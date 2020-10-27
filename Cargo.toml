@@ -1,0 +1,8 @@
+[package]
+name = "concurrent_unordered_map"
+version = "0.0.1"
+authors = ["Changgyoo Park <wvwwvwwv@me.com>"]
+edition = "2018"
+
+[dependencies]
+crossbeam="^0.8"
