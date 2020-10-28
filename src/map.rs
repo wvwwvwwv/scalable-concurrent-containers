@@ -1,8 +1,10 @@
 extern crate crossbeam;
 
+pub mod array;
 pub mod cell;
 
-use cell::{Array, Cell, Entry, ExclusiveLocker};
+use array::Array;
+use cell::{Cell, ExclusiveLocker};
 use crossbeam::atomic::AtomicCell;
 use crossbeam::epoch::Guard;
 use crossbeam::utils::CachePadded;
@@ -20,8 +22,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 // It resizes or shrinks itself when the estimated load factor reaches 100% and 12.5%, and resizing is not a blocking operation.
 // Once resized, the old array is kept intact, and the key-value pairs stored in the array is incrementally relocated to the new array on each access.
 pub struct HashMap<K: Eq + Hash + Sync + Unpin, V: Sync + Unpin, H: BuildHasher> {
-    current_array: CachePadded<AtomicCell<Option<Box<Array<K, V>>>>>,
-    deprecated_array: CachePadded<AtomicCell<Option<Box<Array<K, V>>>>>,
+    current_array: CachePadded<AtomicCell<Option<Box<Array<K, V, Cell<K, V>>>>>>,
+    deprecated_array: CachePadded<AtomicCell<Option<Box<Array<K, V, Cell<K, V>>>>>>,
     resize_mutex: AtomicBool,
     hasher: H,
 }

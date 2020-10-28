@@ -10,23 +10,10 @@ pub struct Cell<K, V> {
     partial_hash_array: [u32; 10],
 }
 
-pub struct Array<K, V> {
-    metadata_array: *const Cell<K, V>,
-    entry_array: *const Entry<K, V>,
-    capacity: usize,
-    rehashing: AtomicUsize,
-}
-
 /// ExclusiveLocker
 pub struct ExclusiveLocker<'a, K, V> {
     cell: &'a Cell<K, V>,
     metadata: u64,
-}
-
-/// Key-value pair
-pub struct Entry<K, V> {
-    key: K,
-    value: V,
 }
 
 struct WaitQueueEntry {
@@ -37,7 +24,7 @@ struct WaitQueueEntry {
 }
 
 struct LinkedEntry<K, V> {
-    entry: Entry<K, V>,
+    entry: (K, V),
     next: Option<Box<LinkedEntry<K, V>>>,
 }
 
@@ -54,7 +41,6 @@ impl<K, V> Cell<K, V> {
 }
 
 impl<'a, K, V> ExclusiveLocker<'a, K, V> {
-
     /// Creates a new ExclusiveLocker instance.
     fn new(cell: &'a Cell<K, V>) -> ExclusiveLocker<'a, K, V> {
         let mut current = cell.metadata.load(Relaxed);
@@ -183,12 +169,6 @@ impl WaitQueueEntry {
         self.condvar.notify_one();
         drop(completed);
         self.completed.store(true, Relaxed);
-    }
-}
-
-impl<K, V> Drop for Array<K, V> {
-    fn drop(&mut self) {
-        unimplemented!()
     }
 }
 
