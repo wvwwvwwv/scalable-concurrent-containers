@@ -1,18 +1,19 @@
 use std::ptr;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64};
 use std::sync::{Condvar, Mutex};
 
-pub struct Cell<K, V> {
+#[derive(Default)]
+pub struct Cell {
     metadata: AtomicU64,
     wait_queue: AtomicPtr<WaitQueueEntry>,
-    link: Option<Box<LinkedEntry<K, V>>>,
+    link: Option<u32>,
     partial_hash_array: [u32; 10],
 }
 
 /// ExclusiveLocker
-pub struct ExclusiveLocker<'a, K, V> {
-    cell: &'a Cell<K, V>,
+pub struct ExclusiveLocker<'a> {
+    cell: &'a Cell,
     metadata: u64,
 }
 
@@ -23,14 +24,9 @@ struct WaitQueueEntry {
     next: *mut WaitQueueEntry,
 }
 
-struct LinkedEntry<K, V> {
-    entry: (K, V),
-    next: Option<Box<LinkedEntry<K, V>>>,
-}
-
-impl<K, V> Cell<K, V> {
+impl Cell {
     const XLOCK: u64 = 1 << 32;
-    fn new() -> Cell<K, V> {
+    fn new() -> Cell {
         Cell {
             metadata: AtomicU64::new(0),
             wait_queue: AtomicPtr::new(ptr::null_mut()),
@@ -40,26 +36,26 @@ impl<K, V> Cell<K, V> {
     }
 }
 
-impl<'a, K, V> ExclusiveLocker<'a, K, V> {
+impl<'a> ExclusiveLocker<'a> {
     /// Creates a new ExclusiveLocker instance.
-    fn new(cell: &'a Cell<K, V>) -> ExclusiveLocker<'a, K, V> {
+    fn new(cell: &'a Cell) -> ExclusiveLocker<'a> {
         let mut current = cell.metadata.load(Relaxed);
         loop {
             match cell.metadata.compare_exchange(
-                current & (!Cell::<K, V>::XLOCK),
-                current | Cell::<K, V>::XLOCK,
+                current & (!Cell::XLOCK),
+                current | Cell::XLOCK,
                 Acquire,
                 Relaxed,
             ) {
                 Ok(result) => {
-                    current = result | Cell::<K, V>::XLOCK;
+                    current = result | Cell::XLOCK;
                     break;
                 }
                 Err(result) => current = result,
             }
 
             // locked: wait for a thread to release the lock
-            if current & Cell::<K, V>::XLOCK == Cell::<K, V>::XLOCK {
+            if current & Cell::XLOCK == Cell::XLOCK {
                 if Self::wait(&cell) {
                     current = cell.metadata.load(Relaxed);
                     break;
@@ -67,14 +63,14 @@ impl<'a, K, V> ExclusiveLocker<'a, K, V> {
                 current = cell.metadata.load(Relaxed);
             }
         }
-        assert!(current & Cell::<K, V>::XLOCK == Cell::<K, V>::XLOCK);
+        assert!(current & Cell::XLOCK == Cell::XLOCK);
         ExclusiveLocker {
             cell: cell,
             metadata: current,
         }
     }
 
-    fn wait(cell: &'a Cell<K, V>) -> bool {
+    fn wait(cell: &'a Cell) -> bool {
         let mut barrier = WaitQueueEntry::new(cell.wait_queue.load(Relaxed));
         let barrier_ptr: *mut WaitQueueEntry = &mut barrier;
         loop {
@@ -93,8 +89,8 @@ impl<'a, K, V> ExclusiveLocker<'a, K, V> {
         let mut locked = false;
         loop {
             match cell.metadata.compare_exchange(
-                current & (!Cell::<K, V>::XLOCK),
-                current | Cell::<K, V>::XLOCK,
+                current & (!Cell::XLOCK),
+                current | Cell::XLOCK,
                 Acquire,
                 Relaxed,
             ) {
@@ -103,7 +99,7 @@ impl<'a, K, V> ExclusiveLocker<'a, K, V> {
                     break;
                 }
                 Err(result) => {
-                    if result & Cell::<K, V>::XLOCK == 0 {
+                    if result & Cell::XLOCK == 0 {
                         current = result;
                         continue;
                     }
@@ -119,7 +115,7 @@ impl<'a, K, V> ExclusiveLocker<'a, K, V> {
         locked
     }
 
-    fn wakeup(cell: &'a Cell<K, V>) {
+    fn wakeup(cell: &'a Cell) {
         let mut barrier_ptr: *mut WaitQueueEntry = cell.wait_queue.load(Acquire);
         loop {
             if let Err(result) =
@@ -172,15 +168,15 @@ impl WaitQueueEntry {
     }
 }
 
-impl<'a, K, V> Drop for ExclusiveLocker<'a, K, V> {
+impl<'a> Drop for ExclusiveLocker<'a> {
     fn drop(&mut self) {
-        if self.metadata & Cell::<K, V>::XLOCK == Cell::<K, V>::XLOCK {
+        if self.metadata & Cell::XLOCK == Cell::XLOCK {
             let mut current = self.metadata;
             loop {
-                assert!(current & Cell::<K, V>::XLOCK == Cell::<K, V>::XLOCK);
+                assert!(current & Cell::XLOCK == Cell::XLOCK);
                 match self.cell.metadata.compare_exchange(
                     current,
-                    current & (!Cell::<K, V>::XLOCK),
+                    current & (!Cell::XLOCK),
                     Release,
                     Relaxed,
                 ) {
@@ -201,14 +197,14 @@ mod test {
 
     #[test]
     fn basic_assumptions() {
-        assert_eq!(std::mem::size_of::<Cell<u32, u32>>(), 64)
+        assert_eq!(std::mem::size_of::<Cell>(), 64)
     }
 
     #[test]
     fn basic_exclusive_locker() {
         let threads = 12;
         let barrier = Arc::new(Barrier::new(threads));
-        let cell: Arc<Cell<u64, u64>> = Arc::new(Cell::new());
+        let cell: Arc<Cell> = Arc::new(Cell::new());
         let mut thread_handles = Vec::with_capacity(threads);
         for tid in 0..threads {
             let barrier_copied = barrier.clone();
