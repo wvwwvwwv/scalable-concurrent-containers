@@ -1,3 +1,4 @@
+use std::convert::TryInto;
 use std::ptr;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32};
@@ -32,9 +33,16 @@ impl<K, V> Cell<K, V> {
     const LOCK_MASK: u32 = (!(0 as u32)) << 8;
     const XLOCK: u32 = 1 << 31;
     const SLOCK_MAX: u32 = Self::LOCK_MASK & (!Self::XLOCK);
-    const SLOCK: u32 = 1 << 8;
-    const SIZE_MASK: u32 = 1 << 8 - 1;
-    const SIZE_MAX: u32 = Self::SIZE_MASK;
+    const SLOCK: u32 = 1 << 16;
+    const OCCUPANCY_MASK: u32 = (1 << 16 - 1) & (!Self::SIZE_MASK);
+    const OCCUPANCY_BIT: u32 = 1 << 6;
+    const SIZE_MASK: u32 = 1 << 6 - 1;
+
+    pub fn size(&self) -> usize {
+        (self.metadata.load(Relaxed) & Self::SIZE_MASK)
+            .try_into()
+            .unwrap()
+    }
 }
 
 impl<K, V> Default for Cell<K, V> {
