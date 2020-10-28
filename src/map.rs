@@ -37,7 +37,7 @@ pub struct Accessor<'a, K, V> {
 }
 
 impl<K: Eq + Hash + Sync + Unpin, V: Sync + Unpin, H: BuildHasher> HashMap<K, V, H> {
-    /// Create an empty HashMap instance with the given capacity
+    /// Creates an empty HashMap instance with the given capacity
     pub fn new(hasher: H, _: Option<usize>) -> HashMap<K, V, H> {
         HashMap {
             current_array: CachePadded::new(AtomicCell::new(None)),
@@ -47,14 +47,20 @@ impl<K: Eq + Hash + Sync + Unpin, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         }
     }
 
-    /// Insert a value into the HashMap.
-    pub fn insert(&mut self, key: &K, value: V) -> bool {
-        let hash = self.hash(key);
-        false
+    /// Inserts a key-value pair into the HashMap
+    pub fn insert<'a>(&self, key: &K, value: V) -> Result<Accessor<'a, K, V>, Accessor<'a, K, V>> {
+        let _ = self.hash(key);
+        Err(Accessor {
+            key_ref: None,
+            value_ref: None,
+            cell_ref: std::ptr::null(),
+            iterable: false,
+        })
     }
 
-    /// Get a reference to the value associated with the key.
-    pub fn get<'a>(&self, key: &K) -> Accessor<'a, K, V> {
+    /// Upserts a key-value pair into the HashMap.
+    pub fn upsert<'a>(&self, key: &K, value: V) -> Accessor<'a, K, V> {
+        let _ = self.hash(key);
         Accessor {
             key_ref: None,
             value_ref: None,
@@ -63,20 +69,40 @@ impl<K: Eq + Hash + Sync + Unpin, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         }
     }
 
-    pub fn map<U, F: FnOnce(&K, &V) -> U>(&self, key: &K, f: F) -> Option<U> {
+    /// Gets a mutable reference to the value associated with the key.
+    pub fn get<'a>(&self, key: &K) -> Option<Accessor<'a, K, V>> {
         None
     }
 
-    /// Removes a key from the HashMap.
-    pub fn remove(&mut self, key: &K) -> bool {
+    /// Reads the key-value pair.
+    pub fn read<U, F: FnOnce(&K, &V) -> U>(&self, key: &K, f: F) -> Option<U> {
+        None
+    }
+
+    /// Mutates the value associated with the given key.
+    pub fn mutate<U, F: FnOnce(&K, &mut V) -> U>(&self, key: &K, f: F) -> Option<U> {
+        None
+    }
+
+    /// Erases the key-value pair owned by the given Accessor.
+    pub fn erase<'a>(&self, accessor: Accessor<'a, K, V>) -> bool {
         false
     }
 
-    /// Return the size of the HashMap.
+    /// Removes a key-value pair.
+    pub fn remove(&self, key: &K) -> bool {
+        if let Some(accessor) = self.get(key) {
+            return self.erase(accessor);
+        }
+        false
+    }
+
+    /// Returns the estimated size of the HashMap.
     pub fn len(&self) -> usize {
         0
     }
 
+    /// Returns a iterable Accessor.
     pub fn iter<'a>(&self) -> Accessor<'a, K, V> {
         Accessor {
             key_ref: None,
@@ -86,6 +112,7 @@ impl<K: Eq + Hash + Sync + Unpin, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         }
     }
 
+    /// Returns a hash value of the given key.
     fn hash(&self, key: &K) -> u64 {
         // generate a hash value
         let mut h = self.hasher.build_hasher();
