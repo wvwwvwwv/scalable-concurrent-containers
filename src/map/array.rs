@@ -12,7 +12,7 @@ impl<K, V, M: Default> Array<K, V, M> {
     fn new(capacity: usize) -> Array<K, V, M> {
         let mut array = Array {
             metadata_array: Vec::with_capacity(capacity),
-            entry_array: Vec::with_capacity(capacity),
+            entry_array: Vec::with_capacity(capacity * 10),
             capacity: capacity,
             rehashing: AtomicUsize::new(0),
         };

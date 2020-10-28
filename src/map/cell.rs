@@ -1,20 +1,24 @@
 use std::ptr;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32};
 use std::sync::{Condvar, Mutex};
 
-#[derive(Default)]
-pub struct Cell {
-    metadata: AtomicU64,
+pub struct Cell<K, V> {
+    link: Option<Box<EntryLink<K, V>>>,
+    metadata: AtomicU32,
     wait_queue: AtomicPtr<WaitQueueEntry>,
-    link: Option<u32>,
     partial_hash_array: [u32; 10],
 }
 
-/// ExclusiveLocker
-pub struct ExclusiveLocker<'a> {
-    cell: &'a Cell,
-    metadata: u64,
+/// CellLocker
+pub struct CellLocker<'a, K, V> {
+    cell: &'a Cell<K, V>,
+    metadata: u32,
+}
+
+struct EntryLink<K, V> {
+    key_value_pair: (K, V),
+    next: Option<Box<EntryLink<K, V>>>,
 }
 
 struct WaitQueueEntry {
@@ -24,111 +28,97 @@ struct WaitQueueEntry {
     next: *mut WaitQueueEntry,
 }
 
-impl Cell {
-    const XLOCK: u64 = 1 << 32;
-    fn new() -> Cell {
+impl<K, V> Cell<K, V> {
+    const LOCK_MASK: u32 = (!(0 as u32)) << 8;
+    const XLOCK: u32 = 1 << 31;
+    const SLOCK_MAX: u32 = Self::LOCK_MASK & (!Self::XLOCK);
+    const SLOCK: u32 = 1 << 8;
+    const SIZE_MASK: u32 = 1 << 8 - 1;
+    const SIZE_MAX: u32 = Self::SIZE_MASK;
+}
+
+impl<K, V> Default for Cell<K, V> {
+    fn default() -> Self {
         Cell {
-            metadata: AtomicU64::new(0),
-            wait_queue: AtomicPtr::new(ptr::null_mut()),
             link: None,
-            partial_hash_array: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            metadata: AtomicU32::new(0),
+            wait_queue: AtomicPtr::new(ptr::null_mut()),
+            partial_hash_array: [0; 10],
         }
     }
 }
 
-impl<'a> ExclusiveLocker<'a> {
-    /// Creates a new ExclusiveLocker instance.
-    fn new(cell: &'a Cell) -> ExclusiveLocker<'a> {
+impl<'a, K, V> CellLocker<'a, K, V> {
+    /// Creates a new CellLocker instance with the cell exclusively locked.
+    fn lock_exclusive(cell: &'a Cell<K, V>) -> CellLocker<'a, K, V> {
+        loop {
+            if let Some(result) = Self::try_lock_exclusive(cell) {
+                return result;
+            }
+            if let Some(result) = Self::wait_exclusive(&cell) {
+                return result;
+            }
+        }
+    }
+
+    /// Creates a new CellLocker instance if the cell is exclusively locked.
+    fn try_lock_exclusive(cell: &'a Cell<K, V>) -> Option<CellLocker<'a, K, V>> {
         let mut current = cell.metadata.load(Relaxed);
         loop {
             match cell.metadata.compare_exchange(
-                current & (!Cell::XLOCK),
-                current | Cell::XLOCK,
+                current & (!Cell::<K, V>::XLOCK),
+                current | Cell::<K, V>::XLOCK,
                 Acquire,
                 Relaxed,
             ) {
                 Ok(result) => {
-                    current = result | Cell::XLOCK;
-                    break;
+                    return Some(CellLocker {
+                        cell: cell,
+                        metadata: result | Cell::<K, V>::XLOCK,
+                    })
                 }
-                Err(result) => current = result,
-            }
-
-            // locked: wait for a thread to release the lock
-            if current & Cell::XLOCK == Cell::XLOCK {
-                if Self::wait(&cell) {
-                    current = cell.metadata.load(Relaxed);
-                    break;
+                Err(result) => {
+                    if result & Cell::<K, V>::XLOCK == Cell::<K, V>::XLOCK {
+                        current = result;
+                        return None;
+                    }
+                    current = result;
                 }
-                current = cell.metadata.load(Relaxed);
             }
-        }
-        assert!(current & Cell::XLOCK == Cell::XLOCK);
-        ExclusiveLocker {
-            cell: cell,
-            metadata: current,
         }
     }
 
-    fn wait(cell: &'a Cell) -> bool {
+    fn wait_exclusive(cell: &'a Cell<K, V>) -> Option<CellLocker<'a, K, V>> {
         let mut barrier = WaitQueueEntry::new(cell.wait_queue.load(Relaxed));
         let barrier_ptr: *mut WaitQueueEntry = &mut barrier;
-        loop {
-            if let Err(result) =
-                cell.wait_queue
-                    .compare_exchange(barrier.next, barrier_ptr, Release, Relaxed)
-            {
-                barrier.next = result;
-                continue;
-            }
-            break;
+
+        // insert itself into the wait queue
+        while let Err(result) =
+            cell.wait_queue
+                .compare_exchange(barrier.next, barrier_ptr, Release, Relaxed)
+        {
+            barrier.next = result;
         }
 
         // try-lock again once the barrier is inserted into the wait queue
-        let mut current = cell.metadata.load(Relaxed);
-        let mut locked = false;
-        loop {
-            match cell.metadata.compare_exchange(
-                current & (!Cell::XLOCK),
-                current | Cell::XLOCK,
-                Acquire,
-                Relaxed,
-            ) {
-                Ok(_) => {
-                    locked = true;
-                    break;
-                }
-                Err(result) => {
-                    if result & Cell::XLOCK == 0 {
-                        current = result;
-                        continue;
-                    }
-                    break;
-                }
-            }
-        }
-
-        if locked {
+        let locked = Self::try_lock_exclusive(cell);
+        if locked.is_some() {
             Self::wakeup(cell);
         }
         barrier.wait();
         locked
     }
 
-    fn wakeup(cell: &'a Cell) {
+    fn wakeup(cell: &'a Cell<K, V>) {
         let mut barrier_ptr: *mut WaitQueueEntry = cell.wait_queue.load(Acquire);
-        loop {
-            if let Err(result) =
-                cell.wait_queue
-                    .compare_exchange(barrier_ptr, ptr::null_mut(), Acquire, Relaxed)
-            {
-                barrier_ptr = result;
-                if barrier_ptr == ptr::null_mut() {
-                    return;
-                }
-                continue;
+        while let Err(result) =
+            cell.wait_queue
+                .compare_exchange(barrier_ptr, ptr::null_mut(), Acquire, Relaxed)
+        {
+            barrier_ptr = result;
+            if barrier_ptr == ptr::null_mut() {
+                return;
             }
-            break;
         }
 
         while barrier_ptr != ptr::null_mut() {
@@ -168,24 +158,26 @@ impl WaitQueueEntry {
     }
 }
 
-impl<'a> Drop for ExclusiveLocker<'a> {
+impl<'a, K, V> Drop for CellLocker<'a, K, V> {
     fn drop(&mut self) {
-        if self.metadata & Cell::XLOCK == Cell::XLOCK {
-            let mut current = self.metadata;
-            loop {
-                assert!(current & Cell::XLOCK == Cell::XLOCK);
-                match self.cell.metadata.compare_exchange(
-                    current,
-                    current & (!Cell::XLOCK),
-                    Release,
-                    Relaxed,
-                ) {
-                    Err(result) => current = result,
-                    Ok(_) => break,
-                }
+        let mut current = self.metadata;
+        loop {
+            assert!(current & Cell::<K, V>::LOCK_MASK != 0);
+            let new = if current & Cell::<K, V>::XLOCK == Cell::<K, V>::XLOCK {
+                current & (!Cell::<K, V>::XLOCK)
+            } else {
+                current - Cell::<K, V>::SLOCK
+            };
+            match self
+                .cell
+                .metadata
+                .compare_exchange(current, new, Release, Relaxed)
+            {
+                Ok(_) => break,
+                Err(result) => current = result,
             }
-            Self::wakeup(self.cell);
         }
+        Self::wakeup(self.cell);
     }
 }
 
@@ -197,14 +189,14 @@ mod test {
 
     #[test]
     fn basic_assumptions() {
-        assert_eq!(std::mem::size_of::<Cell>(), 64)
+        assert_eq!(std::mem::size_of::<Cell<u64, bool>>(), 64)
     }
 
     #[test]
     fn basic_exclusive_locker() {
         let threads = 12;
         let barrier = Arc::new(Barrier::new(threads));
-        let cell: Arc<Cell> = Arc::new(Cell::new());
+        let cell: Arc<Cell<bool, u8>> = Arc::new(Default::default());
         let mut thread_handles = Vec::with_capacity(threads);
         for tid in 0..threads {
             let barrier_copied = barrier.clone();
@@ -213,7 +205,7 @@ mod test {
             thread_handles.push(thread::spawn(move || {
                 barrier_copied.wait();
                 for i in 0..4096 {
-                    let locker = ExclusiveLocker::new(&*cell_copied);
+                    let locker = CellLocker::lock_exclusive(&*cell_copied);
                     if i % 256 == 255 {
                         println!("locked {}:{}", thread_id, i);
                     }
