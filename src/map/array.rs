@@ -4,7 +4,6 @@ use std::sync::atomic::AtomicUsize;
 pub struct Array<K, V, M: Default> {
     metadata_array: Vec<M>,
     entry_array: Vec<MaybeUninit<(K, V)>>,
-    capacity: usize,
     rehashing: AtomicUsize,
 }
 
@@ -13,7 +12,6 @@ impl<K, V, M: Default> Array<K, V, M> {
         let mut array = Array {
             metadata_array: Vec::with_capacity(capacity),
             entry_array: Vec::with_capacity(capacity * 10),
-            capacity: capacity,
             rehashing: AtomicUsize::new(0),
         };
         for _ in 0..capacity {

@@ -55,7 +55,12 @@ impl<K, V> Cell<K, V> {
             .unwrap()
     }
 
-    fn wait<T, F: FnOnce() -> Option<T>>(&self, f: F) -> Option<T> {
+    fn wait<T, F: Fn() -> Option<T>>(&self, f: F) -> Option<T> {
+        let mut locked = f();
+        if locked.is_some() {
+            return locked;
+        }
+
         let mut barrier = WaitQueueEntry::new(self.wait_queue.load(Relaxed));
         let barrier_ptr: *mut WaitQueueEntry = &mut barrier;
 
@@ -66,8 +71,9 @@ impl<K, V> Cell<K, V> {
         {
             barrier.next = result;
         }
+
         // try-lock again once the barrier is inserted into the wait queue
-        let locked = f();
+        locked = f();
         if locked.is_some() {
             self.wakeup();
         }
@@ -97,49 +103,35 @@ impl<K, V> Cell<K, V> {
     }
 }
 
-impl<K, V> Default for Cell<K, V> {
-    fn default() -> Self {
-        Cell {
-            link: None,
-            metadata: AtomicU32::new(0),
-            wait_queue: AtomicPtr::new(ptr::null_mut()),
-            partial_hash_array: [0; 10],
-        }
-    }
-}
-
 impl<'a, K, V> ExclusiveLocker<'a, K, V> {
-    /// Creates a new ExclusiveLocker instance with the cell exclusively locked.
+    /// Create a new ExclusiveLocker instance with the cell exclusively locked.
     fn lock(cell: &'a Cell<K, V>) -> ExclusiveLocker<'a, K, V> {
         loop {
-            if let Some(result) = Self::try_lock(cell) {
-                return result;
-            }
             if let Some(result) = cell.wait(|| Self::try_lock(cell)) {
                 return result;
             }
         }
     }
 
-    /// Creates a new ExclusiveLocker instance if the cell is exclusively locked.
+    /// Create a new ExclusiveLocker instance if the cell is exclusively locked.
     fn try_lock(cell: &'a Cell<K, V>) -> Option<ExclusiveLocker<'a, K, V>> {
         let mut current = cell.metadata.load(Relaxed);
         loop {
             match cell.metadata.compare_exchange(
                 current & (!Cell::<K, V>::LOCK_MASK),
-                current | Cell::<K, V>::XLOCK,
+                (current & (!Cell::<K, V>::LOCK_MASK)) | Cell::<K, V>::XLOCK,
                 Acquire,
                 Relaxed,
             ) {
                 Ok(result) => {
+                    assert_eq!(result & Cell::<K, V>::LOCK_MASK, 0);
                     return Some(ExclusiveLocker {
                         cell: cell,
                         metadata: result | Cell::<K, V>::XLOCK,
-                    })
+                    });
                 }
                 Err(result) => {
                     if result & Cell::<K, V>::LOCK_MASK != 0 {
-                        current = result;
                         return None;
                     }
                     current = result;
@@ -150,35 +142,33 @@ impl<'a, K, V> ExclusiveLocker<'a, K, V> {
 }
 
 impl<'a, K, V> SharedLocker<'a, K, V> {
-    /// Creates a new SharedLocker instance with the cell shared locked.
+    /// Create a new SharedLocker instance with the cell shared locked.
     fn lock(cell: &'a Cell<K, V>) -> SharedLocker<'a, K, V> {
         loop {
-            if let Some(result) = Self::try_lock(cell) {
-                return result;
-            }
             if let Some(result) = cell.wait(|| Self::try_lock(cell)) {
                 return result;
             }
         }
     }
 
-    /// Creates a new SharedLocker instance if the cell is shared locked.
+    /// Create a new SharedLocker instance if the cell is shared locked.
     fn try_lock(cell: &'a Cell<K, V>) -> Option<SharedLocker<'a, K, V>> {
         let mut current = cell.metadata.load(Relaxed);
         loop {
             if current & Cell::<K, V>::LOCK_MASK >= Cell::<K, V>::SLOCK_MAX {
-                current = current & (!Cell::<K, V>::XLOCK) - Cell::<K, V>::SLOCK;
+                current = current & (!Cell::<K, V>::LOCK_MASK);
             }
+            assert_eq!(current & Cell::<K, V>::LOCK_MASK & Cell::<K, V>::XLOCK, 0);
+            assert!(current & Cell::<K, V>::LOCK_MASK < Cell::<K, V>::SLOCK_MAX);
             match cell.metadata.compare_exchange(
                 current,
                 current + Cell::<K, V>::SLOCK,
                 Acquire,
                 Relaxed,
             ) {
-                Ok(result) => return Some(SharedLocker { cell: cell }),
+                Ok(_) => return Some(SharedLocker { cell: cell }),
                 Err(result) => {
                     if result & Cell::<K, V>::LOCK_MASK >= Cell::<K, V>::SLOCK_MAX {
-                        current = result;
                         return None;
                     }
                     current = result;
@@ -215,21 +205,49 @@ impl WaitQueueEntry {
     }
 }
 
+impl<K, V> Default for Cell<K, V> {
+    fn default() -> Self {
+        Cell {
+            link: None,
+            metadata: AtomicU32::new(0),
+            wait_queue: AtomicPtr::new(ptr::null_mut()),
+            partial_hash_array: [0; 10],
+        }
+    }
+}
+
 impl<'a, K, V> Drop for ExclusiveLocker<'a, K, V> {
     fn drop(&mut self) {
         let mut current = self.metadata;
         loop {
-            assert!(current & Cell::<K, V>::LOCK_MASK != 0);
-            let new = if current & Cell::<K, V>::XLOCK == Cell::<K, V>::XLOCK {
-                current & (!Cell::<K, V>::XLOCK)
-            } else {
-                current - Cell::<K, V>::SLOCK
-            };
-            match self
-                .cell
-                .metadata
-                .compare_exchange(current, new, Release, Relaxed)
-            {
+            assert_eq!(current & Cell::<K, V>::LOCK_MASK, Cell::<K, V>::XLOCK);
+            match self.cell.metadata.compare_exchange(
+                current,
+                current & (!Cell::<K, V>::XLOCK),
+                Release,
+                Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(result) => current = result,
+            }
+        }
+        self.cell.wakeup();
+    }
+}
+
+impl<'a, K, V> Drop for SharedLocker<'a, K, V> {
+    fn drop(&mut self) {
+        // no modification is allowed with a SharedLocker held, therefore no memory fences are required
+        let mut current = self.cell.metadata.load(Relaxed);
+        loop {
+            assert!(current & Cell::<K, V>::LOCK_MASK <= Cell::<K, V>::SLOCK_MAX);
+            assert!(current & Cell::<K, V>::LOCK_MASK >= Cell::<K, V>::SLOCK);
+            match self.cell.metadata.compare_exchange(
+                current,
+                current - Cell::<K, V>::SLOCK,
+                Relaxed,
+                Relaxed,
+            ) {
                 Ok(_) => break,
                 Err(result) => current = result,
             }
@@ -247,6 +265,35 @@ mod test {
     #[test]
     fn basic_assumptions() {
         assert_eq!(std::mem::size_of::<Cell<u64, bool>>(), 64);
+        assert!(Cell::<bool, u32>::XLOCK > Cell::<bool, u32>::SLOCK_MAX);
+        assert!(
+            (Cell::<bool, u32>::XLOCK & Cell::<bool, u32>::LOCK_MASK)
+                > Cell::<bool, u32>::SLOCK_MAX
+        );
+        assert_eq!(
+            ((Cell::<bool, u32>::XLOCK << 1) & Cell::<bool, u32>::LOCK_MASK),
+            0
+        );
+        assert_eq!(
+            Cell::<bool, u32>::XLOCK & Cell::<bool, u32>::LOCK_MASK,
+            Cell::<bool, u32>::XLOCK
+        );
+        assert_eq!(
+            Cell::<bool, u32>::SLOCK & (!Cell::<bool, u32>::LOCK_MASK),
+            0
+        );
+        assert_eq!(
+            Cell::<bool, u32>::SLOCK & Cell::<bool, u32>::LOCK_MASK,
+            Cell::<bool, u32>::SLOCK
+        );
+        assert_eq!(
+            (Cell::<bool, u32>::SLOCK >> 1) & Cell::<bool, u32>::LOCK_MASK,
+            0
+        );
+        assert_eq!(
+            Cell::<bool, u32>::SLOCK & Cell::<bool, u32>::SLOCK_MAX,
+            Cell::<bool, u32>::SLOCK
+        );
         assert_eq!(
             Cell::<bool, u32>::KILLED_FLAG & Cell::<bool, u32>::LOCK_MASK,
             0
@@ -269,23 +316,39 @@ mod test {
     }
 
     #[test]
-    fn basic_exclusive_locker() {
-        let threads = 12;
+    fn basic_locker() {
+        let threads = 6;
         let barrier = Arc::new(Barrier::new(threads));
         let cell: Arc<Cell<bool, u8>> = Arc::new(Default::default());
+        let mut data: [u64; 128] = [0; 128];
         let mut thread_handles = Vec::with_capacity(threads);
-        for tid in 0..threads {
+        for _ in 0..threads {
             let barrier_copied = barrier.clone();
             let cell_copied = cell.clone();
-            let thread_id = tid;
+            let data_ptr = AtomicPtr::new(&mut data);
             thread_handles.push(thread::spawn(move || {
                 barrier_copied.wait();
                 for i in 0..4096 {
-                    let locker = ExclusiveLocker::lock(&*cell_copied);
-                    if i % 256 == 255 {
-                        println!("locked {}:{}", thread_id, i);
+                    if i % 2 == 0 {
+                        let xlocker = ExclusiveLocker::lock(&*cell_copied);
+                        let mut sum: u64 = 0;
+                        for j in 0..128 {
+                            unsafe {
+                                sum += (*data_ptr.load(Relaxed))[j];
+                                (*data_ptr.load(Relaxed))[j] = if i % 4 == 0 { 2 } else { 4 }
+                            };
+                        }
+                        assert_eq!(sum % 256, 0);
+                        drop(xlocker);
+                    } else {
+                        let slocker = SharedLocker::lock(&*cell_copied);
+                        let mut sum: u64 = 0;
+                        for j in 0..128 {
+                            unsafe { sum += (*data_ptr.load(Relaxed))[j] };
+                        }
+                        assert_eq!(sum % 256, 0);
+                        drop(slocker);
                     }
-                    drop(locker);
                 }
             }));
         }

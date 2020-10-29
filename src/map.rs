@@ -38,7 +38,7 @@ pub struct Accessor<'a, K, V> {
 }
 
 impl<K: Eq + Hash + Sync + Unpin, V: Sync + Unpin, H: BuildHasher> HashMap<K, V, H> {
-    /// Creates an empty HashMap instance with the given capacity
+    /// Create an empty HashMap instance with the given capacity
     pub fn new(hasher: H, _: Option<usize>) -> HashMap<K, V, H> {
         HashMap {
             current_array: CachePadded::new(Atomic::null()),
@@ -48,7 +48,7 @@ impl<K: Eq + Hash + Sync + Unpin, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         }
     }
 
-    /// Inserts a key-value pair into the HashMap
+    /// Insert a key-value pair into the HashMap
     pub fn insert<'a>(&self, key: &K, value: V) -> Result<Accessor<'a, K, V>, Accessor<'a, K, V>> {
         let _ = self.hash(key);
         let guard = crossbeam::epoch::pin();
@@ -61,7 +61,7 @@ impl<K: Eq + Hash + Sync + Unpin, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         })
     }
 
-    /// Upserts a key-value pair into the HashMap.
+    /// Upsert a key-value pair into the HashMap.
     pub fn upsert<'a>(&self, key: &K, value: V) -> Accessor<'a, K, V> {
         let _ = self.hash(key);
         let guard = crossbeam::epoch::pin();
@@ -74,30 +74,30 @@ impl<K: Eq + Hash + Sync + Unpin, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         }
     }
 
-    /// Gets a mutable reference to the value associated with the key.
+    /// Get a mutable reference to the value associated with the key.
     pub fn get<'a>(&self, key: &K) -> Option<Accessor<'a, K, V>> {
         let _ = crossbeam::epoch::pin();
         None
     }
 
-    /// Reads the key-value pair.
+    /// Read the key-value pair.
     pub fn read<U, F: FnOnce(&K, &V) -> U>(&self, key: &K, f: F) -> Option<U> {
         let _ = crossbeam::epoch::pin();
         None
     }
 
-    /// Mutates the value associated with the given key.
+    /// Mutate the value associated with the given key.
     pub fn mutate<U, F: FnOnce(&K, &mut V) -> U>(&self, key: &K, f: F) -> Option<U> {
         let _ = crossbeam::epoch::pin();
         None
     }
 
-    /// Erases the key-value pair owned by the given Accessor.
+    /// Erase the key-value pair owned by the given Accessor.
     pub fn erase<'a>(&self, accessor: Accessor<'a, K, V>) -> bool {
         false
     }
 
-    /// Removes a key-value pair.
+    /// Remove a key-value pair.
     pub fn remove(&self, key: &K) -> bool {
         if let Some(accessor) = self.get(key) {
             return self.erase(accessor);
@@ -105,13 +105,13 @@ impl<K: Eq + Hash + Sync + Unpin, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         false
     }
 
-    /// Returns the estimated size of the HashMap.
+    /// Return the estimated size of the HashMap.
     pub fn len(&self) -> usize {
         let _ = crossbeam::epoch::pin();
         0
     }
 
-    /// Returns a iterable Accessor.
+    /// Return an iterable Accessor.
     pub fn iter<'a>(&self) -> Accessor<'a, K, V> {
         let guard = crossbeam::epoch::pin();
         Accessor {
@@ -123,7 +123,7 @@ impl<K: Eq + Hash + Sync + Unpin, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         }
     }
 
-    /// Returns a hash value of the given key.
+    /// Return a hash value of the given key.
     fn hash(&self, key: &K) -> u64 {
         // generate a hash value
         let mut h = self.hasher.build_hasher();
