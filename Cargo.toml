@@ -1,5 +1,5 @@
 [package]
-name = "cc"
+name = "scc"
 version = "0.0.1"
 authors = ["Changgyoo Park <wvwwvwwv@me.com>"]
 edition = "2018"
