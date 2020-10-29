@@ -4,7 +4,7 @@ pub mod array;
 pub mod cell;
 
 use array::Array;
-use cell::{Cell, CellLocker};
+use cell::{Cell, ExclusiveLocker, SharedLocker};
 use crossbeam::epoch::{Atomic, Guard, Owned};
 use crossbeam::utils::CachePadded;
 use std::hash::{BuildHasher, Hash, Hasher};
