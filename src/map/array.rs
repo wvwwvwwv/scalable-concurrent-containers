@@ -11,6 +11,25 @@ pub struct Array<K, V, M: Default> {
 
 impl<K, V, M: Default> Array<K, V, M> {
     fn new(capacity: usize) -> Array<K, V, M> {
+        let (adjusted_capacity, log_capacity) = Self::calculated_adjusted_capacity(capacity);
+        let mut array = Array {
+            metadata_array: Vec::with_capacity(adjusted_capacity),
+            entry_array: Vec::with_capacity(adjusted_capacity * 10),
+            log_capacity: log_capacity,
+            rehashing: AtomicUsize::new(0),
+        };
+        for _ in 0..capacity {
+            array.metadata_array.push(Default::default());
+        }
+        for _ in 0..capacity {
+            array
+                .entry_array
+                .push(unsafe { MaybeUninit::uninit().assume_init() });
+        }
+        array
+    }
+
+    pub fn calculated_adjusted_capacity(capacity: usize) -> (usize, u8) {
         let mut adjusted_capacity = 1;
         let mut log_capacity = 0;
 
@@ -30,22 +49,7 @@ impl<K, V, M: Default> Array<K, V, M> {
             adjusted_capacity = adjusted_capacity << 1;
         }
         assert_eq!(adjusted_capacity, 1 << log_capacity);
-
-        let mut array = Array {
-            metadata_array: Vec::with_capacity(adjusted_capacity),
-            entry_array: Vec::with_capacity(adjusted_capacity * 10),
-            log_capacity: log_capacity,
-            rehashing: AtomicUsize::new(0),
-        };
-        for _ in 0..capacity {
-            array.metadata_array.push(Default::default());
-        }
-        for _ in 0..capacity {
-            array
-                .entry_array
-                .push(unsafe { MaybeUninit::uninit().assume_init() });
-        }
-        array
+        (adjusted_capacity, log_capacity)
     }
 
     fn capacity(&self) -> usize {
@@ -62,8 +66,7 @@ impl<K, V, M: Default> Array<K, V, M> {
 }
 
 impl<K, V, M: Default> Drop for Array<K, V, M> {
-    fn drop(&mut self) {
-    }
+    fn drop(&mut self) {}
 }
 
 #[cfg(test)]

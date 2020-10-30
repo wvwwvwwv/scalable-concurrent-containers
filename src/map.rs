@@ -40,14 +40,16 @@ pub struct Accessor<'a, K, V> {
 impl<K: Eq + Hash + Sync + Unpin, V: Sync + Unpin, H: BuildHasher> HashMap<K, V, H> {
     /// Create an empty HashMap instance with the given hasher and minimum capacity
     pub fn new(hasher: H, minimum_capacity: Option<usize>) -> HashMap<K, V, H> {
+        let adjusted_minimum_capacity = if let Some(capacity) = minimum_capacity {
+            Array::<K, V, Cell<K, V>>::calculated_adjusted_capacity(capacity).0
+        } else {
+            64
+        };
+
         HashMap {
             current_array: Atomic::null(),
             deprecated_array: Atomic::null(),
-            minimum_capacity: if let Some(capacity) = minimum_capacity {
-                std::cmp::min(capacity, 16)
-            } else {
-                16
-            },
+            minimum_capacity: adjusted_minimum_capacity,
             resize_mutex: AtomicBool::new(false),
             hasher: hasher,
         }
