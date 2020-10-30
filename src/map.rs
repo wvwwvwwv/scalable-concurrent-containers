@@ -6,7 +6,6 @@ pub mod cell;
 use array::Array;
 use cell::{Cell, ExclusiveLocker, SharedLocker};
 use crossbeam::epoch::{Atomic, Guard, Owned};
-use crossbeam::utils::CachePadded;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -20,8 +19,9 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 // It resizes or shrinks itself when the estimated load factor reaches 100% and 12.5%, and resizing is not a blocking operation.
 // Once resized, the old array is kept intact, and the key-value pairs stored in the array is incrementally relocated to the new array on each access.
 pub struct HashMap<K: Eq + Hash + Sync + Unpin, V: Sync + Unpin, H: BuildHasher> {
-    current_array: CachePadded<Atomic<Array<K, V, Cell<K, V>>>>,
-    deprecated_array: CachePadded<Atomic<Array<K, V, Cell<K, V>>>>,
+    current_array: Atomic<Array<K, V, Cell<K, V>>>,
+    deprecated_array: Atomic<Array<K, V, Cell<K, V>>>,
+    minimum_capacity: usize,
     resize_mutex: AtomicBool,
     hasher: H,
 }
@@ -38,11 +38,16 @@ pub struct Accessor<'a, K, V> {
 }
 
 impl<K: Eq + Hash + Sync + Unpin, V: Sync + Unpin, H: BuildHasher> HashMap<K, V, H> {
-    /// Create an empty HashMap instance with the given capacity
-    pub fn new(hasher: H, _: Option<usize>) -> HashMap<K, V, H> {
+    /// Create an empty HashMap instance with the given hasher and minimum capacity
+    pub fn new(hasher: H, minimum_capacity: Option<usize>) -> HashMap<K, V, H> {
         HashMap {
-            current_array: CachePadded::new(Atomic::null()),
-            deprecated_array: CachePadded::new(Atomic::null()),
+            current_array: Atomic::null(),
+            deprecated_array: Atomic::null(),
+            minimum_capacity: if let Some(capacity) = minimum_capacity {
+                std::cmp::min(capacity, 16)
+            } else {
+                16
+            },
             resize_mutex: AtomicBool::new(false),
             hasher: hasher,
         }
@@ -159,5 +164,5 @@ mod test {
     use super::*;
 
     #[test]
-    fn basic_assumptions() {}
+    fn static_assertions() {}
 }
