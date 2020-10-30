@@ -280,7 +280,6 @@ impl<'a, K, V> Drop for SharedLocker<'a, K, V> {
                 Err(result) => current = result,
             }
         }
-        self.cell.wakeup();
     }
 }
 

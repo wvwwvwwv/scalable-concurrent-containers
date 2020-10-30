@@ -18,7 +18,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 // This approach is very similar to what is implemented in Swisstable, or a proprietary hash table implementation used by various SAP products.
 // It resizes or shrinks itself when the estimated load factor reaches 100% and 12.5%, and resizing is not a blocking operation.
 // Once resized, the old array is kept intact, and the key-value pairs stored in the array is incrementally relocated to the new array on each access.
-pub struct HashMap<K: Eq + Hash + Sync + Unpin, V: Sync + Unpin, H: BuildHasher> {
+pub struct HashMap<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> {
     current_array: Atomic<Array<K, V, Cell<K, V>>>,
     deprecated_array: Atomic<Array<K, V, Cell<K, V>>>,
     minimum_capacity: usize,
@@ -37,7 +37,7 @@ pub struct Accessor<'a, K, V> {
     iterable: bool,
 }
 
-impl<K: Eq + Hash + Sync + Unpin, V: Sync + Unpin, H: BuildHasher> HashMap<K, V, H> {
+impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V, H> {
     /// Create an empty HashMap instance with the given hasher and minimum capacity
     pub fn new(hasher: H, minimum_capacity: Option<usize>) -> HashMap<K, V, H> {
         let adjusted_minimum_capacity = if let Some(capacity) = minimum_capacity {
@@ -47,7 +47,7 @@ impl<K: Eq + Hash + Sync + Unpin, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         };
 
         HashMap {
-            current_array: Atomic::null(),
+            current_array: Atomic::new(Array::new(adjusted_minimum_capacity)),
             deprecated_array: Atomic::null(),
             minimum_capacity: adjusted_minimum_capacity,
             resize_mutex: AtomicBool::new(false),
@@ -146,7 +146,7 @@ impl<K: Eq + Hash + Sync + Unpin, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     }
 }
 
-impl<K: Eq + Hash + Sync + Unpin, V: Sync + Unpin, H: BuildHasher> Drop for HashMap<K, V, H> {
+impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Drop for HashMap<K, V, H> {
     fn drop(&mut self) {}
 }
 
@@ -164,7 +164,13 @@ impl<'a, K, V> Iterator for Accessor<'a, K, V> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::collections::hash_map::RandomState;
 
     #[test]
     fn static_assertions() {}
+
+    #[test]
+    fn basic_hashmap() {
+        let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), Some(10));
+    }
 }
