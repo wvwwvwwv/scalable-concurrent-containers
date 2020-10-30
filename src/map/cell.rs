@@ -73,11 +73,10 @@ impl<K, V> Cell<K, V> {
         // while the actual value is 'unset' means that the lock owner has released it.
         let mut current = self.metadata.load(Relaxed);
         while current & Self::WAITING_FLAG == 0 {
-            // 'Release' is necessary for the lock owner to see the condvar
             match self.metadata.compare_exchange(
                 current,
                 current | Self::WAITING_FLAG,
-                Release,
+                Relaxed,
                 Relaxed,
             ) {
                 Ok(_) => break,
@@ -237,6 +236,7 @@ impl<K, V> Default for Cell<K, V> {
 
 impl<'a, K, V> Drop for ExclusiveLocker<'a, K, V> {
     fn drop(&mut self) {
+        // a 'Release' fence is required to publish the changes
         let mut current = self.metadata;
         loop {
             assert_eq!(current & Cell::<K, V>::LOCK_MASK, Cell::<K, V>::XLOCK);
