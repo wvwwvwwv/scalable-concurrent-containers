@@ -139,7 +139,7 @@ impl<'a, K, V> ExclusiveLocker<'a, K, V> {
                 Relaxed,
             ) {
                 Ok(result) => {
-                    assert_eq!(result & Cell::<K, V>::LOCK_MASK, 0);
+                    debug_assert_eq!(result & Cell::<K, V>::LOCK_MASK, 0);
                     return Some(ExclusiveLocker {
                         cell: cell,
                         metadata: result | Cell::<K, V>::XLOCK,
@@ -176,8 +176,8 @@ impl<'a, K, V> SharedLocker<'a, K, V> {
             if current & Cell::<K, V>::LOCK_MASK >= Cell::<K, V>::SLOCK_MAX {
                 current = current & (!Cell::<K, V>::LOCK_MASK);
             }
-            assert_eq!(current & Cell::<K, V>::LOCK_MASK & Cell::<K, V>::XLOCK, 0);
-            assert!(current & Cell::<K, V>::LOCK_MASK < Cell::<K, V>::SLOCK_MAX);
+            debug_assert_eq!(current & Cell::<K, V>::LOCK_MASK & Cell::<K, V>::XLOCK, 0);
+            debug_assert!(current & Cell::<K, V>::LOCK_MASK < Cell::<K, V>::SLOCK_MAX);
             match cell.metadata.compare_exchange(
                 current,
                 current + Cell::<K, V>::SLOCK,
@@ -239,7 +239,7 @@ impl<'a, K, V> Drop for ExclusiveLocker<'a, K, V> {
         // a 'Release' fence is required to publish the changes
         let mut current = self.metadata;
         loop {
-            assert_eq!(current & Cell::<K, V>::LOCK_MASK, Cell::<K, V>::XLOCK);
+            debug_assert_eq!(current & Cell::<K, V>::LOCK_MASK, Cell::<K, V>::XLOCK);
             match self.cell.metadata.compare_exchange(
                 current,
                 current & (!(Cell::<K, V>::WAITING_FLAG | Cell::<K, V>::XLOCK)),
@@ -263,8 +263,8 @@ impl<'a, K, V> Drop for SharedLocker<'a, K, V> {
         // no modification is allowed with a SharedLocker held: no memory fences required
         let mut current = self.cell.metadata.load(Relaxed);
         loop {
-            assert!(current & Cell::<K, V>::LOCK_MASK <= Cell::<K, V>::SLOCK_MAX);
-            assert!(current & Cell::<K, V>::LOCK_MASK >= Cell::<K, V>::SLOCK);
+            debug_assert!(current & Cell::<K, V>::LOCK_MASK <= Cell::<K, V>::SLOCK_MAX);
+            debug_assert!(current & Cell::<K, V>::LOCK_MASK >= Cell::<K, V>::SLOCK);
             match self.cell.metadata.compare_exchange(
                 current,
                 (current & (!Cell::<K, V>::WAITING_FLAG)) - Cell::<K, V>::SLOCK,

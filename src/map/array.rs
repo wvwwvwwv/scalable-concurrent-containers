@@ -5,51 +5,28 @@ use std::sync::atomic::AtomicUsize;
 pub struct Array<K, V, M: Default> {
     metadata_array: Vec<M>,
     entry_array: Vec<MaybeUninit<(K, V)>>,
-    log_capacity: u8,
+    log_base_two_capacity: u8,
     rehashing: AtomicUsize,
 }
 
 impl<K, V, M: Default> Array<K, V, M> {
-    pub fn new(capacity: usize) -> Array<K, V, M> {
-        let (adjusted_capacity, log_capacity) = Self::calculated_adjusted_capacity(capacity);
+    pub fn new(log_base_two_capacity: u8) -> Array<K, V, M> {
+        debug_assert!(log_base_two_capacity > 0);
         let mut array = Array {
-            metadata_array: Vec::with_capacity(adjusted_capacity),
-            entry_array: Vec::with_capacity(adjusted_capacity * 10),
-            log_capacity: log_capacity,
+            metadata_array: Vec::with_capacity(1 << log_base_two_capacity),
+            entry_array: Vec::with_capacity((1 << log_base_two_capacity) * 10),
+            log_base_two_capacity: log_base_two_capacity,
             rehashing: AtomicUsize::new(0),
         };
-        for _ in 0..adjusted_capacity {
+        for _ in 0..(1 << log_base_two_capacity) {
             array.metadata_array.push(Default::default());
         }
-        for _ in 0..adjusted_capacity * 10 {
+        for _ in 0..(1 << log_base_two_capacity) * 10 {
             array
                 .entry_array
                 .push(unsafe { MaybeUninit::uninit().assume_init() });
         }
         array
-    }
-
-    pub fn calculated_adjusted_capacity(capacity: usize) -> (usize, u8) {
-        let mut adjusted_capacity = 2;
-        let mut log_capacity = 1;
-
-        // it supports both 32-bit and 64-bit processors
-        let max_consumable_bits = if std::mem::size_of::<usize>() >= 8 {
-            60
-        } else {
-            28
-        };
-
-        // the maximum size of the key-value pair array is (1 << 60) * 10
-        for i in 1..max_consumable_bits {
-            if adjusted_capacity >= (capacity / 10 + 1) {
-                log_capacity = i;
-                break;
-            }
-            adjusted_capacity = adjusted_capacity << 1;
-        }
-        assert_eq!(adjusted_capacity, 1 << log_capacity);
-        (adjusted_capacity, log_capacity)
     }
 
     fn get_cell(&self, index: usize) -> &M {
@@ -67,11 +44,11 @@ impl<K, V, M: Default> Array<K, V, M> {
     }
 
     fn capacity(&self) -> usize {
-        (1 << self.log_capacity) * 10
+        (1 << self.log_base_two_capacity) * 10
     }
 
     fn calculate_metadata_array_index(&self, hash: u64) -> usize {
-        (hash >> (64 - self.log_capacity)).try_into().unwrap()
+        (hash >> (64 - self.log_base_two_capacity)).try_into().unwrap()
     }
 }
 
@@ -82,21 +59,26 @@ mod test {
 
     #[test]
     fn basic_array() {
-        let very_small: Array<u64, bool, bool> = Array::new(0);
-        assert_eq!(very_small.capacity(), 20);
-        assert_eq!(very_small.calculate_metadata_array_index(1 << 63), 1);
-        let small: Array<u32, i32, i16> = Array::new(16);
+        let small: Array<u32, i32, i16> = Array::new(1);
         assert_eq!(small.capacity(), 20);
         assert_eq!(small.calculate_metadata_array_index(1 << 63), 1);
         assert_eq!(small.calculate_metadata_array_index(1 << 62), 0);
-        let medium: Array<u8, i64, i8> = Array::new(190);
-        assert_eq!(medium.capacity(), 320);
-        assert_eq!(medium.calculate_metadata_array_index(1 << 63), 16);
-        assert_eq!(medium.calculate_metadata_array_index(1 << 59), 1);
-        let large: Array<usize, u16, bool> = Array::new(5000);
+        assert_eq!(small.calculate_metadata_array_index(1 << 61), 0);
+        let medium: Array<u8, i64, i8> = Array::new(4);
+        assert_eq!(medium.capacity(), 160);
+        assert_eq!(medium.calculate_metadata_array_index(1 << 63), 8);
+        assert_eq!(medium.calculate_metadata_array_index(1 << 60), 1);
+        assert_eq!(medium.calculate_metadata_array_index(1 << 59), 0);
+        let large: Array<usize, u16, bool> = Array::new(9);
         assert_eq!(large.capacity(), 5120);
         assert_eq!(large.calculate_metadata_array_index(1 << 63), 256);
         assert_eq!(large.calculate_metadata_array_index(1 << 55), 1);
+        assert_eq!(large.calculate_metadata_array_index(1 << 54), 0);
+        let very_large: Array<usize, u16, bool> = Array::new(10);
+        assert_eq!(very_large.capacity(), 10240);
+        assert_eq!(very_large.calculate_metadata_array_index(1 << 63), 512);
+        assert_eq!(very_large.calculate_metadata_array_index(1 << 54), 1);
+        assert_eq!(very_large.calculate_metadata_array_index(1 << 53), 0);
     }
 
     struct Checker<'a> {
@@ -119,8 +101,8 @@ mod test {
     #[test]
     fn basic_insert_remove() {
         let data = AtomicUsize::new(0);
-        let mut array: Array<usize, Checker, i8> = Array::new(190);
-        assert_eq!(array.capacity(), 320);
+        let mut array: Array<usize, Checker, i8> = Array::new(4);
+        assert_eq!(array.capacity(), 160);
         for i in 0..array.capacity() {
             if i % 2 == 0 {
                 array.insert(i, i, Checker::new(&data));

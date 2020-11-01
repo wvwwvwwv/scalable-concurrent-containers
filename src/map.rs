@@ -21,7 +21,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 pub struct HashMap<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> {
     current_array: Atomic<Array<K, V, Cell<K, V>>>,
     deprecated_array: Atomic<Array<K, V, Cell<K, V>>>,
-    minimum_capacity: usize,
+    minimum_log_base_two_capacity: u8,
     resize_mutex: AtomicBool,
     hasher: H,
 }
@@ -40,16 +40,16 @@ pub struct Accessor<'a, K, V> {
 impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V, H> {
     /// Create an empty HashMap instance with the given hasher and minimum capacity
     pub fn new(hasher: H, minimum_capacity: Option<usize>) -> HashMap<K, V, H> {
-        let adjusted_minimum_capacity = if let Some(capacity) = minimum_capacity {
-            Array::<K, V, Cell<K, V>>::calculated_adjusted_capacity(capacity).0
+        let adjusted_minimum_log_base_two_capacity = if let Some(capacity) = minimum_capacity {
+            Self::log_base_two(capacity)
         } else {
-            64
+            4
         };
 
         HashMap {
-            current_array: Atomic::new(Array::new(adjusted_minimum_capacity)),
+            current_array: Atomic::new(Array::new(adjusted_minimum_log_base_two_capacity)),
             deprecated_array: Atomic::null(),
-            minimum_capacity: adjusted_minimum_capacity,
+            minimum_log_base_two_capacity: adjusted_minimum_log_base_two_capacity,
             resize_mutex: AtomicBool::new(false),
             hasher: hasher,
         }
@@ -144,6 +144,30 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
             * (0x9FB21C651E98DF25 as u64);
         hash ^ (hash >> 28)
     }
+
+    fn log_base_two(capacity: usize) -> u8 {
+        let mut calculated_capacity = 2;
+        let mut log_base_two = 1;
+
+        // it supports both 32-bit and 64-bit processors
+        let max_consumable_bits = if std::mem::size_of::<usize>() >= 8 {
+            60
+        } else {
+            28
+        };
+
+        // the maximum size of the key-value pair array is (1 << 60) * 10
+        for i in 1..max_consumable_bits {
+            if calculated_capacity >= ((capacity + 9) / 10) {
+                log_base_two = i;
+                break;
+            }
+            calculated_capacity = calculated_capacity << 1;
+        }
+        debug_assert!(calculated_capacity * 10 >= capacity);
+        debug_assert_eq!(calculated_capacity, 1 << log_base_two);
+        log_base_two
+    }
 }
 
 impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Drop for HashMap<K, V, H> {
@@ -158,19 +182,5 @@ impl<'a, K, V> Iterator for Accessor<'a, K, V> {
     type Item = &'a Accessor<'a, K, V>;
     fn next(&mut self) -> Option<Self::Item> {
         None
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-    use std::collections::hash_map::RandomState;
-
-    #[test]
-    fn static_assertions() {}
-
-    #[test]
-    fn basic_hashmap() {
-        let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), Some(10));
     }
 }

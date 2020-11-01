@@ -6,3 +6,9 @@ edition = "2018"
 
 [dependencies]
 crossbeam="^0.8"
+
+[workspace]
+members = [
+    ".",
+    "tests"
+]
