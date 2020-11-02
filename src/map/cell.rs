@@ -31,7 +31,6 @@ struct EntryLink<K, V> {
 struct WaitQueueEntry {
     mutex: Mutex<bool>,
     condvar: Condvar,
-    completed: AtomicBool,
     next: *mut WaitQueueEntry,
 }
 
@@ -201,7 +200,6 @@ impl WaitQueueEntry {
         WaitQueueEntry {
             mutex: Mutex::new(false),
             condvar: Condvar::new(),
-            completed: AtomicBool::new(false),
             next: wait_queue,
         }
     }
@@ -211,15 +209,12 @@ impl WaitQueueEntry {
         while !*completed {
             completed = self.condvar.wait(completed).unwrap();
         }
-        while !self.completed.load(Relaxed) {}
     }
 
     fn signal(&self) {
         let mut completed = self.mutex.lock().unwrap();
         *completed = true;
         self.condvar.notify_one();
-        drop(completed);
-        self.completed.store(true, Relaxed);
     }
 }
 
@@ -349,12 +344,12 @@ mod test {
 
     #[test]
     fn basic_locker() {
-        let threads = 12;
-        let barrier = Arc::new(Barrier::new(threads));
+        let num_threads = 12;
+        let barrier = Arc::new(Barrier::new(num_threads));
         let cell: Arc<Cell<bool, u8>> = Arc::new(Default::default());
         let mut data: [u64; 128] = [0; 128];
-        let mut thread_handles = Vec::with_capacity(threads);
-        for _ in 0..threads {
+        let mut thread_handles = Vec::with_capacity(num_threads);
+        for _ in 0..num_threads {
             let barrier_copied = barrier.clone();
             let cell_copied = cell.clone();
             let data_ptr = AtomicPtr::new(&mut data);
