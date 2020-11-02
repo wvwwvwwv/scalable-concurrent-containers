@@ -52,7 +52,8 @@ impl<K, V, M: Default> Array<K, V, M> {
     }
 
     pub fn calculate_lb_metadata_array_size(capacity: usize) -> u8 {
-        let required_cells = ((capacity.min(usize::MAX - 9) + 9) / 10).next_power_of_two();
+        let adjusted_capacity = capacity.min((usize::MAX / 2) - 9);
+        let required_cells = ((adjusted_capacity + 9) / 10).next_power_of_two();
         let lb_capacity =
             ((std::mem::size_of::<usize>() * 8) - (required_cells.leading_zeros() as usize) - 1)
                 .max(1);
@@ -60,7 +61,7 @@ impl<K, V, M: Default> Array<K, V, M> {
         // 2^lb_capacity * 10 >= capacity
         debug_assert!(lb_capacity > 0);
         debug_assert!(lb_capacity < (std::mem::size_of::<usize>() * 8));
-        debug_assert!((1 << lb_capacity) * 10 >= capacity);
+        debug_assert!((1 << lb_capacity) * 10 >= adjusted_capacity);
         lb_capacity.try_into().unwrap()
     }
 }
@@ -86,6 +87,10 @@ mod test {
                     >= capacity
             );
         }
+        assert!(
+            (1 << Array::<bool, bool, bool>::calculate_lb_metadata_array_size(usize::MAX)) * 10
+                >= (usize::MAX / 2)
+        );
         for i in 2..(std::mem::size_of::<usize>() - 3) {
             let capacity = (1 << i) * 10;
             assert_eq!(

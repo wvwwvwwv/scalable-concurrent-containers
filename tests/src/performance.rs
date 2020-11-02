@@ -22,7 +22,7 @@ mod test {
         let stop_measurement = Arc::new(AtomicBool::new(false));
         let total_num_operations = Arc::new(AtomicUsize::new(0));
         let mut thread_handles = Vec::with_capacity(num_threads);
-        for _ in 0..num_threads {
+        for thread_id in 0..num_threads {
             let barrier_copied = barrier.clone();
             let start_time_copied = start_time.clone();
             let end_time_copied = end_time.clone();
@@ -44,7 +44,7 @@ mod test {
         }
         let start_time = *start_time.lock().unwrap();
         let end_time = *end_time.lock().unwrap();
-        (end_time.duration_since(start_time), total_num_operations.load(Relaxed))
+        (end_time.saturating_duration_since(start_time), total_num_operations.load(Relaxed))
     }
 
     #[test]
