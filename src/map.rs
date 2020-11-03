@@ -20,8 +20,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 // It resizes or shrinks itself when the estimated load factor reaches 100% and 12.5%, and resizing is not a blocking operation.
 // Once resized, the old array is kept intact, and the key-value pairs stored in the array is incrementally relocated to the new array on each access.
 pub struct HashMap<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> {
-    current_array: Atomic<Array<K, V, Cell<K, V>>>,
-    deprecated_array: Atomic<Array<K, V, Cell<K, V>>>,
+    array: Atomic<Array<K, V, Cell<K, V>>>,
     minimum_capacity: usize,
     resize_mutex: AtomicBool,
     hasher: H,
@@ -44,8 +43,10 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
             160
         };
         HashMap {
-            current_array: Atomic::new(Array::<K, V, Cell<K, V>>::new(initial_capacity)),
-            deprecated_array: Atomic::null(),
+            array: Atomic::new(Array::<K, V, Cell<K, V>>::new(
+                initial_capacity,
+                Atomic::null(),
+            )),
             minimum_capacity: initial_capacity,
             resize_mutex: AtomicBool::new(false),
             hasher: hasher,
@@ -60,22 +61,28 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     ) -> Result<Accessor<'a, 'b, K, V, H>, Accessor<'a, 'b, K, V, H>> {
         let (hash, partial_hash) = self.hash(key);
         let guard = crossbeam::epoch::pin();
-        let mut array_ptr = self.current_array.load(Relaxed, &guard);
 
-        // c = check, i = insert, r = read, u = pointer update, x = retire
-        // t1: u(D0) u(C1)       u(D1) u(C2) x(D0)
-        // t2: r(C0) r(D-) i(C0)                                     r(C0)
-        //  => IMPOSSIBLE SCHEDULE: i(C0) is locked, and therefore the array cannot be retired
-        // t1: u(D0) u(C1)       u(D1) u(C2) x(D0)
-        // t2:             r(C1) r(D0) c(D0)                   i(C1) r(C1) OK
-        // t3:                               r(C2) r(D1) c(D1) i(C2) r(C2) OK
+        // it is guaranteed that the thread reads a consistent snapshot of current and
+        // old array pair by a Release fence at the resize function, hence the following
+        // procedure is correct.
+        //  - the thread reads self.array, and it kills the target cell in the old array
+        //    if there is one attached to it, and inserts the key into array.
+        // There are two cases.
+        //  1. the thread reads an old version of self.array.
+        //    if there is another thread having read the latest version of self.array,
+        //    trying to insert the same key, it will try to kill the cell in the old version
+        //    of self.array, thus competing with each other.
+        //  2. Thread X reads the latest version of self.array.
+        //    if the array is deprecated while inserting the key, it falls into case 1.
         loop {
-            let deprecated_array_ptr = self.deprecated_array.load(Relaxed, &guard).as_raw();
-            if !deprecated_array_ptr.is_null() {
-                // relocate a certain number of cells
-                //  self.relocate()
+            let current_array_ptr = self.array.load(Relaxed, &guard).as_raw();
+            let old_array_ptr = unsafe { (*current_array_ptr).get_old_array(&guard) }.as_raw();
+            if !old_array_ptr.is_null() {
+                // relocate at most 16 cells
+                // self.relocate(current_array_ptr, old_array_ptr);
+
                 // new entries will never be inserted into a deprecated array
-                let locker = self.search(key, hash, partial_hash, deprecated_array_ptr);
+                let (locker, _) = self.search(key, hash, partial_hash, old_array_ptr);
                 if locker.key_value_pair_associated() {
                     return Err(Accessor {
                         hash_map: &self,
@@ -83,22 +90,34 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                     });
                 } else if !locker.killed() {
                     // relocated the cell
+                    // self.kill(locker, old_array_ptr, current_array_ptr);
                 }
             }
-
-            let array_ptr_again = self.current_array.load(Relaxed, &guard);
-            if array_ptr == array_ptr_again {
-                break;
+            let (mut locker, mut cell_index) =
+                self.search(key, hash, partial_hash, current_array_ptr);
+            if locker.key_value_pair_associated() {
+                return Err(Accessor {
+                    hash_map: &self,
+                    cell_locker: Some(locker),
+                });
+            } else if !locker.killed() {
+                match locker.insert(partial_hash) {
+                    Some(index) => {
+                        let key_value_array_index = cell_index * 10 + (index as usize);
+                        let current_array_mut_ptr = current_array_ptr as *mut Array<K, V, Cell<K, V>>;
+                        let key_value_pair = unsafe {
+                            (*current_array_mut_ptr).insert(key_value_array_index, key.clone(), value)
+                        };
+                    }
+                    None => {}
+                }
+                return Ok(Accessor {
+                    hash_map: &self,
+                    cell_locker: Some(locker),
+                });
             }
-
-            // resize took place in the meantime, thus revert the entry insertion and try again
-            array_ptr = array_ptr_again
+            // reaching here indicates that self.array is updated
         }
-
-        Err(Accessor {
-            hash_map: &self,
-            cell_locker: None,
-        })
     }
 
     /// Upsert a key-value pair into the HashMap.
@@ -179,25 +198,27 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         hash: u64,
         partial_hash: u32,
         array_ptr: *const Array<K, V, Cell<K, V>>,
-    ) -> ExclusiveLocker<'a, K, V> {
+    ) -> (ExclusiveLocker<'a, K, V>, usize) {
         let cell_index = unsafe { (*array_ptr).calculate_metadata_array_index(hash) };
         let cell = unsafe { (*array_ptr).get_cell(cell_index) };
         let mut locker = ExclusiveLocker::lock(cell);
         if !locker.killed() && !locker.empty() {
             if locker.overflowing() {
                 if locker.search_link(key) {
-                    return locker;
+                    return (locker, cell_index);
                 }
             }
             if let Some(index) = locker.search_array(partial_hash) {
                 let key_value_array_index = cell_index * 10 + (index as usize);
                 let key_value_pair =
                     unsafe { (*array_ptr).get_key_value_pair(key_value_array_index) };
-                locker.set_key_value_pair(key_value_pair);
-                return locker;
+                if key_value_pair.0 == *key {
+                    locker.set_key_value_pair(key_value_pair);
+                    return (locker, cell_index);
+                }
             }
         }
-        locker
+        (locker, usize::MAX)
     }
 }
 

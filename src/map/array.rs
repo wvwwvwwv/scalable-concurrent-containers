@@ -1,22 +1,26 @@
+use crossbeam::epoch::{Atomic, Guard, Shared};
 use std::convert::TryInto;
 use std::mem::MaybeUninit;
 use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::Relaxed;
 
 pub struct Array<K, V, M: Default> {
     metadata_array: Vec<M>,
     entry_array: Vec<MaybeUninit<(K, V)>>,
     lb_capacity: u8,
     rehashing: AtomicUsize,
+    old_array: Atomic<Array<K, V, M>>,
 }
 
 impl<K, V, M: Default> Array<K, V, M> {
-    pub fn new(capacity: usize) -> Array<K, V, M> {
+    pub fn new(capacity: usize, old_array: Atomic<Array<K, V, M>>) -> Array<K, V, M> {
         let lb_capacity = Self::calculate_lb_metadata_array_size(capacity);
         let mut array = Array {
             metadata_array: Vec::with_capacity(1 << lb_capacity),
             entry_array: Vec::with_capacity((1 << lb_capacity) * 10),
             lb_capacity: lb_capacity,
             rehashing: AtomicUsize::new(0),
+            old_array: old_array,
         };
         for _ in 0..(1 << lb_capacity) {
             array.metadata_array.push(Default::default());
@@ -37,7 +41,7 @@ impl<K, V, M: Default> Array<K, V, M> {
         unsafe { &*self.entry_array[index].as_ptr() }
     }
 
-    fn insert(&mut self, index: usize, key: K, value: V) {
+    pub fn insert(&mut self, index: usize, key: K, value: V) {
         self.entry_array[index] = MaybeUninit::new((key, value));
     }
 
@@ -49,6 +53,10 @@ impl<K, V, M: Default> Array<K, V, M> {
 
     fn capacity(&self) -> usize {
         (1 << self.lb_capacity) * 10
+    }
+
+    pub fn get_old_array<'a>(&self, guard: &'a Guard) -> Shared<'a, Array<K, V, M>> {
+        self.old_array.load(Relaxed, guard)
     }
 
     pub fn calculate_metadata_array_index(&self, hash: u64) -> usize {
@@ -124,7 +132,7 @@ mod test {
     #[test]
     fn basic_insert_remove() {
         let data = AtomicUsize::new(0);
-        let mut array: Array<usize, Checker, i8> = Array::new(160);
+        let mut array: Array<usize, Checker, i8> = Array::new(160, Atomic::null());
         assert_eq!(array.capacity(), 160);
         for i in 0..array.capacity() {
             if i % 2 == 0 {

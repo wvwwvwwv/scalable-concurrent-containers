@@ -170,11 +170,21 @@ impl<'a, K, V> ExclusiveLocker<'a, K, V> {
     }
 
     pub fn search_array(&self, partial_hash: u32) -> Option<u8> {
+        let preferred_index = (partial_hash % 8);
+        if self.cell.partial_hash_array[preferred_index as usize] == partial_hash
+            && self.occupied(preferred_index as usize)
+        {
+            return Some(preferred_index.try_into().unwrap());
+        }
         for (i, v) in self.cell.partial_hash_array.iter().enumerate() {
-            if *v == partial_hash && self.occupied(i) {
+            if i != (preferred_index as usize) && *v == partial_hash && self.occupied(i) {
                 return Some(i.try_into().unwrap());
             }
         }
+        None
+    }
+
+    pub fn insert(&mut self, partial_hash: u32) -> Option<u8> {
         None
     }
 
