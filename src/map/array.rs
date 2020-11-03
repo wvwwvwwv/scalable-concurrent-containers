@@ -29,8 +29,12 @@ impl<K, V, M: Default> Array<K, V, M> {
         array
     }
 
-    fn get_cell(&self, index: usize) -> &M {
+    pub fn get_cell(&self, index: usize) -> &M {
         &self.metadata_array[index]
+    }
+
+    pub fn get_key_value_pair(&self, index: usize) -> &(K, V) {
+        unsafe { &*self.entry_array[index].as_ptr() }
     }
 
     fn insert(&mut self, index: usize, key: K, value: V) {
@@ -47,7 +51,7 @@ impl<K, V, M: Default> Array<K, V, M> {
         (1 << self.lb_capacity) * 10
     }
 
-    fn calculate_metadata_array_index(&self, hash: u64) -> usize {
+    pub fn calculate_metadata_array_index(&self, hash: u64) -> usize {
         (hash >> (64 - self.lb_capacity)).try_into().unwrap()
     }
 

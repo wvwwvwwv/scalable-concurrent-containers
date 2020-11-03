@@ -15,6 +15,7 @@ pub struct Cell<K, V> {
 /// ExclusiveLocker
 pub struct ExclusiveLocker<'a, K, V> {
     cell: &'a Cell<K, V>,
+    key_value_pair: Option<&'a (K, V)>,
     metadata: u32,
 }
 
@@ -36,18 +37,15 @@ struct WaitQueueEntry {
 
 impl<K, V> Cell<K, V> {
     const KILLED_FLAG: u32 = 1 << 31;
-    const WAITING_FLAG: u32 = 1 << 30;
-    const LOCK_MASK: u32 = ((1 << 14) - 1) << 16;
-    const XLOCK: u32 = 1 << 29;
+    const OVERFLOW_FLAG: u32 = 1 << 30;
+    const WAITING_FLAG: u32 = 1 << 29;
+    const LOCK_MASK: u32 = ((1 << 13) - 1) << 16;
+    const XLOCK: u32 = 1 << 28;
     const SLOCK_MAX: u32 = Self::LOCK_MASK & (!Self::XLOCK);
     const SLOCK: u32 = 1 << 16;
     const OCCUPANCY_MASK: u32 = ((1 << 10) - 1) << 6;
     const OCCUPANCY_BIT: u32 = 1 << 6;
     const SIZE_MASK: u32 = (1 << 6) - 1;
-
-    pub fn killed(&self) -> bool {
-        (self.metadata.load(Relaxed) & Self::KILLED_FLAG) == Self::KILLED_FLAG
-    }
 
     pub fn size(&self) -> usize {
         (self.metadata.load(Relaxed) & Self::SIZE_MASK)
@@ -116,7 +114,7 @@ impl<K, V> Cell<K, V> {
 
 impl<'a, K, V> ExclusiveLocker<'a, K, V> {
     /// Create a new ExclusiveLocker instance with the cell exclusively locked.
-    fn lock(cell: &'a Cell<K, V>) -> ExclusiveLocker<'a, K, V> {
+    pub fn lock(cell: &'a Cell<K, V>) -> ExclusiveLocker<'a, K, V> {
         loop {
             if let Some(result) = Self::try_lock(cell) {
                 return result;
@@ -141,6 +139,7 @@ impl<'a, K, V> ExclusiveLocker<'a, K, V> {
                     debug_assert_eq!(result & Cell::<K, V>::LOCK_MASK, 0);
                     return Some(ExclusiveLocker {
                         cell: cell,
+                        key_value_pair: None,
                         metadata: result | Cell::<K, V>::XLOCK,
                     });
                 }
@@ -153,11 +152,56 @@ impl<'a, K, V> ExclusiveLocker<'a, K, V> {
             }
         }
     }
+
+    pub fn key(&self) -> Option<&K> {
+        self.key_value_pair.map(|(k, _)| k)
+    }
+
+    pub fn value(&self) -> Option<&V> {
+        self.key_value_pair.map(|(_, v)| v)
+    }
+
+    pub fn occupied(&self, index: usize) -> bool {
+        (self.metadata & (1 << index)) != 0
+    }
+
+    pub fn overflowing(&self) -> bool {
+        self.metadata & Cell::<K, V>::OVERFLOW_FLAG == Cell::<K, V>::OVERFLOW_FLAG
+    }
+
+    pub fn search_array(&self, partial_hash: u32) -> Option<u8> {
+        for (i, v) in self.cell.partial_hash_array.iter().enumerate() {
+            if *v == partial_hash && self.occupied(i) {
+                return Some(i.try_into().unwrap());
+            }
+        }
+        None
+    }
+
+    pub fn key_value_pair_associated(&self) -> bool {
+        self.key_value_pair.is_some()
+    }
+
+    pub fn set_key_value_pair(&mut self, pair: &'a (K, V)) {
+        self.key_value_pair = Some(pair);
+    }
+
+    pub fn search_link(&mut self, key: &K) -> bool {
+        false
+    }
+
+    pub fn empty(&self) -> bool {
+        self.metadata & Cell::<K, V>::OCCUPANCY_MASK == 0
+    }
+
+    pub fn killed(&self) -> bool {
+        self.metadata & Cell::<K, V>::KILLED_FLAG == Cell::<K, V>::KILLED_FLAG
+    }
 }
 
 impl<'a, K, V> SharedLocker<'a, K, V> {
     /// Create a new SharedLocker instance with the cell shared locked.
-    fn lock(cell: &'a Cell<K, V>) -> SharedLocker<'a, K, V> {
+    pub fn lock(cell: &'a Cell<K, V>) -> SharedLocker<'a, K, V> {
         loop {
             if let Some(result) = Self::try_lock(cell) {
                 return result;
@@ -289,6 +333,10 @@ mod test {
         assert_eq!(std::mem::size_of::<Cell<u64, bool>>(), 64);
         assert!(Cell::<bool, u32>::XLOCK > Cell::<bool, u32>::SLOCK_MAX);
         assert_eq!(
+            Cell::<bool, u32>::OVERFLOW_FLAG & Cell::<bool, u32>::LOCK_MASK,
+            0
+        );
+        assert_eq!(
             Cell::<bool, u32>::WAITING_FLAG & Cell::<bool, u32>::LOCK_MASK,
             0
         );
@@ -334,6 +382,7 @@ mod test {
         );
         assert_eq!(
             Cell::<bool, u32>::KILLED_FLAG
+                | Cell::<bool, u32>::OVERFLOW_FLAG
                 | Cell::<bool, u32>::WAITING_FLAG
                 | Cell::<bool, u32>::LOCK_MASK
                 | Cell::<bool, u32>::OCCUPANCY_MASK
