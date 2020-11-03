@@ -93,8 +93,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                     // self.kill(locker, old_array_ptr, current_array_ptr);
                 }
             }
-            let (mut locker, mut cell_index) =
-                self.search(key, hash, partial_hash, current_array_ptr);
+            let (mut locker, cell_index) = self.search(key, hash, partial_hash, current_array_ptr);
             if locker.key_value_pair_associated() {
                 return Err(Accessor {
                     hash_map: &self,
@@ -104,9 +103,14 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                 match locker.insert(partial_hash) {
                     Some(index) => {
                         let key_value_array_index = cell_index * 10 + (index as usize);
-                        let current_array_mut_ptr = current_array_ptr as *mut Array<K, V, Cell<K, V>>;
-                        let key_value_pair = unsafe {
-                            (*current_array_mut_ptr).insert(key_value_array_index, key.clone(), value)
+                        let current_array_mut_ptr =
+                            current_array_ptr as *mut Array<K, V, Cell<K, V>>;
+                        unsafe {
+                            (*current_array_mut_ptr).insert(
+                                key_value_array_index,
+                                key.clone(),
+                                value,
+                            )
                         };
                     }
                     None => {}
