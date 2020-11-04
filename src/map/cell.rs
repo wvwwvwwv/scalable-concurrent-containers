@@ -194,7 +194,7 @@ impl<'a, K: Clone + Eq, V> ExclusiveLocker<'a, K, V> {
         None
     }
 
-    pub fn search_link(&mut self, key: &K) -> *const (K, V) {
+    pub fn search_link(&self, key: &K) -> *const (K, V) {
         let mut link = &self.cell.link;
         while let Some(entry) = link {
             if (*entry).key_value_pair.0 == *key {
@@ -425,7 +425,7 @@ mod test {
     fn basic_locker() {
         let num_threads = 12;
         let barrier = Arc::new(Barrier::new(num_threads));
-        let cell: Arc<Cell<bool, u8>> = Arc::new(Default::default());
+        let cell: Arc<Cell<usize, usize>> = Arc::new(Default::default());
         let mut data: [u64; 128] = [0; 128];
         let mut thread_handles = Vec::with_capacity(num_threads);
         for tid in 0..num_threads {
@@ -433,6 +433,7 @@ mod test {
             let cell_copied = cell.clone();
             let data_ptr = AtomicPtr::new(&mut data);
             let tid_copied = tid;
+            let num_threads_copied = num_threads;
             thread_handles.push(thread::spawn(move || {
                 barrier_copied.wait();
                 for i in 0..4096 {
@@ -448,6 +449,11 @@ mod test {
                         assert_eq!(sum % 256, 0);
                         if i == 1024 {
                             xlocker.insert(tid.try_into().unwrap());
+                        } else if i == 512 {
+                            let key = tid + num_threads_copied;
+                            let inserted = xlocker.insert_link(&key, i);
+                            assert_eq!(unsafe { *inserted }, (key, i));
+                            assert!(xlocker.overflowing());
                         }
                         drop(xlocker);
                     } else {
@@ -465,6 +471,11 @@ mod test {
         for handle in thread_handles {
             handle.join().unwrap();
         }
+        for tid in 0..num_threads {
+            let xlocker = ExclusiveLocker::lock(&*cell);
+            let key = tid + num_threads;
+            assert!(xlocker.search_link(&key) != ptr::null());
+        }
         assert_eq!(
             (*cell).metadata.load(Relaxed) & Cell::<bool, u8>::SIZE_MASK,
             10
@@ -472,6 +483,10 @@ mod test {
         assert_eq!(
             (*cell).metadata.load(Relaxed) & Cell::<bool, u8>::OCCUPANCY_MASK,
             Cell::<bool, u8>::OCCUPANCY_MASK
+        );
+        assert_eq!(
+            (*cell).metadata.load(Relaxed) & Cell::<bool, u8>::OVERFLOW_FLAG,
+            Cell::<bool, u8>::OVERFLOW_FLAG
         );
         assert_eq!(
             (*cell).metadata.load(Relaxed) & Cell::<bool, u8>::LOCK_MASK,
