@@ -14,9 +14,9 @@ mod test {
         if let Ok(result) = result1 {
             assert_eq!(*result.get().unwrap(), (1, 0));
         }
-        let result1 = hashmap.insert(1, 0);
-        assert!(result1.is_err());
-        if let Err(result) = result1 {
+        let result2 = hashmap.insert(1, 0);
+        assert!(result2.is_err());
+        if let Err(result) = result2 {
             assert_eq!(*result.get().unwrap(), (1, 0));
         }
     }

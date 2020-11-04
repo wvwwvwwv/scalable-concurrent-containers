@@ -36,15 +36,15 @@ struct WaitQueueEntry {
 
 impl<K, V> Cell<K, V> {
     const KILLED_FLAG: u32 = 1 << 31;
-    const OVERFLOW_FLAG: u32 = 1 << 30;
-    const WAITING_FLAG: u32 = 1 << 29;
-    const LOCK_MASK: u32 = ((1 << 13) - 1) << 16;
-    const XLOCK: u32 = 1 << 28;
+    const WAITING_FLAG: u32 = 1 << 30;
+    const LOCK_MASK: u32 = ((1 << 14) - 1) << 16;
+    const XLOCK: u32 = 1 << 29;
     const SLOCK_MAX: u32 = Self::LOCK_MASK & (!Self::XLOCK);
     const SLOCK: u32 = 1 << 16;
-    const OCCUPANCY_MASK: u32 = ((1 << 10) - 1) << 6;
-    const OCCUPANCY_BIT: u32 = 1 << 6;
-    const SIZE_MASK: u32 = (1 << 6) - 1;
+    const OVERFLOW_FLAG: u32 = 1 << 15;
+    const OCCUPANCY_MASK: u32 = ((1 << 10) - 1) << 5;
+    const OCCUPANCY_BIT: u32 = 1 << 5;
+    const SIZE_MASK: u32 = (1 << 5) - 1;
 
     pub fn size(&self) -> usize {
         (self.metadata.load(Relaxed) & Self::SIZE_MASK)
@@ -152,7 +152,7 @@ impl<'a, K, V> ExclusiveLocker<'a, K, V> {
     }
 
     pub fn occupied(&self, index: usize) -> bool {
-        (self.metadata & (1 << index)) != 0
+        (self.metadata & (Cell::<K, V>::OCCUPANCY_BIT << index)) != 0
     }
 
     pub fn overflowing(&self) -> bool {
@@ -179,13 +179,14 @@ impl<'a, K, V> ExclusiveLocker<'a, K, V> {
         let cell_ptr = self.cell as *const Cell<K, V>;
         let cell_mut_ptr = cell_ptr as *mut Cell<K, V>;
         if !self.occupied(preferred_index as usize) {
-            self.metadata = self.metadata | (1 << preferred_index);
+            self.metadata = (self.metadata | (Cell::<K, V>::OCCUPANCY_BIT << preferred_index)) + 1;
             unsafe { (*cell_mut_ptr).partial_hash_array[preferred_index as usize] = partial_hash };
             return Some(preferred_index.try_into().unwrap());
         }
-        for (i, v) in self.cell.partial_hash_array.iter().enumerate() {
+        for (i, _) in self.cell.partial_hash_array.iter().enumerate() {
             if i != (preferred_index as usize) && !self.occupied(i) {
-                self.metadata = self.metadata | (1 << preferred_index);
+                self.metadata =
+                    (self.metadata | (Cell::<K, V>::OCCUPANCY_BIT << i)) + 1;
                 unsafe { (*cell_mut_ptr).partial_hash_array[i as usize] = partial_hash };
                 return Some(i.try_into().unwrap());
             }
@@ -202,12 +203,8 @@ impl<'a, K, V> ExclusiveLocker<'a, K, V> {
         let cell_mut_ptr = cell_ptr as *mut Cell<K, V>;
         let cell = unsafe { &mut (*cell_mut_ptr) };
         match &cell.link {
-            Some(_) => {
-                ptr::null()
-            },
-            None => {
-                ptr::null()
-            }
+            Some(_) => ptr::null(),
+            None => ptr::null(),
         }
     }
 
@@ -419,15 +416,16 @@ mod test {
         let cell: Arc<Cell<bool, u8>> = Arc::new(Default::default());
         let mut data: [u64; 128] = [0; 128];
         let mut thread_handles = Vec::with_capacity(num_threads);
-        for _ in 0..num_threads {
+        for tid in 0..num_threads {
             let barrier_copied = barrier.clone();
             let cell_copied = cell.clone();
             let data_ptr = AtomicPtr::new(&mut data);
+            let tid_copied = tid;
             thread_handles.push(thread::spawn(move || {
                 barrier_copied.wait();
                 for i in 0..4096 {
                     if i % 2 == 0 {
-                        let xlocker = ExclusiveLocker::lock(&*cell_copied);
+                        let mut xlocker = ExclusiveLocker::lock(&*cell_copied);
                         let mut sum: u64 = 0;
                         for j in 0..128 {
                             unsafe {
@@ -436,6 +434,9 @@ mod test {
                             };
                         }
                         assert_eq!(sum % 256, 0);
+                        if i == 1024 {
+                            xlocker.insert(tid.try_into().unwrap());
+                        }
                         drop(xlocker);
                     } else {
                         let slocker = SharedLocker::lock(&*cell_copied);
@@ -452,5 +453,8 @@ mod test {
         for handle in thread_handles {
             handle.join().unwrap();
         }
+        assert_eq!((*cell).metadata.load(Relaxed) & Cell::<bool, u8>::SIZE_MASK, 10);
+        assert_eq!((*cell).metadata.load(Relaxed) & Cell::<bool, u8>::OCCUPANCY_MASK, Cell::<bool, u8>::OCCUPANCY_MASK);
+        assert_eq!((*cell).metadata.load(Relaxed) & Cell::<bool, u8>::LOCK_MASK, 0);
     }
 }
