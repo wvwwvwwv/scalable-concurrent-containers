@@ -1,5 +1,5 @@
-use scc::HashMap;
 use proptest::prelude::*;
+use scc::HashMap;
 
 #[cfg(test)]
 mod test {

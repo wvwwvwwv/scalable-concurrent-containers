@@ -27,7 +27,9 @@ mod test {
         fn insert_test(&self, k: K, v: V) -> bool;
     }
 
-    impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMapOperation<K, V, H> for HashMap<K, V, H> {
+    impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMapOperation<K, V, H>
+        for HashMap<K, V, H>
+    {
         fn insert_test(&self, k: K, v: V) -> bool {
             self.insert(k, v).is_ok()
         }
