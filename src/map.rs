@@ -120,7 +120,14 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                             key_value_pair: Some(key_value_pair_ptr),
                         });
                     }
-                    None => {}
+                    None => {
+                        let key_value_pair_ptr = locker.insert_link(&key, value);
+                        return Ok(Accessor {
+                            hash_map: &self,
+                            cell_locker: Some(locker),
+                            key_value_pair: Some(key_value_pair_ptr),
+                        });
+                    }
                 }
             }
             // reaching here indicates that self.array is updated

@@ -4,28 +4,29 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32};
 use std::sync::{Condvar, Mutex};
 
-pub struct Cell<K, V> {
-    link: Option<Box<EntryLink<K, V>>>,
-    /// KILLED_FLAG | XLOCK | SLOCK | OCCUPANCY_BIT | SIZE
+pub struct Cell<K: Clone + Eq, V> {
+    link: LinkType<K, V>,
     metadata: AtomicU32,
     wait_queue: AtomicPtr<WaitQueueEntry>,
     partial_hash_array: [u32; 10],
 }
 
 /// ExclusiveLocker
-pub struct ExclusiveLocker<'a, K, V> {
+pub struct ExclusiveLocker<'a, K: Clone + Eq, V> {
     cell: &'a Cell<K, V>,
     metadata: u32,
 }
 
 /// SharedLocker
-pub struct SharedLocker<'a, K, V> {
+pub struct SharedLocker<'a, K: Clone + Eq, V> {
     cell: &'a Cell<K, V>,
 }
 
-struct EntryLink<K, V> {
+type LinkType<K: Clone + Eq, V> = Option<Box<EntryLink<K, V>>>;
+
+struct EntryLink<K: Clone + Eq, V> {
     key_value_pair: (K, V),
-    next: Option<Box<EntryLink<K, V>>>,
+    link: LinkType<K, V>,
 }
 
 struct WaitQueueEntry {
@@ -34,7 +35,7 @@ struct WaitQueueEntry {
     next: *mut WaitQueueEntry,
 }
 
-impl<K, V> Cell<K, V> {
+impl<K: Clone + Eq, V> Cell<K, V> {
     const KILLED_FLAG: u32 = 1 << 31;
     const WAITING_FLAG: u32 = 1 << 30;
     const LOCK_MASK: u32 = ((1 << 14) - 1) << 16;
@@ -111,7 +112,7 @@ impl<K, V> Cell<K, V> {
     }
 }
 
-impl<'a, K, V> ExclusiveLocker<'a, K, V> {
+impl<'a, K: Clone + Eq, V> ExclusiveLocker<'a, K, V> {
     /// Create a new ExclusiveLocker instance with the cell exclusively locked.
     pub fn lock(cell: &'a Cell<K, V>) -> ExclusiveLocker<'a, K, V> {
         loop {
@@ -185,8 +186,7 @@ impl<'a, K, V> ExclusiveLocker<'a, K, V> {
         }
         for (i, _) in self.cell.partial_hash_array.iter().enumerate() {
             if i != (preferred_index as usize) && !self.occupied(i) {
-                self.metadata =
-                    (self.metadata | (Cell::<K, V>::OCCUPANCY_BIT << i)) + 1;
+                self.metadata = (self.metadata | (Cell::<K, V>::OCCUPANCY_BIT << i)) + 1;
                 unsafe { (*cell_mut_ptr).partial_hash_array[i as usize] = partial_hash };
                 return Some(i.try_into().unwrap());
             }
@@ -195,6 +195,13 @@ impl<'a, K, V> ExclusiveLocker<'a, K, V> {
     }
 
     pub fn search_link(&mut self, key: &K) -> *const (K, V) {
+        let mut link = &self.cell.link;
+        while let Some(entry) = link {
+            if (*entry).key_value_pair.0 == *key {
+                return &(*entry).key_value_pair as *const _;
+            }
+            link = &entry.link;
+        }
         ptr::null()
     }
 
@@ -202,10 +209,15 @@ impl<'a, K, V> ExclusiveLocker<'a, K, V> {
         let cell_ptr = self.cell as *const Cell<K, V>;
         let cell_mut_ptr = cell_ptr as *mut Cell<K, V>;
         let cell = unsafe { &mut (*cell_mut_ptr) };
-        match &cell.link {
-            Some(_) => ptr::null(),
-            None => ptr::null(),
-        }
+        let link = cell.link.take();
+        let entry = Box::new(EntryLink {
+            key_value_pair: ((*key).clone(), value),
+            link: link,
+        });
+        let key_value_pair_ptr = &(*entry).key_value_pair as *const (K, V);
+        cell.link = Some(entry);
+        self.metadata = self.metadata | Cell::<K, V>::OVERFLOW_FLAG;
+        key_value_pair_ptr
     }
 
     pub fn empty(&self) -> bool {
@@ -217,7 +229,7 @@ impl<'a, K, V> ExclusiveLocker<'a, K, V> {
     }
 }
 
-impl<'a, K, V> SharedLocker<'a, K, V> {
+impl<'a, K: Clone + Eq, V> SharedLocker<'a, K, V> {
     /// Create a new SharedLocker instance with the cell shared locked.
     pub fn lock(cell: &'a Cell<K, V>) -> SharedLocker<'a, K, V> {
         loop {
@@ -280,7 +292,7 @@ impl WaitQueueEntry {
     }
 }
 
-impl<K, V> Default for Cell<K, V> {
+impl<K: Clone + Eq, V> Default for Cell<K, V> {
     fn default() -> Self {
         Cell {
             link: None,
@@ -291,7 +303,7 @@ impl<K, V> Default for Cell<K, V> {
     }
 }
 
-impl<'a, K, V> Drop for ExclusiveLocker<'a, K, V> {
+impl<'a, K: Clone + Eq, V> Drop for ExclusiveLocker<'a, K, V> {
     fn drop(&mut self) {
         // a Release fence is required to publish the changes
         let mut current = self.cell.metadata.load(Relaxed);
@@ -315,7 +327,7 @@ impl<'a, K, V> Drop for ExclusiveLocker<'a, K, V> {
     }
 }
 
-impl<'a, K, V> Drop for SharedLocker<'a, K, V> {
+impl<'a, K: Clone + Eq, V> Drop for SharedLocker<'a, K, V> {
     fn drop(&mut self) {
         // no modification is allowed with a SharedLocker held: no memory fences required
         let mut current = self.cell.metadata.load(Relaxed);
@@ -453,8 +465,17 @@ mod test {
         for handle in thread_handles {
             handle.join().unwrap();
         }
-        assert_eq!((*cell).metadata.load(Relaxed) & Cell::<bool, u8>::SIZE_MASK, 10);
-        assert_eq!((*cell).metadata.load(Relaxed) & Cell::<bool, u8>::OCCUPANCY_MASK, Cell::<bool, u8>::OCCUPANCY_MASK);
-        assert_eq!((*cell).metadata.load(Relaxed) & Cell::<bool, u8>::LOCK_MASK, 0);
+        assert_eq!(
+            (*cell).metadata.load(Relaxed) & Cell::<bool, u8>::SIZE_MASK,
+            10
+        );
+        assert_eq!(
+            (*cell).metadata.load(Relaxed) & Cell::<bool, u8>::OCCUPANCY_MASK,
+            Cell::<bool, u8>::OCCUPANCY_MASK
+        );
+        assert_eq!(
+            (*cell).metadata.load(Relaxed) & Cell::<bool, u8>::LOCK_MASK,
+            0
+        );
     }
 }
