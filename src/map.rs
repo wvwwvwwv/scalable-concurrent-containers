@@ -32,6 +32,7 @@ pub struct HashMap<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher>
 pub struct Accessor<'a: 'b, 'b, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> {
     hash_map: &'a HashMap<K, V, H>,
     cell_locker: Option<ExclusiveLocker<'b, K, V>>,
+    key_value_pair: Option<*const (K, V)>,
 }
 
 impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V, H> {
@@ -56,10 +57,10 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     /// Insert a key-value pair into the HashMap
     pub fn insert<'a, 'b>(
         &'a self,
-        key: &K,
+        key: K,
         value: V,
     ) -> Result<Accessor<'a, 'b, K, V, H>, Accessor<'a, 'b, K, V, H>> {
-        let (hash, partial_hash) = self.hash(key);
+        let (hash, partial_hash) = self.hash(&key);
         let guard = crossbeam::epoch::pin();
 
         // it is guaranteed that the thread reads a consistent snapshot of current and
@@ -75,79 +76,82 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         //  2. Thread X reads the latest version of self.array.
         //    if the array is deprecated while inserting the key, it falls into case 1.
         loop {
-            let current_array_ptr = self.array.load(Relaxed, &guard).as_raw();
+            // an Acquire fence is required to correctly load the contents of the array
+            let current_array_ptr = self.array.load(Acquire, &guard).as_raw();
             let old_array_ptr = unsafe { (*current_array_ptr).get_old_array(&guard) }.as_raw();
             if !old_array_ptr.is_null() {
                 // relocate at most 16 cells
                 // self.relocate(current_array_ptr, old_array_ptr);
 
                 // new entries will never be inserted into a deprecated array
-                let (locker, _) = self.search(key, hash, partial_hash, old_array_ptr);
-                if locker.key_value_pair_associated() {
+                let (locker, key_value_pair, _) =
+                    self.search(&key, hash, partial_hash, old_array_ptr);
+                if let Some(_) = key_value_pair {
                     return Err(Accessor {
                         hash_map: &self,
                         cell_locker: Some(locker),
+                        key_value_pair: key_value_pair,
                     });
                 } else if !locker.killed() {
                     // relocated the cell
                     // self.kill(locker, old_array_ptr, current_array_ptr);
                 }
             }
-            let (mut locker, cell_index) = self.search(key, hash, partial_hash, current_array_ptr);
-            if locker.key_value_pair_associated() {
+            let (mut locker, key_value_pair, cell_index) =
+                self.search(&key, hash, partial_hash, current_array_ptr);
+            if let Some(_) = key_value_pair {
                 return Err(Accessor {
                     hash_map: &self,
                     cell_locker: Some(locker),
+                    key_value_pair: key_value_pair,
                 });
             } else if !locker.killed() {
                 match locker.insert(partial_hash) {
                     Some(index) => {
                         let key_value_array_index = cell_index * 10 + (index as usize);
-                        let current_array_mut_ptr =
-                            current_array_ptr as *mut Array<K, V, Cell<K, V>>;
-                        unsafe {
-                            (*current_array_mut_ptr).insert(
-                                key_value_array_index,
-                                key.clone(),
-                                value,
-                            )
+                        let key_value_pair_ptr = unsafe {
+                            (*current_array_ptr).get_key_value_pair(key_value_array_index)
                         };
+                        let key_value_pair_mut_ptr = key_value_pair_ptr as *mut (K, V);
+                        unsafe { key_value_pair_mut_ptr.write((key.clone(), value)) };
+                        return Ok(Accessor {
+                            hash_map: &self,
+                            cell_locker: Some(locker),
+                            key_value_pair: Some(key_value_pair_ptr),
+                        });
                     }
                     None => {}
                 }
-                return Ok(Accessor {
-                    hash_map: &self,
-                    cell_locker: Some(locker),
-                });
             }
             // reaching here indicates that self.array is updated
         }
     }
 
     /// Upsert a key-value pair into the HashMap.
-    pub fn upsert<'a, 'b>(&'a self, key: &K, value: V) -> Accessor<'a, 'b, K, V, H> {
-        let _ = self.hash(key);
+    pub fn upsert<'a, 'b>(&'a self, key: K, value: V) -> Accessor<'a, 'b, K, V, H> {
+        let _ = self.hash(&key);
         let guard = crossbeam::epoch::pin();
         Accessor {
             hash_map: &self,
             cell_locker: None,
+            key_value_pair: None,
         }
     }
 
-    /// Get a mutable reference to the value associated with the key.
-    pub fn get<'a, 'b>(&self, key: &K) -> Option<Accessor<'a, 'b, K, V, H>> {
+    /// Get a reference to the value associated with the key.
+    pub fn get<'a, 'b>(&self, key: K) -> Option<Accessor<'a, 'b, K, V, H>> {
         let _ = crossbeam::epoch::pin();
         None
     }
 
     /// Read the key-value pair.
-    pub fn read<U, F: FnOnce(&K, &V) -> U>(&self, key: &K, f: F) -> Option<U> {
+    pub fn read<U, F: FnOnce(&K, &V) -> U>(&self, key: K, f: F) -> Option<U> {
         let _ = crossbeam::epoch::pin();
         None
     }
 
     /// Mutate the value associated with the given key.
-    pub fn mutate<U, F: FnOnce(&K, &mut V) -> U>(&self, key: &K, f: F) -> Option<U> {
+    pub fn mutate<U, F: FnOnce(&K, &mut V) -> U>(&self, key: K, f: F) -> Option<U> {
         let _ = crossbeam::epoch::pin();
         None
     }
@@ -158,7 +162,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     }
 
     /// Remove a key-value pair.
-    pub fn remove(&self, key: &K) -> bool {
+    pub fn remove(&self, key: K) -> bool {
         if let Some(accessor) = self.get(key) {
             return self.erase(accessor);
         }
@@ -177,6 +181,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         Accessor {
             hash_map: &self,
             cell_locker: None,
+            key_value_pair: None,
         }
     }
 
@@ -188,10 +193,10 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         let mut hash = h.finish();
 
         // bitmix: https://mostlymangling.blogspot.com/2019/01/better-stronger-mixer-and-test-procedure.html
-        hash = (hash ^ (((hash >> 25) | (hash << 39)) ^ ((hash >> 50) | (hash << 14))))
-            * (0xA24BAED4963EE407 as u64);
-        hash = (hash ^ (((hash >> 24) | (hash << 40)) ^ ((hash >> 49) | (hash << 15))))
-            * (0x9FB21C651E98DF25 as u64);
+        hash = hash ^ (hash.rotate_right(25) ^ hash.rotate_right(50));
+        hash = hash.overflowing_mul(0xA24BAED4963EE407u64).0;
+        hash = hash ^ (hash.rotate_right(24) ^ hash.rotate_right(49));
+        hash = hash.overflowing_mul(0x9FB21C651E98DF25u64).0;
         hash = hash ^ (hash >> 28);
         (hash, (hash & ((1 << 32) - 1)).try_into().unwrap())
     }
@@ -202,27 +207,27 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         hash: u64,
         partial_hash: u32,
         array_ptr: *const Array<K, V, Cell<K, V>>,
-    ) -> (ExclusiveLocker<'a, K, V>, usize) {
+    ) -> (ExclusiveLocker<'a, K, V>, Option<*const (K, V)>, usize) {
         let cell_index = unsafe { (*array_ptr).calculate_metadata_array_index(hash) };
         let cell = unsafe { (*array_ptr).get_cell(cell_index) };
         let mut locker = ExclusiveLocker::lock(cell);
         if !locker.killed() && !locker.empty() {
             if locker.overflowing() {
-                if locker.search_link(key) {
-                    return (locker, cell_index);
+                let key_value_pair_ptr = locker.search_link(key);
+                if !key_value_pair_ptr.is_null() {
+                    return (locker, Some(key_value_pair_ptr), cell_index);
                 }
             }
-            if let Some(index) = locker.search_array(partial_hash) {
+            if let Some(index) = locker.search(partial_hash) {
                 let key_value_array_index = cell_index * 10 + (index as usize);
-                let key_value_pair =
+                let key_value_pair_ptr =
                     unsafe { (*array_ptr).get_key_value_pair(key_value_array_index) };
-                if key_value_pair.0 == *key {
-                    locker.set_key_value_pair(key_value_pair);
-                    return (locker, cell_index);
+                if unsafe { (*key_value_pair_ptr).0 == *key } {
+                    return (locker, Some(key_value_pair_ptr), cell_index);
                 }
             }
         }
-        (locker, usize::MAX)
+        (locker, None, cell_index)
     }
 }
 
@@ -233,12 +238,10 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Drop for Hash
 impl<'a: 'b, 'b, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher>
     Accessor<'a, 'b, K, V, H>
 {
-    pub fn key(&self) -> Option<&K> {
-        self.cell_locker.as_ref().map_or(None, |l| l.key())
-    }
-
-    pub fn value(&self) -> Option<&V> {
-        self.cell_locker.as_ref().map_or(None, |l| l.value())
+    pub fn get(&self) -> Option<&'b (K, V)> {
+        self.key_value_pair
+            .as_ref()
+            .map_or(None, |ptr| unsafe { Some(&(*(*ptr))) })
     }
 }
 
@@ -251,8 +254,8 @@ impl<'a: 'b, 'b, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> D
 impl<'a: 'b, 'b, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Iterator
     for Accessor<'a, 'b, K, V, H>
 {
-    type Item = Self;
+    type Item = &'b (K, V);
     fn next(&mut self) -> Option<Self::Item> {
-        None
+        self.get()
     }
 }

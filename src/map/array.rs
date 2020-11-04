@@ -37,8 +37,8 @@ impl<K, V, M: Default> Array<K, V, M> {
         &self.metadata_array[index]
     }
 
-    pub fn get_key_value_pair(&self, index: usize) -> &(K, V) {
-        unsafe { &*self.entry_array[index].as_ptr() }
+    pub fn get_key_value_pair(&self, index: usize) -> *const (K, V) {
+        self.entry_array[index].as_ptr()
     }
 
     pub fn insert(&mut self, index: usize, key: K, value: V) {

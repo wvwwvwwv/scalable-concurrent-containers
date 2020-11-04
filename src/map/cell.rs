@@ -15,7 +15,6 @@ pub struct Cell<K, V> {
 /// ExclusiveLocker
 pub struct ExclusiveLocker<'a, K, V> {
     cell: &'a Cell<K, V>,
-    key_value_pair: Option<&'a (K, V)>,
     metadata: u32,
 }
 
@@ -139,7 +138,6 @@ impl<'a, K, V> ExclusiveLocker<'a, K, V> {
                     debug_assert_eq!(result & Cell::<K, V>::LOCK_MASK, 0);
                     return Some(ExclusiveLocker {
                         cell: cell,
-                        key_value_pair: None,
                         metadata: result | Cell::<K, V>::XLOCK,
                     });
                 }
@@ -153,14 +151,6 @@ impl<'a, K, V> ExclusiveLocker<'a, K, V> {
         }
     }
 
-    pub fn key(&self) -> Option<&K> {
-        self.key_value_pair.map(|(k, _)| k)
-    }
-
-    pub fn value(&self) -> Option<&V> {
-        self.key_value_pair.map(|(_, v)| v)
-    }
-
     pub fn occupied(&self, index: usize) -> bool {
         (self.metadata & (1 << index)) != 0
     }
@@ -169,8 +159,8 @@ impl<'a, K, V> ExclusiveLocker<'a, K, V> {
         self.metadata & Cell::<K, V>::OVERFLOW_FLAG == Cell::<K, V>::OVERFLOW_FLAG
     }
 
-    pub fn search_array(&self, partial_hash: u32) -> Option<u8> {
-        let preferred_index = (partial_hash % 8);
+    pub fn search(&self, partial_hash: u32) -> Option<u8> {
+        let preferred_index = partial_hash % 8;
         if self.cell.partial_hash_array[preferred_index as usize] == partial_hash
             && self.occupied(preferred_index as usize)
         {
@@ -185,19 +175,40 @@ impl<'a, K, V> ExclusiveLocker<'a, K, V> {
     }
 
     pub fn insert(&mut self, partial_hash: u32) -> Option<u8> {
+        let preferred_index = partial_hash % 8;
+        let cell_ptr = self.cell as *const Cell<K, V>;
+        let cell_mut_ptr = cell_ptr as *mut Cell<K, V>;
+        if !self.occupied(preferred_index as usize) {
+            self.metadata = self.metadata | (1 << preferred_index);
+            unsafe { (*cell_mut_ptr).partial_hash_array[preferred_index as usize] = partial_hash };
+            return Some(preferred_index.try_into().unwrap());
+        }
+        for (i, v) in self.cell.partial_hash_array.iter().enumerate() {
+            if i != (preferred_index as usize) && !self.occupied(i) {
+                self.metadata = self.metadata | (1 << preferred_index);
+                unsafe { (*cell_mut_ptr).partial_hash_array[i as usize] = partial_hash };
+                return Some(i.try_into().unwrap());
+            }
+        }
         None
     }
 
-    pub fn key_value_pair_associated(&self) -> bool {
-        self.key_value_pair.is_some()
+    pub fn search_link(&mut self, key: &K) -> *const (K, V) {
+        ptr::null()
     }
 
-    pub fn set_key_value_pair(&mut self, pair: &'a (K, V)) {
-        self.key_value_pair = Some(pair);
-    }
-
-    pub fn search_link(&mut self, key: &K) -> bool {
-        false
+    pub fn insert_link(&mut self, key: &K, value: V) -> *const (K, V) {
+        let cell_ptr = self.cell as *const Cell<K, V>;
+        let cell_mut_ptr = cell_ptr as *mut Cell<K, V>;
+        let cell = unsafe { &mut (*cell_mut_ptr) };
+        match &cell.link {
+            Some(_) => {
+                ptr::null()
+            },
+            None => {
+                ptr::null()
+            }
+        }
     }
 
     pub fn empty(&self) -> bool {
@@ -285,13 +296,13 @@ impl<K, V> Default for Cell<K, V> {
 
 impl<'a, K, V> Drop for ExclusiveLocker<'a, K, V> {
     fn drop(&mut self) {
-        // a 'Release' fence is required to publish the changes
-        let mut current = self.metadata;
+        // a Release fence is required to publish the changes
+        let mut current = self.cell.metadata.load(Relaxed);
         loop {
             debug_assert_eq!(current & Cell::<K, V>::LOCK_MASK, Cell::<K, V>::XLOCK);
             match self.cell.metadata.compare_exchange(
                 current,
-                current & (!(Cell::<K, V>::WAITING_FLAG | Cell::<K, V>::XLOCK)),
+                self.metadata & (!(Cell::<K, V>::WAITING_FLAG | Cell::<K, V>::XLOCK)),
                 Release,
                 Relaxed,
             ) {
