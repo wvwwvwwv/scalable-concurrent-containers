@@ -11,14 +11,14 @@ use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-// A hash map targeted at a highly concurrent workload.
-//
-// Keys are spread over a single array of metadata buckets, and each metadata bucket stores ten hash values and a singly linked list of key-value pairs.
-// Access to each metadata bucket is protected by a custom mutex of the bucket, and the contents of the bucket is only allowed to be updated with the mutex acquired.
-// The instance of a key-value pair is stored in a separate array, and the metadata bucket mutex serializes access to the key-value pair instance.
-// This approach is very similar to what is implemented in Swisstable, or a proprietary hash table implementation used by various SAP products.
-// It resizes or shrinks itself when the estimated load factor reaches 100% and 12.5%, and resizing is not a blocking operation.
-// Once resized, the old array is kept intact, and the key-value pairs stored in the array is incrementally relocated to the new array on each access.
+/// A scalable concurrent hash map implementation.
+///
+/// # Characteristics
+/// * No sharding. All keys are managed by a single array of key metadata cells.
+/// * Auto resizing. It automatically doubles or halves the capacity.
+/// * Non-blocking resizing. Resizing does not block other threads.
+/// * Incremental resizing. Access to the data structure relocates a certain number of key-value pairs.
+/// * Optimized resizing. A single key-value pair is guaranteed to be relocated to one of the two adjacent cells.
 pub struct HashMap<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> {
     array: Atomic<Array<K, V, Cell<K, V>>>,
     minimum_capacity: usize,
@@ -26,7 +26,7 @@ pub struct HashMap<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher>
     hasher: H,
 }
 
-/// Accessor
+/// Accessor offer a means of reading a key-value stored in a hash map container.
 ///
 /// It is !Send, thus disallowing other threads to have references to it.
 pub struct Accessor<'a: 'b, 'b, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> {
@@ -36,9 +36,13 @@ pub struct Accessor<'a: 'b, 'b, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H:
 }
 
 impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V, H> {
-    /// Create an empty HashMap instance with the given hasher and minimum capacity
+    /// Creates an empty HashMap instance with the given hasher and minimum capacity.
+    ///
     /// # Examples
     /// ```
+    /// use scc::HashMap;
+    /// use std::collections::hash_map::RandomState;
+    ///
     /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), None);
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
@@ -62,7 +66,24 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         }
     }
 
-    /// Insert a key-value pair into the HashMap
+    /// Inserts a key-value pair into the HashMap.
+    ///
+    /// # Examples
+    /// ```
+    /// use scc::HashMap;
+    /// use std::collections::hash_map::RandomState;
+    ///
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), None);
+    /// let result = hashmap.insert(1, 0);
+    /// if let Ok(result) = result {
+    ///     assert_eq!(*result.get().unwrap(), (1, 0));
+    /// }
+    /// let result = hashmap.insert(1, 1);
+    /// if let Err((result, value)) = result {
+    ///     assert_eq!(*result.get().unwrap(), (1, 0));
+    ///     assert_eq!(value, 1);
+    /// }
+    /// ```
     pub fn insert<'a, 'b>(
         &'a self,
         key: K,
@@ -148,7 +169,21 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         }
     }
 
-    /// Upsert a key-value pair into the HashMap.
+    /// Upserts a key-value pair into the HashMap.
+    ///
+    /// # Examples
+    /// ```
+    /// use scc::HashMap;
+    /// use std::collections::hash_map::RandomState;
+    ///
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), None);
+    /// let result = hashmap.insert(1, 0);
+    /// if let Ok(result) = result {
+    ///     assert_eq!(*result.get().unwrap(), (1, 0));
+    /// }
+    /// let result = hashmap.upsert(1, 1);
+    /// assert_eq!(*result.get().unwrap(), (1, 1));
+    /// ```
     pub fn upsert<'a, 'b>(&'a self, key: K, value: V) -> Accessor<'a, 'b, K, V, H> {
         match self.insert(key, value) {
             Ok(result) => result,
