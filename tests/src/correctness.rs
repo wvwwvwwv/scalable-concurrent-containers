@@ -9,14 +9,14 @@ mod test {
     #[test]
     fn basic_hashmap() {
         let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), Some(10));
-        let result = hashmap.insert(1, 0);
-        assert!(result.is_ok());
-        if let Ok(result) = result {
+        let result1 = hashmap.insert(1, 0);
+        assert!(result1.is_ok());
+        if let Ok(result) = result1 {
             assert_eq!(*result.get().unwrap(), (1, 0));
         }
-        let result = hashmap.insert(1, 0);
-        assert!(result.is_err());
-        if let Err(result) = result {
+        let result1 = hashmap.insert(1, 0);
+        assert!(result1.is_err());
+        if let Err(result) = result1 {
             assert_eq!(*result.get().unwrap(), (1, 0));
         }
     }
