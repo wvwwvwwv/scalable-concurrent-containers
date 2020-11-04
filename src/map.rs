@@ -37,6 +37,14 @@ pub struct Accessor<'a: 'b, 'b, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H:
 
 impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V, H> {
     /// Create an empty HashMap instance with the given hasher and minimum capacity
+    /// # Examples
+    /// ```
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), None);
+    /// let result = hashmap.insert(1, 0);
+    /// if let Ok(result) = result {
+    ///     assert_eq!(*result.get().unwrap(), (1, 0));
+    /// }
+    /// ```
     pub fn new(hasher: H, minimum_capacity: Option<usize>) -> HashMap<K, V, H> {
         let initial_capacity = if let Some(capacity) = minimum_capacity {
             capacity
@@ -59,7 +67,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         &'a self,
         key: K,
         value: V,
-    ) -> Result<Accessor<'a, 'b, K, V, H>, Accessor<'a, 'b, K, V, H>> {
+    ) -> Result<Accessor<'a, 'b, K, V, H>, (Accessor<'a, 'b, K, V, H>, V)> {
         let (hash, partial_hash) = self.hash(&key);
         let guard = crossbeam::epoch::pin();
 
@@ -87,11 +95,14 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                 let (locker, key_value_pair, _) =
                     self.search(&key, hash, partial_hash, old_array_ptr);
                 if let Some(_) = key_value_pair {
-                    return Err(Accessor {
-                        hash_map: &self,
-                        cell_locker: Some(locker),
-                        key_value_pair: key_value_pair,
-                    });
+                    return Err((
+                        Accessor {
+                            hash_map: &self,
+                            cell_locker: Some(locker),
+                            key_value_pair: key_value_pair,
+                        },
+                        value,
+                    ));
                 } else if !locker.killed() {
                     // relocated the cell
                     // self.kill(locker, old_array_ptr, current_array_ptr);
@@ -100,11 +111,14 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
             let (mut locker, key_value_pair, cell_index) =
                 self.search(&key, hash, partial_hash, current_array_ptr);
             if let Some(_) = key_value_pair {
-                return Err(Accessor {
-                    hash_map: &self,
-                    cell_locker: Some(locker),
-                    key_value_pair: key_value_pair,
-                });
+                return Err((
+                    Accessor {
+                        hash_map: &self,
+                        cell_locker: Some(locker),
+                        key_value_pair: key_value_pair,
+                    },
+                    value,
+                ));
             } else if !locker.killed() {
                 match locker.insert(partial_hash) {
                     Some(index) => {
@@ -136,12 +150,15 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
 
     /// Upsert a key-value pair into the HashMap.
     pub fn upsert<'a, 'b>(&'a self, key: K, value: V) -> Accessor<'a, 'b, K, V, H> {
-        let _ = self.hash(&key);
-        let guard = crossbeam::epoch::pin();
-        Accessor {
-            hash_map: &self,
-            cell_locker: None,
-            key_value_pair: None,
+        match self.insert(key, value) {
+            Ok(result) => result,
+            Err((result, value)) => {
+                result.key_value_pair.as_ref().map(move |pair_ptr| {
+                    let pair_mut_ptr = *pair_ptr as *mut (K, V);
+                    unsafe { (*pair_mut_ptr).1 = value };
+                });
+                result
+            }
         }
     }
 
