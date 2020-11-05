@@ -194,6 +194,15 @@ impl<'a, K: Clone + Eq, V> ExclusiveLocker<'a, K, V> {
         None
     }
 
+    pub fn remove(&mut self, index: u8) {
+        debug_assert!(index < 10);
+        debug_assert!(
+            self.metadata & (Cell::<K, V>::OCCUPANCY_BIT << index)
+                == (Cell::<K, V>::OCCUPANCY_BIT << index)
+        );
+        self.metadata = (self.metadata & (!(Cell::<K, V>::OCCUPANCY_BIT << index))) - 1;
+    }
+
     pub fn search_link(&self, key: &K) -> *const (K, V) {
         let mut link = &self.cell.link;
         while let Some(entry) = link {
@@ -206,9 +215,7 @@ impl<'a, K: Clone + Eq, V> ExclusiveLocker<'a, K, V> {
     }
 
     pub fn insert_link(&mut self, key: &K, value: V) -> *const (K, V) {
-        let cell_ptr = self.cell as *const Cell<K, V>;
-        let cell_mut_ptr = cell_ptr as *mut Cell<K, V>;
-        let cell = unsafe { &mut (*cell_mut_ptr) };
+        let cell = self.get_cell_mut_ref();
         let link = cell.link.take();
         let entry = Box::new(EntryLink {
             key_value_pair: ((*key).clone(), value),
@@ -220,12 +227,40 @@ impl<'a, K: Clone + Eq, V> ExclusiveLocker<'a, K, V> {
         key_value_pair_ptr
     }
 
+    pub fn remove_link(&mut self, key: &K) {
+        let cell = self.get_cell_mut_ref();
+        let mut current = cell.link.take();
+        let mut current_ptr = &mut cell.link as *mut LinkType<K, V>;
+
+        // if current == target, prev.link = current.link, else prev.link = current; prev = current
+        while let Some(mut entry) = current {
+            if (*entry).key_value_pair.0 == *key {
+                unsafe { *current_ptr = entry.link.take() };
+                break;
+            }
+            let prev_ptr = current_ptr;
+            current_ptr = &mut entry.link as *mut LinkType<K, V>;
+            current = entry.link.take();
+            unsafe { *prev_ptr = Some(entry) };
+        }
+
+        if cell.link.is_none() {
+            self.metadata = self.metadata & (!Cell::<K, V>::OVERFLOW_FLAG);
+        }
+    }
+
     pub fn empty(&self) -> bool {
         self.metadata & Cell::<K, V>::OCCUPANCY_MASK == 0
     }
 
     pub fn killed(&self) -> bool {
         self.metadata & Cell::<K, V>::KILLED_FLAG == Cell::<K, V>::KILLED_FLAG
+    }
+
+    pub fn get_cell_mut_ref(&mut self) -> &mut Cell<K, V> {
+        let cell_ptr = self.cell as *const Cell<K, V>;
+        let cell_mut_ptr = cell_ptr as *mut Cell<K, V>;
+        unsafe { &mut (*cell_mut_ptr) }
     }
 }
 
@@ -471,11 +506,20 @@ mod test {
         for handle in thread_handles {
             handle.join().unwrap();
         }
+        assert_eq!(
+            (*cell).metadata.load(Relaxed) & Cell::<bool, u8>::OVERFLOW_FLAG,
+            Cell::<bool, u8>::OVERFLOW_FLAG
+        );
         for tid in 0..num_threads {
-            let xlocker = ExclusiveLocker::lock(&*cell);
+            let mut xlocker = ExclusiveLocker::lock(&*cell);
             let key = tid + num_threads;
             assert!(xlocker.search_link(&key) != ptr::null());
+            xlocker.remove_link(&key);
         }
+        assert_eq!(
+            (*cell).metadata.load(Relaxed) & Cell::<bool, u8>::OVERFLOW_FLAG,
+            0
+        );
         assert_eq!(
             (*cell).metadata.load(Relaxed) & Cell::<bool, u8>::SIZE_MASK,
             10
@@ -483,10 +527,6 @@ mod test {
         assert_eq!(
             (*cell).metadata.load(Relaxed) & Cell::<bool, u8>::OCCUPANCY_MASK,
             Cell::<bool, u8>::OCCUPANCY_MASK
-        );
-        assert_eq!(
-            (*cell).metadata.load(Relaxed) & Cell::<bool, u8>::OVERFLOW_FLAG,
-            Cell::<bool, u8>::OVERFLOW_FLAG
         );
         assert_eq!(
             (*cell).metadata.load(Relaxed) & Cell::<bool, u8>::LOCK_MASK,

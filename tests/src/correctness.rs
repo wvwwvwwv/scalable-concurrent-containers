@@ -28,6 +28,26 @@ mod test {
         if let Err((result, _)) = result4 {
             assert_eq!(*result.get().unwrap(), (1, 1));
         }
+
+        let result5 = hashmap.get(1);
+        assert_eq!(*result5.get().unwrap(), (1, 1));
+        drop(result5);
+
+        let result6 = hashmap.get(2);
+        assert_eq!(result6.get(), None);
+
+        let result7 = hashmap.remove(1);
+        assert_eq!(result7, true);
+
+        let result8 = hashmap.insert(10, 10);
+        assert!(result8.is_ok());
+        if let Ok(result) = result8 {
+            assert_eq!(*result.get().unwrap(), (10, 10));
+            result.erase();
+        }
+
+        let result9 = hashmap.get(10);
+        assert_eq!(result9.get(), None);
     }
 
     proptest! {
