@@ -13,29 +13,17 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 /// A scalable concurrent hash map implementation.
 ///
-/// # Characteristics
-/// * No sharding. All keys are managed by a single array of key metadata cells.
-/// * Auto resizing. It automatically doubles or halves the capacity.
-/// * Non-blocking resizing. Resizing does not block other threads.
-/// * Incremental resizing. Access to the data structure relocates a certain number of key-value pairs.
-/// * Optimized resizing. A single key-value pair is guaranteed to be relocated to one of the two adjacent cells.
+/// The key features of scc::HashMap are as follows.
+/// * No sharding: all keys are managed by a single array of key metadata cells.
+/// * Auto resizing: it automatically doubles or halves the capacity.
+/// * Non-blocking resizing: resizing does not block other threads.
+/// * Incremental resizing: access to the data structure relocates a certain number of key-value pairs.
+/// * Optimized resizing: a single key-value pair is guaranteed to be relocated to one of the two adjacent cells.
 pub struct HashMap<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> {
     array: Atomic<Array<K, V, Cell<K, V>>>,
     minimum_capacity: usize,
     resize_mutex: AtomicBool,
     hasher: H,
-}
-
-/// Accessor offer a means of reading a key-value stored in a hash map container.
-///
-/// It is !Send, thus disallowing other threads to have references to it.
-pub struct Accessor<'a: 'b, 'b, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> {
-    hash_map: &'a HashMap<K, V, H>,
-    array_ptr: *const Array<K, V, Cell<K, V>>,
-    cell_locker: Option<ExclusiveLocker<'b, K, V>>,
-    cell_index: usize,
-    sub_index: u8,
-    key_value_pair: Option<*const (K, V)>,
 }
 
 impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V, H> {
@@ -76,12 +64,12 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
-    ///     assert_eq!(*result.get().unwrap(), (1, 0));
+    ///     assert_eq!(result.get(), (&1, &mut 0));
     /// }
     ///
     /// let result = hashmap.insert(1, 1);
     /// if let Err((result, value)) = result {
-    ///     assert_eq!(*result.get().unwrap(), (1, 0));
+    ///     assert_eq!(result.get(), (&1, &mut 0));
     ///     assert_eq!(value, 1);
     /// }
     /// ```
@@ -92,27 +80,23 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     ) -> Result<Accessor<'a, 'b, K, V, H>, (Accessor<'a, 'b, K, V, H>, V)> {
         let (hash, partial_hash) = self.hash(&key);
         let mut accessor = self.acquire(&key, hash, partial_hash);
-        if accessor.key_value_pair.is_some() {
+        if !accessor.key_value_pair_ptr.is_null() {
             return Err((accessor, value));
         }
-        let mut locker = accessor.cell_locker.take();
-        locker
-            .as_mut()
-            .map(|locker| match locker.insert(partial_hash) {
-                Some(sub_index) => {
-                    let key_value_array_index = accessor.cell_index * 10 + (sub_index as usize);
-                    let key_value_pair_ptr =
-                        unsafe { (*accessor.array_ptr).get_key_value_pair(key_value_array_index) };
-                    let key_value_pair_mut_ptr = key_value_pair_ptr as *mut (K, V);
-                    unsafe { key_value_pair_mut_ptr.write((key.clone(), value)) };
-                    accessor.sub_index = sub_index;
-                    accessor.key_value_pair = Some(key_value_pair_ptr);
-                }
-                None => {
-                    accessor.key_value_pair = Some(locker.insert_link(&key, value));
-                }
-            });
-        accessor.cell_locker = locker.take();
+        match accessor.cell_locker.insert(partial_hash) {
+            Some(sub_index) => {
+                let key_value_array_index = accessor.cell_index * 10 + (sub_index as usize);
+                let key_value_pair_ptr =
+                    unsafe { (*accessor.array_ptr).get_key_value_pair(key_value_array_index) };
+                let key_value_pair_mut_ptr = key_value_pair_ptr as *mut (K, V);
+                unsafe { key_value_pair_mut_ptr.write((key.clone(), value)) };
+                accessor.sub_index = sub_index;
+                accessor.key_value_pair_ptr = key_value_pair_ptr;
+            }
+            None => {
+                accessor.key_value_pair_ptr = accessor.cell_locker.insert_link(&key, value);
+            }
+        };
         Ok(accessor)
     }
 
@@ -127,20 +111,18 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
-    ///     assert_eq!(*result.get().unwrap(), (1, 0));
+    ///     assert_eq!(result.get(), (&1, &mut 0));
     /// }
     ///
     /// let result = hashmap.upsert(1, 1);
-    /// assert_eq!(*result.get().unwrap(), (1, 1));
+    /// assert_eq!(result.get(), (&1, &mut 1));
     /// ```
     pub fn upsert<'a, 'b>(&'a self, key: K, value: V) -> Accessor<'a, 'b, K, V, H> {
         match self.insert(key, value) {
             Ok(result) => result,
             Err((result, value)) => {
-                result.key_value_pair.as_ref().map(move |pair_ptr| {
-                    let pair_mut_ptr = *pair_ptr as *mut (K, V);
-                    unsafe { (*pair_mut_ptr).1 = value };
-                });
+                let pair_mut_ptr = result.key_value_pair_ptr as *mut (K, V);
+                unsafe { (*pair_mut_ptr).1 = value };
                 result
             }
         }
@@ -156,23 +138,23 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), None);
     ///
     /// let result = hashmap.get(1);
-    /// assert_eq!(result.get(), None);
+    /// assert!(result.is_none());
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
-    ///     assert_eq!(*result.get().unwrap(), (1, 0));
+    ///     assert_eq!(result.get(), (&1, &mut 0));
     /// }
     ///
     /// let result = hashmap.get(1);
-    /// assert_eq!(*result.get().unwrap(), (1, 0));
+    /// assert_eq!(result.unwrap().get(), (&1, &mut 0));
     /// ```
-    pub fn get<'a, 'b>(&'a self, key: K) -> Accessor<'a, 'b, K, V, H> {
+    pub fn get<'a, 'b>(&'a self, key: K) -> Option<Accessor<'a, 'b, K, V, H>> {
         let (hash, partial_hash) = self.hash(&key);
         let mut accessor = self.acquire(&key, hash, partial_hash);
-        if accessor.key_value_pair.is_none() {
-            accessor.cell_locker.take();
+        if accessor.key_value_pair_ptr.is_null() {
+            return None;
         }
-        accessor
+        Some(accessor)
     }
 
     /// Removes a key-value pair.
@@ -189,14 +171,14 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
-    ///     assert_eq!(*result.get().unwrap(), (1, 0));
+    ///     assert_eq!(result.get(), (&1, &mut 0));
     /// }
     ///
     /// let result = hashmap.remove(1);
-    /// assert_eq!(result, true);
+    /// assert!(result);
     /// ```
     pub fn remove(&self, key: K) -> bool {
-        self.get(key).erase()
+        self.get(key).map_or(false, |accessor| accessor.erase())
     }
 
     /// Reads the key-value pair.
@@ -224,16 +206,8 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     }
 
     /// Returns an empty Accessor.
-    pub fn iter<'a, 'b>(&'a self) -> Accessor<'a, 'b, K, V, H> {
-        let guard = crossbeam::epoch::pin();
-        Accessor {
-            hash_map: &self,
-            array_ptr: std::ptr::null(),
-            cell_locker: None,
-            cell_index: 0,
-            sub_index: 0,
-            key_value_pair: None,
-        }
+    pub fn iter<'a>(&'a self) -> Scanner<'a, K, V, H> {
+        Scanner { accessor: None }
     }
 
     /// Returns a hash value of the given key.
@@ -280,32 +254,32 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
             if !old_array_ptr.is_null() {
                 // relocate at most 16 cells
                 // self.relocate(current_array_ptr, old_array_ptr);
-                let (locker, key_value_pair, cell_index, sub_index) =
+                let (locker, key_value_pair_ptr, cell_index, sub_index) =
                     self.search(&key, hash, partial_hash, old_array_ptr);
-                if key_value_pair.is_some() {
+                if !key_value_pair_ptr.is_null() {
                     return Accessor {
                         hash_map: &self,
                         array_ptr: current_array_ptr,
-                        cell_locker: Some(locker),
+                        cell_locker: locker,
                         cell_index: cell_index,
                         sub_index: sub_index,
-                        key_value_pair: key_value_pair,
+                        key_value_pair_ptr: key_value_pair_ptr,
                     };
                 } else if !locker.killed() {
                     // relocated the cell
                     // self.kill(locker, old_array_ptr, current_array_ptr);
                 }
             }
-            let (locker, key_value_pair, cell_index, sub_index) =
+            let (locker, key_value_pair_ptr, cell_index, sub_index) =
                 self.search(&key, hash, partial_hash, current_array_ptr);
             if !locker.killed() {
                 return Accessor {
                     hash_map: &self,
                     array_ptr: current_array_ptr,
-                    cell_locker: Some(locker),
+                    cell_locker: locker,
                     cell_index: cell_index,
                     sub_index: sub_index,
-                    key_value_pair: key_value_pair,
+                    key_value_pair_ptr: key_value_pair_ptr,
                 };
             }
             // reaching here indicates that self.array is updated
@@ -314,15 +288,16 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
 
     /// Erases a key-value pair owned by the accessor.
     fn erase<'a, 'b>(&'a self, mut accessor: Accessor<'a, 'b, K, V, H>) {
-        let mut locker = accessor.cell_locker.take().unwrap();
         if accessor.sub_index != u8::MAX {
-            locker.remove(accessor.sub_index);
-            let key_value_pair_ptr = accessor.key_value_pair.take().unwrap() as *mut (K, V);
+            accessor.cell_locker.remove(accessor.sub_index);
+            let key_value_pair_mut_ptr = accessor.key_value_pair_ptr as *mut (K, V);
             unsafe {
-                std::ptr::drop_in_place(key_value_pair_ptr);
+                std::ptr::drop_in_place(key_value_pair_mut_ptr);
             }
         } else {
-            locker.remove_link(unsafe { &(*accessor.key_value_pair.unwrap()).0 })
+            accessor
+                .cell_locker
+                .remove_link(unsafe { &(*accessor.key_value_pair_ptr).0 })
         }
     }
 
@@ -333,7 +308,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         hash: u64,
         partial_hash: u32,
         array_ptr: *const Array<K, V, Cell<K, V>>,
-    ) -> (ExclusiveLocker<'a, K, V>, Option<*const (K, V)>, usize, u8) {
+    ) -> (ExclusiveLocker<'a, K, V>, *const (K, V), usize, u8) {
         let cell_index = unsafe { (*array_ptr).calculate_metadata_array_index(hash) };
         let cell = unsafe { (*array_ptr).get_cell(cell_index) };
         let locker = ExclusiveLocker::lock(cell);
@@ -341,7 +316,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
             if locker.overflowing() {
                 let key_value_pair_ptr = locker.search_link(key);
                 if !key_value_pair_ptr.is_null() {
-                    return (locker, Some(key_value_pair_ptr), cell_index, u8::MAX);
+                    return (locker, key_value_pair_ptr, cell_index, u8::MAX);
                 }
             }
             if let Some(sub_index) = locker.search(partial_hash) {
@@ -349,11 +324,11 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                 let key_value_pair_ptr =
                     unsafe { (*array_ptr).get_key_value_pair(key_value_array_index) };
                 if unsafe { (*key_value_pair_ptr).0 == *key } {
-                    return (locker, Some(key_value_pair_ptr), cell_index, sub_index);
+                    return (locker, key_value_pair_ptr, cell_index, sub_index);
                 }
             }
         }
-        (locker, None, cell_index, 0)
+        (locker, std::ptr::null(), cell_index, 0)
     }
 }
 
@@ -364,7 +339,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Drop for Hash
 impl<'a: 'b, 'b, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher>
     Accessor<'a, 'b, K, V, H>
 {
-    /// Returns an optional reference to the key-value pair.
+    /// Returns a reference to the key-value pair.
     ///
     /// # Examples
     /// ```
@@ -374,17 +349,24 @@ impl<'a: 'b, 'b, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher>
     /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), None);
     ///
     /// let result = hashmap.get(1);
-    /// assert_eq!(result.get(), None);
+    /// assert!(result.is_none());
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
-    ///     assert_eq!(*result.get().unwrap(), (1, 0));
+    ///     assert_eq!(result.get(), (&1, &mut 0));
+    ///     (*result.get().1) = 2;
     /// }
+    ///
+    /// let result = hashmap.get(1);
+    /// assert_eq!(result.unwrap().get(), (&1, &mut 2));
     /// ```
-    pub fn get(&self) -> Option<&'b (K, V)> {
-        self.key_value_pair
-            .as_ref()
-            .map_or(None, |ptr| unsafe { Some(&(*(*ptr))) })
+    pub fn get(&self) -> (&K, &mut V) {
+        unsafe {
+            let key_ptr = &(*self.key_value_pair_ptr).0 as *const K;
+            let value_ptr = &(*self.key_value_pair_ptr).1 as *const V;
+            let value_mut_ptr = value_ptr as *mut V;
+            (&(*key_ptr), &mut (*value_mut_ptr))
+        }
     }
 
     /// Erases the key-value pair owned by the Accessor.
@@ -398,15 +380,15 @@ impl<'a: 'b, 'b, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher>
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
-    ///     assert_eq!(*result.get().unwrap(), (1, 0));
+    ///     assert_eq!(result.get(), (&1, &mut 0));
     ///     result.erase();
     /// }
     ///
     /// let result = hashmap.get(1);
-    /// assert_eq!(result.get(), None);
+    /// assert!(result.is_none());
     /// ```
     pub fn erase(self) -> bool {
-        if self.key_value_pair.is_none() {
+        if self.key_value_pair_ptr.is_null() {
             return false;
         }
         self.hash_map.erase(self);
@@ -414,17 +396,30 @@ impl<'a: 'b, 'b, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher>
     }
 }
 
-impl<'a: 'b, 'b, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Drop
-    for Accessor<'a, 'b, K, V, H>
-{
-    fn drop(&mut self) {}
+/// Accessor offer a means of reading a key-value stored in a hash map container.
+///
+/// It is !Send, thus disallowing other threads to have references to it.
+pub struct Accessor<'a: 'b, 'b, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> {
+    hash_map: &'a HashMap<K, V, H>,
+    array_ptr: *const Array<K, V, Cell<K, V>>,
+    cell_locker: ExclusiveLocker<'b, K, V>,
+    cell_index: usize,
+    sub_index: u8,
+    key_value_pair_ptr: *const (K, V),
 }
 
-impl<'a: 'b, 'b, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Iterator
-    for Accessor<'a, 'b, K, V, H>
+/// Scanner implements Iterator.
+///
+/// It is !Send, thus disallowing other threads to have references to it.
+pub struct Scanner<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> {
+    accessor: Option<Accessor<'a, 'a, K, V, H>>,
+}
+
+impl<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Iterator
+    for Scanner<'a, K, V, H>
 {
-    type Item = &'b (K, V);
+    type Item = (&'a K, &'a mut V);
     fn next(&mut self) -> Option<Self::Item> {
-        self.get()
+        None
     }
 }

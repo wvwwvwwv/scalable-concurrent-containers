@@ -11,30 +11,6 @@ pub struct Cell<K: Clone + Eq, V> {
     partial_hash_array: [u32; 10],
 }
 
-/// ExclusiveLocker
-pub struct ExclusiveLocker<'a, K: Clone + Eq, V> {
-    cell: &'a Cell<K, V>,
-    metadata: u32,
-}
-
-/// SharedLocker
-pub struct SharedLocker<'a, K: Clone + Eq, V> {
-    cell: &'a Cell<K, V>,
-}
-
-type LinkType<K: Clone + Eq, V> = Option<Box<EntryLink<K, V>>>;
-
-struct EntryLink<K: Clone + Eq, V> {
-    key_value_pair: (K, V),
-    link: LinkType<K, V>,
-}
-
-struct WaitQueueEntry {
-    mutex: Mutex<bool>,
-    condvar: Condvar,
-    next: *mut WaitQueueEntry,
-}
-
 impl<K: Clone + Eq, V> Cell<K, V> {
     const KILLED_FLAG: u32 = 1 << 31;
     const WAITING_FLAG: u32 = 1 << 30;
@@ -110,6 +86,23 @@ impl<K: Clone + Eq, V> Cell<K, V> {
             condvar_ptr = next_ptr;
         }
     }
+}
+
+impl<K: Clone + Eq, V> Default for Cell<K, V> {
+    fn default() -> Self {
+        Cell {
+            link: None,
+            metadata: AtomicU32::new(0),
+            wait_queue: AtomicPtr::new(ptr::null_mut()),
+            partial_hash_array: [0; 10],
+        }
+    }
+}
+
+/// ExclusiveLocker
+pub struct ExclusiveLocker<'a, K: Clone + Eq, V> {
+    cell: &'a Cell<K, V>,
+    metadata: u32,
 }
 
 impl<'a, K: Clone + Eq, V> ExclusiveLocker<'a, K, V> {
@@ -250,7 +243,7 @@ impl<'a, K: Clone + Eq, V> ExclusiveLocker<'a, K, V> {
     }
 
     pub fn empty(&self) -> bool {
-        self.metadata & Cell::<K, V>::OCCUPANCY_MASK == 0
+        self.metadata & (Cell::<K, V>::OVERFLOW_FLAG | Cell::<K, V>::OCCUPANCY_MASK) == 0
     }
 
     pub fn killed(&self) -> bool {
@@ -262,6 +255,11 @@ impl<'a, K: Clone + Eq, V> ExclusiveLocker<'a, K, V> {
         let cell_mut_ptr = cell_ptr as *mut Cell<K, V>;
         unsafe { &mut (*cell_mut_ptr) }
     }
+}
+
+/// SharedLocker
+pub struct SharedLocker<'a, K: Clone + Eq, V> {
+    cell: &'a Cell<K, V>,
 }
 
 impl<'a, K: Clone + Eq, V> SharedLocker<'a, K, V> {
@@ -304,6 +302,19 @@ impl<'a, K: Clone + Eq, V> SharedLocker<'a, K, V> {
     }
 }
 
+type LinkType<K: Clone + Eq, V> = Option<Box<EntryLink<K, V>>>;
+
+struct EntryLink<K: Clone + Eq, V> {
+    key_value_pair: (K, V),
+    link: LinkType<K, V>,
+}
+
+struct WaitQueueEntry {
+    mutex: Mutex<bool>,
+    condvar: Condvar,
+    next: *mut WaitQueueEntry,
+}
+
 impl WaitQueueEntry {
     fn new(wait_queue: *mut WaitQueueEntry) -> WaitQueueEntry {
         WaitQueueEntry {
@@ -324,17 +335,6 @@ impl WaitQueueEntry {
         let mut completed = self.mutex.lock().unwrap();
         *completed = true;
         self.condvar.notify_one();
-    }
-}
-
-impl<K: Clone + Eq, V> Default for Cell<K, V> {
-    fn default() -> Self {
-        Cell {
-            link: None,
-            metadata: AtomicU32::new(0),
-            wait_queue: AtomicPtr::new(ptr::null_mut()),
-            partial_hash_array: [0; 10],
-        }
     }
 }
 

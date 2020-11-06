@@ -41,16 +41,6 @@ impl<K, V, M: Default> Array<K, V, M> {
         self.entry_array[index].as_ptr()
     }
 
-    pub fn insert(&mut self, index: usize, key: K, value: V) {
-        self.entry_array[index] = MaybeUninit::new((key, value));
-    }
-
-    fn remove(&mut self, index: usize) {
-        unsafe {
-            std::ptr::drop_in_place(self.entry_array[index].as_mut_ptr());
-        }
-    }
-
     fn capacity(&self) -> usize {
         (1 << self.lb_capacity) * 10
     }
@@ -110,42 +100,5 @@ mod test {
                 i
             );
         }
-    }
-
-    struct Checker<'a> {
-        data: &'a AtomicUsize,
-    }
-
-    impl<'a> Checker<'a> {
-        fn new(data: &'a AtomicUsize) -> Checker<'a> {
-            data.fetch_add(1, Relaxed);
-            Checker { data: data }
-        }
-    }
-
-    impl<'a> Drop for Checker<'a> {
-        fn drop(&mut self) {
-            self.data.fetch_sub(1, Relaxed);
-        }
-    }
-
-    #[test]
-    fn basic_insert_remove() {
-        let data = AtomicUsize::new(0);
-        let mut array: Array<usize, Checker, i8> = Array::new(160, Atomic::null());
-        assert_eq!(array.capacity(), 160);
-        for i in 0..array.capacity() {
-            if i % 2 == 0 {
-                array.insert(i, i, Checker::new(&data));
-                assert_eq!(unsafe { (*array.entry_array[i].as_ptr()).0 }, i);
-            }
-        }
-        assert_eq!(data.load(Relaxed), array.capacity() / 2);
-        for i in 0..array.capacity() {
-            if i % 2 == 0 {
-                array.remove(i);
-            }
-        }
-        assert_eq!(data.load(Relaxed), 0);
     }
 }
