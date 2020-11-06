@@ -196,11 +196,18 @@ impl<'a, K: Clone + Eq, V> ExclusiveLocker<'a, K, V> {
         self.metadata = (self.metadata & (!(Cell::<K, V>::OCCUPANCY_BIT << index))) - 1;
     }
 
+    pub fn link_head(&self) -> *const EntryLink<K, V> {
+        self.cell
+            .link
+            .as_ref()
+            .map_or(ptr::null(), |entry| &(**entry) as *const EntryLink<K, V>)
+    }
+
     pub fn search_link(&self, key: &K) -> *const (K, V) {
         let mut link = &self.cell.link;
         while let Some(entry) = link {
             if (*entry).key_value_pair.0 == *key {
-                return &(*entry).key_value_pair as *const _;
+                return (*entry).key_value_pair_ptr();
             }
             link = &entry.link;
         }
@@ -214,7 +221,7 @@ impl<'a, K: Clone + Eq, V> ExclusiveLocker<'a, K, V> {
             key_value_pair: ((*key).clone(), value),
             link: link,
         });
-        let key_value_pair_ptr = &(*entry).key_value_pair as *const (K, V);
+        let key_value_pair_ptr = (*entry).key_value_pair_ptr();
         cell.link = Some(entry);
         self.metadata = self.metadata | Cell::<K, V>::OVERFLOW_FLAG;
         key_value_pair_ptr
@@ -304,9 +311,15 @@ impl<'a, K: Clone + Eq, V> SharedLocker<'a, K, V> {
 
 type LinkType<K: Clone + Eq, V> = Option<Box<EntryLink<K, V>>>;
 
-struct EntryLink<K: Clone + Eq, V> {
+pub struct EntryLink<K: Clone + Eq, V> {
     key_value_pair: (K, V),
     link: LinkType<K, V>,
+}
+
+impl<K: Clone + Eq, V> EntryLink<K, V> {
+    pub fn key_value_pair_ptr(&self) -> *const (K, V) {
+        &self.key_value_pair as *const (K, V)
+    }
 }
 
 struct WaitQueueEntry {

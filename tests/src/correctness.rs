@@ -17,11 +17,13 @@ mod test {
             if let Ok(result) = result1 {
                 assert_eq!(result.get(), (&key, &mut 0));
             }
+
             let result2 = hashmap.insert(key, 0);
             assert!(result2.is_err());
             if let Err((result, _)) = result2 {
                 assert_eq!(result.get(), (&key, &mut 0));
             }
+
             let result3 = hashmap.upsert(key, 1);
             assert_eq!(result3.get(), (&key, &mut 1));
             drop(result3);
@@ -33,24 +35,33 @@ mod test {
                 *result.get().1 = 2;
             }
 
-            let result5 = hashmap.get(key);
-            assert_eq!(result5.unwrap().get(), (&key, &mut 2));
+            let mut result5 = hashmap.iter();
+            assert_eq!(result5.next(), Some((&key, &mut 2)));
+            assert_eq!(result5.next(), None);
 
-            let result6 = hashmap.get(key + 1);
-            assert!(result6.is_none());
+            for iter in hashmap.iter() {
+                assert_eq!(iter, (&key, &mut 2));
+                *iter.1 = 3;
+            }
 
-            let result7 = hashmap.remove(key);
-            assert_eq!(result7, true);
+            let result6 = hashmap.get(key);
+            assert_eq!(result6.unwrap().get(), (&key, &mut 3));
 
-            let result8 = hashmap.insert(key + 2, 10);
-            assert!(result8.is_ok());
-            if let Ok(result) = result8 {
+            let result7 = hashmap.get(key + 1);
+            assert!(result7.is_none());
+
+            let result8 = hashmap.remove(key);
+            assert_eq!(result8, true);
+
+            let result9 = hashmap.insert(key + 2, 10);
+            assert!(result9.is_ok());
+            if let Ok(result) = result9 {
                 assert_eq!(result.get(), (&(key + 2), &mut 10));
                 result.erase();
             }
 
-            let result9 = hashmap.get(key + 2);
-            assert!(result9.is_none());
+            let result10 = hashmap.get(key + 2);
+            assert!(result10.is_none());
         }
     }
 
