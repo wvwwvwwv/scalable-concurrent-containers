@@ -5,7 +5,7 @@ pub mod cell;
 
 use array::Array;
 use cell::EntryLink;
-use cell::{Cell, ExclusiveLocker, SharedLocker};
+use cell::{Cell, CellLocker, CellReader};
 use crossbeam::epoch::{Atomic, Guard, Owned};
 use std::convert::TryInto;
 use std::hash::{BuildHasher, Hash, Hasher};
@@ -352,10 +352,9 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         hash: u64,
         partial_hash: u32,
         array_ptr: *const Array<K, V, Cell<K, V>>,
-    ) -> (ExclusiveLocker<'a, K, V>, *const (K, V), usize, u8) {
+    ) -> (CellLocker<'a, K, V>, *const (K, V), usize, u8) {
         let cell_index = unsafe { (*array_ptr).calculate_metadata_array_index(hash) };
-        let cell = unsafe { (*array_ptr).get_cell(cell_index) };
-        let locker = ExclusiveLocker::lock(cell);
+        let locker = CellLocker::lock(unsafe { (*array_ptr).get_cell(cell_index) });
         if !locker.killed() && !locker.empty() {
             if locker.overflowing() {
                 let key_value_pair_ptr = locker.search_link(key);
@@ -379,7 +378,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     fn first<'a>(
         &'a self,
     ) -> (
-        Option<ExclusiveLocker<'a, K, V>>,
+        Option<CellLocker<'a, K, V>>,
         *const Array<K, V, Cell<K, V>>,
         usize,
     ) {
@@ -395,8 +394,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                 }
                 let num_cells = unsafe { (*array_ptr).num_cells() };
                 for cell_index in 0..num_cells {
-                    let cell = unsafe { (*array_ptr).get_cell(cell_index) };
-                    let locker = ExclusiveLocker::lock(cell);
+                    let locker = CellLocker::lock(unsafe { (*array_ptr).get_cell(cell_index) });
                     if !locker.killed() && !locker.empty() {
                         // once a valid cell is locked, the array is guaranteed to retain
                         return (Some(locker), array_ptr, cell_index);
@@ -426,40 +424,58 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         // an Acquire fence is required to correctly load the contents of the array
         let current_array_ptr = self.array.load(Acquire, &guard).as_raw();
         let old_array_ptr = unsafe { (*current_array_ptr).get_old_array(&guard) }.as_raw();
+
+        // either one of the two arrays must match with array_ptr
         debug_assert!(array_ptr == current_array_ptr || array_ptr == old_array_ptr);
 
-        // either one of the two array must match with array_ptr
         if old_array_ptr == array_ptr {
             let num_cells = unsafe { (*old_array_ptr).num_cells() };
             for cell_index in (current_index + 1)..num_cells {
-                let cell = unsafe { (*old_array_ptr).get_cell(cell_index) };
-                let locker = ExclusiveLocker::lock(cell);
-                if !locker.killed() && !locker.empty() {}
+                let locker = CellLocker::lock(unsafe { (*old_array_ptr).get_cell(cell_index) });
+                if !locker.killed() && !locker.empty() {
+                    if let Some(scanner) = self.pick(locker, old_array_ptr, cell_index) {
+                        return Some(scanner);
+                    }
+                }
             }
         }
 
-        let mut found_killed = false;
+        let mut new_array_ptr = std::ptr::null() as *const Array<K, V, Cell<K, V>>;
         let num_cells = unsafe { (*current_array_ptr).num_cells() };
         let start_index = if old_array_ptr == array_ptr {
             0
         } else {
             current_index + 1
         };
-        for cell_index in (start_index)..num_cells {}
+        for cell_index in (start_index)..num_cells {
+            let locker = CellLocker::lock(unsafe { (*current_array_ptr).get_cell(cell_index) });
+            if !locker.killed() && !locker.empty() {
+                if let Some(scanner) = self.pick(locker, current_array_ptr, cell_index) {
+                    return Some(scanner);
+                }
+            } else if locker.killed() && new_array_ptr.is_null() {
+                new_array_ptr = self.array.load(Acquire, &guard).as_raw();
+            }
+        }
 
-        if found_killed {
-            let current_array_ptr = self.array.load(Acquire, &guard).as_raw();
-            debug_assert!(array_ptr != current_array_ptr);
+        if !new_array_ptr.is_null() {
             let num_cells = unsafe { (*current_array_ptr).num_cells() };
-            for cell_index in 0..num_cells {}
+            for cell_index in 0..num_cells {
+                let locker = CellLocker::lock(unsafe { (*current_array_ptr).get_cell(cell_index) });
+                if !locker.killed() && !locker.empty() {
+                    if let Some(scanner) = self.pick(locker, current_array_ptr, cell_index) {
+                        return Some(scanner);
+                    }
+                }
+            }
         }
         None
     }
 
-    /// Picks a key-value pair entry using the given ExclusiveLocker.
+    /// Picks a key-value pair entry using the given CellLocker.
     fn pick<'a>(
         &'a self,
-        locker: ExclusiveLocker<'a, K, V>,
+        locker: CellLocker<'a, K, V>,
         array_ptr: *const Array<K, V, Cell<K, V>>,
         cell_index: usize,
     ) -> Option<Scanner<'a, K, V, H>> {
@@ -513,7 +529,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Drop for Hash
 /// It is !Send, thus disallowing other threads to have references to it.
 pub struct Accessor<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> {
     hash_map: &'a HashMap<K, V, H>,
-    cell_locker: ExclusiveLocker<'a, K, V>,
+    cell_locker: CellLocker<'a, K, V>,
     sub_index: u8,
     key_value_pair_ptr: *const (K, V),
 }
@@ -631,7 +647,7 @@ impl<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Iterator
                 // advance in the array
                 let current_array_ptr = self.array_ptr;
                 let current_cell_index = self.cell_index;
-                let mut scanner = self.accessor.as_ref().map_or(None, |accessor| {
+                let scanner = self.accessor.as_ref().map_or(None, |accessor| {
                     accessor
                         .hash_map
                         .next(current_array_ptr, current_cell_index)

@@ -42,7 +42,7 @@ impl<K, V, M: Default> Array<K, V, M> {
     }
 
     pub fn num_cells(&self) -> usize {
-        (1 << self.lb_capacity)
+        1 << self.lb_capacity
     }
 
     pub fn get_old_array<'a>(&self, guard: &'a Guard) -> Shared<'a, Array<K, V, M>> {

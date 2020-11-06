@@ -23,12 +23,6 @@ impl<K: Clone + Eq, V> Cell<K, V> {
     const OCCUPANCY_BIT: u32 = 1 << 5;
     const SIZE_MASK: u32 = (1 << 5) - 1;
 
-    pub fn size(&self) -> usize {
-        (self.metadata.load(Relaxed) & Self::SIZE_MASK)
-            .try_into()
-            .unwrap()
-    }
-
     fn wait<T, F: FnOnce() -> Option<T>>(&self, f: F) -> Option<T> {
         // insert the condvar into the wait queue
         let mut condvar = WaitQueueEntry::new(self.wait_queue.load(Relaxed));
@@ -99,15 +93,15 @@ impl<K: Clone + Eq, V> Default for Cell<K, V> {
     }
 }
 
-/// ExclusiveLocker
-pub struct ExclusiveLocker<'a, K: Clone + Eq, V> {
+/// CellLocker
+pub struct CellLocker<'a, K: Clone + Eq, V> {
     cell: &'a Cell<K, V>,
     metadata: u32,
 }
 
-impl<'a, K: Clone + Eq, V> ExclusiveLocker<'a, K, V> {
-    /// Create a new ExclusiveLocker instance with the cell exclusively locked.
-    pub fn lock(cell: &'a Cell<K, V>) -> ExclusiveLocker<'a, K, V> {
+impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
+    /// Create a new CellLocker instance with the cell exclusively locked.
+    pub fn lock(cell: &'a Cell<K, V>) -> CellLocker<'a, K, V> {
         loop {
             if let Some(result) = Self::try_lock(cell) {
                 return result;
@@ -118,8 +112,8 @@ impl<'a, K: Clone + Eq, V> ExclusiveLocker<'a, K, V> {
         }
     }
 
-    /// Create a new ExclusiveLocker instance if the cell is exclusively locked.
-    fn try_lock(cell: &'a Cell<K, V>) -> Option<ExclusiveLocker<'a, K, V>> {
+    /// Create a new CellLocker instance if the cell is exclusively locked.
+    fn try_lock(cell: &'a Cell<K, V>) -> Option<CellLocker<'a, K, V>> {
         let mut current = cell.metadata.load(Relaxed);
         loop {
             match cell.metadata.compare_exchange(
@@ -130,7 +124,7 @@ impl<'a, K: Clone + Eq, V> ExclusiveLocker<'a, K, V> {
             ) {
                 Ok(result) => {
                     debug_assert_eq!(result & Cell::<K, V>::LOCK_MASK, 0);
-                    return Some(ExclusiveLocker {
+                    return Some(CellLocker {
                         cell: cell,
                         metadata: result | Cell::<K, V>::XLOCK,
                     });
@@ -143,6 +137,12 @@ impl<'a, K: Clone + Eq, V> ExclusiveLocker<'a, K, V> {
                 }
             }
         }
+    }
+
+    pub fn size(&self) -> usize {
+        (self.metadata & Cell::<K, V>::SIZE_MASK)
+            .try_into()
+            .unwrap()
     }
 
     pub fn occupied(&self, index: usize) -> bool {
@@ -274,14 +274,14 @@ impl<'a, K: Clone + Eq, V> ExclusiveLocker<'a, K, V> {
     }
 }
 
-/// SharedLocker
-pub struct SharedLocker<'a, K: Clone + Eq, V> {
+/// CellReader
+pub struct CellReader<'a, K: Clone + Eq, V> {
     cell: &'a Cell<K, V>,
 }
 
-impl<'a, K: Clone + Eq, V> SharedLocker<'a, K, V> {
-    /// Create a new SharedLocker instance with the cell shared locked.
-    pub fn lock(cell: &'a Cell<K, V>) -> SharedLocker<'a, K, V> {
+impl<'a, K: Clone + Eq, V> CellReader<'a, K, V> {
+    /// Create a new CellReader instance with the cell shared locked.
+    pub fn lock(cell: &'a Cell<K, V>) -> CellReader<'a, K, V> {
         loop {
             if let Some(result) = Self::try_lock(cell) {
                 return result;
@@ -292,8 +292,8 @@ impl<'a, K: Clone + Eq, V> SharedLocker<'a, K, V> {
         }
     }
 
-    /// Create a new SharedLocker instance if the cell is shared locked.
-    fn try_lock(cell: &'a Cell<K, V>) -> Option<SharedLocker<'a, K, V>> {
+    /// Create a new CellReader instance if the cell is shared locked.
+    fn try_lock(cell: &'a Cell<K, V>) -> Option<CellReader<'a, K, V>> {
         let mut current = cell.metadata.load(Relaxed);
         loop {
             if current & Cell::<K, V>::LOCK_MASK >= Cell::<K, V>::SLOCK_MAX {
@@ -307,7 +307,7 @@ impl<'a, K: Clone + Eq, V> SharedLocker<'a, K, V> {
                 Acquire,
                 Relaxed,
             ) {
-                Ok(_) => return Some(SharedLocker { cell: cell }),
+                Ok(_) => return Some(CellReader { cell: cell }),
                 Err(result) => {
                     if result & Cell::<K, V>::LOCK_MASK >= Cell::<K, V>::SLOCK_MAX {
                         return None;
@@ -367,7 +367,7 @@ impl WaitQueueEntry {
     }
 }
 
-impl<'a, K: Clone + Eq, V> Drop for ExclusiveLocker<'a, K, V> {
+impl<'a, K: Clone + Eq, V> Drop for CellLocker<'a, K, V> {
     fn drop(&mut self) {
         // a Release fence is required to publish the changes
         let mut current = self.cell.metadata.load(Relaxed);
@@ -391,9 +391,9 @@ impl<'a, K: Clone + Eq, V> Drop for ExclusiveLocker<'a, K, V> {
     }
 }
 
-impl<'a, K: Clone + Eq, V> Drop for SharedLocker<'a, K, V> {
+impl<'a, K: Clone + Eq, V> Drop for CellReader<'a, K, V> {
     fn drop(&mut self) {
-        // no modification is allowed with a SharedLocker held: no memory fences required
+        // no modification is allowed with a CellReader held: no memory fences required
         let mut current = self.cell.metadata.load(Relaxed);
         loop {
             debug_assert!(current & Cell::<K, V>::LOCK_MASK <= Cell::<K, V>::SLOCK_MAX);
@@ -502,7 +502,7 @@ mod test {
                 barrier_copied.wait();
                 for i in 0..4096 {
                     if i % 2 == 0 {
-                        let mut xlocker = ExclusiveLocker::lock(&*cell_copied);
+                        let mut xlocker = CellLocker::lock(&*cell_copied);
                         let mut sum: u64 = 0;
                         for j in 0..128 {
                             unsafe {
@@ -521,7 +521,7 @@ mod test {
                         }
                         drop(xlocker);
                     } else {
-                        let slocker = SharedLocker::lock(&*cell_copied);
+                        let slocker = CellReader::lock(&*cell_copied);
                         let mut sum: u64 = 0;
                         for j in 0..128 {
                             unsafe { sum += (*data_ptr.load(Relaxed))[j] };
@@ -540,7 +540,7 @@ mod test {
             Cell::<bool, u8>::OVERFLOW_FLAG
         );
         for tid in 0..num_threads {
-            let mut xlocker = ExclusiveLocker::lock(&*cell);
+            let mut xlocker = CellLocker::lock(&*cell);
             let key = tid + num_threads;
             assert!(xlocker.search_link(&key) != ptr::null());
             xlocker.remove_link(&key);

@@ -117,6 +117,13 @@ mod test {
                 let result = hashmap.upsert(Data::new(d, &checker), Data::new(d + 1, &checker));
                 (*result.get().1) = Data::new(d + 2, &checker);
             }
+            let mut found_keys = 0;
+            for iter in hashmap.iter() {
+                assert!(iter.0.data < key + 4096);
+                assert!(iter.0.data >= key);
+                found_keys += 1;
+            }
+            assert_eq!(found_keys, 4096);
             assert_eq!(checker.load(Relaxed), range * 2);
             for d in key..(key + 4096) {
                 let result = hashmap.get(Data::new(d, &checker));
