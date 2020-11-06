@@ -153,6 +153,16 @@ impl<'a, K: Clone + Eq, V> ExclusiveLocker<'a, K, V> {
         self.metadata & Cell::<K, V>::OVERFLOW_FLAG == Cell::<K, V>::OVERFLOW_FLAG
     }
 
+    pub fn next_occupied(&self, index: u8) -> u8 {
+        let start_index = if index == u8::MAX { 0 } else { index + 1 };
+        for i in start_index..10 {
+            if self.occupied(i as usize) {
+                return i;
+            }
+        }
+        u8::MAX
+    }
+
     pub fn search(&self, partial_hash: u32) -> Option<u8> {
         let preferred_index = partial_hash % 8;
         if self.cell.partial_hash_array[preferred_index as usize] == partial_hash
@@ -319,6 +329,10 @@ pub struct EntryLink<K: Clone + Eq, V> {
 impl<K: Clone + Eq, V> EntryLink<K, V> {
     pub fn key_value_pair_ptr(&self) -> *const (K, V) {
         &self.key_value_pair as *const (K, V)
+    }
+
+    pub fn next(&self) -> *const EntryLink<K, V> {
+        self.link.as_ref().map_or(ptr::null(), |link| &(**link) as *const EntryLink<K, V>)
     }
 }
 

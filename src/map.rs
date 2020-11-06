@@ -237,43 +237,10 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         let (locker, array_ptr, cell_index) = self.first();
         if locker.is_some() {
             let mut locker = locker.unwrap();
-            if locker.overflowing() {
-                let link = locker.link_head();
-                let key_value_pair_ptr = unsafe { (*link).key_value_pair_ptr() };
-                return Scanner {
-                    accessor: Some(Accessor {
-                        hash_map: &self,
-                        cell_locker: locker,
-                        sub_index: u8::MAX,
-                        key_value_pair_ptr: key_value_pair_ptr,
-                    }),
-                    array_ptr: array_ptr,
-                    cell_index: cell_index,
-                    entry_link: link,
-                    activated: false,
-                };
-            }
-            for sub_index in 0..10 as u8 {
-                if locker.occupied(sub_index as usize) {
-                    let key_value_array_index = cell_index * 10 + (sub_index as usize);
-                    let key_value_pair_ptr =
-                        unsafe { (*array_ptr).get_key_value_pair(key_value_array_index) };
-                    return Scanner {
-                        accessor: Some(Accessor {
-                            hash_map: &self,
-                            cell_locker: locker,
-                            sub_index: sub_index,
-                            key_value_pair_ptr: key_value_pair_ptr,
-                        }),
-                        array_ptr: array_ptr,
-                        cell_index: cell_index,
-                        entry_link: std::ptr::null(),
-                        activated: false,
-                    };
-                }
+            if let Some(scanner) = self.pick(locker, array_ptr, cell_index) {
+                return scanner;
             }
         }
-
         Scanner {
             accessor: None,
             array_ptr: std::ptr::null(),
@@ -447,6 +414,92 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         }
         (None, std::ptr::null(), 0)
     }
+
+    /// Returns the next valid cell.
+    fn next<'a>(
+        &'a self,
+        array_ptr: *const Array<K, V, Cell<K, V>>,
+        current_index: usize,
+    ) -> Option<Scanner<'a, K, V, H>> {
+        let guard = crossbeam::epoch::pin();
+
+        // an Acquire fence is required to correctly load the contents of the array
+        let current_array_ptr = self.array.load(Acquire, &guard).as_raw();
+        let old_array_ptr = unsafe { (*current_array_ptr).get_old_array(&guard) }.as_raw();
+        debug_assert!(array_ptr == current_array_ptr || array_ptr == old_array_ptr);
+
+        // either one of the two array must match with array_ptr
+        if old_array_ptr == array_ptr {
+            let num_cells = unsafe { (*old_array_ptr).num_cells() };
+            for cell_index in (current_index + 1)..num_cells {
+                let cell = unsafe { (*old_array_ptr).get_cell(cell_index) };
+                let locker = ExclusiveLocker::lock(cell);
+                if !locker.killed() && !locker.empty() {}
+            }
+        }
+
+        let mut found_killed = false;
+        let num_cells = unsafe { (*current_array_ptr).num_cells() };
+        let start_index = if old_array_ptr == array_ptr {
+            0
+        } else {
+            current_index + 1
+        };
+        for cell_index in (start_index)..num_cells {}
+
+        if found_killed {
+            let current_array_ptr = self.array.load(Acquire, &guard).as_raw();
+            debug_assert!(array_ptr != current_array_ptr);
+            let num_cells = unsafe { (*current_array_ptr).num_cells() };
+            for cell_index in 0..num_cells {}
+        }
+        None
+    }
+
+    /// Picks a key-value pair entry using the given ExclusiveLocker.array
+    fn pick<'a>(
+        &'a self,
+        locker: ExclusiveLocker<'a, K, V>,
+        array_ptr: *const Array<K, V, Cell<K, V>>,
+        cell_index: usize,
+    ) -> Option<Scanner<'a, K, V, H>> {
+        if locker.overflowing() {
+            let link = locker.link_head();
+            let key_value_pair_ptr = unsafe { (*link).key_value_pair_ptr() };
+            return Some(Scanner {
+                accessor: Some(Accessor {
+                    hash_map: &self,
+                    cell_locker: locker,
+                    sub_index: u8::MAX,
+                    key_value_pair_ptr: key_value_pair_ptr,
+                }),
+                array_ptr: array_ptr,
+                cell_index: cell_index,
+                entry_link: link,
+                activated: false,
+            });
+        }
+        for sub_index in 0..10 as u8 {
+            if locker.occupied(sub_index as usize) {
+                let key_value_array_index = cell_index * 10 + (sub_index as usize);
+                let key_value_pair_ptr =
+                    unsafe { (*array_ptr).get_key_value_pair(key_value_array_index) };
+                return Some(Scanner {
+                    accessor: Some(Accessor {
+                        hash_map: &self,
+                        cell_locker: locker,
+                        sub_index: sub_index,
+                        key_value_pair_ptr: key_value_pair_ptr,
+                    }),
+                    array_ptr: array_ptr,
+                    cell_index: cell_index,
+                    entry_link: std::ptr::null(),
+                    activated: false,
+                });
+            }
+        }
+        None
+    }
 }
 
 impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Drop for HashMap<K, V, H> {
@@ -541,16 +594,65 @@ impl<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Iterator
     fn next(&mut self) -> Option<Self::Item> {
         if !self.activated {
             self.activated = true;
-            if let Some(accessor) = &self.accessor {
-                unsafe {
-                    let key_ptr = &(*accessor.key_value_pair_ptr).0 as *const K;
-                    let value_ptr = &(*accessor.key_value_pair_ptr).1 as *const V;
-                    let value_mut_ptr = value_ptr as *mut V;
-                    return Some((&(*key_ptr), &mut (*value_mut_ptr)));
+        } else if self.accessor.is_some() {
+            if !self.entry_link.is_null() {
+                // follow the link
+                let next = unsafe { (*self.entry_link).next() };
+                self.entry_link = next;
+                if !self.entry_link.is_null() {
+                    let key_value_pair_ptr = unsafe { (*self.entry_link).key_value_pair_ptr() };
+                    self.accessor.as_mut().map_or((), |accessor| {
+                        accessor.key_value_pair_ptr = key_value_pair_ptr
+                    });
+                }
+            }
+            if self.entry_link.is_null() {
+                // advance in the cell
+                let new_sub_index = self.accessor.as_mut().map_or(u8::MAX, |accessor| {
+                    accessor.sub_index = accessor.cell_locker.next_occupied(accessor.sub_index);
+                    accessor.sub_index
+                });
+                if new_sub_index != u8::MAX {
+                    let key_value_array_index = self.cell_index * 10 + (new_sub_index as usize);
+                    let key_value_pair_ptr =
+                        unsafe { (*self.array_ptr).get_key_value_pair(key_value_array_index) };
+                    self.accessor.as_mut().map_or((), |accessor| {
+                        accessor.key_value_pair_ptr = key_value_pair_ptr
+                    });
+                }
+            }
+            if self
+                .accessor
+                .as_ref()
+                .map_or(u8::MAX, |accessor| accessor.sub_index)
+                == u8::MAX
+                && self.entry_link.is_null()
+            {
+                // advance in the array
+                let current_array_ptr = self.array_ptr;
+                let current_cell_index = self.cell_index;
+                let mut scanner = self.accessor.as_ref().map_or(None, |accessor| {
+                    accessor
+                        .hash_map
+                        .next(current_array_ptr, current_cell_index)
+                });
+                self.accessor.take();
+                if let Some(mut scanner) = scanner {
+                    self.accessor = scanner.accessor.take();
+                    self.array_ptr = scanner.array_ptr;
+                    self.cell_index = scanner.cell_index;
+                    self.entry_link = scanner.entry_link;
                 }
             }
         }
-        self.accessor.take();
+        if let Some(accessor) = &self.accessor {
+            unsafe {
+                let key_ptr = &(*accessor.key_value_pair_ptr).0 as *const K;
+                let value_ptr = &(*accessor.key_value_pair_ptr).1 as *const V;
+                let value_mut_ptr = value_ptr as *mut V;
+                return Some((&(*key_ptr), &mut (*value_mut_ptr)));
+            }
+        }
         None
     }
 }
