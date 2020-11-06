@@ -195,7 +195,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     }
 
     /// Retains the key-value pairs that the given function allows them to.
-    pub fn retain<F: Fn(&K, &V) -> bool>(&self, f: F) -> usize {
+    pub fn retain<F: Fn(&K, &mut V) -> bool>(&self, f: F) -> usize {
         let _ = crossbeam::epoch::pin();
         0
     }
@@ -234,55 +234,42 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     /// }
     /// ```
     pub fn iter<'a>(&'a self) -> Scanner<'a, K, V, H> {
-        let guard = crossbeam::epoch::pin();
-
-        // an Acquire fence is required to correctly load the contents of the array
-        let current_array_ptr = self.array.load(Acquire, &guard).as_raw();
-        let old_array_ptr = unsafe { (*current_array_ptr).get_old_array(&guard) }.as_raw();
-        for array_ptr in vec![old_array_ptr, current_array_ptr] {
-            if array_ptr.is_null() {
-                continue;
+        let (locker, array_ptr, cell_index) = self.first();
+        if locker.is_some() {
+            let mut locker = locker.unwrap();
+            if locker.overflowing() {
+                let link = locker.link_head();
+                let key_value_pair_ptr = unsafe { (*link).key_value_pair_ptr() };
+                return Scanner {
+                    accessor: Some(Accessor {
+                        hash_map: &self,
+                        cell_locker: locker,
+                        sub_index: u8::MAX,
+                        key_value_pair_ptr: key_value_pair_ptr,
+                    }),
+                    array_ptr: array_ptr,
+                    cell_index: cell_index,
+                    entry_link: link,
+                    activated: false,
+                };
             }
-            let num_cells = unsafe { (*array_ptr).num_cells() };
-            for cell_index in 0..num_cells {
-                let cell = unsafe { (*array_ptr).get_cell(cell_index) };
-                let locker = ExclusiveLocker::lock(cell);
-                if !locker.killed() && !locker.empty() {
-                    if locker.overflowing() {
-                        let link = locker.link_head();
-                        let key_value_pair_ptr = unsafe { (*link).key_value_pair_ptr() };
-                        return Scanner {
-                            accessor: Some(Accessor {
-                                hash_map: &self,
-                                cell_locker: locker,
-                                sub_index: u8::MAX,
-                                key_value_pair_ptr: key_value_pair_ptr,
-                            }),
-                            array_ptr: array_ptr,
-                            cell_index: cell_index,
-                            entry_link: link,
-                            activated: false,
-                        };
-                    }
-                    for sub_index in 0..10 as u8 {
-                        if locker.occupied(sub_index as usize) {
-                            let key_value_array_index = cell_index * 10 + (sub_index as usize);
-                            let key_value_pair_ptr =
-                                unsafe { (*array_ptr).get_key_value_pair(key_value_array_index) };
-                            return Scanner {
-                                accessor: Some(Accessor {
-                                    hash_map: &self,
-                                    cell_locker: locker,
-                                    sub_index: sub_index,
-                                    key_value_pair_ptr: key_value_pair_ptr,
-                                }),
-                                array_ptr: array_ptr,
-                                cell_index: cell_index,
-                                entry_link: std::ptr::null(),
-                                activated: false,
-                            };
-                        }
-                    }
+            for sub_index in 0..10 as u8 {
+                if locker.occupied(sub_index as usize) {
+                    let key_value_array_index = cell_index * 10 + (sub_index as usize);
+                    let key_value_pair_ptr =
+                        unsafe { (*array_ptr).get_key_value_pair(key_value_array_index) };
+                    return Scanner {
+                        accessor: Some(Accessor {
+                            hash_map: &self,
+                            cell_locker: locker,
+                            sub_index: sub_index,
+                            key_value_pair_ptr: key_value_pair_ptr,
+                        }),
+                        array_ptr: array_ptr,
+                        cell_index: cell_index,
+                        entry_link: std::ptr::null(),
+                        activated: false,
+                    };
                 }
             }
         }
@@ -420,6 +407,46 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         }
         (locker, std::ptr::null(), cell_index, 0)
     }
+
+    /// Returns the first valid cell.
+    fn first<'a>(
+        &'a self,
+    ) -> (
+        Option<ExclusiveLocker<'a, K, V>>,
+        *const Array<K, V, Cell<K, V>>,
+        usize,
+    ) {
+        let guard = crossbeam::epoch::pin();
+
+        // an Acquire fence is required to correctly load the contents of the array
+        let mut current_array_ptr = self.array.load(Acquire, &guard).as_raw();
+        loop {
+            let old_array_ptr = unsafe { (*current_array_ptr).get_old_array(&guard) }.as_raw();
+            for array_ptr in vec![old_array_ptr, current_array_ptr] {
+                if array_ptr.is_null() {
+                    continue;
+                }
+                let num_cells = unsafe { (*array_ptr).num_cells() };
+                for cell_index in 0..num_cells {
+                    let cell = unsafe { (*array_ptr).get_cell(cell_index) };
+                    let locker = ExclusiveLocker::lock(cell);
+                    if !locker.killed() && !locker.empty() {
+                        // once a valid cell is locked, the array is guaranteed to retain
+                        return (Some(locker), array_ptr, cell_index);
+                    }
+                }
+            }
+            // no valid cells found
+            let current_array_ptr_new = self.array.load(Acquire, &guard).as_raw();
+            if current_array_ptr == current_array_ptr_new {
+                break;
+            }
+
+            // resized in the meantime
+            current_array_ptr = current_array_ptr_new;
+        }
+        (None, std::ptr::null(), 0)
+    }
 }
 
 impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Drop for HashMap<K, V, H> {
@@ -519,7 +546,7 @@ impl<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Iterator
                     let key_ptr = &(*accessor.key_value_pair_ptr).0 as *const K;
                     let value_ptr = &(*accessor.key_value_pair_ptr).1 as *const V;
                     let value_mut_ptr = value_ptr as *mut V;
-                    return Some((&(*key_ptr), &mut (*value_mut_ptr)))
+                    return Some((&(*key_ptr), &mut (*value_mut_ptr)));
                 }
             }
         }
