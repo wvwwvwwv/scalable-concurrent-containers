@@ -332,7 +332,9 @@ impl<K: Clone + Eq, V> EntryLink<K, V> {
     }
 
     pub fn next(&self) -> *const EntryLink<K, V> {
-        self.link.as_ref().map_or(ptr::null(), |link| &(**link) as *const EntryLink<K, V>)
+        self.link
+            .as_ref()
+            .map_or(ptr::null(), |link| &(**link) as *const EntryLink<K, V>)
     }
 }
 

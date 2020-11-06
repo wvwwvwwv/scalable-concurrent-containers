@@ -456,7 +456,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         None
     }
 
-    /// Picks a key-value pair entry using the given ExclusiveLocker.array
+    /// Picks a key-value pair entry using the given ExclusiveLocker.
     fn pick<'a>(
         &'a self,
         locker: ExclusiveLocker<'a, K, V>,
