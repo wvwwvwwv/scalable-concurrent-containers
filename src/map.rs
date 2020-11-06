@@ -151,7 +151,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     /// ```
     pub fn get<'a>(&'a self, key: K) -> Option<Accessor<'a, K, V, H>> {
         let (hash, partial_hash) = self.hash(&key);
-        let (mut accessor, _, _) = self.acquire(&key, hash, partial_hash);
+        let (accessor, _, _) = self.acquire(&key, hash, partial_hash);
         if accessor.key_value_pair_ptr.is_null() {
             return None;
         }
@@ -235,8 +235,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     /// ```
     pub fn iter<'a>(&'a self) -> Scanner<'a, K, V, H> {
         let (locker, array_ptr, cell_index) = self.first();
-        if locker.is_some() {
-            let mut locker = locker.unwrap();
+        if let Some(locker) = locker {
             if let Some(scanner) = self.pick(locker, array_ptr, cell_index) {
                 return scanner;
             }

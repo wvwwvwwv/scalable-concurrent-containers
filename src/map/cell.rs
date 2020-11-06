@@ -52,7 +52,7 @@ impl<K: Clone + Eq, V> Cell<K, V> {
         }
 
         // try-lock again once the condvar is inserted into the wait queue
-        let mut locked = f();
+        let locked = f();
         if locked.is_some() {
             self.wakeup();
         }

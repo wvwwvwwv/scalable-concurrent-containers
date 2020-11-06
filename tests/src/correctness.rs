@@ -12,6 +12,8 @@ mod test {
         #[test]
         fn basic_hashmap(key in 0u64..10) {
             let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), Some(10));
+            assert!(hashmap.iter().next().is_none());
+
             let result1 = hashmap.insert(key, 0);
             assert!(result1.is_ok());
             if let Ok(result) = result1 {
