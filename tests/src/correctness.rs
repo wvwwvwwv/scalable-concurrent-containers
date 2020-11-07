@@ -3,6 +3,7 @@ mod test {
     use super::*;
     use proptest::prelude::*;
     use scc::HashMap;
+    use scc::SampleSize;
     use std::collections::hash_map::RandomState;
     use std::hash::{Hash, Hasher};
     use std::sync::atomic::AtomicUsize;
@@ -110,28 +111,73 @@ mod test {
 
     proptest! {
         #[test]
-        fn insert(key in 0u64..64) {
-            let range = 4096;
+        fn insert(key in 0u64..16) {
+            let range = 1024;
             let mut checker = AtomicUsize::new(0);
             let hashmap: HashMap<Data, Data, RandomState> = HashMap::new(RandomState::new(), Some(10));
-            for d in key..(key + 4096) {
+            for d in key..(key + range) {
                 hashmap.insert(Data::new(d, &checker), Data::new(d, &checker));
                 let result = hashmap.upsert(Data::new(d, &checker), Data::new(d + 1, &checker));
                 (*result.get().1) = Data::new(d + 2, &checker);
             }
             let mut found_keys = 0;
             for iter in hashmap.iter() {
-                assert!(iter.0.data < key + 4096);
+                assert!(iter.0.data < key + range);
                 assert!(iter.0.data >= key);
                 found_keys += 1;
             }
-            assert_eq!(found_keys, 4096);
-            assert_eq!(checker.load(Relaxed), range * 2);
-            for d in key..(key + 4096) {
+            assert_eq!(found_keys, range);
+            assert_eq!(checker.load(Relaxed) as u64, range * 2);
+            for d in key..(key + range) {
                 let result = hashmap.get(Data::new(d, &checker));
                 result.unwrap().erase();
             }
             assert_eq!(checker.load(Relaxed), 0);
+        }
+    }
+
+    #[test]
+    fn sample() {
+        let hashmap_10k: HashMap<usize, u8, RandomState> =
+            HashMap::new(RandomState::new(), Some(10240));
+        for i in 0..1000 {
+            hashmap_10k.insert(i, 0);
+        }
+        let mut statistics = hashmap_10k.statistics();
+        println!("10K/10%: {} / {}", statistics.0, statistics.1);
+        for sample_size in 0..256 {
+            let len = hashmap_10k.len(SampleSize::Number(sample_size));
+            println!("10K/10%: {};{}", sample_size, len);
+        }
+        for i in 1000..9000 {
+            hashmap_10k.insert(i, 0);
+        }
+        statistics = hashmap_10k.statistics();
+        println!("10K/90%: {} / {}", statistics.0, statistics.1);
+        for sample_size in 0..256 {
+            let len = hashmap_10k.len(SampleSize::Number(sample_size));
+            println!("10K/90%: {};{}", sample_size, len);
+        }
+
+        let hashmap_10m: HashMap<usize, u8, RandomState> =
+            HashMap::new(RandomState::new(), Some(10485760));
+        for i in 0..1000000 {
+            hashmap_10m.insert(i, 0);
+        }
+        statistics = hashmap_10m.statistics();
+        println!("10M/10%: {} / {}", statistics.0, statistics.1);
+        for sample_size in 0..256 {
+            let len = hashmap_10m.len(SampleSize::Number(sample_size));
+            println!("10M/10%: {};{}", sample_size, len);
+        }
+        for i in 1000000..9000000 {
+            hashmap_10m.insert(i, 0);
+        }
+        statistics = hashmap_10m.statistics();
+        println!("10M/90%: {} / {}", statistics.0, statistics.1);
+        for sample_size in 0..256 {
+            let len = hashmap_10m.len(SampleSize::Number(sample_size));
+            println!("10M/90%: {};{}", sample_size, len);
         }
     }
 }

@@ -27,6 +27,11 @@ pub struct HashMap<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher>
     hasher: H,
 }
 
+/// The size of samples.
+pub enum SampleSize {
+    Number(usize),
+}
+
 impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V, H> {
     /// Creates an empty HashMap instance with the given hasher and minimum capacity.
     ///
@@ -206,9 +211,44 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     }
 
     /// Returns the estimated size of the HashMap.
-    pub fn len(&self) -> usize {
-        let _ = crossbeam::epoch::pin();
-        0
+    pub fn len(&self, sample_size: SampleSize) -> usize {
+        let guard = crossbeam::epoch::pin();
+        let current_array_ptr = self.array.load(Acquire, &guard).as_raw();
+        let num_cells = unsafe { (*current_array_ptr).num_cells() };
+        let num_samples = match sample_size {
+            SampleSize::Number(n) => std::cmp::max(1, std::cmp::min(num_cells, n)),
+        };
+        let mut num_entries = 0;
+        for i in 0..num_samples {
+            let (size, overflowing) = unsafe { (*current_array_ptr).get_cell(i).size() };
+            num_entries += size;
+            if overflowing {
+                let reader = CellReader::lock(unsafe { (*current_array_ptr).get_cell(i)} );
+                num_entries += reader.num_links();
+            }
+        }
+        let approximated_size = ((num_entries as f64) / (num_samples as f64)) * (num_cells as f64);
+        approximated_size as usize
+    }
+
+    /// Returns the statistics of the HashMap.
+    pub fn statistics(&self) -> (usize, usize) {
+        let guard = crossbeam::epoch::pin();
+        let current_array_ptr = self.array.load(Acquire, &guard).as_raw();
+        let num_cells = unsafe { (*current_array_ptr).num_cells() };
+        let mut num_entries = 0;
+        let mut num_linked_entries = 0;
+        for i in 0..num_cells {
+            let (size, overflowing) = unsafe { (*current_array_ptr).get_cell(i).size() };
+            num_entries += size;
+            if overflowing {
+                let reader = CellReader::lock(unsafe { (*current_array_ptr).get_cell(i)} );
+                let linked_entries = reader.num_links();
+                num_entries += linked_entries;
+                num_linked_entries += linked_entries;
+            }
+        }
+        (num_entries, num_linked_entries)
     }
 
     /// Returns a Scanner.

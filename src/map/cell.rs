@@ -23,6 +23,14 @@ impl<K: Clone + Eq, V> Cell<K, V> {
     const OCCUPANCY_BIT: u32 = 1 << 5;
     const SIZE_MASK: u32 = (1 << 5) - 1;
 
+    pub fn size(&self) -> (usize, bool) {
+        let metadata = self.metadata.load(Relaxed);
+        (
+            (metadata & Self::SIZE_MASK) as usize,
+            (metadata & Self::OVERFLOW_FLAG) == Self::OVERFLOW_FLAG,
+        )
+    }
+
     fn wait<T, F: FnOnce() -> Option<T>>(&self, f: F) -> Option<T> {
         // insert the condvar into the wait queue
         let mut condvar = WaitQueueEntry::new(self.wait_queue.load(Relaxed));
@@ -316,6 +324,16 @@ impl<'a, K: Clone + Eq, V> CellReader<'a, K, V> {
                 }
             }
         }
+    }
+
+    pub fn num_links(&self) -> usize {
+        let mut size = 0;
+        let mut link = &self.cell.link;
+        while let Some(entry) = link {
+            size += 1;
+            link = &entry.link;
+        }
+        size
     }
 }
 
