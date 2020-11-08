@@ -4,30 +4,31 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32};
 use std::sync::{Condvar, Mutex};
 
+pub const ARRAY_SIZE: u8 = 10;
+const KILLED_FLAG: u32 = 1 << 31;
+const WAITING_FLAG: u32 = 1 << 30;
+const LOCK_MASK: u32 = ((1 << 14) - 1) << 16;
+const XLOCK: u32 = 1 << 29;
+const SLOCK_MAX: u32 = LOCK_MASK & (!XLOCK);
+const SLOCK: u32 = 1 << 16;
+const OVERFLOW_FLAG: u32 = 1 << 15;
+const OCCUPANCY_MASK: u32 = ((1 << ARRAY_SIZE) - 1) << 5;
+const OCCUPANCY_BIT: u32 = 1 << 5;
+const SIZE_MASK: u32 = (1 << 5) - 1;
+
 pub struct Cell<K: Clone + Eq, V> {
     link: LinkType<K, V>,
+    partial_hash_array: [u32; ARRAY_SIZE as usize],
     metadata: AtomicU32,
     wait_queue: AtomicPtr<WaitQueueEntry>,
-    partial_hash_array: [u32; 10],
 }
 
 impl<K: Clone + Eq, V> Cell<K, V> {
-    const KILLED_FLAG: u32 = 1 << 31;
-    const WAITING_FLAG: u32 = 1 << 30;
-    const LOCK_MASK: u32 = ((1 << 14) - 1) << 16;
-    const XLOCK: u32 = 1 << 29;
-    const SLOCK_MAX: u32 = Self::LOCK_MASK & (!Self::XLOCK);
-    const SLOCK: u32 = 1 << 16;
-    const OVERFLOW_FLAG: u32 = 1 << 15;
-    const OCCUPANCY_MASK: u32 = ((1 << 10) - 1) << 5;
-    const OCCUPANCY_BIT: u32 = 1 << 5;
-    const SIZE_MASK: u32 = (1 << 5) - 1;
-
     pub fn size(&self) -> (usize, bool) {
         let metadata = self.metadata.load(Relaxed);
         (
-            (metadata & Self::SIZE_MASK) as usize,
-            (metadata & Self::OVERFLOW_FLAG) == Self::OVERFLOW_FLAG,
+            (metadata & SIZE_MASK) as usize,
+            (metadata & OVERFLOW_FLAG) == OVERFLOW_FLAG,
         )
     }
 
@@ -47,13 +48,11 @@ impl<K: Clone + Eq, V> Cell<K, V> {
         // 'Relaxed' is sufficient, because this thread reading the flag state as 'set'
         // while the actual value is 'unset' means that the lock owner has released it.
         let mut current = self.metadata.load(Relaxed);
-        while current & Self::WAITING_FLAG == 0 {
-            match self.metadata.compare_exchange(
-                current,
-                current | Self::WAITING_FLAG,
-                Relaxed,
-                Relaxed,
-            ) {
+        while current & WAITING_FLAG == 0 {
+            match self
+                .metadata
+                .compare_exchange(current, current | WAITING_FLAG, Relaxed, Relaxed)
+            {
                 Ok(_) => break,
                 Err(result) => current = result,
             }
@@ -96,7 +95,7 @@ impl<K: Clone + Eq, V> Default for Cell<K, V> {
             link: None,
             metadata: AtomicU32::new(0),
             wait_queue: AtomicPtr::new(ptr::null_mut()),
-            partial_hash_array: [0; 10],
+            partial_hash_array: [0; ARRAY_SIZE as usize],
         }
     }
 }
@@ -125,20 +124,20 @@ impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
         let mut current = cell.metadata.load(Relaxed);
         loop {
             match cell.metadata.compare_exchange(
-                current & (!Cell::<K, V>::LOCK_MASK),
-                (current & (!Cell::<K, V>::LOCK_MASK)) | Cell::<K, V>::XLOCK,
+                current & (!LOCK_MASK),
+                (current & (!LOCK_MASK)) | XLOCK,
                 Acquire,
                 Relaxed,
             ) {
                 Ok(result) => {
-                    debug_assert_eq!(result & Cell::<K, V>::LOCK_MASK, 0);
+                    debug_assert_eq!(result & LOCK_MASK, 0);
                     return Some(CellLocker {
                         cell: cell,
-                        metadata: result | Cell::<K, V>::XLOCK,
+                        metadata: result | XLOCK,
                     });
                 }
                 Err(result) => {
-                    if result & Cell::<K, V>::LOCK_MASK != 0 {
+                    if result & LOCK_MASK != 0 {
                         return None;
                     }
                     current = result;
@@ -148,23 +147,21 @@ impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
     }
 
     pub fn size(&self) -> usize {
-        (self.metadata & Cell::<K, V>::SIZE_MASK)
-            .try_into()
-            .unwrap()
+        (self.metadata & SIZE_MASK).try_into().unwrap()
     }
 
-    pub fn occupied(&self, index: usize) -> bool {
-        (self.metadata & (Cell::<K, V>::OCCUPANCY_BIT << index)) != 0
+    pub fn occupied(&self, index: u8) -> bool {
+        (self.metadata & (OCCUPANCY_BIT << index)) != 0
     }
 
     pub fn overflowing(&self) -> bool {
-        self.metadata & Cell::<K, V>::OVERFLOW_FLAG == Cell::<K, V>::OVERFLOW_FLAG
+        self.metadata & OVERFLOW_FLAG == OVERFLOW_FLAG
     }
 
     pub fn next_occupied(&self, index: u8) -> u8 {
         let start_index = if index == u8::MAX { 0 } else { index + 1 };
-        for i in start_index..10 {
-            if self.occupied(i as usize) {
+        for i in start_index..ARRAY_SIZE {
+            if self.occupied(i) {
                 return i;
             }
         }
@@ -172,14 +169,17 @@ impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
     }
 
     pub fn search(&self, partial_hash: u32) -> Option<u8> {
-        let preferred_index = partial_hash % 8;
+        let preferred_index = (partial_hash % 8).try_into().unwrap();
         if self.cell.partial_hash_array[preferred_index as usize] == partial_hash
-            && self.occupied(preferred_index as usize)
+            && self.occupied(preferred_index)
         {
             return Some(preferred_index.try_into().unwrap());
         }
         for (i, v) in self.cell.partial_hash_array.iter().enumerate() {
-            if i != (preferred_index as usize) && *v == partial_hash && self.occupied(i) {
+            if i != (preferred_index as usize)
+                && *v == partial_hash
+                && self.occupied(i.try_into().unwrap())
+            {
                 return Some(i.try_into().unwrap());
             }
         }
@@ -187,17 +187,17 @@ impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
     }
 
     pub fn insert(&mut self, partial_hash: u32) -> Option<u8> {
-        let preferred_index = partial_hash % 8;
+        let preferred_index = (partial_hash % 8).try_into().unwrap();
         let cell_ptr = self.cell as *const Cell<K, V>;
         let cell_mut_ptr = cell_ptr as *mut Cell<K, V>;
-        if !self.occupied(preferred_index as usize) {
-            self.metadata = (self.metadata | (Cell::<K, V>::OCCUPANCY_BIT << preferred_index)) + 1;
+        if !self.occupied(preferred_index) {
+            self.metadata = (self.metadata | (OCCUPANCY_BIT << preferred_index)) + 1;
             unsafe { (*cell_mut_ptr).partial_hash_array[preferred_index as usize] = partial_hash };
             return Some(preferred_index.try_into().unwrap());
         }
         for (i, _) in self.cell.partial_hash_array.iter().enumerate() {
-            if i != (preferred_index as usize) && !self.occupied(i) {
-                self.metadata = (self.metadata | (Cell::<K, V>::OCCUPANCY_BIT << i)) + 1;
+            if i != (preferred_index as usize) && !self.occupied(i.try_into().unwrap()) {
+                self.metadata = (self.metadata | (OCCUPANCY_BIT << i)) + 1;
                 unsafe { (*cell_mut_ptr).partial_hash_array[i as usize] = partial_hash };
                 return Some(i.try_into().unwrap());
             }
@@ -206,12 +206,9 @@ impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
     }
 
     pub fn remove(&mut self, index: u8) {
-        debug_assert!(index < 10);
-        debug_assert!(
-            self.metadata & (Cell::<K, V>::OCCUPANCY_BIT << index)
-                == (Cell::<K, V>::OCCUPANCY_BIT << index)
-        );
-        self.metadata = (self.metadata & (!(Cell::<K, V>::OCCUPANCY_BIT << index))) - 1;
+        debug_assert!(index < ARRAY_SIZE);
+        debug_assert!(self.metadata & (OCCUPANCY_BIT << index) == (OCCUPANCY_BIT << index));
+        self.metadata = (self.metadata & (!(OCCUPANCY_BIT << index))) - 1;
     }
 
     pub fn link_head(&self) -> *const EntryLink<K, V> {
@@ -241,7 +238,7 @@ impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
         });
         let key_value_pair_ptr = (*entry).key_value_pair_ptr();
         cell.link = Some(entry);
-        self.metadata = self.metadata | Cell::<K, V>::OVERFLOW_FLAG;
+        self.metadata = self.metadata | OVERFLOW_FLAG;
         key_value_pair_ptr
     }
 
@@ -263,16 +260,16 @@ impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
         }
 
         if cell.link.is_none() {
-            self.metadata = self.metadata & (!Cell::<K, V>::OVERFLOW_FLAG);
+            self.metadata = self.metadata & (!OVERFLOW_FLAG);
         }
     }
 
     pub fn empty(&self) -> bool {
-        self.metadata & (Cell::<K, V>::OVERFLOW_FLAG | Cell::<K, V>::OCCUPANCY_MASK) == 0
+        self.metadata & (OVERFLOW_FLAG | OCCUPANCY_MASK) == 0
     }
 
     pub fn killed(&self) -> bool {
-        self.metadata & Cell::<K, V>::KILLED_FLAG == Cell::<K, V>::KILLED_FLAG
+        self.metadata & KILLED_FLAG == KILLED_FLAG
     }
 
     pub fn get_cell_mut_ref(&mut self) -> &mut Cell<K, V> {
@@ -304,20 +301,18 @@ impl<'a, K: Clone + Eq, V> CellReader<'a, K, V> {
     fn try_lock(cell: &'a Cell<K, V>) -> Option<CellReader<'a, K, V>> {
         let mut current = cell.metadata.load(Relaxed);
         loop {
-            if current & Cell::<K, V>::LOCK_MASK >= Cell::<K, V>::SLOCK_MAX {
-                current = current & (!Cell::<K, V>::LOCK_MASK);
+            if current & LOCK_MASK >= SLOCK_MAX {
+                current = current & (!LOCK_MASK);
             }
-            debug_assert_eq!(current & Cell::<K, V>::LOCK_MASK & Cell::<K, V>::XLOCK, 0);
-            debug_assert!(current & Cell::<K, V>::LOCK_MASK < Cell::<K, V>::SLOCK_MAX);
-            match cell.metadata.compare_exchange(
-                current,
-                current + Cell::<K, V>::SLOCK,
-                Acquire,
-                Relaxed,
-            ) {
+            debug_assert_eq!(current & LOCK_MASK & XLOCK, 0);
+            debug_assert!(current & LOCK_MASK < SLOCK_MAX);
+            match cell
+                .metadata
+                .compare_exchange(current, current + SLOCK, Acquire, Relaxed)
+            {
                 Ok(_) => return Some(CellReader { cell: cell }),
                 Err(result) => {
-                    if result & Cell::<K, V>::LOCK_MASK >= Cell::<K, V>::SLOCK_MAX {
+                    if result & LOCK_MASK >= SLOCK_MAX {
                         return None;
                     }
                     current = result;
@@ -390,15 +385,15 @@ impl<'a, K: Clone + Eq, V> Drop for CellLocker<'a, K, V> {
         // a Release fence is required to publish the changes
         let mut current = self.cell.metadata.load(Relaxed);
         loop {
-            debug_assert_eq!(current & Cell::<K, V>::LOCK_MASK, Cell::<K, V>::XLOCK);
+            debug_assert_eq!(current & LOCK_MASK, XLOCK);
             match self.cell.metadata.compare_exchange(
                 current,
-                self.metadata & (!(Cell::<K, V>::WAITING_FLAG | Cell::<K, V>::XLOCK)),
+                self.metadata & (!(WAITING_FLAG | XLOCK)),
                 Release,
                 Relaxed,
             ) {
                 Ok(result) => {
-                    if result & Cell::<K, V>::WAITING_FLAG == Cell::<K, V>::WAITING_FLAG {
+                    if result & WAITING_FLAG == WAITING_FLAG {
                         self.cell.wakeup();
                     }
                     break;
@@ -414,16 +409,16 @@ impl<'a, K: Clone + Eq, V> Drop for CellReader<'a, K, V> {
         // no modification is allowed with a CellReader held: no memory fences required
         let mut current = self.cell.metadata.load(Relaxed);
         loop {
-            debug_assert!(current & Cell::<K, V>::LOCK_MASK <= Cell::<K, V>::SLOCK_MAX);
-            debug_assert!(current & Cell::<K, V>::LOCK_MASK >= Cell::<K, V>::SLOCK);
+            debug_assert!(current & LOCK_MASK <= SLOCK_MAX);
+            debug_assert!(current & LOCK_MASK >= SLOCK);
             match self.cell.metadata.compare_exchange(
                 current,
-                (current & (!Cell::<K, V>::WAITING_FLAG)) - Cell::<K, V>::SLOCK,
+                (current & (!WAITING_FLAG)) - SLOCK,
                 Relaxed,
                 Relaxed,
             ) {
                 Ok(result) => {
-                    if result & Cell::<K, V>::WAITING_FLAG == Cell::<K, V>::WAITING_FLAG {
+                    if result & WAITING_FLAG == WAITING_FLAG {
                         self.cell.wakeup();
                     }
                     break;
@@ -443,62 +438,22 @@ mod test {
     #[test]
     fn static_assertions() {
         assert_eq!(std::mem::size_of::<Cell<u64, bool>>(), 64);
-        assert!(Cell::<bool, u32>::XLOCK > Cell::<bool, u32>::SLOCK_MAX);
+        assert!((ARRAY_SIZE as u32) < SIZE_MASK);
+        assert!(XLOCK > SLOCK_MAX);
+        assert_eq!(OVERFLOW_FLAG & LOCK_MASK, 0);
+        assert_eq!(WAITING_FLAG & LOCK_MASK, 0);
+        assert!((XLOCK & LOCK_MASK) > SLOCK_MAX);
+        assert_eq!(((XLOCK << 1) & LOCK_MASK), 0);
+        assert_eq!(XLOCK & LOCK_MASK, XLOCK);
+        assert_eq!(SLOCK & (!LOCK_MASK), 0);
+        assert_eq!(SLOCK & LOCK_MASK, SLOCK);
+        assert_eq!((SLOCK >> 1) & LOCK_MASK, 0);
+        assert_eq!(SLOCK & SLOCK_MAX, SLOCK);
+        assert_eq!(KILLED_FLAG & LOCK_MASK, 0);
+        assert_eq!(LOCK_MASK & OCCUPANCY_MASK, 0);
+        assert_eq!(OCCUPANCY_MASK & SIZE_MASK, 0);
         assert_eq!(
-            Cell::<bool, u32>::OVERFLOW_FLAG & Cell::<bool, u32>::LOCK_MASK,
-            0
-        );
-        assert_eq!(
-            Cell::<bool, u32>::WAITING_FLAG & Cell::<bool, u32>::LOCK_MASK,
-            0
-        );
-        assert!(
-            (Cell::<bool, u32>::XLOCK & Cell::<bool, u32>::LOCK_MASK)
-                > Cell::<bool, u32>::SLOCK_MAX
-        );
-        assert_eq!(
-            ((Cell::<bool, u32>::XLOCK << 1) & Cell::<bool, u32>::LOCK_MASK),
-            0
-        );
-        assert_eq!(
-            Cell::<bool, u32>::XLOCK & Cell::<bool, u32>::LOCK_MASK,
-            Cell::<bool, u32>::XLOCK
-        );
-        assert_eq!(
-            Cell::<bool, u32>::SLOCK & (!Cell::<bool, u32>::LOCK_MASK),
-            0
-        );
-        assert_eq!(
-            Cell::<bool, u32>::SLOCK & Cell::<bool, u32>::LOCK_MASK,
-            Cell::<bool, u32>::SLOCK
-        );
-        assert_eq!(
-            (Cell::<bool, u32>::SLOCK >> 1) & Cell::<bool, u32>::LOCK_MASK,
-            0
-        );
-        assert_eq!(
-            Cell::<bool, u32>::SLOCK & Cell::<bool, u32>::SLOCK_MAX,
-            Cell::<bool, u32>::SLOCK
-        );
-        assert_eq!(
-            Cell::<bool, u32>::KILLED_FLAG & Cell::<bool, u32>::LOCK_MASK,
-            0
-        );
-        assert_eq!(
-            Cell::<bool, u32>::LOCK_MASK & Cell::<bool, u32>::OCCUPANCY_MASK,
-            0
-        );
-        assert_eq!(
-            Cell::<bool, u32>::OCCUPANCY_MASK & Cell::<bool, u32>::SIZE_MASK,
-            0
-        );
-        assert_eq!(
-            Cell::<bool, u32>::KILLED_FLAG
-                | Cell::<bool, u32>::OVERFLOW_FLAG
-                | Cell::<bool, u32>::WAITING_FLAG
-                | Cell::<bool, u32>::LOCK_MASK
-                | Cell::<bool, u32>::OCCUPANCY_MASK
-                | Cell::<bool, u32>::SIZE_MASK,
+            KILLED_FLAG | OVERFLOW_FLAG | WAITING_FLAG | LOCK_MASK | OCCUPANCY_MASK | SIZE_MASK,
             !(0 as u32)
         );
     }
@@ -554,8 +509,8 @@ mod test {
             handle.join().unwrap();
         }
         assert_eq!(
-            (*cell).metadata.load(Relaxed) & Cell::<bool, u8>::OVERFLOW_FLAG,
-            Cell::<bool, u8>::OVERFLOW_FLAG
+            (*cell).metadata.load(Relaxed) & OVERFLOW_FLAG,
+            OVERFLOW_FLAG
         );
         for tid in 0..num_threads {
             let mut xlocker = CellLocker::lock(&*cell);
@@ -563,21 +518,15 @@ mod test {
             assert!(xlocker.search_link(&key) != ptr::null());
             xlocker.remove_link(&key);
         }
+        assert_eq!((*cell).metadata.load(Relaxed) & OVERFLOW_FLAG, 0);
         assert_eq!(
-            (*cell).metadata.load(Relaxed) & Cell::<bool, u8>::OVERFLOW_FLAG,
-            0
+            (*cell).metadata.load(Relaxed) & SIZE_MASK,
+            ARRAY_SIZE as u32
         );
         assert_eq!(
-            (*cell).metadata.load(Relaxed) & Cell::<bool, u8>::SIZE_MASK,
-            10
+            (*cell).metadata.load(Relaxed) & OCCUPANCY_MASK,
+            OCCUPANCY_MASK
         );
-        assert_eq!(
-            (*cell).metadata.load(Relaxed) & Cell::<bool, u8>::OCCUPANCY_MASK,
-            Cell::<bool, u8>::OCCUPANCY_MASK
-        );
-        assert_eq!(
-            (*cell).metadata.load(Relaxed) & Cell::<bool, u8>::LOCK_MASK,
-            0
-        );
+        assert_eq!((*cell).metadata.load(Relaxed) & LOCK_MASK, 0);
     }
 }

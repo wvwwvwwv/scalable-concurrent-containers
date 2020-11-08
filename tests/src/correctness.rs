@@ -137,106 +137,29 @@ mod test {
 
     #[test]
     fn sample() {
-        let hashmap_10k: HashMap<usize, u8, RandomState> =
-            HashMap::new(RandomState::new(), Some(10240));
-        for i in 0..1000 {
-            hashmap_10k.insert(i, 0);
-        }
-        let mut statistics = hashmap_10k.statistics();
-        println!(
-            "10K/10%: {} / {} / {} / {}",
-            statistics.0, statistics.1, statistics.2, statistics.3
-        );
-        for sample_size in 0..256 {
-            let len = hashmap_10k.len(|_| sample_size);
-            println!("10K/10%: {};{}", sample_size, len);
-        }
-        for i in 1000..6000 {
-            hashmap_10k.insert(i, 0);
-        }
-        statistics = hashmap_10k.statistics();
-        println!(
-            "10K/60%: {} / {} / {} / {}",
-            statistics.0, statistics.1, statistics.2, statistics.3
-        );
-        for i in 6000..7000 {
-            hashmap_10k.insert(i, 0);
-        }
-        statistics = hashmap_10k.statistics();
-        println!(
-            "10K/70%: {} / {} / {} / {}",
-            statistics.0, statistics.1, statistics.2, statistics.3
-        );
-        for i in 7000..8000 {
-            hashmap_10k.insert(i, 0);
-        }
-        statistics = hashmap_10k.statistics();
-        println!(
-            "10K/80%: {} / {} / {} / {}",
-            statistics.0, statistics.1, statistics.2, statistics.3
-        );
-        for i in 8000..9000 {
-            hashmap_10k.insert(i, 0);
-        }
-        statistics = hashmap_10k.statistics();
-        println!(
-            "10K/90%: {} / {} / {} / {}",
-            statistics.0, statistics.1, statistics.2, statistics.3
-        );
-        for sample_size in 0..256 {
-            let len = hashmap_10k.len(|_| sample_size);
-            println!("10K/90%: {};{}", sample_size, len);
-        }
-
-        let hashmap_10m: HashMap<usize, u8, RandomState> =
-            HashMap::new(RandomState::new(), Some(10485760));
-        for i in 0..1000000 {
-            hashmap_10m.insert(i, 0);
-        }
-        statistics = hashmap_10m.statistics();
-        println!(
-            "10M/10%: {} / {} / {} / {}",
-            statistics.0, statistics.1, statistics.2, statistics.3
-        );
-        for sample_size in 0..256 {
-            let len = hashmap_10m.len(|_| sample_size);
-            println!("10M/10%: {};{}", sample_size, len);
-        }
-        for i in 1000000..6000000 {
-            hashmap_10m.insert(i, 0);
-        }
-        statistics = hashmap_10m.statistics();
-        println!(
-            "10M/60%: {} / {} / {} / {}",
-            statistics.0, statistics.1, statistics.2, statistics.3
-        );
-        for i in 6000000..7000000 {
-            hashmap_10m.insert(i, 0);
-        }
-        statistics = hashmap_10m.statistics();
-        println!(
-            "10M/70%: {} / {} / {} / {}",
-            statistics.0, statistics.1, statistics.2, statistics.3
-        );
-        for i in 7000000..8000000 {
-            hashmap_10m.insert(i, 0);
-        }
-        statistics = hashmap_10m.statistics();
-        println!(
-            "10M/80%: {} / {} / {} / {}",
-            statistics.0, statistics.1, statistics.2, statistics.3
-        );
-        for i in 8000000..9000000 {
-            hashmap_10m.insert(i, 0);
-        }
-        statistics = hashmap_10m.statistics();
-        println!(
-            "10M/90%: {} / {} / {} / {}",
-            statistics.0, statistics.1, statistics.2, statistics.3
-        );
-        for sample_size in 0..256 {
-            let len = hashmap_10m.len(|_| sample_size);
-            println!("10M/90%: {};{}", sample_size, len);
+        for s in vec![10240, 10485760] {
+            let hashmap: HashMap<usize, u8, RandomState> =
+                HashMap::new(RandomState::new(), Some(s));
+            let step_size = s / 10;
+            for p in 0..10 {
+                for i in (p * step_size)..((p + 1) * step_size) {
+                    assert!(hashmap.insert(i, 0).is_ok());
+                }
+                let statistics = hashmap.statistics();
+                println!(
+                    "{}/{}%: {} / {} / {} / {}",
+                    s,
+                    (p + 1) * 10,
+                    statistics.0,
+                    statistics.1,
+                    statistics.2,
+                    statistics.3
+                );
+                for sample_size in 0..9 {
+                    let len = hashmap.len(|_| 1 << sample_size);
+                    println!("{}/{}%: {};{}", s, (p + 1) * 10, 1 << sample_size, len);
+                }
+            }
         }
     }
 }

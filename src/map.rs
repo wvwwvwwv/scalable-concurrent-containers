@@ -86,7 +86,8 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         }
         match accessor.cell_locker.insert(partial_hash) {
             Some(sub_index) => {
-                let key_value_array_index = cell_index * 10 + (sub_index as usize);
+                let key_value_array_index =
+                    cell_index * (cell::ARRAY_SIZE as usize) + (sub_index as usize);
                 let key_value_pair_ptr =
                     unsafe { (*array_ptr).get_key_value_pair(key_value_array_index) };
                 let key_value_pair_mut_ptr = key_value_pair_ptr as *mut (K, V);
@@ -270,7 +271,12 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                 }
             }
         }
-        (num_entries, num_linked_entries, num_linked_cells, max_link_length)
+        (
+            num_entries,
+            num_linked_entries,
+            num_linked_cells,
+            max_link_length,
+        )
     }
 
     /// Returns a Scanner.
@@ -424,7 +430,8 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                 }
             }
             if let Some(sub_index) = locker.search(partial_hash) {
-                let key_value_array_index = cell_index * 10 + (sub_index as usize);
+                let key_value_array_index =
+                    cell_index * (cell::ARRAY_SIZE as usize) + (sub_index as usize);
                 let key_value_pair_ptr =
                     unsafe { (*array_ptr).get_key_value_pair(key_value_array_index) };
                 if unsafe { (*key_value_pair_ptr).0 == *key } {
@@ -556,9 +563,10 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                 activated: false,
             });
         }
-        for sub_index in 0..10 as u8 {
-            if locker.occupied(sub_index as usize) {
-                let key_value_array_index = cell_index * 10 + (sub_index as usize);
+        for sub_index in 0..cell::ARRAY_SIZE as u8 {
+            if locker.occupied(sub_index) {
+                let key_value_array_index =
+                    cell_index * (cell::ARRAY_SIZE as usize) + (sub_index as usize);
                 let key_value_pair_ptr =
                     unsafe { (*array_ptr).get_key_value_pair(key_value_array_index) };
                 return Some(Scanner {
@@ -690,7 +698,8 @@ impl<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Iterator
                     accessor.sub_index
                 });
                 if new_sub_index != u8::MAX {
-                    let key_value_array_index = self.cell_index * 10 + (new_sub_index as usize);
+                    let key_value_array_index =
+                        self.cell_index * (cell::ARRAY_SIZE as usize) + (new_sub_index as usize);
                     let key_value_pair_ptr =
                         unsafe { (*self.array_ptr).get_key_value_pair(key_value_array_index) };
                     self.accessor.as_mut().map_or((), |accessor| {
