@@ -27,11 +27,6 @@ pub struct HashMap<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher>
     hasher: H,
 }
 
-/// The size of samples.
-pub enum SampleSize {
-    Number(usize),
-}
-
 impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V, H> {
     /// Creates an empty HashMap instance with the given hasher and minimum capacity.
     ///
@@ -210,20 +205,41 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         self.retain(|_, _| false)
     }
 
-    /// Returns the estimated size of the HashMap.
-    pub fn len(&self, sample_size: SampleSize) -> usize {
+    /// Returns an estimated size of the HashMap.
+    ///
+    /// # Examples
+    /// ```
+    /// use scc::HashMap;
+    /// use std::collections::hash_map::RandomState;
+    ///
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), Some(1000));
+    ///
+    /// let result = hashmap.insert(1, 0);
+    /// if let Ok(result) = result {
+    ///     assert_eq!(result.get(), (&1, &mut 0));
+    /// }
+    ///
+    /// let result = hashmap.len(|num_cells| num_cells);
+    /// assert_eq!(result, 1);
+    ///
+    /// let result = hashmap.len(|num_cells| num_cells / 2);
+    /// assert!(result == 0 || result == 2);
+    /// ```
+    pub fn len<F: FnOnce(usize) -> usize>(&self, f: F) -> usize {
         let guard = crossbeam::epoch::pin();
         let current_array_ptr = self.array.load(Acquire, &guard).as_raw();
+        let old_array_ptr = unsafe { (*current_array_ptr).get_old_array(&guard) }.as_raw();
         let num_cells = unsafe { (*current_array_ptr).num_cells() };
-        let num_samples = match sample_size {
-            SampleSize::Number(n) => std::cmp::max(1, std::cmp::min(num_cells, n)),
-        };
+        let num_samples = f(num_cells);
+        if !old_array_ptr.is_null() {
+            // kill num_samples cells
+        }
         let mut num_entries = 0;
         for i in 0..num_samples {
             let (size, overflowing) = unsafe { (*current_array_ptr).get_cell(i).size() };
             num_entries += size;
             if overflowing {
-                let reader = CellReader::lock(unsafe { (*current_array_ptr).get_cell(i)} );
+                let reader = CellReader::lock(unsafe { (*current_array_ptr).get_cell(i) });
                 num_entries += reader.num_links();
             }
         }
@@ -232,23 +248,29 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     }
 
     /// Returns the statistics of the HashMap.
-    pub fn statistics(&self) -> (usize, usize) {
+    pub fn statistics(&self) -> (usize, usize, usize, usize) {
         let guard = crossbeam::epoch::pin();
         let current_array_ptr = self.array.load(Acquire, &guard).as_raw();
         let num_cells = unsafe { (*current_array_ptr).num_cells() };
         let mut num_entries = 0;
         let mut num_linked_entries = 0;
+        let mut num_linked_cells = 0;
+        let mut max_link_length = 0;
         for i in 0..num_cells {
             let (size, overflowing) = unsafe { (*current_array_ptr).get_cell(i).size() };
             num_entries += size;
             if overflowing {
-                let reader = CellReader::lock(unsafe { (*current_array_ptr).get_cell(i)} );
+                let reader = CellReader::lock(unsafe { (*current_array_ptr).get_cell(i) });
                 let linked_entries = reader.num_links();
                 num_entries += linked_entries;
                 num_linked_entries += linked_entries;
+                num_linked_cells += 1;
+                if linked_entries > max_link_length {
+                    max_link_length = linked_entries;
+                }
             }
         }
-        (num_entries, num_linked_entries)
+        (num_entries, num_linked_entries, num_linked_cells, max_link_length)
     }
 
     /// Returns a Scanner.
