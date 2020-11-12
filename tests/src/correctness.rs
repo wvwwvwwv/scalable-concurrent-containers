@@ -137,7 +137,7 @@ mod test {
 
     #[test]
     fn sample() {
-        for s in vec![65536, 16777216] {
+        for s in vec![65536, 2097152, 16777216] {
             let hashmap: HashMap<usize, u8, RandomState> =
                 HashMap::new(RandomState::new(), Some(s));
             let step_size = s / 10;

@@ -227,10 +227,10 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     pub fn len<F: FnOnce(usize) -> usize>(&self, f: F) -> usize {
         let guard = crossbeam::epoch::pin();
         let current_array_ptr = self.array.load(Acquire, &guard).as_raw();
-        let old_array_ptr = unsafe { (*current_array_ptr).get_old_array(&guard) }.as_raw();
+        let old_array = unsafe { (*current_array_ptr).get_old_array(&guard) };
         let num_cells = unsafe { (*current_array_ptr).num_cells() };
         let num_samples = std::cmp::min(f(num_cells), num_cells);
-        if !old_array_ptr.is_null() {
+        if !old_array.is_null() {
             // kill num_samples cells
         }
         let mut num_entries = 0;
@@ -354,12 +354,12 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         loop {
             // an Acquire fence is required to correctly load the contents of the array
             let current_array_ptr = self.array.load(Acquire, &guard).as_raw();
-            let old_array_ptr = unsafe { (*current_array_ptr).get_old_array(&guard) }.as_raw();
-            if !old_array_ptr.is_null() {
+            let old_array = unsafe { (*current_array_ptr).get_old_array(&guard) };
+            if !old_array.is_null() {
                 // relocate at most 16 cells
                 // self.relocate(current_array_ptr, old_array_ptr);
                 let (locker, key_value_pair_ptr, cell_index, sub_index) =
-                    self.search(&key, hash, partial_hash, old_array_ptr);
+                    self.search(&key, hash, partial_hash, old_array.as_raw());
                 if !key_value_pair_ptr.is_null() {
                     return (
                         Accessor {
@@ -457,8 +457,8 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         // an Acquire fence is required to correctly load the contents of the array
         let mut current_array_ptr = self.array.load(Acquire, &guard).as_raw();
         loop {
-            let old_array_ptr = unsafe { (*current_array_ptr).get_old_array(&guard) }.as_raw();
-            for array_ptr in vec![old_array_ptr, current_array_ptr] {
+            let old_array = unsafe { (*current_array_ptr).get_old_array(&guard) };
+            for array_ptr in vec![old_array.as_raw(), current_array_ptr] {
                 if array_ptr.is_null() {
                     continue;
                 }
@@ -493,17 +493,17 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
 
         // an Acquire fence is required to correctly load the contents of the array
         let current_array_ptr = self.array.load(Acquire, &guard).as_raw();
-        let old_array_ptr = unsafe { (*current_array_ptr).get_old_array(&guard) }.as_raw();
+        let old_array = unsafe { (*current_array_ptr).get_old_array(&guard) };
 
         // either one of the two arrays must match with array_ptr
-        debug_assert!(array_ptr == current_array_ptr || array_ptr == old_array_ptr);
+        debug_assert!(array_ptr == current_array_ptr || array_ptr == old_array.as_raw());
 
-        if old_array_ptr == array_ptr {
-            let num_cells = unsafe { (*old_array_ptr).num_cells() };
+        if old_array.as_raw() == array_ptr {
+            let num_cells = unsafe { (*old_array.as_raw()).num_cells() };
             for cell_index in (current_index + 1)..num_cells {
-                let locker = CellLocker::lock(unsafe { (*old_array_ptr).get_cell(cell_index) });
+                let locker = CellLocker::lock(unsafe { (*old_array.as_raw()).get_cell(cell_index) });
                 if !locker.killed() && !locker.empty() {
-                    if let Some(scanner) = self.pick(locker, old_array_ptr, cell_index) {
+                    if let Some(scanner) = self.pick(locker, old_array.as_raw(), cell_index) {
                         return Some(scanner);
                     }
                 }
@@ -512,7 +512,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
 
         let mut new_array_ptr = std::ptr::null() as *const Array<K, V>;
         let num_cells = unsafe { (*current_array_ptr).num_cells() };
-        let start_index = if old_array_ptr == array_ptr {
+        let start_index = if old_array.as_raw() == array_ptr {
             0
         } else {
             current_index + 1
