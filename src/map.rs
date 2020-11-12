@@ -8,6 +8,7 @@ use cell::EntryLink;
 use cell::{Cell, CellLocker, CellReader};
 use crossbeam::epoch::{Atomic, Guard, Owned};
 use std::convert::TryInto;
+use std::fmt;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -44,10 +45,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
             160
         };
         HashMap {
-            array: Atomic::new(Array::<K, V>::new(
-                initial_capacity,
-                Atomic::null(),
-            )),
+            array: Atomic::new(Array::<K, V>::new(initial_capacity, Atomic::null())),
             minimum_capacity: initial_capacity,
             resize_mutex: AtomicBool::new(false),
             hasher: hasher,
@@ -231,7 +229,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         let current_array_ptr = self.array.load(Acquire, &guard).as_raw();
         let old_array_ptr = unsafe { (*current_array_ptr).get_old_array(&guard) }.as_raw();
         let num_cells = unsafe { (*current_array_ptr).num_cells() };
-        let num_samples = f(num_cells);
+        let num_samples = std::cmp::min(f(num_cells), num_cells);
         if !old_array_ptr.is_null() {
             // kill num_samples cells
         }
@@ -249,34 +247,33 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     }
 
     /// Returns the statistics of the HashMap.
-    pub fn statistics(&self) -> (usize, usize, usize, usize) {
+    pub fn statistics(&self) -> Statistics {
+        let mut statistics = Statistics {
+            capacity: 0,
+            entries: 0,
+            linked_entries: 0,
+            cells_having_link: 0,
+            max_link_length: 0,
+        };
         let guard = crossbeam::epoch::pin();
         let current_array_ptr = self.array.load(Acquire, &guard).as_raw();
         let num_cells = unsafe { (*current_array_ptr).num_cells() };
-        let mut num_entries = 0;
-        let mut num_linked_entries = 0;
-        let mut num_linked_cells = 0;
-        let mut max_link_length = 0;
+        statistics.capacity += num_cells * cell::ARRAY_SIZE as usize;
         for i in 0..num_cells {
             let (size, overflowing) = unsafe { (*current_array_ptr).get_cell(i).size() };
-            num_entries += size;
+            statistics.entries += size;
             if overflowing {
                 let reader = CellReader::lock(unsafe { (*current_array_ptr).get_cell(i) });
                 let linked_entries = reader.num_links();
-                num_entries += linked_entries;
-                num_linked_entries += linked_entries;
-                num_linked_cells += 1;
-                if linked_entries > max_link_length {
-                    max_link_length = linked_entries;
+                statistics.entries += linked_entries;
+                statistics.linked_entries += linked_entries;
+                statistics.cells_having_link += 1;
+                if statistics.max_link_length < linked_entries {
+                    statistics.max_link_length = linked_entries;
                 }
             }
         }
-        (
-            num_entries,
-            num_linked_entries,
-            num_linked_cells,
-            max_link_length,
-        )
+        statistics
     }
 
     /// Returns a Scanner.
@@ -318,7 +315,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     }
 
     /// Returns a hash value of the given key.
-    fn hash(&self, key: &K) -> (u64, u32) {
+    fn hash(&self, key: &K) -> (u64, u16) {
         // generate a hash value
         let mut h = self.hasher.build_hasher();
         key.hash(&mut h);
@@ -330,7 +327,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         hash = hash ^ (hash.rotate_right(24) ^ hash.rotate_right(49));
         hash = hash.overflowing_mul(0x9FB21C651E98DF25u64).0;
         hash = hash ^ (hash >> 28);
-        (hash, (hash & ((1 << 32) - 1)).try_into().unwrap())
+        (hash, (hash & ((1 << 16) - 1)).try_into().unwrap())
     }
 
     /// Acquires a cell.
@@ -338,7 +335,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         &'a self,
         key: &K,
         hash: u64,
-        partial_hash: u32,
+        partial_hash: u16,
     ) -> (Accessor<'a, K, V, H>, *const Array<K, V>, usize) {
         let guard = crossbeam::epoch::pin();
 
@@ -417,7 +414,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         &self,
         key: &K,
         hash: u64,
-        partial_hash: u32,
+        partial_hash: u16,
         array_ptr: *const Array<K, V>,
     ) -> (CellLocker<'a, K, V>, *const (K, V), usize, u8) {
         let cell_index = unsafe { (*array_ptr).calculate_metadata_array_index(hash) };
@@ -429,7 +426,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                     return (locker, key_value_pair_ptr, cell_index, u8::MAX);
                 }
             }
-            if let Some(sub_index) = locker.search(partial_hash) {
+            if let Some(sub_index) = locker.search_preferred(partial_hash) {
                 let key_value_array_index =
                     cell_index * (cell::ARRAY_SIZE as usize) + (sub_index as usize);
                 let key_value_pair_ptr =
@@ -438,18 +435,23 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                     return (locker, key_value_pair_ptr, cell_index, sub_index);
                 }
             }
+            let mut current_index = 0 as u8;
+            while let Some(sub_index) = locker.search(current_index, partial_hash) {
+                let key_value_array_index =
+                    cell_index * (cell::ARRAY_SIZE as usize) + (sub_index as usize);
+                let key_value_pair_ptr =
+                    unsafe { (*array_ptr).get_key_value_pair(key_value_array_index) };
+                if unsafe { (*key_value_pair_ptr).0 == *key } {
+                    return (locker, key_value_pair_ptr, cell_index, sub_index);
+                }
+                current_index = sub_index + 1;
+            }
         }
         (locker, std::ptr::null(), cell_index, 0)
     }
 
     /// Returns the first valid cell.
-    fn first<'a>(
-        &'a self,
-    ) -> (
-        Option<CellLocker<'a, K, V>>,
-        *const Array<K, V>,
-        usize,
-    ) {
+    fn first<'a>(&'a self) -> (Option<CellLocker<'a, K, V>>, *const Array<K, V>, usize) {
         let guard = crossbeam::epoch::pin();
 
         // an Acquire fence is required to correctly load the contents of the array
@@ -740,5 +742,27 @@ impl<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Iterator
             }
         }
         None
+    }
+}
+
+pub struct Statistics {
+    capacity: usize,
+    entries: usize,
+    linked_entries: usize,
+    cells_having_link: usize,
+    max_link_length: usize,
+}
+
+impl fmt::Display for Statistics {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "capacity: {}, entries: {}, linked_entries: {}, cells_having_link: {}, max_link_length: {}",
+            self.capacity,
+            self.entries,
+            self.linked_entries,
+            self.cells_having_link,
+            self.max_link_length
+        )
     }
 }

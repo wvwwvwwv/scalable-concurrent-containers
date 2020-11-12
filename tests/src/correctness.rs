@@ -137,7 +137,7 @@ mod test {
 
     #[test]
     fn sample() {
-        for s in vec![10240, 10485760] {
+        for s in vec![65536, 16777216] {
             let hashmap: HashMap<usize, u8, RandomState> =
                 HashMap::new(RandomState::new(), Some(s));
             let step_size = s / 10;
@@ -146,15 +146,7 @@ mod test {
                     assert!(hashmap.insert(i, 0).is_ok());
                 }
                 let statistics = hashmap.statistics();
-                println!(
-                    "{}/{}%: {} / {} / {} / {}",
-                    s,
-                    (p + 1) * 10,
-                    statistics.0,
-                    statistics.1,
-                    statistics.2,
-                    statistics.3
-                );
+                println!("{}%: {}", (p + 1) * 10, statistics);
                 for sample_size in 0..9 {
                     let len = hashmap.len(|_| 1 << sample_size);
                     println!("{}/{}%: {};{}", s, (p + 1) * 10, 1 << sample_size, len);

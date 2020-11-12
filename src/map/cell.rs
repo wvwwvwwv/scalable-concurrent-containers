@@ -4,30 +4,30 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32};
 use std::sync::{Condvar, Mutex};
 
-pub const ARRAY_SIZE: u8 = 10;
+pub const ARRAY_SIZE: u8 = 16;
 const KILLED_FLAG: u32 = 1 << 31;
 const WAITING_FLAG: u32 = 1 << 30;
-const LOCK_MASK: u32 = ((1 << 14) - 1) << 16;
-const XLOCK: u32 = 1 << 29;
+const OVERFLOW_FLAG: u32 = 1 << 29;
+const LOCK_MASK: u32 = ((1 << 13) - 1) << ARRAY_SIZE;
+const XLOCK: u32 = 1 << 28;
 const SLOCK_MAX: u32 = LOCK_MASK & (!XLOCK);
-const SLOCK: u32 = 1 << 16;
-const OVERFLOW_FLAG: u32 = 1 << 15;
-const OCCUPANCY_MASK: u32 = ((1 << ARRAY_SIZE) - 1) << 5;
-const OCCUPANCY_BIT: u32 = 1 << 5;
-const SIZE_MASK: u32 = (1 << 5) - 1;
+const SLOCK: u32 = 1 << ARRAY_SIZE;
+const OCCUPANCY_MASK: u32 = (1 << ARRAY_SIZE) - 1;
+const OCCUPANCY_BIT: u32 = 1;
 
 pub struct Cell<K: Clone + Eq, V> {
     link: LinkType<K, V>,
-    partial_hash_array: [u32; ARRAY_SIZE as usize],
+    partial_hash_array: [u16; ARRAY_SIZE as usize],
     metadata: AtomicU32,
     wait_queue: AtomicPtr<WaitQueueEntry>,
+    _padding: usize,
 }
 
 impl<K: Clone + Eq, V> Cell<K, V> {
     pub fn size(&self) -> (usize, bool) {
         let metadata = self.metadata.load(Relaxed);
         (
-            (metadata & SIZE_MASK) as usize,
+            (metadata & OCCUPANCY_MASK).count_ones() as usize,
             (metadata & OVERFLOW_FLAG) == OVERFLOW_FLAG,
         )
     }
@@ -96,6 +96,7 @@ impl<K: Clone + Eq, V> Default for Cell<K, V> {
             metadata: AtomicU32::new(0),
             wait_queue: AtomicPtr::new(ptr::null_mut()),
             partial_hash_array: [0; ARRAY_SIZE as usize],
+            _padding: 0,
         }
     }
 }
@@ -147,7 +148,7 @@ impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
     }
 
     pub fn size(&self) -> usize {
-        (self.metadata & SIZE_MASK).try_into().unwrap()
+        (self.metadata & OCCUPANCY_MASK).count_ones() as usize
     }
 
     pub fn occupied(&self, index: u8) -> bool {
@@ -168,16 +169,19 @@ impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
         u8::MAX
     }
 
-    pub fn search(&self, partial_hash: u32) -> Option<u8> {
-        let preferred_index = (partial_hash % 8).try_into().unwrap();
+    pub fn search_preferred(&self, partial_hash: u16) -> Option<u8> {
+        let preferred_index = (partial_hash % (ARRAY_SIZE as u16)).try_into().unwrap();
         if self.cell.partial_hash_array[preferred_index as usize] == partial_hash
             && self.occupied(preferred_index)
         {
             return Some(preferred_index.try_into().unwrap());
         }
-        for (i, v) in self.cell.partial_hash_array.iter().enumerate() {
-            if i != (preferred_index as usize)
-                && *v == partial_hash
+        None
+    }
+
+    pub fn search(&self, start_index: u8, partial_hash: u16) -> Option<u8> {
+        for i in start_index..ARRAY_SIZE {
+            if self.cell.partial_hash_array[i as usize] == partial_hash
                 && self.occupied(i.try_into().unwrap())
             {
                 return Some(i.try_into().unwrap());
@@ -186,18 +190,18 @@ impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
         None
     }
 
-    pub fn insert(&mut self, partial_hash: u32) -> Option<u8> {
-        let preferred_index = (partial_hash % 8).try_into().unwrap();
+    pub fn insert(&mut self, partial_hash: u16) -> Option<u8> {
+        let preferred_index = (partial_hash % (ARRAY_SIZE as u16)).try_into().unwrap();
         let cell_ptr = self.cell as *const Cell<K, V>;
         let cell_mut_ptr = cell_ptr as *mut Cell<K, V>;
         if !self.occupied(preferred_index) {
-            self.metadata = (self.metadata | (OCCUPANCY_BIT << preferred_index)) + 1;
+            self.metadata = self.metadata | (OCCUPANCY_BIT << preferred_index);
             unsafe { (*cell_mut_ptr).partial_hash_array[preferred_index as usize] = partial_hash };
             return Some(preferred_index.try_into().unwrap());
         }
         for (i, _) in self.cell.partial_hash_array.iter().enumerate() {
             if i != (preferred_index as usize) && !self.occupied(i.try_into().unwrap()) {
-                self.metadata = (self.metadata | (OCCUPANCY_BIT << i)) + 1;
+                self.metadata = self.metadata | (OCCUPANCY_BIT << i);
                 unsafe { (*cell_mut_ptr).partial_hash_array[i as usize] = partial_hash };
                 return Some(i.try_into().unwrap());
             }
@@ -208,7 +212,7 @@ impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
     pub fn remove(&mut self, index: u8) {
         debug_assert!(index < ARRAY_SIZE);
         debug_assert!(self.metadata & (OCCUPANCY_BIT << index) == (OCCUPANCY_BIT << index));
-        self.metadata = (self.metadata & (!(OCCUPANCY_BIT << index))) - 1;
+        self.metadata = self.metadata & (!(OCCUPANCY_BIT << index));
     }
 
     pub fn link_head(&self) -> *const EntryLink<K, V> {
@@ -438,7 +442,6 @@ mod test {
     #[test]
     fn static_assertions() {
         assert_eq!(std::mem::size_of::<Cell<u64, bool>>(), 64);
-        assert!((ARRAY_SIZE as u32) < SIZE_MASK);
         assert!(XLOCK > SLOCK_MAX);
         assert_eq!(OVERFLOW_FLAG & LOCK_MASK, 0);
         assert_eq!(WAITING_FLAG & LOCK_MASK, 0);
@@ -451,16 +454,15 @@ mod test {
         assert_eq!(SLOCK & SLOCK_MAX, SLOCK);
         assert_eq!(KILLED_FLAG & LOCK_MASK, 0);
         assert_eq!(LOCK_MASK & OCCUPANCY_MASK, 0);
-        assert_eq!(OCCUPANCY_MASK & SIZE_MASK, 0);
         assert_eq!(
-            KILLED_FLAG | OVERFLOW_FLAG | WAITING_FLAG | LOCK_MASK | OCCUPANCY_MASK | SIZE_MASK,
+            KILLED_FLAG | OVERFLOW_FLAG | WAITING_FLAG | LOCK_MASK | OCCUPANCY_MASK,
             !(0 as u32)
         );
     }
 
     #[test]
     fn basic_locker() {
-        let num_threads = 12;
+        let num_threads = (ARRAY_SIZE + 1) as usize;
         let barrier = Arc::new(Barrier::new(num_threads));
         let cell: Arc<Cell<usize, usize>> = Arc::new(Default::default());
         let mut data: [u64; 128] = [0; 128];
@@ -519,10 +521,7 @@ mod test {
             xlocker.remove_link(&key);
         }
         assert_eq!((*cell).metadata.load(Relaxed) & OVERFLOW_FLAG, 0);
-        assert_eq!(
-            (*cell).metadata.load(Relaxed) & SIZE_MASK,
-            ARRAY_SIZE as u32
-        );
+        assert_eq!((*cell).size(), (ARRAY_SIZE as usize, false));
         assert_eq!(
             (*cell).metadata.load(Relaxed) & OCCUPANCY_MASK,
             OCCUPANCY_MASK
