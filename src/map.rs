@@ -21,7 +21,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 /// * Incremental resizing: access to the data structure relocates a certain number of key-value pairs.
 /// * Optimized resizing: a single key-value pair is guaranteed to be relocated to one of the two adjacent cells.
 pub struct HashMap<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> {
-    array: Atomic<Array<K, V, Cell<K, V>>>,
+    array: Atomic<Array<K, V>>,
     minimum_capacity: usize,
     resize_mutex: AtomicBool,
     hasher: H,
@@ -44,7 +44,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
             160
         };
         HashMap {
-            array: Atomic::new(Array::<K, V, Cell<K, V>>::new(
+            array: Atomic::new(Array::<K, V>::new(
                 initial_capacity,
                 Atomic::null(),
             )),
@@ -339,7 +339,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         key: &K,
         hash: u64,
         partial_hash: u32,
-    ) -> (Accessor<'a, K, V, H>, *const Array<K, V, Cell<K, V>>, usize) {
+    ) -> (Accessor<'a, K, V, H>, *const Array<K, V>, usize) {
         let guard = crossbeam::epoch::pin();
 
         // it is guaranteed that the thread reads a consistent snapshot of current and
@@ -418,7 +418,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         key: &K,
         hash: u64,
         partial_hash: u32,
-        array_ptr: *const Array<K, V, Cell<K, V>>,
+        array_ptr: *const Array<K, V>,
     ) -> (CellLocker<'a, K, V>, *const (K, V), usize, u8) {
         let cell_index = unsafe { (*array_ptr).calculate_metadata_array_index(hash) };
         let locker = CellLocker::lock(unsafe { (*array_ptr).get_cell(cell_index) });
@@ -447,7 +447,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         &'a self,
     ) -> (
         Option<CellLocker<'a, K, V>>,
-        *const Array<K, V, Cell<K, V>>,
+        *const Array<K, V>,
         usize,
     ) {
         let guard = crossbeam::epoch::pin();
@@ -484,7 +484,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     /// Returns the next valid cell.
     fn next<'a>(
         &'a self,
-        array_ptr: *const Array<K, V, Cell<K, V>>,
+        array_ptr: *const Array<K, V>,
         current_index: usize,
     ) -> Option<Scanner<'a, K, V, H>> {
         let guard = crossbeam::epoch::pin();
@@ -508,7 +508,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
             }
         }
 
-        let mut new_array_ptr = std::ptr::null() as *const Array<K, V, Cell<K, V>>;
+        let mut new_array_ptr = std::ptr::null() as *const Array<K, V>;
         let num_cells = unsafe { (*current_array_ptr).num_cells() };
         let start_index = if old_array_ptr == array_ptr {
             0
@@ -544,7 +544,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     fn pick<'a>(
         &'a self,
         locker: CellLocker<'a, K, V>,
-        array_ptr: *const Array<K, V, Cell<K, V>>,
+        array_ptr: *const Array<K, V>,
         cell_index: usize,
     ) -> Option<Scanner<'a, K, V, H>> {
         if locker.overflowing() {
@@ -666,7 +666,7 @@ impl<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Accessor<
 /// It is !Send, thus disallowing other threads to have references to it.
 pub struct Scanner<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> {
     accessor: Option<Accessor<'a, K, V, H>>,
-    array_ptr: *const Array<K, V, Cell<K, V>>,
+    array_ptr: *const Array<K, V>,
     cell_index: usize,
     entry_link: *const EntryLink<K, V>,
     activated: bool,

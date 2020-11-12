@@ -1,19 +1,20 @@
+use super::cell::Cell;
 use crossbeam::epoch::{Atomic, Guard, Shared};
 use std::convert::TryInto;
 use std::mem::MaybeUninit;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 
-pub struct Array<K, V, M: Default> {
-    metadata_array: Vec<M>,
+pub struct Array<K: Clone + Eq, V> {
+    metadata_array: Vec<Cell<K, V>>,
     entry_array: Vec<MaybeUninit<(K, V)>>,
     lb_capacity: u8,
     rehashing: AtomicUsize,
-    old_array: Atomic<Array<K, V, M>>,
+    old_array: Atomic<Array<K, V>>,
 }
 
-impl<K, V, M: Default> Array<K, V, M> {
-    pub fn new(capacity: usize, old_array: Atomic<Array<K, V, M>>) -> Array<K, V, M> {
+impl<K: Clone + Eq, V> Array<K, V> {
+    pub fn new(capacity: usize, old_array: Atomic<Array<K, V>>) -> Array<K, V> {
         let lb_capacity = Self::calculate_lb_metadata_array_size(capacity);
         let mut array = Array {
             metadata_array: Vec::with_capacity(1 << lb_capacity),
@@ -33,7 +34,7 @@ impl<K, V, M: Default> Array<K, V, M> {
         array
     }
 
-    pub fn get_cell(&self, index: usize) -> &M {
+    pub fn get_cell(&self, index: usize) -> &Cell<K, V> {
         &self.metadata_array[index]
     }
 
@@ -45,7 +46,7 @@ impl<K, V, M: Default> Array<K, V, M> {
         1 << self.lb_capacity
     }
 
-    pub fn get_old_array<'a>(&self, guard: &'a Guard) -> Shared<'a, Array<K, V, M>> {
+    pub fn get_old_array<'a>(&self, guard: &'a Guard) -> Shared<'a, Array<K, V>> {
         self.old_array.load(Relaxed, guard)
     }
 
@@ -71,7 +72,6 @@ impl<K, V, M: Default> Array<K, V, M> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::sync::atomic::Ordering::Relaxed;
 
     #[test]
     fn static_assertions() {
@@ -85,18 +85,18 @@ mod test {
         assert_eq!(19usize / 10, 1);
         for capacity in 0..1024 as usize {
             assert!(
-                (1 << Array::<bool, bool, bool>::calculate_lb_metadata_array_size(capacity)) * 10
+                (1 << Array::<bool, bool>::calculate_lb_metadata_array_size(capacity)) * 10
                     >= capacity
             );
         }
         assert!(
-            (1 << Array::<bool, bool, bool>::calculate_lb_metadata_array_size(usize::MAX)) * 10
+            (1 << Array::<bool, bool>::calculate_lb_metadata_array_size(usize::MAX)) * 10
                 >= (usize::MAX / 2)
         );
         for i in 2..(std::mem::size_of::<usize>() - 3) {
             let capacity = (1 << i) * 10;
             assert_eq!(
-                Array::<bool, bool, bool>::calculate_lb_metadata_array_size(capacity) as usize,
+                Array::<bool, bool>::calculate_lb_metadata_array_size(capacity) as usize,
                 i
             );
         }
