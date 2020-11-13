@@ -745,6 +745,7 @@ impl<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Iterator
     }
 }
 
+/// Statistics
 pub struct Statistics {
     capacity: usize,
     entries: usize,
