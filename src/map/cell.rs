@@ -1,3 +1,4 @@
+use super::link::{EntryArrayLink, LinkType};
 use std::convert::TryInto;
 use std::ptr;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -7,28 +8,26 @@ use std::sync::{Condvar, Mutex};
 pub const ARRAY_SIZE: u8 = 16;
 const KILLED_FLAG: u32 = 1 << 31;
 const WAITING_FLAG: u32 = 1 << 30;
-const OVERFLOW_FLAG: u32 = 1 << 29;
-const LOCK_MASK: u32 = ((1 << 13) - 1) << ARRAY_SIZE;
-const XLOCK: u32 = 1 << 28;
+const LOCK_MASK: u32 = ((1 << 14) - 1) << ARRAY_SIZE;
+const XLOCK: u32 = 1 << 29;
 const SLOCK_MAX: u32 = LOCK_MASK & (!XLOCK);
 const SLOCK: u32 = 1 << ARRAY_SIZE;
 const OCCUPANCY_MASK: u32 = (1 << ARRAY_SIZE) - 1;
 const OCCUPANCY_BIT: u32 = 1;
 
 pub struct Cell<K: Clone + Eq, V> {
-    link: LinkType<K, V>,
     partial_hash_array: [u16; ARRAY_SIZE as usize],
     metadata: AtomicU32,
     wait_queue: AtomicPtr<WaitQueueEntry>,
-    _padding: usize,
+    link: LinkType<K, V>,
+    linked_entries: usize,
 }
 
 impl<K: Clone + Eq, V> Cell<K, V> {
-    pub fn size(&self) -> (usize, bool) {
-        let metadata = self.metadata.load(Relaxed);
+    pub fn size(&self) -> (usize, usize) {
         (
-            (metadata & OCCUPANCY_MASK).count_ones() as usize,
-            (metadata & OVERFLOW_FLAG) == OVERFLOW_FLAG,
+            self.metadata.load(Relaxed).count_ones() as usize,
+            self.linked_entries,
         )
     }
 
@@ -92,11 +91,11 @@ impl<K: Clone + Eq, V> Cell<K, V> {
 impl<K: Clone + Eq, V> Default for Cell<K, V> {
     fn default() -> Self {
         Cell {
-            link: None,
             metadata: AtomicU32::new(0),
             wait_queue: AtomicPtr::new(ptr::null_mut()),
             partial_hash_array: [0; ARRAY_SIZE as usize],
-            _padding: 0,
+            link: None,
+            linked_entries: 0,
         }
     }
 }
@@ -147,16 +146,12 @@ impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
         }
     }
 
-    pub fn size(&self) -> usize {
-        (self.metadata & OCCUPANCY_MASK).count_ones() as usize
-    }
-
     pub fn occupied(&self, index: u8) -> bool {
         (self.metadata & (OCCUPANCY_BIT << index)) != 0
     }
 
     pub fn overflowing(&self) -> bool {
-        self.metadata & OVERFLOW_FLAG == OVERFLOW_FLAG
+        self.cell.linked_entries > 0
     }
 
     pub fn next_occupied(&self, index: u8) -> u8 {
@@ -215,61 +210,69 @@ impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
         self.metadata = self.metadata & (!(OCCUPANCY_BIT << index));
     }
 
-    pub fn link_head(&self) -> *const EntryLink<K, V> {
+    pub fn first_entry(&self) -> (*const EntryArrayLink<K, V>, *const (K, V)) {
         self.cell
             .link
             .as_ref()
-            .map_or(ptr::null(), |entry| &(**entry) as *const EntryLink<K, V>)
+            .map_or((ptr::null(), ptr::null()), |entry| entry.first_entry())
     }
 
-    pub fn search_link(&self, key: &K) -> *const (K, V) {
-        let mut link = &self.cell.link;
-        while let Some(entry) = link {
-            if (*entry).key_value_pair.0 == *key {
-                return (*entry).key_value_pair_ptr();
-            }
-            link = &entry.link;
-        }
-        ptr::null()
+    pub fn search_link(
+        &self,
+        key: &K,
+        partial_hash: u16,
+    ) -> (*const EntryArrayLink<K, V>, *const (K, V)) {
+        self.cell
+            .link
+            .as_ref()
+            .map_or((ptr::null(), ptr::null()), |link| {
+                link.search_entry(key, partial_hash)
+            })
     }
 
-    pub fn insert_link(&mut self, key: &K, value: V) -> *const (K, V) {
+    pub fn insert_link(
+        &mut self,
+        key: &K,
+        partial_hash: u16,
+        value: V,
+    ) -> (*const EntryArrayLink<K, V>, *const (K, V)) {
         let cell = self.get_cell_mut_ref();
-        let link = cell.link.take();
-        let entry = Box::new(EntryLink {
-            key_value_pair: ((*key).clone(), value),
-            link: link,
-        });
-        let key_value_pair_ptr = (*entry).key_value_pair_ptr();
-        cell.link = Some(entry);
-        self.metadata = self.metadata | OVERFLOW_FLAG;
-        key_value_pair_ptr
+        let mut value = value;
+        if let Some(link) = &mut cell.link {
+            match link.insert_entry(key, partial_hash, value) {
+                Ok(result) => {
+                    cell.linked_entries += 1;
+                    return result;
+                }
+                Err(result) => value = result,
+            }
+        }
+
+        let mut new_entry_array_link = Box::new(EntryArrayLink::new(cell.link.take()));
+        let result = new_entry_array_link.insert_entry(key, partial_hash, value);
+        cell.link = Some(new_entry_array_link);
+        cell.linked_entries += 1;
+        return result.ok().unwrap();
     }
 
-    pub fn remove_link(&mut self, key: &K) {
+    pub fn remove_link(
+        &mut self,
+        entry_array_link_ptr: *const EntryArrayLink<K, V>,
+        key_value_pair_ptr: *const (K, V),
+    ) {
         let cell = self.get_cell_mut_ref();
-        let mut current = cell.link.take();
-        let mut current_ptr = &mut cell.link as *mut LinkType<K, V>;
-
-        // if current == target, prev.link = current.link, else prev.link = current; prev = current
-        while let Some(mut entry) = current {
-            if (*entry).key_value_pair.0 == *key {
-                unsafe { *current_ptr = entry.link.take() };
-                break;
-            }
-            let prev_ptr = current_ptr;
-            current_ptr = &mut entry.link as *mut LinkType<K, V>;
-            current = entry.link.take();
-            unsafe { *prev_ptr = Some(entry) };
+        let entry_array_link_mut_ptr = entry_array_link_ptr as *mut EntryArrayLink<K, V>;
+        if unsafe { (*entry_array_link_mut_ptr).remove_entry(key_value_pair_ptr) } {
+            let current = cell.link.take();
+            cell.link = current.map_or(None, |link| {
+                EntryArrayLink::<K, V>::remove_link(link, entry_array_link_ptr)
+            });
         }
-
-        if cell.link.is_none() {
-            self.metadata = self.metadata & (!OVERFLOW_FLAG);
-        }
+        cell.linked_entries -= 1;
     }
 
     pub fn empty(&self) -> bool {
-        self.metadata & (OVERFLOW_FLAG | OCCUPANCY_MASK) == 0
+        (self.metadata & OCCUPANCY_MASK) == 0 && self.cell.linked_entries == 0
     }
 
     pub fn killed(&self) -> bool {
@@ -323,35 +326,6 @@ impl<'a, K: Clone + Eq, V> CellReader<'a, K, V> {
                 }
             }
         }
-    }
-
-    pub fn num_links(&self) -> usize {
-        let mut size = 0;
-        let mut link = &self.cell.link;
-        while let Some(entry) = link {
-            size += 1;
-            link = &entry.link;
-        }
-        size
-    }
-}
-
-type LinkType<K: Clone + Eq, V> = Option<Box<EntryLink<K, V>>>;
-
-pub struct EntryLink<K: Clone + Eq, V> {
-    key_value_pair: (K, V),
-    link: LinkType<K, V>,
-}
-
-impl<K: Clone + Eq, V> EntryLink<K, V> {
-    pub fn key_value_pair_ptr(&self) -> *const (K, V) {
-        &self.key_value_pair as *const (K, V)
-    }
-
-    pub fn next(&self) -> *const EntryLink<K, V> {
-        self.link
-            .as_ref()
-            .map_or(ptr::null(), |link| &(**link) as *const EntryLink<K, V>)
     }
 }
 
@@ -443,7 +417,6 @@ mod test {
     fn static_assertions() {
         assert_eq!(std::mem::size_of::<Cell<u64, bool>>(), 64);
         assert!(XLOCK > SLOCK_MAX);
-        assert_eq!(OVERFLOW_FLAG & LOCK_MASK, 0);
         assert_eq!(WAITING_FLAG & LOCK_MASK, 0);
         assert!((XLOCK & LOCK_MASK) > SLOCK_MAX);
         assert_eq!(((XLOCK << 1) & LOCK_MASK), 0);
@@ -455,7 +428,7 @@ mod test {
         assert_eq!(KILLED_FLAG & LOCK_MASK, 0);
         assert_eq!(LOCK_MASK & OCCUPANCY_MASK, 0);
         assert_eq!(
-            KILLED_FLAG | OVERFLOW_FLAG | WAITING_FLAG | LOCK_MASK | OCCUPANCY_MASK,
+            KILLED_FLAG | WAITING_FLAG | LOCK_MASK | OCCUPANCY_MASK,
             !(0 as u32)
         );
     }
@@ -471,8 +444,6 @@ mod test {
             let barrier_copied = barrier.clone();
             let cell_copied = cell.clone();
             let data_ptr = AtomicPtr::new(&mut data);
-            let tid_copied = tid;
-            let num_threads_copied = num_threads;
             thread_handles.push(thread::spawn(move || {
                 barrier_copied.wait();
                 for i in 0..4096 {
@@ -489,10 +460,11 @@ mod test {
                         if i == 1024 {
                             xlocker.insert(tid.try_into().unwrap());
                         } else if i == 512 {
-                            let key = tid + num_threads_copied;
-                            let inserted = xlocker.insert_link(&key, i);
-                            assert_eq!(unsafe { *inserted }, (key, i));
+                            let key = tid + num_threads;
+                            let inserted = xlocker.insert_link(&key, 1, i);
+                            assert_eq!(unsafe { *inserted.1 }, (key, 512));
                             assert!(xlocker.overflowing());
+                            assert!(!xlocker.search_link(&key, 1).0.is_null());
                         }
                         drop(xlocker);
                     } else {
@@ -510,22 +482,28 @@ mod test {
         for handle in thread_handles {
             handle.join().unwrap();
         }
-        assert_eq!(
-            (*cell).metadata.load(Relaxed) & OVERFLOW_FLAG,
-            OVERFLOW_FLAG
-        );
+        assert_eq!((*cell).size().0, ARRAY_SIZE as usize);
+        assert_eq!((*cell).linked_entries, num_threads);
         for tid in 0..num_threads {
             let mut xlocker = CellLocker::lock(&*cell);
             let key = tid + num_threads;
-            assert!(xlocker.search_link(&key) != ptr::null());
-            xlocker.remove_link(&key);
+            let result = xlocker.search_link(&key, 1);
+            assert_ne!(result.0, ptr::null());
+            assert_eq!(unsafe { *result.1 }, (key, 512));
+            xlocker.remove_link(result.0, result.1);
         }
-        assert_eq!((*cell).metadata.load(Relaxed) & OVERFLOW_FLAG, 0);
-        assert_eq!((*cell).size(), (ARRAY_SIZE as usize, false));
+        assert_eq!((*cell).linked_entries, 0);
+        assert_eq!((*cell).size().0, ARRAY_SIZE as usize);
         assert_eq!(
             (*cell).metadata.load(Relaxed) & OCCUPANCY_MASK,
             OCCUPANCY_MASK
         );
+        for tid in 0..ARRAY_SIZE {
+            let mut xlocker = CellLocker::lock(&*cell);
+            xlocker.remove(tid.try_into().unwrap());
+        }
+        assert_eq!((*cell).size().0, 0);
+        assert_eq!((*cell).metadata.load(Relaxed) & OCCUPANCY_MASK, 0);
         assert_eq!((*cell).metadata.load(Relaxed) & LOCK_MASK, 0);
     }
 }

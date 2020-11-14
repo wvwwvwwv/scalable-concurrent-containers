@@ -8,6 +8,9 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 pub struct Array<K: Clone + Eq, V> {
     metadata_array: Vec<Cell<K, V>>,
     entry_array: Vec<MaybeUninit<(K, V)>>,
+    /// The log (base 2) capacity of the array
+    ///
+    /// Trigger resize when the max depth of linked lists reaches lb_capacity / 4
     lb_capacity: u8,
     rehashing: AtomicUsize,
     rehashed: AtomicUsize,
@@ -29,9 +32,7 @@ impl<K: Clone + Eq, V> Array<K, V> {
             array.metadata_array.push(Default::default());
         }
         for _ in 0..(1 << lb_capacity) * (ARRAY_SIZE as usize) {
-            array
-                .entry_array
-                .push(unsafe { MaybeUninit::uninit().assume_init() });
+            array.entry_array.push(MaybeUninit::uninit());
         }
         array
     }

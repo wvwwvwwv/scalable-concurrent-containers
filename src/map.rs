@@ -2,18 +2,20 @@ extern crate crossbeam;
 
 pub mod array;
 pub mod cell;
+pub mod link;
 
 use array::Array;
-use cell::EntryLink;
 use cell::{Cell, CellLocker, CellReader};
 use crossbeam::epoch::{Atomic, Guard, Owned};
+use link::EntryArrayLink;
 use std::convert::TryInto;
 use std::fmt;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-/// A scalable concurrent hash map implementation.
+/// A scalable concur
+/// rent hash map implementation.
 ///
 /// The key features of scc::HashMap are as follows.
 /// * No sharding: all keys are managed by a single array of key metadata cells.
@@ -91,10 +93,13 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                 let key_value_pair_mut_ptr = key_value_pair_ptr as *mut (K, V);
                 unsafe { key_value_pair_mut_ptr.write((key.clone(), value)) };
                 accessor.sub_index = sub_index;
+                accessor.entry_array_link_ptr = std::ptr::null();
                 accessor.key_value_pair_ptr = key_value_pair_ptr;
             }
             None => {
-                accessor.key_value_pair_ptr = accessor.cell_locker.insert_link(&key, value);
+                let result = accessor.cell_locker.insert_link(&key, partial_hash, value);
+                accessor.entry_array_link_ptr = result.0;
+                accessor.key_value_pair_ptr = result.1;
             }
         };
         Ok(accessor)
@@ -235,12 +240,8 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         }
         let mut num_entries = 0;
         for i in 0..num_samples {
-            let (size, overflowing) = unsafe { (*current_array_ptr).get_cell(i).size() };
-            num_entries += size;
-            if overflowing {
-                let reader = CellReader::lock(unsafe { (*current_array_ptr).get_cell(i) });
-                num_entries += reader.num_links();
-            }
+            let (size, linked_entries) = unsafe { (*current_array_ptr).get_cell(i).size() };
+            num_entries += size + linked_entries;
         }
         let approximated_size = ((num_entries as f64) / (num_samples as f64)) * (num_cells as f64);
         approximated_size as usize
@@ -260,11 +261,9 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         let num_cells = unsafe { (*current_array_ptr).num_cells() };
         statistics.capacity += num_cells * cell::ARRAY_SIZE as usize;
         for i in 0..num_cells {
-            let (size, overflowing) = unsafe { (*current_array_ptr).get_cell(i).size() };
-            statistics.entries += size;
-            if overflowing {
-                let reader = CellReader::lock(unsafe { (*current_array_ptr).get_cell(i) });
-                let linked_entries = reader.num_links();
+            let (size, linked_entries) = unsafe { (*current_array_ptr).get_cell(i).size() };
+            statistics.entries += size + linked_entries;
+            if linked_entries > 0 {
                 statistics.entries += linked_entries;
                 statistics.linked_entries += linked_entries;
                 statistics.cells_having_link += 1;
@@ -309,7 +308,6 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
             accessor: None,
             array_ptr: std::ptr::null(),
             cell_index: 0,
-            entry_link: std::ptr::null(),
             activated: false,
         }
     }
@@ -358,7 +356,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
             if !old_array.is_null() {
                 // relocate at most 16 cells
                 // self.relocate(current_array_ptr, old_array_ptr);
-                let (locker, key_value_pair_ptr, cell_index, sub_index) =
+                let (locker, entry_array_link_ptr, key_value_pair_ptr, cell_index, sub_index) =
                     self.search(&key, hash, partial_hash, old_array.as_raw());
                 if !key_value_pair_ptr.is_null() {
                     return (
@@ -366,6 +364,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                             hash_map: &self,
                             cell_locker: locker,
                             sub_index: sub_index,
+                            entry_array_link_ptr: entry_array_link_ptr,
                             key_value_pair_ptr: key_value_pair_ptr,
                         },
                         current_array_ptr,
@@ -376,7 +375,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                     // self.kill(locker, old_array_ptr, current_array_ptr);
                 }
             }
-            let (locker, key_value_pair_ptr, cell_index, sub_index) =
+            let (locker, entry_array_link_ptr, key_value_pair_ptr, cell_index, sub_index) =
                 self.search(&key, hash, partial_hash, current_array_ptr);
             if !locker.killed() {
                 return (
@@ -384,6 +383,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                         hash_map: &self,
                         cell_locker: locker,
                         sub_index: sub_index,
+                        entry_array_link_ptr: entry_array_link_ptr,
                         key_value_pair_ptr: key_value_pair_ptr,
                     },
                     current_array_ptr,
@@ -405,7 +405,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         } else {
             accessor
                 .cell_locker
-                .remove_link(unsafe { &(*accessor.key_value_pair_ptr).0 })
+                .remove_link(accessor.entry_array_link_ptr, accessor.key_value_pair_ptr)
         }
     }
 
@@ -416,14 +416,27 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         hash: u64,
         partial_hash: u16,
         array_ptr: *const Array<K, V>,
-    ) -> (CellLocker<'a, K, V>, *const (K, V), usize, u8) {
+    ) -> (
+        CellLocker<'a, K, V>,
+        *const EntryArrayLink<K, V>,
+        *const (K, V),
+        usize,
+        u8,
+    ) {
         let cell_index = unsafe { (*array_ptr).calculate_metadata_array_index(hash) };
         let locker = CellLocker::lock(unsafe { (*array_ptr).get_cell(cell_index) });
         if !locker.killed() && !locker.empty() {
             if locker.overflowing() {
-                let key_value_pair_ptr = locker.search_link(key);
+                let (entry_array_link_ptr, key_value_pair_ptr) =
+                    locker.search_link(key, partial_hash);
                 if !key_value_pair_ptr.is_null() {
-                    return (locker, key_value_pair_ptr, cell_index, u8::MAX);
+                    return (
+                        locker,
+                        entry_array_link_ptr,
+                        key_value_pair_ptr,
+                        cell_index,
+                        u8::MAX,
+                    );
                 }
             }
             if let Some(sub_index) = locker.search_preferred(partial_hash) {
@@ -432,7 +445,13 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                 let key_value_pair_ptr =
                     unsafe { (*array_ptr).get_key_value_pair(key_value_array_index) };
                 if unsafe { (*key_value_pair_ptr).0 == *key } {
-                    return (locker, key_value_pair_ptr, cell_index, sub_index);
+                    return (
+                        locker,
+                        std::ptr::null(),
+                        key_value_pair_ptr,
+                        cell_index,
+                        sub_index,
+                    );
                 }
             }
             let mut current_index = 0 as u8;
@@ -442,12 +461,18 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                 let key_value_pair_ptr =
                     unsafe { (*array_ptr).get_key_value_pair(key_value_array_index) };
                 if unsafe { (*key_value_pair_ptr).0 == *key } {
-                    return (locker, key_value_pair_ptr, cell_index, sub_index);
+                    return (
+                        locker,
+                        std::ptr::null(),
+                        key_value_pair_ptr,
+                        cell_index,
+                        sub_index,
+                    );
                 }
                 current_index = sub_index + 1;
             }
         }
-        (locker, std::ptr::null(), cell_index, 0)
+        (locker, std::ptr::null(), std::ptr::null(), cell_index, 0)
     }
 
     /// Returns the first valid cell.
@@ -501,7 +526,8 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         if old_array.as_raw() == array_ptr {
             let num_cells = unsafe { (*old_array.as_raw()).num_cells() };
             for cell_index in (current_index + 1)..num_cells {
-                let locker = CellLocker::lock(unsafe { (*old_array.as_raw()).get_cell(cell_index) });
+                let locker =
+                    CellLocker::lock(unsafe { (*old_array.as_raw()).get_cell(cell_index) });
                 if !locker.killed() && !locker.empty() {
                     if let Some(scanner) = self.pick(locker, old_array.as_raw(), cell_index) {
                         return Some(scanner);
@@ -550,18 +576,17 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         cell_index: usize,
     ) -> Option<Scanner<'a, K, V, H>> {
         if locker.overflowing() {
-            let link = locker.link_head();
-            let key_value_pair_ptr = unsafe { (*link).key_value_pair_ptr() };
+            let first = locker.first_entry();
             return Some(Scanner {
                 accessor: Some(Accessor {
                     hash_map: &self,
                     cell_locker: locker,
                     sub_index: u8::MAX,
-                    key_value_pair_ptr: key_value_pair_ptr,
+                    entry_array_link_ptr: first.0,
+                    key_value_pair_ptr: first.1,
                 }),
                 array_ptr: array_ptr,
                 cell_index: cell_index,
-                entry_link: link,
                 activated: false,
             });
         }
@@ -576,11 +601,11 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                         hash_map: &self,
                         cell_locker: locker,
                         sub_index: sub_index,
+                        entry_array_link_ptr: std::ptr::null(),
                         key_value_pair_ptr: key_value_pair_ptr,
                     }),
                     array_ptr: array_ptr,
                     cell_index: cell_index,
-                    entry_link: std::ptr::null(),
                     activated: false,
                 });
             }
@@ -602,6 +627,7 @@ pub struct Accessor<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHa
     hash_map: &'a HashMap<K, V, H>,
     cell_locker: CellLocker<'a, K, V>,
     sub_index: u8,
+    entry_array_link_ptr: *const EntryArrayLink<K, V>,
     key_value_pair_ptr: *const (K, V),
 }
 
@@ -670,7 +696,6 @@ pub struct Scanner<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHas
     accessor: Option<Accessor<'a, K, V, H>>,
     array_ptr: *const Array<K, V>,
     cell_index: usize,
-    entry_link: *const EntryLink<K, V>,
     activated: bool,
 }
 
@@ -682,18 +707,29 @@ impl<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Iterator
         if !self.activated {
             self.activated = true;
         } else if self.accessor.is_some() {
-            if !self.entry_link.is_null() {
-                // follow the link
-                let next = unsafe { (*self.entry_link).next() };
-                self.entry_link = next;
-                if !self.entry_link.is_null() {
-                    let key_value_pair_ptr = unsafe { (*self.entry_link).key_value_pair_ptr() };
-                    self.accessor.as_mut().map_or((), |accessor| {
-                        accessor.key_value_pair_ptr = key_value_pair_ptr
-                    });
-                }
+            let entry_array_link_ptr = self
+                .accessor
+                .as_ref()
+                .map_or(std::ptr::null(), |accessor| accessor.entry_array_link_ptr);
+            if !entry_array_link_ptr.is_null() {
+                // traverse the link
+                let next = unsafe {
+                    (*entry_array_link_ptr).next_entry(
+                        self.accessor
+                            .as_ref()
+                            .map_or(std::ptr::null(), |accessor| accessor.key_value_pair_ptr),
+                    )
+                };
+                self.accessor.as_mut().map_or((), |accessor| {
+                    accessor.entry_array_link_ptr = next.0;
+                    accessor.key_value_pair_ptr = next.1;
+                });
             }
-            if self.entry_link.is_null() {
+            if self
+                .accessor
+                .as_ref()
+                .map_or(true, |accessor| accessor.entry_array_link_ptr.is_null())
+            {
                 // advance in the cell
                 let new_sub_index = self.accessor.as_mut().map_or(u8::MAX, |accessor| {
                     accessor.sub_index = accessor.cell_locker.next_occupied(accessor.sub_index);
@@ -709,13 +745,9 @@ impl<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Iterator
                     });
                 }
             }
-            if self
-                .accessor
-                .as_ref()
-                .map_or(u8::MAX, |accessor| accessor.sub_index)
-                == u8::MAX
-                && self.entry_link.is_null()
-            {
+            if self.accessor.as_ref().map_or(true, |accessor| {
+                accessor.sub_index == u8::MAX && accessor.entry_array_link_ptr.is_null()
+            }) {
                 // advance in the array
                 let current_array_ptr = self.array_ptr;
                 let current_cell_index = self.cell_index;
@@ -729,7 +761,6 @@ impl<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Iterator
                     self.accessor = scanner.accessor.take();
                     self.array_ptr = scanner.array_ptr;
                     self.cell_index = scanner.cell_index;
-                    self.entry_link = scanner.entry_link;
                 }
             }
         }

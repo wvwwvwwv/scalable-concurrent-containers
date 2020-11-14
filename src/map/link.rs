@@ -1,0 +1,162 @@
+use std::mem::MaybeUninit;
+use std::ptr;
+
+const ARRAY_SIZE: usize = 4;
+
+pub type LinkType<K: Clone + Eq, V> = Option<Box<EntryArrayLink<K, V>>>;
+
+pub struct EntryArrayLink<K: Clone + Eq, V> {
+    /// The array of partial hash values
+    ///
+    /// Zero represents a state where the corresponding entry is vacant.
+    partial_hash_array: [u16; ARRAY_SIZE],
+    entry_array: [MaybeUninit<(K, V)>; ARRAY_SIZE],
+    link: LinkType<K, V>,
+}
+
+impl<K: Clone + Eq, V> EntryArrayLink<K, V> {
+    pub fn new(link: LinkType<K, V>) -> EntryArrayLink<K, V> {
+        EntryArrayLink {
+            partial_hash_array: [0; ARRAY_SIZE],
+            entry_array: unsafe { MaybeUninit::uninit().assume_init() },
+            link: link,
+        }
+    }
+
+    pub fn first_entry(&self) -> (*const EntryArrayLink<K, V>, *const (K, V)) {
+        for i in 0..ARRAY_SIZE {
+            if self.partial_hash_array[i] != 0 {
+                return (
+                    self as *const EntryArrayLink<K, V>,
+                    self.entry_array[i].as_ptr(),
+                );
+            }
+        }
+        self.link
+            .as_ref()
+            .map_or((ptr::null(), ptr::null()), |link| (*link).first_entry())
+    }
+
+    pub fn next_entry(
+        &self,
+        entry_ptr: *const (K, V),
+    ) -> (*const EntryArrayLink<K, V>, *const (K, V)) {
+        for i in 0..ARRAY_SIZE {
+            if entry_ptr == self.entry_array[i].as_ptr() {
+                for j in (i + 1)..ARRAY_SIZE {
+                    if self.partial_hash_array[j] != 0 {
+                        return (
+                            self as *const EntryArrayLink<K, V>,
+                            self.entry_array[j].as_ptr(),
+                        );
+                    }
+                }
+                break;
+            }
+        }
+        self.link
+            .as_ref()
+            .map_or((ptr::null(), ptr::null()), |link| (*link).first_entry())
+    }
+
+    pub fn search_entry(
+        &self,
+        key: &K,
+        partial_hash: u16,
+    ) -> (*const EntryArrayLink<K, V>, *const (K, V)) {
+        for (i, v) in self.partial_hash_array.iter().enumerate() {
+            if *v == (partial_hash | 1) {
+                if unsafe { &(*self.entry_array[i].as_ptr()).0 } == key {
+                    return (
+                        self as *const EntryArrayLink<K, V>,
+                        self.entry_array[i].as_ptr(),
+                    );
+                }
+            }
+        }
+        self.link
+            .as_ref()
+            .map_or((ptr::null(), ptr::null()), |link| {
+                (*link).search_entry(key, partial_hash)
+            })
+    }
+
+    pub fn insert_entry(
+        &mut self,
+        key: &K,
+        partial_hash: u16,
+        value: V,
+    ) -> Result<(*const EntryArrayLink<K, V>, *const (K, V)), V> {
+        for i in 0..ARRAY_SIZE {
+            if self.partial_hash_array[i] == 0 {
+                self.partial_hash_array[i] = partial_hash | 1;
+                unsafe { self.entry_array[i].as_mut_ptr().write((key.clone(), value)) };
+                return Ok((
+                    self as *const EntryArrayLink<K, V>,
+                    self.entry_array[i].as_ptr(),
+                ));
+            }
+        }
+
+        if let Some(link) = &mut self.link {
+            return link.insert_entry(key, partial_hash, value);
+        } else {
+            return Err(value);
+        }
+    }
+
+    pub fn remove_entry(&mut self, key_value_pair_ptr: *const (K, V)) -> bool {
+        let mut removed = false;
+        let mut vacant = true;
+        for i in 0..ARRAY_SIZE {
+            if !removed && self.entry_array[i].as_ptr() == key_value_pair_ptr {
+                unsafe { std::ptr::drop_in_place(self.entry_array[i].as_mut_ptr()) };
+                self.partial_hash_array[i] = 0;
+                if !vacant {
+                    return false;
+                }
+                removed = true;
+            } else if vacant && self.partial_hash_array[i] != 0 {
+                if removed {
+                    return false;
+                }
+                vacant = false;
+            }
+        }
+        vacant
+    }
+
+    pub fn remove_link(
+        mut head: Box<EntryArrayLink<K, V>>,
+        entry_array_link_ptr: *const EntryArrayLink<K, V>,
+    ) -> LinkType<K, V> {
+        if head.compare_ptr(entry_array_link_ptr) {
+            return head.link.take();
+        }
+
+        let mut current_link_mut_ptr = &mut (*head).link as *mut LinkType<K, V>;
+        let mut current = &(*head).link;
+        while current.is_some() {
+            if current
+                .as_ref()
+                .map_or(false, |entry| entry.compare_ptr(entry_array_link_ptr))
+            {
+                let mut entry = unsafe { (*current_link_mut_ptr).take() };
+                unsafe {
+                    (*current_link_mut_ptr) = entry.as_mut().map_or(None, |entry| entry.link.take())
+                };
+                break;
+            }
+            let current_link_ptr = current.as_ref().map_or(std::ptr::null(), |entry| {
+                &entry.link as *const LinkType<K, V>
+            });
+            current_link_mut_ptr = current_link_ptr as *mut LinkType<K, V>;
+            current = unsafe { &(*current_link_ptr) };
+        }
+        Some(head)
+    }
+
+    fn compare_ptr(&self, entry_array_link_ptr: *const EntryArrayLink<K, V>) -> bool {
+        self as *const EntryArrayLink<K, V> == entry_array_link_ptr
+    }
+}
