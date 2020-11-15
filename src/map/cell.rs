@@ -263,10 +263,17 @@ impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
         let cell = self.get_cell_mut_ref();
         let entry_array_link_mut_ptr = entry_array_link_ptr as *mut EntryArrayLink<K, V>;
         if unsafe { (*entry_array_link_mut_ptr).remove_entry(key_value_pair_ptr) } {
-            let current = cell.link.take();
-            cell.link = current.map_or(None, |link| {
-                EntryArrayLink::<K, V>::remove_link(link, entry_array_link_ptr)
-            });
+            if let Ok(mut head) = cell
+                .link
+                .as_mut()
+                .map_or(Err(()), |head| head.remove_self(entry_array_link_mut_ptr))
+            {
+                cell.link = head.take();
+            } else {
+                cell.link
+                    .as_mut()
+                    .map(|head| head.remove_next(entry_array_link_mut_ptr));
+            }
         }
         cell.linked_entries -= 1;
     }

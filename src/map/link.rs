@@ -126,34 +126,31 @@ impl<K: Clone + Eq, V> EntryArrayLink<K, V> {
         vacant
     }
 
-    pub fn remove_link(
-        mut head: Box<EntryArrayLink<K, V>>,
+    pub fn remove_self(
+        &mut self,
         entry_array_link_ptr: *const EntryArrayLink<K, V>,
-    ) -> LinkType<K, V> {
-        if head.compare_ptr(entry_array_link_ptr) {
-            return head.link.take();
+    ) -> Result<LinkType<K, V>, ()> {
+        if self.compare_ptr(entry_array_link_ptr) {
+            return Ok(self.link.take());
         }
+        Err(())
+    }
 
-        let mut current_link_mut_ptr = &mut (*head).link as *mut LinkType<K, V>;
-        let mut current = &(*head).link;
-        while current.is_some() {
-            if current
-                .as_ref()
-                .map_or(false, |entry| entry.compare_ptr(entry_array_link_ptr))
-            {
-                let mut entry = unsafe { (*current_link_mut_ptr).take() };
-                unsafe {
-                    (*current_link_mut_ptr) = entry.as_mut().map_or(None, |entry| entry.link.take())
-                };
-                break;
+    pub fn remove_next(&mut self, entry_array_link_ptr: *const EntryArrayLink<K, V>) {
+        let next = self.link.as_mut().map_or(None, |next| {
+            if next.compare_ptr(entry_array_link_ptr) {
+                return Some(next.link.take());
             }
-            let current_link_ptr = current.as_ref().map_or(std::ptr::null(), |entry| {
-                &entry.link as *const LinkType<K, V>
-            });
-            current_link_mut_ptr = current_link_ptr as *mut LinkType<K, V>;
-            current = unsafe { &(*current_link_ptr) };
+            None
+        });
+        if let Some(next) = next {
+            self.link.take();
+            self.link = next;
+            return;
         }
-        Some(head)
+        self.link
+            .as_mut()
+            .map(|next| next.remove_next(entry_array_link_ptr));
     }
 
     fn compare_ptr(&self, entry_array_link_ptr: *const EntryArrayLink<K, V>) -> bool {
