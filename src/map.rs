@@ -98,8 +98,8 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
             }
             None => {
                 let result = accessor.cell_locker.insert_link(&key, partial_hash, value);
-                accessor.entry_array_link_ptr = result.0.0;
-                accessor.key_value_pair_ptr = result.0.1;
+                accessor.entry_array_link_ptr = (result.0).0;
+                accessor.key_value_pair_ptr = (result.0).1;
                 if array_ref.advise_expand(result.1) {
                     // resize
                 }
@@ -268,7 +268,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
             if array_ptr.is_null() {
                 continue;
             }
-            let array_ref = unsafe { &(*array_ptr)};
+            let array_ref = unsafe { &(*array_ptr) };
             let num_cells = array_ref.num_cells();
             statistics.capacity += num_cells * cell::ARRAY_SIZE as usize;
             statistics.cells += num_cells;
