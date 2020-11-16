@@ -678,7 +678,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                     self.array.store(
                         Owned::new(Array::<K, V>::new(
                             new_capacity,
-                            Atomic::from(unsafe { current_array.into_owned() }),
+                            Atomic::from(current_array),
                         )),
                         Release,
                     );
