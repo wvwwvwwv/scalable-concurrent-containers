@@ -37,11 +37,9 @@ impl<K: Clone + Eq, V> EntryArrayLink<K, V> {
                     };
                     let (key, value) = unsafe { entry.assume_init() };
                     key_value.replace((key, value));
-                    if !empty {
-                        break;
-                    }
                 } else {
                     empty = false;
+                    break;
                 }
             }
         }

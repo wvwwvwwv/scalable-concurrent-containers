@@ -1,6 +1,6 @@
 use super::cell::{Cell, CellLocker, ARRAY_SIZE};
 use super::link;
-use crossbeam::epoch::{Atomic, Guard, Shared};
+use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::convert::TryInto;
 use std::mem::MaybeUninit;
 use std::sync::atomic::AtomicUsize;
@@ -51,7 +51,7 @@ impl<K: Clone + Eq, V> Array<K, V> {
     }
 
     pub fn get_old_array<'a>(&self, guard: &'a Guard) -> Shared<'a, Array<K, V>> {
-        self.old_array.load(Relaxed, guard)
+        self.old_array.load(Relaxed, &guard)
     }
 
     pub fn calculate_metadata_array_index(&self, hash: u64) -> usize {
@@ -209,13 +209,12 @@ impl<K: Clone + Eq, V> Array<K, V> {
     }
 
     pub fn partial_rehash<F: Fn(&K) -> (u64, u16)>(&self, guard: &Guard, hasher: F) {
-        let old_array = self.get_old_array(&guard);
+        let old_array = self.old_array.load(Relaxed, guard);
         if old_array.is_null() {
             return;
         }
 
-        let current_array_size = self.num_cells();
-        let old_array_ref = unsafe { &(*old_array.as_raw()) };
+        let old_array_ref = unsafe { old_array.deref() };
         let old_array_size = old_array_ref.num_cells();
         let mut current = self.rehashing.load(Relaxed);
         loop {
@@ -241,15 +240,8 @@ impl<K: Clone + Eq, V> Array<K, V> {
 
         let completed = self.rehashed.fetch_add(16, Release) + 16;
         if old_array_size <= completed {
-            let old_array = self.old_array.swap(Shared::null(), Release, guard);
-            if !old_array.is_null() {
-                // drop the old array
-                unsafe {
-                    guard.defer_unchecked(move || {
-                        drop(old_array.into_owned());
-                    });
-                }
-            }
+            let old_array = self.old_array.swap(Shared::null(), Relaxed, guard);
+            unsafe { guard.defer_destroy(old_array) };
         }
     }
 }
