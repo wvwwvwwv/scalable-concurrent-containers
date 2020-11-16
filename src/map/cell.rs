@@ -24,6 +24,10 @@ pub struct Cell<K: Clone + Eq, V> {
 }
 
 impl<K: Clone + Eq, V> Cell<K, V> {
+    pub fn killed(&self) -> bool {
+        self.metadata.load(Relaxed) & KILLED_FLAG == KILLED_FLAG
+    }
+
     pub fn size(&self) -> (usize, usize) {
         (
             self.metadata.load(Relaxed).count_ones() as usize,
@@ -278,8 +282,29 @@ impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
         cell.linked_entries -= 1;
     }
 
+    pub fn consume_link(&mut self) -> Option<(K, V)> {
+        let cell = self.get_cell_mut_ref();
+        if cell.linked_entries == 0 {
+            return None;
+        }
+
+        if let Some(result) = cell.link.as_mut().map(|head| head.consume_first_entry()) {
+            if let Some(mut head) = result.0 {
+                cell.link = head.take();
+            }
+            cell.linked_entries -= 1;
+            return result.1;
+        }
+        None
+    }
+
     pub fn empty(&self) -> bool {
         (self.metadata & OCCUPANCY_MASK) == 0 && self.cell.linked_entries == 0
+    }
+
+    pub fn kill(&mut self) {
+        debug_assert!(self.empty());
+        self.metadata = self.metadata | KILLED_FLAG;
     }
 
     pub fn killed(&self) -> bool {

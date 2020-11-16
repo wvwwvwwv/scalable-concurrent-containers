@@ -101,7 +101,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                 accessor.entry_array_link_ptr = (result.0).0;
                 accessor.key_value_pair_ptr = (result.0).1;
                 if array_ref.advise_expand(result.1) {
-                    // resize
+                    self.resize();
                 }
             }
         };
@@ -368,11 +368,12 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         loop {
             // an Acquire fence is required to correctly load the contents of the array
             let current_array_ptr = self.array.load(Acquire, &guard).as_raw();
-            let old_array = unsafe { (*current_array_ptr).get_old_array(&guard) };
+            let current_array_ref = unsafe { &(*current_array_ptr) };
+            let old_array = current_array_ref.get_old_array(&guard);
             if !old_array.is_null() {
                 // relocate at most 16 cells
                 // self.relocate(current_array_ptr, old_array_ptr);
-                let (locker, entry_array_link_ptr, key_value_pair_ptr, cell_index, sub_index) =
+                let (mut locker, entry_array_link_ptr, key_value_pair_ptr, cell_index, sub_index) =
                     self.search(&key, hash, partial_hash, old_array.as_raw());
                 if !key_value_pair_ptr.is_null() {
                     return (
@@ -387,8 +388,11 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                         cell_index,
                     );
                 } else if !locker.killed() {
-                    // relocated the cell
-                    // self.kill(locker, old_array_ptr, current_array_ptr);
+                    // kill the cell
+                    let old_array_ref = unsafe { &(*old_array.as_raw()) };
+                    current_array_ref.kill_cell(&mut locker, old_array_ref, cell_index, &|key| {
+                        self.hash(key)
+                    });
                 }
             }
             let (locker, entry_array_link_ptr, key_value_pair_ptr, cell_index, sub_index) =
@@ -630,6 +634,55 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
             }
         }
         None
+    }
+
+    /// Resizes the array
+    fn resize(&self) {
+        let current_mutex_state = false;
+        if let Ok(_) =
+            self.resize_mutex
+                .compare_exchange(current_mutex_state, true, Acquire, Relaxed)
+        {
+            let guard = crossbeam::epoch::pin();
+            let current_array = self.array.load(Acquire, &guard);
+            let current_array_ref = unsafe { &(*current_array.as_raw()) };
+            let old_array = current_array_ref.get_old_array(&guard);
+            if old_array.is_null() {
+                // the resizing policies are as follows.
+                //  - load factor reaches 7/8: double the capacity
+                //  - load factor reaches 1/8: halve the capacity
+                let capacity = current_array_ref.num_cells() * cell::ARRAY_SIZE as usize;
+                let estimated_num_entries = self.len(|_| 32);
+                let new_capacity = if estimated_num_entries > (capacity / 8) * 7 {
+                    if capacity >= (1 << (std::mem::size_of::<usize>() * 8 - 2)) {
+                        capacity
+                    } else {
+                        capacity * 2
+                    }
+                } else if estimated_num_entries < capacity / 8 {
+                    if capacity / 2 >= self.minimum_capacity {
+                        capacity / 2
+                    } else {
+                        capacity
+                    }
+                } else {
+                    capacity
+                };
+
+                if new_capacity != capacity {
+                    let former_array = self.array.swap(
+                        Owned::new(Array::<K, V>::new(new_capacity, Atomic::null())),
+                        Release,
+                        &guard,
+                    );
+                    // NOT IMPLEMENTED!
+                    // 1. pass the pointer of the current array to the new array
+                    // 2. store former_array.into_owned() inside the array
+                    // 3. guard.defer_destroy after all entries are cleaned up
+                }
+            }
+            self.resize_mutex.store(false, Release);
+        }
     }
 }
 

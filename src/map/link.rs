@@ -23,6 +23,35 @@ impl<K: Clone + Eq, V> EntryArrayLink<K, V> {
         }
     }
 
+    pub fn consume_first_entry(&mut self) -> (Option<LinkType<K, V>>, Option<(K, V)>) {
+        let mut key_value = None;
+        let mut empty = true;
+        for i in 0..ARRAY_SIZE {
+            if self.partial_hash_array[i] != 0 {
+                if key_value.is_none() {
+                    self.partial_hash_array[i] = 0;
+                    let key_value_pair_entry_mut_ptr =
+                        &mut self.entry_array[i] as *mut MaybeUninit<(K, V)>;
+                    let entry = unsafe {
+                        std::ptr::replace(key_value_pair_entry_mut_ptr, MaybeUninit::uninit())
+                    };
+                    let (key, value) = unsafe { entry.assume_init() };
+                    key_value.replace((key, value));
+                    if !empty {
+                        break;
+                    }
+                } else {
+                    empty = false;
+                }
+            }
+        }
+        if empty {
+            (Some(self.link.take()), key_value)
+        } else {
+            (None, key_value)
+        }
+    }
+
     pub fn first_entry(&self) -> (*const EntryArrayLink<K, V>, *const (K, V)) {
         for i in 0..ARRAY_SIZE {
             if self.partial_hash_array[i] != 0 {

@@ -1,4 +1,4 @@
-use super::cell::{Cell, ARRAY_SIZE};
+use super::cell::{Cell, CellLocker, ARRAY_SIZE};
 use super::link;
 use crossbeam::epoch::{Atomic, Guard, Shared};
 use std::convert::TryInto;
@@ -75,17 +75,148 @@ impl<K: Clone + Eq, V> Array<K, V> {
     }
 
     pub fn advise_expand(&self, linked_entries: usize) -> bool {
-        (linked_entries + link::ARRAY_SIZE - 1) >= self.lb_capacity as usize
+        false && (linked_entries + link::ARRAY_SIZE - 1) >= self.lb_capacity as usize
     }
 
-    pub fn partial_rehash(&self, guard: &Guard) {
+    pub fn kill_cell<F: Fn(&K) -> (u64, u16)>(
+        &self,
+        cell_locker: &mut CellLocker<K, V>,
+        old_array: &Array<K, V>,
+        old_cell_index: usize,
+        hasher: &F,
+    ) {
+        if cell_locker.killed() {
+            return;
+        } else if cell_locker.empty() {
+            cell_locker.kill();
+            return;
+        }
+
+        let shrink = self.num_cells() < old_array.num_cells();
+        let target_cell_index = if shrink {
+            old_cell_index / 2
+        } else {
+            old_cell_index * 2
+        };
+        let mut target_cell = CellLocker::lock(self.get_cell(target_cell_index));
+        let mut optional_target_cell: Option<CellLocker<K, V>> = None;
+
+        let mut current = cell_locker.next_occupied(u8::MAX);
+        while current != u8::MAX {
+            let old_index = old_cell_index * ARRAY_SIZE as usize + current as usize;
+            let key_value_pair_entry_ptr =
+                &old_array.entry_array[old_index] as *const MaybeUninit<(K, V)>;
+            let key_value_pair_entry_mut_ptr = key_value_pair_entry_ptr as *mut MaybeUninit<(K, V)>;
+            let entry =
+                unsafe { std::ptr::replace(key_value_pair_entry_mut_ptr, MaybeUninit::uninit()) };
+            let (key, value) = unsafe { entry.assume_init() };
+            let (hash, partial_hash) = hasher(&key);
+            let new_cell_index = self.calculate_metadata_array_index(hash);
+            if optional_target_cell.is_none() && new_cell_index != target_cell_index {
+                optional_target_cell.replace(CellLocker::lock(self.get_cell(new_cell_index)));
+            }
+
+            // the new location is /2, *2 or *2+1
+            debug_assert!(
+                (!shrink
+                    && (new_cell_index == old_cell_index * 2
+                        || new_cell_index == old_cell_index * 2 + 1))
+                    || (shrink && new_cell_index == old_cell_index / 2)
+            );
+
+            self.insert(
+                &key,
+                partial_hash,
+                value,
+                new_cell_index,
+                target_cell_index,
+                &mut target_cell,
+                &mut optional_target_cell,
+            );
+            cell_locker.remove(current);
+            current = cell_locker.next_occupied(current);
+        }
+
+        if cell_locker.overflowing() {
+            while let Some((key, value)) = cell_locker.consume_link() {
+                let (hash, partial_hash) = hasher(&key);
+                let new_cell_index = self.calculate_metadata_array_index(hash);
+                if optional_target_cell.is_none() && new_cell_index != target_cell_index {
+                    optional_target_cell.replace(CellLocker::lock(self.get_cell(new_cell_index)));
+                }
+
+                // the new location is /2, *2 or *2+1
+                debug_assert!(
+                    (!shrink
+                        && (new_cell_index == old_cell_index * 2
+                            || new_cell_index == old_cell_index * 2 + 1))
+                        || (shrink && new_cell_index == old_cell_index / 2)
+                );
+
+                self.insert(
+                    &key,
+                    partial_hash,
+                    value,
+                    new_cell_index,
+                    target_cell_index,
+                    &mut target_cell,
+                    &mut optional_target_cell,
+                );
+            }
+        }
+
+        cell_locker.kill();
+    }
+
+    fn insert(
+        &self,
+        key: &K,
+        partial_hash: u16,
+        value: V,
+        new_cell_index: usize,
+        target_cell_index: usize,
+        target_cell: &mut CellLocker<K, V>,
+        optional_target_cell: &mut Option<CellLocker<K, V>>,
+    ) {
+        let mut new_sub_index = u8::MAX;
+        if new_cell_index != target_cell_index {
+            debug_assert!(new_cell_index == target_cell_index + 1);
+            if let Some(sub_index) = optional_target_cell
+                .as_mut()
+                .map_or(None, |cell| cell.insert(partial_hash))
+            {
+                new_sub_index = sub_index;
+            }
+        } else {
+            if let Some(sub_index) = target_cell.insert(partial_hash) {
+                new_sub_index = sub_index;
+            }
+        }
+
+        if new_sub_index != u8::MAX {
+            let key_value_array_index =
+                new_cell_index * (ARRAY_SIZE as usize) + (new_sub_index as usize);
+            let key_value_pair_mut_ptr =
+                self.get_key_value_pair(key_value_array_index) as *mut (K, V);
+            unsafe { key_value_pair_mut_ptr.write((key.clone(), value)) };
+        } else if new_cell_index != target_cell_index {
+            optional_target_cell
+                .as_mut()
+                .map(|cell| cell.insert_link(&key, partial_hash, value));
+        } else {
+            target_cell.insert_link(&key, partial_hash, value);
+        }
+    }
+
+    pub fn partial_rehash<F: Fn(&K) -> (u64, u16)>(&self, guard: &Guard, hasher: F) {
         let old_array = self.get_old_array(&guard);
         if old_array.is_null() {
             return;
         }
 
         let current_array_size = self.num_cells();
-        let old_array_size = unsafe { (*old_array.as_raw()).num_cells() };
+        let old_array_ref = unsafe { &(*old_array.as_raw()) };
+        let old_array_size = old_array_ref.num_cells();
         let mut current = self.rehashing.load(Relaxed);
         loop {
             if current >= self.num_cells() {
@@ -100,16 +231,12 @@ impl<K: Clone + Eq, V> Array<K, V> {
             }
         }
 
-        if current_array_size > old_array_size {
-            for old_array_index in current..(current + 16) {
-                let current_array_index_1 = old_array_index * 2;
-                let current_array_index_2 = current_array_index_1 + 1;
+        for old_cell_index in current..(current + 16) {
+            if old_array_ref.metadata_array[old_cell_index].killed() {
+                continue;
             }
-        } else {
-            for current_array_index in (current / 2)..(current / 2 + 8) {
-                let old_array_index_1 = current_array_index * 2;
-                let old_array_index_2 = old_array_index_1 + 1;
-            }
+            let mut old_cell = CellLocker::lock(&old_array_ref.metadata_array[old_cell_index]);
+            self.kill_cell(&mut old_cell, old_array_ref, old_cell_index, &hasher);
         }
 
         let completed = self.rehashed.fetch_add(16, Release) + 16;
