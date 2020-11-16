@@ -695,7 +695,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Drop for Hash
     }
 }
 
-/// Accessor offer a means of reading a key-value stored in a hash map container.
+/// Accessor offers a means of reading a key-value stored in a hash map container.
 ///
 /// It is !Send, thus disallowing other threads to have references to it.
 pub struct Accessor<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> {
