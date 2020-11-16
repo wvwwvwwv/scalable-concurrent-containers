@@ -84,12 +84,12 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         if !accessor.key_value_pair_ptr.is_null() {
             return Err((accessor, value));
         }
+        let array_ref = unsafe { &(*array_ptr) };
         match accessor.cell_locker.insert(partial_hash) {
             Some(sub_index) => {
                 let key_value_array_index =
                     cell_index * (cell::ARRAY_SIZE as usize) + (sub_index as usize);
-                let key_value_pair_ptr =
-                    unsafe { (*array_ptr).get_key_value_pair(key_value_array_index) };
+                let key_value_pair_ptr = array_ref.get_key_value_pair(key_value_array_index);
                 let key_value_pair_mut_ptr = key_value_pair_ptr as *mut (K, V);
                 unsafe { key_value_pair_mut_ptr.write((key.clone(), value)) };
                 accessor.sub_index = sub_index;
@@ -98,8 +98,11 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
             }
             None => {
                 let result = accessor.cell_locker.insert_link(&key, partial_hash, value);
-                accessor.entry_array_link_ptr = result.0;
-                accessor.key_value_pair_ptr = result.1;
+                accessor.entry_array_link_ptr = result.0.0;
+                accessor.key_value_pair_ptr = result.0.1;
+                if array_ref.advise_expand(result.1) {
+                    // resize
+                }
             }
         };
         Ok(accessor)
@@ -243,14 +246,16 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
             let (size, linked_entries) = unsafe { (*current_array_ptr).get_cell(i).size() };
             num_entries += size + linked_entries;
         }
-        let approximated_size = ((num_entries as f64) / (num_samples as f64)) * (num_cells as f64);
-        approximated_size as usize
+        let size_estimated = ((num_entries as f64) / (num_samples as f64)) * (num_cells as f64);
+        size_estimated as usize
     }
 
     /// Returns the statistics of the HashMap.
     pub fn statistics(&self) -> Statistics {
         let mut statistics = Statistics {
             capacity: 0,
+            cells: 0,
+            empty_cells: 0,
             entries: 0,
             linked_entries: 0,
             cells_having_link: 0,
@@ -258,17 +263,28 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         };
         let guard = crossbeam::epoch::pin();
         let current_array_ptr = self.array.load(Acquire, &guard).as_raw();
-        let num_cells = unsafe { (*current_array_ptr).num_cells() };
-        statistics.capacity += num_cells * cell::ARRAY_SIZE as usize;
-        for i in 0..num_cells {
-            let (size, linked_entries) = unsafe { (*current_array_ptr).get_cell(i).size() };
-            statistics.entries += size + linked_entries;
-            if linked_entries > 0 {
-                statistics.entries += linked_entries;
-                statistics.linked_entries += linked_entries;
-                statistics.cells_having_link += 1;
-                if statistics.max_link_length < linked_entries {
-                    statistics.max_link_length = linked_entries;
+        let old_array_ptr = unsafe { (*current_array_ptr).get_old_array(&guard).as_raw() };
+        for array_ptr in vec![old_array_ptr, current_array_ptr] {
+            if array_ptr.is_null() {
+                continue;
+            }
+            let array_ref = unsafe { &(*array_ptr)};
+            let num_cells = array_ref.num_cells();
+            statistics.capacity += num_cells * cell::ARRAY_SIZE as usize;
+            statistics.cells += num_cells;
+            for i in 0..num_cells {
+                let (size, linked_entries) = array_ref.get_cell(i).size();
+                statistics.entries += size + linked_entries;
+                if size == 0 {
+                    statistics.empty_cells += 1;
+                }
+                if linked_entries > 0 {
+                    statistics.entries += linked_entries;
+                    statistics.linked_entries += linked_entries;
+                    statistics.cells_having_link += 1;
+                    if statistics.max_link_length < linked_entries {
+                        statistics.max_link_length = linked_entries;
+                    }
                 }
             }
         }
@@ -407,6 +423,9 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                 .cell_locker
                 .remove_link(accessor.entry_array_link_ptr, accessor.key_value_pair_ptr)
         }
+        if accessor.cell_locker.empty() {
+            // resize
+        }
     }
 
     /// Searches for a cell for the key.
@@ -423,8 +442,9 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         usize,
         u8,
     ) {
-        let cell_index = unsafe { (*array_ptr).calculate_metadata_array_index(hash) };
-        let locker = CellLocker::lock(unsafe { (*array_ptr).get_cell(cell_index) });
+        let array_ref = unsafe { &(*array_ptr) };
+        let cell_index = array_ref.calculate_metadata_array_index(hash);
+        let locker = CellLocker::lock(array_ref.get_cell(cell_index));
         if !locker.killed() && !locker.empty() {
             if locker.overflowing() {
                 let (entry_array_link_ptr, key_value_pair_ptr) =
@@ -442,8 +462,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
             if let Some(sub_index) = locker.search_preferred(partial_hash) {
                 let key_value_array_index =
                     cell_index * (cell::ARRAY_SIZE as usize) + (sub_index as usize);
-                let key_value_pair_ptr =
-                    unsafe { (*array_ptr).get_key_value_pair(key_value_array_index) };
+                let key_value_pair_ptr = array_ref.get_key_value_pair(key_value_array_index);
                 if unsafe { (*key_value_pair_ptr).0 == *key } {
                     return (
                         locker,
@@ -458,8 +477,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
             while let Some(sub_index) = locker.search(current_index, partial_hash) {
                 let key_value_array_index =
                     cell_index * (cell::ARRAY_SIZE as usize) + (sub_index as usize);
-                let key_value_pair_ptr =
-                    unsafe { (*array_ptr).get_key_value_pair(key_value_array_index) };
+                let key_value_pair_ptr = array_ref.get_key_value_pair(key_value_array_index);
                 if unsafe { (*key_value_pair_ptr).0 == *key } {
                     return (
                         locker,
@@ -487,9 +505,10 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                 if array_ptr.is_null() {
                     continue;
                 }
-                let num_cells = unsafe { (*array_ptr).num_cells() };
+                let array_ref = unsafe { &(*array_ptr) };
+                let num_cells = array_ref.num_cells();
                 for cell_index in 0..num_cells {
-                    let locker = CellLocker::lock(unsafe { (*array_ptr).get_cell(cell_index) });
+                    let locker = CellLocker::lock(array_ref.get_cell(cell_index));
                     if !locker.killed() && !locker.empty() {
                         // once a valid cell is locked, the array is guaranteed to retain
                         return (Some(locker), array_ptr, cell_index);
@@ -780,6 +799,8 @@ impl<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Iterator
 pub struct Statistics {
     capacity: usize,
     entries: usize,
+    cells: usize,
+    empty_cells: usize,
     linked_entries: usize,
     cells_having_link: usize,
     max_link_length: usize,
@@ -789,8 +810,10 @@ impl fmt::Display for Statistics {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "capacity: {}, entries: {}, linked_entries: {}, cells_having_link: {}, max_link_length: {}",
+            "capacity: {}, cells: {}, empty_cells: {}, entries: {}, linked_entries: {}, cells_having_link: {}, max_link_length: {}",
             self.capacity,
+            self.cells,
+            self.empty_cells,
             self.entries,
             self.linked_entries,
             self.cells_having_link,

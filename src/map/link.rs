@@ -1,9 +1,9 @@
 use std::mem::MaybeUninit;
 use std::ptr;
 
-const ARRAY_SIZE: usize = 4;
+pub const ARRAY_SIZE: usize = 4;
 
-pub type LinkType<K: Clone + Eq, V> = Option<Box<EntryArrayLink<K, V>>>;
+pub type LinkType<K, V> = Option<Box<EntryArrayLink<K, V>>>;
 
 pub struct EntryArrayLink<K: Clone + Eq, V> {
     /// The array of partial hash values

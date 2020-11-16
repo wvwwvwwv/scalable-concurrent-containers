@@ -235,14 +235,14 @@ impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
         key: &K,
         partial_hash: u16,
         value: V,
-    ) -> (*const EntryArrayLink<K, V>, *const (K, V)) {
+    ) -> ((*const EntryArrayLink<K, V>, *const (K, V)), usize) {
         let cell = self.get_cell_mut_ref();
         let mut value = value;
         if let Some(link) = &mut cell.link {
             match link.insert_entry(key, partial_hash, value) {
                 Ok(result) => {
                     cell.linked_entries += 1;
-                    return result;
+                    return (result, cell.linked_entries);
                 }
                 Err(result) => value = result,
             }
@@ -252,7 +252,7 @@ impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
         let result = new_entry_array_link.insert_entry(key, partial_hash, value);
         cell.link = Some(new_entry_array_link);
         cell.linked_entries += 1;
-        return result.ok().unwrap();
+        return (result.ok().unwrap(), cell.linked_entries);
     }
 
     pub fn remove_link(
@@ -286,7 +286,7 @@ impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
         self.metadata & KILLED_FLAG == KILLED_FLAG
     }
 
-    pub fn get_cell_mut_ref(&mut self) -> &mut Cell<K, V> {
+    fn get_cell_mut_ref(&mut self) -> &mut Cell<K, V> {
         let cell_ptr = self.cell as *const Cell<K, V>;
         let cell_mut_ptr = cell_ptr as *mut Cell<K, V>;
         unsafe { &mut (*cell_mut_ptr) }
@@ -468,7 +468,7 @@ mod test {
                             xlocker.insert(tid.try_into().unwrap());
                         } else if i == 512 {
                             let key = tid + num_threads;
-                            let inserted = xlocker.insert_link(&key, 1, i);
+                            let inserted = xlocker.insert_link(&key, 1, i).0;
                             assert_eq!(unsafe { *inserted.1 }, (key, 512));
                             assert!(xlocker.overflowing());
                             assert!(!xlocker.search_link(&key, 1).0.is_null());

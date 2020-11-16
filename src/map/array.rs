@@ -1,4 +1,5 @@
 use super::cell::{Cell, ARRAY_SIZE};
+use super::link;
 use crossbeam::epoch::{Atomic, Guard, Shared};
 use std::convert::TryInto;
 use std::mem::MaybeUninit;
@@ -71,6 +72,10 @@ impl<K: Clone + Eq, V> Array<K, V> {
         debug_assert!(lb_capacity < (std::mem::size_of::<usize>() * 8));
         debug_assert!((1 << lb_capacity) * (ARRAY_SIZE as usize) >= adjusted_capacity);
         lb_capacity.try_into().unwrap()
+    }
+
+    pub fn advise_expand(&self, linked_entries: usize) -> bool {
+        (linked_entries + link::ARRAY_SIZE - 1) >= self.lb_capacity as usize
     }
 
     pub fn partial_rehash(&self, guard: &Guard) {
