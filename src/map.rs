@@ -44,7 +44,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         let initial_capacity = if let Some(capacity) = minimum_capacity {
             capacity
         } else {
-            160
+            256
         };
         HashMap {
             array: Atomic::new(Array::<K, V>::new(initial_capacity, Atomic::null())),
@@ -240,7 +240,11 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         let num_cells = current_array_ref.num_cells();
         let num_samples = std::cmp::min(f(num_cells), num_cells);
         if !old_array.is_null() {
-            // kill num_samples cells
+            for _ in 0..(num_samples / cell::ARRAY_SIZE as usize) {
+                if current_array_ref.partial_rehash(&guard, |key| self.hash(key)) {
+                    break;
+                }
+            }
         }
         let mut num_entries = 0;
         for i in 0..num_samples {
@@ -252,10 +256,28 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     }
 
     /// Returns the statistics of the HashMap.
+    ///
+    /// # Examples
+    /// ```
+    /// use scc::HashMap;
+    /// use std::collections::hash_map::RandomState;
+    ///
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), Some(1000));
+    ///
+    /// let result = hashmap.insert(1, 0);
+    /// if let Ok(result) = result {
+    ///     assert_eq!(result.get(), (&1, &mut 0));
+    /// }
+    ///
+    /// let statistics = hashmap.statistics();
+    /// assert_eq!(statistics.num_entries(), 1);
+    /// ```
     pub fn statistics(&self) -> Statistics {
         let mut statistics = Statistics {
             capacity: 0,
+            effective_capacity: 0,
             cells: 0,
+            killed_entries: 0,
             empty_cells: 0,
             entries: 0,
             linked_entries: 0,
@@ -272,6 +294,9 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
             let array_ref = unsafe { &(*array_ptr) };
             let num_cells = array_ref.num_cells();
             statistics.capacity += num_cells * cell::ARRAY_SIZE as usize;
+            if array_ptr == current_array.as_raw() {
+                statistics.effective_capacity = num_cells * cell::ARRAY_SIZE as usize;
+            }
             statistics.cells += num_cells;
             for i in 0..num_cells {
                 let (size, linked_entries) = array_ref.get_cell(i).size();
@@ -280,12 +305,14 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                     statistics.empty_cells += 1;
                 }
                 if linked_entries > 0 {
-                    statistics.entries += linked_entries;
                     statistics.linked_entries += linked_entries;
                     statistics.cells_having_link += 1;
                     if statistics.max_link_length < linked_entries {
                         statistics.max_link_length = linked_entries;
                     }
+                }
+                if array_ref.get_cell(i).killed() {
+                    statistics.killed_entries += 1;
                 }
             }
         }
@@ -372,7 +399,9 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
             let current_array_ref = unsafe { current_array.deref() };
             let old_array = current_array_ref.get_old_array(&guard);
             if !old_array.is_null() {
-                // current_array_ref.partial_rehash(&guard);
+                if current_array_ref.partial_rehash(&guard, |key| self.hash(key)) {
+                    continue;
+                }
                 let (mut locker, entry_array_link_ptr, key_value_pair_ptr, cell_index, sub_index) =
                     self.search(&key, hash, partial_hash, old_array.as_raw());
                 if !key_value_pair_ptr.is_null() {
@@ -656,7 +685,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                 // the resizing policies are as follows.
                 //  - load factor reaches 7/8: double the capacity
                 //  - load factor reaches 1/8: halve the capacity
-                let capacity = current_array_ref.num_cells() * cell::ARRAY_SIZE as usize;
+                let capacity = current_array_ref.capacity();
                 let estimated_num_entries = self.len(|_| 32);
                 let new_capacity = if estimated_num_entries > (capacity / 8) * 7 {
                     if capacity >= (1 << (std::mem::size_of::<usize>() * 8 - 2)) {
@@ -854,7 +883,9 @@ impl<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Iterator
 /// Statistics
 pub struct Statistics {
     capacity: usize,
+    effective_capacity: usize,
     entries: usize,
+    killed_entries: usize,
     cells: usize,
     empty_cells: usize,
     linked_entries: usize,
@@ -862,13 +893,45 @@ pub struct Statistics {
     max_link_length: usize,
 }
 
+impl Statistics {
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+    pub fn effective_capacity(&self) -> usize {
+        self.effective_capacity
+    }
+    pub fn num_entries(&self) -> usize {
+        self.entries
+    }
+    pub fn num_killed_entries(&self) -> usize {
+        self.killed_entries
+    }
+    pub fn num_cells(&self) -> usize {
+        self.cells
+    }
+    pub fn num_empty_cells(&self) -> usize {
+        self.empty_cells
+    }
+    pub fn num_linked_entries(&self) -> usize {
+        self.linked_entries
+    }
+    pub fn num_cells_having_link(&self) -> usize {
+        self.cells_having_link
+    }
+    pub fn max_link_length(&self) -> usize {
+        self.max_link_length
+    }
+}
+
 impl fmt::Display for Statistics {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "capacity: {}, cells: {}, empty_cells: {}, entries: {}, linked_entries: {}, cells_having_link: {}, max_link_length: {}",
+            "capacity: {}, effective_capacity: {}, cells: {}, killed_entries: {}, empty_cells: {}, entries: {}, linked_entries: {}, cells_having_link: {}, max_link_length: {}",
             self.capacity,
+            self.effective_capacity,
             self.cells,
+            self.killed_entries,
             self.empty_cells,
             self.entries,
             self.linked_entries,

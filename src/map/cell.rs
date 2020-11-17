@@ -30,7 +30,7 @@ impl<K: Clone + Eq, V> Cell<K, V> {
 
     pub fn size(&self) -> (usize, usize) {
         (
-            self.metadata.load(Relaxed).count_ones() as usize,
+            (self.metadata.load(Relaxed) & OCCUPANCY_MASK).count_ones() as usize,
             self.linked_entries,
         )
     }

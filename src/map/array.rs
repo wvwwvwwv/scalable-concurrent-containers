@@ -50,6 +50,10 @@ impl<K: Clone + Eq, V> Array<K, V> {
         1 << self.lb_capacity
     }
 
+    pub fn capacity(&self) -> usize {
+        (1 << self.lb_capacity) * (ARRAY_SIZE as usize)
+    }
+
     pub fn get_old_array<'a>(&self, guard: &'a Guard) -> Shared<'a, Array<K, V>> {
         self.old_array.load(Relaxed, &guard)
     }
@@ -75,7 +79,8 @@ impl<K: Clone + Eq, V> Array<K, V> {
     }
 
     pub fn advise_expand(&self, linked_entries: usize) -> bool {
-        false && (linked_entries + link::ARRAY_SIZE - 1) >= self.lb_capacity as usize
+        // num(linked_entries + delta) >= log(capacity)
+        (linked_entries + link::ARRAY_SIZE / 2) >= self.lb_capacity as usize
     }
 
     pub fn kill_cell<F: Fn(&K) -> (u64, u16)>(
@@ -208,10 +213,10 @@ impl<K: Clone + Eq, V> Array<K, V> {
         }
     }
 
-    pub fn partial_rehash<F: Fn(&K) -> (u64, u16)>(&self, guard: &Guard, hasher: F) {
+    pub fn partial_rehash<F: Fn(&K) -> (u64, u16)>(&self, guard: &Guard, hasher: F) -> bool {
         let old_array = self.old_array.load(Relaxed, guard);
         if old_array.is_null() {
-            return;
+            return true;
         }
 
         let old_array_ref = unsafe { old_array.deref() };
@@ -219,7 +224,7 @@ impl<K: Clone + Eq, V> Array<K, V> {
         let mut current = self.rehashing.load(Relaxed);
         loop {
             if current >= self.num_cells() {
-                return;
+                return false;
             }
             match self
                 .rehashing
@@ -230,7 +235,7 @@ impl<K: Clone + Eq, V> Array<K, V> {
             }
         }
 
-        for old_cell_index in current..(current + 16) {
+        for old_cell_index in current..(current + ARRAY_SIZE as usize).min(old_array_size) {
             if old_array_ref.metadata_array[old_cell_index].killed() {
                 continue;
             }
@@ -238,11 +243,13 @@ impl<K: Clone + Eq, V> Array<K, V> {
             self.kill_cell(&mut old_cell, old_array_ref, old_cell_index, &hasher);
         }
 
-        let completed = self.rehashed.fetch_add(16, Release) + 16;
+        let completed = self.rehashed.fetch_add(ARRAY_SIZE as usize, Release) + ARRAY_SIZE as usize;
         if old_array_size <= completed {
             let old_array = self.old_array.swap(Shared::null(), Relaxed, guard);
             unsafe { guard.defer_destroy(old_array) };
+            return true;
         }
+        false
     }
 }
 

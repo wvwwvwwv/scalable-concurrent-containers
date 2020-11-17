@@ -119,6 +119,9 @@ mod test {
                 let result = hashmap.upsert(Data::new(d, &checker), Data::new(d + 1, &checker));
                 (*result.get().1) = Data::new(d + 2, &checker);
             }
+            let statistics = hashmap.statistics();
+            println!("{}", statistics);
+            assert_eq!(statistics.num_entries() as u64, range);
             let mut found_keys = 0;
             for iter in hashmap.iter() {
                 assert!(iter.0.data < key + range);
