@@ -246,7 +246,9 @@ impl<K: Clone + Eq, V> Array<K, V> {
         let completed = self.rehashed.fetch_add(ARRAY_SIZE as usize, Release) + ARRAY_SIZE as usize;
         if old_array_size <= completed {
             let old_array = self.old_array.swap(Shared::null(), Relaxed, guard);
-            unsafe { guard.defer_destroy(old_array) };
+            if !old_array.is_null() {
+                unsafe { guard.defer_destroy(old_array) };
+            }
             return true;
         }
         false

@@ -5,8 +5,8 @@ pub mod cell;
 pub mod link;
 
 use array::Array;
-use cell::{Cell, CellLocker, CellReader};
-use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
+use cell::{CellLocker, CellReader};
+use crossbeam_epoch::{Atomic, Owned, Shared};
 use link::EntryArrayLink;
 use std::convert::TryInto;
 use std::fmt;
@@ -14,8 +14,7 @@ use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-/// A scalable concur
-/// rent hash map implementation.
+/// A scalable concurrent hash map implementation.
 ///
 /// The key features of scc::HashMap are as follows.
 /// * No sharding: all keys are managed by a single array of key metadata cells.
