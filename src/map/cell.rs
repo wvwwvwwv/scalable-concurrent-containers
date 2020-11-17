@@ -1,6 +1,5 @@
 use super::link::{EntryArrayLink, LinkType};
 use std::convert::TryInto;
-use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicPtr, AtomicU32};
@@ -322,6 +321,7 @@ impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
 /// CellReader
 pub struct CellReader<'a, K: Clone + Eq, V> {
     cell: &'a Cell<K, V>,
+    metadata: u32,
 }
 
 impl<'a, K: Clone + Eq, V> CellReader<'a, K, V> {
@@ -350,7 +350,12 @@ impl<'a, K: Clone + Eq, V> CellReader<'a, K, V> {
                 .metadata
                 .compare_exchange(current, current + SLOCK, Acquire, Relaxed)
             {
-                Ok(_) => return Some(CellReader { cell: cell }),
+                Ok(result) => {
+                    return Some(CellReader {
+                        cell: cell,
+                        metadata: result,
+                    })
+                }
                 Err(result) => {
                     if result & LOCK_MASK >= SLOCK_MAX {
                         return None;
@@ -361,13 +366,31 @@ impl<'a, K: Clone + Eq, V> CellReader<'a, K, V> {
         }
     }
 
-    pub fn get(
-        &self,
-        key: &K,
-        partial_hash: u16,
-        cell_index: usize,
-        entry_array: *const Vec<MaybeUninit<(K, V)>>,
-    ) -> Option<*const (K, V)> {
+    pub fn get(&self, key: &K, partial_hash: u16) -> Option<(u8, *const (K, V))> {
+        if self.cell.linked_entries > 0 {
+            let result = self
+                .cell
+                .link
+                .as_ref()
+                .map_or(ptr::null(), |link| link.search_entry(key, partial_hash).1);
+            if !result.is_null() {
+                return Some((u8::MAX, result));
+            }
+        }
+        let preferred_index = (partial_hash % (ARRAY_SIZE as u16)).try_into().unwrap();
+        if self.cell.partial_hash_array[preferred_index as usize] == partial_hash
+            && (self.metadata & (OCCUPANCY_BIT << preferred_index)) != 0
+        {
+            return Some((preferred_index, ptr::null()));
+        }
+        for i in 0..ARRAY_SIZE {
+            if i != preferred_index
+                && self.cell.partial_hash_array[i as usize] == partial_hash
+                && (self.metadata & (OCCUPANCY_BIT << i)) != 0
+            {
+                return Some((i, ptr::null()));
+            }
+        }
         None
     }
 }
@@ -534,6 +557,9 @@ mod test {
             assert_ne!(result.0, ptr::null());
             assert_eq!(unsafe { *result.1 }, (key, 512));
             xlocker.remove_link(result.0, result.1);
+            drop(xlocker);
+            let xlocker_again = CellLocker::lock(&*cell);
+            drop(xlocker_again);
         }
         assert_eq!((*cell).linked_entries, 0);
         assert_eq!((*cell).size().0, ARRAY_SIZE as usize);

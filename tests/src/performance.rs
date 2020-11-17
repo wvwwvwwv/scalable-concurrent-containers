@@ -1,8 +1,6 @@
-use scc::HashMap;
-
 #[cfg(test)]
 mod test {
-    use super::*;
+    use scc::HashMap;
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hash};
     use std::sync::atomic::Ordering::Relaxed;

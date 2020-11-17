@@ -42,7 +42,7 @@ impl<K: Clone + Eq, V> Array<K, V> {
         &self.metadata_array[index]
     }
 
-    pub fn get_key_value_pair(&self, index: usize) -> *const (K, V) {
+    pub fn get_entry(&self, index: usize) -> *const (K, V) {
         self.entry_array[index].as_ptr()
     }
 
@@ -97,9 +97,14 @@ impl<K: Clone + Eq, V> Array<K, V> {
             return;
         }
 
-        let shrink = self.num_cells() < old_array.num_cells();
+        let shrink = old_array.lb_capacity > self.lb_capacity;
+        let shrinking_ratio = if shrink {
+            1 << (old_array.lb_capacity - self.lb_capacity)
+        } else {
+            1
+        };
         let target_cell_index = if shrink {
-            old_cell_index / 2
+            old_cell_index / shrinking_ratio
         } else {
             old_cell_index * 2
         };
@@ -109,11 +114,9 @@ impl<K: Clone + Eq, V> Array<K, V> {
         let mut current = cell_locker.next_occupied(u8::MAX);
         while current != u8::MAX {
             let old_index = old_cell_index * ARRAY_SIZE as usize + current as usize;
-            let key_value_pair_entry_ptr =
-                &old_array.entry_array[old_index] as *const MaybeUninit<(K, V)>;
-            let key_value_pair_entry_mut_ptr = key_value_pair_entry_ptr as *mut MaybeUninit<(K, V)>;
-            let entry =
-                unsafe { std::ptr::replace(key_value_pair_entry_mut_ptr, MaybeUninit::uninit()) };
+            let entry_ptr = &old_array.entry_array[old_index] as *const MaybeUninit<(K, V)>;
+            let entry_mut_ptr = entry_ptr as *mut MaybeUninit<(K, V)>;
+            let entry = unsafe { std::ptr::replace(entry_mut_ptr, MaybeUninit::uninit()) };
             let (key, value) = unsafe { entry.assume_init() };
             let (hash, partial_hash) = hasher(&key);
             let new_cell_index = self.calculate_metadata_array_index(hash);
@@ -121,12 +124,12 @@ impl<K: Clone + Eq, V> Array<K, V> {
                 optional_target_cell.replace(CellLocker::lock(self.get_cell(new_cell_index)));
             }
 
-            // the new location is /2, *2 or *2+1
+            // the new location is /shrinking_ratio, *2 or *2+1
             debug_assert!(
                 (!shrink
                     && (new_cell_index == old_cell_index * 2
                         || new_cell_index == old_cell_index * 2 + 1))
-                    || (shrink && new_cell_index == old_cell_index / 2)
+                    || (shrink && new_cell_index == old_cell_index / shrinking_ratio)
             );
 
             self.insert(
@@ -155,7 +158,7 @@ impl<K: Clone + Eq, V> Array<K, V> {
                     (!shrink
                         && (new_cell_index == old_cell_index * 2
                             || new_cell_index == old_cell_index * 2 + 1))
-                        || (shrink && new_cell_index == old_cell_index / 2)
+                        || (shrink && new_cell_index == old_cell_index / shrinking_ratio)
                 );
 
                 self.insert(
@@ -199,11 +202,10 @@ impl<K: Clone + Eq, V> Array<K, V> {
         }
 
         if new_sub_index != u8::MAX {
-            let key_value_array_index =
+            let entry_array_index =
                 new_cell_index * (ARRAY_SIZE as usize) + (new_sub_index as usize);
-            let key_value_pair_mut_ptr =
-                self.get_key_value_pair(key_value_array_index) as *mut (K, V);
-            unsafe { key_value_pair_mut_ptr.write((key.clone(), value)) };
+            let entry_mut_ptr = self.get_entry(entry_array_index) as *mut (K, V);
+            unsafe { entry_mut_ptr.write((key.clone(), value)) };
         } else if new_cell_index != target_cell_index {
             optional_target_cell
                 .as_mut()

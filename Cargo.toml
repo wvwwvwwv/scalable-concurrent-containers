@@ -1,6 +1,6 @@
 [package]
 name = "scc"
-version = "0.0.3"
+version = "0.1.0"
 authors = ["Changgyoo Park <wvwwvwwv@me.com>"]
 edition = "2018"
 

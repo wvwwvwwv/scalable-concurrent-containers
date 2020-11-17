@@ -1,6 +1,5 @@
 #[cfg(test)]
 mod test {
-    use super::*;
     use proptest::prelude::*;
     use scc::HashMap;
     use std::collections::hash_map::RandomState;
@@ -112,10 +111,12 @@ mod test {
         #[test]
         fn insert(key in 0u64..16) {
             let range = 1024;
-            let mut checker = AtomicUsize::new(0);
+            let checker = AtomicUsize::new(0);
             let hashmap: HashMap<Data, Data, RandomState> = HashMap::new(RandomState::new(), Some(10));
             for d in key..(key + range) {
-                hashmap.insert(Data::new(d, &checker), Data::new(d, &checker));
+                let result = hashmap.insert(Data::new(d, &checker), Data::new(d, &checker));
+                assert!(result.is_ok());
+                drop(result);
                 let result = hashmap.upsert(Data::new(d, &checker), Data::new(d + 1, &checker));
                 (*result.get().1) = Data::new(d + 2, &checker);
             }
@@ -123,7 +124,9 @@ mod test {
             println!("{}", statistics);
 
             for d in (key + range)..(key + range + range) {
-                hashmap.insert(Data::new(d, &checker), Data::new(d, &checker));
+                let result = hashmap.insert(Data::new(d, &checker), Data::new(d, &checker));
+                assert!(result.is_ok());
+                drop(result);
                 let result = hashmap.upsert(Data::new(d, &checker), Data::new(d + 1, &checker));
                 (*result.get().1) = Data::new(d + 2, &checker);
             }
@@ -151,8 +154,13 @@ mod test {
             }
             assert_eq!(checker.load(Relaxed), 0);
 
+            let statistics = hashmap.statistics();
+            println!("after erase: {}", statistics);
+
             for d in key..(key + range) {
-                hashmap.insert(Data::new(d, &checker), Data::new(d, &checker));
+                let result = hashmap.insert(Data::new(d, &checker), Data::new(d, &checker));
+                assert!(result.is_ok());
+                drop(result);
                 let result = hashmap.upsert(Data::new(d, &checker), Data::new(d + 1, &checker));
                 (*result.get().1) = Data::new(d + 2, &checker);
             }
