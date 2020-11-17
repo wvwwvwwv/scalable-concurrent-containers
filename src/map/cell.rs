@@ -2,7 +2,7 @@ use super::link::{EntryArrayLink, LinkType};
 use std::convert::TryInto;
 use std::ptr;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32};
+use std::sync::atomic::{AtomicPtr, AtomicU32};
 use std::sync::{Condvar, Mutex};
 
 pub const ARRAY_SIZE: u8 = 16;

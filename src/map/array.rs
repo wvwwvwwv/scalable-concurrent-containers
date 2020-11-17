@@ -1,6 +1,6 @@
 use super::cell::{Cell, CellLocker, ARRAY_SIZE};
 use super::link;
-use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
+use crossbeam_epoch::{Atomic, Guard, Shared};
 use std::convert::TryInto;
 use std::mem::MaybeUninit;
 use std::sync::atomic::AtomicUsize;
