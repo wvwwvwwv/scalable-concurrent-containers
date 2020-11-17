@@ -41,7 +41,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     /// ```
     pub fn new(hasher: H, minimum_capacity: Option<usize>) -> HashMap<K, V, H> {
         let initial_capacity = if let Some(capacity) = minimum_capacity {
-            capacity.min(64)
+            capacity.max(64)
         } else {
             256
         };
@@ -539,7 +539,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         }
     }
 
-    /// Searches for a cell for the key.
+    /// Searches a cell for the key.
     fn search<'a>(
         &self,
         key: &K,
