@@ -41,7 +41,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     /// ```
     pub fn new(hasher: H, minimum_capacity: Option<usize>) -> HashMap<K, V, H> {
         let initial_capacity = if let Some(capacity) = minimum_capacity {
-            capacity
+            capacity.min(64)
         } else {
             256
         };
@@ -190,25 +190,103 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
 
     /// Reads the key-value pair.
     pub fn read<U, F: FnOnce(&K, &V) -> U>(&self, key: K, f: F) -> Option<U> {
-        let _ = crossbeam_epoch::pin();
+        let (hash, partial_hash) = self.hash(&key);
+        let guard = crossbeam_epoch::pin();
+        loop {
+            // an Acquire fence is required to correctly load the contents of the array
+            let current_array = self.array.load(Acquire, &guard);
+            let current_array_ref = unsafe { current_array.deref() };
+            let old_array = current_array_ref.get_old_array(&guard);
+            if !old_array.is_null() {
+                if current_array_ref.partial_rehash(&guard, |key| self.hash(key)) {
+                    continue;
+                }
+            }
+        }
         None
     }
 
-    /// Mutates the value associated with the given key.
-    pub fn mutate<U, F: FnOnce(&K, &mut V) -> U>(&self, key: K, f: F) -> Option<U> {
-        let _ = crossbeam_epoch::pin();
-        None
+    /// Retains the key-value pairs that satisfy the given predicate.
+    ///
+    /// # Examples
+    /// ```
+    /// use scc::HashMap;
+    /// use std::collections::hash_map::RandomState;
+    ///
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), Some(1000));
+    ///
+    /// let result = hashmap.insert(1, 0);
+    /// if let Ok(result) = result {
+    ///     assert_eq!(result.get(), (&1, &mut 0));
+    /// }
+    ///
+    /// let result = hashmap.insert(2, 0);
+    /// if let Ok(result) = result {
+    ///     assert_eq!(result.get(), (&2, &mut 0));
+    /// }
+    ///
+    /// let result = hashmap.retain(|key, value| *key == 1 && *value == 0);
+    /// assert_eq!(result, (1, 1));
+    ///
+    /// let result = hashmap.get(1);
+    /// assert_eq!(result.unwrap().get(), (&1, &mut 0));
+    ///
+    /// let result = hashmap.get(2);
+    /// assert!(result.is_none());
+    /// ```
+    pub fn retain<F: Fn(&K, &mut V) -> bool>(&self, f: F) -> (usize, usize) {
+        let mut retained_entries = 0;
+        let mut removed_entries = 0;
+        let mut scanner = self.iter();
+        while let Some((key, value)) = scanner.next() {
+            if !f(key, value) {
+                scanner.erase_on_next = true;
+                removed_entries += 1;
+            } else {
+                retained_entries += 1;
+            }
+        }
+        if removed_entries > retained_entries {
+            let guard = crossbeam_epoch::pin();
+            let current_array = self.array.load(Acquire, &guard);
+            let current_array_ref = unsafe { current_array.deref() };
+            if retained_entries <= current_array_ref.capacity() / 8 {
+                self.resize();
+            }
+        }
+        (retained_entries, removed_entries)
     }
 
-    /// Retains the key-value pairs that the given function allows them to.
-    pub fn retain<F: Fn(&K, &mut V) -> bool>(&self, f: F) -> usize {
-        let _ = crossbeam_epoch::pin();
-        0
-    }
-
-    /// Clear all the key-value pairs stored at the moment.
+    /// Clears all the key-value pairs.
+    ///
+    /// # Examples
+    /// ```
+    /// use scc::HashMap;
+    /// use std::collections::hash_map::RandomState;
+    ///
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), Some(1000));
+    ///
+    /// let result = hashmap.insert(1, 0);
+    /// if let Ok(result) = result {
+    ///     assert_eq!(result.get(), (&1, &mut 0));
+    /// }
+    ///
+    /// let result = hashmap.insert(2, 0);
+    /// if let Ok(result) = result {
+    ///     assert_eq!(result.get(), (&2, &mut 0));
+    /// }
+    ///
+    /// let result = hashmap.clear();
+    /// assert_eq!(result, 2);
+    ///
+    /// let result = hashmap.get(1);
+    /// assert!(result.is_none());
+    ///
+    /// let result = hashmap.get(2);
+    /// assert!(result.is_none());
+    /// ```
     pub fn clear(&self) -> usize {
-        self.retain(|_, _| false)
+        self.retain(|_, _| false).1
     }
 
     /// Returns an estimated size of the HashMap.
@@ -352,6 +430,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
             array_ptr: std::ptr::null(),
             cell_index: 0,
             activated: false,
+            erase_on_next: false,
         }
     }
 
@@ -644,6 +723,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                 array_ptr: array_ptr,
                 cell_index: cell_index,
                 activated: false,
+                erase_on_next: false,
             });
         }
         for sub_index in 0..cell::ARRAY_SIZE as u8 {
@@ -663,6 +743,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                     array_ptr: array_ptr,
                     cell_index: cell_index,
                     activated: false,
+                    erase_on_next: false,
                 });
             }
         }
@@ -692,12 +773,10 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                     } else {
                         capacity * 2
                     }
-                } else if estimated_num_entries < capacity / 8 {
-                    if capacity / 2 >= self.minimum_capacity {
-                        capacity / 2
-                    } else {
-                        capacity
-                    }
+                } else if estimated_num_entries.next_power_of_two() <= capacity / 8 {
+                    estimated_num_entries
+                        .next_power_of_two()
+                        .max(self.minimum_capacity)
                 } else {
                     capacity
                 };
@@ -800,6 +879,7 @@ pub struct Scanner<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHas
     array_ptr: *const Array<K, V>,
     cell_index: usize,
     activated: bool,
+    erase_on_next: bool,
 }
 
 impl<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Iterator
@@ -823,6 +903,15 @@ impl<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Iterator
                             .map_or(std::ptr::null(), |accessor| accessor.key_value_pair_ptr),
                     )
                 };
+                // erase the linked entry
+                if self.erase_on_next {
+                    self.accessor.as_mut().map(|accessor| {
+                        accessor
+                            .cell_locker
+                            .remove_link(accessor.entry_array_link_ptr, accessor.key_value_pair_ptr)
+                    });
+                    self.erase_on_next = false;
+                }
                 self.accessor.as_mut().map_or((), |accessor| {
                     accessor.entry_array_link_ptr = next.0;
                     accessor.key_value_pair_ptr = next.1;
@@ -833,6 +922,23 @@ impl<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Iterator
                 .as_ref()
                 .map_or(true, |accessor| accessor.entry_array_link_ptr.is_null())
             {
+                // erase the entry
+                if self
+                    .accessor
+                    .as_ref()
+                    .map_or(u8::MAX, |accessor| accessor.sub_index)
+                    != u8::MAX
+                    && self.erase_on_next
+                {
+                    self.accessor.as_mut().map(|accessor| {
+                        accessor.cell_locker.remove(accessor.sub_index);
+                        let key_value_pair_mut_ptr = accessor.key_value_pair_ptr as *mut (K, V);
+                        unsafe {
+                            std::ptr::drop_in_place(key_value_pair_mut_ptr);
+                        }
+                    });
+                    self.erase_on_next = false;
+                }
                 // advance in the cell
                 let new_sub_index = self.accessor.as_mut().map_or(u8::MAX, |accessor| {
                     accessor.sub_index = accessor.cell_locker.next_occupied(accessor.sub_index);

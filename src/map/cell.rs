@@ -359,6 +359,10 @@ impl<'a, K: Clone + Eq, V> CellReader<'a, K, V> {
             }
         }
     }
+
+    pub fn get(&self, key: &K, partial_hash: u16) -> Result<(u8, *const (K, V)), ()> {
+        Err(())
+    }
 }
 
 struct WaitQueueEntry {
