@@ -459,7 +459,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     ) -> (Accessor<'a, K, V, H>, *const Array<K, V>, usize) {
         let guard = crossbeam_epoch::pin();
 
-        // it is guaranteed that the thread reads a consistent snapshot of current and
+        // it is guaranteed that the thread reads a consistent snapshot of the current and
         // old array pair by a Release fence at the resize function, hence the following
         // procedure is correct.
         //  - the thread reads self.array, and it kills the target cell in the old array

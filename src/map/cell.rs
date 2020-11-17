@@ -1,5 +1,6 @@
 use super::link::{EntryArrayLink, LinkType};
 use std::convert::TryInto;
+use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicPtr, AtomicU32};
@@ -360,8 +361,14 @@ impl<'a, K: Clone + Eq, V> CellReader<'a, K, V> {
         }
     }
 
-    pub fn get(&self, key: &K, partial_hash: u16) -> Result<(u8, *const (K, V)), ()> {
-        Err(())
+    pub fn get(
+        &self,
+        key: &K,
+        partial_hash: u16,
+        cell_index: usize,
+        entry_array: *const Vec<MaybeUninit<(K, V)>>,
+    ) -> Option<*const (K, V)> {
+        None
     }
 }
 
