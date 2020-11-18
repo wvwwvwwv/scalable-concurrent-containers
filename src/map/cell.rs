@@ -226,12 +226,14 @@ impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
         key: &K,
         partial_hash: u16,
     ) -> (*const EntryArrayLink<K, V>, *const (K, V)) {
-        self.cell
-            .link
-            .as_ref()
-            .map_or((ptr::null(), ptr::null()), |link| {
-                link.search_entry(key, partial_hash)
-            })
+        let mut link_ref = &self.cell.link;
+        while let Some(link) = link_ref.as_ref() {
+            if let Some(result) = link.search_entry(key, partial_hash) {
+                return result;
+            }
+            link_ref = &link.link;
+        }
+        (ptr::null(), ptr::null())
     }
 
     pub fn insert_link(
@@ -239,24 +241,26 @@ impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
         key: &K,
         partial_hash: u16,
         value: V,
-    ) -> ((*const EntryArrayLink<K, V>, *const (K, V)), usize) {
+    ) -> (*const EntryArrayLink<K, V>, *const (K, V)) {
         let cell = self.get_cell_mut_ref();
         let mut value = value;
-        if let Some(link) = &mut cell.link {
+        let mut link_ref = &mut cell.link;
+        while let Some(link) = link_ref.as_mut() {
             match link.insert_entry(key, partial_hash, value) {
                 Ok(result) => {
                     cell.linked_entries += 1;
-                    return (result, cell.linked_entries);
+                    return result;
                 }
                 Err(result) => value = result,
             }
+            link_ref = &mut link.link;
         }
 
         let mut new_entry_array_link = Box::new(EntryArrayLink::new(cell.link.take()));
         let result = new_entry_array_link.insert_entry(key, partial_hash, value);
         cell.link = Some(new_entry_array_link);
         cell.linked_entries += 1;
-        return (result.ok().unwrap(), cell.linked_entries);
+        return result.ok().unwrap();
     }
 
     pub fn remove_link(
@@ -274,9 +278,13 @@ impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
             {
                 cell.link = head.take();
             } else {
-                cell.link
-                    .as_mut()
-                    .map(|head| head.remove_next(entry_array_link_mut_ptr));
+                let mut link_ref = &mut cell.link;
+                while let Some(link) = link_ref.as_mut() {
+                    if link.remove_next(entry_array_link_mut_ptr) {
+                        break;
+                    }
+                    link_ref = &mut link.link;
+                }
             }
         }
         cell.linked_entries -= 1;
@@ -296,6 +304,10 @@ impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
             return result.1;
         }
         None
+    }
+
+    pub fn num_linked_entries(&self) -> usize {
+        self.cell.linked_entries
     }
 
     pub fn empty(&self) -> bool {
@@ -368,13 +380,12 @@ impl<'a, K: Clone + Eq, V> CellReader<'a, K, V> {
 
     pub fn get(&self, key: &K, partial_hash: u16) -> Option<(u8, *const (K, V))> {
         if self.cell.linked_entries > 0 {
-            let result = self
-                .cell
-                .link
-                .as_ref()
-                .map_or(ptr::null(), |link| link.search_entry(key, partial_hash).1);
-            if !result.is_null() {
-                return Some((u8::MAX, result));
+            let mut link_ref = &self.cell.link;
+            while let Some(link) = link_ref.as_ref() {
+                if let Some(result) = link.search_entry(key, partial_hash) {
+                    return Some((u8::MAX, result.1));
+                }
+                link_ref = &link.link;
             }
         }
         let preferred_index = (partial_hash % (ARRAY_SIZE as u16)).try_into().unwrap();
@@ -527,8 +538,8 @@ mod test {
                             xlocker.insert(tid.try_into().unwrap());
                         } else if i == 512 {
                             let key = tid + num_threads;
-                            let inserted = xlocker.insert_link(&key, 1, i).0;
-                            assert_eq!(unsafe { *inserted.1 }, (key, 512));
+                            let inserted = xlocker.insert_link(&key, 1, i);
+                            assert_eq!(unsafe { *(inserted.1) }, (key, 512));
                             assert!(xlocker.overflowing());
                             assert!(!xlocker.search_link(&key, 1).0.is_null());
                         }

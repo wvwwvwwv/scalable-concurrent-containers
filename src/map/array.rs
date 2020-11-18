@@ -98,18 +98,18 @@ impl<K: Clone + Eq, V> Array<K, V> {
         }
 
         let shrink = old_array.lb_capacity > self.lb_capacity;
-        let shrinking_ratio = if shrink {
+        let ratio = if shrink {
             1 << (old_array.lb_capacity - self.lb_capacity)
         } else {
-            1
+            1 << (self.lb_capacity - old_array.lb_capacity)
         };
         let target_cell_index = if shrink {
-            old_cell_index / shrinking_ratio
+            old_cell_index / ratio
         } else {
-            old_cell_index * 2
+            old_cell_index * ratio
         };
-        let mut target_cell = CellLocker::lock(self.get_cell(target_cell_index));
-        let mut optional_target_cell: Option<CellLocker<K, V>> = None;
+        let num_target_cells = if shrink { 1 } else { ratio };
+        let mut target_cells: Vec<CellLocker<K, V>> = Vec::with_capacity(num_target_cells);
 
         let mut current = cell_locker.next_occupied(u8::MAX);
         while current != u8::MAX {
@@ -120,26 +120,23 @@ impl<K: Clone + Eq, V> Array<K, V> {
             let (key, value) = unsafe { entry.assume_init() };
             let (hash, partial_hash) = hasher(&key);
             let new_cell_index = self.calculate_metadata_array_index(hash);
-            if optional_target_cell.is_none() && new_cell_index != target_cell_index {
-                optional_target_cell.replace(CellLocker::lock(self.get_cell(new_cell_index)));
-            }
 
-            // the new location is /shrinking_ratio, *2 or *2+1
             debug_assert!(
-                (!shrink
-                    && (new_cell_index == old_cell_index * 2
-                        || new_cell_index == old_cell_index * 2 + 1))
-                    || (shrink && new_cell_index == old_cell_index / shrinking_ratio)
+                (!shrink && (new_cell_index - target_cell_index) < ratio)
+                    || (shrink && new_cell_index == old_cell_index / ratio)
             );
+
+            while target_cells.len() <= (new_cell_index - target_cell_index) {
+                let cell_index = target_cell_index + target_cells.len();
+                target_cells.push(CellLocker::lock(self.get_cell(cell_index)));
+            }
 
             self.insert(
                 &key,
                 partial_hash,
                 value,
                 new_cell_index,
-                target_cell_index,
-                &mut target_cell,
-                &mut optional_target_cell,
+                &mut target_cells[new_cell_index - target_cell_index],
             );
             cell_locker.remove(current);
             current = cell_locker.next_occupied(current);
@@ -149,26 +146,22 @@ impl<K: Clone + Eq, V> Array<K, V> {
             while let Some((key, value)) = cell_locker.consume_link() {
                 let (hash, partial_hash) = hasher(&key);
                 let new_cell_index = self.calculate_metadata_array_index(hash);
-                if optional_target_cell.is_none() && new_cell_index != target_cell_index {
-                    optional_target_cell.replace(CellLocker::lock(self.get_cell(new_cell_index)));
-                }
 
-                // the new location is /2, *2 or *2+1
                 debug_assert!(
-                    (!shrink
-                        && (new_cell_index == old_cell_index * 2
-                            || new_cell_index == old_cell_index * 2 + 1))
-                        || (shrink && new_cell_index == old_cell_index / shrinking_ratio)
+                    (!shrink && (new_cell_index - target_cell_index) < ratio)
+                        || (shrink && new_cell_index == old_cell_index / ratio)
                 );
+                while target_cells.len() <= (new_cell_index - target_cell_index) {
+                    let cell_index = target_cell_index + target_cells.len();
+                    target_cells.push(CellLocker::lock(self.get_cell(cell_index)));
+                }
 
                 self.insert(
                     &key,
                     partial_hash,
                     value,
                     new_cell_index,
-                    target_cell_index,
-                    &mut target_cell,
-                    &mut optional_target_cell,
+                    &mut target_cells[new_cell_index - target_cell_index],
                 );
             }
         }
@@ -181,37 +174,19 @@ impl<K: Clone + Eq, V> Array<K, V> {
         key: &K,
         partial_hash: u16,
         value: V,
-        new_cell_index: usize,
-        target_cell_index: usize,
-        target_cell: &mut CellLocker<K, V>,
-        optional_target_cell: &mut Option<CellLocker<K, V>>,
+        cell_index: usize,
+        cell_locker: &mut CellLocker<K, V>,
     ) {
         let mut new_sub_index = u8::MAX;
-        if new_cell_index != target_cell_index {
-            debug_assert!(new_cell_index == target_cell_index + 1);
-            if let Some(sub_index) = optional_target_cell
-                .as_mut()
-                .map_or(None, |cell| cell.insert(partial_hash))
-            {
-                new_sub_index = sub_index;
-            }
-        } else {
-            if let Some(sub_index) = target_cell.insert(partial_hash) {
-                new_sub_index = sub_index;
-            }
+        if let Some(sub_index) = cell_locker.insert(partial_hash) {
+            new_sub_index = sub_index;
         }
-
         if new_sub_index != u8::MAX {
-            let entry_array_index =
-                new_cell_index * (ARRAY_SIZE as usize) + (new_sub_index as usize);
+            let entry_array_index = cell_index * (ARRAY_SIZE as usize) + (new_sub_index as usize);
             let entry_mut_ptr = self.get_entry(entry_array_index) as *mut (K, V);
             unsafe { entry_mut_ptr.write((key.clone(), value)) };
-        } else if new_cell_index != target_cell_index {
-            optional_target_cell
-                .as_mut()
-                .map(|cell| cell.insert_link(&key, partial_hash, value));
         } else {
-            target_cell.insert_link(&key, partial_hash, value);
+            cell_locker.insert_link(&key, partial_hash, value);
         }
     }
 
@@ -225,7 +200,7 @@ impl<K: Clone + Eq, V> Array<K, V> {
         let old_array_size = old_array_ref.num_cells();
         let mut current = self.rehashing.load(Relaxed);
         loop {
-            if current >= self.num_cells() {
+            if current >= old_array_size {
                 return false;
             }
             match self

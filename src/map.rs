@@ -79,32 +79,34 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         value: V,
     ) -> Result<Accessor<'a, K, V, H>, (Accessor<'a, K, V, H>, V)> {
         let (hash, partial_hash) = self.hash(&key);
-        let (mut accessor, array_ptr, cell_index) = self.acquire(&key, hash, partial_hash);
-        if !accessor.entry_ptr.is_null() {
-            return Err((accessor, value));
-        }
-        let array_ref = unsafe { &(*array_ptr) };
-        match accessor.cell_locker.insert(partial_hash) {
-            Some(sub_index) => {
-                let entry_array_index =
-                    cell_index * (cell::ARRAY_SIZE as usize) + (sub_index as usize);
-                let entry_ptr = array_ref.get_entry(entry_array_index);
-                let entry_mut_ptr = entry_ptr as *mut (K, V);
-                unsafe { entry_mut_ptr.write((key.clone(), value)) };
-                accessor.sub_index = sub_index;
-                accessor.entry_array_link_ptr = std::ptr::null();
-                accessor.entry_ptr = entry_ptr;
+        loop {
+            let (mut accessor, array_ptr, cell_index) = self.acquire(&key, hash, partial_hash);
+            if !accessor.entry_ptr.is_null() {
+                return Err((accessor, value));
             }
-            None => {
-                let result = accessor.cell_locker.insert_link(&key, partial_hash, value);
-                accessor.entry_array_link_ptr = (result.0).0;
-                accessor.entry_ptr = (result.0).1;
-                if array_ref.advise_expand(result.1) {
-                    self.resize();
+            let array_ref = unsafe { &(*array_ptr) };
+            match accessor.cell_locker.insert(partial_hash) {
+                Some(sub_index) => {
+                    let entry_array_index =
+                        cell_index * (cell::ARRAY_SIZE as usize) + (sub_index as usize);
+                    let entry_ptr = array_ref.get_entry(entry_array_index);
+                    let entry_mut_ptr = entry_ptr as *mut (K, V);
+                    unsafe { entry_mut_ptr.write((key.clone(), value)) };
+                    accessor.sub_index = sub_index;
+                    accessor.entry_array_link_ptr = std::ptr::null();
+                    accessor.entry_ptr = entry_ptr;
                 }
-            }
-        };
-        Ok(accessor)
+                None => {
+                    if array_ref.advise_expand(accessor.cell_locker.num_linked_entries()) {
+                        self.resize();
+                    }
+                    let result = accessor.cell_locker.insert_link(&key, partial_hash, value);
+                    accessor.entry_array_link_ptr = result.0;
+                    accessor.entry_ptr = result.1;
+                }
+            };
+            return Ok(accessor);
+        }
     }
 
     /// Upserts a key-value pair into the HashMap.
@@ -524,6 +526,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
             let current_array = self.array.load(Acquire, &guard);
             let current_array_ref = unsafe { current_array.deref() };
             let old_array = current_array_ref.get_old_array(&guard);
+            let old_array_ptr = old_array.as_raw();
             if !old_array.is_null() {
                 if current_array_ref.partial_rehash(&guard, |key| self.hash(key)) {
                     continue;
@@ -802,10 +805,9 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
 
     /// Resizes the array
     fn resize(&self) {
-        let current_mutex_state = false;
-        if let Ok(_) =
-            self.resize_mutex
-                .compare_exchange(current_mutex_state, true, Acquire, Relaxed)
+        if let Ok(_) = self
+            .resize_mutex
+            .compare_exchange(false, true, Acquire, Relaxed)
         {
             let guard = crossbeam_epoch::pin();
             let current_array = self.array.load(Acquire, &guard);
@@ -813,17 +815,17 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
             let old_array = current_array_ref.get_old_array(&guard);
             if old_array.is_null() {
                 // the resizing policies are as follows.
-                //  - load factor reaches 7/8: double the capacity
-                //  - load factor reaches 1/16 ~ 1/8: shrink to fit
+                //  - load factor reaches 7/8: enlarge to accomodate
+                //  - load factor reaches 1/8: shrink to fit
                 let capacity = current_array_ref.capacity();
                 let estimated_num_entries = self.len(|_| 64);
-                let new_capacity = if estimated_num_entries > (capacity / 8) * 7 {
-                    if capacity >= (1 << (std::mem::size_of::<usize>() * 8 - 2)) {
+                let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
+                    if estimated_num_entries >= (1 << (std::mem::size_of::<usize>() * 8 - 2)) {
                         capacity
                     } else {
-                        capacity * 2
+                        estimated_num_entries.next_power_of_two() * 2
                     }
-                } else if estimated_num_entries.next_power_of_two() <= capacity / 8 {
+                } else if estimated_num_entries <= capacity / 8 {
                     estimated_num_entries
                         .next_power_of_two()
                         .max(self.minimum_capacity)

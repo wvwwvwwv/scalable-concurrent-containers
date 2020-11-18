@@ -11,7 +11,7 @@ pub struct EntryArrayLink<K: Clone + Eq, V> {
     /// Zero represents a state where the corresponding entry is vacant.
     partial_hash_array: [u16; ARRAY_SIZE],
     entry_array: [MaybeUninit<(K, V)>; ARRAY_SIZE],
-    link: LinkType<K, V>,
+    pub link: LinkType<K, V>,
 }
 
 impl<K: Clone + Eq, V> EntryArrayLink<K, V> {
@@ -59,6 +59,8 @@ impl<K: Clone + Eq, V> EntryArrayLink<K, V> {
                 );
             }
         }
+
+        // the call depth is guaranteed to be less than two
         self.link
             .as_ref()
             .map_or((ptr::null(), ptr::null()), |link| (*link).first_entry())
@@ -81,6 +83,8 @@ impl<K: Clone + Eq, V> EntryArrayLink<K, V> {
                 break;
             }
         }
+
+        // the call depth is guaranteed to be less than two
         self.link
             .as_ref()
             .map_or((ptr::null(), ptr::null()), |link| (*link).first_entry())
@@ -90,22 +94,18 @@ impl<K: Clone + Eq, V> EntryArrayLink<K, V> {
         &self,
         key: &K,
         partial_hash: u16,
-    ) -> (*const EntryArrayLink<K, V>, *const (K, V)) {
+    ) -> Option<(*const EntryArrayLink<K, V>, *const (K, V))> {
         for (i, v) in self.partial_hash_array.iter().enumerate() {
             if *v == (partial_hash | 1) {
                 if unsafe { &(*self.entry_array[i].as_ptr()).0 } == key {
-                    return (
+                    return Some((
                         self as *const EntryArrayLink<K, V>,
                         self.entry_array[i].as_ptr(),
-                    );
+                    ));
                 }
             }
         }
-        self.link
-            .as_ref()
-            .map_or((ptr::null(), ptr::null()), |link| {
-                (*link).search_entry(key, partial_hash)
-            })
+        None
     }
 
     pub fn insert_entry(
@@ -124,12 +124,7 @@ impl<K: Clone + Eq, V> EntryArrayLink<K, V> {
                 ));
             }
         }
-
-        if let Some(link) = &mut self.link {
-            return link.insert_entry(key, partial_hash, value);
-        } else {
-            return Err(value);
-        }
+        Err(value)
     }
 
     pub fn remove_entry(&mut self, key_value_pair_ptr: *const (K, V)) -> bool {
@@ -163,7 +158,7 @@ impl<K: Clone + Eq, V> EntryArrayLink<K, V> {
         Err(())
     }
 
-    pub fn remove_next(&mut self, entry_array_link_ptr: *const EntryArrayLink<K, V>) {
+    pub fn remove_next(&mut self, entry_array_link_ptr: *const EntryArrayLink<K, V>) -> bool {
         let next = self.link.as_mut().map_or(None, |next| {
             if next.compare_ptr(entry_array_link_ptr) {
                 return Some(next.link.take());
@@ -173,11 +168,9 @@ impl<K: Clone + Eq, V> EntryArrayLink<K, V> {
         if let Some(next) = next {
             self.link.take();
             self.link = next;
-            return;
+            return true;
         }
-        self.link
-            .as_mut()
-            .map(|next| next.remove_next(entry_array_link_ptr));
+        false
     }
 
     fn compare_ptr(&self, entry_array_link_ptr: *const EntryArrayLink<K, V>) -> bool {
