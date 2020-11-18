@@ -79,8 +79,8 @@ impl<K: Clone + Eq, V> Array<K, V> {
     }
 
     pub fn advise_expand(&self, linked_entries: usize) -> bool {
-        // num(linked_entries) >= log(capacity)
-        linked_entries >= self.lb_capacity as usize
+        // num(linked_entries + delta) >= log(capacity)
+        (linked_entries + link::ARRAY_SIZE / 2) >= self.lb_capacity as usize
     }
 
     pub fn kill_cell<F: Fn(&K) -> (u64, u16)>(
