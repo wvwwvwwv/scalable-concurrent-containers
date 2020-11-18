@@ -1,5 +1,4 @@
 use super::cell::{Cell, CellLocker, ARRAY_SIZE};
-use super::link;
 use crossbeam_epoch::{Atomic, Guard, Shared};
 use std::convert::TryInto;
 use std::mem::MaybeUninit;
@@ -9,9 +8,6 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 pub struct Array<K: Clone + Eq, V> {
     metadata_array: Vec<Cell<K, V>>,
     entry_array: Vec<MaybeUninit<(K, V)>>,
-    /// The log (base 2) capacity of the array
-    ///
-    /// Trigger resize when the max depth of linked lists reaches lb_capacity / 4
     lb_capacity: u8,
     rehashing: AtomicUsize,
     rehashed: AtomicUsize,
@@ -32,9 +28,6 @@ impl<K: Clone + Eq, V> Array<K, V> {
         for _ in 0..(1 << lb_capacity) {
             array.metadata_array.push(Default::default());
         }
-        for _ in 0..(1 << lb_capacity) * (ARRAY_SIZE as usize) {
-            array.entry_array.push(MaybeUninit::uninit());
-        }
         array
     }
 
@@ -43,7 +36,7 @@ impl<K: Clone + Eq, V> Array<K, V> {
     }
 
     pub fn get_entry(&self, index: usize) -> *const (K, V) {
-        self.entry_array[index].as_ptr()
+        unsafe { &(*self.entry_array.as_ptr().add(index)) }.as_ptr()
     }
 
     pub fn num_cells(&self) -> usize {
@@ -78,11 +71,6 @@ impl<K: Clone + Eq, V> Array<K, V> {
         lb_capacity.try_into().unwrap()
     }
 
-    pub fn advise_expand(&self, linked_entries: usize) -> bool {
-        // num(linked_entries + delta) >= log(capacity)
-        (linked_entries + link::ARRAY_SIZE / 2) >= self.lb_capacity as usize
-    }
-
     pub fn kill_cell<F: Fn(&K) -> (u64, u16)>(
         &self,
         cell_locker: &mut CellLocker<K, V>,
@@ -114,7 +102,7 @@ impl<K: Clone + Eq, V> Array<K, V> {
         let mut current = cell_locker.next_occupied(u8::MAX);
         while current != u8::MAX {
             let old_index = old_cell_index * ARRAY_SIZE as usize + current as usize;
-            let entry_ptr = &old_array.entry_array[old_index] as *const MaybeUninit<(K, V)>;
+            let entry_ptr = unsafe { &(*old_array.entry_array.as_ptr().add(old_index)) }.as_ptr();
             let entry_mut_ptr = entry_ptr as *mut MaybeUninit<(K, V)>;
             let entry = unsafe { std::ptr::replace(entry_mut_ptr, MaybeUninit::uninit()) };
             let (key, value) = unsafe { entry.assume_init() };

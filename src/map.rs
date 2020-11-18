@@ -41,7 +41,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     /// ```
     pub fn new(hasher: H, minimum_capacity: Option<usize>) -> HashMap<K, V, H> {
         let initial_capacity = if let Some(capacity) = minimum_capacity {
-            capacity.max(64)
+            capacity.max(256)
         } else {
             256
         };
@@ -98,11 +98,9 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                     accessor.entry_ptr = entry_ptr;
                 }
                 None => {
-                    if !resize_triggered
-                        && array_ref.advise_expand(accessor.cell_locker.num_linked_entries())
-                    {
+                    if !resize_triggered && cell_index < cell::ARRAY_SIZE as usize {
                         drop(accessor);
-                        self.resize();
+                        self.resize(false);
                         resize_triggered = true;
                         continue;
                     }
@@ -312,7 +310,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
             let current_array = self.array.load(Acquire, &guard);
             let current_array_ref = unsafe { current_array.deref() };
             if retained_entries <= current_array_ref.capacity() / 8 {
-                self.resize();
+                self.resize(true);
             }
         }
         (retained_entries, removed_entries)
@@ -607,24 +605,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         }
         if accessor.cell_in_sampling_range && accessor.cell_locker.empty() {
             drop(accessor);
-
-            // size estimation
-            let guard = crossbeam_epoch::pin();
-            let current_array = self.array.load(Acquire, &guard);
-            let current_array_ref = unsafe { current_array.deref() };
-            let old_array = current_array_ref.get_old_array(&guard);
-            if old_array.is_null() {
-                let mut num_entries = 0;
-                for i in 0..current_array_ref.num_cells().min(cell::ARRAY_SIZE as usize) {
-                    num_entries += current_array_ref.get_cell(i).size().0;
-                    if num_entries >= cell::ARRAY_SIZE as usize {
-                        break;
-                    }
-                }
-                if num_entries < cell::ARRAY_SIZE as usize {
-                    self.resize();
-                }
-            }
+            self.resize(true);
         }
     }
 
@@ -822,42 +803,70 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     }
 
     /// Resizes the array
-    fn resize(&self) {
-        if !self.resize_mutex.swap(true, Acquire) {
-            let guard = crossbeam_epoch::pin();
-            let current_array = self.array.load(Acquire, &guard);
-            let current_array_ref = unsafe { current_array.deref() };
-            let old_array = current_array_ref.get_old_array(&guard);
-            if old_array.is_null() {
-                // the resizing policies are as follows.
-                //  - load factor reaches 7/8: enlarge to accomodate
-                //  - load factor reaches 1/8: shrink to fit
-                let capacity = current_array_ref.capacity();
-                let estimated_num_entries = self.len(|_| 64);
-                let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
-                    if capacity >= (1 << (std::mem::size_of::<usize>() * 8 - 1)) {
-                        capacity
-                    } else {
-                        estimated_num_entries.next_power_of_two() * 2
-                    }
-                } else if estimated_num_entries <= capacity / 8 {
-                    estimated_num_entries
-                        .next_power_of_two()
-                        .max(self.minimum_capacity)
-                } else {
-                    capacity
-                };
+    fn resize(&self, shrink: bool) {
+        // initial rough size estimation using a small number of entries
+        let guard = crossbeam_epoch::pin();
+        let current_array = self.array.load(Acquire, &guard);
+        let current_array_ref = unsafe { current_array.deref() };
+        let old_array = current_array_ref.get_old_array(&guard);
+        if !old_array.is_null() {
+            if !current_array_ref.partial_rehash(&guard, |key| self.hash(key)) {
+                return;
+            }
+        }
 
-                if new_capacity != capacity {
-                    self.array.store(
-                        Owned::new(Array::<K, V>::new(
-                            new_capacity,
-                            Atomic::from(current_array),
-                        )),
-                        Release,
-                    );
+        // trigger resize if the sample has less than 1/16, or more than 15/16 entries
+        let mut num_entries = 0;
+        for i in 0..current_array_ref.num_cells().min(cell::ARRAY_SIZE as usize) {
+            num_entries += current_array_ref.get_cell(i).size().0;
+            if shrink {
+                if num_entries >= cell::ARRAY_SIZE as usize {
+                    return;
+                }
+            } else {
+                if ((i + 1) * cell::ARRAY_SIZE as usize) - num_entries >= cell::ARRAY_SIZE as usize
+                {
+                    return;
                 }
             }
+        }
+
+        // resize
+        if !self.resize_mutex.swap(true, Acquire) {
+            if current_array != self.array.load(Acquire, &guard) {
+                self.resize_mutex.store(false, Release);
+                return;
+            }
+
+            // the resizing policies are as follows.
+            //  - load factor reaches 7/8: enlarge to accomodate
+            //  - load factor reaches 1/8: shrink to fit
+            let capacity = current_array_ref.capacity();
+            let estimated_num_entries = self.len(|_| 64);
+            let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
+                if capacity >= (1 << (std::mem::size_of::<usize>() * 8 - 1)) {
+                    capacity
+                } else {
+                    estimated_num_entries.next_power_of_two() * 2
+                }
+            } else if estimated_num_entries <= capacity / 8 {
+                estimated_num_entries
+                    .next_power_of_two()
+                    .max(self.minimum_capacity)
+            } else {
+                capacity
+            };
+
+            if new_capacity != capacity {
+                self.array.store(
+                    Owned::new(Array::<K, V>::new(
+                        new_capacity,
+                        Atomic::from(current_array),
+                    )),
+                    Release,
+                );
+            }
+
             self.resize_mutex.store(false, Release);
         }
     }

@@ -153,7 +153,7 @@ mod test {
                 num_threads, duration, total_num_operations
             );
             let statistics = hashmap.statistics();
-            println!("after insert: {}", statistics);
+            println!("after read: {}", statistics);
             // 3. remove
             let remove = Workload {
                 size: 1048576,

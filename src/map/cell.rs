@@ -306,10 +306,6 @@ impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
         None
     }
 
-    pub fn num_linked_entries(&self) -> usize {
-        self.cell.linked_entries
-    }
-
     pub fn empty(&self) -> bool {
         (self.metadata & OCCUPANCY_MASK) == 0 && self.cell.linked_entries == 0
     }
