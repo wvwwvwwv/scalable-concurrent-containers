@@ -203,10 +203,12 @@ impl<K: Clone + Eq, V> Array<K, V> {
             if current >= old_array_size {
                 return false;
             }
-            match self
-                .rehashing
-                .compare_exchange(current, current + 16, Acquire, Relaxed)
-            {
+            match self.rehashing.compare_exchange(
+                current,
+                current + ARRAY_SIZE as usize,
+                Acquire,
+                Relaxed,
+            ) {
                 Ok(_) => break,
                 Err(result) => current = result,
             }

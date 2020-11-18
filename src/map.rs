@@ -12,7 +12,7 @@ use std::convert::TryInto;
 use std::fmt;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use std::sync::atomic::Ordering::{Acquire, Release};
 
 /// A scalable concurrent hash map implementation.
 ///
@@ -79,6 +79,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         value: V,
     ) -> Result<Accessor<'a, K, V, H>, (Accessor<'a, K, V, H>, V)> {
         let (hash, partial_hash) = self.hash(&key);
+        let mut resize_triggered = false;
         loop {
             let (mut accessor, array_ptr, cell_index) = self.acquire(&key, hash, partial_hash);
             if !accessor.entry_ptr.is_null() {
@@ -97,8 +98,13 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                     accessor.entry_ptr = entry_ptr;
                 }
                 None => {
-                    if array_ref.advise_expand(accessor.cell_locker.num_linked_entries()) {
+                    if !resize_triggered
+                        && array_ref.advise_expand(accessor.cell_locker.num_linked_entries())
+                    {
+                        drop(accessor);
                         self.resize();
+                        resize_triggered = true;
+                        continue;
                     }
                     let result = accessor.cell_locker.insert_link(&key, partial_hash, value);
                     accessor.entry_array_link_ptr = result.0;
@@ -817,10 +823,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
 
     /// Resizes the array
     fn resize(&self) {
-        if let Ok(_) = self
-            .resize_mutex
-            .compare_exchange(false, true, Acquire, Relaxed)
-        {
+        if !self.resize_mutex.swap(true, Acquire) {
             let guard = crossbeam_epoch::pin();
             let current_array = self.array.load(Acquire, &guard);
             let current_array_ref = unsafe { current_array.deref() };
@@ -832,7 +835,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                 let capacity = current_array_ref.capacity();
                 let estimated_num_entries = self.len(|_| 64);
                 let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
-                    if estimated_num_entries >= (1 << (std::mem::size_of::<usize>() * 8 - 2)) {
+                    if capacity >= (1 << (std::mem::size_of::<usize>() * 8 - 1)) {
                         capacity
                     } else {
                         estimated_num_entries.next_power_of_two() * 2
