@@ -18,14 +18,14 @@ impl<K: Clone + Eq, V> Array<K, V> {
     pub fn new(capacity: usize, old_array: Atomic<Array<K, V>>) -> Array<K, V> {
         let lb_capacity = Self::calculate_lb_metadata_array_size(capacity);
         let mut array = Array {
-            metadata_array: Vec::with_capacity(1 << lb_capacity),
-            entry_array: Vec::with_capacity((1 << lb_capacity) * (ARRAY_SIZE as usize)),
+            metadata_array: Vec::with_capacity(1usize << lb_capacity),
+            entry_array: Vec::with_capacity((1usize << lb_capacity) * (ARRAY_SIZE as usize)),
             lb_capacity: lb_capacity,
             rehashing: AtomicUsize::new(0),
             rehashed: AtomicUsize::new(0),
             old_array: old_array,
         };
-        for _ in 0..(1 << lb_capacity) {
+        for _ in 0..(1usize << lb_capacity) {
             array.metadata_array.push(Default::default());
         }
         array
@@ -40,11 +40,11 @@ impl<K: Clone + Eq, V> Array<K, V> {
     }
 
     pub fn num_cells(&self) -> usize {
-        1 << self.lb_capacity
+        1usize << self.lb_capacity
     }
 
     pub fn capacity(&self) -> usize {
-        (1 << self.lb_capacity) * (ARRAY_SIZE as usize)
+        (1usize << self.lb_capacity) * (ARRAY_SIZE as usize)
     }
 
     pub fn get_old_array<'a>(&self, guard: &'a Guard) -> Shared<'a, Array<K, V>> {
@@ -67,7 +67,7 @@ impl<K: Clone + Eq, V> Array<K, V> {
         // 2^lb_capacity * ARRAY_SIZE >= capacity
         debug_assert!(lb_capacity > 0);
         debug_assert!(lb_capacity < (std::mem::size_of::<usize>() * 8));
-        debug_assert!((1 << lb_capacity) * (ARRAY_SIZE as usize) >= adjusted_capacity);
+        debug_assert!((1usize << lb_capacity) * (ARRAY_SIZE as usize) >= adjusted_capacity);
         lb_capacity.try_into().unwrap()
     }
 
@@ -87,9 +87,9 @@ impl<K: Clone + Eq, V> Array<K, V> {
 
         let shrink = old_array.lb_capacity > self.lb_capacity;
         let ratio = if shrink {
-            1 << (old_array.lb_capacity - self.lb_capacity)
+            1usize << (old_array.lb_capacity - self.lb_capacity)
         } else {
-            1 << (self.lb_capacity - old_array.lb_capacity)
+            1usize << (self.lb_capacity - old_array.lb_capacity)
         };
         let target_cell_index = if shrink {
             old_cell_index / ratio
@@ -238,18 +238,18 @@ mod test {
         assert_eq!(19usize / (ARRAY_SIZE as usize), 1);
         for capacity in 0..1024 as usize {
             assert!(
-                (1 << Array::<bool, bool>::calculate_lb_metadata_array_size(capacity))
+                (1usize << Array::<bool, bool>::calculate_lb_metadata_array_size(capacity))
                     * (ARRAY_SIZE as usize)
                     >= capacity
             );
         }
         assert!(
-            (1 << Array::<bool, bool>::calculate_lb_metadata_array_size(usize::MAX))
+            (1usize << Array::<bool, bool>::calculate_lb_metadata_array_size(usize::MAX))
                 * (ARRAY_SIZE as usize)
                 >= (usize::MAX / 2)
         );
         for i in 2..(std::mem::size_of::<usize>() - 3) {
-            let capacity = (1 << i) * (ARRAY_SIZE as usize);
+            let capacity = (1usize << i) * (ARRAY_SIZE as usize);
             assert_eq!(
                 Array::<bool, bool>::calculate_lb_metadata_array_size(capacity) as usize,
                 i

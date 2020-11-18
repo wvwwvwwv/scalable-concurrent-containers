@@ -6,13 +6,13 @@ use std::sync::atomic::{AtomicPtr, AtomicU32};
 use std::sync::{Condvar, Mutex};
 
 pub const ARRAY_SIZE: u8 = 16;
-const KILLED_FLAG: u32 = 1 << 31;
-const WAITING_FLAG: u32 = 1 << 30;
-const LOCK_MASK: u32 = ((1 << 14) - 1) << ARRAY_SIZE;
-const XLOCK: u32 = 1 << 29;
+const KILLED_FLAG: u32 = 1u32 << 31;
+const WAITING_FLAG: u32 = 1u32 << 30;
+const LOCK_MASK: u32 = ((1u32 << 14) - 1) << ARRAY_SIZE;
+const XLOCK: u32 = 1u32 << 29;
 const SLOCK_MAX: u32 = LOCK_MASK & (!XLOCK);
-const SLOCK: u32 = 1 << ARRAY_SIZE;
-const OCCUPANCY_MASK: u32 = (1 << ARRAY_SIZE) - 1;
+const SLOCK: u32 = 1u32 << ARRAY_SIZE;
+const OCCUPANCY_MASK: u32 = (1u32 << ARRAY_SIZE) - 1;
 const OCCUPANCY_BIT: u32 = 1;
 
 pub struct Cell<K: Clone + Eq, V> {

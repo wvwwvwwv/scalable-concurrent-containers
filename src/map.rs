@@ -844,7 +844,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
             let capacity = current_array_ref.capacity();
             let estimated_num_entries = self.len(|_| 64);
             let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
-                if capacity >= (1 << (std::mem::size_of::<usize>() * 8 - 1)) {
+                if capacity >= (1usize << (std::mem::size_of::<usize>() * 8 - 1)) {
                     capacity
                 } else {
                     estimated_num_entries.next_power_of_two() * 2
