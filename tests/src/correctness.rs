@@ -71,31 +71,33 @@ mod test {
 
     #[test]
     fn basic_scanner() {
-        let hashmap: Arc<HashMap<u64, u64, RandomState>> =
-            Arc::new(HashMap::new(RandomState::new(), None));
-        let hashmap_copied = hashmap.clone();
-        let inserted = Arc::new(AtomicU64::new(0));
-        let inserted_copied = inserted.clone();
-        let thread_handle = thread::spawn(move || {
-            for _ in 0..16 {
-                let max = inserted_copied.load(Acquire);
-                let mut scanned = 0;
-                let mut checker = BTreeSet::new();
-                for iter in hashmap_copied.iter() {
-                    scanned += 1;
-                    checker.insert(*iter.0);
+        for _ in 0..64 {
+            let hashmap: Arc<HashMap<u64, u64, RandomState>> =
+                Arc::new(HashMap::new(RandomState::new(), None));
+            let hashmap_copied = hashmap.clone();
+            let inserted = Arc::new(AtomicU64::new(0));
+            let inserted_copied = inserted.clone();
+            let thread_handle = thread::spawn(move || {
+                for _ in 0..16 {
+                    let mut scanned = 0;
+                    let mut checker = BTreeSet::new();
+                    let max = inserted_copied.load(Acquire);
+                    for iter in hashmap_copied.iter() {
+                        scanned += 1;
+                        checker.insert(*iter.0);
+                    }
+                    println!("scanned: {}, max: {}", scanned, max);
+                    for key in 0..max {
+                        assert!(checker.contains(&key));
+                    }
                 }
-                println!("scanned: {}, max: {}", scanned, max);
-                for key in 0..max {
-                    assert!(checker.contains(&key));
-                }
+            });
+            for i in 0..16384 {
+                assert!(hashmap.insert(i, i).is_ok());
+                inserted.store(i, Release);
             }
-        });
-        for i in 0..1048576 {
-            assert!(hashmap.insert(i, i).is_ok());
-            inserted.store(i, Release);
+            thread_handle.join().unwrap();
         }
-        thread_handle.join().unwrap();
     }
 
     struct Data<'a> {

@@ -387,6 +387,7 @@ impl<'a, K: Clone + Eq, V> CellReader<'a, K, V> {
         }
         None
     }
+
     pub fn get(&self, key: &K, start_index: u8, partial_hash: u16) -> Option<(u8, *const (K, V))> {
         if start_index == u8::MAX && self.cell.linked_entries > 0 {
             let mut link_ref = &self.cell.link;

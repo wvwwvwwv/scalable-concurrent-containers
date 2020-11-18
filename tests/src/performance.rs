@@ -11,7 +11,7 @@ mod test {
 
     #[test]
     fn basic_latency() {
-        let hashmap: HashMap<u64, u64, RandomState> = HashMap::new(RandomState::new(), None);
+        let _hashmap: HashMap<u64, u64, RandomState> = HashMap::new(RandomState::new(), None);
     }
 
     #[derive(Clone)]

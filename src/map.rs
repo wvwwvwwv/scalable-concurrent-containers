@@ -539,7 +539,6 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
             let current_array = self.array.load(Acquire, &guard);
             let current_array_ref = unsafe { current_array.deref() };
             let old_array = current_array_ref.get_old_array(&guard);
-            let old_array_ptr = old_array.as_raw();
             if !old_array.is_null() {
                 if current_array_ref.partial_rehash(&guard, |key| self.hash(key)) {
                     continue;
@@ -685,7 +684,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                 let num_cells = array_ref.num_cells();
                 for cell_index in 0..num_cells {
                     let locker = CellLocker::lock(array_ref.get_cell(cell_index));
-                    if !locker.killed() && !locker.empty() {
+                    if !locker.empty() {
                         // once a valid cell is locked, the array is guaranteed to retain
                         return (Some(locker), array_ptr, cell_index);
                     }
