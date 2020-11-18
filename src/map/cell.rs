@@ -378,8 +378,17 @@ impl<'a, K: Clone + Eq, V> CellReader<'a, K, V> {
         }
     }
 
-    pub fn get(&self, key: &K, partial_hash: u16) -> Option<(u8, *const (K, V))> {
-        if self.cell.linked_entries > 0 {
+    pub fn get_preferred(&self, partial_hash: u16) -> Option<u8> {
+        let preferred_index = (partial_hash % (ARRAY_SIZE as u16)).try_into().unwrap();
+        if self.cell.partial_hash_array[preferred_index as usize] == partial_hash
+            && (self.metadata & (OCCUPANCY_BIT << preferred_index)) != 0
+        {
+            return Some(preferred_index);
+        }
+        None
+    }
+    pub fn get(&self, key: &K, start_index: u8, partial_hash: u16) -> Option<(u8, *const (K, V))> {
+        if start_index == u8::MAX && self.cell.linked_entries > 0 {
             let mut link_ref = &self.cell.link;
             while let Some(link) = link_ref.as_ref() {
                 if let Some(result) = link.search_entry(key, partial_hash) {
@@ -388,15 +397,13 @@ impl<'a, K: Clone + Eq, V> CellReader<'a, K, V> {
                 link_ref = &link.link;
             }
         }
-        let preferred_index = (partial_hash % (ARRAY_SIZE as u16)).try_into().unwrap();
-        if self.cell.partial_hash_array[preferred_index as usize] == partial_hash
-            && (self.metadata & (OCCUPANCY_BIT << preferred_index)) != 0
-        {
-            return Some((preferred_index, ptr::null()));
-        }
-        for i in 0..ARRAY_SIZE {
-            if i != preferred_index
-                && self.cell.partial_hash_array[i as usize] == partial_hash
+        let start_index = if start_index == u8::MAX {
+            0
+        } else {
+            start_index
+        };
+        for i in start_index..ARRAY_SIZE {
+            if self.cell.partial_hash_array[i as usize] == partial_hash
                 && (self.metadata & (OCCUPANCY_BIT << i)) != 0
             {
                 return Some((i, ptr::null()));

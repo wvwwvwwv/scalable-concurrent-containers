@@ -228,7 +228,19 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                 let array_ref = unsafe { &(*array_ptr) };
                 let cell_index = array_ref.calculate_metadata_array_index(hash);
                 let reader = CellReader::lock(array_ref.get_cell(cell_index));
-                if let Some((sub_index, entry_ptr)) = reader.get(&key, partial_hash) {
+                if let Some(sub_index) = reader.get_preferred(partial_hash) {
+                    let entry_array_index =
+                        cell_index * (cell::ARRAY_SIZE as usize) + (sub_index as usize);
+                    let entry_ptr = array_ref.get_entry(entry_array_index);
+                    let entry_ref = unsafe { &(*entry_ptr) };
+                    if entry_ref.0 == key {
+                        return Some(f(&entry_ref.0, &entry_ref.1));
+                    }
+                }
+                let mut current_index = u8::MAX;
+                while let Some((sub_index, entry_ptr)) =
+                    reader.get(&key, current_index, partial_hash)
+                {
                     if sub_index != u8::MAX {
                         let entry_array_index =
                             cell_index * (cell::ARRAY_SIZE as usize) + (sub_index as usize);
@@ -237,7 +249,8 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                         if entry_ref.0 == key {
                             return Some(f(&entry_ref.0, &entry_ref.1));
                         }
-                    } else if !entry_ptr.is_null() {
+                        current_index = sub_index + 1;
+                    } else {
                         let entry_ref = unsafe { &(*entry_ptr) };
                         return Some(f(&entry_ref.0, &entry_ref.1));
                     }

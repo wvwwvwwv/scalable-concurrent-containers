@@ -83,7 +83,7 @@ mod test {
                 };
                 for i in start_index..(start_index + workload_size) {
                     for j in 0..workload_copied.insert {
-                        map_copied.insert_test(i + j as usize, i);
+                        assert!(map_copied.insert_test(i + j as usize, i));
                         num_operations += 1;
                     }
                     for j in 0..workload_copied.update {
@@ -91,11 +91,11 @@ mod test {
                         num_operations += 1;
                     }
                     for j in 0..workload_copied.read {
-                        map_copied.read_test(i + j as usize);
+                        assert!(map_copied.read_test(i + j as usize));
                         num_operations += 1;
                     }
                     for j in 0..workload_copied.remove {
-                        map_copied.remove_test(i + j as usize);
+                        assert!(map_copied.remove_test(i + j as usize));
                         num_operations += 1;
                     }
                 }

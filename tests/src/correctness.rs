@@ -3,9 +3,12 @@ mod test {
     use proptest::prelude::*;
     use scc::HashMap;
     use std::collections::hash_map::RandomState;
+    use std::collections::BTreeSet;
     use std::hash::{Hash, Hasher};
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering::Relaxed;
+    use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+    use std::sync::atomic::{AtomicU64, AtomicUsize};
+    use std::sync::Arc;
+    use std::thread;
 
     proptest! {
         #[test]
@@ -64,6 +67,35 @@ mod test {
             let result10 = hashmap.get(key + 2);
             assert!(result10.is_none());
         }
+    }
+
+    #[test]
+    fn basic_scanner() {
+        let hashmap: Arc<HashMap<u64, u64, RandomState>> =
+            Arc::new(HashMap::new(RandomState::new(), None));
+        let hashmap_copied = hashmap.clone();
+        let inserted = Arc::new(AtomicU64::new(0));
+        let inserted_copied = inserted.clone();
+        let thread_handle = thread::spawn(move || {
+            for _ in 0..16 {
+                let max = inserted_copied.load(Acquire);
+                let mut scanned = 0;
+                let mut checker = BTreeSet::new();
+                for iter in hashmap_copied.iter() {
+                    scanned += 1;
+                    checker.insert(*iter.0);
+                }
+                println!("scanned: {}, max: {}", scanned, max);
+                for key in 0..max {
+                    assert!(checker.contains(&key));
+                }
+            }
+        });
+        for i in 0..1048576 {
+            assert!(hashmap.insert(i, i).is_ok());
+            inserted.store(i, Release);
+        }
+        thread_handle.join().unwrap();
     }
 
     struct Data<'a> {
