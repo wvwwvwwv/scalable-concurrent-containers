@@ -16,12 +16,27 @@ use std::sync::atomic::Ordering::{Acquire, Release};
 
 /// A scalable concurrent hash map implementation.
 ///
+/// scc::HashMap is a concurrent hash map data structure that is targeted at a highly concurrent workload.
+/// It internally has a single entry array that stores key-value pairs and a metadata cell array for managing the data.
+/// A metadata cell manages a range of hash values, and overflowing by collisions is resolved by allocating a separate linked lists.
+/// The range of hash values managed by a single metadata cell share a single customized mutex, instead of having a mutex assigned to the entire array.
+/// Therefore, two threads accessing different keys managed by different metadata cells do not interfere with eath other.
+///
 /// The key features of scc::HashMap are as follows.
 /// * No sharding: all keys are managed by a single array of key metadata cells.
-/// * Auto resizing: it automatically doubles or halves the capacity.
+/// * Auto resizing: it automatically enlarges or shrinks the internal arrays.
 /// * Non-blocking resizing: resizing does not block other threads.
 /// * Incremental resizing: access to the data structure relocates a certain number of key-value pairs.
-/// * Optimized resizing: a single key-value pair is guaranteed to be relocated to one of the two adjacent cells.
+/// * Optimized resizing: key-value pairs in a single metadata cell are guaranteed to be relocated to adjacent cells.
+///
+/// The key statistics for scc::HashMap.
+/// * The expected size of metadata for a single key-value pair: 4-byte.
+/// * The expected number of atomic operations required for a single key operation: 2.
+/// * The expected number of atomic variables accessed during a single key operation: 1.
+/// * The range of hash values a single metadata cell manages: 65536.
+/// * The number of entries managed by a single metadata cell without a linked list: 16.
+/// * The number of entries a single linked list entry manages: 4.
+/// * The expected maximum linked list length when resize is triggered: log(capacity) / 4.
 pub struct HashMap<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> {
     array: Atomic<Array<K, V>>,
     minimum_capacity: usize,
