@@ -378,7 +378,7 @@ impl<'a, K: Eq, V> CellReader<'a, K, V> {
         }
     }
 
-    pub fn get_preferred(&self, partial_hash: u16) -> Option<u8> {
+    pub fn preferred(&self, partial_hash: u16) -> Option<u8> {
         let preferred_index = (partial_hash % (ARRAY_SIZE as u16)).try_into().unwrap();
         if self.cell.partial_hash_array[preferred_index as usize] == partial_hash
             && (self.metadata & (OCCUPANCY_BIT << preferred_index)) != 0

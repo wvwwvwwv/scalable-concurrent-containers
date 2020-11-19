@@ -31,11 +31,11 @@ impl<K: Eq, V> Array<K, V> {
         array
     }
 
-    pub fn get_cell(&self, index: usize) -> &Cell<K, V> {
+    pub fn cell(&self, index: usize) -> &Cell<K, V> {
         &self.metadata_array[index]
     }
 
-    pub fn get_entry(&self, index: usize) -> *const (K, V) {
+    pub fn entry(&self, index: usize) -> *const (K, V) {
         unsafe { &(*self.entry_array.as_ptr().add(index)) }.as_ptr()
     }
 
@@ -47,7 +47,7 @@ impl<K: Eq, V> Array<K, V> {
         (1usize << self.lb_capacity) * (ARRAY_SIZE as usize)
     }
 
-    pub fn get_old_array<'a>(&self, guard: &'a Guard) -> Shared<'a, Array<K, V>> {
+    pub fn old_array<'a>(&self, guard: &'a Guard) -> Shared<'a, Array<K, V>> {
         self.old_array.load(Relaxed, &guard)
     }
 
@@ -116,7 +116,7 @@ impl<K: Eq, V> Array<K, V> {
 
             while target_cells.len() <= (new_cell_index - target_cell_index) {
                 let cell_index = target_cell_index + target_cells.len();
-                target_cells.push(CellLocker::lock(self.get_cell(cell_index)));
+                target_cells.push(CellLocker::lock(self.cell(cell_index)));
             }
 
             self.insert(
@@ -141,7 +141,7 @@ impl<K: Eq, V> Array<K, V> {
                 );
                 while target_cells.len() <= (new_cell_index - target_cell_index) {
                     let cell_index = target_cell_index + target_cells.len();
-                    target_cells.push(CellLocker::lock(self.get_cell(cell_index)));
+                    target_cells.push(CellLocker::lock(self.cell(cell_index)));
                 }
 
                 self.insert(
@@ -171,7 +171,7 @@ impl<K: Eq, V> Array<K, V> {
         }
         if new_sub_index != u8::MAX {
             let entry_array_index = cell_index * (ARRAY_SIZE as usize) + (new_sub_index as usize);
-            let entry_mut_ptr = self.get_entry(entry_array_index) as *mut (K, V);
+            let entry_mut_ptr = self.entry(entry_array_index) as *mut (K, V);
             unsafe { entry_mut_ptr.write((key, value)) };
         } else {
             cell_locker.insert_link(key, partial_hash, value);

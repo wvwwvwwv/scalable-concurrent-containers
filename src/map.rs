@@ -23,7 +23,7 @@ use std::sync::atomic::Ordering::{Acquire, Release};
 /// Therefore, two threads accessing different keys managed by different metadata cells do not interfere with eath other.
 ///
 /// The key features of scc::HashMap are as follows.
-/// * No sharding: all keys are managed by a single array of key metadata cells.
+/// * No sharding: all keys are managed by a single array of metadata cells.
 /// * Auto resizing: it automatically enlarges or shrinks the internal arrays.
 /// * Non-blocking resizing: resizing does not block other threads.
 /// * Incremental resizing: access to the data structure relocates a certain number of key-value pairs.
@@ -105,7 +105,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 Some(sub_index) => {
                     let entry_array_index =
                         cell_index * (cell::ARRAY_SIZE as usize) + (sub_index as usize);
-                    let entry_ptr = array_ref.get_entry(entry_array_index);
+                    let entry_ptr = array_ref.entry(entry_array_index);
                     let entry_mut_ptr = entry_ptr as *mut (K, V);
                     unsafe { entry_mut_ptr.write((key, value)) };
                     accessor.sub_index = sub_index;
@@ -233,7 +233,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             // an Acquire fence is required to correctly load the contents of the array
             let current_array = self.array.load(Acquire, &guard);
             let current_array_ref = unsafe { current_array.deref() };
-            let old_array = current_array_ref.get_old_array(&guard);
+            let old_array = current_array_ref.old_array(&guard);
             if !old_array.is_null() {
                 if current_array_ref.partial_rehash(&guard, |key| self.hash(key)) {
                     continue;
@@ -246,11 +246,11 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 }
                 let array_ref = unsafe { &(*array_ptr) };
                 let cell_index = array_ref.calculate_metadata_array_index(hash);
-                let reader = CellReader::lock(array_ref.get_cell(cell_index));
-                if let Some(sub_index) = reader.get_preferred(partial_hash) {
+                let reader = CellReader::lock(array_ref.cell(cell_index));
+                if let Some(sub_index) = reader.preferred(partial_hash) {
                     let entry_array_index =
                         cell_index * (cell::ARRAY_SIZE as usize) + (sub_index as usize);
-                    let entry_ptr = array_ref.get_entry(entry_array_index);
+                    let entry_ptr = array_ref.entry(entry_array_index);
                     let entry_ref = unsafe { &(*entry_ptr) };
                     if entry_ref.0 == key {
                         return Some(f(&entry_ref.0, &entry_ref.1));
@@ -263,7 +263,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                     if sub_index != u8::MAX {
                         let entry_array_index =
                             cell_index * (cell::ARRAY_SIZE as usize) + (sub_index as usize);
-                        let entry_ptr = array_ref.get_entry(entry_array_index);
+                        let entry_ptr = array_ref.entry(entry_array_index);
                         let entry_ref = unsafe { &(*entry_ptr) };
                         if entry_ref.0 == key {
                             return Some(f(&entry_ref.0, &entry_ref.1));
@@ -391,7 +391,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         let guard = crossbeam_epoch::pin();
         let current_array = self.array.load(Acquire, &guard);
         let current_array_ref = unsafe { current_array.deref() };
-        let old_array = current_array_ref.get_old_array(&guard);
+        let old_array = current_array_ref.old_array(&guard);
         let capacity = current_array_ref.capacity();
         let num_samples = std::cmp::min(f(capacity), capacity).next_power_of_two();
         let num_cells_to_sample = (num_samples / cell::ARRAY_SIZE as usize).max(1);
@@ -404,7 +404,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         }
         let mut num_entries = 0;
         for i in 0..num_cells_to_sample {
-            let (size, linked_entries) = current_array_ref.get_cell(i).size();
+            let (size, linked_entries) = current_array_ref.cell(i).size();
             num_entries += size + linked_entries;
         }
         num_entries * (current_array_ref.num_cells() / num_cells_to_sample)
@@ -442,7 +442,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         };
         let guard = crossbeam_epoch::pin();
         let current_array = self.array.load(Acquire, &guard);
-        let old_array = unsafe { current_array.deref().get_old_array(&guard) };
+        let old_array = unsafe { current_array.deref().old_array(&guard) };
         for array_ptr in vec![old_array.as_raw(), current_array.as_raw()] {
             if array_ptr.is_null() {
                 continue;
@@ -456,7 +456,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             }
             statistics.cells += num_cells;
             for i in 0..num_cells {
-                let (size, linked_entries) = array_ref.get_cell(i).size();
+                let (size, linked_entries) = array_ref.cell(i).size();
                 statistics.entries += size + linked_entries;
                 if size == 0 {
                     statistics.empty_cells += 1;
@@ -474,7 +474,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                         statistics.max_link_length = linked_entries;
                     }
                 }
-                if array_ref.get_cell(i).killed() {
+                if array_ref.cell(i).killed() {
                     statistics.killed_entries += 1;
                 }
             }
@@ -561,7 +561,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             // an Acquire fence is required to correctly load the contents of the array
             let current_array = self.array.load(Acquire, &guard);
             let current_array_ref = unsafe { current_array.deref() };
-            let old_array = current_array_ref.get_old_array(&guard);
+            let old_array = current_array_ref.old_array(&guard);
             if !old_array.is_null() {
                 if current_array_ref.partial_rehash(&guard, |key| self.hash(key)) {
                     continue;
@@ -644,7 +644,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     ) {
         let array_ref = unsafe { &(*array_ptr) };
         let cell_index = array_ref.calculate_metadata_array_index(hash);
-        let locker = CellLocker::lock(array_ref.get_cell(cell_index));
+        let locker = CellLocker::lock(array_ref.cell(cell_index));
         if !locker.killed() && !locker.empty() {
             if locker.overflowing() {
                 let (entry_array_link_ptr, entry_ptr) = locker.search_link(key, partial_hash);
@@ -655,7 +655,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             if let Some(sub_index) = locker.search_preferred(partial_hash) {
                 let entry_array_index =
                     cell_index * (cell::ARRAY_SIZE as usize) + (sub_index as usize);
-                let entry_ptr = array_ref.get_entry(entry_array_index);
+                let entry_ptr = array_ref.entry(entry_array_index);
                 if unsafe { (*entry_ptr).0 == *key } {
                     return (locker, std::ptr::null(), entry_ptr, cell_index, sub_index);
                 }
@@ -664,7 +664,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             while let Some(sub_index) = locker.search(current_index, partial_hash) {
                 let entry_array_index =
                     cell_index * (cell::ARRAY_SIZE as usize) + (sub_index as usize);
-                let entry_ptr = array_ref.get_entry(entry_array_index);
+                let entry_ptr = array_ref.entry(entry_array_index);
                 if unsafe { (*entry_ptr).0 == *key } {
                     return (locker, std::ptr::null(), entry_ptr, cell_index, sub_index);
                 }
@@ -681,7 +681,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         // an Acquire fence is required to correctly load the contents of the array
         let mut current_array = self.array.load(Acquire, &guard);
         loop {
-            let old_array = unsafe { current_array.deref().get_old_array(&guard) };
+            let old_array = unsafe { current_array.deref().old_array(&guard) };
             for array_ptr in vec![old_array.as_raw(), current_array.as_raw()] {
                 if array_ptr.is_null() {
                     continue;
@@ -689,7 +689,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 let array_ref = unsafe { &(*array_ptr) };
                 let num_cells = array_ref.num_cells();
                 for cell_index in 0..num_cells {
-                    let locker = CellLocker::lock(array_ref.get_cell(cell_index));
+                    let locker = CellLocker::lock(array_ref.cell(cell_index));
                     if !locker.empty() {
                         // once a valid cell is locked, the array is guaranteed to retain
                         return (Some(locker), array_ptr, cell_index);
@@ -720,7 +720,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         let current_array = self.array.load(Acquire, &guard);
         // bypass the lifetime checker by not calling Shared::deref()
         let current_array_ref = unsafe { &(*current_array.as_raw()) };
-        let old_array = current_array_ref.get_old_array(&guard);
+        let old_array = current_array_ref.old_array(&guard);
 
         // either one of the two arrays must match with array_ptr
         debug_assert!(array_ptr == current_array.as_raw() || array_ptr == old_array.as_raw());
@@ -730,7 +730,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             let old_array_ref = unsafe { &(*old_array.as_raw()) };
             let num_cells = old_array_ref.num_cells();
             for cell_index in (current_index + 1)..num_cells {
-                let locker = CellLocker::lock(old_array_ref.get_cell(cell_index));
+                let locker = CellLocker::lock(old_array_ref.cell(cell_index));
                 if !locker.killed() && !locker.empty() {
                     if let Some(scanner) = self.pick(locker, old_array.as_raw(), cell_index) {
                         return Some(scanner);
@@ -747,7 +747,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             current_index + 1
         };
         for cell_index in (start_index)..num_cells {
-            let locker = CellLocker::lock(current_array_ref.get_cell(cell_index));
+            let locker = CellLocker::lock(current_array_ref.cell(cell_index));
             if !locker.killed() && !locker.empty() {
                 if let Some(scanner) = self.pick(locker, current_array.as_raw(), cell_index) {
                     return Some(scanner);
@@ -762,7 +762,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             let new_array_ref = unsafe { &(*new_array.as_raw()) };
             let num_cells = new_array_ref.num_cells();
             for cell_index in 0..num_cells {
-                let locker = CellLocker::lock(new_array_ref.get_cell(cell_index));
+                let locker = CellLocker::lock(new_array_ref.cell(cell_index));
                 if !locker.killed() && !locker.empty() {
                     if let Some(scanner) = self.pick(locker, new_array.as_raw(), cell_index) {
                         return Some(scanner);
@@ -801,7 +801,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             if locker.occupied(sub_index) {
                 let entry_array_index =
                     cell_index * (cell::ARRAY_SIZE as usize) + (sub_index as usize);
-                let entry_ptr = unsafe { (*array_ptr).get_entry(entry_array_index) };
+                let entry_ptr = unsafe { (*array_ptr).entry(entry_array_index) };
                 return Some(Scanner {
                     accessor: Some(Accessor {
                         hash_map: &self,
@@ -827,7 +827,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         let guard = crossbeam_epoch::pin();
         let current_array = self.array.load(Acquire, &guard);
         let current_array_ref = unsafe { current_array.deref() };
-        let old_array = current_array_ref.get_old_array(&guard);
+        let old_array = current_array_ref.old_array(&guard);
         if !old_array.is_null() {
             if !current_array_ref.partial_rehash(&guard, |key| self.hash(key)) {
                 return;
@@ -837,7 +837,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         // trigger resize if the sample has less than 1/16, or more than 15/16 entries
         let mut num_entries = 0;
         for i in 0..current_array_ref.num_cells().min(cell::ARRAY_SIZE as usize) {
-            num_entries += current_array_ref.get_cell(i).size().0;
+            num_entries += current_array_ref.cell(i).size().0;
             if shrink {
                 if num_entries >= cell::ARRAY_SIZE as usize {
                     return;
@@ -861,7 +861,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             //  - load factor reaches 7/8: enlarge to accomodate
             //  - load factor reaches 1/8: shrink to fit
             let capacity = current_array_ref.capacity();
-            let estimated_num_entries = self.len(|_| 256 * cell::ARRAY_SIZE as usize);
+            let estimated_num_entries = self.len(|capacity| (capacity / 16).min(65536));
             let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
                 if capacity >= (1usize << (std::mem::size_of::<usize>() * 8 - 1)) {
                     capacity
@@ -1039,7 +1039,7 @@ impl<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Iterator for Scanner<'a, 
                 if new_sub_index != u8::MAX {
                     let entry_array_index =
                         self.cell_index * (cell::ARRAY_SIZE as usize) + (new_sub_index as usize);
-                    let entry_ptr = unsafe { (*self.array_ptr).get_entry(entry_array_index) };
+                    let entry_ptr = unsafe { (*self.array_ptr).entry(entry_array_index) };
                     self.accessor
                         .as_mut()
                         .map_or((), |accessor| accessor.entry_ptr = entry_ptr);
