@@ -5,7 +5,7 @@ mod test {
     use std::hash::{BuildHasher, Hash};
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
-    use std::sync::{Arc, Barrier, Mutex};
+    use std::sync::{Arc, Barrier};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -63,14 +63,12 @@ mod test {
         map: Arc<M>,
         workload: Workload,
     ) -> (Duration, usize) {
-        let barrier = Arc::new(Barrier::new(num_threads));
-        let start_time = Arc::new(Mutex::new(Instant::now()));
+        let barrier = Arc::new(Barrier::new(num_threads + 1));
         let total_num_operations = Arc::new(AtomicUsize::new(0));
         let mut thread_handles = Vec::with_capacity(num_threads);
         for thread_id in 0..num_threads {
             let map_copied = map.clone();
             let barrier_copied = barrier.clone();
-            let start_time_copied = start_time.clone();
             let total_num_operations_copied = total_num_operations.clone();
             let workload_copied = workload.clone();
             thread_handles.push(thread::spawn(move || {
@@ -81,10 +79,7 @@ mod test {
                 } else {
                     thread_id * workload_size
                 };
-                if barrier_copied.wait().is_leader() {
-                    let mut start_time = start_time_copied.lock().unwrap();
-                    *start_time = Instant::now();
-                }
+                barrier_copied.wait();
                 for i in start_index..(start_index + workload_size) {
                     for j in 0..workload_copied.insert {
                         assert!(map_copied.insert_test(i + j as usize, i));
@@ -103,14 +98,17 @@ mod test {
                         num_operations += 1;
                     }
                 }
+                barrier_copied.wait();
                 total_num_operations_copied.fetch_add(num_operations, Relaxed);
             }));
         }
+        barrier.wait();
+        let start_time = Instant::now();
+        barrier.wait();
+        let end_time = Instant::now();
         for handle in thread_handles {
             handle.join().unwrap();
         }
-        let start_time = *start_time.lock().unwrap();
-        let end_time = Instant::now();
         (
             end_time.saturating_duration_since(start_time),
             total_num_operations.load(Relaxed),
