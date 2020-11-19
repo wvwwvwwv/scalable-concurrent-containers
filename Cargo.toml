@@ -6,6 +6,8 @@ edition = "2018"
 
 [dependencies]
 crossbeam-epoch="^0.9"
+libc="^0.2.80"
+
 
 [workspace]
 members = [

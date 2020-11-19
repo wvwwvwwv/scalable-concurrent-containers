@@ -1,5 +1,4 @@
 use std::mem::MaybeUninit;
-use std::ptr;
 
 pub const ARRAY_SIZE: usize = 4;
 
@@ -11,7 +10,7 @@ pub struct EntryArrayLink<K: Eq, V> {
     /// Zero represents a state where the corresponding entry is vacant.
     partial_hash_array: [u16; ARRAY_SIZE],
     entry_array: [MaybeUninit<(K, V)>; ARRAY_SIZE],
-    pub link: LinkType<K, V>,
+    link: LinkType<K, V>,
 }
 
 impl<K: Eq, V> EntryArrayLink<K, V> {
@@ -23,61 +22,42 @@ impl<K: Eq, V> EntryArrayLink<K, V> {
         }
     }
 
-    pub fn consume_first_entry(&mut self) -> (Option<LinkType<K, V>>, Option<(K, V)>) {
-        let mut key_value = None;
-        let mut empty = true;
-        for i in 0..ARRAY_SIZE {
-            if self.partial_hash_array[i] != 0 {
-                if key_value.is_none() {
-                    self.partial_hash_array[i] = 0;
-                    let key_value_pair_entry_mut_ptr =
-                        &mut self.entry_array[i] as *mut MaybeUninit<(K, V)>;
-                    let entry = unsafe {
-                        std::ptr::replace(key_value_pair_entry_mut_ptr, MaybeUninit::uninit())
-                    };
-                    let (key, value) = unsafe { entry.assume_init() };
-                    key_value.replace((key, value));
-                } else {
-                    empty = false;
-                    break;
-                }
-            }
-        }
-        if empty {
-            (Some(self.link.take()), key_value)
-        } else {
-            (None, key_value)
-        }
+    pub fn link_ref(&self) -> &LinkType<K, V> {
+        &self.link
     }
 
-    pub fn first_entry(&self) -> (*const EntryArrayLink<K, V>, *const (K, V)) {
+    pub fn link_mut_ref(&mut self) -> &mut LinkType<K, V> {
+        &mut self.link
+    }
+
+    pub fn first_entry(&self) -> Option<(*const EntryArrayLink<K, V>, *const (K, V))> {
         for i in 0..ARRAY_SIZE {
             if self.partial_hash_array[i] != 0 {
-                return (
+                return Some((
                     self as *const EntryArrayLink<K, V>,
                     self.entry_array[i].as_ptr(),
-                );
+                ));
             }
         }
 
         // the call depth is guaranteed to be less than two
         self.link
             .as_ref()
-            .map_or((ptr::null(), ptr::null()), |link| (*link).first_entry())
+            .map_or(None, |link| (*link).first_entry())
     }
 
     pub fn next_entry(
         &self,
         entry_ptr: *const (K, V),
-    ) -> (*const EntryArrayLink<K, V>, *const (K, V)) {
+    ) -> Option<(*const EntryArrayLink<K, V>, *const (K, V))> {
         for i in 0..ARRAY_SIZE {
             if entry_ptr == self.entry_array[i].as_ptr() {
                 for j in (i + 1)..ARRAY_SIZE {
                     if self.partial_hash_array[j] != 0 {
-                        return (
+                        return Some((
                             self as *const EntryArrayLink<K, V>,
                             self.entry_array[j].as_ptr(),
-                        );
+                        ));
                     }
                 }
                 break;
@@ -87,7 +67,7 @@ impl<K: Eq, V> EntryArrayLink<K, V> {
         // the call depth is guaranteed to be less than two
         self.link
             .as_ref()
-            .map_or((ptr::null(), ptr::null()), |link| (*link).first_entry())
+            .map_or(None, |link| (*link).first_entry())
     }
 
     pub fn search_entry(
@@ -127,12 +107,14 @@ impl<K: Eq, V> EntryArrayLink<K, V> {
         Err((key, value))
     }
 
-    pub fn remove_entry(&mut self, key_value_pair_ptr: *const (K, V)) -> bool {
+    pub fn remove_entry(&mut self, drop_entry: bool, key_value_pair_ptr: *const (K, V)) -> bool {
         let mut removed = false;
         let mut vacant = true;
         for i in 0..ARRAY_SIZE {
             if !removed && self.entry_array[i].as_ptr() == key_value_pair_ptr {
-                unsafe { std::ptr::drop_in_place(self.entry_array[i].as_mut_ptr()) };
+                if drop_entry {
+                    unsafe { std::ptr::drop_in_place(self.entry_array[i].as_mut_ptr()) };
+                }
                 self.partial_hash_array[i] = 0;
                 if !vacant {
                     return false;

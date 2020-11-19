@@ -1,13 +1,17 @@
-use super::cell::{Cell, CellLocker, ARRAY_SIZE};
+extern crate libc;
+
+use super::cell::{Cell, CellLocker, EntryArray, ARRAY_SIZE};
 use crossbeam_epoch::{Atomic, Guard, Shared};
 use std::convert::TryInto;
 use std::mem::MaybeUninit;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
+pub const MAX_ENLARGE_FACTOR: u8 = 6;
+
 pub struct Array<K: Eq, V> {
-    metadata_array: Vec<Cell<K, V>>,
-    entry_array: Vec<MaybeUninit<(K, V)>>,
+    cell_array: Option<Box<Cell<K, V>>>,
+    entry_array: Option<Box<EntryArray<K, V>>>,
     lb_capacity: u8,
     rehashing: AtomicUsize,
     rehashed: AtomicUsize,
@@ -17,26 +21,34 @@ pub struct Array<K: Eq, V> {
 impl<K: Eq, V> Array<K, V> {
     pub fn new(capacity: usize, old_array: Atomic<Array<K, V>>) -> Array<K, V> {
         let lb_capacity = Self::calculate_lb_metadata_array_size(capacity);
-        let mut array = Array {
-            metadata_array: Vec::with_capacity(1usize << lb_capacity),
-            entry_array: Vec::with_capacity((1usize << lb_capacity) * (ARRAY_SIZE as usize)),
+        let cell_capacity = 1usize << lb_capacity;
+        // calloc zeroes the allocated heap memory region
+        let cell_array: *mut Cell<K, V> = unsafe {
+            libc::calloc(cell_capacity, std::mem::size_of::<Cell<K, V>>()) as *mut Cell<K, V>
+        };
+        // MaybeUninit does not need the memory to be zeroed
+        let entry_array: *mut EntryArray<K, V> = unsafe {
+            libc::malloc(cell_capacity * std::mem::size_of::<EntryArray<K, V>>())
+                as *mut EntryArray<K, V>
+        };
+        Array {
+            cell_array: Some(unsafe { Box::from_raw(cell_array) }),
+            entry_array: Some(unsafe { Box::from_raw(entry_array) }),
             lb_capacity: lb_capacity,
             rehashing: AtomicUsize::new(0),
             rehashed: AtomicUsize::new(0),
             old_array: old_array,
-        };
-        for _ in 0..(1usize << lb_capacity) {
-            array.metadata_array.push(Default::default());
         }
-        array
     }
 
     pub fn cell(&self, index: usize) -> &Cell<K, V> {
-        &self.metadata_array[index]
+        let array_ptr = &(**self.cell_array.as_ref().unwrap()) as *const Cell<K, V>;
+        unsafe { &(*(array_ptr.add(index))) }
     }
 
-    pub fn entry(&self, index: usize) -> *const (K, V) {
-        unsafe { &(*self.entry_array.as_ptr().add(index)) }.as_ptr()
+    pub fn entry_array(&self, index: usize) -> &EntryArray<K, V> {
+        let array_ptr = &(**self.entry_array.as_ref().unwrap()) as *const EntryArray<K, V>;
+        unsafe { &(*(array_ptr.add(index))) }
     }
 
     pub fn num_cells(&self) -> usize {
@@ -96,13 +108,17 @@ impl<K: Eq, V> Array<K, V> {
         } else {
             old_cell_index * ratio
         };
-        let num_target_cells = if shrink { 1 } else { ratio };
-        let mut target_cells: Vec<CellLocker<K, V>> = Vec::with_capacity(num_target_cells);
+        debug_assert!(ratio <= (1 << MAX_ENLARGE_FACTOR as usize));
 
-        let mut current = cell_locker.next_occupied(u8::MAX);
-        while current != u8::MAX {
-            let old_index = old_cell_index * ARRAY_SIZE as usize + current as usize;
-            let entry_ptr = unsafe { &(*old_array.entry_array.as_ptr().add(old_index)) }.as_ptr();
+        let mut target_cells: [Option<CellLocker<K, V>>; 1 << MAX_ENLARGE_FACTOR as usize] = [
+            None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None,
+        ];
+        let mut current = cell_locker.first();
+        while let Some((sub_index, entry_array_link_ptr, entry_ptr)) = current {
             let entry_mut_ptr = entry_ptr as *mut MaybeUninit<(K, V)>;
             let entry = unsafe { std::ptr::replace(entry_mut_ptr, MaybeUninit::uninit()) };
             let (key, value) = unsafe { entry.assume_init() };
@@ -114,68 +130,21 @@ impl<K: Eq, V> Array<K, V> {
                     || (shrink && new_cell_index == old_cell_index / ratio)
             );
 
-            while target_cells.len() <= (new_cell_index - target_cell_index) {
-                let cell_index = target_cell_index + target_cells.len();
-                target_cells.push(CellLocker::lock(self.cell(cell_index)));
-            }
-
-            self.insert(
-                key,
-                partial_hash,
-                value,
-                new_cell_index,
-                &mut target_cells[new_cell_index - target_cell_index],
-            );
-            cell_locker.remove(current);
-            current = cell_locker.next_occupied(current);
-        }
-
-        if cell_locker.overflowing() {
-            while let Some((key, value)) = cell_locker.consume_link() {
-                let (hash, partial_hash) = hasher(&key);
-                let new_cell_index = self.calculate_metadata_array_index(hash);
-
-                debug_assert!(
-                    (!shrink && (new_cell_index - target_cell_index) < ratio)
-                        || (shrink && new_cell_index == old_cell_index / ratio)
-                );
-                while target_cells.len() <= (new_cell_index - target_cell_index) {
-                    let cell_index = target_cell_index + target_cells.len();
-                    target_cells.push(CellLocker::lock(self.cell(cell_index)));
+            for i in 0..=(new_cell_index - target_cell_index) {
+                if target_cells[i].is_none() {
+                    target_cells[i] = Some(CellLocker::lock(
+                        self.cell(target_cell_index + i),
+                        self.entry_array(target_cell_index + i),
+                    ));
                 }
-
-                self.insert(
-                    key,
-                    partial_hash,
-                    value,
-                    new_cell_index,
-                    &mut target_cells[new_cell_index - target_cell_index],
-                );
             }
-        }
+            target_cells[new_cell_index - target_cell_index]
+                .as_mut()
+                .map(|cell_locker| cell_locker.insert(key, partial_hash, value));
 
+            current = cell_locker.next(true, false, sub_index, entry_array_link_ptr, entry_ptr);
+        }
         cell_locker.kill();
-    }
-
-    fn insert(
-        &self,
-        key: K,
-        partial_hash: u16,
-        value: V,
-        cell_index: usize,
-        cell_locker: &mut CellLocker<K, V>,
-    ) {
-        let mut new_sub_index = u8::MAX;
-        if let Some(sub_index) = cell_locker.insert(partial_hash) {
-            new_sub_index = sub_index;
-        }
-        if new_sub_index != u8::MAX {
-            let entry_array_index = cell_index * (ARRAY_SIZE as usize) + (new_sub_index as usize);
-            let entry_mut_ptr = self.entry(entry_array_index) as *mut (K, V);
-            unsafe { entry_mut_ptr.write((key, value)) };
-        } else {
-            cell_locker.insert_link(key, partial_hash, value);
-        }
     }
 
     pub fn partial_rehash<F: Fn(&K) -> (u64, u16)>(&self, guard: &Guard, hasher: F) -> bool {
@@ -203,10 +172,16 @@ impl<K: Eq, V> Array<K, V> {
         }
 
         for old_cell_index in current..(current + ARRAY_SIZE as usize).min(old_array_size) {
-            if old_array_ref.metadata_array[old_cell_index].killed() {
+            let old_cell_array_ptr =
+                &(**old_array_ref.cell_array.as_ref().unwrap()) as *const Cell<K, V>;
+            let old_cell_ref = unsafe { &(*(old_cell_array_ptr.add(old_cell_index))) };
+            if old_cell_ref.killed() {
                 continue;
             }
-            let mut old_cell = CellLocker::lock(&old_array_ref.metadata_array[old_cell_index]);
+            let old_entry_array_ptr =
+                &(**old_array_ref.entry_array.as_ref().unwrap()) as *const EntryArray<K, V>;
+            let old_entry_array_ref = unsafe { &(*(old_entry_array_ptr.add(old_cell_index))) };
+            let mut old_cell = CellLocker::lock(old_cell_ref, old_entry_array_ref);
             self.kill_cell(&mut old_cell, old_array_ref, old_cell_index, &hasher);
         }
 
@@ -219,6 +194,21 @@ impl<K: Eq, V> Array<K, V> {
             return true;
         }
         false
+    }
+}
+
+impl<K: Eq, V> Drop for Array<K, V> {
+    fn drop(&mut self) {
+        let entry_array = self.entry_array.take();
+        entry_array.map(|entry_array_box| {
+            let entry_array_ptr = Box::into_raw(entry_array_box);
+            unsafe { libc::free(entry_array_ptr as *mut libc::c_void) };
+        });
+        let cell_array = self.cell_array.take();
+        cell_array.map(|cell_array_box| {
+            let cell_array_ptr = Box::into_raw(cell_array_box);
+            unsafe { libc::free(cell_array_ptr as *mut libc::c_void) };
+        });
     }
 }
 
