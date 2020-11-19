@@ -15,7 +15,7 @@ const SLOCK: u32 = 1u32 << ARRAY_SIZE;
 const OCCUPANCY_MASK: u32 = (1u32 << ARRAY_SIZE) - 1;
 const OCCUPANCY_BIT: u32 = 1;
 
-pub struct Cell<K: Clone + Eq, V> {
+pub struct Cell<K: Eq, V> {
     partial_hash_array: [u16; ARRAY_SIZE as usize],
     metadata: AtomicU32,
     wait_queue: AtomicPtr<WaitQueueEntry>,
@@ -23,7 +23,7 @@ pub struct Cell<K: Clone + Eq, V> {
     linked_entries: usize,
 }
 
-impl<K: Clone + Eq, V> Cell<K, V> {
+impl<K: Eq, V> Cell<K, V> {
     pub fn killed(&self) -> bool {
         self.metadata.load(Relaxed) & KILLED_FLAG == KILLED_FLAG
     }
@@ -92,7 +92,7 @@ impl<K: Clone + Eq, V> Cell<K, V> {
     }
 }
 
-impl<K: Clone + Eq, V> Default for Cell<K, V> {
+impl<K: Eq, V> Default for Cell<K, V> {
     fn default() -> Self {
         Cell {
             metadata: AtomicU32::new(0),
@@ -105,12 +105,12 @@ impl<K: Clone + Eq, V> Default for Cell<K, V> {
 }
 
 /// CellLocker
-pub struct CellLocker<'a, K: Clone + Eq, V> {
+pub struct CellLocker<'a, K: Eq, V> {
     cell: &'a Cell<K, V>,
     metadata: u32,
 }
 
-impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
+impl<'a, K: Eq, V> CellLocker<'a, K, V> {
     /// Create a new CellLocker instance with the cell exclusively locked.
     pub fn lock(cell: &'a Cell<K, V>) -> CellLocker<'a, K, V> {
         loop {
@@ -238,11 +238,12 @@ impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
 
     pub fn insert_link(
         &mut self,
-        key: &K,
+        key: K,
         partial_hash: u16,
         value: V,
     ) -> (*const EntryArrayLink<K, V>, *const (K, V)) {
         let cell = self.get_cell_mut_ref();
+        let mut key = key;
         let mut value = value;
         let mut link_ref = &mut cell.link;
         while let Some(link) = link_ref.as_mut() {
@@ -251,7 +252,10 @@ impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
                     cell.linked_entries += 1;
                     return result;
                 }
-                Err(result) => value = result,
+                Err(result) => {
+                    key = result.0;
+                    value = result.1;
+                }
             }
             link_ref = &mut link.link;
         }
@@ -327,12 +331,12 @@ impl<'a, K: Clone + Eq, V> CellLocker<'a, K, V> {
 }
 
 /// CellReader
-pub struct CellReader<'a, K: Clone + Eq, V> {
+pub struct CellReader<'a, K: Eq, V> {
     cell: &'a Cell<K, V>,
     metadata: u32,
 }
 
-impl<'a, K: Clone + Eq, V> CellReader<'a, K, V> {
+impl<'a, K: Eq, V> CellReader<'a, K, V> {
     /// Create a new CellReader instance with the cell shared locked.
     pub fn lock(cell: &'a Cell<K, V>) -> CellReader<'a, K, V> {
         loop {
@@ -439,7 +443,7 @@ impl WaitQueueEntry {
     }
 }
 
-impl<'a, K: Clone + Eq, V> Drop for CellLocker<'a, K, V> {
+impl<'a, K: Eq, V> Drop for CellLocker<'a, K, V> {
     fn drop(&mut self) {
         // a Release fence is required to publish the changes
         let mut current = self.cell.metadata.load(Relaxed);
@@ -463,7 +467,7 @@ impl<'a, K: Clone + Eq, V> Drop for CellLocker<'a, K, V> {
     }
 }
 
-impl<'a, K: Clone + Eq, V> Drop for CellReader<'a, K, V> {
+impl<'a, K: Eq, V> Drop for CellReader<'a, K, V> {
     fn drop(&mut self) {
         // no modification is allowed with a CellReader held: no memory fences required
         let mut current = self.cell.metadata.load(Relaxed);
@@ -542,7 +546,7 @@ mod test {
                             xlocker.insert(tid.try_into().unwrap());
                         } else if i == 512 {
                             let key = tid + num_threads;
-                            let inserted = xlocker.insert_link(&key, 1, i);
+                            let inserted = xlocker.insert_link(key, 1, i);
                             assert_eq!(unsafe { *(inserted.1) }, (key, 512));
                             assert!(xlocker.overflowing());
                             assert!(!xlocker.search_link(&key, 1).0.is_null());

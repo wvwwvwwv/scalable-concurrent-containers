@@ -220,7 +220,7 @@ mod test {
                 let statistics = hashmap.statistics();
                 println!("{}%: {}", (p + 1) * 10, statistics);
                 for sample_size in 0..9 {
-                    let len = hashmap.len(|_| 1 << sample_size);
+                    let len = hashmap.len(|_| (1 << sample_size) * 16);
                     println!("{}/{}%: {};{}", s, (p + 1) * 10, 1 << sample_size, len);
                 }
             }

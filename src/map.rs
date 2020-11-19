@@ -37,14 +37,14 @@ use std::sync::atomic::Ordering::{Acquire, Release};
 /// * The number of entries managed by a single metadata cell without a linked list: 16.
 /// * The number of entries a single linked list entry manages: 4.
 /// * The expected maximum linked list length when resize is triggered: log(capacity) / 4.
-pub struct HashMap<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> {
+pub struct HashMap<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> {
     array: Atomic<Array<K, V>>,
     minimum_capacity: usize,
     resize_mutex: AtomicBool,
     hasher: H,
 }
 
-impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V, H> {
+impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// Creates an empty HashMap instance with the given hasher and minimum capacity.
     ///
     /// # Examples
@@ -107,7 +107,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                         cell_index * (cell::ARRAY_SIZE as usize) + (sub_index as usize);
                     let entry_ptr = array_ref.get_entry(entry_array_index);
                     let entry_mut_ptr = entry_ptr as *mut (K, V);
-                    unsafe { entry_mut_ptr.write((key.clone(), value)) };
+                    unsafe { entry_mut_ptr.write((key, value)) };
                     accessor.sub_index = sub_index;
                     accessor.entry_array_link_ptr = std::ptr::null();
                     accessor.entry_ptr = entry_ptr;
@@ -119,7 +119,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
                         resize_triggered = true;
                         continue;
                     }
-                    let result = accessor.cell_locker.insert_link(&key, partial_hash, value);
+                    let result = accessor.cell_locker.insert_link(key, partial_hash, value);
                     accessor.entry_array_link_ptr = result.0;
                     accessor.entry_ptr = result.1;
                 }
@@ -156,7 +156,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         }
     }
 
-    /// Gets a reference to the value associated with the key.
+    /// Gets a mutable reference to the value associated with the key.
     ///
     /// # Examples
     /// ```
@@ -282,6 +282,8 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
 
     /// Retains the key-value pairs that satisfy the given predicate.
     ///
+    /// It returns the number of entries remaining and removed.
+    ///
     /// # Examples
     /// ```
     /// use scc::HashMap;
@@ -365,22 +367,24 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
 
     /// Returns an estimated size of the HashMap.
     ///
+    /// It passes the number of metadata cells to the given function.
+    ///
     /// # Examples
     /// ```
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), Some(1000));
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), None);
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
     ///     assert_eq!(result.get(), (&1, &mut 0));
     /// }
     ///
-    /// let result = hashmap.len(|num_cells| num_cells);
+    /// let result = hashmap.len(|capacity| capacity);
     /// assert_eq!(result, 1);
     ///
-    /// let result = hashmap.len(|num_cells| num_cells / 2);
+    /// let result = hashmap.len(|capacity| capacity / 2);
     /// assert!(result == 0 || result == 2);
     /// ```
     pub fn len<F: FnOnce(usize) -> usize>(&self, f: F) -> usize {
@@ -388,22 +392,22 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
         let current_array = self.array.load(Acquire, &guard);
         let current_array_ref = unsafe { current_array.deref() };
         let old_array = current_array_ref.get_old_array(&guard);
-        let num_cells = current_array_ref.num_cells();
-        let num_samples = std::cmp::min(f(num_cells), num_cells);
+        let capacity = current_array_ref.capacity();
+        let num_samples = std::cmp::min(f(capacity), capacity).next_power_of_two();
+        let num_cells_to_sample = (num_samples / cell::ARRAY_SIZE as usize).max(1);
         if !old_array.is_null() {
-            for _ in 0..(num_samples / cell::ARRAY_SIZE as usize) {
+            for _ in 0..num_cells_to_sample {
                 if current_array_ref.partial_rehash(&guard, |key| self.hash(key)) {
                     break;
                 }
             }
         }
         let mut num_entries = 0;
-        for i in 0..num_samples {
+        for i in 0..num_cells_to_sample {
             let (size, linked_entries) = current_array_ref.get_cell(i).size();
             num_entries += size + linked_entries;
         }
-        let size_estimated = ((num_entries as f64) / (num_samples as f64)) * (num_cells as f64);
-        size_estimated as usize
+        num_entries * (current_array_ref.num_cells() / num_cells_to_sample)
     }
 
     /// Returns the statistics of the HashMap.
@@ -857,7 +861,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
             //  - load factor reaches 7/8: enlarge to accomodate
             //  - load factor reaches 1/8: shrink to fit
             let capacity = current_array_ref.capacity();
-            let estimated_num_entries = self.len(|_| 64);
+            let estimated_num_entries = self.len(|_| 256 * cell::ARRAY_SIZE as usize);
             let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
                 if capacity >= (1usize << (std::mem::size_of::<usize>() * 8 - 1)) {
                     capacity
@@ -887,7 +891,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMap<K, V,
     }
 }
 
-impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Drop for HashMap<K, V, H> {
+impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Drop for HashMap<K, V, H> {
     fn drop(&mut self) {
         self.clear();
     }
@@ -896,7 +900,7 @@ impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Drop for Hash
 /// Accessor offers a means of reading a key-value stored in a hash map container.
 ///
 /// It is !Send, thus disallowing other threads to have references to it.
-pub struct Accessor<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> {
+pub struct Accessor<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> {
     hash_map: &'a HashMap<K, V, H>,
     cell_locker: CellLocker<'a, K, V>,
     cell_in_sampling_range: bool,
@@ -905,7 +909,7 @@ pub struct Accessor<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHa
     entry_ptr: *const (K, V),
 }
 
-impl<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Accessor<'a, K, V, H> {
+impl<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Accessor<'a, K, V, H> {
     /// Returns a reference to the key-value pair.
     ///
     /// # Examples
@@ -964,9 +968,7 @@ impl<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Accessor<
 }
 
 /// Scanner implements Iterator.
-///
-/// It is !Send, thus disallowing other threads to have references to it.
-pub struct Scanner<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> {
+pub struct Scanner<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> {
     accessor: Option<Accessor<'a, K, V, H>>,
     array_ptr: *const Array<K, V>,
     cell_index: usize,
@@ -974,9 +976,7 @@ pub struct Scanner<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHas
     erase_on_next: bool,
 }
 
-impl<'a, K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> Iterator
-    for Scanner<'a, K, V, H>
-{
+impl<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Iterator for Scanner<'a, K, V, H> {
     type Item = (&'a K, &'a mut V);
     fn next(&mut self) -> Option<Self::Item> {
         if !self.activated {

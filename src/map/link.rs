@@ -5,7 +5,7 @@ pub const ARRAY_SIZE: usize = 4;
 
 pub type LinkType<K, V> = Option<Box<EntryArrayLink<K, V>>>;
 
-pub struct EntryArrayLink<K: Clone + Eq, V> {
+pub struct EntryArrayLink<K: Eq, V> {
     /// The array of partial hash values
     ///
     /// Zero represents a state where the corresponding entry is vacant.
@@ -14,7 +14,7 @@ pub struct EntryArrayLink<K: Clone + Eq, V> {
     pub link: LinkType<K, V>,
 }
 
-impl<K: Clone + Eq, V> EntryArrayLink<K, V> {
+impl<K: Eq, V> EntryArrayLink<K, V> {
     pub fn new(link: LinkType<K, V>) -> EntryArrayLink<K, V> {
         EntryArrayLink {
             partial_hash_array: [0; ARRAY_SIZE],
@@ -110,21 +110,21 @@ impl<K: Clone + Eq, V> EntryArrayLink<K, V> {
 
     pub fn insert_entry(
         &mut self,
-        key: &K,
+        key: K,
         partial_hash: u16,
         value: V,
-    ) -> Result<(*const EntryArrayLink<K, V>, *const (K, V)), V> {
+    ) -> Result<(*const EntryArrayLink<K, V>, *const (K, V)), (K, V)> {
         for i in 0..ARRAY_SIZE {
             if self.partial_hash_array[i] == 0 {
                 self.partial_hash_array[i] = partial_hash | 1;
-                unsafe { self.entry_array[i].as_mut_ptr().write((key.clone(), value)) };
+                unsafe { self.entry_array[i].as_mut_ptr().write((key, value)) };
                 return Ok((
                     self as *const EntryArrayLink<K, V>,
                     self.entry_array[i].as_ptr(),
                 ));
             }
         }
-        Err(value)
+        Err((key, value))
     }
 
     pub fn remove_entry(&mut self, key_value_pair_ptr: *const (K, V)) -> bool {

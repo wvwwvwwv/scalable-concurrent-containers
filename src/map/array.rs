@@ -5,7 +5,7 @@ use std::mem::MaybeUninit;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-pub struct Array<K: Clone + Eq, V> {
+pub struct Array<K: Eq, V> {
     metadata_array: Vec<Cell<K, V>>,
     entry_array: Vec<MaybeUninit<(K, V)>>,
     lb_capacity: u8,
@@ -14,7 +14,7 @@ pub struct Array<K: Clone + Eq, V> {
     old_array: Atomic<Array<K, V>>,
 }
 
-impl<K: Clone + Eq, V> Array<K, V> {
+impl<K: Eq, V> Array<K, V> {
     pub fn new(capacity: usize, old_array: Atomic<Array<K, V>>) -> Array<K, V> {
         let lb_capacity = Self::calculate_lb_metadata_array_size(capacity);
         let mut array = Array {
@@ -120,7 +120,7 @@ impl<K: Clone + Eq, V> Array<K, V> {
             }
 
             self.insert(
-                &key,
+                key,
                 partial_hash,
                 value,
                 new_cell_index,
@@ -145,7 +145,7 @@ impl<K: Clone + Eq, V> Array<K, V> {
                 }
 
                 self.insert(
-                    &key,
+                    key,
                     partial_hash,
                     value,
                     new_cell_index,
@@ -159,7 +159,7 @@ impl<K: Clone + Eq, V> Array<K, V> {
 
     fn insert(
         &self,
-        key: &K,
+        key: K,
         partial_hash: u16,
         value: V,
         cell_index: usize,
@@ -172,9 +172,9 @@ impl<K: Clone + Eq, V> Array<K, V> {
         if new_sub_index != u8::MAX {
             let entry_array_index = cell_index * (ARRAY_SIZE as usize) + (new_sub_index as usize);
             let entry_mut_ptr = self.get_entry(entry_array_index) as *mut (K, V);
-            unsafe { entry_mut_ptr.write((key.clone(), value)) };
+            unsafe { entry_mut_ptr.write((key, value)) };
         } else {
-            cell_locker.insert_link(&key, partial_hash, value);
+            cell_locker.insert_link(key, partial_hash, value);
         }
     }
 
