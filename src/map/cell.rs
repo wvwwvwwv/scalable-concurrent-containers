@@ -441,7 +441,7 @@ impl<'a, K: Eq, V> CellReader<'a, K, V> {
 impl<'a, K: Eq, V> Drop for CellReader<'a, K, V> {
     fn drop(&mut self) {
         // no modification is allowed with a CellReader held: no memory fences required
-        let mut current = self.metadata;
+        let mut current = self.metadata + SLOCK;
         loop {
             debug_assert!(current & LOCK_MASK <= SLOCK_MAX);
             debug_assert!(current & LOCK_MASK >= SLOCK);

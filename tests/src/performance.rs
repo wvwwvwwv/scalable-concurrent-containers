@@ -50,7 +50,7 @@ mod test {
         }
         #[inline(always)]
         fn read_test(&self, k: K) -> bool {
-            self.get(k).is_some()
+            self.read(k, |_, _| ()).is_some()
         }
         #[inline(always)]
         fn remove_test(&self, k: K) -> bool {
