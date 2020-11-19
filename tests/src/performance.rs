@@ -40,15 +40,19 @@ mod test {
     impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMapOperation<K, V, H>
         for HashMap<K, V, H>
     {
+        #[inline(always)]
         fn insert_test(&self, k: K, v: V) -> bool {
             self.insert(k, v).is_ok()
         }
+        #[inline(always)]
         fn update_test(&self, k: K, v: V) {
             self.upsert(k, v);
         }
+        #[inline(always)]
         fn read_test(&self, k: K) -> bool {
-            self.read(k, |_, _| ()).is_some()
+            self.get(k).is_some()
         }
+        #[inline(always)]
         fn remove_test(&self, k: K) -> bool {
             self.remove(k)
         }
@@ -70,10 +74,6 @@ mod test {
             let total_num_operations_copied = total_num_operations.clone();
             let workload_copied = workload.clone();
             thread_handles.push(thread::spawn(move || {
-                if barrier_copied.wait().is_leader() {
-                    let mut start_time = start_time_copied.lock().unwrap();
-                    *start_time = Instant::now();
-                }
                 let mut num_operations = 0;
                 let workload_size = workload_copied.size * workload_copied.subop_size();
                 let start_index = if workload_copied.overlap {
@@ -81,6 +81,10 @@ mod test {
                 } else {
                     thread_id * workload_size
                 };
+                if barrier_copied.wait().is_leader() {
+                    let mut start_time = start_time_copied.lock().unwrap();
+                    *start_time = Instant::now();
+                }
                 for i in start_index..(start_index + workload_size) {
                     for j in 0..workload_copied.insert {
                         assert!(map_copied.insert_test(i + j as usize, i));

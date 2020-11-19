@@ -330,6 +330,30 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
     }
 }
 
+impl<'a, K: Eq, V> Drop for CellLocker<'a, K, V> {
+    fn drop(&mut self) {
+        // a Release fence is required to publish the changes
+        let mut current = self.cell.metadata.load(Relaxed);
+        loop {
+            debug_assert_eq!(current & LOCK_MASK, XLOCK);
+            match self.cell.metadata.compare_exchange(
+                current,
+                self.metadata & (!(WAITING_FLAG | XLOCK)),
+                Release,
+                Relaxed,
+            ) {
+                Ok(result) => {
+                    if result & WAITING_FLAG == WAITING_FLAG {
+                        self.cell.wakeup();
+                    }
+                    break;
+                }
+                Err(result) => current = result,
+            }
+        }
+    }
+}
+
 /// CellReader
 pub struct CellReader<'a, K: Eq, V> {
     cell: &'a Cell<K, V>,
@@ -414,6 +438,31 @@ impl<'a, K: Eq, V> CellReader<'a, K, V> {
     }
 }
 
+impl<'a, K: Eq, V> Drop for CellReader<'a, K, V> {
+    fn drop(&mut self) {
+        // no modification is allowed with a CellReader held: no memory fences required
+        let mut current = self.metadata;
+        loop {
+            debug_assert!(current & LOCK_MASK <= SLOCK_MAX);
+            debug_assert!(current & LOCK_MASK >= SLOCK);
+            match self.cell.metadata.compare_exchange(
+                current,
+                (current & (!WAITING_FLAG)) - SLOCK,
+                Relaxed,
+                Relaxed,
+            ) {
+                Ok(result) => {
+                    if result & WAITING_FLAG == WAITING_FLAG {
+                        self.cell.wakeup();
+                    }
+                    break;
+                }
+                Err(result) => current = result,
+            }
+        }
+    }
+}
+
 struct WaitQueueEntry {
     mutex: Mutex<bool>,
     condvar: Condvar,
@@ -440,55 +489,6 @@ impl WaitQueueEntry {
         let mut completed = self.mutex.lock().unwrap();
         *completed = true;
         self.condvar.notify_one();
-    }
-}
-
-impl<'a, K: Eq, V> Drop for CellLocker<'a, K, V> {
-    fn drop(&mut self) {
-        // a Release fence is required to publish the changes
-        let mut current = self.cell.metadata.load(Relaxed);
-        loop {
-            debug_assert_eq!(current & LOCK_MASK, XLOCK);
-            match self.cell.metadata.compare_exchange(
-                current,
-                self.metadata & (!(WAITING_FLAG | XLOCK)),
-                Release,
-                Relaxed,
-            ) {
-                Ok(result) => {
-                    if result & WAITING_FLAG == WAITING_FLAG {
-                        self.cell.wakeup();
-                    }
-                    break;
-                }
-                Err(result) => current = result,
-            }
-        }
-    }
-}
-
-impl<'a, K: Eq, V> Drop for CellReader<'a, K, V> {
-    fn drop(&mut self) {
-        // no modification is allowed with a CellReader held: no memory fences required
-        let mut current = self.cell.metadata.load(Relaxed);
-        loop {
-            debug_assert!(current & LOCK_MASK <= SLOCK_MAX);
-            debug_assert!(current & LOCK_MASK >= SLOCK);
-            match self.cell.metadata.compare_exchange(
-                current,
-                (current & (!WAITING_FLAG)) - SLOCK,
-                Relaxed,
-                Relaxed,
-            ) {
-                Ok(result) => {
-                    if result & WAITING_FLAG == WAITING_FLAG {
-                        self.cell.wakeup();
-                    }
-                    break;
-                }
-                Err(result) => current = result,
-            }
-        }
     }
 }
 

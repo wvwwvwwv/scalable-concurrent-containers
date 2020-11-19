@@ -834,9 +834,11 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             if !current_array_ref.partial_rehash(&guard, |key| self.hash(key)) {
                 return;
             }
+        } else if shrink && current_array_ref.capacity() == self.minimum_capacity {
+            return;
         }
 
-        // trigger resize if the sample has less than 1/16, or more than 15/16 entries
+        // trigger resize if the sampling entries have less than 1/16, or more than 15/16 entries
         let mut num_entries = 0;
         for i in 0..current_array_ref.num_cells().min(cell::ARRAY_SIZE as usize) {
             num_entries += current_array_ref.cell(i).size().0;
