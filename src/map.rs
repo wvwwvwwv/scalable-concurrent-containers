@@ -20,14 +20,16 @@ use std::sync::atomic::Ordering::{Acquire, Release};
 /// It internally has a single entry array that stores key-value pairs and a metadata cell array for managing the data.
 /// A metadata cell manages a range of hash values, and overflowing by collisions is resolved by allocating a separate linked lists.
 /// The range of hash values managed by a single metadata cell share a single customized mutex, instead of having a mutex assigned to the entire array.
-/// Therefore, two threads accessing different keys managed by different metadata cells do not interfere with eath other.
+/// Therefore, two threads accessing different keys managed by different metadata cells do not interfere with each other.
+/// It harnesses the power of the epoch-based reclamation technique provided by the crossbeam_epoch crate, allowing the data structure to eliminate coarse locking.
 ///
-/// The key features of scc::HashMap are as follows.
+/// The key features of scc::HashMap.
 /// * No sharding: all keys are managed by a single array of metadata cells.
 /// * Auto resizing: it automatically enlarges or shrinks the internal arrays.
 /// * Non-blocking resizing: resizing does not block other threads.
 /// * Incremental resizing: access to the data structure relocates a certain number of key-value pairs.
 /// * Optimized resizing: key-value pairs in a single metadata cell are guaranteed to be relocated to adjacent cells.
+/// * No shared data: no atomic entry counter and the number of key-value pairs is estimated.
 ///
 /// The key statistics for scc::HashMap.
 /// * The expected size of metadata for a single key-value pair: 4-byte.
@@ -858,8 +860,8 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             }
 
             // the resizing policies are as follows.
-            //  - load factor reaches 7/8: enlarge to accomodate
-            //  - load factor reaches 1/8: shrink to fit
+            //  - load factor reaches 7/8: enlarge
+            //  - load factor reaches 1/8: shrink
             let capacity = current_array_ref.capacity();
             let estimated_num_entries = self.len(|capacity| (capacity / 16).min(65536));
             let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
