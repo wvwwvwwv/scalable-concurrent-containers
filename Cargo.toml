@@ -1,7 +1,7 @@
 [package]
 name = "scc"
-version = "0.2.1"
-authors = ["Changgyoo Park <wvwwvwwv@me.com>"]
+version = "0.2.2"
+authors = ["Changgyoo Park <wvwwvwwv@me.com>", "Changgyoo Park <changgyoo.park@sap.com>"]
 edition = "2018"
 readme = "README.md"
 repository = "https://github.com/wvwwvwwv/scc/"

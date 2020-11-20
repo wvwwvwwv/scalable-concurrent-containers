@@ -1,6 +1,7 @@
 # SCC: Scalable Concurrent Containers
 
 [Work-in-progress]
+
 SCC offers scalable concurrent containers written in the Rust language. The data structures in SCC assume to be used by a database management software running on a server, ane therefore they may not efficiently work on small systems.
 
 ## scc::HashMap
@@ -12,7 +13,7 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 Test environment.
 - OS: SUSE Linux Enterprise Server 15 SP1
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4 (4 CPUs / 88 cores)
-- Ram: 1TB
+- RAM: 1TB
 - Rust: 1.48.0
 
 Test workload.

@@ -518,7 +518,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         let guard = crossbeam_epoch::pin();
 
         // it is guaranteed that the thread reads a consistent snapshot of the current and
-        // old array pair by a Release fence at the resize function, hence the following
+        // old array pair by a release fence in the resize function, hence the following
         // procedure is correct.
         //  - the thread reads self.array, and it kills the target cell in the old array
         //    if there is one attached to it, and inserts the key into array.
@@ -527,7 +527,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         //    if there is another thread having read the latest version of self.array,
         //    trying to insert the same key, it will try to kill the cell in the old version
         //    of self.array, thus competing with each other.
-        //  2. Thread X reads the latest version of self.array.
+        //  2. the thread reads the latest version of self.array.
         //    if the array is deprecated while inserting the key, it falls into case 1.
         loop {
             // an acquire fence is required to correctly load the contents of the array
