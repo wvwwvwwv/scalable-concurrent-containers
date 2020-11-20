@@ -25,10 +25,10 @@ use std::sync::atomic::Ordering::{Acquire, Release};
 /// A metadata cell resolves hash collisions by allocating a linked list of key-value pair arrays.
 ///
 /// The key features of scc::HashMap.
-/// * No sharding: all keys are managed by a single array of metadata cells.
+/// * No sharding: all keys stored in a single entry array are managed by a single array of metadata cells.
 /// * Auto resizing: it automatically enlarges or shrinks the internal arrays.
 /// * Non-blocking resizing: resizing does not block other threads.
-/// * Incremental resizing: access to the data structure relocates a certain number of key-value pairs.
+/// * Incremental resizing: each access to the data structure relocates a certain number of key-value pairs.
 /// * Optimized resizing: key-value pairs in a single metadata cell are guaranteed to be relocated to adjacent cells.
 /// * Minimized shared data: no atomic counter and coarse lock.
 ///
@@ -56,6 +56,13 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// use std::collections::hash_map::RandomState;
     ///
     /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), Some(1000));
+    ///
+    /// let result = hashmap.capacity();
+    /// assert_eq!(result, 1024);
+    ///
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), None);
+    /// let result = hashmap.capacity();
+    /// assert_eq!(result, 256);
     /// ```
     pub fn new(hasher: H, minimum_capacity: Option<usize>) -> HashMap<K, V, H> {
         let initial_capacity = if let Some(capacity) = minimum_capacity {
@@ -204,7 +211,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             .map_or_else(|| false, |accessor| accessor.erase())
     }
 
-    /// Reads the key-value pair.
+    /// Reads a key-value pair.
     ///
     /// # Examples
     /// ```
@@ -261,7 +268,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), Some(1000));
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), None);
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
@@ -312,7 +319,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), Some(1000));
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), None);
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
@@ -339,7 +346,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
 
     /// Returns an estimated size of the HashMap.
     ///
-    /// It passes the number of metadata cells to the given function.
+    /// It passes the capacity of the HashMap to the given function.
     ///
     /// # Examples
     /// ```
@@ -382,6 +389,28 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         num_entries * (current_array_ref.num_cells() / num_cells_to_sample)
     }
 
+    /// Returns the capacity of the HashMap.
+    ///
+    /// # Examples
+    /// ```
+    /// use scc::HashMap;
+    /// use std::collections::hash_map::RandomState;
+    ///
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), Some(1000000));
+    ///
+    /// let result = hashmap.capacity();
+    /// assert_eq!(result, 1048576);
+    /// ```
+    pub fn capacity(&self) -> usize {
+        let guard = crossbeam_epoch::pin();
+        let current_array = self.array.load(Acquire, &guard);
+        let current_array_ref = unsafe { current_array.deref() };
+        if !current_array_ref.old_array(&guard).is_null() {
+            current_array_ref.partial_rehash(&guard, |key| self.hash(key));
+        }
+        current_array_ref.capacity()
+    }
+
     /// Returns the statistics of the HashMap.
     ///
     /// # Examples
@@ -398,6 +427,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     ///
     /// let statistics = hashmap.statistics();
     /// assert_eq!(statistics.num_entries(), 1);
+    /// assert_eq!(statistics.capacity(), 1024);
     /// ```
     pub fn statistics(&self) -> Statistics {
         let mut statistics = Statistics {
@@ -455,6 +485,9 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     }
 
     /// Returns a Scanner.
+    ///
+    /// It is guaranteed to scan all the key-value pairs pertaining in the HashMap at the moment,
+    /// however the same key-value pair can be scanned more than once if the HashMap is being resized.
     ///
     /// # Examples
     /// ```
@@ -768,7 +801,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
 
     /// Resizes the array
     fn resize(&self, shrink: bool) {
-        // initial rough size estimation using a small number of entries
+        // initial rough size estimation using a small number of cells
         let guard = crossbeam_epoch::pin();
         let current_array = self.array.load(Acquire, &guard);
         let current_array_ref = unsafe { current_array.deref() };
@@ -828,6 +861,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 capacity
             };
 
+            // Array::new may not be able to allocate the requested number of cells
             if new_capacity != capacity {
                 let new_array = Array::<K, V>::new(new_capacity, Atomic::from(current_array));
                 if (!shrink && new_array.capacity() > capacity)
@@ -848,9 +882,11 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Drop for HashMap<K, V, H> {
     }
 }
 
-/// Accessor offers a means of reading a key-value stored in a hash map container.
+/// Accessor owns a key-value pair in the HashMap.
 ///
 /// It is !Send, thus disallowing other threads to have references to it.
+/// It acquires an exclusive lock on the cell managing the key.
+/// Instantiating multiple Accessor of Scanner instances in a thread poses a possibility of deadlock.
 pub struct Accessor<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> {
     hash_map: &'a HashMap<K, V, H>,
     cell_locker: CellLocker<'a, K, V>,
@@ -919,6 +955,10 @@ impl<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Accessor<'a, K, V, H> {
 }
 
 /// Scanner implements Iterator.
+///
+/// It is !Send, thus disallowing other threads to have references to it.
+/// It acquires an exclusive lock on a cell that is currently being scanned.
+/// Instantiating multiple Accessor of Scanner instances in a thread poses a possibility of deadlock.
 pub struct Scanner<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> {
     accessor: Option<Accessor<'a, K, V, H>>,
     array_ptr: *const Array<K, V>,

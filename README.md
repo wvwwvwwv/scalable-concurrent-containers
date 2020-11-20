@@ -1,6 +1,9 @@
 # SCC: Scalable Concurrent Containers
 
 [Work-in-progress]
+- [x] std::panic::UnwindSafe
+- [x] Optimization
+- [x] Stress test
 
 SCC offers scalable concurrent containers written in the Rust language. The data structures in SCC assume to be used by a database management software running on a server, ane therefore they may not efficiently work on small systems.
 
