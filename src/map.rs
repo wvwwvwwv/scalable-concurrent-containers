@@ -808,7 +808,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             //  - load factor reaches 7/8: enlarge up to 64x
             //  - load factor reaches 1/8: shrink
             let capacity = current_array_ref.capacity();
-            let estimated_num_entries = self.len(|capacity| (capacity / 16).min(4096));
+            let estimated_num_entries = self.len(|capacity| (capacity / 16).min(16384));
             let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
                 if capacity >= (1usize << (std::mem::size_of::<usize>() * 8 - 1)) {
                     capacity
@@ -829,13 +829,12 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             };
 
             if new_capacity != capacity {
-                self.array.store(
-                    Owned::new(Array::<K, V>::new(
-                        new_capacity,
-                        Atomic::from(current_array),
-                    )),
-                    Release,
-                );
+                let new_array = Array::<K, V>::new(new_capacity, Atomic::from(current_array));
+                if (!shrink && new_array.capacity() > capacity)
+                    || (shrink && new_array.capacity() == new_capacity)
+                {
+                    self.array.store(Owned::new(new_array), Release);
+                }
             }
 
             self.resize_mutex.store(false, Release);

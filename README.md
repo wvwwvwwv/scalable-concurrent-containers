@@ -10,10 +10,10 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 ### Performance
 
 Test environment.
-- OS: Suse Linux Enterprise Server 15 SP1
+- OS: SUSE Linux Enterprise Server 15 SP1
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4 (4 CPUs / 88 cores)
 - Ram: 1TB
-- Rust: 1.47.0
+- Rust: 1.48.0
 
 Test workload.
 - Insert: each thread inserts 168M records.
@@ -26,10 +26,10 @@ Test data.
 - The hashtable is generated using the default parameters: K = u64, V = u64, and 256 entries are pre-allocated.
 
 Test result.
-|        | 11             | 22             | 44             | 88             |
+|        | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
 |--------|----------------|----------------|----------------|----------------|
 | Insert | 250.439022819s | 246.541850542s | 390.237944978s | 770.503371682s |
 | Read   | 108.023992798s | 110.250855322s | 123.870267714s | 143.606594002s |
 | Remove | 129.740425826s | 141.48738765s  | 183.845848945s | 396.571406724s |
-- Memory allocation and page fault handling are the main factors that slow down insert operations
+- Memory allocation and page fault handling are the main factors that slow down insert operations.
 

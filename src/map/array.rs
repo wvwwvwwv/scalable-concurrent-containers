@@ -20,24 +20,58 @@ pub struct Array<K: Eq, V> {
 
 impl<K: Eq, V> Array<K, V> {
     pub fn new(capacity: usize, old_array: Atomic<Array<K, V>>) -> Array<K, V> {
-        let lb_capacity = Self::calculate_lb_metadata_array_size(capacity);
-        let cell_capacity = 1usize << lb_capacity;
-        // calloc zeroes the allocated heap memory region
-        let cell_array: *mut Cell<K, V> = unsafe {
-            libc::calloc(cell_capacity, std::mem::size_of::<Cell<K, V>>()) as *mut Cell<K, V>
-        };
-        // MaybeUninit does not need the memory to be zeroed
-        let entry_array: *mut EntryArray<K, V> = unsafe {
-            libc::malloc(cell_capacity * std::mem::size_of::<EntryArray<K, V>>())
-                as *mut EntryArray<K, V>
-        };
-        Array {
-            cell_array: Some(unsafe { Box::from_raw(cell_array) }),
-            entry_array: Some(unsafe { Box::from_raw(entry_array) }),
-            lb_capacity: lb_capacity,
-            rehashing: AtomicUsize::new(0),
-            rehashed: AtomicUsize::new(0),
-            old_array: old_array,
+        let mut lb_capacity = Self::calculate_lb_metadata_array_size(capacity);
+        loop {
+            let cell_capacity = 1usize << lb_capacity;
+
+            // calloc zeroes the allocated heap memory region
+            let cell_array_ptr: *mut Cell<K, V> = unsafe {
+                libc::calloc(cell_capacity, std::mem::size_of::<Cell<K, V>>()) as *mut Cell<K, V>
+            };
+
+            // memory allocation failure: retry with a smaller capacity value
+            if cell_array_ptr.is_null() {
+                if lb_capacity > 2 {
+                    lb_capacity -= 1;
+                }
+                continue;
+            }
+
+            let cell_array_boxed = if !cell_array_ptr.is_null() {
+                Some(unsafe { Box::from_raw(cell_array_ptr) })
+            } else {
+                None
+            };
+
+            // MaybeUninit does not need the memory to be zeroed
+            let entry_array_ptr: *mut EntryArray<K, V> = unsafe {
+                libc::malloc(cell_capacity * std::mem::size_of::<EntryArray<K, V>>())
+                    as *mut EntryArray<K, V>
+            };
+
+            // memory allocation failure: retry with a smaller capacity value
+            if entry_array_ptr.is_null() {
+                unsafe { libc::free(cell_array_ptr as *mut libc::c_void) };
+                if lb_capacity > 2 {
+                    lb_capacity -= 1;
+                }
+                continue;
+            }
+
+            let entry_array_boxed = if !entry_array_ptr.is_null() {
+                Some(unsafe { Box::from_raw(entry_array_ptr) })
+            } else {
+                None
+            };
+
+            return Array {
+                cell_array: cell_array_boxed,
+                entry_array: entry_array_boxed,
+                lb_capacity: lb_capacity,
+                rehashing: AtomicUsize::new(0),
+                rehashed: AtomicUsize::new(0),
+                old_array: old_array,
+            };
         }
     }
 
