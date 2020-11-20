@@ -24,12 +24,13 @@ Test data.
 - Each thread is assigned a disjoint range of integers.
 - The entropy of test input is very low, however scc::HashMap artificially increases the entropy.
 - The hashtable is generated using the default parameters: K = u64, V = u64, and 256 entries are pre-allocated.
+- In order to minimize the cost of page fault handling, all the tests were run twice, and only the best results were taken.
 
 Test result.
 |        | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
 |--------|----------------|----------------|----------------|----------------|
-| Insert | 250.439022819s | 246.541850542s | 390.237944978s | 770.503371682s |
-| Read   | 108.023992798s | 110.250855322s | 123.870267714s | 143.606594002s |
-| Remove | 129.740425826s | 141.48738765s  | 183.845848945s | 396.571406724s |
-- Memory allocation and page fault handling are the main factors that slow down insert operations.
+| Insert | 248.863872330s | 246.541850542s | 281.454809275s | 471.991919119s |
+| Read   | 102.500104496s | 110.250855322s | 123.870267714s | 143.606594002s |
+| Remove | 127.192766540s | 141.48738765s  | 169.476767746s | 280.781299976s |
+
 
