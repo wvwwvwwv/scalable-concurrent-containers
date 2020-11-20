@@ -43,7 +43,7 @@ impl<K: Eq, V> EntryArrayLink<K, V> {
         // the call depth is guaranteed to be less than two
         self.link
             .as_ref()
-            .map_or(None, |link| (*link).first_entry())
+            .map_or_else(|| None, |link| (*link).first_entry())
     }
 
     pub fn next_entry(
@@ -67,7 +67,7 @@ impl<K: Eq, V> EntryArrayLink<K, V> {
         // the call depth is guaranteed to be less than two
         self.link
             .as_ref()
-            .map_or(None, |link| (*link).first_entry())
+            .map_or_else(|| None, |link| (*link).first_entry())
     }
 
     pub fn search_entry(
@@ -141,12 +141,15 @@ impl<K: Eq, V> EntryArrayLink<K, V> {
     }
 
     pub fn remove_next(&mut self, entry_array_link_ptr: *const EntryArrayLink<K, V>) -> bool {
-        let next = self.link.as_mut().map_or(None, |next| {
-            if next.compare_ptr(entry_array_link_ptr) {
-                return Some(next.link.take());
-            }
-            None
-        });
+        let next = self.link.as_mut().map_or_else(
+            || None,
+            |next| {
+                if next.compare_ptr(entry_array_link_ptr) {
+                    return Some(next.link.take());
+                }
+                None
+            },
+        );
         if let Some(next) = next {
             self.link.take();
             self.link = next;

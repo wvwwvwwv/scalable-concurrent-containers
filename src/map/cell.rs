@@ -105,8 +105,8 @@ impl<K: Eq, V> Cell<K, V> {
 
         // start with the preferred index
         let preferred_index = (partial_hash % (ARRAY_SIZE as u16)).try_into().unwrap();
-        if self.partial_hash_array[preferred_index as usize] == partial_hash
-            && (occupancy_metadata & (OCCUPANCY_BIT << preferred_index)) != 0
+        if (occupancy_metadata & (OCCUPANCY_BIT << preferred_index)) != 0
+            && self.partial_hash_array[preferred_index as usize] == partial_hash
         {
             let entry_ptr = entry_array[preferred_index as usize].as_ptr();
             if unsafe { &(*entry_ptr) }.0 == *key {
@@ -122,8 +122,8 @@ impl<K: Eq, V> Cell<K, V> {
                 break;
             }
             if i != preferred_index
-                && self.partial_hash_array[i as usize] == partial_hash
                 && (metadata & occupancy_bit) != 0
+                && self.partial_hash_array[i as usize] == partial_hash
             {
                 let entry_ptr = entry_array[i as usize].as_ptr();
                 if unsafe { &(*entry_ptr) }.0 == *key {
@@ -351,11 +351,10 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
             let entry_array_link_mut_ptr = entry_array_link_ptr as *mut EntryArrayLink<K, V>;
             let cell = self.cell_mut_ref();
             if unsafe { (*entry_array_link_mut_ptr).remove_entry(drop_entry, key_value_pair_ptr) } {
-                if let Ok(mut head) = cell
-                    .link
-                    .as_mut()
-                    .map_or(Err(()), |head| head.remove_self(entry_array_link_mut_ptr))
-                {
+                if let Ok(mut head) = cell.link.as_mut().map_or_else(
+                    || Err(()),
+                    |head| head.remove_self(entry_array_link_mut_ptr),
+                ) {
                     cell.link = head.take();
                 } else {
                     let mut link_ref = &mut cell.link;

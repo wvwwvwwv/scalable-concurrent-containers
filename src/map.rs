@@ -17,10 +17,12 @@ use std::sync::atomic::Ordering::{Acquire, Release};
 /// A scalable concurrent hash map implementation.
 ///
 /// scc::HashMap is a concurrent hash map data structure that is targeted at a highly concurrent workload.
-/// It internally has a single entry array storing key-value pairs and their corresponding metadata array.
-/// The metadata array is comprised of metadata cells, and each of them manages a fixed number of key-value pair entries.
-/// The metadata cells contain partial hash values of the key-value pairs, customized mutexes, and linked lists for collision resolution.
-/// It harnesses the power of the epoch-based reclamation technique provided by the crossbeam_epoch crate, allowing the data structure to eliminate coarse locking.
+/// The epoch-based reclamation technique provided by the crossbeam_epoch crate allows the data structure to eliminate coarse locking,
+/// instead, only a small, fixed number of key-value pairs share a single mutex.
+/// Therefore, it internally has only a single entry array storing key-value pairs and their corresponding metadata array.
+/// The metadata array is composed of metadata cells, and each of them manages a fixed number of key-value pair entries using a customized mutex.
+/// The metadata cells are able to locate the correct entry by having an array of partial hash values of the key-value pairs.
+/// A metadata cell resolves hash collisions by allocating a linked list of key-value pair arrays.
 ///
 /// The key features of scc::HashMap.
 /// * No sharding: all keys are managed by a single array of metadata cells.
@@ -28,7 +30,7 @@ use std::sync::atomic::Ordering::{Acquire, Release};
 /// * Non-blocking resizing: resizing does not block other threads.
 /// * Incremental resizing: access to the data structure relocates a certain number of key-value pairs.
 /// * Optimized resizing: key-value pairs in a single metadata cell are guaranteed to be relocated to adjacent cells.
-/// * No shared data: no atomic entry counter and the number of key-value pairs is estimated.
+/// * Minimized shared data: no atomic counter and coarse lock.
 ///
 /// The key statistics for scc::HashMap.
 /// * The expected size of metadata for a single key-value pair: 4-byte.
@@ -198,7 +200,8 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// assert!(result);
     /// ```
     pub fn remove(&self, key: K) -> bool {
-        self.get(key).map_or(false, |accessor| accessor.erase())
+        self.get(key)
+            .map_or_else(|| false, |accessor| accessor.erase())
     }
 
     /// Reads the key-value pair.
@@ -221,35 +224,30 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     pub fn read<U, F: FnOnce(&K, &V) -> U>(&self, key: K, f: F) -> Option<U> {
         let (hash, partial_hash) = self.hash(&key);
         let guard = crossbeam_epoch::pin();
-        loop {
-            // an acquire fence is required to correctly load the contents of the array
-            let current_array = self.array.load(Acquire, &guard);
-            let current_array_ref = unsafe { current_array.deref() };
-            let old_array = current_array_ref.old_array(&guard);
-            if !old_array.is_null() {
+
+        // an acquire fence is required to correctly load the contents of the array
+        let current_array = self.array.load(Acquire, &guard);
+        let current_array_ref = unsafe { current_array.deref() };
+        let old_array = current_array_ref.old_array(&guard);
+        for array_ptr in vec![old_array.as_raw(), current_array.as_raw()] {
+            if array_ptr.is_null() {
+                continue;
+            }
+            if array_ptr == old_array.as_raw() {
                 if current_array_ref.partial_rehash(&guard, |key| self.hash(key)) {
                     continue;
                 }
             }
-
-            for array_ptr in vec![old_array.as_raw(), current_array.as_raw()] {
-                if array_ptr.is_null() {
-                    continue;
-                }
-                let array_ref = unsafe { &(*array_ptr) };
-                let cell_index = array_ref.calculate_metadata_array_index(hash);
-                let reader = CellReader::lock(
-                    array_ref.cell(cell_index),
-                    array_ref.entry_array(cell_index),
-                );
-                if let Some(entry_ptr) = reader.search(&key, partial_hash) {
-                    let entry_ref = unsafe { &(*entry_ptr) };
-                    if entry_ref.0 == key {
-                        return Some(f(&entry_ref.0, &entry_ref.1));
-                    }
-                }
+            let array_ref = unsafe { &(*array_ptr) };
+            let cell_index = array_ref.calculate_cell_index(hash);
+            let reader = CellReader::lock(
+                array_ref.cell(cell_index),
+                array_ref.entry_array(cell_index),
+            );
+            if let Some(entry_ptr) = reader.search(&key, partial_hash) {
+                let entry_ref = unsafe { &(*entry_ptr) };
+                return Some(f(&entry_ref.0, &entry_ref.1));
             }
-            break;
         }
         None
     }
@@ -610,7 +608,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         u8,
     ) {
         let array_ref = unsafe { &(*array_ptr) };
-        let cell_index = array_ref.calculate_metadata_array_index(hash);
+        let cell_index = array_ref.calculate_cell_index(hash);
         let locker = CellLocker::lock(
             array_ref.cell(cell_index),
             array_ref.entry_array(cell_index),
@@ -810,7 +808,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             //  - load factor reaches 7/8: enlarge up to 64x
             //  - load factor reaches 1/8: shrink
             let capacity = current_array_ref.capacity();
-            let estimated_num_entries = self.len(|capacity| (capacity / 16).min(65536));
+            let estimated_num_entries = self.len(|capacity| (capacity / 16).min(4096));
             let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
                 if capacity >= (1usize << (std::mem::size_of::<usize>() * 8 - 1)) {
                     capacity
@@ -941,29 +939,38 @@ impl<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Iterator for Scanner<'a, 
                 self.erase_on_next = false;
             }
             if let Some((next_sub_index, next_entry_array_link_ptr, next_entry_ptr)) =
-                self.accessor.as_mut().map_or(None, |accessor| {
-                    accessor.cell_locker.next(
-                        erase,
-                        true,
-                        accessor.sub_index,
-                        accessor.entry_array_link_ptr,
-                        accessor.entry_ptr,
-                    )
-                })
+                self.accessor.as_mut().map_or_else(
+                    || None,
+                    |accessor| {
+                        accessor.cell_locker.next(
+                            erase,
+                            true,
+                            accessor.sub_index,
+                            accessor.entry_array_link_ptr,
+                            accessor.entry_ptr,
+                        )
+                    },
+                )
             {
-                self.accessor.as_mut().map_or((), |accessor| {
-                    accessor.sub_index = next_sub_index;
-                    accessor.entry_array_link_ptr = next_entry_array_link_ptr;
-                    accessor.entry_ptr = next_entry_ptr;
-                });
+                self.accessor.as_mut().map_or_else(
+                    || (),
+                    |accessor| {
+                        accessor.sub_index = next_sub_index;
+                        accessor.entry_array_link_ptr = next_entry_array_link_ptr;
+                        accessor.entry_ptr = next_entry_ptr;
+                    },
+                );
             } else {
                 let current_array_ptr = self.array_ptr;
                 let current_cell_index = self.cell_index;
-                let scanner = self.accessor.as_ref().map_or(None, |accessor| {
-                    accessor
-                        .hash_map
-                        .next(current_array_ptr, current_cell_index)
-                });
+                let scanner = self.accessor.as_ref().map_or_else(
+                    || None,
+                    |accessor| {
+                        accessor
+                            .hash_map
+                            .next(current_array_ptr, current_cell_index)
+                    },
+                );
                 self.accessor.take();
                 if let Some(mut scanner) = scanner {
                     self.accessor = scanner.accessor.take();

@@ -63,7 +63,7 @@ impl<K: Eq, V> Array<K, V> {
         self.old_array.load(Relaxed, &guard)
     }
 
-    pub fn calculate_metadata_array_index(&self, hash: u64) -> usize {
+    pub fn calculate_cell_index(&self, hash: u64) -> usize {
         (hash >> (64 - self.lb_capacity)).try_into().unwrap()
     }
 
@@ -123,7 +123,7 @@ impl<K: Eq, V> Array<K, V> {
             let entry = unsafe { std::ptr::replace(entry_mut_ptr, MaybeUninit::uninit()) };
             let (key, value) = unsafe { entry.assume_init() };
             let (hash, partial_hash) = hasher(&key);
-            let new_cell_index = self.calculate_metadata_array_index(hash);
+            let new_cell_index = self.calculate_cell_index(hash);
 
             debug_assert!(
                 (!shrink && (new_cell_index - target_cell_index) < ratio)
