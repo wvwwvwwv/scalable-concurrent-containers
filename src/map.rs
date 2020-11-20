@@ -19,7 +19,7 @@ use std::sync::atomic::Ordering::{Acquire, Release};
 /// scc::HashMap is a concurrent hash map data structure that is targeted at a highly concurrent workload.
 /// The epoch-based reclamation technique provided by the crossbeam_epoch crate allows the data structure to eliminate coarse locking,
 /// instead, only a small, fixed number of key-value pairs share a single mutex.
-/// Therefore, it internally has only a single entry array storing key-value pairs and their corresponding metadata array.
+/// Therefore, it internally has only a single entry array storing key-value pairs and corresponding metadata array.
 /// The metadata array is composed of metadata cells, and each of them manages a fixed number of key-value pair entries using a customized mutex.
 /// The metadata cells are able to locate the correct entry by having an array of partial hash values of the key-value pairs.
 /// A metadata cell resolves hash collisions by allocating a linked list of key-value pair arrays.
