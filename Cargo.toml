@@ -3,11 +3,16 @@ name = "scc"
 version = "0.2.0"
 authors = ["Changgyoo Park <wvwwvwwv@me.com>"]
 edition = "2018"
+readme = "README.md"
+repository = "https://github.com/wvwwvwwv/scc/"
+license = "MIT"
+keywords = ["hashmap", "hashtable"]
+categories = ["concurrent-hashmap", "concurrent-data-structure", "data-structure"]
+description = "scalable concurrent data structures for database management systems"
 
 [dependencies]
 crossbeam-epoch="^0.9"
 libc="^0.2.80"
-
 
 [workspace]
 members = [
