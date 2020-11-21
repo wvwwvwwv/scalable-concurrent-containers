@@ -89,7 +89,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// let result = hashmap.capacity();
     /// assert_eq!(result, 1024);
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(0, RandomState::new());
+    /// let hashmap: HashMap<u64, u32, _> = Default::default();
     /// let result = hashmap.capacity();
     /// assert_eq!(result, 256);
     /// ```
@@ -108,9 +108,8 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// # Examples
     /// ```
     /// use scc::HashMap;
-    /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(0, RandomState::new());
+    /// let hashmap: HashMap<u64, u32, _> = Default::default();
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
@@ -159,9 +158,8 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// # Examples
     /// ```
     /// use scc::HashMap;
-    /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(0, RandomState::new());
+    /// let hashmap: HashMap<u64, u32, _> = Default::default();
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
@@ -187,9 +185,8 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// # Examples
     /// ```
     /// use scc::HashMap;
-    /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(0, RandomState::new());
+    /// let hashmap: HashMap<u64, u32, _> = Default::default();
     ///
     /// let result = hashmap.get(&1);
     /// assert!(result.is_none());
@@ -216,9 +213,8 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// # Examples
     /// ```
     /// use scc::HashMap;
-    /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(0, RandomState::new());
+    /// let hashmap: HashMap<u64, u32, _> = Default::default();
     ///
     /// let result = hashmap.remove(&1);
     /// assert!(result.is_none());
@@ -241,9 +237,8 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// # Examples
     /// ```
     /// use scc::HashMap;
-    /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(0, RandomState::new());
+    /// let hashmap: HashMap<u64, u32, _> = Default::default();
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
@@ -291,9 +286,8 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// # Examples
     /// ```
     /// use scc::HashMap;
-    /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(0, RandomState::new());
+    /// let hashmap: HashMap<u64, u32, _> = Default::default();
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
@@ -342,9 +336,8 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// # Examples
     /// ```
     /// use scc::HashMap;
-    /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(0, RandomState::new());
+    /// let hashmap: HashMap<u64, u32, _> = Default::default();
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
@@ -376,9 +369,8 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// # Examples
     /// ```
     /// use scc::HashMap;
-    /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(0, RandomState::new());
+    /// let hashmap: HashMap<u64, u32, _> = Default::default();
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
@@ -517,9 +509,8 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// # Examples
     /// ```
     /// use scc::HashMap;
-    /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(0, RandomState::new());
+    /// let hashmap: HashMap<u64, u32, _> = Default::default();
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
@@ -929,9 +920,8 @@ impl<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Accessor<'a, K, V, H> {
     /// # Examples
     /// ```
     /// use scc::HashMap;
-    /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(0, RandomState::new());
+    /// let hashmap: HashMap<u64, u32, _> = Default::default();
     ///
     /// let result = hashmap.get(&1);
     /// assert!(result.is_none());
@@ -959,9 +949,8 @@ impl<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Accessor<'a, K, V, H> {
     /// # Examples
     /// ```
     /// use scc::HashMap;
-    /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(0, RandomState::new());
+    /// let hashmap: HashMap<u64, u32, _> = Default::default();
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
