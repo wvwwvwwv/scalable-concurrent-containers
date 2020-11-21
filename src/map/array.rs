@@ -117,6 +117,11 @@ impl<K: Eq, V> Array<K, V> {
         lb_capacity.try_into().unwrap()
     }
 
+    pub fn extract_key_value(entry_ptr: *const (K, V)) -> (K, V) {
+        let entry_mut_ptr = entry_ptr as *mut MaybeUninit<(K, V)>;
+        unsafe { std::ptr::replace(entry_mut_ptr, MaybeUninit::uninit()).assume_init() }
+    }
+
     pub fn kill_cell<F: Fn(&K) -> (u64, u16)>(
         &self,
         cell_locker: &mut CellLocker<K, V>,
@@ -153,9 +158,7 @@ impl<K: Eq, V> Array<K, V> {
         ];
         let mut current = cell_locker.first();
         while let Some((sub_index, entry_array_link_ptr, entry_ptr)) = current {
-            let entry_mut_ptr = entry_ptr as *mut MaybeUninit<(K, V)>;
-            let entry = unsafe { std::ptr::replace(entry_mut_ptr, MaybeUninit::uninit()) };
-            let (key, value) = unsafe { entry.assume_init() };
+            let (key, value) = Self::extract_key_value(entry_ptr);
             let (hash, partial_hash) = hasher(&key);
             let new_cell_index = self.calculate_cell_index(hash);
 

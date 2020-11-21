@@ -13,7 +13,7 @@ mod test {
     proptest! {
         #[test]
         fn basic_hashmap(key in 0u64..10) {
-            let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), Some(10));
+            let hashmap: HashMap<u64, u32, RandomState> = Default::default();
             assert!(hashmap.iter().next().is_none());
 
             let result1 = hashmap.insert(key, 0);
@@ -48,14 +48,14 @@ mod test {
                 *iter.1 = 3;
             }
 
-            let result6 = hashmap.get(key);
+            let result6 = hashmap.get(&key);
             assert_eq!(result6.unwrap().get(), (&key, &mut 3));
 
-            let result7 = hashmap.get(key + 1);
+            let result7 = hashmap.get(&(key + 1));
             assert!(result7.is_none());
 
-            let result8 = hashmap.remove(key);
-            assert_eq!(result8, true);
+            let result8 = hashmap.remove(&key);
+            assert_eq!(result8.unwrap(), 3);
 
             let result9 = hashmap.insert(key + 2, 10);
             assert!(result9.is_ok());
@@ -64,21 +64,20 @@ mod test {
                 result.erase();
             }
 
-            let result10 = hashmap.get(key + 2);
+            let result10 = hashmap.get(&(key + 2));
             assert!(result10.is_none());
         }
     }
 
     #[test]
     fn basic_scanner() {
-        for _ in 0..64 {
-            let hashmap: Arc<HashMap<u64, u64, RandomState>> =
-                Arc::new(HashMap::new(RandomState::new(), None));
+        for _ in 0..256 {
+            let hashmap: Arc<HashMap<u64, u64, RandomState>> = Arc::new(Default::default());
             let hashmap_copied = hashmap.clone();
             let inserted = Arc::new(AtomicU64::new(0));
             let inserted_copied = inserted.clone();
             let thread_handle = thread::spawn(move || {
-                for _ in 0..16 {
+                for _ in 0..8 {
                     let mut scanned = 0;
                     let mut checker = BTreeSet::new();
                     let max = inserted_copied.load(Acquire);
@@ -92,7 +91,7 @@ mod test {
                     }
                 }
             });
-            for i in 0..16384 {
+            for i in 0..4096 {
                 assert!(hashmap.insert(i, i).is_ok());
                 inserted.store(i, Release);
             }
@@ -146,7 +145,7 @@ mod test {
         fn insert(key in 0u64..16) {
             let range = 1024;
             let checker = AtomicUsize::new(0);
-            let hashmap: HashMap<Data, Data, RandomState> = HashMap::new(RandomState::new(), Some(10));
+            let hashmap: HashMap<Data, Data, RandomState> = Default::default();
             for d in key..(key + range) {
                 let result = hashmap.insert(Data::new(d, &checker), Data::new(d, &checker));
                 assert!(result.is_ok());
@@ -183,7 +182,7 @@ mod test {
             assert_eq!(found_keys, range);
             assert_eq!(checker.load(Relaxed) as u64, range * 2);
             for d in key..(key + range) {
-                let result = hashmap.get(Data::new(d, &checker));
+                let result = hashmap.get(&Data::new(d, &checker));
                 result.unwrap().erase();
             }
             assert_eq!(checker.load(Relaxed), 0);
@@ -211,7 +210,7 @@ mod test {
     fn sample() {
         for s in vec![65536, 2097152, 16777216] {
             let hashmap: HashMap<usize, u8, RandomState> =
-                HashMap::new(RandomState::new(), Some(s));
+                HashMap::new(s, RandomState::new());
             let step_size = s / 10;
             for p in 0..10 {
                 for i in (p * step_size)..((p + 1) * step_size) {

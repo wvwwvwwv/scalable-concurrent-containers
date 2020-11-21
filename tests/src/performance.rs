@@ -11,7 +11,7 @@ mod test {
 
     #[test]
     fn basic_latency() {
-        let _hashmap: HashMap<u64, u64, RandomState> = HashMap::new(RandomState::new(), None);
+        let _hashmap: HashMap<u64, u64, RandomState> = Default::default();
     }
 
     #[derive(Clone)]
@@ -33,8 +33,8 @@ mod test {
     trait HashMapOperation<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> {
         fn insert_test(&self, k: K, v: V) -> bool;
         fn update_test(&self, k: K, v: V);
-        fn read_test(&self, k: K) -> bool;
-        fn remove_test(&self, k: K) -> bool;
+        fn read_test(&self, k: &K) -> bool;
+        fn remove_test(&self, k: &K) -> bool;
     }
 
     impl<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> HashMapOperation<K, V, H>
@@ -49,12 +49,12 @@ mod test {
             self.upsert(k, v);
         }
         #[inline(always)]
-        fn read_test(&self, k: K) -> bool {
+        fn read_test(&self, k: &K) -> bool {
             self.read(k, |_, _| ()).is_some()
         }
         #[inline(always)]
-        fn remove_test(&self, k: K) -> bool {
-            self.remove(k)
+        fn remove_test(&self, k: &K) -> bool {
+            self.remove(k).is_some()
         }
     }
 
@@ -90,11 +90,11 @@ mod test {
                         num_operations += 1;
                     }
                     for j in 0..workload_copied.read {
-                        assert!(map_copied.read_test(i + j as usize));
+                        assert!(map_copied.read_test(&(i + j as usize)));
                         num_operations += 1;
                     }
                     for j in 0..workload_copied.remove {
-                        assert!(map_copied.remove_test(i + j as usize));
+                        assert!(map_copied.remove_test(&(i + j as usize)));
                         num_operations += 1;
                     }
                 }
@@ -120,8 +120,7 @@ mod test {
         let num_threads_vector = vec![1, 2, 4, 8, 16];
 
         for num_threads in num_threads_vector {
-            let hashmap: Arc<HashMap<usize, usize, RandomState>> =
-                Arc::new(HashMap::new(RandomState::new(), None));
+            let hashmap: Arc<HashMap<usize, usize, RandomState>> = Arc::new(Default::default());
             // 1. insert
             let insert = Workload {
                 size: 1048576,

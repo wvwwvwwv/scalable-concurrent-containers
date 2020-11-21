@@ -8,11 +8,14 @@ use array::{Array, MAX_ENLARGE_FACTOR};
 use cell::{CellLocker, CellReader};
 use crossbeam_epoch::{Atomic, Owned, Shared};
 use link::EntryArrayLink;
+use std::collections::hash_map::RandomState;
 use std::convert::TryInto;
 use std::fmt;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Release};
+
+const DEFAULT_CAPACITY: usize = 256;
 
 /// A scalable concurrent hash map implementation.
 ///
@@ -44,37 +47,59 @@ pub struct HashMap<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> {
     array: Atomic<Array<K, V>>,
     minimum_capacity: usize,
     resize_mutex: AtomicBool,
-    hasher: H,
+    build_hasher: H,
+}
+
+impl<K: Eq + Hash + Sync, V: Sync> Default for HashMap<K, V, RandomState> {
+    /// Creates a HashMap instance with the default parameters.
+    ///
+    /// The default hash builder is RandomState, and the default capacity is 256.
+    ///
+    /// # Examples
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32, _> = Default::default();
+    ///
+    /// let result = hashmap.capacity();
+    /// assert_eq!(result, 256);
+    /// ```
+    fn default() -> Self {
+        HashMap {
+            array: Atomic::new(Array::<K, V>::new(DEFAULT_CAPACITY, Atomic::null())),
+            minimum_capacity: DEFAULT_CAPACITY,
+            resize_mutex: AtomicBool::new(false),
+            build_hasher: RandomState::new(),
+        }
+    }
 }
 
 impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
-    /// Creates an empty HashMap instance with the given hasher and minimum capacity.
+    /// Creates an empty HashMap instance with the given capacity and build hasher.
+    ///
+    /// The actual capacity is equal to or greater than the given capacity.
     ///
     /// # Examples
     /// ```
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), Some(1000));
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(1000, RandomState::new());
     ///
     /// let result = hashmap.capacity();
     /// assert_eq!(result, 1024);
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), None);
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(0, RandomState::new());
     /// let result = hashmap.capacity();
     /// assert_eq!(result, 256);
     /// ```
-    pub fn new(hasher: H, minimum_capacity: Option<usize>) -> HashMap<K, V, H> {
-        let initial_capacity = if let Some(capacity) = minimum_capacity {
-            capacity.max(256)
-        } else {
-            256
-        };
+    pub fn new(capacity: usize, build_hasher: H) -> HashMap<K, V, H> {
+        let initial_capacity = capacity.max(DEFAULT_CAPACITY);
         HashMap {
             array: Atomic::new(Array::<K, V>::new(initial_capacity, Atomic::null())),
             minimum_capacity: initial_capacity,
             resize_mutex: AtomicBool::new(false),
-            hasher: hasher,
+            build_hasher: build_hasher,
         }
     }
 
@@ -85,7 +110,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), None);
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(0, RandomState::new());
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
@@ -136,7 +161,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), None);
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(0, RandomState::new());
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
@@ -164,9 +189,9 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), None);
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(0, RandomState::new());
     ///
-    /// let result = hashmap.get(1);
+    /// let result = hashmap.get(&1);
     /// assert!(result.is_none());
     ///
     /// let result = hashmap.insert(1, 0);
@@ -174,12 +199,12 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     ///     assert_eq!(result.get(), (&1, &mut 0));
     /// }
     ///
-    /// let result = hashmap.get(1);
+    /// let result = hashmap.get(&1);
     /// assert_eq!(result.unwrap().get(), (&1, &mut 0));
     /// ```
-    pub fn get<'a>(&'a self, key: K) -> Option<Accessor<'a, K, V, H>> {
-        let (hash, partial_hash) = self.hash(&key);
-        let (accessor, _) = self.acquire(&key, hash, partial_hash);
+    pub fn get<'a>(&'a self, key: &K) -> Option<Accessor<'a, K, V, H>> {
+        let (hash, partial_hash) = self.hash(key);
+        let (accessor, _) = self.acquire(key, hash, partial_hash);
         if accessor.entry_ptr.is_null() {
             return None;
         }
@@ -193,22 +218,22 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), None);
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(0, RandomState::new());
     ///
-    /// let result = hashmap.remove(1);
-    /// assert_eq!(result, false);
+    /// let result = hashmap.remove(&1);
+    /// assert!(result.is_none());
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
     ///     assert_eq!(result.get(), (&1, &mut 0));
     /// }
     ///
-    /// let result = hashmap.remove(1);
-    /// assert!(result);
+    /// let result = hashmap.remove(&1);
+    /// assert_eq!(result.unwrap(), 0);
     /// ```
-    pub fn remove(&self, key: K) -> bool {
+    pub fn remove(&self, key: &K) -> Option<V> {
         self.get(key)
-            .map_or_else(|| false, |accessor| accessor.erase())
+            .map_or_else(|| None, |accessor| accessor.erase())
     }
 
     /// Reads a key-value pair.
@@ -218,18 +243,18 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), None);
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(0, RandomState::new());
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
     ///     assert_eq!(result.get(), (&1, &mut 0));
     /// }
     ///
-    /// let result = hashmap.read(1, |key, value| *value);
+    /// let result = hashmap.read(&1, |key, value| *value);
     /// assert_eq!(result.unwrap(), 0);
     /// ```
-    pub fn read<U, F: FnOnce(&K, &V) -> U>(&self, key: K, f: F) -> Option<U> {
-        let (hash, partial_hash) = self.hash(&key);
+    pub fn read<U, F: FnOnce(&K, &V) -> U>(&self, key: &K, f: F) -> Option<U> {
+        let (hash, partial_hash) = self.hash(key);
         let guard = crossbeam_epoch::pin();
 
         // an acquire fence is required to correctly load the contents of the array
@@ -268,7 +293,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), None);
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(0, RandomState::new());
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
@@ -283,10 +308,10 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// let result = hashmap.retain(|key, value| *key == 1 && *value == 0);
     /// assert_eq!(result, (1, 1));
     ///
-    /// let result = hashmap.get(1);
+    /// let result = hashmap.get(&1);
     /// assert_eq!(result.unwrap().get(), (&1, &mut 0));
     ///
-    /// let result = hashmap.get(2);
+    /// let result = hashmap.get(&2);
     /// assert!(result.is_none());
     /// ```
     pub fn retain<F: Fn(&K, &mut V) -> bool>(&self, f: F) -> (usize, usize) {
@@ -319,7 +344,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), None);
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(0, RandomState::new());
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
@@ -334,10 +359,10 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// let result = hashmap.clear();
     /// assert_eq!(result, 2);
     ///
-    /// let result = hashmap.get(1);
+    /// let result = hashmap.get(&1);
     /// assert!(result.is_none());
     ///
-    /// let result = hashmap.get(2);
+    /// let result = hashmap.get(&2);
     /// assert!(result.is_none());
     /// ```
     pub fn clear(&self) -> usize {
@@ -353,7 +378,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), None);
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(0, RandomState::new());
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
@@ -396,7 +421,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), Some(1000000));
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(1000000, RandomState::new());
     ///
     /// let result = hashmap.capacity();
     /// assert_eq!(result, 1048576);
@@ -418,7 +443,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), Some(1000));
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(1000, RandomState::new());
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
@@ -494,7 +519,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), None);
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(0, RandomState::new());
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
@@ -528,7 +553,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// Returns a hash value of the given key.
     fn hash(&self, key: &K) -> (u64, u16) {
         // generate a hash value
-        let mut h = self.hasher.build_hasher();
+        let mut h = self.build_hasher.build_hasher();
         key.hash(&mut h);
         let mut hash = h.finish();
 
@@ -613,9 +638,10 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     }
 
     /// Erases a key-value pair owned by the accessor.
-    fn erase<'a>(&'a self, mut accessor: Accessor<'a, K, V, H>) {
+    fn erase<'a>(&'a self, mut accessor: Accessor<'a, K, V, H>) -> V {
+        let value = Array::<K, V>::extract_key_value(accessor.entry_ptr).1;
         accessor.cell_locker.remove(
-            true,
+            false,
             accessor.sub_index,
             accessor.entry_array_link_ptr,
             accessor.entry_ptr,
@@ -624,6 +650,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             drop(accessor);
             self.resize(true);
         }
+        value
     }
 
     /// Searches a cell for the key.
@@ -904,9 +931,9 @@ impl<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Accessor<'a, K, V, H> {
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), None);
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(0, RandomState::new());
     ///
-    /// let result = hashmap.get(1);
+    /// let result = hashmap.get(&1);
     /// assert!(result.is_none());
     ///
     /// let result = hashmap.insert(1, 0);
@@ -915,7 +942,7 @@ impl<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Accessor<'a, K, V, H> {
     ///     (*result.get().1) = 2;
     /// }
     ///
-    /// let result = hashmap.get(1);
+    /// let result = hashmap.get(&1);
     /// assert_eq!(result.unwrap().get(), (&1, &mut 2));
     /// ```
     pub fn get(&'a self) -> (&'a K, &'a mut V) {
@@ -934,23 +961,23 @@ impl<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Accessor<'a, K, V, H> {
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(RandomState::new(), None);
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(0, RandomState::new());
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
     ///     assert_eq!(result.get(), (&1, &mut 0));
-    ///     result.erase();
+    ///     let result = result.erase();
+    ///     assert_eq!(result.unwrap(), 0);
     /// }
     ///
-    /// let result = hashmap.get(1);
+    /// let result = hashmap.get(&1);
     /// assert!(result.is_none());
     /// ```
-    pub fn erase(self) -> bool {
+    pub fn erase(self) -> Option<V> {
         if self.entry_ptr.is_null() {
-            return false;
+            return None;
         }
-        self.hash_map.erase(self);
-        true
+        Some(self.hash_map.erase(self))
     }
 }
 

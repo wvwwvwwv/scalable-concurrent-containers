@@ -26,6 +26,18 @@ pub struct Cell<K: Eq, V> {
     linked_entries: usize,
 }
 
+impl<K: Eq, V> Default for Cell<K, V> {
+    fn default() -> Self {
+        Cell {
+            metadata: AtomicU32::new(0),
+            wait_queue: AtomicPtr::new(ptr::null_mut()),
+            partial_hash_array: [0; ARRAY_SIZE as usize],
+            link: None,
+            linked_entries: 0,
+        }
+    }
+}
+
 impl<K: Eq, V> Cell<K, V> {
     pub fn killed(&self) -> bool {
         self.metadata.load(Relaxed) & KILLED_FLAG == KILLED_FLAG
@@ -142,18 +154,6 @@ impl<K: Eq, V> Cell<K, V> {
         }
 
         None
-    }
-}
-
-impl<K: Eq, V> Default for Cell<K, V> {
-    fn default() -> Self {
-        Cell {
-            metadata: AtomicU32::new(0),
-            wait_queue: AtomicPtr::new(ptr::null_mut()),
-            partial_hash_array: [0; ARRAY_SIZE as usize],
-            link: None,
-            linked_entries: 0,
-        }
     }
 }
 
