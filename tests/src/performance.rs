@@ -88,13 +88,12 @@ mod test {
                     } else {
                         (thread_id + 1 + i % (num_threads - 1)) % num_threads
                     };
+                    assert!(num_threads < 2 || thread_id != remote_thread_id);
                     for j in 0..workload_copied.insert_local {
                         let local_index =
                             thread_id * per_thread_workload_size + i * per_op_workload_size + j;
-                        assert!(
-                            workload_copied.has_remote_op()
-                                || map_copied.insert_test(local_index, i)
-                        );
+                        let result = map_copied.insert_test(local_index, i);
+                        assert!(result || workload_copied.has_remote_op());
                         num_operations += 1;
                     }
                     for j in 0..workload_copied.insert_remote {
@@ -107,9 +106,8 @@ mod test {
                     for j in 0..workload_copied.read_local {
                         let local_index =
                             thread_id * per_thread_workload_size + i * per_op_workload_size + j;
-                        assert!(
-                            workload_copied.has_remote_op() || map_copied.read_test(&local_index)
-                        );
+                        let result = map_copied.read_test(&local_index);
+                        assert!(result || workload_copied.has_remote_op());
                         num_operations += 1;
                     }
                     for j in 0..workload_copied.read_remote {
@@ -122,9 +120,8 @@ mod test {
                     for j in 0..workload_copied.remove_local {
                         let local_index =
                             thread_id * per_thread_workload_size + i * per_op_workload_size + j;
-                        assert!(
-                            workload_copied.has_remote_op() || map_copied.remove_test(&local_index)
-                        );
+                        let result = map_copied.remove_test(&local_index);
+                        assert!(result || workload_copied.has_remote_op());
                         num_operations += 1;
                     }
                     for j in 0..workload_copied.remove_remote {
