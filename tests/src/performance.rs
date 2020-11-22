@@ -17,22 +17,32 @@ mod test {
     #[derive(Clone)]
     struct Workload {
         size: usize,
-        overlap: bool,
-        insert: u8,
-        update: u8,
-        read: u8,
-        remove: u8,
+        insert_local: usize,
+        insert_remote: usize,
+        read_local: usize,
+        read_remote: usize,
+        remove_local: usize,
+        remove_remote: usize,
     }
 
     impl Workload {
-        pub fn subop_size(&self) -> usize {
-            self.insert.max(self.update.max(self.read.max(self.remove))) as usize
+        pub fn max_per_op_size(&self) -> usize {
+            self.insert_local.max(
+                self.insert_remote.max(
+                    self.read_local.max(
+                        self.read_remote
+                            .max(self.remove_local.max(self.remove_remote)),
+                    ),
+                ),
+            )
+        }
+        pub fn has_remote_op(&self) -> bool {
+            self.insert_remote > 0 || self.read_remote > 0 || self.remove_remote > 0
         }
     }
 
     trait HashMapOperation<K: Clone + Eq + Hash + Sync, V: Sync + Unpin, H: BuildHasher> {
         fn insert_test(&self, k: K, v: V) -> bool;
-        fn update_test(&self, k: K, v: V);
         fn read_test(&self, k: &K) -> bool;
         fn remove_test(&self, k: &K) -> bool;
     }
@@ -43,10 +53,6 @@ mod test {
         #[inline(always)]
         fn insert_test(&self, k: K, v: V) -> bool {
             self.insert(k, v).is_ok()
-        }
-        #[inline(always)]
-        fn update_test(&self, k: K, v: V) {
-            self.upsert(k, v);
         }
         #[inline(always)]
         fn read_test(&self, k: &K) -> bool {
@@ -73,28 +79,59 @@ mod test {
             let workload_copied = workload.clone();
             thread_handles.push(thread::spawn(move || {
                 let mut num_operations = 0;
-                let workload_size = workload_copied.size * workload_copied.subop_size();
-                let start_index = if workload_copied.overlap {
-                    thread_id * (workload_size / 2)
-                } else {
-                    thread_id * workload_size
-                };
+                let per_op_workload_size = workload_copied.max_per_op_size();
+                let per_thread_workload_size = workload_copied.size * per_op_workload_size;
                 barrier_copied.wait();
-                for i in start_index..(start_index + workload_size) {
-                    for j in 0..workload_copied.insert {
-                        assert!(map_copied.insert_test(i + j as usize, i));
+                for i in 0..per_thread_workload_size {
+                    let remote_thread_id = if num_threads < 2 {
+                        0
+                    } else {
+                        (thread_id + 1 + i % (num_threads - 1)) % num_threads
+                    };
+                    for j in 0..workload_copied.insert_local {
+                        let local_index =
+                            thread_id * per_thread_workload_size + i * per_op_workload_size + j;
+                        assert!(
+                            workload_copied.has_remote_op()
+                                || map_copied.insert_test(local_index, i)
+                        );
                         num_operations += 1;
                     }
-                    for j in 0..workload_copied.update {
-                        map_copied.update_test(i + j as usize, i);
+                    for j in 0..workload_copied.insert_remote {
+                        let remote_index = remote_thread_id * per_thread_workload_size
+                            + i * per_op_workload_size
+                            + j;
+                        map_copied.insert_test(remote_index, i);
                         num_operations += 1;
                     }
-                    for j in 0..workload_copied.read {
-                        assert!(map_copied.read_test(&(i + j as usize)));
+                    for j in 0..workload_copied.read_local {
+                        let local_index =
+                            thread_id * per_thread_workload_size + i * per_op_workload_size + j;
+                        assert!(
+                            workload_copied.has_remote_op() || map_copied.read_test(&local_index)
+                        );
                         num_operations += 1;
                     }
-                    for j in 0..workload_copied.remove {
-                        assert!(map_copied.remove_test(&(i + j as usize)));
+                    for j in 0..workload_copied.read_remote {
+                        let remote_index = remote_thread_id * per_thread_workload_size
+                            + i * per_op_workload_size
+                            + j;
+                        map_copied.read_test(&remote_index);
+                        num_operations += 1;
+                    }
+                    for j in 0..workload_copied.remove_local {
+                        let local_index =
+                            thread_id * per_thread_workload_size + i * per_op_workload_size + j;
+                        assert!(
+                            workload_copied.has_remote_op() || map_copied.remove_test(&local_index)
+                        );
+                        num_operations += 1;
+                    }
+                    for j in 0..workload_copied.remove_remote {
+                        let remote_index = remote_thread_id * per_thread_workload_size
+                            + i * per_op_workload_size
+                            + j;
+                        map_copied.remove_test(&remote_index);
                         num_operations += 1;
                     }
                 }
@@ -121,57 +158,148 @@ mod test {
 
         for num_threads in num_threads_vector {
             let hashmap: Arc<HashMap<usize, usize, RandomState>> = Arc::new(Default::default());
-            // 1. insert
+            let worload_size = 1048576;
+
+            // 1. insert-local
             let insert = Workload {
-                size: 1048576,
-                overlap: false,
-                insert: 1,
-                update: 0,
-                read: 0,
-                remove: 0,
+                size: worload_size,
+                insert_local: 1,
+                insert_remote: 0,
+                read_local: 0,
+                read_remote: 0,
+                remove_local: 0,
+                remove_remote: 0,
             };
             let (duration, total_num_operations) =
                 perform(num_threads, hashmap.clone(), insert.clone());
             println!(
-                "insert: {}, {:?}, {}",
+                "insert-local: {}, {:?}, {}",
                 num_threads, duration, total_num_operations
             );
             let statistics = hashmap.statistics();
-            println!("after insert: {}", statistics);
-            // 2. read
+            println!("after insert-local: {}", statistics);
+            assert_eq!(statistics.num_entries(), worload_size * num_threads);
+
+            // 2. read-local
             let read = Workload {
-                size: 1048576,
-                overlap: false,
-                insert: 0,
-                update: 0,
-                read: 1,
-                remove: 0,
+                size: worload_size,
+                insert_local: 0,
+                insert_remote: 0,
+                read_local: 1,
+                read_remote: 0,
+                remove_local: 0,
+                remove_remote: 0,
             };
             let (duration, total_num_operations) =
                 perform(num_threads, hashmap.clone(), read.clone());
             println!(
-                "read: {}, {:?}, {}",
+                "read-local: {}, {:?}, {}",
                 num_threads, duration, total_num_operations
             );
-            let statistics = hashmap.statistics();
-            println!("after read: {}", statistics);
-            // 3. remove
+
+            // 3. remove-local
             let remove = Workload {
-                size: 1048576,
-                overlap: false,
-                insert: 0,
-                update: 0,
-                read: 0,
-                remove: 1,
+                size: worload_size,
+                insert_local: 0,
+                insert_remote: 0,
+                read_local: 0,
+                read_remote: 0,
+                remove_local: 1,
+                remove_remote: 0,
             };
             let (duration, total_num_operations) =
                 perform(num_threads, hashmap.clone(), remove.clone());
             println!(
-                "remove: {}, {:?}, {}",
+                "remove-local: {}, {:?}, {}",
                 num_threads, duration, total_num_operations
             );
             let statistics = hashmap.statistics();
-            println!("after remove: {}", statistics);
+            println!("after remove-local: {}", statistics);
+            assert_eq!(statistics.capacity(), 256);
+            assert_eq!(statistics.num_entries(), 0);
+
+            if num_threads < 2 {
+                continue;
+            }
+
+            // 4. insert-local-remote
+            let insert = Workload {
+                size: worload_size,
+                insert_local: 1,
+                insert_remote: 1,
+                read_local: 0,
+                read_remote: 0,
+                remove_local: 0,
+                remove_remote: 0,
+            };
+            let (duration, total_num_operations) =
+                perform(num_threads, hashmap.clone(), insert.clone());
+            println!(
+                "insert-local-remote: {}, {:?}, {}",
+                num_threads, duration, total_num_operations
+            );
+            let statistics = hashmap.statistics();
+            println!("after insert-local-remote: {}", statistics);
+            assert_eq!(statistics.num_entries(), worload_size * num_threads);
+
+            // 5. read-local-remote
+            let read = Workload {
+                size: worload_size,
+                insert_local: 0,
+                insert_remote: 0,
+                read_local: 1,
+                read_remote: 1,
+                remove_local: 0,
+                remove_remote: 0,
+            };
+            let (duration, total_num_operations) =
+                perform(num_threads, hashmap.clone(), read.clone());
+            println!(
+                "read-local-remote: {}, {:?}, {}",
+                num_threads, duration, total_num_operations
+            );
+
+            // 6. remove-local-remote
+            let remove = Workload {
+                size: worload_size,
+                insert_local: 0,
+                insert_remote: 0,
+                read_local: 0,
+                read_remote: 0,
+                remove_local: 1,
+                remove_remote: 1,
+            };
+            let (duration, total_num_operations) =
+                perform(num_threads, hashmap.clone(), remove.clone());
+            println!(
+                "remove-local-remote: {}, {:?}, {}",
+                num_threads, duration, total_num_operations
+            );
+            let statistics = hashmap.statistics();
+            println!("after remove-local-remote: {}", statistics);
+            assert_eq!(statistics.capacity(), 256);
+            assert_eq!(statistics.num_entries(), 0);
+
+            // 7. mixed
+            let mixed = Workload {
+                size: worload_size,
+                insert_local: 1,
+                insert_remote: 1,
+                read_local: 1,
+                read_remote: 1,
+                remove_local: 1,
+                remove_remote: 1,
+            };
+            let (duration, total_num_operations) =
+                perform(num_threads, hashmap.clone(), mixed.clone());
+            println!(
+                "mixed: {}, {:?}, {}",
+                num_threads, duration, total_num_operations
+            );
+            let statistics = hashmap.statistics();
+            println!("after mixed: {}", statistics);
+            assert_eq!(statistics.capacity(), 256);
+            assert_eq!(statistics.num_entries(), 0);
         }
     }
 }
