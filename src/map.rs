@@ -405,11 +405,10 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         let guard = crossbeam_epoch::pin();
         let current_array = self.array.load(Acquire, &guard);
         let current_array_ref = unsafe { current_array.deref() };
-        let old_array = current_array_ref.old_array(&guard);
         let capacity = current_array_ref.capacity();
         let num_samples = std::cmp::min(f(capacity), capacity).next_power_of_two();
         let num_cells_to_sample = (num_samples / cell::ARRAY_SIZE as usize).max(1);
-        if !old_array.is_null() {
+        if !current_array_ref.old_array(&guard).is_null() {
             for _ in 0..num_cells_to_sample {
                 if current_array_ref.partial_rehash(&guard, |key| self.hash(key)) {
                     break;

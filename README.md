@@ -1,10 +1,6 @@
 # SCC: Scalable Concurrent Containers
 
 [Work-in-progress]
-[HashMap:not-fully-optimized]
-[HashMap:not-fully-unwinding-safe]
-[HashMap:APIs-half-stabilized]
-[BwTree:come-in-Feb-2021]
 
 SCC offers scalable concurrent containers written in the Rust language. The data structures in SCC assume to be used by a database management software running on a server, ane therefore they may not efficiently work on small systems.
 
@@ -59,3 +55,9 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 |        | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
 |--------|----------------|----------------|----------------|----------------|
 | Mixed  | 248.86387233s  | 246.541850542s | 281.454809275s | 471.991919119s |
+
+## Milestones
+
+### scc::HashMap optimization: Dec 2021
+
+### BwTree: Q1 2021

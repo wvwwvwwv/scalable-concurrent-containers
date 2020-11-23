@@ -66,6 +66,7 @@ mod test {
 
     fn perform<M: HashMapOperation<usize, usize, RandomState> + 'static + Send + Sync>(
         num_threads: usize,
+        start_index: usize,
         map: Arc<M>,
         workload: Workload,
     ) -> (Duration, usize) {
@@ -90,8 +91,10 @@ mod test {
                     };
                     assert!(num_threads < 2 || thread_id != remote_thread_id);
                     for j in 0..workload_copied.insert_local {
-                        let local_index =
-                            thread_id * per_thread_workload_size + i * per_op_workload_size + j;
+                        let local_index = thread_id * per_thread_workload_size
+                            + i * per_op_workload_size
+                            + j
+                            + start_index;
                         let result = map_copied.insert_test(local_index, i);
                         assert!(result || workload_copied.has_remote_op());
                         num_operations += 1;
@@ -99,13 +102,16 @@ mod test {
                     for j in 0..workload_copied.insert_remote {
                         let remote_index = remote_thread_id * per_thread_workload_size
                             + i * per_op_workload_size
-                            + j;
+                            + j
+                            + start_index;
                         map_copied.insert_test(remote_index, i);
                         num_operations += 1;
                     }
                     for j in 0..workload_copied.read_local {
-                        let local_index =
-                            thread_id * per_thread_workload_size + i * per_op_workload_size + j;
+                        let local_index = thread_id * per_thread_workload_size
+                            + i * per_op_workload_size
+                            + j
+                            + start_index;
                         let result = map_copied.read_test(&local_index);
                         assert!(result || workload_copied.has_remote_op());
                         num_operations += 1;
@@ -113,13 +119,16 @@ mod test {
                     for j in 0..workload_copied.read_remote {
                         let remote_index = remote_thread_id * per_thread_workload_size
                             + i * per_op_workload_size
-                            + j;
+                            + j
+                            + start_index;
                         map_copied.read_test(&remote_index);
                         num_operations += 1;
                     }
                     for j in 0..workload_copied.remove_local {
-                        let local_index =
-                            thread_id * per_thread_workload_size + i * per_op_workload_size + j;
+                        let local_index = thread_id * per_thread_workload_size
+                            + i * per_op_workload_size
+                            + j
+                            + start_index;
                         let result = map_copied.remove_test(&local_index);
                         assert!(result || workload_copied.has_remote_op());
                         num_operations += 1;
@@ -127,7 +136,8 @@ mod test {
                     for j in 0..workload_copied.remove_remote {
                         let remote_index = remote_thread_id * per_thread_workload_size
                             + i * per_op_workload_size
-                            + j;
+                            + j
+                            + start_index;
                         map_copied.remove_test(&remote_index);
                         num_operations += 1;
                     }
@@ -168,7 +178,7 @@ mod test {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                perform(num_threads, hashmap.clone(), insert.clone());
+                perform(num_threads, 0, hashmap.clone(), insert.clone());
             println!(
                 "insert-local: {}, {:?}, {}",
                 num_threads, duration, total_num_operations
@@ -188,7 +198,7 @@ mod test {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                perform(num_threads, hashmap.clone(), read.clone());
+                perform(num_threads, 0, hashmap.clone(), read.clone());
             println!(
                 "read-local: {}, {:?}, {}",
                 num_threads, duration, total_num_operations
@@ -205,7 +215,7 @@ mod test {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                perform(num_threads, hashmap.clone(), remove.clone());
+                perform(num_threads, 0, hashmap.clone(), remove.clone());
             println!(
                 "remove-local: {}, {:?}, {}",
                 num_threads, duration, total_num_operations
@@ -229,7 +239,7 @@ mod test {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                perform(num_threads, hashmap.clone(), insert.clone());
+                perform(num_threads, 0, hashmap.clone(), insert.clone());
             println!(
                 "insert-local-remote: {}, {:?}, {}",
                 num_threads, duration, total_num_operations
@@ -238,22 +248,29 @@ mod test {
             println!("after insert-local-remote: {}", statistics);
             assert_eq!(statistics.num_entries(), worload_size * num_threads);
 
-            // 5. read-local-remote
-            let read = Workload {
+            // 5. mixed
+            let mixed = Workload {
                 size: worload_size,
-                insert_local: 0,
-                insert_remote: 0,
+                insert_local: 1,
+                insert_remote: 1,
                 read_local: 1,
                 read_remote: 1,
-                remove_local: 0,
-                remove_remote: 0,
+                remove_local: 1,
+                remove_remote: 1,
             };
-            let (duration, total_num_operations) =
-                perform(num_threads, hashmap.clone(), read.clone());
+            let (duration, total_num_operations) = perform(
+                num_threads,
+                statistics.num_entries(),
+                hashmap.clone(),
+                mixed.clone(),
+            );
             println!(
-                "read-local-remote: {}, {:?}, {}",
+                "mixed: {}, {:?}, {}",
                 num_threads, duration, total_num_operations
             );
+            let statistics = hashmap.statistics();
+            println!("after mixed: {}", statistics);
+            assert_eq!(statistics.num_entries(), worload_size * num_threads);
 
             // 6. remove-local-remote
             let remove = Workload {
@@ -266,33 +283,13 @@ mod test {
                 remove_remote: 1,
             };
             let (duration, total_num_operations) =
-                perform(num_threads, hashmap.clone(), remove.clone());
+                perform(num_threads, 0, hashmap.clone(), remove.clone());
             println!(
                 "remove-local-remote: {}, {:?}, {}",
                 num_threads, duration, total_num_operations
             );
             let statistics = hashmap.statistics();
             println!("after remove-local-remote: {}", statistics);
-            assert_eq!(statistics.num_entries(), 0);
-
-            // 7. mixed
-            let mixed = Workload {
-                size: worload_size,
-                insert_local: 1,
-                insert_remote: 1,
-                read_local: 1,
-                read_remote: 1,
-                remove_local: 1,
-                remove_remote: 1,
-            };
-            let (duration, total_num_operations) =
-                perform(num_threads, hashmap.clone(), mixed.clone());
-            println!(
-                "mixed: {}, {:?}, {}",
-                num_threads, duration, total_num_operations
-            );
-            let statistics = hashmap.statistics();
-            println!("after mixed: {}", statistics);
             assert_eq!(statistics.num_entries(), 0);
         }
     }
