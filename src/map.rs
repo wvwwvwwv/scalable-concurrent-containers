@@ -78,6 +78,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// Creates an empty HashMap instance with the given capacity and build hasher.
     ///
     /// The actual capacity is equal to or greater than the given capacity.
+    /// It is recommended to give a capacity value that is larger than 16 * the number of threads to access the HashMap.
     ///
     /// # Examples
     /// ```
@@ -338,14 +339,14 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 retained_entries += 1;
             }
         }
-        if removed_entries > retained_entries {
-            let guard = crossbeam_epoch::pin();
-            let current_array = self.array.load(Acquire, &guard);
-            let current_array_ref = unsafe { current_array.deref() };
-            if retained_entries <= current_array_ref.capacity() / 8 {
-                self.resize();
-            }
+
+        let guard = crossbeam_epoch::pin();
+        let current_array = self.array.load(Acquire, &guard);
+        let current_array_ref = unsafe { current_array.deref() };
+        if retained_entries <= current_array_ref.capacity() / 8 {
+            self.resize();
         }
+
         (retained_entries, removed_entries)
     }
 
@@ -382,7 +383,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
 
     /// Returns an estimated size of the HashMap.
     ///
-    /// It passes the capacity of the HashMap to the given function.
+    /// It passes the capacity of the HashMap to the given function returning the sampling size.
     ///
     /// # Examples
     /// ```
@@ -1050,7 +1051,7 @@ impl<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Iterator for Scanner<'a, 
     }
 }
 
-/// Statistics
+/// Statistics shows aggregated views of the HashMap.
 ///
 /// # Examples
 /// ```

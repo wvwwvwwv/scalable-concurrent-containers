@@ -1,6 +1,6 @@
 # SCC: Scalable Concurrent Containers
 
-[Work-in-progress]
+[Work-in-progress](https://github.com/wvwwvwwv/scc/milestones)
 
 SCC offers scalable concurrent containers written in the Rust language. The data structures in SCC assume to be used by a database management software running on a server, ane therefore they may not efficiently work on small systems.
 
@@ -22,42 +22,34 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 #### Test data.
 - Each thread is assigned a disjoint range of u64 integers.
 - The entropy of the test input is very low, however it does not undermine the test result as the key distribution method is agnostic to the input pattern.
-- The performance test code asserts the expected outcome of each operation, and the post-state of the hashtable instance.
-
-** TEST RESULTS: TO BE UPDATED, SHORTLY
+- The performance test code asserts the expected outcome of each operation, and the post state of the hashtable instance.
 
 #### Test workload: local.
 - Insert: each thread inserts 128M records.
-- Read: each thread reads 128M  records.
+- Read: each thread reads 128M records.
 - Remove: each thread removes 128M records.
+- The data for Read/Remove tests is populated by the Insert test.
 
 |        | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
 |--------|----------------|----------------|----------------|----------------|
-| Insert | 173.144712239s | 246.541850542s | 281.454809275s | 471.991919119s |
-| Read   | 76.763939972s  | 110.250855322s | 123.870267714s | 143.606594002s |
-| Remove | 93.043478471s  | 141.48738765s  | 169.476767746s | 280.781299976s |
+| Insert | 182.425985671s | 205.141640515s | 274.732659832s | 449.748250864s |
+| Read   | 84.803851576s  | 84.604536547s  | 98.492147135s  | 120.014568598s |
+| Remove | 91.934335899s  | 114.706894435s | 128.019035168s | 175.823523048s |
 
 #### Test workload: local-remote.
-- Each Insert/Read/Remove thread additionally tries to perform the operation using keys belonging to other threads.
+- Insert/Remove: each thread additionally tries to perform assigned operations using keys belonging to other threads.
+- Mixed: each thread performs 128M insert-local -> insert-remote -> read-local -> read-remote -> remove-local -> remove-remote.
+- The data for Mixed/Remove tests is populated by the Insert test.
 - The target remote thread is randomly chosen.
-- The total operation count per thread is 256M, and half of the Insert/Remove operations are bound to fail.
+- The total operation count per Insert/Read thread is 256M, and half of the operations are bound to fail.
+- The total operation count per Mixed thread is 768M, and about half of the operations are bound to fail.
 
 |        | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
 |--------|----------------|----------------|----------------|----------------|
-| Insert | 200.997180266s | 246.541850542s | 281.454809275s | 471.991919119s |
-| Read   | 76.005210454s  | 110.250855322s | 123.870267714s | 143.606594002s |
-| Remove | 97.686499857s  | 141.48738765s  | 169.476767746s | 280.781299976s |
-
-#### Test workload: mixed.
-- Each thread performs 1. Insert-local, 2. Insert-remote, 3. Read-local, 4. Read-remote, 5. Remove-local, and 6. Remove-remote.
-- The total operation count per thread is 768M, and half of the Insert/Remove operations are bound to fail.
-
-|        | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
-|--------|----------------|----------------|----------------|----------------|
-| Mixed  | 248.86387233s  | 246.541850542s | 281.454809275s | 471.991919119s |
+| Insert | 270.442900433s | 347.144686171s | 438.534754158s | 684.925329641s |
+| Mixed  | 337.862498549s | 359.250368494s | 383.997076178s | 433.138958047s |
+| Remove | 182.425985671s | 204.476775721s | 227.617657582s | 281.109044156s |
 
 ## Milestones
 
-### scc::HashMap optimization: Dec 2021
-
-### BwTree: Q1 2021
+[Milestones](https://github.com/wvwwvwwv/scc/milestones)
