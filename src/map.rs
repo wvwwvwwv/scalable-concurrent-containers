@@ -16,7 +16,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 const DEFAULT_CAPACITY: usize = (cell::ARRAY_SIZE as usize) * (cell::ARRAY_SIZE as usize);
-const MAXIMUM_SAMPLING_SIZE: usize = (cell::ARRAY_SIZE as usize) * (cell::ARRAY_SIZE as usize);
 
 /// A scalable concurrent hash map implementation.
 ///
@@ -408,7 +407,6 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         let current_array_ref = unsafe { current_array.deref() };
         let old_array = current_array_ref.old_array(&guard);
         let capacity = current_array_ref.capacity();
-        let num_cells = current_array_ref.num_cells();
         let num_samples = std::cmp::min(f(capacity), capacity).next_power_of_two();
         let num_cells_to_sample = (num_samples / cell::ARRAY_SIZE as usize).max(1);
         if !old_array.is_null() {
@@ -418,7 +416,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 }
             }
         }
-        self.sample(current_array_ref, 0, num_cells_to_sample) * (num_cells / num_cells_to_sample)
+        self.estimate(current_array_ref, num_cells_to_sample)
     }
 
     /// Returns the capacity of the HashMap.
@@ -857,9 +855,8 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             //  - load factor reaches 1/8: shrink
             let capacity = current_array_ref.capacity();
             let num_cells = current_array_ref.num_cells();
-            let num_cells_to_sample = num_cells.min(MAXIMUM_SAMPLING_SIZE);
-            let estimated_num_entries = self.sample(current_array_ref, 0, num_cells_to_sample)
-                * (num_cells / num_cells_to_sample);
+            let num_cells_to_sample = (num_cells / 16).max(4).min(4096);
+            let estimated_num_entries = self.estimate(current_array_ref, num_cells_to_sample);
             let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
                 if capacity >= (1usize << (std::mem::size_of::<usize>() * 8 - 1)) {
                     capacity
@@ -895,18 +892,13 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     }
 
     /// Estimate the number of entries using the given number of cells.
-    fn sample(
-        &self,
-        current_array_ref: &Array<K, V>,
-        start_cell_index: usize,
-        end_cell_index: usize,
-    ) -> usize {
+    fn estimate(&self, current_array_ref: &Array<K, V>, num_cells_to_sample: usize) -> usize {
         let mut num_entries = 0;
-        for i in start_cell_index..end_cell_index {
+        for i in 0..num_cells_to_sample {
             let (size, linked_entries) = current_array_ref.cell(i).size();
             num_entries += size + linked_entries;
         }
-        num_entries
+        num_entries * (current_array_ref.num_cells() / num_cells_to_sample)
     }
 }
 
