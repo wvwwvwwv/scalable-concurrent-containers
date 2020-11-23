@@ -275,16 +275,16 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         let current_array = self.array.load(Acquire, &guard);
         let current_array_ref = unsafe { current_array.deref() };
         let old_array = current_array_ref.old_array(&guard);
-        for array_ptr in vec![old_array.as_raw(), current_array.as_raw()] {
+        for array_ptr in [old_array.as_raw(), current_array.as_raw()].iter() {
             if array_ptr.is_null() {
                 continue;
             }
-            if array_ptr == old_array.as_raw() {
+            if *array_ptr == old_array.as_raw() {
                 if current_array_ref.partial_rehash(&guard, |key| self.hash(key)) {
                     continue;
                 }
             }
-            let array_ref = unsafe { &(*array_ptr) };
+            let array_ref = unsafe { &(**array_ptr) };
             let cell_index = array_ref.calculate_cell_index(hash);
             let reader = CellReader::lock(
                 array_ref.cell(cell_index),
@@ -475,15 +475,15 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         let guard = crossbeam_epoch::pin();
         let current_array = self.array.load(Acquire, &guard);
         let old_array = unsafe { current_array.deref().old_array(&guard) };
-        for array_ptr in vec![old_array.as_raw(), current_array.as_raw()] {
+        for array_ptr in [old_array.as_raw(), current_array.as_raw()].iter() {
             if array_ptr.is_null() {
                 continue;
             }
-            let array_ref = unsafe { &(*array_ptr) };
+            let array_ref = unsafe { &(**array_ptr) };
             let num_cells = array_ref.num_cells();
             let mut consecutive_empty_cells = 0;
             statistics.capacity += num_cells * cell::ARRAY_SIZE as usize;
-            if array_ptr == current_array.as_raw() {
+            if *array_ptr == current_array.as_raw() {
                 statistics.effective_capacity = num_cells * cell::ARRAY_SIZE as usize;
             }
             statistics.cells += num_cells;
@@ -702,11 +702,11 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         let mut current_array = self.array.load(Acquire, &guard);
         loop {
             let old_array = unsafe { current_array.deref().old_array(&guard) };
-            for array_ptr in vec![old_array.as_raw(), current_array.as_raw()] {
+            for array_ptr in [old_array.as_raw(), current_array.as_raw()].iter() {
                 if array_ptr.is_null() {
                     continue;
                 }
-                let array_ref = unsafe { &(*array_ptr) };
+                let array_ref = unsafe { &(**array_ptr) };
                 let num_cells = array_ref.num_cells();
                 for cell_index in 0..num_cells {
                     let locker = CellLocker::lock(
@@ -715,7 +715,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                     );
                     if !locker.empty() {
                         // once a valid cell is locked, the array is guaranteed to retain
-                        return (Some(locker), array_ptr, cell_index);
+                        return (Some(locker), *array_ptr, cell_index);
                     }
                 }
             }
