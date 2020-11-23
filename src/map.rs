@@ -643,7 +643,9 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             let guard = crossbeam_epoch::pin();
             let current_array = self.array.load(Acquire, &guard);
             let current_array_ref = unsafe { current_array.deref() };
-            if current_array_ref.old_array(&guard).is_null() {
+            if current_array_ref.old_array(&guard).is_null()
+                && current_array_ref.capacity() > self.minimum_capacity
+            {
                 // trigger resize if the estimated load factor is smaller than 1/16
                 let mut num_entries = 0;
                 for i in 0..(cell::ARRAY_SIZE as usize) {
