@@ -212,7 +212,6 @@ mod test {
             );
             let statistics = hashmap.statistics();
             println!("after remove-local: {}", statistics);
-            assert_eq!(statistics.capacity(), 256);
             assert_eq!(statistics.num_entries(), 0);
 
             if num_threads < 2 {
@@ -274,7 +273,6 @@ mod test {
             );
             let statistics = hashmap.statistics();
             println!("after remove-local-remote: {}", statistics);
-            assert_eq!(statistics.capacity(), 256);
             assert_eq!(statistics.num_entries(), 0);
 
             // 7. mixed
@@ -295,7 +293,6 @@ mod test {
             );
             let statistics = hashmap.statistics();
             println!("after mixed: {}", statistics);
-            assert_eq!(statistics.capacity(), 256);
             assert_eq!(statistics.num_entries(), 0);
         }
     }

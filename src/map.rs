@@ -13,7 +13,7 @@ use std::convert::TryInto;
 use std::fmt;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering::{Acquire, Release};
+use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 const DEFAULT_CAPACITY: usize = (cell::ARRAY_SIZE as usize) * (cell::ARRAY_SIZE as usize);
 const MAXIMUM_SAMPLING_SIZE: usize = (cell::ARRAY_SIZE as usize) * (cell::ARRAY_SIZE as usize);
@@ -136,18 +136,19 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 return Err((accessor, value));
             }
             if !resize_triggered
-                && accessor.cell_index < MAXIMUM_SAMPLING_SIZE
+                && accessor.cell_index < (cell::ARRAY_SIZE as usize)
                 && accessor.cell_locker.full()
             {
+                drop(accessor);
+                resize_triggered = true;
                 let guard = crossbeam_epoch::pin();
                 let current_array = self.array.load(Acquire, &guard);
                 let current_array_ref = unsafe { current_array.deref() };
                 if current_array_ref.old_array(&guard).is_null() {
                     // trigger resize if the estimated load factor is greater than 15/16
                     let threshold = (cell::ARRAY_SIZE as usize - 1) * cell::ARRAY_SIZE as usize;
-                    let start_index = accessor.cell_index & (!(cell::ARRAY_SIZE as usize - 1));
                     let mut num_entries = 0;
-                    for i in start_index..(start_index + cell::ARRAY_SIZE as usize) {
+                    for i in 0..(cell::ARRAY_SIZE as usize) {
                         num_entries += current_array_ref.cell(i).size().0;
                         if num_entries > threshold {
                             break;
@@ -156,12 +157,10 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                         }
                     }
                     if num_entries > threshold {
-                        drop(accessor);
                         self.resize();
-                        resize_triggered = true;
-                        continue;
                     }
                 }
+                continue;
             }
 
             let (sub_index, entry_array_link_ptr, entry_ptr) =
@@ -641,22 +640,20 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             accessor.entry_array_link_ptr,
             accessor.entry_ptr,
         );
-        if accessor.cell_locker.empty() && accessor.cell_index < MAXIMUM_SAMPLING_SIZE {
-            // initial rough size estimation using a small number of cells
+        if accessor.cell_locker.empty() && accessor.cell_index < (cell::ARRAY_SIZE as usize) {
+            drop(accessor);
             let guard = crossbeam_epoch::pin();
             let current_array = self.array.load(Acquire, &guard);
             let current_array_ref = unsafe { current_array.deref() };
             if current_array_ref.old_array(&guard).is_null() {
                 // trigger resize if the estimated load factor is smaller than 1/16
-                let start_index = accessor.cell_index & (!(cell::ARRAY_SIZE as usize - 1));
                 let mut num_entries = 0;
-                for i in start_index..(start_index + cell::ARRAY_SIZE as usize) {
+                for i in 0..(cell::ARRAY_SIZE as usize) {
                     num_entries += current_array_ref.cell(i).size().0;
                     if num_entries >= cell::ARRAY_SIZE as usize {
                         return value;
                     }
                 }
-                drop(accessor);
                 self.resize();
             }
         }
@@ -851,7 +848,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         // resize
         if !self.resize_mutex.swap(true, Acquire) {
             if current_array != self.array.load(Acquire, &guard) {
-                self.resize_mutex.store(false, Release);
+                self.resize_mutex.store(false, Relaxed);
                 return;
             }
 
@@ -892,6 +889,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 }
             }
 
+            // the release fence assures that future calls to the function see the latest state
             self.resize_mutex.store(false, Release);
         }
     }
