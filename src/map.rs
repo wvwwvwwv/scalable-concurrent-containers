@@ -15,7 +15,8 @@ use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Release};
 
-const DEFAULT_CAPACITY: usize = 256;
+const DEFAULT_CAPACITY: usize = (cell::ARRAY_SIZE as usize) * (cell::ARRAY_SIZE as usize);
+const MAXIMUM_SAMPLING_SIZE: usize = (cell::ARRAY_SIZE as usize) * (cell::ARRAY_SIZE as usize);
 
 /// A scalable concurrent hash map implementation.
 ///
@@ -130,18 +131,37 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         let (hash, partial_hash) = self.hash(&key);
         let mut resize_triggered = false;
         loop {
-            let (mut accessor, cell_index) = self.acquire(&key, hash, partial_hash);
+            let mut accessor = self.acquire(&key, hash, partial_hash);
             if !accessor.entry_ptr.is_null() {
                 return Err((accessor, value));
             }
             if !resize_triggered
+                && accessor.cell_index < MAXIMUM_SAMPLING_SIZE
                 && accessor.cell_locker.full()
-                && cell_index < cell::ARRAY_SIZE as usize
             {
-                drop(accessor);
-                self.resize(false);
-                resize_triggered = true;
-                continue;
+                let guard = crossbeam_epoch::pin();
+                let current_array = self.array.load(Acquire, &guard);
+                let current_array_ref = unsafe { current_array.deref() };
+                if current_array_ref.old_array(&guard).is_null() {
+                    // trigger resize if the estimated load factor is greater than 15/16
+                    let threshold = (cell::ARRAY_SIZE as usize - 1) * cell::ARRAY_SIZE as usize;
+                    let start_index = accessor.cell_index & (!(cell::ARRAY_SIZE as usize - 1));
+                    let mut num_entries = 0;
+                    for i in start_index..(start_index + cell::ARRAY_SIZE as usize) {
+                        num_entries += current_array_ref.cell(i).size().0;
+                        if num_entries > threshold {
+                            break;
+                        } else if num_entries <= i * (cell::ARRAY_SIZE as usize) {
+                            break;
+                        }
+                    }
+                    if num_entries > threshold {
+                        drop(accessor);
+                        self.resize();
+                        resize_triggered = true;
+                        continue;
+                    }
+                }
             }
 
             let (sub_index, entry_array_link_ptr, entry_ptr) =
@@ -201,7 +221,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// ```
     pub fn get<'a>(&'a self, key: &K) -> Option<Accessor<'a, K, V, H>> {
         let (hash, partial_hash) = self.hash(key);
-        let (accessor, _) = self.acquire(key, hash, partial_hash);
+        let accessor = self.acquire(key, hash, partial_hash);
         if accessor.entry_ptr.is_null() {
             return None;
         }
@@ -325,7 +345,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             let current_array = self.array.load(Acquire, &guard);
             let current_array_ref = unsafe { current_array.deref() };
             if retained_entries <= current_array_ref.capacity() / 8 {
-                self.resize(true);
+                self.resize();
             }
         }
         (retained_entries, removed_entries)
@@ -389,6 +409,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         let current_array_ref = unsafe { current_array.deref() };
         let old_array = current_array_ref.old_array(&guard);
         let capacity = current_array_ref.capacity();
+        let num_cells = current_array_ref.num_cells();
         let num_samples = std::cmp::min(f(capacity), capacity).next_power_of_two();
         let num_cells_to_sample = (num_samples / cell::ARRAY_SIZE as usize).max(1);
         if !old_array.is_null() {
@@ -398,12 +419,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 }
             }
         }
-        let mut num_entries = 0;
-        for i in 0..num_cells_to_sample {
-            let (size, linked_entries) = current_array_ref.cell(i).size();
-            num_entries += size + linked_entries;
-        }
-        num_entries * (current_array_ref.num_cells() / num_cells_to_sample)
+        self.sample(current_array_ref, 0, num_cells_to_sample) * (num_cells / num_cells_to_sample)
     }
 
     /// Returns the capacity of the HashMap.
@@ -442,9 +458,9 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     ///     assert_eq!(result.get(), (&1, &mut 0));
     /// }
     ///
-    /// let statistics = hashmap.statistics();
-    /// assert_eq!(statistics.num_entries(), 1);
-    /// assert_eq!(statistics.capacity(), 1024);
+    /// let result = hashmap.statistics();
+    /// assert_eq!(result.capacity(), 1024);
+    /// assert_eq!(result.num_entries(), 1);
     /// ```
     pub fn statistics(&self) -> Statistics {
         let mut statistics = Statistics {
@@ -535,7 +551,6 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         Scanner {
             accessor: None,
             array_ptr: std::ptr::null(),
-            cell_index: 0,
             activated: false,
             erase_on_next: false,
         }
@@ -558,12 +573,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     }
 
     /// Acquires a cell.
-    fn acquire<'a>(
-        &'a self,
-        key: &K,
-        hash: u64,
-        partial_hash: u16,
-    ) -> (Accessor<'a, K, V, H>, usize) {
+    fn acquire<'a>(&'a self, key: &K, hash: u64, partial_hash: u16) -> Accessor<'a, K, V, H> {
         let guard = crossbeam_epoch::pin();
 
         // it is guaranteed that the thread reads a consistent snapshot of the current and
@@ -590,17 +600,14 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 let (mut locker, entry_array_link_ptr, entry_ptr, cell_index, sub_index) =
                     self.search(&key, hash, partial_hash, old_array.as_raw());
                 if !entry_ptr.is_null() {
-                    return (
-                        Accessor {
-                            hash_map: &self,
-                            cell_locker: locker,
-                            cell_in_sampling_range: cell_index < cell::ARRAY_SIZE as usize,
-                            sub_index: sub_index,
-                            entry_array_link_ptr: entry_array_link_ptr,
-                            entry_ptr: entry_ptr,
-                        },
-                        cell_index,
-                    );
+                    return Accessor {
+                        hash_map: &self,
+                        cell_locker: locker,
+                        cell_index: cell_index,
+                        sub_index: sub_index,
+                        entry_array_link_ptr: entry_array_link_ptr,
+                        entry_ptr: entry_ptr,
+                    };
                 } else if !locker.killed() {
                     // kill the cell
                     let old_array_ref = unsafe { old_array.deref() };
@@ -612,17 +619,14 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             let (locker, entry_array_link_ptr, entry_ptr, cell_index, sub_index) =
                 self.search(&key, hash, partial_hash, current_array.as_raw());
             if !locker.killed() {
-                return (
-                    Accessor {
-                        hash_map: &self,
-                        cell_locker: locker,
-                        cell_in_sampling_range: cell_index < cell::ARRAY_SIZE as usize,
-                        sub_index: sub_index,
-                        entry_array_link_ptr: entry_array_link_ptr,
-                        entry_ptr: entry_ptr,
-                    },
-                    cell_index,
-                );
+                return Accessor {
+                    hash_map: &self,
+                    cell_locker: locker,
+                    cell_index: cell_index,
+                    sub_index: sub_index,
+                    entry_array_link_ptr: entry_array_link_ptr,
+                    entry_ptr: entry_ptr,
+                };
             }
             // reaching here indicates that self.array is updated
         }
@@ -637,9 +641,24 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             accessor.entry_array_link_ptr,
             accessor.entry_ptr,
         );
-        if accessor.cell_in_sampling_range && accessor.cell_locker.empty() {
-            drop(accessor);
-            self.resize(true);
+        if accessor.cell_locker.empty() && accessor.cell_index < MAXIMUM_SAMPLING_SIZE {
+            // initial rough size estimation using a small number of cells
+            let guard = crossbeam_epoch::pin();
+            let current_array = self.array.load(Acquire, &guard);
+            let current_array_ref = unsafe { current_array.deref() };
+            if current_array_ref.old_array(&guard).is_null() {
+                // trigger resize if the estimated load factor is smaller than 1/16
+                let start_index = accessor.cell_index & (!(cell::ARRAY_SIZE as usize - 1));
+                let mut num_entries = 0;
+                for i in start_index..(start_index + cell::ARRAY_SIZE as usize) {
+                    num_entries += current_array_ref.cell(i).size().0;
+                    if num_entries >= cell::ARRAY_SIZE as usize {
+                        return value;
+                    }
+                }
+                drop(accessor);
+                self.resize();
+            }
         }
         value
     }
@@ -803,13 +822,12 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 accessor: Some(Accessor {
                     hash_map: &self,
                     cell_locker: cell_locker,
-                    cell_in_sampling_range: cell_index < cell::ARRAY_SIZE as usize,
+                    cell_index: cell_index,
                     sub_index: sub_index,
                     entry_array_link_ptr: entry_array_link_ptr,
                     entry_ptr: entry_ptr,
                 }),
                 array_ptr: array_ptr,
-                cell_index: cell_index,
                 activated: false,
                 erase_on_next: false,
             });
@@ -818,7 +836,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     }
 
     /// Resizes the array
-    fn resize(&self, shrink: bool) {
+    fn resize(&self) {
         // initial rough size estimation using a small number of cells
         let guard = crossbeam_epoch::pin();
         let current_array = self.array.load(Acquire, &guard);
@@ -827,24 +845,6 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         if !old_array.is_null() {
             if !current_array_ref.partial_rehash(&guard, |key| self.hash(key)) {
                 return;
-            }
-        } else if shrink && current_array_ref.capacity() == self.minimum_capacity {
-            return;
-        }
-
-        // trigger resize if the sampling entries have less than 1/16, or more than 15/16 entries
-        let mut num_entries = 0;
-        for i in 0..current_array_ref.num_cells().min(cell::ARRAY_SIZE as usize) {
-            num_entries += current_array_ref.cell(i).size().0;
-            if shrink {
-                if num_entries >= cell::ARRAY_SIZE as usize {
-                    return;
-                }
-            } else {
-                if ((i + 1) * cell::ARRAY_SIZE as usize) - num_entries >= cell::ARRAY_SIZE as usize
-                {
-                    return;
-                }
             }
         }
 
@@ -859,7 +859,10 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             //  - load factor reaches 7/8: enlarge up to 64x
             //  - load factor reaches 1/8: shrink
             let capacity = current_array_ref.capacity();
-            let estimated_num_entries = self.len(|capacity| (capacity / 16).min(16384));
+            let num_cells = current_array_ref.num_cells();
+            let num_cells_to_sample = num_cells.min(MAXIMUM_SAMPLING_SIZE);
+            let estimated_num_entries = self.sample(current_array_ref, 0, num_cells_to_sample)
+                * (num_cells / num_cells_to_sample);
             let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
                 if capacity >= (1usize << (std::mem::size_of::<usize>() * 8 - 1)) {
                     capacity
@@ -882,8 +885,8 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             // Array::new may not be able to allocate the requested number of cells
             if new_capacity != capacity {
                 let new_array = Array::<K, V>::new(new_capacity, Atomic::from(current_array));
-                if (!shrink && new_array.capacity() > capacity)
-                    || (shrink && new_array.capacity() == new_capacity)
+                if (new_capacity > capacity && new_array.capacity() > capacity)
+                    || (new_capacity < capacity && new_array.capacity() == new_capacity)
                 {
                     self.array.store(Owned::new(new_array), Release);
                 }
@@ -891,6 +894,21 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
 
             self.resize_mutex.store(false, Release);
         }
+    }
+
+    /// Estimate the number of entries using the given number of cells.
+    fn sample(
+        &self,
+        current_array_ref: &Array<K, V>,
+        start_cell_index: usize,
+        end_cell_index: usize,
+    ) -> usize {
+        let mut num_entries = 0;
+        for i in start_cell_index..end_cell_index {
+            let (size, linked_entries) = current_array_ref.cell(i).size();
+            num_entries += size + linked_entries;
+        }
+        num_entries
     }
 }
 
@@ -908,7 +926,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Drop for HashMap<K, V, H> {
 pub struct Accessor<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> {
     hash_map: &'a HashMap<K, V, H>,
     cell_locker: CellLocker<'a, K, V>,
-    cell_in_sampling_range: bool,
+    cell_index: usize,
     sub_index: u8,
     entry_array_link_ptr: *const EntryArrayLink<K, V>,
     entry_ptr: *const (K, V),
@@ -978,7 +996,6 @@ impl<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Accessor<'a, K, V, H> {
 pub struct Scanner<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> {
     accessor: Option<Accessor<'a, K, V, H>>,
     array_ptr: *const Array<K, V>,
-    cell_index: usize,
     activated: bool,
     erase_on_next: bool,
 }
@@ -1017,20 +1034,18 @@ impl<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Iterator for Scanner<'a, 
                 );
             } else {
                 let current_array_ptr = self.array_ptr;
-                let current_cell_index = self.cell_index;
                 let scanner = self.accessor.as_ref().map_or_else(
                     || None,
                     |accessor| {
                         accessor
                             .hash_map
-                            .next(current_array_ptr, current_cell_index)
+                            .next(current_array_ptr, accessor.cell_index)
                     },
                 );
                 self.accessor.take();
                 if let Some(mut scanner) = scanner {
                     self.accessor = scanner.accessor.take();
                     self.array_ptr = scanner.array_ptr;
-                    self.cell_index = scanner.cell_index;
                 }
             }
         }
@@ -1047,6 +1062,20 @@ impl<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Iterator for Scanner<'a, 
 }
 
 /// Statistics
+///
+/// # Examples
+/// ```
+/// use scc::HashMap;
+///
+/// let hashmap: HashMap<u64, u32, _> = Default::default();
+///
+/// let result = hashmap.insert(1, 0);
+/// if let Ok(result) = result {
+///     assert_eq!(result.get(), (&1, &mut 0));
+/// }
+///
+/// println!("{}", hashmap.statistics());
+/// ```
 pub struct Statistics {
     capacity: usize,
     effective_capacity: usize,

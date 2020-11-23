@@ -209,9 +209,9 @@ mod test {
     #[test]
     fn sample() {
         for s in vec![65536, 2097152, 16777216] {
-            let hashmap: HashMap<usize, u8, RandomState> =
-                HashMap::new(s, RandomState::new());
+            let hashmap: HashMap<usize, u8, RandomState> = HashMap::new(s, RandomState::new());
             let step_size = s / 10;
+            let mut sample_warning_count = [(0usize, 0.0f32); 9];
             for p in 0..10 {
                 for i in (p * step_size)..((p + 1) * step_size) {
                     assert!(hashmap.insert(i, 0).is_ok());
@@ -220,8 +220,35 @@ mod test {
                 println!("{}%: {}", (p + 1) * 10, statistics);
                 for sample_size in 0..9 {
                     let len = hashmap.len(|_| (1 << sample_size) * 16);
-                    println!("{}/{}%: {};{}", s, (p + 1) * 10, 1 << sample_size, len);
+                    let diff = if statistics.num_entries() > len {
+                        statistics.num_entries() - len
+                    } else {
+                        len - statistics.num_entries()
+                    };
+                    let div = diff as f32 / statistics.num_entries() as f32;
+                    if div > 0.05f32 {
+                        sample_warning_count[sample_size].0 += 1;
+                    }
+                    if div > sample_warning_count[sample_size].1 {
+                        sample_warning_count[sample_size].1 = div;
+                    }
+                    println!(
+                        "{}/{}%: {};{};{}",
+                        s,
+                        (p + 1) * 10,
+                        1 << sample_size,
+                        len,
+                        div
+                    );
                 }
+            }
+            for (i, w) in sample_warning_count.iter().enumerate() {
+                println!(
+                    "sample cells: {}, errors > 0.05: {}, max: {}",
+                    1 << i,
+                    w.0,
+                    w.1
+                );
             }
         }
     }

@@ -14,23 +14,23 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 
 ### Performance
 
-Test setup.
+#### Test setup.
 - OS: SUSE Linux Enterprise Server 15 SP1
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
 - RAM: 1TB
 - Rust compiler version: 1.48.0
 - SCC: 0.2.6
-- The hashtable is generated using the default parameters: 256 preallocated entries.
+- The hashtable is generated using the default parameters: the RandomState hasher builder, and 256 preallocated entries.
 - In order to minimize the cost of page fault handling, all the tests were run twice, and only the best results were taken.
 
-Test data.
+#### Test data.
 - Each thread is assigned a disjoint range of u64 integers.
 - The entropy of the test input is very low, however it does not undermine the test result as the key distribution method is agnostic to the input pattern.
 - The performance test code asserts the expected outcome of each operation, and the post-state of the hashtable instance.
 
 ** TEST RESULTS: TO BE UPDATED, SHORTLY
 
-Test workload: local-only.
+#### Test workload: local.
 - Insert: each thread inserts 128M records.
 - Read: each thread reads 128M  records.
 - Remove: each thread removes 128M records.
@@ -41,7 +41,7 @@ Test workload: local-only.
 | Read   | 76.763939972s  | 110.250855322s | 123.870267714s | 143.606594002s |
 | Remove | 93.043478471s  | 141.48738765s  | 169.476767746s | 280.781299976s |
 
-Test workload: local-remote.
+#### Test workload: local-remote.
 - Each Insert/Read/Remove thread additionally tries to perform the operation using keys belonging to other threads.
 - The target remote thread is randomly chosen.
 - The total operation count per thread is 256M, and half of the Insert/Remove operations are bound to fail.
@@ -52,9 +52,9 @@ Test workload: local-remote.
 | Read   | 76.005210454s  | 110.250855322s | 123.870267714s | 143.606594002s |
 | Remove | 97.686499857s  | 141.48738765s  | 169.476767746s | 280.781299976s |
 
-Test workload: mixed.
+#### Test workload: mixed.
 - Each thread performs 1. Insert-local, 2. Insert-remote, 3. Read-local, 4. Read-remote, 5. Remove-local, and 6. Remove-remote.
-- The total operation count per thread is 768, and half of the Insert/Remove operations are bound to fail.
+- The total operation count per thread is 768M, and half of the Insert/Remove operations are bound to fail.
 
 |        | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
 |--------|----------------|----------------|----------------|----------------|
