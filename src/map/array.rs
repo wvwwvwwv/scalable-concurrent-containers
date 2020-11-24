@@ -30,13 +30,11 @@ impl<K: Eq, V> Array<K, V> {
         };
         let cell_capacity = 1usize << array.lb_capacity;
 
-        // calloc zeroes the allocated heap memory region
         let cell_array_ptr: *mut Cell<K, V> = unsafe {
             libc::calloc(cell_capacity, std::mem::size_of::<Cell<K, V>>()) as *mut Cell<K, V>
         };
-
-        // memory allocation failure: panic
         if cell_array_ptr.is_null() {
+            // memory allocation failure: panic
             panic!(
                 "memory allocation failure: {} bytes",
                 cell_capacity * std::mem::size_of::<Cell<K, V>>()
@@ -44,14 +42,12 @@ impl<K: Eq, V> Array<K, V> {
         }
         array.cell_array = Some(unsafe { Box::from_raw(cell_array_ptr) });
 
-        // MaybeUninit does not need the memory to be zeroed
         let entry_array_ptr: *mut EntryArray<K, V> = unsafe {
-            libc::malloc(cell_capacity * std::mem::size_of::<EntryArray<K, V>>())
+            libc::calloc(cell_capacity, std::mem::size_of::<EntryArray<K, V>>())
                 as *mut EntryArray<K, V>
         };
-
-        // memory allocation failure: panic
         if entry_array_ptr.is_null() {
+            // memory allocation failure: panic
             panic!(
                 "memory allocation failure: {} bytes",
                 cell_capacity * std::mem::size_of::<EntryArray<K, V>>()

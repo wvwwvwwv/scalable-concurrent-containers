@@ -2,11 +2,22 @@
 
 [Work-in-progress](https://github.com/wvwwvwwv/scc/milestones)
 
-SCC offers scalable concurrent containers written in the Rust language. The data structures in SCC assume to be used by a database management software running on a server, ane therefore they may not efficiently work on small systems.
+SCC offers scalable concurrent containers written in the Rust language. The data structures in SCC assume to be used by a database management software running on a server, ane therefore they may not efficiently work with a small set of data.
+
+## Changelog
+
+### 0.2.8
+
+- Make scc::HashMap stack-unwinding-safe, meaning that it does not leave resources (memory, locks) unreleased after stack-unwinding on one condition; moving instances of K, and V types must always be successful (in C++ terms, K and V satisfy std::is_nothrow_move_constructible).
+- Refine resizing strategies
+
+### 0.2.7
+
+- Remove unnecessary heap allocation during read
 
 ## scc::HashMap
 
-scc::HashMap is a scalable in-memory unique key-value store that is targeted at highly concurrent heavy workloads. It does not distribute data to multiple shards as most concurrent hash maps do, instead only does it have a single array of entries and corresponding metadata cell array. The metadata management strategy is similar to that of Swisstable; a metadata cell which is separated from the key-value array, is a 64-byte data structure for managing consecutive sixteen entries in the key-value array. The metadata cell also has a linked list of entry arrays for hash collision resolution. scc::HashMap automatically enlarges and shrinks the capacity of its internal array automatically, and it happens without blocking other operations and threads. In order to keep the predictable latency of each operation, it does not rehash every entry in the container at once when resizing, instead it distributes the resizing workload to future access to the data structure.
+scc::HashMap is a scalable in-memory unique key-value store that is targeted at highly concurrent heavy workloads. It does not distribute data to multiple shards as most concurrent hash maps do, instead only does it have a single array of entries and corresponding metadata cell array. The metadata management strategy is similar to that of Swisstable; a metadata cell which is separated from the key-value array, is a 64-byte data structure for managing consecutive sixteen entries in the key-value array. The metadata cell also has a linked list of entry arrays for hash collision resolution. scc::HashMap automatically enlarges and shrinks the capacity of its internal array, and resizing happens without blocking other operations and threads. In order to keep the predictable latency of each operation, it does not rehash every entry in the container at once when resizing, instead it distributes the resizing workload to future access to the data structure.
 
 ### Performance
 
@@ -15,7 +26,7 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
 - RAM: 1TB
 - Rust compiler version: 1.48.0
-- SCC: 0.2.8
+- SCC version: 0.2.8
 - The hashtable is generated using the default parameters: the RandomState hasher builder, and 256 preallocated entries.
 - In order to minimize the cost of page fault handling, all the tests were run twice, and only the best results were taken.
 
@@ -30,29 +41,25 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 - Remove: each thread removes 128M records.
 - The data for Read/Remove tests is populated by the Insert test.
 
-[22, 44, 88 thread results are outdated]
-
-|        | 11 threads     | -22 threads    | -44 threads    | -88 threads    |
+|        | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
 |--------|----------------|----------------|----------------|----------------|
-| Insert | 160.383746376s | 205.141640515s | 274.732659832s | 449.748250864s |
-| Read   | 72.262907419s  | 84.604536547s  | 98.492147135s  | 120.014568598s |
-| Remove | 99.912119679s  | 114.706894435s | 128.019035168s | 175.823523048s |
+| Insert | 160.0296045s   | 193.795963356s | 277.626057713s | 481.870984015s |
+| Read   | 80.402082433s  | 85.180396045s  | 89.37547222s   | 100.88658824s  |
+| Remove | 89.642203773s  | 104.70431303s  | 127.851116779s | 170.375524741s |
 
 #### Test workload: local-remote.
 - Insert/Remove: each thread additionally tries to perform assigned operations using keys belonging to other threads.
-- Mixed: each thread performs 128M insert-local -> insert-remote -> read-local -> read-remote -> remove-local -> remove-remote.
+- Mixed: each thread performs 128M insert-local -> insert-remote -> read-local -> read-remote -> remove-local -> remove-remote sequences.
 - The data for Mixed/Remove tests is populated by the Insert test.
 - The target remote thread is randomly chosen.
 - The total operation count per Insert/Read thread is 256M, and half of the operations are bound to fail.
 - The total operation count per Mixed thread is 768M, and about half of the operations are bound to fail.
 
-[22, 44, 88 thread results are outdated]
-
-|        | 11 threads     | -22 threads    | -44 threads    | -88 threads    |
+|        | 11 threads     | 22 threads     | 44 threads     | 88 threads    |
 |--------|----------------|----------------|----------------|----------------|
-| Insert | 288.263557024s | 347.144686171s | 438.534754158s | 684.925329641s |
-| Mixed  | 333.881301634s | 359.250368494s | 383.997076178s | 433.138958047s |
-| Remove | 187.790119066s | 204.476775721s | 227.617657582s | 281.109044156s |
+| Insert | 287.074169883s | 331.645274067s | 454.448331025s | 676.909568328s |
+| Mixed  | 338.147534267s | 356.44845854s  | 377.938664239s | 427.24426793s  |
+| Remove | 178.737543249s | 197.831223618s | 225.811047389s | 276.429387396s |
 
 ## Milestones
 
