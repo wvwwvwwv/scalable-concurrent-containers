@@ -210,15 +210,15 @@ mod test {
     fn sample() {
         for s in vec![65536, 2097152, 16777216] {
             let hashmap: HashMap<usize, u8, RandomState> = HashMap::new(s, RandomState::new());
-            let step_size = s / 10;
-            let mut sample_warning_count = [(0usize, 0.0f32); 9];
-            for p in 0..10 {
+            let step_size = s / 16;
+            let mut sample_warning_count = [(0usize, 0.0f32); 16];
+            for p in 0..16 {
                 for i in (p * step_size)..((p + 1) * step_size) {
                     assert!(hashmap.insert(i, 0).is_ok());
                 }
                 let statistics = hashmap.statistics();
-                println!("{}%: {}", (p + 1) * 10, statistics);
-                for sample_size in 0..9 {
+                println!("{}/16: {}", p + 1, statistics);
+                for sample_size in 0..16 {
                     let len = hashmap.len(|_| (1 << sample_size) * 16);
                     let diff = if statistics.num_entries() > len {
                         statistics.num_entries() - len
@@ -232,14 +232,7 @@ mod test {
                     if div > sample_warning_count[sample_size].1 {
                         sample_warning_count[sample_size].1 = div;
                     }
-                    println!(
-                        "{}/{}%: {};{};{}",
-                        s,
-                        (p + 1) * 10,
-                        1 << sample_size,
-                        len,
-                        div
-                    );
+                    println!("{}/16: {};{};{}", p + 1, 1 << sample_size, len, div);
                 }
             }
             for (i, w) in sample_warning_count.iter().enumerate() {

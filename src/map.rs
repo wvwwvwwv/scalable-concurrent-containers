@@ -1,4 +1,5 @@
 extern crate crossbeam_epoch;
+extern crate scopeguard;
 
 pub mod array;
 pub mod cell;
@@ -55,6 +56,10 @@ impl<K: Eq + Hash + Sync, V: Sync> Default for HashMap<K, V, RandomState> {
     ///
     /// The default hash builder is RandomState, and the default capacity is 256.
     ///
+    /// # Panics
+    ///
+    /// Panics if memory allocation fails.
+    ///
     /// # Examples
     /// ```
     /// use scc::HashMap;
@@ -79,6 +84,10 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     ///
     /// The actual capacity is equal to or greater than the given capacity.
     /// It is recommended to give a capacity value that is larger than 16 * the number of threads to access the HashMap.
+    ///
+    /// # Panics
+    ///
+    /// Panics if memory allocation fails.
     ///
     /// # Examples
     /// ```
@@ -105,6 +114,10 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     }
 
     /// Inserts a key-value pair into the HashMap.
+    ///
+    /// # Panics
+    ///
+    /// Panics if memory allocation fails.
     ///
     /// # Examples
     /// ```
@@ -173,6 +186,10 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     }
 
     /// Upserts a key-value pair into the HashMap.
+    ///
+    /// # Panics
+    ///
+    /// Panics if memory allocation fails.
     ///
     /// # Examples
     /// ```
@@ -847,8 +864,11 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
 
         // resize
         if !self.resize_mutex.swap(true, Acquire) {
+            let memory_ordering = Relaxed;
+            let mut mutex_guard = scopeguard::guard(memory_ordering, |memory_ordering| {
+                self.resize_mutex.store(false, memory_ordering);
+            });
             if current_array != self.array.load(Acquire, &guard) {
-                self.resize_mutex.store(false, Relaxed);
                 return;
             }
 
@@ -860,17 +880,27 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             let num_cells_to_sample = (num_cells / 16).max(4).min(4096);
             let estimated_num_entries = self.estimate(current_array_ref, num_cells_to_sample);
             let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
-                if capacity >= (1usize << (std::mem::size_of::<usize>() * 8 - 1)) {
+                let max_capacity = 1usize << (std::mem::size_of::<usize>() * 8 - 1);
+                if capacity == max_capacity {
+                    // do not resize if the capacity cannot be increased
                     capacity
+                } else if estimated_num_entries < (capacity / 16) * 17 {
+                    // double if the estimated size marginally exceeds the capacity
+                    capacity * 2
                 } else {
-                    (capacity.min(
-                        1usize
-                            << (std::mem::size_of::<usize>() * 8
-                                - (MAX_ENLARGE_FACTOR as usize + 1)),
-                    ) * (1 << MAX_ENLARGE_FACTOR as usize))
-                        .min(estimated_num_entries.next_power_of_two() * 2)
+                    // enlarge up to 64
+                    let new_capacity_candidate = estimated_num_entries
+                        .next_power_of_two()
+                        .min(max_capacity / 2)
+                        * 2;
+                    if new_capacity_candidate / capacity > (1 << MAX_ENLARGE_FACTOR as usize) {
+                        capacity * (1 << MAX_ENLARGE_FACTOR as usize)
+                    } else {
+                        new_capacity_candidate
+                    }
                 }
             } else if estimated_num_entries <= capacity / 8 {
+                // shrink to fit
                 estimated_num_entries
                     .next_power_of_two()
                     .max(self.minimum_capacity)
@@ -880,16 +910,16 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
 
             // Array::new may not be able to allocate the requested number of cells
             if new_capacity != capacity {
-                let new_array = Array::<K, V>::new(new_capacity, Atomic::from(current_array));
-                if (new_capacity > capacity && new_array.capacity() > capacity)
-                    || (new_capacity < capacity && new_array.capacity() == new_capacity)
-                {
-                    self.array.store(Owned::new(new_array), Release);
-                }
+                self.array.store(
+                    Owned::new(Array::<K, V>::new(
+                        new_capacity,
+                        Atomic::from(current_array),
+                    )),
+                    Release,
+                );
+                // the release fence assures that future calls to the function see the latest state
+                *mutex_guard = Release;
             }
-
-            // the release fence assures that future calls to the function see the latest state
-            self.resize_mutex.store(false, Release);
         }
     }
 

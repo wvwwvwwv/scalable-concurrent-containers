@@ -275,13 +275,13 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
     ) -> (u8, *const EntryArrayLink<K, V>, *const (K, V)) {
         let preferred_index = (partial_hash % (ARRAY_SIZE as u16)).try_into().unwrap();
         if !self.occupied(preferred_index) {
-            self.metadata = self.metadata | (OCCUPANCY_BIT << preferred_index);
-            self.cell_mut_ref().partial_hash_array[preferred_index as usize] = partial_hash;
             unsafe {
                 self.entry_array_mut_ref()[preferred_index as usize]
                     .as_mut_ptr()
                     .write((key, value))
             };
+            self.metadata = self.metadata | (OCCUPANCY_BIT << preferred_index);
+            self.cell_mut_ref().partial_hash_array[preferred_index as usize] = partial_hash;
             return (
                 preferred_index,
                 ptr::null(),
@@ -290,13 +290,13 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
         }
         let free_index: u8 = self.metadata.trailing_ones().try_into().unwrap();
         if free_index < ARRAY_SIZE {
-            self.metadata = self.metadata | (OCCUPANCY_BIT << free_index);
-            self.cell_mut_ref().partial_hash_array[free_index as usize] = partial_hash;
             unsafe {
                 self.entry_array_mut_ref()[free_index as usize]
                     .as_mut_ptr()
                     .write((key, value))
             };
+            self.metadata = self.metadata | (OCCUPANCY_BIT << free_index);
+            self.cell_mut_ref().partial_hash_array[free_index as usize] = partial_hash;
             return (
                 free_index,
                 ptr::null(),
