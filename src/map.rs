@@ -888,7 +888,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                     // double if the estimated size marginally exceeds the capacity
                     capacity * 2
                 } else {
-                    // enlarge up to 64
+                    // enlarge up to 64x
                     let new_capacity_candidate = estimated_num_entries
                         .next_power_of_two()
                         .min(max_capacity / 2)

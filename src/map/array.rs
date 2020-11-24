@@ -20,8 +20,15 @@ pub struct Array<K: Eq, V> {
 
 impl<K: Eq, V> Array<K, V> {
     pub fn new(capacity: usize, old_array: Atomic<Array<K, V>>) -> Array<K, V> {
-        let lb_capacity = Self::calculate_lb_metadata_array_size(capacity);
-        let cell_capacity = 1usize << lb_capacity;
+        let mut array = Array {
+            cell_array: None,
+            entry_array: None,
+            lb_capacity: Self::calculate_lb_metadata_array_size(capacity),
+            rehashing: AtomicUsize::new(0),
+            rehashed: AtomicUsize::new(0),
+            old_array: old_array,
+        };
+        let cell_capacity = 1usize << array.lb_capacity;
 
         // calloc zeroes the allocated heap memory region
         let cell_array_ptr: *mut Cell<K, V> = unsafe {
@@ -35,12 +42,7 @@ impl<K: Eq, V> Array<K, V> {
                 cell_capacity * std::mem::size_of::<Cell<K, V>>()
             )
         }
-
-        let cell_array_boxed = if !cell_array_ptr.is_null() {
-            Some(unsafe { Box::from_raw(cell_array_ptr) })
-        } else {
-            None
-        };
+        array.cell_array = Some(unsafe { Box::from_raw(cell_array_ptr) });
 
         // MaybeUninit does not need the memory to be zeroed
         let entry_array_ptr: *mut EntryArray<K, V> = unsafe {
@@ -55,21 +57,9 @@ impl<K: Eq, V> Array<K, V> {
                 cell_capacity * std::mem::size_of::<EntryArray<K, V>>()
             )
         }
+        array.entry_array = Some(unsafe { Box::from_raw(entry_array_ptr) });
 
-        let entry_array_boxed = if !entry_array_ptr.is_null() {
-            Some(unsafe { Box::from_raw(entry_array_ptr) })
-        } else {
-            None
-        };
-
-        Array {
-            cell_array: cell_array_boxed,
-            entry_array: entry_array_boxed,
-            lb_capacity: lb_capacity,
-            rehashing: AtomicUsize::new(0),
-            rehashed: AtomicUsize::new(0),
-            old_array: old_array,
-        }
+        array
     }
 
     pub fn cell(&self, index: usize) -> &Cell<K, V> {
