@@ -82,6 +82,9 @@ impl<K: Eq, V> Array<K, V> {
         unsafe { &(*(array_ptr.add(index))) }
     }
 
+    pub fn num_sample_size(&self) -> usize {
+        (self.lb_capacity as usize).next_power_of_two()
+    }
     pub fn num_cells(&self) -> usize {
         1usize << self.lb_capacity
     }

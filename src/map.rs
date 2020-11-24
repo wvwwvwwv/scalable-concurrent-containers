@@ -159,18 +159,16 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 let current_array_ref = unsafe { current_array.deref() };
                 if current_array_ref.old_array(&guard).is_null() {
                     // trigger resize if the estimated load factor is greater than 15/16
-                    let threshold = (cell::ARRAY_SIZE as usize - 1) * cell::ARRAY_SIZE as usize;
+                    let sample_size = current_array_ref.num_sample_size();
+                    let threshold = sample_size * (cell::ARRAY_SIZE as usize - 1);
                     let mut num_entries = 0;
                     for i in 0..(cell::ARRAY_SIZE as usize) {
-                        num_entries += current_array_ref.cell(i).size().0;
+                        num_entries +=
+                            current_array_ref.cell(i).size().0 + current_array_ref.cell(i).size().1;
                         if num_entries > threshold {
-                            break;
-                        } else if num_entries <= i * (cell::ARRAY_SIZE as usize) {
+                            self.resize();
                             break;
                         }
-                    }
-                    if num_entries > threshold {
-                        self.resize();
                     }
                 }
                 continue;
@@ -664,10 +662,12 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 && current_array_ref.capacity() > self.minimum_capacity
             {
                 // trigger resize if the estimated load factor is smaller than 1/16
+                let sample_size = current_array_ref.num_sample_size();
                 let mut num_entries = 0;
-                for i in 0..(cell::ARRAY_SIZE as usize) {
-                    num_entries += current_array_ref.cell(i).size().0;
-                    if num_entries >= cell::ARRAY_SIZE as usize {
+                for i in 0..sample_size {
+                    num_entries +=
+                        current_array_ref.cell(i).size().0 + current_array_ref.cell(i).size().1;
+                    if num_entries >= sample_size * (cell::ARRAY_SIZE as usize) / 16 {
                         return value;
                     }
                 }
@@ -884,7 +884,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 if capacity == max_capacity {
                     // do not resize if the capacity cannot be increased
                     capacity
-                } else if estimated_num_entries < (capacity / 16) * 17 {
+                } else if estimated_num_entries <= (capacity / 8) * 9 {
                     // double if the estimated size marginally exceeds the capacity
                     capacity * 2
                 } else {

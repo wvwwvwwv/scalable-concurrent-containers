@@ -25,9 +25,9 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 - The performance test code asserts the expected outcome of each operation, and the post state of the hashtable instance.
 
 #### Test workload: local.
-- Insert: each thread inserts 128M records.
-- Read: each thread reads 128M records.
-- Remove: each thread removes 128M records.
+- Insert: each thread inserts 64M records.
+- Read: each thread reads 64M records.
+- Remove: each thread removes 64M records.
 - The data for Read/Remove tests is populated by the Insert test.
 
 [22, 44, 88 thread results are outdated]
@@ -40,11 +40,11 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 
 #### Test workload: local-remote.
 - Insert/Remove: each thread additionally tries to perform assigned operations using keys belonging to other threads.
-- Mixed: each thread performs 128M insert-local -> insert-remote -> read-local -> read-remote -> remove-local -> remove-remote.
+- Mixed: each thread performs 64M insert-local -> insert-remote -> read-local -> read-remote -> remove-local -> remove-remote.
 - The data for Mixed/Remove tests is populated by the Insert test.
 - The target remote thread is randomly chosen.
-- The total operation count per Insert/Read thread is 256M, and half of the operations are bound to fail.
-- The total operation count per Mixed thread is 768M, and about half of the operations are bound to fail.
+- The total operation count per Insert/Read thread is 128M, and half of the operations are bound to fail.
+- The total operation count per Mixed thread is 384M, and about half of the operations are bound to fail.
 
 [22, 44, 88 thread results are outdated]
 
