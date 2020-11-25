@@ -2,13 +2,76 @@
 mod test {
     use proptest::prelude::*;
     use scc::HashMap;
+    use std::alloc::{GlobalAlloc, Layout, System};
     use std::collections::hash_map::RandomState;
     use std::collections::BTreeSet;
     use std::hash::{Hash, Hasher};
     use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
-    use std::sync::atomic::{AtomicU64, AtomicUsize};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
     use std::sync::Arc;
     use std::thread;
+
+    struct MemoryTester {
+        allocated_size: AtomicUsize,
+        random_panic: AtomicBool,
+    }
+
+    unsafe impl GlobalAlloc for MemoryTester {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            debug_assert!(!self.random_panic.load(Relaxed) || rand::random::<u32>() % 4 != 0);
+            let ret = System.alloc(layout);
+            if !ret.is_null() {
+                debug_assert!(self.allocated_size.fetch_add(layout.size(), Relaxed) != usize::MAX);
+            } else {
+                panic!("memory allocation failed");
+            }
+            return ret;
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            System.dealloc(ptr, layout);
+            debug_assert!(self.allocated_size.fetch_sub(layout.size(), Relaxed) > 0);
+        }
+    }
+
+    impl MemoryTester {
+        fn panic_test(&self) {
+            std::panic::set_hook(Box::new(|_| println!("panic occurred somewhere")));
+
+            // panicking.rs:527 not OoM-safe - this test is disabled
+            for _ in 0..1024 {
+                let last_successful_insert = Arc::new(AtomicUsize::new(0));
+                let last_successful_insert_cloned = last_successful_insert.clone();
+                let hashmap: Arc<HashMap<usize, u16, _>> = Arc::new(Default::default());
+                let hashmap_cloned = hashmap.clone();
+                self.random_panic.store(true, Release);
+                if let Err(_) = std::panic::catch_unwind(move || {
+                    for i in 1..1025 {
+                        if hashmap_cloned.insert(i, 1).is_ok() {
+                            last_successful_insert_cloned.fetch_add(1, Relaxed);
+                        }
+                    }
+                }) {
+                    println!("panicked");
+                }
+                self.random_panic.store(false, Release);
+            }
+
+            let _ = std::panic::take_hook();
+        }
+    }
+
+    #[global_allocator]
+    static ALLOCATOR: MemoryTester = MemoryTester {
+        allocated_size: AtomicUsize::new(0),
+        random_panic: AtomicBool::new(false),
+    };
+
+    #[test]
+    #[ignore]
+    fn panic() {
+        ALLOCATOR.panic_test();
+    }
 
     proptest! {
         #[test]

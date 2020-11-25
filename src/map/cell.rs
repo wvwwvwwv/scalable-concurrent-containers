@@ -258,8 +258,6 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
                 return Some((i, ptr::null(), entry_ptr));
             }
         }
-
-        // none found
         None
     }
 

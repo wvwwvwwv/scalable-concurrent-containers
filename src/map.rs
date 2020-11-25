@@ -5,7 +5,7 @@ pub mod array;
 pub mod cell;
 pub mod link;
 
-use array::{Array, MAX_ENLARGE_FACTOR};
+use array::Array;
 use cell::{CellLocker, CellReader};
 use crossbeam_epoch::{Atomic, Owned, Shared};
 use link::EntryArrayLink;
@@ -161,9 +161,9 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 let current_array = self.array.load(Acquire, &guard);
                 let current_array_ref = unsafe { current_array.deref() };
                 if current_array_ref.old_array(&guard).is_null() {
-                    // trigger resize if the estimated load factor is greater than 15/16
+                    // trigger resize if the estimated load factor is greater than 7/8
                     let sample_size = current_array_ref.num_sample_size();
-                    let threshold = sample_size * (cell::ARRAY_SIZE as usize - 1);
+                    let threshold = sample_size * (cell::ARRAY_SIZE as usize / 8) * 7;
                     let mut num_entries = 0;
                     for i in 0..sample_size {
                         num_entries +=
@@ -414,7 +414,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// Returns an estimated size of the HashMap.
     ///
     /// The given function determines the sampling size.
-    /// A function returning a fixed number larger than u16::MAX yields a ~99% accuracy.
+    /// A function returning a fixed number larger than u16::MAX yields around 99% accuracy.
     ///
     /// # Examples
     /// ```
@@ -638,10 +638,9 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                     };
                 } else if !cell_locker.killed() {
                     // kill the cell
-                    let old_array_ref = unsafe { old_array.deref() };
                     current_array_ref.kill_cell(
                         &mut cell_locker,
-                        old_array_ref,
+                        unsafe { old_array.deref() },
                         cell_index,
                         &|key| self.hash(key),
                     );
@@ -899,7 +898,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
 
             // the resizing policies are as follows.
             //  - load factor reaches 7/8: enlarge up to 64x
-            //  - load factor reaches 1/8: shrink
+            //  - load factor reaches 1/16: shrink to fit
             let capacity = current_array_ref.capacity();
             let num_cells = current_array_ref.num_cells();
             let num_cells_to_sample = (num_cells / 16).max(4).min(4096);
@@ -918,8 +917,9 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                         .next_power_of_two()
                         .min(max_capacity / 2)
                         * 2;
-                    if new_capacity_candidate / capacity > (1 << MAX_ENLARGE_FACTOR as usize) {
-                        capacity * (1 << MAX_ENLARGE_FACTOR as usize)
+                    if new_capacity_candidate / capacity > (1 << array::MAX_ENLARGE_FACTOR as usize)
+                    {
+                        capacity * (1 << array::MAX_ENLARGE_FACTOR as usize)
                     } else {
                         new_capacity_candidate
                     }

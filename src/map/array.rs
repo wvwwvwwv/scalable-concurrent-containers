@@ -1,7 +1,6 @@
-extern crate libc;
-
 use super::cell::{Cell, CellLocker, EntryArray, ARRAY_SIZE};
 use crossbeam_epoch::{Atomic, Guard, Shared};
+use std::alloc::{GlobalAlloc, System};
 use std::convert::TryInto;
 use std::mem::MaybeUninit;
 use std::sync::atomic::AtomicUsize;
@@ -31,35 +30,36 @@ impl<K: Eq, V> Array<K, V> {
             old_array: old_array,
         };
         array.cell_array_capacity = 1usize << array.lb_capacity;
+        unsafe {
+            let size_of_cell = std::mem::size_of::<Cell<K, V>>();
+            let cell_array_ptr = System.alloc_zeroed(std::alloc::Layout::from_size_align_unchecked(
+                array.cell_array_capacity * size_of_cell,
+                size_of_cell,
+            )) as *mut Cell<K, V>;
+            if cell_array_ptr.is_null() {
+                // memory allocation failure: panic
+                panic!(
+                    "memory allocation failure: {} bytes",
+                    array.cell_array_capacity * size_of_cell
+                )
+            }
+            array.cell_array = Some(Box::from_raw(cell_array_ptr));
 
-        let cell_array_ptr: *mut Cell<K, V> = unsafe {
-            libc::calloc(array.cell_array_capacity, std::mem::size_of::<Cell<K, V>>())
-                as *mut Cell<K, V>
-        };
-        if cell_array_ptr.is_null() {
-            // memory allocation failure: panic
-            panic!(
-                "memory allocation failure: {} bytes",
-                array.cell_array_capacity * std::mem::size_of::<Cell<K, V>>()
-            )
+            let size_of_entry = std::mem::size_of::<EntryArray<K, V>>();
+            let entry_array_ptr =
+                System.alloc_zeroed(std::alloc::Layout::from_size_align_unchecked(
+                    array.cell_array_capacity * size_of_entry,
+                    size_of_entry,
+                )) as *mut EntryArray<K, V>;
+            if entry_array_ptr.is_null() {
+                // memory allocation failure: panic
+                panic!(
+                    "memory allocation failure: {} bytes",
+                    array.cell_array_capacity * size_of_entry
+                )
+            }
+            array.entry_array = Some(Box::from_raw(entry_array_ptr));
         }
-        array.cell_array = Some(unsafe { Box::from_raw(cell_array_ptr) });
-
-        let entry_array_ptr: *mut EntryArray<K, V> = unsafe {
-            libc::calloc(
-                array.cell_array_capacity,
-                std::mem::size_of::<EntryArray<K, V>>(),
-            ) as *mut EntryArray<K, V>
-        };
-        if entry_array_ptr.is_null() {
-            // memory allocation failure: panic
-            panic!(
-                "memory allocation failure: {} bytes",
-                array.cell_array_capacity * std::mem::size_of::<EntryArray<K, V>>()
-            )
-        }
-        array.entry_array = Some(unsafe { Box::from_raw(entry_array_ptr) });
-
         array
     }
 
@@ -147,6 +147,7 @@ impl<K: Eq, V> Array<K, V> {
             None, None, None, None, None, None, None, None, None, None, None, None, None, None,
             None, None, None, None, None, None, None, None,
         ];
+        let mut num_target_cells = 0;
         let mut current = cell_locker.first();
         while let Some((sub_index, entry_array_link_ptr, entry_ptr)) = current {
             let (key, value) = Self::extract_key_value(entry_ptr);
@@ -158,13 +159,12 @@ impl<K: Eq, V> Array<K, V> {
                     || (shrink && new_cell_index == old_cell_index / ratio)
             );
 
-            for i in 0..=(new_cell_index - target_cell_index) {
-                if target_cells[i].is_none() {
-                    target_cells[i] = Some(CellLocker::lock(
-                        self.cell(target_cell_index + i),
-                        self.entry_array(target_cell_index + i),
-                    ));
-                }
+            for i in num_target_cells..=(new_cell_index - target_cell_index) {
+                target_cells[i] = Some(CellLocker::lock(
+                    self.cell(target_cell_index + i),
+                    self.entry_array(target_cell_index + i),
+                ));
+                num_target_cells = i + 1;
             }
             target_cells[new_cell_index - target_cell_index]
                 .as_mut()
@@ -233,13 +233,29 @@ impl<K: Eq, V> Drop for Array<K, V> {
     fn drop(&mut self) {
         let entry_array = self.entry_array.take();
         entry_array.map(|entry_array_box| {
-            let entry_array_ptr = Box::into_raw(entry_array_box);
-            unsafe { libc::free(entry_array_ptr as *mut libc::c_void) };
+            let size_of_entry = std::mem::size_of::<EntryArray<K, V>>();
+            unsafe {
+                System.dealloc(
+                    Box::into_raw(entry_array_box) as *mut u8,
+                    std::alloc::Layout::from_size_align_unchecked(
+                        self.capacity() * size_of_entry,
+                        size_of_entry,
+                    ),
+                )
+            };
         });
         let cell_array = self.cell_array.take();
         cell_array.map(|cell_array_box| {
-            let cell_array_ptr = Box::into_raw(cell_array_box);
-            unsafe { libc::free(cell_array_ptr as *mut libc::c_void) };
+            let size_of_cell = std::mem::size_of::<Cell<K, V>>();
+            unsafe {
+                System.dealloc(
+                    Box::into_raw(cell_array_box) as *mut u8,
+                    std::alloc::Layout::from_size_align_unchecked(
+                        self.capacity() * size_of_cell,
+                        size_of_cell,
+                    ),
+                )
+            };
         });
     }
 }
