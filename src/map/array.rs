@@ -10,8 +10,10 @@ pub const MAX_ENLARGE_FACTOR: u8 = 6;
 
 pub struct Array<K: Eq, V> {
     cell_array: Option<Box<Cell<K, V>>>,
+    cell_array_ptr_offset: usize,
     cell_array_capacity: usize,
     entry_array: Option<Box<EntryArray<K, V>>>,
+    entry_array_ptr_offset: usize,
     lb_capacity: u8,
     rehashing: AtomicUsize,
     rehashed: AtomicUsize,
@@ -22,8 +24,10 @@ impl<K: Eq, V> Array<K, V> {
     pub fn new(capacity: usize, old_array: Atomic<Array<K, V>>) -> Array<K, V> {
         let mut array = Array {
             cell_array: None,
+            cell_array_ptr_offset: 0,
             cell_array_capacity: 0,
             entry_array: None,
+            entry_array_ptr_offset: 0,
             lb_capacity: Self::calculate_lb_metadata_array_size(capacity),
             rehashing: AtomicUsize::new(0),
             rehashed: AtomicUsize::new(0),
@@ -32,32 +36,35 @@ impl<K: Eq, V> Array<K, V> {
         array.cell_array_capacity = 1usize << array.lb_capacity;
         unsafe {
             let size_of_cell = std::mem::size_of::<Cell<K, V>>();
-            let cell_array_ptr = System.alloc_zeroed(std::alloc::Layout::from_size_align_unchecked(
-                array.cell_array_capacity * size_of_cell,
-                8,
-            )) as *mut Cell<K, V>;
-            if cell_array_ptr.is_null() {
+            let ptr = System.alloc_zeroed(std::alloc::Layout::from_size_align_unchecked(
+                (array.cell_array_capacity + 1) * size_of_cell,
+                1,
+            ));
+            if ptr.is_null() {
                 // memory allocation failure: panic
                 panic!(
                     "memory allocation failure: {} bytes",
                     array.cell_array_capacity * size_of_cell
                 )
             }
+            array.cell_array_ptr_offset = ptr.align_offset(size_of_cell);
+            let cell_array_ptr = ptr.add(array.cell_array_ptr_offset) as *mut Cell<K, V>;
             array.cell_array = Some(Box::from_raw(cell_array_ptr));
 
             let size_of_entry = std::mem::size_of::<EntryArray<K, V>>();
-            let entry_array_ptr =
-                System.alloc_zeroed(std::alloc::Layout::from_size_align_unchecked(
-                    array.cell_array_capacity * size_of_entry,
-                    8,
-                )) as *mut EntryArray<K, V>;
-            if entry_array_ptr.is_null() {
+            let ptr = System.alloc_zeroed(std::alloc::Layout::from_size_align_unchecked(
+                (array.cell_array_capacity + 1) * size_of_entry,
+                1,
+            ));
+            if ptr.is_null() {
                 // memory allocation failure: panic
                 panic!(
                     "memory allocation failure: {} bytes",
                     array.cell_array_capacity * size_of_entry
                 )
             }
+            array.entry_array_ptr_offset = ptr.align_offset(size_of_entry);
+            let entry_array_ptr = ptr.add(array.entry_array_ptr_offset) as *mut EntryArray<K, V>;
             array.entry_array = Some(Box::from_raw(entry_array_ptr));
         }
         array
@@ -236,10 +243,10 @@ impl<K: Eq, V> Drop for Array<K, V> {
             let size_of_entry = std::mem::size_of::<EntryArray<K, V>>();
             unsafe {
                 System.dealloc(
-                    Box::into_raw(entry_array_box) as *mut u8,
+                    (Box::into_raw(entry_array_box) as *mut u8).sub(self.entry_array_ptr_offset),
                     std::alloc::Layout::from_size_align_unchecked(
-                        self.capacity() * size_of_entry,
-                        8,
+                        (self.capacity() + 1) * size_of_entry,
+                        1,
                     ),
                 )
             };
@@ -249,10 +256,10 @@ impl<K: Eq, V> Drop for Array<K, V> {
             let size_of_cell = std::mem::size_of::<Cell<K, V>>();
             unsafe {
                 System.dealloc(
-                    Box::into_raw(cell_array_box) as *mut u8,
+                    (Box::into_raw(cell_array_box) as *mut u8).sub(self.cell_array_ptr_offset),
                     std::alloc::Layout::from_size_align_unchecked(
-                        self.capacity() * size_of_cell,
-                        8,
+                        (self.capacity() + 1) * size_of_cell,
+                        1,
                     ),
                 )
             };
