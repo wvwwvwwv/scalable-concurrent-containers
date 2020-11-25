@@ -1,5 +1,6 @@
 use super::cell::{Cell, CellLocker, EntryArray, ARRAY_SIZE};
 use crossbeam_epoch::{Atomic, Guard, Shared};
+use std::alloc::{GlobalAlloc, System};
 use std::convert::TryInto;
 use std::mem::MaybeUninit;
 use std::sync::atomic::AtomicUsize;
@@ -31,11 +32,10 @@ impl<K: Eq, V> Array<K, V> {
         array.cell_array_capacity = 1usize << array.lb_capacity;
         unsafe {
             let size_of_cell = std::mem::size_of::<Cell<K, V>>();
-            let cell_array_ptr =
-                std::alloc::alloc_zeroed(std::alloc::Layout::from_size_align_unchecked(
-                    array.cell_array_capacity * size_of_cell,
-                    8,
-                )) as *mut Cell<K, V>;
+            let cell_array_ptr = System.alloc_zeroed(std::alloc::Layout::from_size_align_unchecked(
+                array.cell_array_capacity * size_of_cell,
+                8,
+            )) as *mut Cell<K, V>;
             if cell_array_ptr.is_null() {
                 // memory allocation failure: panic
                 panic!(
@@ -47,7 +47,7 @@ impl<K: Eq, V> Array<K, V> {
 
             let size_of_entry = std::mem::size_of::<EntryArray<K, V>>();
             let entry_array_ptr =
-                std::alloc::alloc_zeroed(std::alloc::Layout::from_size_align_unchecked(
+                System.alloc_zeroed(std::alloc::Layout::from_size_align_unchecked(
                     array.cell_array_capacity * size_of_entry,
                     8,
                 )) as *mut EntryArray<K, V>;
@@ -235,7 +235,7 @@ impl<K: Eq, V> Drop for Array<K, V> {
         entry_array.map(|entry_array_box| {
             let size_of_entry = std::mem::size_of::<EntryArray<K, V>>();
             unsafe {
-                std::alloc::dealloc(
+                System.dealloc(
                     Box::into_raw(entry_array_box) as *mut u8,
                     std::alloc::Layout::from_size_align_unchecked(
                         self.capacity() * size_of_entry,
@@ -248,7 +248,7 @@ impl<K: Eq, V> Drop for Array<K, V> {
         cell_array.map(|cell_array_box| {
             let size_of_cell = std::mem::size_of::<Cell<K, V>>();
             unsafe {
-                std::alloc::dealloc(
+                System.dealloc(
                     Box::into_raw(cell_array_box) as *mut u8,
                     std::alloc::Layout::from_size_align_unchecked(
                         self.capacity() * size_of_cell,
