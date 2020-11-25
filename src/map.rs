@@ -5,7 +5,7 @@ pub mod array;
 pub mod cell;
 pub mod link;
 
-use array::Array;
+use array::{Array, MAX_ENLARGE_FACTOR};
 use cell::{CellLocker, CellReader};
 use crossbeam_epoch::{Atomic, Owned, Shared};
 use link::EntryArrayLink;
@@ -161,9 +161,9 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 let current_array = self.array.load(Acquire, &guard);
                 let current_array_ref = unsafe { current_array.deref() };
                 if current_array_ref.old_array(&guard).is_null() {
-                    // trigger resize if the estimated load factor is greater than 7/8
+                    // trigger resize if the estimated load factor is greater than 15/16
                     let sample_size = current_array_ref.num_sample_size();
-                    let threshold = sample_size * (cell::ARRAY_SIZE as usize / 8) * 7;
+                    let threshold = sample_size * (cell::ARRAY_SIZE as usize - 1);
                     let mut num_entries = 0;
                     for i in 0..sample_size {
                         num_entries +=
@@ -414,7 +414,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// Returns an estimated size of the HashMap.
     ///
     /// The given function determines the sampling size.
-    /// A function returning a fixed number larger than u16::MAX yields ~99% accuracy.
+    /// A function returning a fixed number larger than u16::MAX usually gives ~99% accuracy.
     ///
     /// # Examples
     /// ```
@@ -625,33 +625,31 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 if current_array_ref.partial_rehash(&guard, |key| self.hash(key)) {
                     continue;
                 }
-                let (mut cell_locker, cell_index, sub_index, entry_array_link_ptr, entry_ptr) =
+                let (mut locker, entry_array_link_ptr, entry_ptr, cell_index, sub_index) =
                     self.search(&key, hash, partial_hash, old_array.as_raw());
                 if !entry_ptr.is_null() {
                     return Accessor {
                         hash_map: &self,
-                        cell_locker: cell_locker,
+                        cell_locker: locker,
                         cell_index: cell_index,
                         sub_index: sub_index,
                         entry_array_link_ptr: entry_array_link_ptr,
                         entry_ptr: entry_ptr,
                     };
-                } else if !cell_locker.killed() {
+                } else if !locker.killed() {
                     // kill the cell
-                    current_array_ref.kill_cell(
-                        &mut cell_locker,
-                        unsafe { old_array.deref() },
-                        cell_index,
-                        &|key| self.hash(key),
-                    );
+                    let old_array_ref = unsafe { old_array.deref() };
+                    current_array_ref.kill_cell(&mut locker, old_array_ref, cell_index, &|key| {
+                        self.hash(key)
+                    });
                 }
             }
-            let (cell_locker, cell_index, sub_index, entry_array_link_ptr, entry_ptr) =
+            let (locker, entry_array_link_ptr, entry_ptr, cell_index, sub_index) =
                 self.search(&key, hash, partial_hash, current_array.as_raw());
-            if !cell_locker.killed() {
+            if !locker.killed() {
                 return Accessor {
                     hash_map: &self,
-                    cell_locker: cell_locker,
+                    cell_locker: locker,
                     cell_index: cell_index,
                     sub_index: sub_index,
                     entry_array_link_ptr: entry_array_link_ptr,
@@ -704,37 +702,31 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         array_ptr: *const Array<K, V>,
     ) -> (
         CellLocker<'a, K, V>,
-        usize,
-        u8,
         *const EntryArrayLink<K, V>,
         *const (K, V),
+        usize,
+        u8,
     ) {
         let array_ref = unsafe { &(*array_ptr) };
         let cell_index = array_ref.calculate_cell_index(hash);
-        let cell_locker = CellLocker::lock(
+        let locker = CellLocker::lock(
             array_ref.cell(cell_index),
             array_ref.entry_array(cell_index),
         );
-        if !cell_locker.killed() && !cell_locker.empty() {
+        if !locker.killed() && !locker.empty() {
             if let Some((sub_index, entry_array_link_ptr, entry_ptr)) =
-                cell_locker.search(key, partial_hash)
+                locker.search(key, partial_hash)
             {
                 return (
-                    cell_locker,
-                    cell_index,
-                    sub_index,
+                    locker,
                     entry_array_link_ptr,
                     entry_ptr,
+                    cell_index,
+                    sub_index,
                 );
             }
         }
-        (
-            cell_locker,
-            cell_index,
-            0,
-            std::ptr::null(),
-            std::ptr::null(),
-        )
+        (locker, std::ptr::null(), std::ptr::null(), cell_index, 0)
     }
 
     /// Returns the first valid cell.
@@ -898,7 +890,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
 
             // the resizing policies are as follows.
             //  - load factor reaches 7/8: enlarge up to 64x
-            //  - load factor reaches 1/16: shrink to fit
+            //  - load factor reaches 1/8: shrink
             let capacity = current_array_ref.capacity();
             let num_cells = current_array_ref.num_cells();
             let num_cells_to_sample = (num_cells / 16).max(4).min(4096);
@@ -917,9 +909,8 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                         .next_power_of_two()
                         .min(max_capacity / 2)
                         * 2;
-                    if new_capacity_candidate / capacity > (1 << array::MAX_ENLARGE_FACTOR as usize)
-                    {
-                        capacity * (1 << array::MAX_ENLARGE_FACTOR as usize)
+                    if new_capacity_candidate / capacity > (1 << MAX_ENLARGE_FACTOR as usize) {
+                        capacity * (1 << MAX_ENLARGE_FACTOR as usize)
                     } else {
                         new_capacity_candidate
                     }
@@ -935,8 +926,13 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
 
             // Array::new may not be able to allocate the requested number of cells
             if new_capacity != capacity {
-                let new_array = Array::<K, V>::new(new_capacity, Atomic::from(current_array));
-                self.array.store(Owned::new(new_array), Release);
+                self.array.store(
+                    Owned::new(Array::<K, V>::new(
+                        new_capacity,
+                        Atomic::from(current_array),
+                    )),
+                    Release,
+                );
                 // the release fence assures that future calls to the function see the latest state
                 *mutex_guard = Release;
             }

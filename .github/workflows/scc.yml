@@ -27,6 +27,3 @@ jobs:
         run: cargo test --release --verbose
       - name: Release - Run tests
         run: cargo test --release -p tests -- --nocapture
-#      - name: Debug/Segregated - Run tests
-#        run: cargo test -p tests -- --test-threads=1 --ignored
-#        Rust panic handler allocates!

@@ -134,7 +134,7 @@ impl<K: Eq, V> Cell<K, V> {
                 break;
             }
             if i != preferred_index
-                && (occupancy_metadata & occupancy_bit) != 0
+                && (metadata & occupancy_bit) != 0
                 && self.partial_hash_array[i as usize] == partial_hash
             {
                 let entry_ptr = entry_array[i as usize].as_ptr();
@@ -242,22 +242,19 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
         }
 
         // advance in the cell
-        let occupancy_metadata = self.metadata & OCCUPANCY_MASK;
         let start_index = if sub_index == u8::MAX {
-            occupancy_metadata.trailing_zeros().try_into().unwrap()
+            self.metadata.trailing_zeros().try_into().unwrap()
         } else {
             sub_index + 1
         };
         for i in start_index..ARRAY_SIZE {
-            let occupancy_bit = OCCUPANCY_BIT << i;
-            if occupancy_bit > occupancy_metadata {
-                break;
-            }
-            if (occupancy_metadata & occupancy_bit) != 0 {
+            if self.occupied(i) {
                 let entry_ptr = self.entry_array[i as usize].as_ptr();
                 return Some((i, ptr::null(), entry_ptr));
             }
         }
+
+        // none found
         None
     }
 
@@ -276,29 +273,35 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
         partial_hash: u16,
         value: V,
     ) -> (u8, *const EntryArrayLink<K, V>, *const (K, V)) {
-        for i in [
-            (partial_hash % (ARRAY_SIZE as u16)) as usize,
-            self.metadata.trailing_ones() as usize,
-        ]
-        .iter()
-        {
-            if *i >= ARRAY_SIZE as usize {
-                continue;
-            }
-            if !self.occupied((*i).try_into().unwrap()) {
-                unsafe {
-                    self.entry_array_mut_ref()[*i]
-                        .as_mut_ptr()
-                        .write((key, value))
-                };
-                self.metadata = self.metadata | (OCCUPANCY_BIT << i);
-                self.cell_mut_ref().partial_hash_array[*i] = partial_hash;
-                return (
-                    (*i).try_into().unwrap(),
-                    ptr::null(),
-                    self.entry_array[*i].as_ptr(),
-                );
-            }
+        let preferred_index = (partial_hash % (ARRAY_SIZE as u16)).try_into().unwrap();
+        if !self.occupied(preferred_index) {
+            unsafe {
+                self.entry_array_mut_ref()[preferred_index as usize]
+                    .as_mut_ptr()
+                    .write((key, value))
+            };
+            self.metadata = self.metadata | (OCCUPANCY_BIT << preferred_index);
+            self.cell_mut_ref().partial_hash_array[preferred_index as usize] = partial_hash;
+            return (
+                preferred_index,
+                ptr::null(),
+                self.entry_array[preferred_index as usize].as_ptr(),
+            );
+        }
+        let free_index: u8 = self.metadata.trailing_ones().try_into().unwrap();
+        if free_index < ARRAY_SIZE {
+            unsafe {
+                self.entry_array_mut_ref()[free_index as usize]
+                    .as_mut_ptr()
+                    .write((key, value))
+            };
+            self.metadata = self.metadata | (OCCUPANCY_BIT << free_index);
+            self.cell_mut_ref().partial_hash_array[free_index as usize] = partial_hash;
+            return (
+                free_index,
+                ptr::null(),
+                self.entry_array[free_index as usize].as_ptr(),
+            );
         }
 
         let cell = self.cell_mut_ref();
