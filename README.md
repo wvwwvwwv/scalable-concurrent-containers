@@ -10,9 +10,9 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 
 ### Changelog
 
-#### 0.2.9
+#### 0.2.10
 
-- Memory leak fixed
+- Fix memory leak
 
 #### 0.2.8
 
@@ -22,7 +22,7 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 #### 0.2.7
 
 - Remove unnecessary heap allocation during read
-- 
+
 ### Performance
 
 #### Test setup.
