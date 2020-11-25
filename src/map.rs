@@ -926,13 +926,8 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
 
             // Array::new may not be able to allocate the requested number of cells
             if new_capacity != capacity {
-                self.array.store(
-                    Owned::new(Array::<K, V>::new(
-                        new_capacity,
-                        Atomic::from(current_array),
-                    )),
-                    Release,
-                );
+                let new_array = Array::<K, V>::new(new_capacity, Atomic::from(current_array));
+                self.array.store(Owned::new(new_array), Release);
                 // the release fence assures that future calls to the function see the latest state
                 *mutex_guard = Release;
             }
