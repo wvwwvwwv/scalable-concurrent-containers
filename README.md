@@ -10,6 +10,9 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 
 ### Changelog
 
+#### 0.2.11
+
+- Remove libc dependencies
 #### 0.2.10
 
 - Fix memory leak
