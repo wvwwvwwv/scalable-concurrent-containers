@@ -67,6 +67,12 @@ mod test {
         random_panic: AtomicBool::new(false),
     };
 
+    #[test]
+    #[ignore]
+    fn panic() {
+        ALLOCATOR.panic_test();
+    }
+
     proptest! {
         #[test]
         fn basic_hashmap(key in 0u64..10) {
@@ -261,12 +267,6 @@ mod test {
             let statistics = hashmap.statistics();
             println!("after clear: {}", statistics);
         }
-    }
-
-    #[test]
-    #[ignore]
-    fn panic() {
-        ALLOCATOR.panic_test();
     }
 
     #[test]

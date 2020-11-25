@@ -242,19 +242,22 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
         }
 
         // advance in the cell
+        let occupancy_metadata = self.metadata & OCCUPANCY_MASK;
         let start_index = if sub_index == u8::MAX {
-            self.metadata.trailing_zeros().try_into().unwrap()
+            occupancy_metadata.trailing_zeros().try_into().unwrap()
         } else {
             sub_index + 1
         };
         for i in start_index..ARRAY_SIZE {
-            if self.occupied(i) {
+            let occupancy_bit = OCCUPANCY_BIT << i;
+            if occupancy_bit > occupancy_metadata {
+                break;
+            }
+            if (occupancy_metadata & occupancy_bit) != 0 {
                 let entry_ptr = self.entry_array[i as usize].as_ptr();
                 return Some((i, ptr::null(), entry_ptr));
             }
         }
-
-        // none found
         None
     }
 
