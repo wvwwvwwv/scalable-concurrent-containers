@@ -9,11 +9,6 @@ mod test {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    #[test]
-    fn basic_latency() {
-        let _hashmap: HashMap<u64, u64, RandomState> = Default::default();
-    }
-
     #[derive(Clone)]
     struct Workload {
         size: usize,

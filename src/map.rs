@@ -414,7 +414,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// Returns an estimated size of the HashMap.
     ///
     /// The given function determines the sampling size.
-    /// A function returning a fixed number larger than u16::MAX usually gives ~99% accuracy.
+    /// A function returning a fixed number larger than u16::MAX yields a ~99% accuracy.
     ///
     /// # Examples
     /// ```
@@ -570,9 +570,9 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// }
     /// ```
     pub fn iter<'a>(&'a self) -> Scanner<'a, K, V, H> {
-        let (locker, array_ptr, cell_index) = self.first();
-        if let Some(locker) = locker {
-            if let Some(scanner) = self.pick(locker, array_ptr, cell_index) {
+        let (cell_locker, array_ptr, cell_index) = self.first();
+        if let Some(cell_locker) = cell_locker {
+            if let Some(scanner) = self.pick(cell_locker, array_ptr, cell_index) {
                 return scanner;
             }
         }
@@ -625,31 +625,34 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 if current_array_ref.partial_rehash(&guard, |key| self.hash(key)) {
                     continue;
                 }
-                let (mut locker, entry_array_link_ptr, entry_ptr, cell_index, sub_index) =
+                let (mut cell_locker, cell_index, sub_index, entry_array_link_ptr, entry_ptr) =
                     self.search(&key, hash, partial_hash, old_array.as_raw());
                 if !entry_ptr.is_null() {
                     return Accessor {
                         hash_map: &self,
-                        cell_locker: locker,
+                        cell_locker: cell_locker,
                         cell_index: cell_index,
                         sub_index: sub_index,
                         entry_array_link_ptr: entry_array_link_ptr,
                         entry_ptr: entry_ptr,
                     };
-                } else if !locker.killed() {
+                } else if !cell_locker.killed() {
                     // kill the cell
                     let old_array_ref = unsafe { old_array.deref() };
-                    current_array_ref.kill_cell(&mut locker, old_array_ref, cell_index, &|key| {
-                        self.hash(key)
-                    });
+                    current_array_ref.kill_cell(
+                        &mut cell_locker,
+                        old_array_ref,
+                        cell_index,
+                        &|key| self.hash(key),
+                    );
                 }
             }
-            let (locker, entry_array_link_ptr, entry_ptr, cell_index, sub_index) =
+            let (cell_locker, cell_index, sub_index, entry_array_link_ptr, entry_ptr) =
                 self.search(&key, hash, partial_hash, current_array.as_raw());
-            if !locker.killed() {
+            if !cell_locker.killed() {
                 return Accessor {
                     hash_map: &self,
-                    cell_locker: locker,
+                    cell_locker: cell_locker,
                     cell_index: cell_index,
                     sub_index: sub_index,
                     entry_array_link_ptr: entry_array_link_ptr,
@@ -702,31 +705,37 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         array_ptr: *const Array<K, V>,
     ) -> (
         CellLocker<'a, K, V>,
-        *const EntryArrayLink<K, V>,
-        *const (K, V),
         usize,
         u8,
+        *const EntryArrayLink<K, V>,
+        *const (K, V),
     ) {
         let array_ref = unsafe { &(*array_ptr) };
         let cell_index = array_ref.calculate_cell_index(hash);
-        let locker = CellLocker::lock(
+        let cell_locker = CellLocker::lock(
             array_ref.cell(cell_index),
             array_ref.entry_array(cell_index),
         );
-        if !locker.killed() && !locker.empty() {
+        if !cell_locker.killed() && !cell_locker.empty() {
             if let Some((sub_index, entry_array_link_ptr, entry_ptr)) =
-                locker.search(key, partial_hash)
+                cell_locker.search(key, partial_hash)
             {
                 return (
-                    locker,
-                    entry_array_link_ptr,
-                    entry_ptr,
+                    cell_locker,
                     cell_index,
                     sub_index,
+                    entry_array_link_ptr,
+                    entry_ptr,
                 );
             }
         }
-        (locker, std::ptr::null(), std::ptr::null(), cell_index, 0)
+        (
+            cell_locker,
+            cell_index,
+            0,
+            std::ptr::null(),
+            std::ptr::null(),
+        )
     }
 
     /// Returns the first valid cell.
@@ -744,13 +753,13 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 let array_ref = unsafe { &(**array_ptr) };
                 let num_cells = array_ref.num_cells();
                 for cell_index in 0..num_cells {
-                    let locker = CellLocker::lock(
+                    let cell_locker = CellLocker::lock(
                         array_ref.cell(cell_index),
                         array_ref.entry_array(cell_index),
                     );
-                    if !locker.empty() {
+                    if !cell_locker.empty() {
                         // once a valid cell is locked, the array is guaranteed to retain
-                        return (Some(locker), *array_ptr, cell_index);
+                        return (Some(cell_locker), *array_ptr, cell_index);
                     }
                 }
             }
@@ -788,12 +797,12 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             let old_array_ref = unsafe { &(*old_array.as_raw()) };
             let num_cells = old_array_ref.num_cells();
             for cell_index in (current_index + 1)..num_cells {
-                let locker = CellLocker::lock(
+                let cell_locker = CellLocker::lock(
                     old_array_ref.cell(cell_index),
                     old_array_ref.entry_array(cell_index),
                 );
-                if !locker.killed() && !locker.empty() {
-                    if let Some(scanner) = self.pick(locker, old_array.as_raw(), cell_index) {
+                if !cell_locker.killed() && !cell_locker.empty() {
+                    if let Some(scanner) = self.pick(cell_locker, old_array.as_raw(), cell_index) {
                         return Some(scanner);
                     }
                 }
@@ -808,15 +817,15 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             current_index + 1
         };
         for cell_index in (start_index)..num_cells {
-            let locker = CellLocker::lock(
+            let cell_locker = CellLocker::lock(
                 current_array_ref.cell(cell_index),
                 current_array_ref.entry_array(cell_index),
             );
-            if !locker.killed() && !locker.empty() {
-                if let Some(scanner) = self.pick(locker, current_array.as_raw(), cell_index) {
+            if !cell_locker.killed() && !cell_locker.empty() {
+                if let Some(scanner) = self.pick(cell_locker, current_array.as_raw(), cell_index) {
                     return Some(scanner);
                 }
-            } else if locker.killed() && new_array.is_null() {
+            } else if cell_locker.killed() && new_array.is_null() {
                 new_array = self.array.load(Acquire, &guard);
             }
         }
@@ -826,12 +835,12 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             let new_array_ref = unsafe { &(*new_array.as_raw()) };
             let num_cells = new_array_ref.num_cells();
             for cell_index in 0..num_cells {
-                let locker = CellLocker::lock(
+                let cell_locker = CellLocker::lock(
                     new_array_ref.cell(cell_index),
                     new_array_ref.entry_array(cell_index),
                 );
-                if !locker.killed() && !locker.empty() {
-                    if let Some(scanner) = self.pick(locker, new_array.as_raw(), cell_index) {
+                if !cell_locker.killed() && !cell_locker.empty() {
+                    if let Some(scanner) = self.pick(cell_locker, new_array.as_raw(), cell_index) {
                         return Some(scanner);
                     }
                 }
@@ -953,6 +962,11 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
 impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Drop for HashMap<K, V, H> {
     fn drop(&mut self) {
         self.clear();
+        let guard = crossbeam_epoch::pin();
+        let array = self.array.swap(Shared::null(), Relaxed, &guard);
+        if !array.is_null() {
+            unsafe { guard.defer_destroy(array) };
+        }
     }
 }
 

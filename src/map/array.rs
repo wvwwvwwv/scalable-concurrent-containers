@@ -11,6 +11,7 @@ pub const MAX_ENLARGE_FACTOR: u8 = 6;
 
 pub struct Array<K: Eq, V> {
     cell_array: Option<Box<Cell<K, V>>>,
+    cell_array_capacity: usize,
     entry_array: Option<Box<EntryArray<K, V>>>,
     lb_capacity: u8,
     rehashing: AtomicUsize,
@@ -22,35 +23,39 @@ impl<K: Eq, V> Array<K, V> {
     pub fn new(capacity: usize, old_array: Atomic<Array<K, V>>) -> Array<K, V> {
         let mut array = Array {
             cell_array: None,
+            cell_array_capacity: 0,
             entry_array: None,
             lb_capacity: Self::calculate_lb_metadata_array_size(capacity),
             rehashing: AtomicUsize::new(0),
             rehashed: AtomicUsize::new(0),
             old_array: old_array,
         };
-        let cell_capacity = 1usize << array.lb_capacity;
+        array.cell_array_capacity = 1usize << array.lb_capacity;
 
         let cell_array_ptr: *mut Cell<K, V> = unsafe {
-            libc::calloc(cell_capacity, std::mem::size_of::<Cell<K, V>>()) as *mut Cell<K, V>
+            libc::calloc(array.cell_array_capacity, std::mem::size_of::<Cell<K, V>>())
+                as *mut Cell<K, V>
         };
         if cell_array_ptr.is_null() {
             // memory allocation failure: panic
             panic!(
                 "memory allocation failure: {} bytes",
-                cell_capacity * std::mem::size_of::<Cell<K, V>>()
+                array.cell_array_capacity * std::mem::size_of::<Cell<K, V>>()
             )
         }
         array.cell_array = Some(unsafe { Box::from_raw(cell_array_ptr) });
 
         let entry_array_ptr: *mut EntryArray<K, V> = unsafe {
-            libc::calloc(cell_capacity, std::mem::size_of::<EntryArray<K, V>>())
-                as *mut EntryArray<K, V>
+            libc::calloc(
+                array.cell_array_capacity,
+                std::mem::size_of::<EntryArray<K, V>>(),
+            ) as *mut EntryArray<K, V>
         };
         if entry_array_ptr.is_null() {
             // memory allocation failure: panic
             panic!(
                 "memory allocation failure: {} bytes",
-                cell_capacity * std::mem::size_of::<EntryArray<K, V>>()
+                array.cell_array_capacity * std::mem::size_of::<EntryArray<K, V>>()
             )
         }
         array.entry_array = Some(unsafe { Box::from_raw(entry_array_ptr) });
@@ -72,11 +77,11 @@ impl<K: Eq, V> Array<K, V> {
         (self.lb_capacity as usize).next_power_of_two()
     }
     pub fn num_cells(&self) -> usize {
-        1usize << self.lb_capacity
+        self.cell_array_capacity
     }
 
     pub fn capacity(&self) -> usize {
-        (1usize << self.lb_capacity) * (ARRAY_SIZE as usize)
+        self.cell_array_capacity * (ARRAY_SIZE as usize)
     }
 
     pub fn old_array<'a>(&self, guard: &'a Guard) -> Shared<'a, Array<K, V>> {
@@ -122,11 +127,11 @@ impl<K: Eq, V> Array<K, V> {
             return;
         }
 
-        let shrink = old_array.lb_capacity > self.lb_capacity;
+        let shrink = old_array.cell_array_capacity > self.cell_array_capacity;
         let ratio = if shrink {
-            1usize << (old_array.lb_capacity - self.lb_capacity)
+            old_array.cell_array_capacity / self.cell_array_capacity
         } else {
-            1usize << (self.lb_capacity - old_array.lb_capacity)
+            self.cell_array_capacity / old_array.cell_array_capacity
         };
         let target_cell_index = if shrink {
             old_cell_index / ratio
@@ -232,6 +237,11 @@ impl<K: Eq, V> Drop for Array<K, V> {
             let cell_array_ptr = Box::into_raw(cell_array_box);
             unsafe { libc::free(cell_array_ptr as *mut libc::c_void) };
         });
+        let guard = crossbeam_epoch::pin();
+        let old_array = self.old_array.swap(Shared::null(), Relaxed, &guard);
+        if !old_array.is_null() {
+            unsafe { guard.defer_destroy(old_array) };
+        }
     }
 }
 
@@ -241,14 +251,6 @@ mod test {
 
     #[test]
     fn static_assertions() {
-        assert_eq!(0usize.next_power_of_two(), 1);
-        assert_eq!(1usize.next_power_of_two(), 1);
-        assert_eq!(2usize.next_power_of_two(), 2);
-        assert_eq!(3usize.next_power_of_two(), 4);
-        assert_eq!(1 << 0, 1);
-        assert_eq!(0usize.is_power_of_two(), false);
-        assert_eq!(1usize.is_power_of_two(), true);
-        assert_eq!(19usize / (ARRAY_SIZE as usize), 1);
         for capacity in 0..1024 as usize {
             assert!(
                 (1usize << Array::<bool, bool>::calculate_lb_metadata_array_size(capacity))
