@@ -963,6 +963,9 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Drop for HashMap<K, V, H> {
     fn drop(&mut self) {
         self.clear();
         let guard = crossbeam_epoch::pin();
+        let current_array = self.array.load(Acquire, &guard);
+        let current_array_ref = unsafe { current_array.deref() };
+        current_array_ref.drop_old_array(&guard);
         let array = self.array.swap(Shared::null(), Relaxed, &guard);
         if !array.is_null() {
             unsafe { guard.defer_destroy(array) };

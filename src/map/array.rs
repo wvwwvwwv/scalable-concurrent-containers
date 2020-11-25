@@ -215,13 +215,17 @@ impl<K: Eq, V> Array<K, V> {
 
         let completed = self.rehashed.fetch_add(ARRAY_SIZE as usize, Release) + ARRAY_SIZE as usize;
         if old_array_size <= completed {
-            let old_array = self.old_array.swap(Shared::null(), Relaxed, guard);
-            if !old_array.is_null() {
-                unsafe { guard.defer_destroy(old_array) };
-            }
+            self.drop_old_array(guard);
             return true;
         }
         false
+    }
+
+    pub fn drop_old_array(&self, guard: &Guard) {
+        let old_array = self.old_array.swap(Shared::null(), Relaxed, guard);
+        if !old_array.is_null() {
+            unsafe { guard.defer_destroy(old_array) };
+        }
     }
 }
 
@@ -237,11 +241,6 @@ impl<K: Eq, V> Drop for Array<K, V> {
             let cell_array_ptr = Box::into_raw(cell_array_box);
             unsafe { libc::free(cell_array_ptr as *mut libc::c_void) };
         });
-        let guard = crossbeam_epoch::pin();
-        let old_array = self.old_array.swap(Shared::null(), Relaxed, &guard);
-        if !old_array.is_null() {
-            unsafe { guard.defer_destroy(old_array) };
-        }
     }
 }
 
