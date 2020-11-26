@@ -583,7 +583,7 @@ mod test {
     }
 
     #[test]
-    fn basic_locker() {
+    fn cell_locker() {
         let num_threads = (ARRAY_SIZE + 1) as usize;
         let barrier = Arc::new(Barrier::new(num_threads));
         let cell: Arc<Cell<usize, usize>> = Arc::new(Default::default());

@@ -640,7 +640,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                     // kill the cell
                     current_array_ref.kill_cell(
                         &mut cell_locker,
-                        unsafe { old_array.deref() },
+                        self.array(&old_array),
                         cell_index,
                         &|key| self.hash(key),
                     );
@@ -958,6 +958,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         num_entries * (current_array_ref.num_cells() / num_cells_to_sample)
     }
 
+    /// Returns a reference to the Array instance.
     fn array<'a>(&self, array: &'a Shared<Array<K, V>>) -> &'a Array<K, V> {
         unsafe { array.deref() }
     }
