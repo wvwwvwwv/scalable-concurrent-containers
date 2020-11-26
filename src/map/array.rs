@@ -44,10 +44,13 @@ impl<K: Eq, V> Array<K, V> {
                 // memory allocation failure: panic
                 panic!(
                     "memory allocation failure: {} bytes",
-                    array.cell_array_capacity * size_of_cell
+                    (array.cell_array_capacity + 1) * size_of_cell
                 )
             }
             array.cell_array_ptr_offset = ptr.align_offset(size_of_cell);
+            if array.cell_array_ptr_offset == usize::MAX {
+                array.cell_array_ptr_offset = 0;
+            }
             let cell_array_ptr = ptr.add(array.cell_array_ptr_offset) as *mut Cell<K, V>;
             array.cell_array = Some(Box::from_raw(cell_array_ptr));
 
@@ -60,10 +63,13 @@ impl<K: Eq, V> Array<K, V> {
                 // memory allocation failure: panic
                 panic!(
                     "memory allocation failure: {} bytes",
-                    array.cell_array_capacity * size_of_entry
+                    (array.cell_array_capacity + 1) * size_of_entry
                 )
             }
             array.entry_array_ptr_offset = ptr.align_offset(size_of_entry);
+            if array.entry_array_ptr_offset == usize::MAX {
+                array.entry_array_ptr_offset = 0;
+            }
             let entry_array_ptr = ptr.add(array.entry_array_ptr_offset) as *mut EntryArray<K, V>;
             array.entry_array = Some(Box::from_raw(entry_array_ptr));
         }

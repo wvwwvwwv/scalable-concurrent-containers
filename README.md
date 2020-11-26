@@ -13,6 +13,8 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 #### 0.2.11
 
 - Remove libc dependencies
+- Adjust memory alignment
+
 #### 0.2.10
 
 - Fix memory leak
@@ -33,7 +35,7 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
 - RAM: 1TB
 - Rust compiler version: 1.48.0
-- SCC version: 0.2.8
+- SCC version: 0.2.11
 - The hashtable is generated using the default parameters: the RandomState hasher builder, and 256 preallocated entries.
 - In order to minimize the cost of page fault handling, all the tests were run twice, and only the best results were taken.
 
@@ -50,9 +52,9 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 
 |        | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
 |--------|----------------|----------------|----------------|----------------|
-| Insert | 160.0296045s   | 193.795963356s | 277.626057713s | 481.870984015s |
-| Read   | 80.402082433s  | 85.180396045s  | 89.37547222s   | 100.88658824s  |
-| Remove | 89.642203773s  | 104.70431303s  | 127.851116779s | 170.375524741s |
+| Insert | 153.725430095s | 181.501483645s | 258.285511858s | 462.73899472s  |
+| Read   | 79.495212025s  | 90.859734163s  | 106.374841654s | 137.359072343s |
+| Remove | 88.457419533s  | 103.189953895s | 118.811285809s | 142.061171296s |
 
 #### Test workload: local-remote.
 - Insert/Remove: each thread additionally tries to perform assigned operations using keys belonging to other threads.
@@ -62,11 +64,11 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 - The total operation count per Insert/Read thread is 256M, and half of the operations are bound to fail.
 - The total operation count per Mixed thread is 768M, and about half of the operations are bound to fail.
 
-|        | 11 threads     | 22 threads     | 44 threads     | 88 threads    |
+|        | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
 |--------|----------------|----------------|----------------|----------------|
-| Insert | 287.074169883s | 331.645274067s | 454.448331025s | 676.909568328s |
-| Mixed  | 338.147534267s | 356.44845854s  | 377.938664239s | 427.24426793s  |
-| Remove | 178.737543249s | 197.831223618s | 225.811047389s | 276.429387396s |
+| Insert | 266.724033515s | 309.213404015s | 424.906462015s | 773.520934754s |
+| Mixed  | 327.811948114s | 351.511457701s | 378.930084569s | 436.735096193s |
+| Remove | 167.174273401s | 186.59768589s  | 209.027055204s | 254.330255812s |
 
 ## Milestones
 
