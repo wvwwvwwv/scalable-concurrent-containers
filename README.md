@@ -8,30 +8,6 @@ SCC offers scalable concurrent containers written in the Rust language. The data
 
 scc::HashMap is a scalable in-memory unique key-value store that is targeted at highly concurrent heavy workloads. It does not distribute data to multiple shards as most concurrent hash maps do, instead only does it have a single array of entries and corresponding metadata cell array. The metadata management strategy is similar to that of Swisstable; a metadata cell which is separated from the key-value array, is a 64-byte data structure for managing consecutive sixteen entries in the key-value array. The metadata cell also has a linked list of entry arrays for hash collision resolution. scc::HashMap automatically enlarges and shrinks the capacity of its internal array, and resizing happens without blocking other operations and threads. In order to keep the predictable latency of each operation, it does not rehash every entry in the container at once when resizing, instead it distributes the resizing workload to future access to the data structure.
 
-### Changelog
-
-#### 0.2.12
-
-- Update crossbeam_epoch to 0.9.1
-
-#### 0.2.11
-
-- Remove libc dependencies
-- Adjust memory alignment
-
-#### 0.2.10
-
-- Fix memory leak
-
-#### 0.2.8
-
-- Make scc::HashMap stack-unwinding-safe, meaning that it does not leave resources (memory, locks) unreleased after stack-unwinding on one condition; moving instances of K, and V types must always be successful (in C++ terms, K and V satisfy std::is_nothrow_move_constructible).
-- Refine resizing strategies
-
-#### 0.2.7
-
-- Remove unnecessary heap allocation during read
-
 ### Performance
 
 #### Test setup.
@@ -73,6 +49,24 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 | Insert | 266.724033515s | 309.213404015s | 424.906462015s | 773.520934754s |
 | Mixed  | 327.811948114s | 351.511457701s | 378.930084569s | 436.735096193s |
 | Remove | 167.174273401s | 186.59768589s  | 209.027055204s | 254.330255812s |
+
+
+## Changelog
+
+#### 0.2.13
+- Add 'contains' and 'hasher' APIs
+#### 0.2.12
+- Update crossbeam_epoch to 0.9.1
+#### 0.2.11
+- Remove libc dependencies
+- Adjust memory alignment
+#### 0.2.10
+- Fix memory leak
+#### 0.2.8
+- Make scc::HashMap stack-unwinding-safe, meaning that it does not leave resources (memory, locks) unreleased after stack-unwinding on one condition; moving instances of K, and V types must always be successful (in C++ terms, K and V satisfy std::is_nothrow_move_constructible).
+- Refine resizing strategies
+#### 0.2.7
+- Remove unnecessary heap allocation during read
 
 ## Milestones
 

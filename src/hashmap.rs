@@ -325,6 +325,57 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         None
     }
 
+    /// Checks if the key exists.
+    ///
+    /// # Examples
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32, _> = Default::default();
+    ///
+    /// let result = hashmap.contains(&1);
+    /// assert!(!result);
+    ///
+    /// let result = hashmap.insert(1, 0);
+    /// if let Ok(result) = result {
+    ///     assert_eq!(result.get(), (&1, &mut 0));
+    /// }
+    ///
+    /// let result = hashmap.contains(&1);
+    /// assert!(result);
+    /// ```
+    pub fn contains(&self, key: &K) -> bool {
+        let (hash, partial_hash) = self.hash(key);
+        let guard = crossbeam_epoch::pin();
+
+        // an acquire fence is required to correctly load the contents of the array
+        let current_array = self.array.load(Acquire, &guard);
+        let current_array_ref = self.array(&current_array);
+        let old_array = current_array_ref.old_array(&guard);
+        for array in [&old_array, &current_array].iter() {
+            if array.is_null() {
+                continue;
+            }
+            if array.as_raw() == old_array.as_raw() {
+                let old_array_removed =
+                    current_array_ref.partial_rehash(&guard, |key| self.hash(key));
+                if old_array_removed {
+                    continue;
+                }
+            }
+            let array_ref = self.array(array);
+            let cell_index = array_ref.calculate_cell_index(hash);
+            let reader = CellReader::lock(
+                array_ref.cell(cell_index),
+                array_ref.entry_array(cell_index),
+            );
+            if reader.search(&key, partial_hash).is_some() {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Retains the key-value pairs that satisfy the given predicate.
     ///
     /// It returns the number of entries remaining and removed.
@@ -467,6 +518,20 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             current_array_ref.partial_rehash(&guard, |key| self.hash(key));
         }
         current_array_ref.capacity()
+    }
+
+    /// Returns a reference to its build hasher.
+    ///
+    /// # Examples
+    /// ```
+    /// use scc::HashMap;
+    /// use std::collections::hash_map::RandomState;
+    ///
+    /// let hashmap: HashMap<u64, u32, _> = Default::default();
+    /// let result: &RandomState = hashmap.hasher();
+    /// ```
+    pub fn hasher(&self) -> &H {
+        &self.build_hasher
     }
 
     /// Returns the statistics of the current state of the HashMap.
