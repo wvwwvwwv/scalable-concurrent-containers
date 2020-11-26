@@ -107,7 +107,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             array: Atomic::new(Array::<K, V>::new(initial_capacity, Atomic::null())),
             minimum_capacity: initial_capacity,
             resize_mutex: AtomicBool::new(false),
-            build_hasher: build_hasher,
+            build_hasher,
         }
     }
 
@@ -138,11 +138,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     ///     assert_eq!(value, 1);
     /// }
     /// ```
-    pub fn insert<'a>(
-        &'a self,
-        key: K,
-        value: V,
-    ) -> Result<Accessor<'a, K, V, H>, (Accessor<'a, K, V, H>, V)> {
+    pub fn insert(&self, key: K, value: V) -> Result<Accessor<K, V, H>, (Accessor<K, V, H>, V)> {
         let (hash, partial_hash) = self.hash(&key);
         let mut resize_triggered = false;
         loop {
@@ -205,7 +201,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// let result = hashmap.upsert(1, 1);
     /// assert_eq!(result.get(), (&1, &mut 1));
     /// ```
-    pub fn upsert<'a>(&'a self, key: K, value: V) -> Accessor<'a, K, V, H> {
+    pub fn upsert(&self, key: K, value: V) -> Accessor<K, V, H> {
         match self.insert(key, value) {
             Ok(result) => result,
             Err((result, value)) => {
@@ -309,7 +305,9 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 continue;
             }
             if array.as_raw() == old_array.as_raw() {
-                if current_array_ref.partial_rehash(&guard, |key| self.hash(key)) {
+                let old_array_removed =
+                    current_array_ref.partial_rehash(&guard, |key| self.hash(key));
+                if old_array_removed {
                     continue;
                 }
             }
@@ -568,7 +566,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     ///     assert_eq!(iter, (&1, &mut 0));
     /// }
     /// ```
-    pub fn iter<'a>(&'a self) -> Scanner<'a, K, V, H> {
+    pub fn iter(&self) -> Scanner<K, V, H> {
         let (cell_locker, array_ptr, cell_index) = self.first();
         if let Some(cell_locker) = cell_locker {
             if let Some(scanner) = self.pick(cell_locker, array_ptr, cell_index) {
@@ -629,11 +627,11 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 if !entry_ptr.is_null() {
                     return Accessor {
                         hash_map: &self,
-                        cell_locker: cell_locker,
-                        cell_index: cell_index,
-                        sub_index: sub_index,
-                        entry_array_link_ptr: entry_array_link_ptr,
-                        entry_ptr: entry_ptr,
+                        cell_locker,
+                        cell_index,
+                        sub_index,
+                        entry_array_link_ptr,
+                        entry_ptr,
                     };
                 } else if !cell_locker.killed() {
                     // kill the cell
@@ -650,11 +648,11 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             if !cell_locker.killed() {
                 return Accessor {
                     hash_map: &self,
-                    cell_locker: cell_locker,
-                    cell_index: cell_index,
-                    sub_index: sub_index,
-                    entry_array_link_ptr: entry_array_link_ptr,
-                    entry_ptr: entry_ptr,
+                    cell_locker,
+                    cell_index,
+                    sub_index,
+                    entry_array_link_ptr,
+                    entry_ptr,
                 };
             }
             // reaching here indicates that self.array is updated
@@ -858,13 +856,13 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             return Some(Scanner {
                 accessor: Some(Accessor {
                     hash_map: &self,
-                    cell_locker: cell_locker,
-                    cell_index: cell_index,
-                    sub_index: sub_index,
-                    entry_array_link_ptr: entry_array_link_ptr,
-                    entry_ptr: entry_ptr,
+                    cell_locker,
+                    cell_index,
+                    sub_index,
+                    entry_array_link_ptr,
+                    entry_ptr,
                 }),
-                array_ptr: array_ptr,
+                array_ptr,
                 activated: false,
                 erase_on_next: false,
             });
@@ -880,7 +878,8 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         let current_array_ref = self.array(&current_array);
         let old_array = current_array_ref.old_array(&guard);
         if !old_array.is_null() {
-            if !current_array_ref.partial_rehash(&guard, |key| self.hash(key)) {
+            let old_array_removed = current_array_ref.partial_rehash(&guard, |key| self.hash(key));
+            if !old_array_removed {
                 return;
             }
         }

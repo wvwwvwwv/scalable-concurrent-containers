@@ -21,7 +21,7 @@ pub struct Array<K: Eq, V> {
 }
 
 impl<K: Eq, V> Array<K, V> {
-    pub fn new(capacity: usize, old_array: Atomic<Array<K, V>>) -> Array<K, V> {
+    pub fn new(capacity: usize, current_array: Atomic<Array<K, V>>) -> Array<K, V> {
         let mut array = Array {
             cell_array: None,
             cell_array_ptr_offset: 0,
@@ -31,7 +31,7 @@ impl<K: Eq, V> Array<K, V> {
             lb_capacity: Self::calculate_lb_metadata_array_size(capacity),
             rehashing: AtomicUsize::new(0),
             rehashed: AtomicUsize::new(0),
-            old_array: old_array,
+            old_array: current_array,
         };
         array.cell_array_capacity = 1usize << array.lb_capacity;
         unsafe {
@@ -175,13 +175,19 @@ impl<K: Eq, V> Array<K, V> {
                     || (shrink && new_cell_index == target_cell_index)
             );
 
-            for i in num_target_cells..=(new_cell_index - target_cell_index) {
-                target_cells[i] = Some(CellLocker::lock(
+            for (i, cell_locker_mut_ref) in target_cells
+                .iter_mut()
+                .enumerate()
+                .take((new_cell_index - target_cell_index) + 1)
+                .skip(num_target_cells)
+            {
+                cell_locker_mut_ref.replace(CellLocker::lock(
                     self.cell(target_cell_index + i),
                     self.entry_array(target_cell_index + i),
                 ));
-                num_target_cells = i + 1;
             }
+            num_target_cells = num_target_cells.max(new_cell_index - target_cell_index + 1);
+
             target_cells[new_cell_index - target_cell_index]
                 .as_mut()
                 .map(|cell_locker| cell_locker.insert(key, partial_hash, value));
@@ -248,31 +254,31 @@ impl<K: Eq, V> Array<K, V> {
 impl<K: Eq, V> Drop for Array<K, V> {
     fn drop(&mut self) {
         let entry_array = self.entry_array.take();
-        entry_array.map(|entry_array_box| {
+        if let Some(entry_array) = entry_array {
             let size_of_entry = std::mem::size_of::<EntryArray<K, V>>();
             unsafe {
                 System.dealloc(
-                    (Box::into_raw(entry_array_box) as *mut u8).sub(self.entry_array_ptr_offset),
+                    (Box::into_raw(entry_array) as *mut u8).sub(self.entry_array_ptr_offset),
                     std::alloc::Layout::from_size_align_unchecked(
                         (self.capacity() + 1) * size_of_entry,
                         1,
                     ),
                 )
-            };
-        });
+            }
+        }
         let cell_array = self.cell_array.take();
-        cell_array.map(|cell_array_box| {
+        if let Some(cell_array) = cell_array {
             let size_of_cell = std::mem::size_of::<Cell<K, V>>();
             unsafe {
                 System.dealloc(
-                    (Box::into_raw(cell_array_box) as *mut u8).sub(self.cell_array_ptr_offset),
+                    (Box::into_raw(cell_array) as *mut u8).sub(self.cell_array_ptr_offset),
                     std::alloc::Layout::from_size_align_unchecked(
                         (self.capacity() + 1) * size_of_cell,
                         1,
                     ),
                 )
-            };
-        });
+            }
+        }
     }
 }
 

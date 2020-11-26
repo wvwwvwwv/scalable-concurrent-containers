@@ -97,7 +97,7 @@ impl<K: Eq, V> Cell<K, V> {
             }
         }
 
-        while condvar_ptr != ptr::null_mut() {
+        while !condvar_ptr.is_null() {
             let cond_var_ref = unsafe { &(*condvar_ptr) };
             let next_ptr = cond_var_ref.next;
             cond_var_ref.signal();
@@ -192,8 +192,8 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
                 Ok(result) => {
                     debug_assert_eq!(result & LOCK_MASK, 0);
                     return Some(CellLocker {
-                        cell: cell,
-                        entry_array: entry_array,
+                        cell,
+                        entry_array,
                         metadata: result | XLOCK,
                     });
                 }
@@ -294,7 +294,7 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
                         .as_mut_ptr()
                         .write((key, value))
                 };
-                self.metadata = self.metadata | (OCCUPANCY_BIT << i);
+                self.metadata |= OCCUPANCY_BIT << i;
                 self.cell_mut_ref().partial_hash_array[*i] = partial_hash;
                 return (
                     (*i).try_into().unwrap(),
@@ -338,7 +338,7 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
         key_value_pair_ptr: *const (K, V),
     ) {
         if sub_index != u8::MAX {
-            self.metadata = self.metadata & (!(OCCUPANCY_BIT << sub_index));
+            self.metadata &= !(OCCUPANCY_BIT << sub_index);
             if drop_entry {
                 unsafe {
                     std::ptr::drop_in_place(
@@ -396,7 +396,7 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
 
     pub fn kill(&mut self) {
         debug_assert!(self.empty());
-        self.metadata = self.metadata | KILLED_FLAG;
+        self.metadata |= KILLED_FLAG;
     }
 
     pub fn killed(&self) -> bool {
@@ -468,7 +468,7 @@ impl<'a, K: Eq, V> CellReader<'a, K, V> {
         let mut current = cell.metadata.load(Relaxed);
         loop {
             if current & LOCK_MASK >= SLOCK_MAX {
-                current = current & (!LOCK_MASK);
+                current &= !LOCK_MASK;
             }
             debug_assert_eq!(current & LOCK_MASK & XLOCK, 0);
             debug_assert!(current & LOCK_MASK < SLOCK_MAX);
@@ -478,8 +478,8 @@ impl<'a, K: Eq, V> CellReader<'a, K, V> {
             {
                 Ok(result) => {
                     return Some(CellReader {
-                        cell: cell,
-                        entry_array: entry_array,
+                        cell,
+                        entry_array,
                         metadata: result,
                     })
                 }

@@ -18,7 +18,7 @@ impl<K: Eq, V> EntryArrayLink<K, V> {
         EntryArrayLink {
             partial_hash_array: [0; ARRAY_SIZE],
             entry_array: unsafe { MaybeUninit::uninit().assume_init() },
-            link: link,
+            link,
         }
     }
 
@@ -76,13 +76,14 @@ impl<K: Eq, V> EntryArrayLink<K, V> {
         partial_hash: u16,
     ) -> Option<(*const EntryArrayLink<K, V>, *const (K, V))> {
         for (i, v) in self.partial_hash_array.iter().enumerate() {
-            if *v == (partial_hash | 1) {
-                if unsafe { &(*self.entry_array[i].as_ptr()).0 } == key {
-                    return Some((
-                        self as *const EntryArrayLink<K, V>,
-                        self.entry_array[i].as_ptr(),
-                    ));
-                }
+            if *v != (partial_hash | 1) {
+                continue;
+            }
+            if unsafe { &(*self.entry_array[i].as_ptr()).0 } == key {
+                return Some((
+                    self as *const EntryArrayLink<K, V>,
+                    self.entry_array[i].as_ptr(),
+                ));
             }
         }
         None
