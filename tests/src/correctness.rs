@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod test {
     use proptest::prelude::*;
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
     use scc::HashMap;
     use std::alloc::{GlobalAlloc, Layout, System};
     use std::collections::hash_map::RandomState;
@@ -75,7 +77,7 @@ mod test {
 
     proptest! {
         #[test]
-        fn basic_hashmap(key in 0u64..10) {
+        fn basic(key in 0u64..10) {
             let hashmap: HashMap<u64, u32, RandomState> = Default::default();
             assert!(hashmap.iter().next().is_none());
 
@@ -130,6 +132,38 @@ mod test {
             let result10 = hashmap.get(&(key + 2));
             assert!(result10.is_none());
         }
+    }
+
+    #[test]
+    fn string_key() {
+        let hashmap1: HashMap<String, u32, RandomState> = Default::default();
+        let hashmap2: HashMap<u32, String, RandomState> = Default::default();
+        let mut checker1 = BTreeSet::new();
+        let mut checker2 = BTreeSet::new();
+        let mut runner = TestRunner::default();
+        let test_size = 4096;
+        for i in 0..test_size {
+            let prop_str = "[a-z]{1,16}".new_tree(&mut runner).unwrap();
+            let str_val = prop_str.current();
+            if hashmap1.insert(str_val.clone(), i).is_ok() {
+                checker1.insert((str_val.clone(), i));
+            }
+            if hashmap2.insert(i, str_val.clone()).is_ok() {
+                checker2.insert((i, str_val.clone()));
+            }
+        }
+        assert_eq!(hashmap1.len(|_| 65536), checker1.len());
+        assert_eq!(hashmap2.len(|_| 65536), checker2.len());
+        for iter in checker1 {
+            let v = hashmap1.remove(&iter.0);
+            assert_eq!(v.unwrap(), iter.1);
+        }
+        for iter in checker2 {
+            let v = hashmap2.remove(&iter.0);
+            assert_eq!(v.unwrap(), iter.1);
+        }
+        assert_eq!(hashmap1.len(|_| 65536), 0);
+        assert_eq!(hashmap2.len(|_| 65536), 0);
     }
 
     #[test]
@@ -266,6 +300,17 @@ mod test {
 
             let statistics = hashmap.statistics();
             println!("after clear: {}", statistics);
+
+            for d in key..(key + range) {
+                let result = hashmap.insert(Data::new(d, &checker), Data::new(d, &checker));
+                assert!(result.is_ok());
+                drop(result);
+                let result = hashmap.upsert(Data::new(d, &checker), Data::new(d + 1, &checker));
+                (*result.get().1) = Data::new(d + 2, &checker);
+            }
+            assert_eq!(checker.load(Relaxed) as u64, range * 2);
+            drop(hashmap);
+            assert_eq!(checker.load(Relaxed), 0);
         }
     }
 

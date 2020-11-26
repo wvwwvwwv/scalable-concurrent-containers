@@ -208,12 +208,16 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
         }
     }
 
-    pub fn occupied(&self, index: u8) -> bool {
-        (self.metadata & (OCCUPANCY_BIT << index)) != 0
+    pub fn occupied(&self, sub_index: u8) -> bool {
+        (self.metadata & (OCCUPANCY_BIT << sub_index)) != 0
     }
 
     pub fn full(&self) -> bool {
         (self.metadata & OCCUPANCY_MASK) == OCCUPANCY_MASK
+    }
+
+    pub fn partial_hash(&self, sub_index: u8) -> u16 {
+        self.cell.partial_hash_array[sub_index as usize]
     }
 
     pub fn next(

@@ -1,12 +1,10 @@
 [package]
-name = "tests"
-version = "0.2.11"
-authors = ["wvwwvwwv <wvwwvwwv@me.com>"]
+name = "scc-tests"
+version = "0.2.12"
+authors = ["wvwwvwwv <wvwwvwwv@me.com>", "Changgyoo Park <changgyoo.park@sap.com>"]
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-scc = { path = ".."}
 proptest = "^0.10.1"
 rand = "^0.7.3"
+scc = { path = ".."}

@@ -159,7 +159,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 resize_triggered = true;
                 let guard = crossbeam_epoch::pin();
                 let current_array = self.array.load(Acquire, &guard);
-                let current_array_ref = unsafe { current_array.deref() };
+                let current_array_ref = self.array(&current_array);
                 if current_array_ref.old_array(&guard).is_null() {
                     // trigger resize if the estimated load factor is greater than 7/8
                     let sample_size = current_array_ref.num_sample_size();
@@ -303,7 +303,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
 
         // an acquire fence is required to correctly load the contents of the array
         let current_array = self.array.load(Acquire, &guard);
-        let current_array_ref = unsafe { current_array.deref() };
+        let current_array_ref = self.array(&current_array);
         let old_array = current_array_ref.old_array(&guard);
         for array_ptr in [old_array.as_raw(), current_array.as_raw()].iter() {
             if array_ptr.is_null() {
@@ -372,7 +372,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
 
         let guard = crossbeam_epoch::pin();
         let current_array = self.array.load(Acquire, &guard);
-        let current_array_ref = unsafe { current_array.deref() };
+        let current_array_ref = self.array(&current_array);
         if retained_entries <= current_array_ref.capacity() / 8 {
             self.resize();
         }
@@ -436,7 +436,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     pub fn len<F: FnOnce(usize) -> usize>(&self, f: F) -> usize {
         let guard = crossbeam_epoch::pin();
         let current_array = self.array.load(Acquire, &guard);
-        let current_array_ref = unsafe { current_array.deref() };
+        let current_array_ref = self.array(&current_array);
         let capacity = current_array_ref.capacity();
         let num_samples = std::cmp::min(f(capacity), capacity).next_power_of_two();
         let num_cells_to_sample = (num_samples / cell::ARRAY_SIZE as usize).max(1);
@@ -465,7 +465,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     pub fn capacity(&self) -> usize {
         let guard = crossbeam_epoch::pin();
         let current_array = self.array.load(Acquire, &guard);
-        let current_array_ref = unsafe { current_array.deref() };
+        let current_array_ref = self.array(&current_array);
         if !current_array_ref.old_array(&guard).is_null() {
             current_array_ref.partial_rehash(&guard, |key| self.hash(key));
         }
@@ -505,7 +505,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         };
         let guard = crossbeam_epoch::pin();
         let current_array = self.array.load(Acquire, &guard);
-        let old_array = unsafe { current_array.deref().old_array(&guard) };
+        let old_array = self.array(&current_array).old_array(&guard);
         for array_ptr in [old_array.as_raw(), current_array.as_raw()].iter() {
             if array_ptr.is_null() {
                 continue;
@@ -619,7 +619,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         loop {
             // an acquire fence is required to correctly load the contents of the array
             let current_array = self.array.load(Acquire, &guard);
-            let current_array_ref = unsafe { current_array.deref() };
+            let current_array_ref = self.array(&current_array);
             let old_array = current_array_ref.old_array(&guard);
             if !old_array.is_null() {
                 if current_array_ref.partial_rehash(&guard, |key| self.hash(key)) {
@@ -675,7 +675,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             drop(accessor);
             let guard = crossbeam_epoch::pin();
             let current_array = self.array.load(Acquire, &guard);
-            let current_array_ref = unsafe { current_array.deref() };
+            let current_array_ref = self.array(&current_array);
             if current_array_ref.old_array(&guard).is_null()
                 && current_array_ref.capacity() > self.minimum_capacity
             {
@@ -744,7 +744,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         // an acquire fence is required to correctly load the contents of the array
         let mut current_array = self.array.load(Acquire, &guard);
         loop {
-            let old_array = unsafe { current_array.deref().old_array(&guard) };
+            let old_array = self.array(&current_array).old_array(&guard);
             for array_ptr in [old_array.as_raw(), current_array.as_raw()].iter() {
                 if array_ptr.is_null() {
                     continue;
@@ -878,7 +878,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         // initial rough size estimation using a small number of cells
         let guard = crossbeam_epoch::pin();
         let current_array = self.array.load(Acquire, &guard);
-        let current_array_ref = unsafe { current_array.deref() };
+        let current_array_ref = self.array(&current_array);
         let old_array = current_array_ref.old_array(&guard);
         if !old_array.is_null() {
             if !current_array_ref.partial_rehash(&guard, |key| self.hash(key)) {
@@ -957,6 +957,10 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         }
         num_entries * (current_array_ref.num_cells() / num_cells_to_sample)
     }
+
+    fn array<'a>(&self, array: &'a Shared<Array<K, V>>) -> &'a Array<K, V> {
+        unsafe { array.deref() }
+    }
 }
 
 impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Drop for HashMap<K, V, H> {
@@ -964,7 +968,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Drop for HashMap<K, V, H> {
         self.clear();
         let guard = crossbeam_epoch::pin();
         let current_array = self.array.load(Acquire, &guard);
-        let current_array_ref = unsafe { current_array.deref() };
+        let current_array_ref = self.array(&current_array);
         current_array_ref.drop_old_array(&guard);
         let array = self.array.swap(Shared::null(), Relaxed, &guard);
         if !array.is_null() {

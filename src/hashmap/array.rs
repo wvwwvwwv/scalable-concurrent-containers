@@ -164,12 +164,15 @@ impl<K: Eq, V> Array<K, V> {
         let mut current = cell_locker.first();
         while let Some((sub_index, entry_array_link_ptr, entry_ptr)) = current {
             let (key, value) = Self::extract_key_value(entry_ptr);
-            let (hash, partial_hash) = hasher(&key);
-            let new_cell_index = self.calculate_cell_index(hash);
-
+            let (new_cell_index, partial_hash) = if shrink && sub_index != u8::MAX {
+                (target_cell_index, cell_locker.partial_hash(sub_index))
+            } else {
+                let (hash, partial_hash) = hasher(&key);
+                (self.calculate_cell_index(hash), partial_hash)
+            };
             debug_assert!(
                 (!shrink && (new_cell_index - target_cell_index) < ratio)
-                    || (shrink && new_cell_index == old_cell_index / ratio)
+                    || (shrink && new_cell_index == target_cell_index)
             );
 
             for i in num_target_cells..=(new_cell_index - target_cell_index) {
