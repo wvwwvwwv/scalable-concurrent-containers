@@ -8,7 +8,6 @@ pub mod link;
 use array::Array;
 use cell::{CellLocker, CellReader};
 use crossbeam_epoch::{Atomic, Owned, Shared};
-use link::EntryArrayLink;
 use std::collections::hash_map::RandomState;
 use std::convert::TryInto;
 use std::fmt;
@@ -706,7 +705,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         CellLocker<'a, K, V>,
         usize,
         u8,
-        *const EntryArrayLink<K, V>,
+        *const link::EntryArrayLink<K, V>,
         *const (K, V),
     ) {
         let array_ref = unsafe { &(*array_ptr) };
@@ -988,7 +987,7 @@ pub struct Accessor<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> {
     cell_locker: CellLocker<'a, K, V>,
     cell_index: usize,
     sub_index: u8,
-    entry_array_link_ptr: *const EntryArrayLink<K, V>,
+    entry_array_link_ptr: *const link::EntryArrayLink<K, V>,
     entry_ptr: *const (K, V),
 }
 

@@ -92,16 +92,15 @@ impl<K: Eq, V> Cell<K, V> {
                 .compare_exchange(condvar_ptr, ptr::null_mut(), Acquire, Relaxed)
         {
             condvar_ptr = result;
-            if condvar_ptr == ptr::null_mut() {
+            if condvar_ptr.is_null() {
                 return;
             }
         }
 
         while condvar_ptr != ptr::null_mut() {
-            let next_ptr = unsafe { (*condvar_ptr).next };
-            unsafe {
-                (*condvar_ptr).signal();
-            };
+            let cond_var_ref = unsafe { &(*condvar_ptr) };
+            let next_ptr = cond_var_ref.next;
+            cond_var_ref.signal();
             condvar_ptr = next_ptr;
         }
     }

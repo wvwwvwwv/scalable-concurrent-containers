@@ -10,6 +10,10 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 
 ### Changelog
 
+#### 0.2.12
+
+- Update crossbeam_epoch to 0.9.1
+
 #### 0.2.11
 
 - Remove libc dependencies
