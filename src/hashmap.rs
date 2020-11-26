@@ -305,16 +305,16 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         let current_array = self.array.load(Acquire, &guard);
         let current_array_ref = self.array(&current_array);
         let old_array = current_array_ref.old_array(&guard);
-        for array_ptr in [old_array.as_raw(), current_array.as_raw()].iter() {
-            if array_ptr.is_null() {
+        for array in [&old_array, &current_array].iter() {
+            if array.is_null() {
                 continue;
             }
-            if *array_ptr == old_array.as_raw() {
+            if array.as_raw() == old_array.as_raw() {
                 if current_array_ref.partial_rehash(&guard, |key| self.hash(key)) {
                     continue;
                 }
             }
-            let array_ref = unsafe { &(**array_ptr) };
+            let array_ref = self.array(array);
             let cell_index = array_ref.calculate_cell_index(hash);
             let reader = CellReader::lock(
                 array_ref.cell(cell_index),
@@ -506,15 +506,15 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         let guard = crossbeam_epoch::pin();
         let current_array = self.array.load(Acquire, &guard);
         let old_array = self.array(&current_array).old_array(&guard);
-        for array_ptr in [old_array.as_raw(), current_array.as_raw()].iter() {
-            if array_ptr.is_null() {
+        for array in [old_array, current_array].iter() {
+            if array.is_null() {
                 continue;
             }
-            let array_ref = unsafe { &(**array_ptr) };
+            let array_ref = self.array(array);
             let num_cells = array_ref.num_cells();
             let mut consecutive_empty_cells = 0;
             statistics.capacity += num_cells * cell::ARRAY_SIZE as usize;
-            if *array_ptr == current_array.as_raw() {
+            if array.as_raw() == current_array.as_raw() {
                 statistics.effective_capacity = num_cells * cell::ARRAY_SIZE as usize;
             }
             statistics.cells += num_cells;
