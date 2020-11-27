@@ -27,12 +27,13 @@ const DEFAULT_CAPACITY: usize = (cell::ARRAY_SIZE as usize) * (cell::ARRAY_SIZE 
 /// A metadata cell resolves hash collisions by allocating a linked list of key-value pair arrays.
 ///
 /// ## The key features of scc::HashMap
-/// * No sharding: all keys stored in a single entry array are managed by a single array of metadata cells.
-/// * Auto resizing: it automatically enlarges or shrinks the internal arrays.
+/// * No sharding: the data is stored in a single entry array.
+/// * Automatic resizing: it automatically grows or shrinks.
 /// * Non-blocking resizing: resizing does not block other threads.
 /// * Incremental resizing: each access to the data structure relocates a certain number of key-value pairs.
 /// * Optimized resizing: key-value pairs in a single metadata cell are guaranteed to be relocated to adjacent cells.
 /// * Minimized shared data: no atomic counter and coarse lock.
+/// * No busy waiting: the customized mutex never spins.
 ///
 /// ## The key statistics for scc::HashMap
 /// * The expected size of metadata for a single key-value pair: 4-byte.
@@ -205,8 +206,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         match self.insert(key, value) {
             Ok(result) => result,
             Err((result, value)) => {
-                let entry_mut_ref = self.entry(result.entry_ptr);
-                *entry_mut_ref.1 = value;
+                *self.entry(result.entry_ptr).1 = value;
                 result
             }
         }
@@ -346,37 +346,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// assert!(result);
     /// ```
     pub fn contains(&self, key: &K) -> bool {
-        let (hash, partial_hash) = self.hash(key);
-        let guard = crossbeam_epoch::pin();
-
-        // an acquire fence is required to correctly load the contents of the array
-        let current_array = self.array.load(Acquire, &guard);
-        let current_array_ref = self.array(&current_array);
-        let old_array = current_array_ref.old_array(&guard);
-        for array in [&old_array, &current_array].iter() {
-            if array.is_null() {
-                continue;
-            }
-            if array.as_raw() == old_array.as_raw() {
-                let old_array_removed =
-                    current_array_ref.partial_rehash(&guard, |key| self.hash(key));
-                if old_array_removed {
-                    continue;
-                }
-            }
-            let array_ref = self.array(array);
-            let cell_index = array_ref.calculate_cell_index(hash);
-            let reader = CellReader::read(
-                array_ref.cell(cell_index),
-                array_ref.entry_array(cell_index),
-                &key,
-                partial_hash,
-            );
-            if reader.get().is_some() {
-                return true;
-            }
-        }
-        false
+        self.read(key, |_, _| ()).is_some()
     }
 
     /// Retains the key-value pairs that satisfy the given predicate.
@@ -552,13 +522,13 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// }
     ///
     /// let result = hashmap.statistics();
-    /// assert_eq!(result.capacity(), 1024);
+    /// assert_eq!(result.effective_capacity(), 1024);
     /// assert_eq!(result.num_entries(), 1);
     /// ```
     pub fn statistics(&self) -> Statistics {
         let mut statistics = Statistics {
-            capacity: 0,
             effective_capacity: 0,
+            deprecated_capacity: 0,
             cells: 0,
             killed_entries: 0,
             empty_cells: 0,
@@ -578,9 +548,10 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             let array_ref = self.array(array);
             let num_cells = array_ref.num_cells();
             let mut consecutive_empty_cells = 0;
-            statistics.capacity += num_cells * cell::ARRAY_SIZE as usize;
             if array.as_raw() == current_array.as_raw() {
-                statistics.effective_capacity = num_cells * cell::ARRAY_SIZE as usize;
+                statistics.effective_capacity = array_ref.capacity();
+            } else {
+                statistics.deprecated_capacity += array_ref.capacity();
             }
             statistics.cells += num_cells;
             for i in 0..num_cells {
@@ -963,7 +934,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             }
 
             // the resizing policies are as follows.
-            //  - load factor reaches 7/8: enlarge up to 64x
+            //  - load factor reaches 7/8: grow up to 64x
             //  - load factor reaches 1/16: shrink to fit
             let capacity = current_array_ref.capacity();
             let num_cells = current_array_ref.num_cells();
@@ -978,7 +949,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                     // double if the estimated size marginally exceeds the capacity
                     capacity * 2
                 } else {
-                    // enlarge up to 64x
+                    // grow up to 64x
                     let new_capacity_candidate = estimated_num_entries
                         .next_power_of_two()
                         .min(max_capacity / 2)
@@ -1029,7 +1000,8 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         unsafe { array.deref() }
     }
 
-    fn entry<'a>(&'a self, entry_ptr: *const (K, V)) -> (&'a K, &'a mut V) {
+    /// Returns a reference to the entry.
+    fn entry(&self, entry_ptr: *const (K, V)) -> (&K, &mut V) {
         unsafe {
             let key_ptr = &(*entry_ptr).0 as *const K;
             let value_ptr = &(*entry_ptr).1 as *const V;
@@ -1202,8 +1174,8 @@ impl<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Iterator for Scanner<'a, 
 /// println!("{}", hashmap.statistics());
 /// ```
 pub struct Statistics {
-    capacity: usize,
     effective_capacity: usize,
+    deprecated_capacity: usize,
     entries: usize,
     killed_entries: usize,
     cells: usize,
@@ -1215,11 +1187,11 @@ pub struct Statistics {
 }
 
 impl Statistics {
-    pub fn capacity(&self) -> usize {
-        self.capacity
-    }
     pub fn effective_capacity(&self) -> usize {
         self.effective_capacity
+    }
+    pub fn deprecated_capacity(&self) -> usize {
+        self.deprecated_capacity
     }
     pub fn num_entries(&self) -> usize {
         self.entries
@@ -1251,9 +1223,9 @@ impl fmt::Display for Statistics {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "capacity: {}, effective_capacity: {}, cells: {}, killed_entries: {}, empty_cells: {}, max_consecutive_empty_cells: {}, entries: {}, linked_entries: {}, cells_having_link: {}, max_link_length: {}",
-            self.capacity,
+            "effective_capacity: {}, deprecated_capacity: {}, cells: {}, killed_entries: {}, empty_cells: {}, max_consecutive_empty_cells: {}, entries: {}, linked_entries: {}, cells_having_link: {}, max_link_length: {}",
             self.effective_capacity,
+            self.deprecated_capacity,
             self.cells,
             self.killed_entries,
             self.empty_cells,

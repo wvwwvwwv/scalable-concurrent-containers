@@ -15,7 +15,7 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
 - RAM: 1TB
 - Rust compiler version: 1.48.0
-- SCC version: 0.2.11
+- SCC version: 0.2.14
 - The hashmap is generated using the default parameters: the RandomState hasher builder, and 256 preallocated entries.
 - In order to minimize the cost of page fault handling, all the tests were run twice, and only the best results were taken.
 
@@ -32,9 +32,9 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 
 |        | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
 |--------|----------------|----------------|----------------|----------------|
-| Insert | 153.725430095s | 181.501483645s | 258.285511858s | 462.73899472s  |
-| Read   | 79.495212025s  | 90.859734163s  | 106.374841654s | 137.359072343s |
-| Remove | 88.457419533s  | 103.189953895s | 118.811285809s | 142.061171296s |
+| Insert | 156.423361787s | 187.157442477s | 264.075874751s | 463.032489985s |
+| Read   | 81.03393205s   | 92.933046817s  | 109.303575217s | 137.802145824s |
+| Remove | 85.563265194s  | 102.896206291s | 117.072458551s | 167.450069665s |
 
 #### Test workload: local-remote.
 - Insert/Remove: each thread additionally tries to perform assigned operations using keys belonging to other threads.
@@ -46,29 +46,31 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 
 |        | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
 |--------|----------------|----------------|----------------|----------------|
-| Insert | 266.724033515s | 309.213404015s | 424.906462015s | 773.520934754s |
-| Mixed  | 327.811948114s | 351.511457701s | 378.930084569s | 436.735096193s |
-| Remove | 167.174273401s | 186.59768589s  | 209.027055204s | 254.330255812s |
+| Insert | 272.420310927s | 314.424537182s | 432.493505328s | 772.267595819s |
+| Mixed  | 326.767954659s | 350.603202721s | 375.987412301s | 433.899012681s |
+| Remove | 164.857461617s | 184.528933216s | 199.187884668s | 250.735616868s |
 
 
 ## Changelog
 
 #### 0.2.14
-- Minor optimization for non-existing-key access
+Minor optimization for non-existing-key access
 #### 0.2.13
-- Add 'contains' and 'hasher' APIs
+Add 'contains' and 'hasher' APIs
 #### 0.2.12
-- Update crossbeam_epoch to 0.9.1
+Update crossbeam_epoch to 0.9.1
 #### 0.2.11
-- Remove libc dependencies
-- Adjust memory alignment
+Remove libc dependencies
+
+Adjust memory alignment
 #### 0.2.10
-- Fix memory leak
+Fix memory leak
 #### 0.2.8
-- Make scc::HashMap stack-unwinding-safe, meaning that it does not leave resources (memory, locks) unreleased after stack-unwinding on one condition; moving instances of K, and V types must always be successful (in C++ terms, K and V satisfy std::is_nothrow_move_constructible).
-- Refine resizing strategies
+Make scc::HashMap stack-unwinding-safe, meaning that it does not leave resources (memory, locks) unreleased after stack-unwinding on one condition; moving instances of K, and V types must always be successful (in C++ terms, K and V satisfy std::is_nothrow_move_constructible).
+
+Refine resizing strategies
 #### 0.2.7
-- Remove unnecessary heap allocation during read
+Remove unnecessary heap allocation during read
 
 ## Milestones
 

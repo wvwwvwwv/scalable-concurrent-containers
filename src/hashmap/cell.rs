@@ -190,7 +190,6 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
                 Relaxed,
             ) {
                 Ok(result) => {
-                    debug_assert_eq!(result & LOCK_MASK, 0);
                     return Some(CellLocker {
                         cell,
                         entry_array,
@@ -421,7 +420,6 @@ impl<'a, K: Eq, V> Drop for CellLocker<'a, K, V> {
         // a Release fence is required to publish the changes
         let mut current = self.cell.metadata.load(Relaxed);
         loop {
-            debug_assert_eq!(current & LOCK_MASK, XLOCK);
             match self.cell.metadata.compare_exchange(
                 current,
                 self.metadata & (!(WAITING_FLAG | XLOCK)),
@@ -456,8 +454,9 @@ impl<'a, K: Eq, V> CellReader<'a, K, V> {
         partial_hash: u16,
     ) -> CellReader<'a, K, V> {
         loop {
-            let current = cell.metadata.load(Acquire);
-            if cell.linked_entries == 0 && current & OCCUPANCY_MASK == 0 {
+            // early exit: not locked and empty
+            let current = cell.metadata.load(Relaxed);
+            if cell.linked_entries == 0 && current & (XLOCK | OCCUPANCY_MASK) == 0 {
                 return CellReader {
                     cell,
                     metadata: 0,
@@ -493,9 +492,9 @@ impl<'a, K: Eq, V> CellReader<'a, K, V> {
         let mut current = metadata;
         loop {
             if current & LOCK_MASK >= SLOCK_MAX {
+                // it is bound to fail
                 current &= !LOCK_MASK;
             }
-            debug_assert_eq!(current & LOCK_MASK & XLOCK, 0);
             match cell
                 .metadata
                 .compare_exchange(current, current + SLOCK, Acquire, Relaxed)
@@ -507,7 +506,7 @@ impl<'a, K: Eq, V> CellReader<'a, K, V> {
                         entry_ptr: cell
                             .search(metadata, key, partial_hash, entry_array)
                             .as_ref()
-                            .map_or_else(|| ptr::null(), |result| result.2),
+                            .map_or_else(ptr::null, |result| result.2),
                     })
                 }
                 Err(result) => {
@@ -538,8 +537,6 @@ impl<'a, K: Eq, V> Drop for CellReader<'a, K, V> {
         // no modification is allowed with a CellReader held: no memory fences required
         let mut current = self.metadata;
         loop {
-            debug_assert!(current & LOCK_MASK <= SLOCK_MAX);
-            debug_assert!(current & LOCK_MASK >= SLOCK);
             match self.cell.metadata.compare_exchange(
                 current,
                 (current & (!WAITING_FLAG)) - SLOCK,

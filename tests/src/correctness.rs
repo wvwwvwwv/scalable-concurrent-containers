@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod test {
+mod hashmap_test {
     use proptest::prelude::*;
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
@@ -351,6 +351,16 @@ mod test {
                     w.1
                 );
             }
+        }
+    }
+}
+
+mod treemap_test {
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn basic(_ in 0u64..10) {
         }
     }
 }

@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod test {
+mod hashmap_test {
     use scc::HashMap;
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hash};

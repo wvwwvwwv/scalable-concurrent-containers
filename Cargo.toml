@@ -8,7 +8,7 @@ readme = "README.md"
 repository = "https://github.com/wvwwvwwv/scc/"
 license = "MIT"
 categories = ["concurrency", "data-structures"]
-keywords = ["concurrent", "hashmap", "hashtable"]
+keywords = ["concurrent", "hashmap", "map"]
 
 [dependencies]
 crossbeam-epoch = "^0.9.1"
