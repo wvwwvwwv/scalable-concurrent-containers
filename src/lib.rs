@@ -1,4 +1,7 @@
 //! Scalable concurrent containers.
+//!
+//! # scc::HashMap
+//! A concurrent hash map.
 
 mod hashmap;
 mod treemap;

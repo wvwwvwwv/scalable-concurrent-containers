@@ -205,8 +205,8 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         match self.insert(key, value) {
             Ok(result) => result,
             Err((result, value)) => {
-                let pair_mut_ptr = result.entry_ptr as *mut (K, V);
-                unsafe { (*pair_mut_ptr).1 = value };
+                let entry_mut_ref = self.entry(result.entry_ptr);
+                *entry_mut_ref.1 = value;
                 result
             }
         }
@@ -313,13 +313,14 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             }
             let array_ref = self.array(array);
             let cell_index = array_ref.calculate_cell_index(hash);
-            let reader = CellReader::lock(
+            let reader = CellReader::read(
                 array_ref.cell(cell_index),
                 array_ref.entry_array(cell_index),
+                &key,
+                partial_hash,
             );
-            if let Some(entry_ptr) = reader.search(&key, partial_hash) {
-                let entry_ref = unsafe { &(*entry_ptr) };
-                return Some(f(&entry_ref.0, &entry_ref.1));
+            if let Some((key, value)) = reader.get() {
+                return Some(f(key, value));
             }
         }
         None
@@ -365,11 +366,13 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             }
             let array_ref = self.array(array);
             let cell_index = array_ref.calculate_cell_index(hash);
-            let reader = CellReader::lock(
+            let reader = CellReader::read(
                 array_ref.cell(cell_index),
                 array_ref.entry_array(cell_index),
+                &key,
+                partial_hash,
             );
-            if reader.search(&key, partial_hash).is_some() {
+            if reader.get().is_some() {
                 return true;
             }
         }
@@ -1025,6 +1028,15 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     fn array<'a>(&self, array: &'a Shared<Array<K, V>>) -> &'a Array<K, V> {
         unsafe { array.deref() }
     }
+
+    fn entry<'a>(&'a self, entry_ptr: *const (K, V)) -> (&'a K, &'a mut V) {
+        unsafe {
+            let key_ptr = &(*entry_ptr).0 as *const K;
+            let value_ptr = &(*entry_ptr).1 as *const V;
+            let value_mut_ptr = value_ptr as *mut V;
+            (&(*key_ptr), &mut (*value_mut_ptr))
+        }
+    }
 }
 
 impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Drop for HashMap<K, V, H> {
@@ -1077,12 +1089,7 @@ impl<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Accessor<'a, K, V, H> {
     /// assert_eq!(result.unwrap().get(), (&1, &mut 2));
     /// ```
     pub fn get(&'a self) -> (&'a K, &'a mut V) {
-        unsafe {
-            let key_ptr = &(*self.entry_ptr).0 as *const K;
-            let value_ptr = &(*self.entry_ptr).1 as *const V;
-            let value_mut_ptr = value_ptr as *mut V;
-            (&(*key_ptr), &mut (*value_mut_ptr))
-        }
+        self.hash_map.entry(self.entry_ptr)
     }
 
     /// Erases the key-value pair owned by the Accessor.
@@ -1173,12 +1180,7 @@ impl<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Iterator for Scanner<'a, 
             }
         }
         if let Some(accessor) = &self.accessor {
-            unsafe {
-                let key_ptr = &(*accessor.entry_ptr).0 as *const K;
-                let value_ptr = &(*accessor.entry_ptr).1 as *const V;
-                let value_mut_ptr = value_ptr as *mut V;
-                return Some((&(*key_ptr), &mut (*value_mut_ptr)));
-            }
+            return Some(accessor.hash_map.entry(accessor.entry_ptr));
         }
         None
     }

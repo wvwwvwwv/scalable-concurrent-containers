@@ -443,35 +443,59 @@ impl<'a, K: Eq, V> Drop for CellLocker<'a, K, V> {
 /// CellReader
 pub struct CellReader<'a, K: Eq, V> {
     cell: &'a Cell<K, V>,
-    entry_array: &'a EntryArray<K, V>,
     metadata: u32,
+    entry_ptr: *const (K, V),
 }
 
 impl<'a, K: Eq, V> CellReader<'a, K, V> {
     /// Create a new CellReader instance with the cell shared locked.
-    pub fn lock(cell: &'a Cell<K, V>, entry_array: &'a EntryArray<K, V>) -> CellReader<'a, K, V> {
+    pub fn read(
+        cell: &'a Cell<K, V>,
+        entry_array: &'a EntryArray<K, V>,
+        key: &K,
+        partial_hash: u16,
+    ) -> CellReader<'a, K, V> {
         loop {
-            if let Some(result) = Self::try_lock(cell, entry_array) {
+            let current = cell.metadata.load(Acquire);
+            if cell.linked_entries == 0 && current & OCCUPANCY_MASK == 0 {
+                return CellReader {
+                    cell,
+                    metadata: 0,
+                    entry_ptr: ptr::null(),
+                };
+            }
+
+            if let Some(result) = Self::try_read(cell, entry_array, current, key, partial_hash) {
                 return result;
             }
-            if let Some(result) = cell.wait(|| Self::try_lock(cell, entry_array)) {
+            if let Some(result) = cell.wait(|| {
+                Self::try_read(
+                    cell,
+                    entry_array,
+                    cell.metadata.load(Relaxed),
+                    key,
+                    partial_hash,
+                )
+            }) {
                 return result;
             }
         }
     }
 
     /// Create a new CellReader instance if the cell is shared locked.
-    fn try_lock(
+    fn try_read(
         cell: &'a Cell<K, V>,
         entry_array: &'a EntryArray<K, V>,
+        metadata: u32,
+        key: &K,
+        partial_hash: u16,
     ) -> Option<CellReader<'a, K, V>> {
-        let mut current = cell.metadata.load(Relaxed);
+        let mut current = metadata;
         loop {
             if current & LOCK_MASK >= SLOCK_MAX {
                 current &= !LOCK_MASK;
             }
             debug_assert_eq!(current & LOCK_MASK & XLOCK, 0);
-            debug_assert!(current & LOCK_MASK < SLOCK_MAX);
             match cell
                 .metadata
                 .compare_exchange(current, current + SLOCK, Acquire, Relaxed)
@@ -479,8 +503,11 @@ impl<'a, K: Eq, V> CellReader<'a, K, V> {
                 Ok(result) => {
                     return Some(CellReader {
                         cell,
-                        entry_array,
-                        metadata: result,
+                        metadata: result + SLOCK,
+                        entry_ptr: cell
+                            .search(metadata, key, partial_hash, entry_array)
+                            .as_ref()
+                            .map_or_else(|| ptr::null(), |result| result.2),
                     })
                 }
                 Err(result) => {
@@ -493,18 +520,23 @@ impl<'a, K: Eq, V> CellReader<'a, K, V> {
         }
     }
 
-    pub fn search(&self, key: &K, partial_hash: u16) -> Option<*const (K, V)> {
-        self.cell
-            .search(self.metadata, key, partial_hash, self.entry_array)
-            .as_ref()
-            .map(|result| result.2)
+    pub fn get(&self) -> Option<(&K, &V)> {
+        if self.entry_ptr.is_null() {
+            return None;
+        }
+        let entry_ref = unsafe { &(*self.entry_ptr) };
+        Some((&entry_ref.0, &entry_ref.1))
     }
 }
 
 impl<'a, K: Eq, V> Drop for CellReader<'a, K, V> {
     fn drop(&mut self) {
+        if self.metadata == 0 {
+            return;
+        }
+
         // no modification is allowed with a CellReader held: no memory fences required
-        let mut current = self.metadata + SLOCK;
+        let mut current = self.metadata;
         loop {
             debug_assert!(current & LOCK_MASK <= SLOCK_MAX);
             debug_assert!(current & LOCK_MASK >= SLOCK);
@@ -588,6 +620,9 @@ mod test {
         let cell: Arc<Cell<usize, usize>> = Arc::new(Default::default());
         let entry_array: Arc<EntryArray<usize, usize>> =
             Arc::new(unsafe { MaybeUninit::uninit().assume_init() });
+        let mut xlocker = CellLocker::lock(&*cell, &*entry_array);
+        xlocker.insert(usize::MAX, 0, usize::MAX);
+        drop(xlocker);
         let mut data: [u64; 128] = [0; 128];
         let mut thread_handles = Vec::with_capacity(num_threads);
         for tid in 0..num_threads {
@@ -613,7 +648,12 @@ mod test {
                         }
                         drop(xlocker);
                     } else {
-                        let slocker = CellReader::lock(&*cell_copied, &*entry_array_copied);
+                        let slocker =
+                            CellReader::read(&*cell_copied, &*entry_array_copied, &usize::MAX, 0);
+                        if let Some((key, value)) = slocker.get() {
+                            assert_eq!(*key, usize::MAX);
+                            assert_eq!(*value, usize::MAX);
+                        }
                         let mut sum: u64 = 0;
                         for j in 0..128 {
                             unsafe { sum += (*data_ptr.load(Relaxed))[j] };
@@ -627,7 +667,13 @@ mod test {
         for handle in thread_handles {
             handle.join().unwrap();
         }
-        assert_eq!((*cell).size().0 + (*cell).size().1, num_threads);
+        assert_eq!((*cell).size().0 + (*cell).size().1, num_threads + 1);
+        let mut xlocker = CellLocker::lock(&*cell, &*entry_array);
+        let result = xlocker.search(&usize::MAX, 0);
+        if let Some((sub_index, entry_array_link_ptr, entry_ptr)) = result {
+            xlocker.remove(true, sub_index, entry_array_link_ptr, entry_ptr);
+        }
+        drop(xlocker);
         for tid in 0..(num_threads / 2) {
             let mut xlocker = CellLocker::lock(&*cell, &*entry_array);
             let result = xlocker.first();
