@@ -6,11 +6,11 @@ SCC offers scalable concurrent containers written in the Rust language. The data
 
 scc::HashMap is a scalable in-memory unique key-value store that is targeted at highly concurrent heavy workloads. It does not distribute data to multiple shards as most concurrent hash maps do, instead only does it have a single array of entries and corresponding metadata cell array. The metadata management strategy is similar to that of Swisstable; a metadata cell which is separated from the key-value array, is a 64-byte data structure for managing consecutive sixteen entries in the key-value array. The metadata cell also has a linked list of entry arrays for hash collision resolution. scc::HashMap automatically enlarges and shrinks the capacity of its internal array, and resizing happens without blocking other operations and threads. In order to keep the predictable latency of each operation, it does not rehash every entry in the container at once when resizing, instead it distributes the resizing workload to future access to the data structure.
 
-* It is clear that experimental hardware-transactional-memory functions (such as https://stdrs.dev/nightly/x86_64-pc-windows-gnu/core/core_arch/x86/rtm/index.html) make read operations entirely memory-write-free, boosting performance without compromising semantics and memory consumption. scc::HashMap will start use TSX/HTM intrinsics as soon as the functions become stabilized.
+* It is clear that experimental hardware-transactional-memory functions (such as https://stdrs.dev/nightly/x86_64-pc-windows-gnu/core/core_arch/x86/rtm/index.html) make read operations entirely memory-write-free, boosting performance without compromising semantics and memory consumption. scc::HashMap will start using TSX/HTM intrinsics as soon as the functions become stabilized.
 
 ### Performance
 
-#### Test setup.
+#### Test setup
 - OS: SUSE Linux Enterprise Server 15 SP1
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
 - RAM: 1TB
@@ -19,12 +19,12 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 - The hashmap is generated using the default parameters: the RandomState hasher builder, and 256 preallocated entries.
 - In order to minimize the cost of page fault handling, all the tests were run twice, and only the best results were taken.
 
-#### Test data.
+#### Test data
 - Each thread is assigned a disjoint range of u64 integers.
 - The entropy of the test input is very low, however it does not undermine the test result as the key distribution method is agnostic to the input pattern.
 - The performance test code asserts the expected outcome of each operation, and the post state of the hashmap instance.
 
-#### Test workload: local.
+#### Test workload: local
 - Insert: each thread inserts 128M records.
 - Read: each thread reads 128M records.
 - Remove: each thread removes 128M records.
@@ -36,7 +36,7 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 | Read   | 81.03393205s   | 92.933046817s  | 109.303575217s | 137.802145824s |
 | Remove | 85.563265194s  | 102.896206291s | 117.072458551s | 167.450069665s |
 
-#### Test workload: local-remote.
+#### Test workload: local-remote
 - Insert/Remove: each thread additionally tries to perform assigned operations using keys belonging to other threads.
 - Mixed: each thread performs 128M insert-local -> insert-remote -> read-local -> read-remote -> remove-local -> remove-remote sequences.
 - The data for Mixed/Remove tests is populated by the Insert test.
@@ -53,7 +53,7 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 
 ## Changelog
 
-#### 0.3.0
+#### 0.3.1
 APIs stabilized
 #### 0.2.13
 Add 'contains' and 'hasher' APIs
