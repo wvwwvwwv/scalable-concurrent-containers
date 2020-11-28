@@ -15,7 +15,7 @@ use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-const DEFAULT_CAPACITY: usize = (cell::ARRAY_SIZE as usize) * (cell::ARRAY_SIZE as usize);
+const DEFAULT_CAPACITY: usize = cell::ARRAY_SIZE * cell::ARRAY_SIZE;
 
 /// A scalable concurrent hash map implementation.
 ///
@@ -148,7 +148,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 return Err((accessor, value));
             }
             if !resize_triggered
-                && accessor.cell_index < (cell::ARRAY_SIZE as usize)
+                && accessor.cell_index < cell::ARRAY_SIZE
                 && accessor.cell_locker.full()
             {
                 drop(accessor);
@@ -159,7 +159,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 if current_array_ref.old_array(&guard).is_null() {
                     // trigger resize if the estimated load factor is greater than 7/8
                     let sample_size = current_array_ref.num_sample_size();
-                    let threshold = sample_size * (cell::ARRAY_SIZE as usize / 8) * 7;
+                    let threshold = sample_size * (cell::ARRAY_SIZE / 8) * 7;
                     let mut num_entries = 0;
                     for i in 0..sample_size {
                         num_entries +=
@@ -460,7 +460,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         let current_array_ref = self.array(&current_array);
         let capacity = current_array_ref.capacity();
         let num_samples = std::cmp::min(f(capacity), capacity).next_power_of_two();
-        let num_cells_to_sample = (num_samples / cell::ARRAY_SIZE as usize).max(1);
+        let num_cells_to_sample = (num_samples / cell::ARRAY_SIZE).max(1);
         if !current_array_ref.old_array(&guard).is_null() {
             for _ in 0..num_cells_to_sample {
                 if current_array_ref.partial_rehash(&guard, |key| self.hash(key)) {
@@ -707,7 +707,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             accessor.entry_array_link_ptr,
             accessor.entry_ptr,
         );
-        if accessor.cell_locker.empty() && accessor.cell_index < (cell::ARRAY_SIZE as usize) {
+        if accessor.cell_locker.empty() && accessor.cell_index < cell::ARRAY_SIZE {
             drop(accessor);
             let guard = crossbeam_epoch::pin();
             let current_array = self.array.load(Acquire, &guard);
@@ -721,7 +721,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 for i in 0..sample_size {
                     num_entries +=
                         current_array_ref.cell(i).size().0 + current_array_ref.cell(i).size().1;
-                    if num_entries >= sample_size * (cell::ARRAY_SIZE as usize) / 16 {
+                    if num_entries >= sample_size * cell::ARRAY_SIZE / 16 {
                         return value;
                     }
                 }

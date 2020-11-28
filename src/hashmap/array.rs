@@ -94,7 +94,7 @@ impl<K: Eq, V> Array<K, V> {
     }
 
     pub fn capacity(&self) -> usize {
-        self.cell_array_capacity * (ARRAY_SIZE as usize)
+        self.cell_array_capacity * ARRAY_SIZE
     }
 
     pub fn old_array<'a>(&self, guard: &'a Guard) -> Shared<'a, Array<K, V>> {
@@ -106,10 +106,9 @@ impl<K: Eq, V> Array<K, V> {
     }
 
     pub fn calculate_lb_metadata_array_size(capacity: usize) -> u8 {
-        let adjusted_capacity = capacity.min((usize::MAX / 2) - (ARRAY_SIZE as usize - 1));
-        let required_cells = ((adjusted_capacity + (ARRAY_SIZE as usize - 1))
-            / (ARRAY_SIZE as usize))
-            .next_power_of_two();
+        let adjusted_capacity = capacity.min((usize::MAX / 2) - (ARRAY_SIZE - 1));
+        let required_cells =
+            ((adjusted_capacity + ARRAY_SIZE - 1) / ARRAY_SIZE).next_power_of_two();
         let lb_capacity =
             ((std::mem::size_of::<usize>() * 8) - (required_cells.leading_zeros() as usize) - 1)
                 .max(1);
@@ -117,7 +116,7 @@ impl<K: Eq, V> Array<K, V> {
         // 2^lb_capacity * ARRAY_SIZE >= capacity
         debug_assert!(lb_capacity > 0);
         debug_assert!(lb_capacity < (std::mem::size_of::<usize>() * 8));
-        debug_assert!((1usize << lb_capacity) * (ARRAY_SIZE as usize) >= adjusted_capacity);
+        debug_assert!((1usize << lb_capacity) * ARRAY_SIZE >= adjusted_capacity);
         lb_capacity.try_into().unwrap()
     }
 
@@ -210,18 +209,16 @@ impl<K: Eq, V> Array<K, V> {
             if current >= old_array_size {
                 return false;
             }
-            match self.rehashing.compare_exchange(
-                current,
-                current + ARRAY_SIZE as usize,
-                Acquire,
-                Relaxed,
-            ) {
+            match self
+                .rehashing
+                .compare_exchange(current, current + ARRAY_SIZE, Acquire, Relaxed)
+            {
                 Ok(_) => break,
                 Err(result) => current = result,
             }
         }
 
-        for old_cell_index in current..(current + ARRAY_SIZE as usize).min(old_array_size) {
+        for old_cell_index in current..(current + ARRAY_SIZE).min(old_array_size) {
             let old_cell_array_ptr =
                 &(**old_array_ref.cell_array.as_ref().unwrap()) as *const Cell<K, V>;
             let old_cell_ref = unsafe { &(*(old_cell_array_ptr.add(old_cell_index))) };
@@ -235,7 +232,7 @@ impl<K: Eq, V> Array<K, V> {
             self.kill_cell(&mut old_cell, old_array_ref, old_cell_index, &hasher);
         }
 
-        let completed = self.rehashed.fetch_add(ARRAY_SIZE as usize, Release) + ARRAY_SIZE as usize;
+        let completed = self.rehashed.fetch_add(ARRAY_SIZE, Release) + ARRAY_SIZE;
         if old_array_size <= completed {
             self.drop_old_array(guard);
             return true;
@@ -291,17 +288,17 @@ mod test {
         for capacity in 0..1024 as usize {
             assert!(
                 (1usize << Array::<bool, bool>::calculate_lb_metadata_array_size(capacity))
-                    * (ARRAY_SIZE as usize)
+                    * ARRAY_SIZE
                     >= capacity
             );
         }
         assert!(
             (1usize << Array::<bool, bool>::calculate_lb_metadata_array_size(usize::MAX))
-                * (ARRAY_SIZE as usize)
+                * ARRAY_SIZE
                 >= (usize::MAX / 2)
         );
         for i in 2..(std::mem::size_of::<usize>() - 3) {
-            let capacity = (1usize << i) * (ARRAY_SIZE as usize);
+            let capacity = (1usize << i) * ARRAY_SIZE;
             assert_eq!(
                 Array::<bool, bool>::calculate_lb_metadata_array_size(capacity) as usize,
                 i

@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicPtr, AtomicU32};
 use std::sync::{Condvar, Mutex};
 
-pub const ARRAY_SIZE: u8 = 16;
+pub const ARRAY_SIZE: usize = 16;
 const KILLED_FLAG: u32 = 1u32 << 31;
 const WAITING_FLAG: u32 = 1u32 << 30;
 const LOCK_MASK: u32 = ((1u32 << 14) - 1) << ARRAY_SIZE;
@@ -16,10 +16,10 @@ const SLOCK: u32 = 1u32 << ARRAY_SIZE;
 const OCCUPANCY_MASK: u32 = (1u32 << ARRAY_SIZE) - 1;
 const OCCUPANCY_BIT: u32 = 1;
 
-pub type EntryArray<K, V> = [MaybeUninit<(K, V)>; ARRAY_SIZE as usize];
+pub type EntryArray<K, V> = [MaybeUninit<(K, V)>; ARRAY_SIZE];
 
 pub struct Cell<K: Eq, V> {
-    partial_hash_array: [u16; ARRAY_SIZE as usize],
+    partial_hash_array: [u16; ARRAY_SIZE],
     metadata: AtomicU32,
     wait_queue: AtomicPtr<WaitQueueEntry>,
     link: LinkType<K, V>,
@@ -31,7 +31,7 @@ impl<K: Eq, V> Default for Cell<K, V> {
         Cell {
             metadata: AtomicU32::new(0),
             wait_queue: AtomicPtr::new(ptr::null_mut()),
-            partial_hash_array: [0; ARRAY_SIZE as usize],
+            partial_hash_array: [0; ARRAY_SIZE],
             link: None,
             linked_entries: 0,
         }
@@ -127,7 +127,7 @@ impl<K: Eq, V> Cell<K, V> {
 
         // iterate the array
         let start_index: u8 = occupancy_metadata.trailing_zeros().try_into().unwrap();
-        for i in start_index..ARRAY_SIZE {
+        for i in start_index..ARRAY_SIZE.try_into().unwrap() {
             let occupancy_bit = OCCUPANCY_BIT << i;
             if occupancy_bit > occupancy_metadata {
                 break;
@@ -250,7 +250,7 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
         } else {
             sub_index + 1
         };
-        for i in start_index..ARRAY_SIZE {
+        for i in start_index..ARRAY_SIZE.try_into().unwrap() {
             let occupancy_bit = OCCUPANCY_BIT << i;
             if occupancy_bit > occupancy_metadata {
                 break;
@@ -284,7 +284,7 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
         ]
         .iter()
         {
-            if *i >= ARRAY_SIZE as usize {
+            if *i >= ARRAY_SIZE {
                 continue;
             }
             if !self.occupied((*i).try_into().unwrap()) {
@@ -373,7 +373,7 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
         self.cell.link.as_ref().map_or_else(
             || {
                 let start_index: u8 = self.metadata.trailing_zeros().try_into().unwrap();
-                for i in start_index..ARRAY_SIZE {
+                for i in start_index..ARRAY_SIZE.try_into().unwrap() {
                     if self.occupied(i) {
                         return Some((i, ptr::null(), self.entry_array[i as usize].as_ptr()));
                     }
