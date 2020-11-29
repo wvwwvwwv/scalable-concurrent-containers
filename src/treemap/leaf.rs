@@ -19,6 +19,7 @@ const OCCUPANCY_BIT: u32 = 1;
 const MAX_KEY_REMOVED: u32 = 1u32 << ARRAY_SIZE * (RANK_INDEX_ENTRY_SIZE + 1);
 const INVALIDATED: u32 = MAX_KEY_REMOVED << 1;
 
+/// Each entry in an EntryArray is never dropped until the Leaf is dropped once constructed.
 pub type EntryArray<K, V> = [MaybeUninit<(K, V)>; ARRAY_SIZE];
 
 /// Leaf stores key-value pairs.

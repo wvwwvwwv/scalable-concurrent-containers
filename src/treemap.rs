@@ -10,6 +10,7 @@ use node::Node;
 /// A scalable concurrent tree map implementation.
 ///
 /// It implements an in-memory B+-tree variant.
+/// The customized structure of TreeMap allows the scanning operation to perform very efficiently without being blocked.
 pub struct TreeMap<K: Clone + Ord + Sync, V: Clone + Sync> {
     root: Atomic<Node<K, V>>,
     degree: usize,
