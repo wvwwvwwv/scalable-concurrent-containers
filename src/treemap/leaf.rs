@@ -258,7 +258,7 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         }
     }
 
-    pub fn next<'a>(&self, guard: &'a Guard) -> Shared<'a, Leaf<K, V>> {
+    pub fn jump<'a>(&self, guard: &'a Guard) -> Shared<'a, Leaf<K, V>> {
         self.next.load(Relaxed, &guard)
     }
 
@@ -272,6 +272,10 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
                 .as_mut_ptr()
                 .write((key, value))
         };
+    }
+
+    pub fn next(&self, rank: u32) -> (u32, *const (K, V)) {
+        (0, std::ptr::null())
     }
 
     fn compare(&self, index: usize, key: &K) -> std::cmp::Ordering {
@@ -412,6 +416,60 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Drop for Inserter<'a, K, V> {
     }
 }
 
+/// Leaf scanner.
+///
+/// A scanner instance holds a Guard, thus preventing GC.
+pub struct Scanner<'a, K: Clone + Ord + Sync, V: Clone + Sync> {
+    leaf: Shared<'a, Leaf<K, V>>,
+    guard: Guard,
+    entry_ptr: *const (K, V),
+    entry_rank: u32,
+}
+
+impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Scanner<'a, K, V> {
+    pub fn new() -> Scanner<'a, K, V> {
+        Scanner {
+            leaf: Shared::null(),
+            guard: crossbeam_epoch::pin(),
+            entry_ptr: std::ptr::null(),
+            entry_rank: 0,
+        }
+    }
+
+    pub fn start(&'a mut self, leaf: &'a Atomic<Leaf<K, V>>) {
+        self.leaf = leaf.load(Acquire, &self.guard);
+    }
+
+    pub fn next(&'a mut self) {
+        if self.leaf.is_null() {
+            return;
+        }
+
+        let (rank, entry_ptr) = unsafe { self.leaf.deref().next(self.entry_rank) };
+        self.entry_rank = rank;
+        self.entry_ptr = entry_ptr;
+        while self.entry_rank == 0 {
+            let next = unsafe { self.leaf.deref().jump(&self.guard) };
+            self.leaf = next;
+            self.entry_ptr = std::ptr::null();
+            self.entry_rank = 0;
+            if self.leaf.is_null() {
+                return;
+            }
+            let (rank, entry_ptr) = unsafe { self.leaf.deref().next(self.entry_rank) };
+            self.entry_rank = rank;
+            self.entry_ptr = entry_ptr;
+        }
+    }
+}
+
+impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Iterator for Scanner<'a, K, V> {
+    type Item = (&'a K, &'a mut V);
+    fn next(&mut self) -> Option<Self::Item> {
+        None
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -516,19 +574,23 @@ mod test {
                     Atomic::from(tail.load(Relaxed, &guard));
                 thread_handles.push(thread::spawn(move || {
                     barrier_copied.wait();
-                    let guard = crossbeam_epoch::pin();
-                    let mut current =
-                        unsafe { head_copied.load(Relaxed, &guard).deref().next(&guard) };
-                    while !current.is_null() {
-                        let next = unsafe { current.deref().next(&guard) };
-                        if next.is_null() {
-                            assert_eq!(
-                                current.as_raw(),
-                                tail_copied.load(Relaxed, &guard).as_raw()
-                            );
-                            break;
+                    for _ in 0..16 {
+                        let mut scanner = Scanner::new();
+                        scanner.start(&head_copied);
+                        let guard = crossbeam_epoch::pin();
+                        let mut current =
+                            unsafe { head_copied.load(Relaxed, &guard).deref().jump(&guard) };
+                        while !current.is_null() {
+                            let next = unsafe { current.deref().jump(&guard) };
+                            if next.is_null() {
+                                assert_eq!(
+                                    current.as_raw(),
+                                    tail_copied.load(Relaxed, &guard).as_raw()
+                                );
+                                break;
+                            }
+                            current = next;
                         }
-                        current = next;
                     }
                 }));
             }
@@ -540,14 +602,14 @@ mod test {
                 // 1. make the target leaf unreachable from the tree
                 let leaf = leaves[i].swap(Shared::null(), Relaxed, &guard);
                 // 2. make the target leaf unreachable by scanners
-                let next = unsafe { leaf.deref().next(&guard) };
+                let next = unsafe { leaf.deref().jump(&guard) };
                 unsafe { head.load(Relaxed, &guard).deref().update(next, &guard) };
                 // 3. deferred drop
                 unsafe { guard.defer_destroy(leaf) };
             }
             let guard = crossbeam_epoch::pin();
             assert_eq!(
-                unsafe { head.load(Relaxed, &guard).deref().next(&guard).as_raw() },
+                unsafe { head.load(Relaxed, &guard).deref().jump(&guard).as_raw() },
                 tail.load(Relaxed, &guard).as_raw()
             );
             drop(guard);
