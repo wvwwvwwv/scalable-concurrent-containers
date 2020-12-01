@@ -99,7 +99,15 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
                             | rank_bits;
                     }
                     Ordering::Equal => {
-                        return Some(entry);
+                        if inserter.metadata & (OCCUPANCY_BIT << i) != 0 {
+                            // duplicate entry
+                            return Some(entry);
+                        } else {
+                            // regard the entry as a lower ranked one
+                            if max_min_rank < rank {
+                                max_min_rank = rank;
+                            }
+                        }
                     }
                 }
             }
@@ -126,11 +134,113 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         Some(entry)
     }
 
-    pub fn remove(&self, key: &K) -> Option<V> {
-        None
+    pub fn remove(&self, key: &K) -> bool {
+        let mut metadata = self.metadata.load(Acquire);
+        if metadata & INVALIDATED != 0 {
+            return false;
+        }
+        if metadata & MAX_KEY_REMOVED == 0
+            && self
+                .max_key_entry
+                .as_ref()
+                .map_or_else(|| false, |entry| entry.0.cmp(&key) == Ordering::Equal)
+        {
+            loop {
+                match self.metadata.compare_exchange(
+                    metadata,
+                    metadata | MAX_KEY_REMOVED,
+                    Release,
+                    Relaxed,
+                ) {
+                    Ok(_) => return true,
+                    Err(result) => {
+                        if result & MAX_KEY_REMOVED != 0 {
+                            return false;
+                        }
+                        metadata = result;
+                    }
+                }
+            }
+        }
+
+        let mut max_min_rank = 0;
+        let mut min_max_rank = ARRAY_SIZE + 1;
+        for i in 0..ARRAY_SIZE {
+            let rank = ((metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
+                >> (i * INDEX_RANK_ENTRY_SIZE)) as usize;
+            if rank > max_min_rank && rank < min_max_rank && (metadata & (OCCUPANCY_BIT << i)) != 0
+            {
+                match self.compare(i, key) {
+                    Ordering::Less => {
+                        if max_min_rank < rank {
+                            max_min_rank = rank;
+                        }
+                    }
+                    Ordering::Greater => {
+                        if min_max_rank > rank {
+                            min_max_rank = rank;
+                        }
+                    }
+                    Ordering::Equal => loop {
+                        match self.metadata.compare_exchange(
+                            metadata,
+                            metadata & (!(OCCUPANCY_BIT << i)),
+                            Release,
+                            Relaxed,
+                        ) {
+                            Ok(_) => return true,
+                            Err(result) => {
+                                if result & (OCCUPANCY_BIT << i) == 0 {
+                                    return false;
+                                }
+                                metadata = result;
+                            }
+                        }
+                    },
+                }
+            }
+        }
+        false
     }
 
     pub fn search(&self, key: &K) -> Option<&V> {
+        let metadata = self.metadata.load(Acquire);
+        if metadata & INVALIDATED != 0 {
+            return None;
+        }
+        if metadata & MAX_KEY_REMOVED == 0
+            && self
+                .max_key_entry
+                .as_ref()
+                .map_or_else(|| false, |entry| entry.0.cmp(&key) == Ordering::Equal)
+        {
+            return self.max_key_entry.as_ref().map(|entry| &entry.1);
+        }
+
+        let mut max_min_rank = 0;
+        let mut min_max_rank = ARRAY_SIZE + 1;
+        for i in 0..ARRAY_SIZE {
+            let rank = ((metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
+                >> (i * INDEX_RANK_ENTRY_SIZE)) as usize;
+            if rank > max_min_rank && rank < min_max_rank && (metadata & (OCCUPANCY_BIT << i)) != 0
+            {
+                match self.compare(i, key) {
+                    Ordering::Less => {
+                        if max_min_rank < rank {
+                            max_min_rank = rank;
+                        }
+                    }
+                    Ordering::Greater => {
+                        if min_max_rank > rank {
+                            min_max_rank = rank;
+                        }
+                    }
+                    Ordering::Equal => {
+                        return Some(self.read(i));
+                    }
+                }
+            }
+        }
         None
     }
 
@@ -152,6 +262,11 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
     fn take(&self, index: usize) -> (K, V) {
         let entry_ptr = &mut self.entry_array_mut_ref()[index] as *mut MaybeUninit<(K, V)>;
         unsafe { std::ptr::replace(entry_ptr, MaybeUninit::uninit()).assume_init() }
+    }
+
+    fn read(&self, index: usize) -> &V {
+        let entry_ref = unsafe { &*self.entry_array[index].as_ptr() };
+        &entry_ref.1
     }
 
     fn entry_array_mut_ref(&self) -> &mut EntryArray<K, V> {
@@ -298,10 +413,34 @@ mod test {
     #[test]
     fn modification() {
         let num_threads = (ARRAY_SIZE + 1) as usize;
-        let mut leaf = Leaf::new(None);
-        leaf.insert(10, 10);
-        leaf.insert(11, 10);
-        leaf.insert(12, 10);
+        let leaf = Leaf::new(None);
+        assert!(leaf.insert(10, 11).is_none());
+        assert_eq!(*leaf.search(&10).unwrap(), 11);
+        assert!(leaf.insert(11, 12).is_none());
+        assert_eq!(leaf.insert(11, 12), Some((11, 12)));
+        assert_eq!(*leaf.search(&11).unwrap(), 12);
+        assert!(leaf.insert(12, 13).is_none());
+        assert_eq!(*leaf.search(&12).unwrap(), 13);
+        assert!(leaf.insert(2, 3).is_none());
+        assert_eq!(*leaf.search(&2).unwrap(), 3);
+        assert_eq!(leaf.insert(2, 3), Some((2, 3)));
+        assert_eq!(*leaf.search(&2).unwrap(), 3);
+        assert!(leaf.insert(1, 2).is_none());
+        assert_eq!(*leaf.search(&1).unwrap(), 2);
+        assert!(leaf.insert(13, 14).is_none());
+        assert_eq!(*leaf.search(&13).unwrap(), 14);
+        assert_eq!(leaf.insert(13, 14), Some((13, 14)));
+        assert!(leaf.remove(&10));
+        assert!(leaf.remove(&11));
+        assert!(leaf.remove(&12));
+        assert!(leaf.insert(12, 13).is_none());
+        assert_eq!(leaf.insert(14, 15), Some((14, 15)));
+        assert!(leaf.search(&11).is_none());
+        assert!(!leaf.remove(&10));
+        assert!(!leaf.remove(&11));
+        assert!(leaf.remove(&12));
+        assert!(leaf.search(&14).is_none());
+        assert_eq!(leaf.insert(10, 11), Some((10, 11)));
         let barrier = Arc::new(Barrier::new(num_threads));
         let mut thread_handles = Vec::with_capacity(num_threads);
         for tid in 0..num_threads {
