@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 pub const ARRAY_SIZE: usize = 7;
 
-/// Metadata layout: invalidated: 1-bit | max-key removed: 1-bit | rank-index map: 21-bit | occupancy: 7-bit
+/// Metadata layout: invalidated: 1-bit | max-key removed: 1-bit | occupancy: 7-bit | rank-index map: 21-bit
 ///
 /// State interpretation
 ///  - !OCCUPIED && RANK = 0: initial state
@@ -15,28 +15,29 @@ pub const ARRAY_SIZE: usize = 7;
 ///  - OCCUPIED && RANK > 0: inserted
 ///  - !OCCUPIED && RANK > 0: removed
 const INDEX_RANK_ENTRY_SIZE: usize = 3;
-const INDEX_RANK_MAP_MASK: u32 = ((1u32 << (ARRAY_SIZE * INDEX_RANK_ENTRY_SIZE)) - 1) << ARRAY_SIZE;
-const INDEX_RANK_ENTRY_MASK: u32 = ((1u32 << INDEX_RANK_ENTRY_SIZE) - 1) << ARRAY_SIZE;
-const OCCUPANCY_MASK: u32 = (1u32 << ARRAY_SIZE) - 1;
-const OCCUPANCY_BIT: u32 = 1;
 const MAX_KEY_REMOVED: u32 = 1u32 << ARRAY_SIZE * (INDEX_RANK_ENTRY_SIZE + 1);
 const INVALIDATED: u32 = MAX_KEY_REMOVED << 1;
+const OCCUPANCY_BIT: u32 = 1u32 << (ARRAY_SIZE * INDEX_RANK_ENTRY_SIZE as usize);
+const OCCUPANCY_MASK: u32 =
+    ((1u32 << ARRAY_SIZE) - 1) << (ARRAY_SIZE * INDEX_RANK_ENTRY_SIZE as usize);
+const INDEX_RANK_MAP_MASK: u32 = (1u32 << (ARRAY_SIZE * INDEX_RANK_ENTRY_SIZE)) - 1;
+const INDEX_RANK_ENTRY_MASK: u32 = (1u32 << INDEX_RANK_ENTRY_SIZE) - 1;
 
 /// Each entry in an EntryArray is never dropped until the Leaf is dropped once constructed.
 pub type EntryArray<K, V> = [MaybeUninit<(K, V)>; ARRAY_SIZE];
 
 /// Leaf stores key-value pairs.
 pub struct Leaf<K: Clone + Ord + Sync, V: Clone + Sync> {
-    max_key_entry: (K, V),
+    max_key_entry: Option<(K, V)>,
     entry_array: EntryArray<K, V>,
     metadata: AtomicU32,
     next: Atomic<Leaf<K, V>>,
 }
 
 impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
-    pub fn new(max_key: K, value: V) -> Leaf<K, V> {
+    pub fn new(max_key_entry: Option<(K, V)>) -> Leaf<K, V> {
         Leaf {
-            max_key_entry: (max_key, value),
+            max_key_entry,
             entry_array: unsafe { MaybeUninit::uninit().assume_init() },
             metadata: AtomicU32::new(0),
             next: Atomic::null(),
@@ -44,8 +45,12 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
     }
 
     pub fn insert(&self, key: K, value: V) -> Option<(K, V)> {
-        if self.max_key_entry.0.cmp(&key) != Ordering::Greater {
-            // the key doesn't fit the left
+        if self
+            .max_key_entry
+            .as_ref()
+            .map_or_else(|| false, |entry| entry.0.cmp(&key) != Ordering::Greater)
+        {
+            // the key doesn't fit the leaf
             return Some((key, value));
         }
 
@@ -54,36 +59,47 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
             // calculate the rank and check uniqueness
             let mut max_min_rank = 0;
             let mut min_max_rank = ARRAY_SIZE + 1;
+            let mut updated_rank_map = inserter.metadata & INDEX_RANK_MAP_MASK;
             for i in 0..ARRAY_SIZE {
                 if i == inserter.index {
                     continue;
                 }
-                let rank = ((inserter.metadata
+                let rank = ((updated_rank_map
                     & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
                     >> (i * INDEX_RANK_ENTRY_SIZE)) as usize;
-                if rank > 0 {
-                    match self.compare(i, &entry.0) {
-                        Ordering::Less => {
-                            if max_min_rank < rank {
-                                max_min_rank = rank;
-                            }
+                if rank == 0 || rank < max_min_rank {
+                    continue;
+                }
+                if rank > min_max_rank {
+                    // update the rank
+                    let rank_bits: u32 = ((rank + 1) << (i * INDEX_RANK_ENTRY_SIZE))
+                        .try_into()
+                        .unwrap();
+                    updated_rank_map = (updated_rank_map
+                        & (!(INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE))))
+                        | rank_bits;
+                    continue;
+                }
+                match self.compare(i, &entry.0) {
+                    Ordering::Less => {
+                        if max_min_rank < rank {
+                            max_min_rank = rank;
                         }
-                        Ordering::Greater => {
-                            if min_max_rank > rank {
-                                min_max_rank = rank;
-                            }
-                            // update the rank
-                            let rank_bits: u32 = ((rank + 1)
-                                << (i * INDEX_RANK_ENTRY_SIZE + ARRAY_SIZE))
-                                .try_into()
-                                .unwrap();
-                            inserter.metadata = (inserter.metadata
-                                & (!(INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE))))
-                                | rank_bits;
+                    }
+                    Ordering::Greater => {
+                        if min_max_rank > rank {
+                            min_max_rank = rank;
                         }
-                        Ordering::Equal => {
-                            return Some(entry);
-                        }
+                        // update the rank
+                        let rank_bits: u32 = ((rank + 1) << (i * INDEX_RANK_ENTRY_SIZE))
+                            .try_into()
+                            .unwrap();
+                        updated_rank_map = (updated_rank_map
+                            & (!(INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE))))
+                            | rank_bits;
+                    }
+                    Ordering::Equal => {
+                        return Some(entry);
                     }
                 }
             }
@@ -91,18 +107,18 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
             debug_assert!(min_max_rank == ARRAY_SIZE + 1 || final_rank == min_max_rank);
 
             // update its own rank
-            let rank_bits: u32 = (final_rank
-                << (inserter.index * INDEX_RANK_ENTRY_SIZE + ARRAY_SIZE))
+            let rank_bits: u32 = (final_rank << (inserter.index * INDEX_RANK_ENTRY_SIZE))
                 .try_into()
                 .unwrap();
-            inserter.metadata = (inserter.metadata
+            updated_rank_map = (updated_rank_map
                 & (!(INDEX_RANK_ENTRY_MASK << (inserter.index * INDEX_RANK_ENTRY_SIZE))))
                 | rank_bits;
 
             // insert the key value
             self.write(inserter.index, entry.0, entry.1);
+
             // try commit
-            if inserter.commit(0) {
+            if inserter.commit(updated_rank_map) {
                 return None;
             }
             entry = self.take(inserter.index);
@@ -146,7 +162,14 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
 }
 
 impl<K: Clone + Ord + Sync, V: Clone + Sync> Drop for Leaf<K, V> {
-    fn drop(&mut self) {}
+    fn drop(&mut self) {
+        let metadata = self.metadata.swap(0, Acquire);
+        for i in 0..ARRAY_SIZE {
+            if metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)) != 0 {
+                self.take(i);
+            }
+        }
+    }
 }
 
 struct Inserter<'a, K: Clone + Ord + Sync, V: Clone + Sync> {
@@ -162,39 +185,37 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Inserter<'a, K, V> {
         let mut current = leaf.metadata.load(Relaxed);
         loop {
             if (current & INVALIDATED) == INVALIDATED {
+                // invalidated
                 return None;
             }
-            let rank_index_map = current & INDEX_RANK_MAP_MASK;
-            let candidate_position = current.trailing_ones();
-            if candidate_position as usize >= ARRAY_SIZE {
-                for i in 0..ARRAY_SIZE {
-                    if rank_index_map & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)) == 0
-                    {
-                        // currently in-doubt: retry
-                        current = leaf.metadata.load(Relaxed);
-                        continue;
+
+            let mut full = true;
+            let mut position = ARRAY_SIZE;
+            for i in 0..ARRAY_SIZE {
+                let rank = current & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE));
+                if rank == 0 {
+                    full = false;
+                    if current & (OCCUPANCY_BIT << i) == 0 {
+                        // initial state
+                        position = i;
+                        break;
                     }
-                }
-                return None;
-            }
-            let mut final_position = ARRAY_SIZE;
-            for i in (candidate_position as usize)..ARRAY_SIZE {
-                if rank_index_map & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)) == 0 {
-                    // it is not ranked: empty
-                    final_position = i;
-                    break;
                 }
             }
 
-            if final_position == ARRAY_SIZE {
-                // no appropriate position found
-                break;
+            if full {
+                // full
+                return None;
+            } else if position == ARRAY_SIZE {
+                // in-doubt
+                current = leaf.metadata.load(Relaxed);
+                continue;
             }
 
             // found an empty position
             match leaf.metadata.compare_exchange(
                 current,
-                current | (OCCUPANCY_BIT << final_position),
+                current | (OCCUPANCY_BIT << position),
                 Acquire,
                 Relaxed,
             ) {
@@ -202,8 +223,8 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Inserter<'a, K, V> {
                     return Some(Inserter {
                         leaf,
                         committed: false,
-                        metadata: result | (OCCUPANCY_BIT << final_position),
-                        index: final_position,
+                        metadata: result | (OCCUPANCY_BIT << position),
+                        index: position,
                     })
                 }
                 Err(result) => current = result,
@@ -213,7 +234,6 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Inserter<'a, K, V> {
     }
 
     fn commit(&mut self, updated_rank_map: u32) -> bool {
-        // rollback metadata changes if not committed
         let mut current = self.metadata;
         loop {
             let next = (current & (!INDEX_RANK_MAP_MASK)) | updated_rank_map;
@@ -226,6 +246,7 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Inserter<'a, K, V> {
                     current = result;
                     continue;
                 }
+                // rollback metadata changes if not committed
                 return false;
             }
             break;
@@ -241,14 +262,12 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Drop for Inserter<'a, K, V> {
             // rollback metadata changes if not committed
             let mut current = self.metadata;
             loop {
-                let reverted = current
-                    & (!((OCCUPANCY_BIT << self.index)
-                        | (INDEX_RANK_ENTRY_MASK << (self.index * INDEX_RANK_ENTRY_SIZE))));
-                if let Err(result) = self
-                    .leaf
-                    .metadata
-                    .compare_exchange(current, reverted, Release, Relaxed)
-                {
+                if let Err(result) = self.leaf.metadata.compare_exchange(
+                    current,
+                    current & (!(OCCUPANCY_BIT << self.index)),
+                    Release,
+                    Relaxed,
+                ) {
                     current = result;
                     continue;
                 }
@@ -279,6 +298,10 @@ mod test {
     #[test]
     fn modification() {
         let num_threads = (ARRAY_SIZE + 1) as usize;
+        let mut leaf = Leaf::new(None);
+        leaf.insert(10, 10);
+        leaf.insert(11, 10);
+        leaf.insert(12, 10);
         let barrier = Arc::new(Barrier::new(num_threads));
         let mut thread_handles = Vec::with_capacity(num_threads);
         for tid in 0..num_threads {
