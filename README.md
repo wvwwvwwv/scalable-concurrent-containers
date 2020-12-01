@@ -2,6 +2,9 @@
 
 SCC offers scalable concurrent containers written in the Rust language. The data structures in SCC assume to be used by a database management software running on a server, ane therefore they may not efficiently work with a small set of data.
 
+- [scc::HashMap](#scc::HashMap)
+- [scc::TreeMap](#scc::TreeMap)
+
 ## scc::HashMap
 
 scc::HashMap is a scalable in-memory unique key-value store that is targeted at highly concurrent heavy workloads. It does not distribute data to multiple shards as most concurrent hash maps do, instead only does it have a single array of entries and corresponding metadata cell array. The metadata management strategy is similar to that of Swisstable; a metadata cell which is separated from the key-value array, is a 64-byte data structure for managing consecutive sixteen entries in the key-value array. The metadata cell also has a linked list of entry arrays for hash collision resolution. scc::HashMap automatically enlarges and shrinks the capacity of its internal array, and resizing happens without blocking other operations and threads. In order to keep the predictable latency of each operation, it does not rehash every entry in the container at once when resizing, instead it distributes the resizing workload to future access to the data structure.
@@ -50,6 +53,11 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 | Mixed  | 326.767954659s | 350.603202721s | 375.987412301s | 433.899012681s |
 | Remove | 164.857461617s | 184.528933216s | 199.187884668s | 250.735616868s |
 
+## scc::TreeMap
+
+[Work-in-progress](#Milestones)
+
+scc::TreeMap is a scan-optimized concurrent tree structure.
 
 ## Changelog
 

@@ -1,4 +1,4 @@
-use crossbeam_epoch::Atomic;
+use crossbeam_epoch::{Atomic, Guard, Shared};
 use std::cmp::Ordering;
 use std::convert::TryInto;
 use std::mem::MaybeUninit;
@@ -27,7 +27,7 @@ const INDEX_RANK_ENTRY_MASK: u32 = (1u32 << INDEX_RANK_ENTRY_SIZE) - 1;
 pub type EntryArray<K, V> = [MaybeUninit<(K, V)>; ARRAY_SIZE];
 
 /// Leaf stores at most eight key-value pairs.
-/// 
+///
 /// A constructed key-value pair entry is never dropped until the Leaf instance is dropped.
 pub struct Leaf<K: Clone + Ord + Sync, V: Clone + Sync> {
     entry_array: EntryArray<K, V>,
@@ -37,12 +37,12 @@ pub struct Leaf<K: Clone + Ord + Sync, V: Clone + Sync> {
 }
 
 impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
-    pub fn new(max_key_entry: Option<(K, V)>) -> Leaf<K, V> {
+    pub fn new(max_key_entry: Option<(K, V)>, next: Atomic<Leaf<K, V>>) -> Leaf<K, V> {
         Leaf {
             entry_array: unsafe { MaybeUninit::uninit().assume_init() },
             max_key_entry,
             metadata: AtomicU32::new(0),
-            next: Atomic::null(),
+            next,
         }
     }
 
@@ -258,6 +258,14 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         }
     }
 
+    pub fn next<'a>(&self, guard: &'a Guard) -> Shared<'a, Leaf<K, V>> {
+        self.next.load(Relaxed, &guard)
+    }
+
+    pub fn update<'a>(&self, next: Shared<'a, Leaf<K, V>>, guard: &'a Guard) {
+        self.next.swap(next, Release, guard);
+    }
+
     fn write(&self, index: usize, key: K, value: V) {
         unsafe {
             self.entry_array_mut_ref()[index]
@@ -423,8 +431,8 @@ mod test {
     }
 
     #[test]
-    fn leaf() {
-        let leaf = Leaf::new(None);
+    fn basic() {
+        let leaf = Leaf::new(None, Atomic::null());
         assert!(leaf.insert(10, 11).is_none());
         assert_eq!(*leaf.search(&10).unwrap(), 11);
         assert!(leaf.insert(11, 12).is_none());
@@ -455,28 +463,106 @@ mod test {
     }
 
     #[test]
-    fn multithreaded() {
+    fn update() {
         let num_threads = (ARRAY_SIZE + 1) as usize;
-        let barrier = Arc::new(Barrier::new(num_threads));
-        let leaf = Arc::new(Leaf::new(Some((10usize, 10usize))));
-        let mut thread_handles = Vec::with_capacity(num_threads);
-        for tid in 0..num_threads {
-            let barrier_copied = barrier.clone();
-            let leaf_copied = leaf.clone();
-            thread_handles.push(thread::spawn(move || {
-                barrier_copied.wait();
-                assert_eq!(leaf_copied.insert(10, 12), Some((10, 12)));
-                let result = leaf_copied.insert(tid, 1);
-                if result.is_none() {
-                    assert_eq!(*leaf_copied.search(&tid).unwrap(), 1);
-                    assert!(leaf_copied.remove(&tid));
-                } else {
-                    assert!(!leaf_copied.remove(&tid));
-                }
-            }));
+        for _ in 0..256 {
+            let barrier = Arc::new(Barrier::new(num_threads));
+            let leaf = Arc::new(Leaf::new(Some((10usize, 10usize)), Atomic::null()));
+            let mut thread_handles = Vec::with_capacity(num_threads);
+            for tid in 0..num_threads {
+                let barrier_copied = barrier.clone();
+                let leaf_copied = leaf.clone();
+                thread_handles.push(thread::spawn(move || {
+                    barrier_copied.wait();
+                    assert_eq!(leaf_copied.insert(10, 12), Some((10, 12)));
+                    let result = leaf_copied.insert(tid, 1);
+                    if result.is_none() {
+                        assert_eq!(*leaf_copied.search(&tid).unwrap(), 1);
+                        assert!(leaf_copied.remove(&tid));
+                    } else {
+                        assert!(!leaf_copied.remove(&tid));
+                    }
+                }));
+            }
+            for handle in thread_handles {
+                handle.join().unwrap();
+            }
         }
     }
 
     #[test]
-    fn iteration() {}
+    fn scan() {
+        let num_threads = (ARRAY_SIZE + 1) as usize;
+        for _ in 0..256 {
+            let barrier = Arc::new(Barrier::new(num_threads + 1));
+            let mut leaves: Vec<Atomic<Leaf<usize, usize>>> = Vec::with_capacity(num_threads);
+            let head = Atomic::new(Leaf::new(None, Atomic::null()));
+            let guard = crossbeam_epoch::pin();
+            let mut prev = head.load(Relaxed, &guard);
+            for _ in 0..num_threads {
+                let current = Atomic::new(Leaf::new(None, Atomic::null()));
+                leaves.push(Atomic::from(current.load(Relaxed, &guard)));
+                unsafe { prev.deref().update(current.load(Relaxed, &guard), &guard) };
+                prev = current.load(Relaxed, &guard);
+            }
+            let tail = Atomic::new(Leaf::new(None, Atomic::null()));
+            unsafe { prev.deref().update(tail.load(Relaxed, &guard), &guard) };
+            let mut thread_handles = Vec::with_capacity(num_threads);
+            for _ in 0..num_threads {
+                let barrier_copied = barrier.clone();
+                let head_copied: Atomic<Leaf<usize, usize>> =
+                    Atomic::from(head.load(Relaxed, &guard));
+                let tail_copied: Atomic<Leaf<usize, usize>> =
+                    Atomic::from(tail.load(Relaxed, &guard));
+                thread_handles.push(thread::spawn(move || {
+                    barrier_copied.wait();
+                    let guard = crossbeam_epoch::pin();
+                    let mut current =
+                        unsafe { head_copied.load(Relaxed, &guard).deref().next(&guard) };
+                    while !current.is_null() {
+                        let next = unsafe { current.deref().next(&guard) };
+                        if next.is_null() {
+                            assert_eq!(
+                                current.as_raw(),
+                                tail_copied.load(Relaxed, &guard).as_raw()
+                            );
+                            break;
+                        }
+                        current = next;
+                    }
+                }));
+            }
+            drop(guard);
+
+            barrier.wait();
+            for i in 0..num_threads {
+                let guard = crossbeam_epoch::pin();
+                // 1. make the target leaf unreachable from the tree
+                let leaf = leaves[i].swap(Shared::null(), Relaxed, &guard);
+                // 2. make the target leaf unreachable by scanners
+                let next = unsafe { leaf.deref().next(&guard) };
+                unsafe { head.load(Relaxed, &guard).deref().update(next, &guard) };
+                // 3. deferred drop
+                unsafe { guard.defer_destroy(leaf) };
+            }
+            let guard = crossbeam_epoch::pin();
+            assert_eq!(
+                unsafe { head.load(Relaxed, &guard).deref().next(&guard).as_raw() },
+                tail.load(Relaxed, &guard).as_raw()
+            );
+            drop(guard);
+
+            for handle in thread_handles {
+                handle.join().unwrap();
+            }
+
+            for ptr in [head, tail].iter() {
+                let guard = crossbeam_epoch::pin();
+                let leaf = ptr.swap(Shared::null(), Relaxed, &guard);
+                if !leaf.is_null() {
+                    unsafe { guard.defer_destroy(leaf) };
+                }
+            }
+        }
+    }
 }
