@@ -26,10 +26,12 @@ const INDEX_RANK_ENTRY_MASK: u32 = (1u32 << INDEX_RANK_ENTRY_SIZE) - 1;
 /// Each entry in an EntryArray is never dropped until the Leaf is dropped once constructed.
 pub type EntryArray<K, V> = [MaybeUninit<(K, V)>; ARRAY_SIZE];
 
-/// Leaf stores key-value pairs.
+/// Leaf stores at most eight key-value pairs.
+/// 
+/// A constructed key-value pair entry is never dropped until the Leaf instance is dropped.
 pub struct Leaf<K: Clone + Ord + Sync, V: Clone + Sync> {
-    max_key_entry: Option<(K, V)>,
     entry_array: EntryArray<K, V>,
+    max_key_entry: Option<(K, V)>,
     metadata: AtomicU32,
     next: Atomic<Leaf<K, V>>,
 }
@@ -37,8 +39,8 @@ pub struct Leaf<K: Clone + Ord + Sync, V: Clone + Sync> {
 impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
     pub fn new(max_key_entry: Option<(K, V)>) -> Leaf<K, V> {
         Leaf {
-            max_key_entry,
             entry_array: unsafe { MaybeUninit::uninit().assume_init() },
+            max_key_entry,
             metadata: AtomicU32::new(0),
             next: Atomic::null(),
         }
@@ -244,7 +246,17 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         None
     }
 
-    pub fn invalidate(&self) {}
+    pub fn invalidate(&self) {
+        let mut current = self.metadata.load(Relaxed);
+        while current & INVALIDATED == 0 {
+            if let Err(result) =
+                self.metadata
+                    .compare_exchange(current, current | INVALIDATED, Release, Relaxed)
+            {
+                current = result;
+            }
+        }
+    }
 
     fn write(&self, index: usize, key: K, value: V) {
         unsafe {
@@ -411,8 +423,7 @@ mod test {
     }
 
     #[test]
-    fn modification() {
-        let num_threads = (ARRAY_SIZE + 1) as usize;
+    fn leaf() {
         let leaf = Leaf::new(None);
         assert!(leaf.insert(10, 11).is_none());
         assert_eq!(*leaf.search(&10).unwrap(), 11);
@@ -441,12 +452,27 @@ mod test {
         assert!(leaf.remove(&12));
         assert!(leaf.search(&14).is_none());
         assert_eq!(leaf.insert(10, 11), Some((10, 11)));
+    }
+
+    #[test]
+    fn multithreaded() {
+        let num_threads = (ARRAY_SIZE + 1) as usize;
         let barrier = Arc::new(Barrier::new(num_threads));
+        let leaf = Arc::new(Leaf::new(Some((10usize, 10usize))));
         let mut thread_handles = Vec::with_capacity(num_threads);
         for tid in 0..num_threads {
             let barrier_copied = barrier.clone();
+            let leaf_copied = leaf.clone();
             thread_handles.push(thread::spawn(move || {
                 barrier_copied.wait();
+                assert_eq!(leaf_copied.insert(10, 12), Some((10, 12)));
+                let result = leaf_copied.insert(tid, 1);
+                if result.is_none() {
+                    assert_eq!(*leaf_copied.search(&tid).unwrap(), 1);
+                    assert!(leaf_copied.remove(&tid));
+                } else {
+                    assert!(!leaf_copied.remove(&tid));
+                }
             }));
         }
     }
