@@ -262,8 +262,12 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         self.next.load(Relaxed, &guard)
     }
 
-    pub fn update<'a>(&self, next: Shared<'a, Leaf<K, V>>, guard: &'a Guard) {
-        self.next.swap(next, Release, guard);
+    pub fn update<'a>(
+        &self,
+        next: Shared<'a, Leaf<K, V>>,
+        guard: &'a Guard,
+    ) -> Shared<'a, Leaf<K, V>> {
+        self.next.swap(next, Release, guard)
     }
 
     fn write(&self, index: usize, key: K, value: V) {
@@ -274,8 +278,43 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         };
     }
 
-    pub fn next(&self, rank: u32) -> (u32, *const (K, V)) {
-        (0, std::ptr::null())
+    pub fn next(&self, rank: usize) -> (usize, *const (K, V)) {
+        let metadata = self.metadata.load(Acquire);
+        if metadata & INVALIDATED != 0 {
+            return (usize::MAX, std::ptr::null());
+        }
+
+        if rank < ARRAY_SIZE {
+            let mut next_rank = ARRAY_SIZE + 1;
+            let mut next_index = ARRAY_SIZE;
+            for i in 0..ARRAY_SIZE {
+                if metadata & (OCCUPANCY_BIT << i) == 0 {
+                    continue;
+                }
+                let current_entry_rank =
+                    ((metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
+                        >> (i * INDEX_RANK_ENTRY_SIZE)) as usize;
+                if rank < current_entry_rank && current_entry_rank < next_rank {
+                    next_rank = current_entry_rank;
+                    next_index = i;
+                }
+            }
+            if next_rank <= ARRAY_SIZE {
+                return (next_rank, unsafe {
+                    &*self.entry_array[next_index].as_ptr()
+                });
+            }
+        }
+
+        if rank <= ARRAY_SIZE && metadata & MAX_KEY_REMOVED == 0 && self.max_key_entry.is_some() {
+            return (
+                ARRAY_SIZE + 1,
+                self.max_key_entry
+                    .as_ref()
+                    .map_or_else(std::ptr::null, |entry| entry as *const (K, V)),
+            );
+        }
+        (usize::MAX, std::ptr::null())
     }
 
     fn compare(&self, index: usize, key: &K) -> std::cmp::Ordering {
@@ -420,43 +459,46 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Drop for Inserter<'a, K, V> {
 ///
 /// A scanner instance holds a Guard, thus preventing GC.
 pub struct Scanner<'a, K: Clone + Ord + Sync, V: Clone + Sync> {
-    leaf: Shared<'a, Leaf<K, V>>,
+    /// It emulates TreeMap<'a, K, V>: to be replaced with treemap: TreeMap<'a, K, V>
+    head: &'a Leaf<K, V>,
+    leaf: *const Leaf<K, V>,
     guard: Guard,
     entry_ptr: *const (K, V),
-    entry_rank: u32,
+    entry_rank: usize,
 }
 
 impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Scanner<'a, K, V> {
-    pub fn new() -> Scanner<'a, K, V> {
+    pub fn new(head: &Leaf<K, V>) -> Scanner<K, V> {
         Scanner {
-            leaf: Shared::null(),
+            head,
+            leaf: std::ptr::null(),
             guard: crossbeam_epoch::pin(),
             entry_ptr: std::ptr::null(),
             entry_rank: 0,
         }
     }
 
-    pub fn start(&'a mut self, leaf: &'a Atomic<Leaf<K, V>>) {
-        self.leaf = leaf.load(Acquire, &self.guard);
-    }
-
-    pub fn next(&'a mut self) {
+    fn proceed(&mut self) {
+        self.entry_ptr = std::ptr::null();
         if self.leaf.is_null() {
-            return;
-        }
-
-        let (rank, entry_ptr) = unsafe { self.leaf.deref().next(self.entry_rank) };
-        self.entry_rank = rank;
-        self.entry_ptr = entry_ptr;
-        while self.entry_rank == 0 {
-            let next = unsafe { self.leaf.deref().jump(&self.guard) };
-            self.leaf = next;
-            self.entry_ptr = std::ptr::null();
-            self.entry_rank = 0;
-            if self.leaf.is_null() {
+            if self.entry_rank == 0 {
+                // to be replaced with self.treemap.head();
+                self.leaf = self.head as *const Leaf<K, V>;
+            } else {
                 return;
             }
-            let (rank, entry_ptr) = unsafe { self.leaf.deref().next(self.entry_rank) };
+        }
+
+        let (rank, entry_ptr) = unsafe { (*self.leaf).next(self.entry_rank) };
+        self.entry_rank = rank;
+        self.entry_ptr = entry_ptr;
+        while self.entry_rank == usize::MAX {
+            self.leaf = unsafe { (*self.leaf).jump(&self.guard) }.as_raw();
+            if self.leaf.is_null() {
+                self.entry_rank = usize::MAX;
+                return;
+            }
+            let (rank, entry_ptr) = unsafe { (*self.leaf).next(0) };
             self.entry_rank = rank;
             self.entry_ptr = entry_ptr;
         }
@@ -466,7 +508,17 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Scanner<'a, K, V> {
 impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Iterator for Scanner<'a, K, V> {
     type Item = (&'a K, &'a mut V);
     fn next(&mut self) -> Option<Self::Item> {
-        None
+        self.proceed();
+        if self.entry_ptr.is_null() {
+            return None;
+        }
+
+        unsafe {
+            let key_ptr = &(*self.entry_ptr).0 as *const K;
+            let value_ptr = &(*self.entry_ptr).1 as *const V;
+            let value_mut_ptr = value_ptr as *mut V;
+            Some((&(*key_ptr), &mut (*value_mut_ptr)))
+        }
     }
 }
 
@@ -490,7 +542,16 @@ mod test {
 
     #[test]
     fn basic() {
-        let leaf = Leaf::new(None, Atomic::null());
+        let guard = crossbeam_epoch::pin();
+        let tail = Atomic::new(Leaf::new(Some((100, 101)), Atomic::null()));
+        let tail_ref = unsafe { tail.load(Relaxed, &guard).deref() };
+        assert!(tail_ref.insert(50, 51).is_none());
+        assert!(tail_ref.insert(60, 61).is_none());
+        assert!(tail_ref.insert(70, 71).is_none());
+        assert!(tail_ref.remove(&60));
+        drop(tail_ref);
+
+        let leaf = Leaf::new(None, tail);
         assert!(leaf.insert(10, 11).is_none());
         assert_eq!(*leaf.search(&10).unwrap(), 11);
         assert!(leaf.insert(11, 12).is_none());
@@ -518,6 +579,37 @@ mod test {
         assert!(leaf.remove(&12));
         assert!(leaf.search(&14).is_none());
         assert_eq!(leaf.insert(10, 11), Some((10, 11)));
+
+        let mut scanner = Scanner::new(&leaf);
+        let mut prev_key = 0;
+        let mut iterated = 0;
+        while let Some(entry) = scanner.next() {
+            println!("{} {}", entry.0, entry.1);
+            assert!(prev_key < *entry.0);
+            assert_eq!(*entry.0 + 1, *entry.1);
+            *entry.1 += 1;
+            prev_key = *entry.0;
+            iterated += 1;
+        }
+        assert_eq!(iterated, 6);
+        drop(scanner);
+
+        let mut scanner = Scanner::new(&leaf);
+        let mut prev_key = 0;
+        let mut iterated = 0;
+        while let Some(entry) = scanner.next() {
+            println!("{} {}", entry.0, entry.1);
+            assert!(prev_key < *entry.0);
+            assert_eq!(*entry.0 + 2, *entry.1);
+            *entry.1 += 1;
+            prev_key = *entry.0;
+            iterated += 1;
+        }
+        drop(scanner);
+        assert_eq!(iterated, 6);
+
+        let tail_ptr = leaf.update(Shared::null(), &guard);
+        unsafe { guard.defer_destroy(tail_ptr) };
     }
 
     #[test]
@@ -575,9 +667,10 @@ mod test {
                 thread_handles.push(thread::spawn(move || {
                     barrier_copied.wait();
                     for _ in 0..16 {
-                        let mut scanner = Scanner::new();
-                        scanner.start(&head_copied);
                         let guard = crossbeam_epoch::pin();
+                        let root_ref = unsafe { head_copied.load(Relaxed, &guard).deref() };
+                        let mut scanner = Scanner::new(root_ref);
+                        while let Some(_) = scanner.next() {}
                         let mut current =
                             unsafe { head_copied.load(Relaxed, &guard).deref().jump(&guard) };
                         while !current.is_null() {
