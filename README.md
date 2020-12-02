@@ -2,8 +2,8 @@
 
 SCC offers scalable concurrent containers written in the Rust language. The data structures in SCC assume to be used by a database management software running on a server, ane therefore they may not efficiently work with a small set of data.
 
-- [scc::HashMap](#scc::HashMap)
-- [scc::TreeMap](#scc::TreeMap)
+- [scc::HashMap](##scc::HashMap)
+- [scc::TreeIndex](##scc::TreeIndex)
 
 ## scc::HashMap
 
@@ -18,7 +18,7 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
 - RAM: 1TB
 - Rust compiler version: 1.48.0
-- SCC version: 0.3.0
+- SCC version: 0.3.1
 - The hashmap is generated using the default parameters: the RandomState hasher builder, and 256 preallocated entries.
 - In order to minimize the cost of page fault handling, all the tests were run twice, and only the best results were taken.
 
@@ -53,11 +53,11 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 | Mixed  | 326.767954659s | 350.603202721s | 375.987412301s | 433.899012681s |
 | Remove | 164.857461617s | 184.528933216s | 199.187884668s | 250.735616868s |
 
-## scc::TreeMap
+## scc::TreeIndex
 
-[Work-in-progress](#Milestones)
+[Work-in-progress](##Milestones)
 
-scc::TreeMap is a scan-optimized concurrent tree structure.
+scc::TreeIndex is a scan-optimized concurrent index structure. Locks are only acquire on structural changes, and non-destructive insert/update/delete/read/scan operations are totally lock-free.
 
 ## Changelog
 
