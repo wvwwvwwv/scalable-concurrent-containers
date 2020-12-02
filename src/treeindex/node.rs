@@ -1,22 +1,25 @@
 use super::Leaf;
 use crossbeam_epoch::Atomic;
 
-enum NodeType<K: Clone + Ord + Sync, V: Clone + Sync> {
-    InternalNode(Leaf<K, Node<K, V>>),
-    LeafNode(Leaf<K, V>),
-}
-pub struct Node<K: Clone + Ord + Sync, V: Clone + Sync> {
-    entry: Box<NodeType<K, V>>,
+enum NodeType<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
+    InternalNode(Leaf<K, Atomic<Node<K, V>>>),
+    LeafNode(Leaf<K, Atomic<Leaf<K, V>>>),
 }
 
-impl<K: Clone + Ord + Sync, V: Clone + Sync> Clone for Node<K, V> {
-    fn clone(&self) -> Self {
-        let mut node = Node {
-            entry: Box::new(NodeType::LeafNode(Leaf::new(None, Atomic::null()))),
-        };
-        // do something...
-        node
+pub struct Node<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
+    entry: NodeType<K, V>,
+    floor: usize,
+}
+
+impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
+    pub fn new(floor: usize) -> Node<K, V> {
+        Node {
+            entry: if floor == 0 {
+                NodeType::LeafNode(Leaf::new(None, Atomic::null()))
+            } else {
+                NodeType::InternalNode(Leaf::new(None, Atomic::null()))
+            },
+            floor,
+        }
     }
 }
-
-unsafe impl<K: Clone + Ord + Sync, V: Clone + Sync> Sync for Node<K, V> {}
