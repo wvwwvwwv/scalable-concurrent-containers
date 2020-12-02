@@ -339,6 +339,21 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
     }
 }
 
+impl<K: Clone + Ord + Sync, V: Clone + Sync> Clone for Leaf<K, V> {
+    fn clone(&self) -> Self {
+        let mut leaf = Leaf {
+            entry_array: unsafe { MaybeUninit::uninit().assume_init() },
+            max_key_entry: None,
+            metadata: AtomicU32::new(0),
+            next: Atomic::null(),
+        };
+        // do something...
+        leaf
+    }
+}
+
+unsafe impl<K: Clone + Ord + Sync, V: Clone + Sync> Sync for Leaf<K, V> {}
+
 impl<K: Clone + Ord + Sync, V: Clone + Sync> Drop for Leaf<K, V> {
     fn drop(&mut self) {
         let metadata = self.metadata.swap(0, Acquire);
