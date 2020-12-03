@@ -484,19 +484,21 @@ pub struct Scanner<'a, K: Ord + Sync, V: Sync> {
     /// It emulates TreeMap<'a, K, V>: to be replaced with treemap: TreeMap<'a, K, V>
     head: &'a Leaf<K, V>,
     leaf: *const Leaf<K, V>,
-    guard: Guard,
+    guard: &'a Guard,
     entry_ptr: *const (K, V),
     entry_rank: usize,
+    jump: bool,
 }
 
 impl<'a, K: Ord + Sync, V: Sync> Scanner<'a, K, V> {
-    pub fn new(head: &Leaf<K, V>) -> Scanner<K, V> {
+    pub fn new(head: &'a Leaf<K, V>, jump: bool, guard: &'a Guard) -> Scanner<'a, K, V> {
         Scanner {
             head,
             leaf: std::ptr::null(),
-            guard: crossbeam_epoch::pin(),
+            guard,
             entry_ptr: std::ptr::null(),
             entry_rank: 0,
+            jump,
         }
     }
 
@@ -515,7 +517,11 @@ impl<'a, K: Ord + Sync, V: Sync> Scanner<'a, K, V> {
         self.entry_rank = rank;
         self.entry_ptr = entry_ptr;
         while self.entry_rank == usize::MAX {
-            self.leaf = unsafe { (*self.leaf).jump(&self.guard) }.as_raw();
+            self.leaf = if self.jump {
+                unsafe { (*self.leaf).jump(self.guard) }.as_raw()
+            } else {
+                std::ptr::null()
+            };
             if self.leaf.is_null() {
                 self.entry_rank = usize::MAX;
                 return;
@@ -642,7 +648,7 @@ mod test {
         assert_eq!(*leaf.search(&20).unwrap(), 21);
         assert_eq!(leaf.insert(10, 11, false), Some((10, 11)));
 
-        let mut scanner = Scanner::new(&leaf);
+        let mut scanner = Scanner::new(&leaf, true, &guard);
         let mut prev_key = 0;
         let mut iterated = 0;
         while let Some(entry) = scanner.next() {
@@ -653,6 +659,19 @@ mod test {
             iterated += 1;
         }
         assert_eq!(iterated, 8);
+        drop(scanner);
+
+        let mut scanner = Scanner::new(&leaf, false, &guard);
+        let mut prev_key = 0;
+        let mut iterated = 0;
+        while let Some(entry) = scanner.next() {
+            println!("{} {}", entry.0, entry.1);
+            assert!(prev_key < *entry.0);
+            assert_eq!(*entry.0 + 1, *entry.1);
+            prev_key = *entry.0;
+            iterated += 1;
+        }
+        assert_eq!(iterated, 4);
         drop(scanner);
 
         let tail_ptr = leaf.update(Shared::null(), &guard);
@@ -716,7 +735,7 @@ mod test {
                     for _ in 0..16 {
                         let guard = crossbeam_epoch::pin();
                         let root_ref = unsafe { head_copied.load(Relaxed, &guard).deref() };
-                        let mut scanner = Scanner::new(root_ref);
+                        let mut scanner = Scanner::new(root_ref, true, &guard);
                         while let Some(_) = scanner.next() {}
                         let mut current =
                             unsafe { head_copied.load(Relaxed, &guard).deref().jump(&guard) };
