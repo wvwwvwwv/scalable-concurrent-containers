@@ -30,26 +30,20 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
     ///
     /// It is a recursive call, and therefore stack-overflow may occur.
     /// The layout of a node: |child/max_key|child/max_key|...child/max_key|child
-    pub fn insert(&self, key: K, value: V, guard: &Guard) -> Option<(K, V)> {
+    pub fn insert(&self, mut key: K, value: V, guard: &Guard) -> Option<(K, V)> {
         match &self.entry {
             NodeType::InternalNode(node) => {
                 // firstly, try to insert into an existing child node
-                let mut scanner = Scanner::new(&node.0, false, guard);
-                while let Some(entry) = scanner.next() {
-                    if (*entry.0).cmp(&key) != Ordering::Less {
-                        let child_node = (*entry.1).load(Acquire, guard);
-                        return unsafe { child_node.deref().insert(key, value, guard) };
-                    }
-                } // TODO: leaf.ceil(key)
-                drop(scanner);
+                if let Some((_, child)) = node.0.min_ge(&key) {
+                    return unsafe { child.load(Acquire, guard).deref().insert(key, value, guard) };
+                }
 
                 // secondly, try to create a new child node
                 let mut new_child_node = Atomic::null();
-                let mut key_cloned = key.clone();
                 if !node.0.full() {
                     new_child_node = Atomic::new(Node::new(self.floor - 1));
                     let inserted = node.0.insert(
-                        key_cloned,
+                        key.clone(),
                         Atomic::from(new_child_node.load(Relaxed, guard)),
                         false,
                     );
@@ -61,33 +55,38 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                                 .insert(key, value, guard)
                         };
                     } else {
-                        // TODO: leaf.ceil(key) again;
-                        // try to reuse the newly allocated child node as the tail entry
-                        let (key, new_child_node) = inserted.unwrap();
-                        let mut current_tail_node = node.1.load(Relaxed, guard);
-                        if current_tail_node.is_null() {
-                            if let Err(result) = node.1.compare_and_set(
-                                current_tail_node,
-                                new_child_node.load(Relaxed, guard),
-                                Relaxed,
-                                &guard,
-                            ) {
-                                unsafe {
-                                    guard.defer_destroy(
-                                        new_child_node.into_owned().into_shared(&guard),
-                                    )
-                                };
-                                current_tail_node = result.current;
-                            }
-                        } else {
-                            unsafe {
-                                guard.defer_destroy(new_child_node.into_owned().into_shared(&guard))
+                        if let Some((_, child)) = node.0.min_ge(&key) {
+                            drop(unsafe { new_child_node.into_owned() });
+                            return unsafe {
+                                child.load(Acquire, guard).deref().insert(key, value, guard)
                             };
                         }
+                        // try to reuse the newly allocated child node as the tail entry
+                        let (key_returned, child_node_returned) = inserted.unwrap();
+                        key = key_returned;
+                        new_child_node = child_node_returned;
                     }
                 }
+
                 // lastly, try to insert into the tail entry
-                None
+                let mut current_tail_node = node.1.load(Relaxed, guard);
+                if current_tail_node.is_null() {
+                    if new_child_node.load(Relaxed, guard).is_null() {
+                        new_child_node = Atomic::new(Node::new(self.floor - 1));
+                    }
+                    if let Err(result) = node.1.compare_and_set(
+                        current_tail_node,
+                        new_child_node.load(Relaxed, guard),
+                        Relaxed,
+                        &guard,
+                    ) {
+                        drop(unsafe { new_child_node.into_owned() });
+                        current_tail_node = result.current;
+                    }
+                } else if !new_child_node.load(Relaxed, guard).is_null() {
+                    drop(unsafe { new_child_node.into_owned() });
+                }
+                return unsafe { current_tail_node.deref().insert(key, value, guard) };
             }
             NodeType::LeafNode(node) => node.insert(key, value, false),
         }

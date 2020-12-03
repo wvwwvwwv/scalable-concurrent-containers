@@ -276,11 +276,57 @@ impl<K: Ord + Sync, V: Sync> Leaf<K, V> {
                         }
                     }
                     Ordering::Equal => {
+                        return Some(self.read(i).1);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Returns the minimum entry among those that are not Ordering::Less than the given key.
+    pub fn min_ge(&self, key: &K) -> Option<(&K, &V)> {
+        let metadata = self.metadata.load(Acquire);
+        let mut max_min_rank = 0;
+        let mut min_max_rank = ARRAY_SIZE + 1;
+        let mut min_max_index = ARRAY_SIZE;
+        for i in 0..ARRAY_SIZE {
+            let rank = ((metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
+                >> (i * INDEX_RANK_ENTRY_SIZE)) as usize;
+            if rank > max_min_rank && rank < min_max_rank && (metadata & (OCCUPANCY_BIT << i)) != 0
+            {
+                match self.compare(i, key) {
+                    Ordering::Less => {
+                        if max_min_rank < rank {
+                            max_min_rank = rank;
+                        }
+                    }
+                    Ordering::Greater => {
+                        if min_max_rank > rank {
+                            min_max_rank = rank;
+                            min_max_index = i;
+                        }
+                    }
+                    Ordering::Equal => {
                         return Some(self.read(i));
                     }
                 }
             }
         }
+        if min_max_rank < ARRAY_SIZE {
+            return Some(self.read(min_max_index));
+        } else if metadata & MAX_KEY_VALID != 0
+            && self
+                .max_key_entry
+                .as_ref()
+                .map_or_else(|| false, |entry| entry.0.cmp(&key) != Ordering::Less)
+        {
+            return self
+                .max_key_entry
+                .as_ref()
+                .map(|entry| (&entry.0, &entry.1));
+        }
+
         None
     }
 
@@ -349,9 +395,9 @@ impl<K: Ord + Sync, V: Sync> Leaf<K, V> {
         unsafe { std::ptr::replace(entry_ptr, MaybeUninit::uninit()).assume_init() }
     }
 
-    fn read(&self, index: usize) -> &V {
+    fn read(&self, index: usize) -> (&K, &V) {
         let entry_ref = unsafe { &*self.entry_array[index].as_ptr() };
-        &entry_ref.1
+        (&entry_ref.0, &entry_ref.1)
     }
 
     fn entry_array_mut_ref(&self) -> &mut EntryArray<K, V> {
@@ -579,6 +625,10 @@ mod test {
         assert!(tail_ref.insert(60, 61, true).is_none());
         assert_eq!(tail_ref.cardinality(), 3);
         assert_eq!(tail_ref.num_removed(), 1);
+        assert_eq!(tail_ref.min_ge(&71), None);
+        assert_eq!(tail_ref.min_ge(&51), Some((&60, &61)));
+        assert_eq!(tail_ref.min_ge(&50), Some((&50, &51)));
+        assert_eq!(tail_ref.min_ge(&49), Some((&50, &51)));
         assert!(tail_ref.remove(&60));
         assert_eq!(tail_ref.num_removed(), 2);
         assert_eq!(tail_ref.cardinality(), 2);
@@ -610,10 +660,15 @@ mod test {
         assert!(leaf.insert(12, 13, false).is_none());
         assert_eq!(leaf.cardinality(), 4);
         assert_eq!(*leaf.search(&12).unwrap(), 13);
+        assert_eq!(leaf.min_ge(&21), None);
+        assert_eq!(leaf.min_ge(&20), Some((&20, &20)));
+        assert_eq!(leaf.min_ge(&19), Some((&20, &20)));
+        assert_eq!(leaf.min_ge(&0), Some((&10, &11)));
         assert!(leaf.insert(2, 3, false).is_none());
         assert_eq!(leaf.cardinality(), 5);
         assert_eq!(*leaf.search(&2).unwrap(), 3);
         assert_eq!(leaf.insert(2, 3, false), Some((2, 3)));
+        assert_eq!(leaf.min_ge(&8), Some((&10, &11)));
         assert_eq!(leaf.cardinality(), 5);
         assert_eq!(*leaf.search(&2).unwrap(), 3);
         assert!(leaf.insert(1, 2, false).is_none());
