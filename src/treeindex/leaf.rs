@@ -1,4 +1,3 @@
-use crossbeam_epoch::{Atomic, Guard, Shared};
 use std::cmp::Ordering;
 use std::convert::TryInto;
 use std::mem::MaybeUninit;
@@ -27,18 +26,17 @@ const INDEX_RANK_ENTRY_MASK: u32 = (1u32 << INDEX_RANK_ENTRY_SIZE) - 1;
 /// Each entry in an EntryArray is never dropped until the Leaf is dropped once constructed.
 pub type EntryArray<K, V> = [MaybeUninit<(K, V)>; ARRAY_SIZE];
 
-/// Leaf stores at most eight key-value pairs.
+/// Leaf is an ordered array of key-value pairs.
 ///
-/// A constructed key-value pair entry is never dropped until the Leaf instance is dropped.
+/// A constructed key-value pair entry is never dropped until the entire Leaf instance is dropped.
 pub struct Leaf<K: Ord + Sync, V: Sync> {
     entry_array: EntryArray<K, V>,
     max_key_entry: Option<(K, V)>,
     metadata: AtomicU32,
-    next: Atomic<Leaf<K, V>>,
 }
 
 impl<K: Ord + Sync, V: Sync> Leaf<K, V> {
-    pub fn new(max_key_entry: Option<(K, V)>, next: Atomic<Leaf<K, V>>) -> Leaf<K, V> {
+    pub fn new(max_key_entry: Option<(K, V)>) -> Leaf<K, V> {
         let initial_metadata = if max_key_entry.is_some() {
             MAX_KEY_VALID
         } else {
@@ -48,7 +46,6 @@ impl<K: Ord + Sync, V: Sync> Leaf<K, V> {
             entry_array: unsafe { MaybeUninit::uninit().assume_init() },
             max_key_entry,
             metadata: AtomicU32::new(initial_metadata),
-            next,
         }
     }
 
@@ -77,7 +74,7 @@ impl<K: Ord + Sync, V: Sync> Leaf<K, V> {
         cardinality + removed == (ARRAY_SIZE + 1).try_into().unwrap()
     }
 
-    pub fn insert(&self, key: K, value: V, is_upsert: bool) -> Option<(K, V)> {
+    pub fn insert(&self, key: K, value: V, upsert: bool) -> Option<((K, V), bool)> {
         let mut duplicate_entry = usize::MAX;
         match self
             .max_key_entry
@@ -86,13 +83,13 @@ impl<K: Ord + Sync, V: Sync> Leaf<K, V> {
         {
             Ordering::Less => {
                 // the key doesn't fit the leaf
-                return Some((key, value));
+                return Some(((key, value), false));
             }
             Ordering::Greater => (),
             Ordering::Equal => {
-                if !is_upsert {
-                    // the key doesn't fit the leaf
-                    return Some((key, value));
+                if !upsert {
+                    // uniqueness check failed
+                    return Some(((key, value), true));
                 }
                 duplicate_entry = ARRAY_SIZE;
             }
@@ -144,9 +141,9 @@ impl<K: Ord + Sync, V: Sync> Leaf<K, V> {
                     }
                     Ordering::Equal => {
                         if inserter.metadata & (OCCUPANCY_BIT << i) != 0 {
-                            if !is_upsert {
-                                // duplicate entry
-                                return Some(entry);
+                            if !upsert {
+                                // uniqueness check failed
+                                return Some((entry, true));
                             }
                             duplicate_entry = i;
                         }
@@ -173,11 +170,15 @@ impl<K: Ord + Sync, V: Sync> Leaf<K, V> {
 
             // try commit
             if inserter.commit(updated_rank_map, duplicate_entry) {
+                // inserted
                 return None;
             }
             entry = self.take(inserter.index);
         }
-        Some(entry)
+
+        // full
+        let duplicate_key = self.search(&entry.0).is_some();
+        Some((entry, duplicate_key))
     }
 
     pub fn remove(&self, key: &K) -> bool {
@@ -328,18 +329,6 @@ impl<K: Ord + Sync, V: Sync> Leaf<K, V> {
         }
 
         None
-    }
-
-    pub fn jump<'a>(&self, guard: &'a Guard) -> Shared<'a, Leaf<K, V>> {
-        self.next.load(Relaxed, &guard)
-    }
-
-    pub fn update<'a>(
-        &self,
-        next: Shared<'a, Leaf<K, V>>,
-        guard: &'a Guard,
-    ) -> Shared<'a, Leaf<K, V>> {
-        self.next.swap(next, Release, guard)
     }
 
     fn write(&self, index: usize, key: K, value: V) {
@@ -524,58 +513,29 @@ impl<'a, K: Ord + Sync, V: Sync> Drop for Inserter<'a, K, V> {
 }
 
 /// Leaf scanner.
-///
-/// A scanner instance holds a Guard, thus preventing GC.
 pub struct Scanner<'a, K: Ord + Sync, V: Sync> {
-    /// It emulates TreeMap<'a, K, V>: to be replaced with treemap: TreeMap<'a, K, V>
-    head: &'a Leaf<K, V>,
-    leaf: *const Leaf<K, V>,
-    guard: &'a Guard,
+    leaf: &'a Leaf<K, V>,
     entry_ptr: *const (K, V),
     entry_rank: usize,
-    jump: bool,
 }
 
 impl<'a, K: Ord + Sync, V: Sync> Scanner<'a, K, V> {
-    pub fn new(head: &'a Leaf<K, V>, jump: bool, guard: &'a Guard) -> Scanner<'a, K, V> {
+    pub fn new(leaf: &'a Leaf<K, V>) -> Scanner<'a, K, V> {
         Scanner {
-            head,
-            leaf: std::ptr::null(),
-            guard,
+            leaf,
             entry_ptr: std::ptr::null(),
             entry_rank: 0,
-            jump,
         }
     }
 
     fn proceed(&mut self) {
         self.entry_ptr = std::ptr::null();
-        if self.leaf.is_null() {
-            if self.entry_rank == 0 {
-                // to be replaced with self.treemap.head();
-                self.leaf = self.head as *const Leaf<K, V>;
-            } else {
-                return;
-            }
+        if self.entry_rank == usize::MAX {
+            return;
         }
-
-        let (rank, entry_ptr) = unsafe { (*self.leaf).next(self.entry_rank) };
+        let (rank, entry_ptr) = self.leaf.next(self.entry_rank);
         self.entry_rank = rank;
         self.entry_ptr = entry_ptr;
-        while self.entry_rank == usize::MAX {
-            self.leaf = if self.jump {
-                unsafe { (*self.leaf).jump(self.guard) }.as_raw()
-            } else {
-                std::ptr::null()
-            };
-            if self.leaf.is_null() {
-                self.entry_rank = usize::MAX;
-                return;
-            }
-            let (rank, entry_ptr) = unsafe { (*self.leaf).next(0) };
-            self.entry_rank = rank;
-            self.entry_ptr = entry_ptr;
-        }
     }
 }
 
@@ -586,7 +546,6 @@ impl<'a, K: Ord + Sync, V: Sync> Iterator for Scanner<'a, K, V> {
         if self.entry_ptr.is_null() {
             return None;
         }
-
         unsafe { Some((&(*self.entry_ptr).0, &(*self.entry_ptr).1)) }
     }
 }
@@ -611,50 +570,60 @@ mod test {
 
     #[test]
     fn basic() {
-        let guard = crossbeam_epoch::pin();
-        let tail = Atomic::new(Leaf::new(None, Atomic::null()));
-        let tail_ref = unsafe { tail.load(Relaxed, &guard).deref() };
-        assert_eq!(tail_ref.num_removed(), 0);
-        assert_eq!(tail_ref.cardinality(), 0);
-        assert!(tail_ref.insert(50, 51, false).is_none());
-        assert_eq!(tail_ref.cardinality(), 1);
-        assert!(tail_ref.insert(60, 60, false).is_none());
-        assert_eq!(tail_ref.cardinality(), 2);
-        assert!(tail_ref.insert(70, 71, false).is_none());
-        assert_eq!(tail_ref.cardinality(), 3);
-        assert!(tail_ref.insert(60, 61, true).is_none());
-        assert_eq!(tail_ref.cardinality(), 3);
-        assert_eq!(tail_ref.num_removed(), 1);
-        assert_eq!(tail_ref.min_ge(&71), None);
-        assert_eq!(tail_ref.min_ge(&51), Some((&60, &61)));
-        assert_eq!(tail_ref.min_ge(&50), Some((&50, &51)));
-        assert_eq!(tail_ref.min_ge(&49), Some((&50, &51)));
-        assert!(tail_ref.remove(&60));
-        assert_eq!(tail_ref.num_removed(), 2);
-        assert_eq!(tail_ref.cardinality(), 2);
-        assert!(!tail_ref.full());
-        assert!(tail_ref.insert(40, 40, false).is_none());
-        assert!(tail_ref.insert(30, 31, false).is_none());
-        assert_eq!(tail_ref.cardinality(), 4);
-        assert!(!tail_ref.full());
-        assert!(tail_ref.insert(40, 41, true).is_none());
-        assert_eq!(tail_ref.insert(30, 33, false), Some((30, 33)));
-        assert_eq!(tail_ref.num_removed(), 3);
-        assert_eq!(tail_ref.cardinality(), 4);
-        assert!(tail_ref.full());
-        drop(tail_ref);
+        let leaf = Leaf::new(None);
+        assert_eq!(leaf.num_removed(), 0);
+        assert_eq!(leaf.cardinality(), 0);
+        assert!(leaf.insert(50, 51, false).is_none());
+        assert_eq!(leaf.cardinality(), 1);
+        assert!(leaf.insert(60, 60, false).is_none());
+        assert_eq!(leaf.cardinality(), 2);
+        assert!(leaf.insert(70, 71, false).is_none());
+        assert_eq!(leaf.cardinality(), 3);
+        assert!(leaf.insert(60, 61, true).is_none());
+        assert_eq!(leaf.cardinality(), 3);
+        assert_eq!(leaf.num_removed(), 1);
+        assert_eq!(leaf.min_ge(&71), None);
+        assert_eq!(leaf.min_ge(&51), Some((&60, &61)));
+        assert_eq!(leaf.min_ge(&50), Some((&50, &51)));
+        assert_eq!(leaf.min_ge(&49), Some((&50, &51)));
+        assert!(leaf.remove(&60));
+        assert_eq!(leaf.num_removed(), 2);
+        assert_eq!(leaf.cardinality(), 2);
+        assert!(!leaf.full());
+        assert!(leaf.insert(40, 40, false).is_none());
+        assert!(leaf.insert(30, 31, false).is_none());
+        assert_eq!(leaf.cardinality(), 4);
+        assert!(!leaf.full());
+        assert!(leaf.insert(40, 41, true).is_none());
+        assert_eq!(leaf.insert(30, 33, false), Some(((30, 33), true)));
+        assert_eq!(leaf.num_removed(), 3);
+        assert_eq!(leaf.cardinality(), 4);
+        assert!(leaf.full());
 
-        let leaf = Leaf::new(Some((20, 20)), tail);
+        let mut scanner = Scanner::new(&leaf);
+        let mut prev_key = 0;
+        let mut iterated = 0;
+        while let Some(entry) = scanner.next() {
+            println!("{} {}", entry.0, entry.1);
+            assert!(prev_key < *entry.0);
+            assert_eq!(*entry.0 + 1, *entry.1);
+            prev_key = *entry.0;
+            iterated += 1;
+        }
+        assert_eq!(iterated, leaf.cardinality());
+        drop(scanner);
+
+        let leaf = Leaf::new(Some((20, 20)));
         assert_eq!(leaf.num_removed(), 0);
         assert_eq!(leaf.cardinality(), 1);
-        assert_eq!(leaf.insert(22, 23, false), Some((22, 23)));
+        assert_eq!(leaf.insert(22, 23, false), Some(((22, 23), false)));
         assert_eq!(leaf.cardinality(), 1);
         assert!(leaf.insert(10, 11, false).is_none());
         assert_eq!(leaf.cardinality(), 2);
         assert_eq!(*leaf.search(&10).unwrap(), 11);
         assert!(leaf.insert(11, 12, false).is_none());
         assert_eq!(leaf.cardinality(), 3);
-        assert_eq!(leaf.insert(11, 12, false), Some((11, 12)));
+        assert_eq!(leaf.insert(11, 12, false), Some(((11, 12), true)));
         assert_eq!(leaf.cardinality(), 3);
         assert_eq!(*leaf.search(&11).unwrap(), 12);
         assert!(leaf.insert(12, 13, false).is_none());
@@ -667,7 +636,7 @@ mod test {
         assert!(leaf.insert(2, 3, false).is_none());
         assert_eq!(leaf.cardinality(), 5);
         assert_eq!(*leaf.search(&2).unwrap(), 3);
-        assert_eq!(leaf.insert(2, 3, false), Some((2, 3)));
+        assert_eq!(leaf.insert(2, 3, false), Some(((2, 3), true)));
         assert_eq!(leaf.min_ge(&8), Some((&10, &11)));
         assert_eq!(leaf.cardinality(), 5);
         assert_eq!(*leaf.search(&2).unwrap(), 3);
@@ -677,7 +646,7 @@ mod test {
         assert!(leaf.insert(13, 14, false).is_none());
         assert_eq!(leaf.cardinality(), 7);
         assert_eq!(*leaf.search(&13).unwrap(), 14);
-        assert_eq!(leaf.insert(13, 14, false), Some((13, 14)));
+        assert_eq!(leaf.insert(13, 14, false), Some(((13, 14), true)));
         assert_eq!(leaf.cardinality(), 7);
         assert!(leaf.remove(&10));
         assert_eq!(leaf.cardinality(), 6);
@@ -691,8 +660,8 @@ mod test {
         assert!(leaf.full());
         assert_eq!(leaf.num_removed(), 4);
         assert_eq!(leaf.cardinality(), 4);
-        assert_eq!(leaf.insert(12, 13, false), Some((12, 13)));
-        assert_eq!(leaf.insert(14, 15, false), Some((14, 15)));
+        assert_eq!(leaf.insert(12, 13, false), Some(((12, 13), false)));
+        assert_eq!(leaf.insert(14, 15, false), Some(((14, 15), false)));
         assert_eq!(leaf.cardinality(), 4);
         assert!(leaf.search(&11).is_none());
         assert!(!leaf.remove(&10));
@@ -701,9 +670,9 @@ mod test {
         assert_eq!(leaf.cardinality(), 4);
         assert!(leaf.search(&14).is_none());
         assert_eq!(*leaf.search(&20).unwrap(), 21);
-        assert_eq!(leaf.insert(10, 11, false), Some((10, 11)));
+        assert_eq!(leaf.insert(10, 11, false), Some(((10, 11), false)));
 
-        let mut scanner = Scanner::new(&leaf, true, &guard);
+        let mut scanner = Scanner::new(&leaf);
         let mut prev_key = 0;
         let mut iterated = 0;
         while let Some(entry) = scanner.next() {
@@ -713,24 +682,8 @@ mod test {
             prev_key = *entry.0;
             iterated += 1;
         }
-        assert_eq!(iterated, 8);
+        assert_eq!(iterated, leaf.cardinality());
         drop(scanner);
-
-        let mut scanner = Scanner::new(&leaf, false, &guard);
-        let mut prev_key = 0;
-        let mut iterated = 0;
-        while let Some(entry) = scanner.next() {
-            println!("{} {}", entry.0, entry.1);
-            assert!(prev_key < *entry.0);
-            assert_eq!(*entry.0 + 1, *entry.1);
-            prev_key = *entry.0;
-            iterated += 1;
-        }
-        assert_eq!(iterated, 4);
-        drop(scanner);
-
-        let tail_ptr = leaf.update(Shared::null(), &guard);
-        unsafe { guard.defer_destroy(tail_ptr) };
     }
 
     #[test]
@@ -738,14 +691,14 @@ mod test {
         let num_threads = (ARRAY_SIZE + 1) as usize;
         for _ in 0..256 {
             let barrier = Arc::new(Barrier::new(num_threads));
-            let leaf = Arc::new(Leaf::new(Some((10usize, 10usize)), Atomic::null()));
+            let leaf = Arc::new(Leaf::new(Some((10usize, 10usize))));
             let mut thread_handles = Vec::with_capacity(num_threads);
             for tid in 0..num_threads {
                 let barrier_copied = barrier.clone();
                 let leaf_copied = leaf.clone();
                 thread_handles.push(thread::spawn(move || {
                     barrier_copied.wait();
-                    assert_eq!(leaf_copied.insert(10, 12, false), Some((10, 12)));
+                    assert_eq!(leaf_copied.insert(10, 12, false), Some(((10, 12), true)));
                     let result = leaf_copied.insert(tid, 1, false);
                     if result.is_none() {
                         assert_eq!(*leaf_copied.search(&tid).unwrap(), 1);
@@ -757,87 +710,6 @@ mod test {
             }
             for handle in thread_handles {
                 handle.join().unwrap();
-            }
-        }
-    }
-
-    #[test]
-    fn scan() {
-        let num_threads = (ARRAY_SIZE + 1) as usize;
-        for _ in 0..256 {
-            let barrier = Arc::new(Barrier::new(num_threads + 1));
-            let mut leaves: Vec<Atomic<Leaf<usize, usize>>> = Vec::with_capacity(num_threads);
-            let head = Atomic::new(Leaf::new(None, Atomic::null()));
-            let guard = crossbeam_epoch::pin();
-            let mut prev = head.load(Relaxed, &guard);
-            for _ in 0..num_threads {
-                let current = Atomic::new(Leaf::new(None, Atomic::null()));
-                leaves.push(Atomic::from(current.load(Relaxed, &guard)));
-                unsafe { prev.deref().update(current.load(Relaxed, &guard), &guard) };
-                prev = current.load(Relaxed, &guard);
-            }
-            let tail = Atomic::new(Leaf::new(None, Atomic::null()));
-            unsafe { prev.deref().update(tail.load(Relaxed, &guard), &guard) };
-            let mut thread_handles = Vec::with_capacity(num_threads);
-            for _ in 0..num_threads {
-                let barrier_copied = barrier.clone();
-                let head_copied: Atomic<Leaf<usize, usize>> =
-                    Atomic::from(head.load(Relaxed, &guard));
-                let tail_copied: Atomic<Leaf<usize, usize>> =
-                    Atomic::from(tail.load(Relaxed, &guard));
-                thread_handles.push(thread::spawn(move || {
-                    barrier_copied.wait();
-                    for _ in 0..16 {
-                        let guard = crossbeam_epoch::pin();
-                        let root_ref = unsafe { head_copied.load(Relaxed, &guard).deref() };
-                        let mut scanner = Scanner::new(root_ref, true, &guard);
-                        while let Some(_) = scanner.next() {}
-                        let mut current =
-                            unsafe { head_copied.load(Relaxed, &guard).deref().jump(&guard) };
-                        while !current.is_null() {
-                            let next = unsafe { current.deref().jump(&guard) };
-                            if next.is_null() {
-                                assert_eq!(
-                                    current.as_raw(),
-                                    tail_copied.load(Relaxed, &guard).as_raw()
-                                );
-                                break;
-                            }
-                            current = next;
-                        }
-                    }
-                }));
-            }
-            drop(guard);
-
-            barrier.wait();
-            for i in 0..num_threads {
-                let guard = crossbeam_epoch::pin();
-                // 1. make the target leaf unreachable from the tree
-                let leaf = leaves[i].swap(Shared::null(), Relaxed, &guard);
-                // 2. make the target leaf unreachable by scanners
-                let next = unsafe { leaf.deref().jump(&guard) };
-                unsafe { head.load(Relaxed, &guard).deref().update(next, &guard) };
-                // 3. deferred drop
-                unsafe { guard.defer_destroy(leaf) };
-            }
-            let guard = crossbeam_epoch::pin();
-            assert_eq!(
-                unsafe { head.load(Relaxed, &guard).deref().jump(&guard).as_raw() },
-                tail.load(Relaxed, &guard).as_raw()
-            );
-            drop(guard);
-
-            for handle in thread_handles {
-                handle.join().unwrap();
-            }
-
-            for ptr in [head, tail].iter() {
-                let guard = crossbeam_epoch::pin();
-                let leaf = ptr.swap(Shared::null(), Relaxed, &guard);
-                if !leaf.is_null() {
-                    unsafe { guard.defer_destroy(leaf) };
-                }
             }
         }
     }

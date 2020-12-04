@@ -57,7 +57,7 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 
 [Work-in-progress](##Milestones)
 
-scc::TreeIndex is a scan-optimized concurrent index structure. Locks are only acquire on structural changes, and non-destructive insert/update/delete/read/scan operations are totally lock-free.
+scc::TreeIndex is a scan-optimized concurrent index structure. Locks are only acquired on structural changes, and non-destructive insert/update/delete/read/scan operations are totally lock-free.
 
 ## Changelog
 
