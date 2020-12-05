@@ -1,7 +1,8 @@
 use super::leaf::Scanner;
 use super::Leaf;
-use crossbeam_epoch::{Atomic, Guard, Owned};
+use crossbeam_epoch::{Atomic, Guard, Shared};
 use std::cmp::Ordering;
+use std::mem::MaybeUninit;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 enum NodeType<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
@@ -23,7 +24,27 @@ pub struct Node<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
 }
 
 impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
-    pub fn new(floor: usize) -> Node<K, V> {
+    pub fn new_bounded(floor: usize, key: &K, value: &V) -> Node<K, V> {
+        Node {
+            entry: if floor == 0 {
+                NodeType::LeafNode {
+                    entry_array: Atomic::new(Leaf::new(Some((key.clone(), value.clone())))),
+                    side_link: Atomic::null(),
+                }
+            } else {
+                NodeType::InternalNode {
+                    bounded_children: Leaf::new(Some((
+                        key.clone(),
+                        Atomic::new(Node::new_bounded(floor - 1, key, value)),
+                    ))),
+                    unbounded_child: Atomic::null(),
+                }
+            },
+            floor,
+        }
+    }
+
+    pub fn new_unbounded(floor: usize) -> Node<K, V> {
         Node {
             entry: if floor == 0 {
                 NodeType::LeafNode {
@@ -43,7 +64,12 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
     /// Inserts a key-value pair.
     ///
     /// It is a recursive call, and therefore stack-overflow may occur.
-    pub fn insert(&self, mut key: K, value: V, guard: &Guard) -> Option<((K, V), bool)> {
+    pub fn insert(
+        &self,
+        mut key: K,
+        value: V,
+        guard: &Guard,
+    ) -> Result<Option<Atomic<Node<K, V>>>, ((K, V), bool)> {
         match &self.entry {
             NodeType::InternalNode {
                 bounded_children,
@@ -55,41 +81,31 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 }
 
                 // secondly, try to create a new child node
-                let mut new_child_node = Atomic::null();
                 if !bounded_children.full() {
-                    new_child_node = Atomic::new(Node::new(self.floor - 1));
+                    let new_child_node =
+                        Atomic::new(Node::new_bounded(self.floor - 1, &key, &value));
                     let inserted = bounded_children.insert(
                         key.clone(),
                         Atomic::from(new_child_node.load(Relaxed, guard)),
                         false,
                     );
                     if inserted.is_none() {
-                        return unsafe {
-                            new_child_node
-                                .load(Relaxed, guard)
-                                .deref()
-                                .insert(key, value, guard)
-                        };
-                    } else {
-                        if let Some((_, child)) = bounded_children.min_ge(&key) {
-                            drop(unsafe { new_child_node.into_owned() });
-                            return unsafe {
-                                child.load(Acquire, guard).deref().insert(key, value, guard)
-                            };
-                        }
-                        // try to reuse the newly allocated child node as the tail entry
-                        let ((key_returned, child_node_returned), duplicated) = inserted.unwrap();
-                        key = key_returned;
-                        new_child_node = child_node_returned;
+                        return Ok(None);
                     }
+
+                    drop(unsafe { new_child_node.into_owned() });
+                    if let Some((_, child)) = bounded_children.min_ge(&key) {
+                        return unsafe {
+                            child.load(Acquire, guard).deref().insert(key, value, guard)
+                        };
+                    }
+                    key = (inserted.unwrap().0).0;
                 }
 
-                // lastly, try to insert into the tail entry
+                // lastly, try to insert into the tail
                 let mut current_tail_node = unbounded_child.load(Relaxed, guard);
                 if current_tail_node.is_null() {
-                    if new_child_node.load(Relaxed, guard).is_null() {
-                        new_child_node = Atomic::new(Node::new(self.floor - 1));
-                    }
+                    let new_child_node = Atomic::new(Node::new_unbounded(self.floor - 1));
                     if let Err(result) = unbounded_child.compare_and_set(
                         current_tail_node,
                         new_child_node.load(Relaxed, guard),
@@ -99,8 +115,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                         drop(unsafe { new_child_node.into_owned() });
                         current_tail_node = result.current;
                     }
-                } else if !new_child_node.load(Relaxed, guard).is_null() {
-                    drop(unsafe { new_child_node.into_owned() });
                 }
                 return unsafe { current_tail_node.deref().insert(key, value, guard) };
             }
@@ -109,7 +123,37 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 side_link,
             } => {
                 let array_ptr = entry_array.load(Acquire, guard);
-                unsafe { array_ptr.deref() }.insert(key, value, false)
+                match unsafe { array_ptr.deref() }.insert(key, value, false) {
+                    Some(result) => Err(result),
+                    None => Ok(None),
+                }
+            }
+        }
+    }
+}
+
+impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for Node<K, V> {
+    fn drop(&mut self) {
+        let guard = crossbeam_epoch::pin();
+        match &self.entry {
+            NodeType::InternalNode {
+                bounded_children,
+                unbounded_child,
+            } => {
+                let mut scanner = Scanner::new(&bounded_children);
+                while let Some(entry) = scanner.next() {
+                    let child = entry.1.swap(Shared::null(), Acquire, &guard);
+                    unsafe { guard.defer_destroy(child) };
+                }
+                let tail = unbounded_child.load(Acquire, &guard);
+                unsafe { guard.defer_destroy(tail) };
+            }
+            NodeType::LeafNode {
+                entry_array,
+                side_link,
+            } => {
+                let tail = entry_array.swap(Shared::null(), Acquire, &guard);
+                unsafe { guard.defer_destroy(tail) };
             }
         }
     }
@@ -120,4 +164,12 @@ mod test {
     use super::*;
     use std::sync::{Arc, Barrier};
     use std::thread;
+
+    #[test]
+    fn insert() {
+        let guard = crossbeam_epoch::pin();
+        let node = Node::new_unbounded(2);
+        assert!(node.insert(10, 10, &guard).is_ok());
+        assert!(node.insert(10, 11, &guard).is_err());
+    }
 }
