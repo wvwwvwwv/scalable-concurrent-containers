@@ -3,7 +3,6 @@ use super::Leaf;
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::cmp::Ordering;
 use std::mem::MaybeUninit;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 enum Error<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
@@ -20,18 +19,21 @@ enum NodeType<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
     InternalNode {
         bounded_children: Leaf<K, Atomic<Node<K, V>>>,
         unbounded_child: Atomic<Node<K, V>>,
+        split_low_key: Atomic<Node<K, V>>,
+        split_high_key: Atomic<Node<K, V>>,
     },
     /// LeafNode: |ptr(entry array)/max(child keys)|...|ptr(entry array)|
     LeafNode {
         bounded_children: Leaf<K, Atomic<Leaf<K, V>>>,
         unbounded_child: Atomic<Leaf<K, V>>,
+        split_low_key: Atomic<Leaf<K, V>>,
+        split_high_key: Atomic<Leaf<K, V>>,
     },
 }
 
 pub struct Node<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
     entry: NodeType<K, V>,
     side_link: Atomic<Node<K, V>>,
-    lock: AtomicBool,
     floor: usize,
 }
 
@@ -42,15 +44,18 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 NodeType::InternalNode {
                     bounded_children: Leaf::new(),
                     unbounded_child: Atomic::null(),
+                    split_low_key: Atomic::null(),
+                    split_high_key: Atomic::null(),
                 }
             } else {
                 NodeType::LeafNode {
                     bounded_children: Leaf::new(),
                     unbounded_child: Atomic::null(),
+                    split_low_key: Atomic::null(),
+                    split_high_key: Atomic::null(),
                 }
             },
             side_link: Atomic::null(),
-            lock: AtomicBool::new(false),
             floor,
         }
     }
@@ -64,6 +69,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             NodeType::InternalNode {
                 bounded_children,
                 unbounded_child,
+                split_low_key,
+                split_high_key,
             } => {
                 // firstly, try to insert into an existing child node
                 loop {
@@ -102,6 +109,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             NodeType::LeafNode {
                 bounded_children,
                 unbounded_child,
+                split_low_key,
+                split_high_key,
             } => {
                 {
                     // firstly, try to insert into an existing child node
@@ -190,6 +199,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for Node<K, V> {
             NodeType::InternalNode {
                 bounded_children,
                 unbounded_child,
+                split_low_key,
+                split_high_key,
             } => {
                 let mut scanner = Scanner::new(&bounded_children);
                 while let Some(entry) = scanner.next() {
@@ -198,10 +209,20 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for Node<K, V> {
                 }
                 let tail = unbounded_child.load(Acquire, &guard);
                 unsafe { guard.defer_destroy(tail) };
+                let low_key_child = split_low_key.swap(Shared::null(), Relaxed, &guard);
+                if !low_key_child.is_null() {
+                    drop(unsafe { low_key_child.into_owned() });
+                }
+                let high_key_child = split_high_key.swap(Shared::null(), Relaxed, &guard);
+                if !high_key_child.is_null() {
+                    drop(unsafe { high_key_child.into_owned() });
+                }
             }
             NodeType::LeafNode {
                 bounded_children,
                 unbounded_child,
+                split_low_key,
+                split_high_key,
             } => {
                 let mut scanner = Scanner::new(&bounded_children);
                 while let Some(entry) = scanner.next() {
@@ -210,6 +231,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for Node<K, V> {
                 }
                 let tail = unbounded_child.load(Acquire, &guard);
                 unsafe { guard.defer_destroy(tail) };
+                let low_key_child = split_low_key.swap(Shared::null(), Relaxed, &guard);
+                if !low_key_child.is_null() {
+                    drop(unsafe { low_key_child.into_owned() });
+                }
+                let high_key_child = split_high_key.swap(Shared::null(), Relaxed, &guard);
+                if !high_key_child.is_null() {
+                    drop(unsafe { high_key_child.into_owned() });
+                }
             }
         }
     }

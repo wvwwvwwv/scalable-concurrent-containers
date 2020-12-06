@@ -234,16 +234,22 @@ impl<K: Eq, V> Array<K, V> {
 
         let completed = self.rehashed.fetch_add(ARRAY_SIZE, Release) + ARRAY_SIZE;
         if old_array_size <= completed {
-            self.drop_old_array(guard);
+            self.drop_old_array(false, guard);
             return true;
         }
         false
     }
 
-    pub fn drop_old_array(&self, guard: &Guard) {
+    pub fn drop_old_array(&self, immediate_drop: bool, guard: &Guard) {
         let old_array = self.old_array.swap(Shared::null(), Relaxed, guard);
         if !old_array.is_null() {
-            unsafe { guard.defer_destroy(old_array) };
+            unsafe {
+                if immediate_drop {
+                    drop(old_array.into_owned());
+                } else {
+                    guard.defer_destroy(old_array);
+                }
+            }
         }
     }
 }
