@@ -501,6 +501,7 @@ mod test {
         assert_eq!(leaf.cardinality(), 0);
         assert!(leaf.insert(50, 51, false).is_none());
         assert_eq!(leaf.cardinality(), 1);
+        assert_eq!(leaf.max_key(), Some(&50));
         assert!(leaf.insert(60, 60, false).is_none());
         assert_eq!(leaf.cardinality(), 2);
         assert!(leaf.insert(70, 71, false).is_none());
@@ -531,6 +532,7 @@ mod test {
         assert!(leaf.insert(13, 14, true).is_none());
         assert_eq!(leaf.num_removed(), 4);
         assert_eq!(leaf.cardinality(), 8);
+        assert_eq!(leaf.max_key(), Some(&70));
         assert!(leaf.full());
 
         let mut scanner = Scanner::new(&leaf);
@@ -555,6 +557,7 @@ mod test {
         assert_eq!(leaf.cardinality(), 2);
         assert_eq!(*leaf.search(&10).unwrap(), 11);
         assert!(leaf.insert(11, 12, false).is_none());
+        assert_eq!(leaf.max_key(), Some(&20));
         assert_eq!(leaf.cardinality(), 3);
         assert_eq!(leaf.insert(11, 12, false), Some(((11, 12), true)));
         assert_eq!(leaf.cardinality(), 3);
@@ -604,6 +607,7 @@ mod test {
         assert_eq!(*leaf.search(&20).unwrap(), 21);
         assert!(leaf.insert(10, 11, false).is_none());
         assert!(leaf.insert(12, 13, false).is_none());
+        assert_eq!(leaf.max_key(), Some(&20));
         assert!(leaf.full());
         assert_eq!(leaf.num_removed(), 5);
         assert_eq!(leaf.cardinality(), 7);

@@ -126,6 +126,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                                         } else {
                                             self.split_leaf(
                                                 result.0,
+                                                false,
                                                 &bounded_children,
                                                 &child,
                                                 &reserved_low_key,
@@ -166,8 +167,15 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                                 if result.1 {
                                     Err(Error::Duplicated(result.0))
                                 } else {
-                                    // [TODO]
-                                    Ok(())
+                                    self.split_leaf(
+                                        result.0,
+                                        true,
+                                        &bounded_children,
+                                        &unbounded_child,
+                                        &reserved_low_key,
+                                        &reserved_high_key,
+                                        guard,
+                                    )
                                 }
                             },
                         );
@@ -179,12 +187,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
     fn split_leaf(
         &self,
         entry: (K, V),
+        is_undounded: bool,
         leaf_array: &Leaf<K, Atomic<Leaf<K, V>>>,
         full_leaf: &Atomic<Leaf<K, V>>,
         low_key: &Atomic<Leaf<K, V>>,
         high_key: &Atomic<Leaf<K, V>>,
         guard: &Guard,
     ) -> Result<(), Error<K, V>> {
+        debug_assert!(unsafe { full_leaf.load(Acquire, &guard).deref().full() });
         let new_leaf_low_key = Owned::new(Leaf::new());
         let new_leaf_high_key = Owned::new(Leaf::new());
         let mut low_key_leaf = Shared::null();
@@ -237,6 +247,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     .deref()
                     .insert(entry.0.clone(), entry.1.clone(), false)
             };
+        }
+
+        // if the key is for the unbounded child leaf, return
+        if is_undounded {
+            return Err(Error::Full(entry));
         }
 
         // insert the newly added leaf into the main array
