@@ -637,7 +637,7 @@ mod test {
 
     #[test]
     fn update() {
-        // [TODO]: fix BUGS!!
+        // [TODO]: fix BUGS in SCANNER!!
         let num_threads = (ARRAY_SIZE + 1) as usize;
         for _ in 0..256 {
             let barrier = Arc::new(Barrier::new(num_threads));
@@ -664,7 +664,7 @@ mod test {
                     let mut prev_key = 0;
                     while let Some(entry) = scanner.next() {
                         assert_eq!(entry.1, &1);
-                        //assert!(prev_key < *entry.0);
+                        //assert!((prev_key == 0 && *entry.0 == 0) || prev_key < *entry.0);
                         prev_key = *entry.0;
                     }
                 }));
@@ -677,7 +677,7 @@ mod test {
             while let Some(entry) = scanner.next() {
                 println!("{}", entry.0);
                 assert_eq!(entry.1, &1);
-                //assert!(prev_key < *entry.0);
+                assert!((prev_key == 0 && *entry.0 == 0) || prev_key < *entry.0);
                 assert!(entry.0 % 2 == 0);
                 prev_key = *entry.0;
             }
