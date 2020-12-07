@@ -263,7 +263,7 @@ impl<K: Ord + Sync, V: Sync> Leaf<K, V> {
                 }
             }
         }
-        if min_max_rank < ARRAY_SIZE {
+        if min_max_rank <= ARRAY_SIZE {
             return Some(self.read(min_max_index));
         }
         None
@@ -497,6 +497,17 @@ mod test {
     #[test]
     fn basic() {
         let leaf = Leaf::new();
+        for i in 0..ARRAY_SIZE {
+            assert!(leaf
+                .insert((ARRAY_SIZE - i - 1) * 2 + 1, 10, false)
+                .is_none());
+        }
+        for i in 0..ARRAY_SIZE {
+            assert_eq!(leaf.min_ge(&(i * 2)), Some((&(i * 2 + 1), &10)));
+            assert_eq!(leaf.min_ge(&(i * 2 + 1)), Some((&(i * 2 + 1), &10)));
+        }
+        assert!(leaf.min_ge(&(ARRAY_SIZE * 3)).is_none());
+        let leaf = Leaf::new();
         assert_eq!(leaf.num_removed(), 0);
         assert_eq!(leaf.cardinality(), 0);
         assert!(leaf.insert(50, 51, false).is_none());
@@ -539,7 +550,6 @@ mod test {
         let mut prev_key = 0;
         let mut iterated = 0;
         while let Some(entry) = scanner.next() {
-            println!("{} {}", entry.0, entry.1);
             assert!(prev_key < *entry.0);
             assert_eq!(*entry.0 + 1, *entry.1);
             prev_key = *entry.0;
@@ -616,7 +626,6 @@ mod test {
         let mut prev_key = 0;
         let mut iterated = 0;
         while let Some(entry) = scanner.next() {
-            println!("{} {}", entry.0, entry.1);
             assert!(prev_key < *entry.0);
             assert_eq!(*entry.0 + 1, *entry.1);
             prev_key = *entry.0;
@@ -628,11 +637,12 @@ mod test {
 
     #[test]
     fn update() {
+        // [TODO]: fix BUGS!!
         let num_threads = (ARRAY_SIZE + 1) as usize;
         for _ in 0..256 {
             let barrier = Arc::new(Barrier::new(num_threads));
             let leaf = Arc::new(Leaf::new());
-            leaf.insert(num_threads + 1, num_threads, false);
+            leaf.insert(num_threads * 2, 1, false);
             let mut thread_handles = Vec::with_capacity(num_threads);
             for tid in 0..num_threads {
                 let barrier_copied = barrier.clone();
@@ -640,20 +650,36 @@ mod test {
                 thread_handles.push(thread::spawn(move || {
                     barrier_copied.wait();
                     assert_eq!(
-                        leaf_copied.insert(num_threads + 1, num_threads, false),
-                        Some(((num_threads + 1, num_threads), true))
+                        leaf_copied.insert(num_threads * 2, num_threads, false),
+                        Some(((num_threads * 2, num_threads), true))
                     );
                     let result = leaf_copied.insert(tid, 1, false);
                     if result.is_none() {
                         assert_eq!(*leaf_copied.search(&tid).unwrap(), 1);
-                        assert!(leaf_copied.remove(&tid));
-                    } else {
-                        assert!(!leaf_copied.remove(&tid));
+                        if tid % 2 != 0 {
+                            assert!(leaf_copied.remove(&tid));
+                        }
+                    }
+                    let mut scanner = Scanner::new(&leaf_copied);
+                    let mut prev_key = 0;
+                    while let Some(entry) = scanner.next() {
+                        assert_eq!(entry.1, &1);
+                        //assert!(prev_key < *entry.0);
+                        prev_key = *entry.0;
                     }
                 }));
             }
             for handle in thread_handles {
                 handle.join().unwrap();
+            }
+            let mut scanner = Scanner::new(&leaf);
+            let mut prev_key = 0;
+            while let Some(entry) = scanner.next() {
+                println!("{}", entry.0);
+                assert_eq!(entry.1, &1);
+                //assert!(prev_key < *entry.0);
+                assert!(entry.0 % 2 == 0);
+                prev_key = *entry.0;
             }
         }
     }

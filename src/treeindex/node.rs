@@ -94,13 +94,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 // secondly, try to insert into the tail
                 let mut current_tail_node = unbounded_child.load(Relaxed, guard);
                 if current_tail_node.is_null() {
-                    if let Err(result) = unbounded_child.compare_and_set(
+                    match unbounded_child.compare_and_set(
                         current_tail_node,
                         Owned::new(Node::new(self.floor - 1)),
                         Relaxed,
                         guard,
                     ) {
-                        current_tail_node = result.current;
+                        Ok(result) => current_tail_node = result,
+                        Err(result) => current_tail_node = result.current,
                     }
                 }
                 let result = unsafe { current_tail_node.deref().insert(key, value, guard) };
@@ -151,13 +152,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     // secondly, try to insert into the tail
                     let mut current_tail_node = unbounded_child.load(Relaxed, guard);
                     if current_tail_node.is_null() {
-                        if let Err(result) = unbounded_child.compare_and_set(
+                        match unbounded_child.compare_and_set(
                             current_tail_node,
                             Owned::new(Leaf::new()),
                             Relaxed,
                             guard,
                         ) {
-                            current_tail_node = result.current;
+                            Ok(result) => current_tail_node = result,
+                            Err(result) => current_tail_node = result.current,
                         }
                     }
                     return unsafe { current_tail_node.deref().insert(key, value, false) }
@@ -377,10 +379,102 @@ mod test {
     use std::thread;
 
     #[test]
-    fn insert() {
+    fn leaf_node() {
         let guard = crossbeam_epoch::pin();
+        // sequential
         let node = Node::new(0);
-        assert!(node.insert(10, 10, &guard).is_ok());
-        assert!(node.insert(10, 11, &guard).is_err());
+        for i in 0..ARRAY_SIZE {
+            for j in 0..(ARRAY_SIZE + 1) {
+                assert!(node
+                    .insert((j + 1) * (ARRAY_SIZE + 1) - i, 10, &guard)
+                    .is_ok());
+                match node.insert((j + 1) * (ARRAY_SIZE + 1) - i, 11, &guard) {
+                    Ok(_) => assert!(false),
+                    Err(result) => match result {
+                        Error::Duplicated(entry) => {
+                            assert_eq!(entry, ((j + 1) * (ARRAY_SIZE + 1) - i, 11))
+                        }
+                        Error::Full(_) => assert!(false),
+                        Error::Retry(_) => assert!(false),
+                    },
+                }
+            }
+        }
+        match node.insert(0, 11, &guard) {
+            Ok(_) => assert!(false),
+            Err(result) => match result {
+                Error::Duplicated(_) => assert!(false),
+                Error::Full(entry) => assert_eq!(entry, (0, 11)),
+                Error::Retry(_) => assert!(false),
+            },
+        }
+        match node.insert(240, 11, &guard) {
+            Ok(_) => assert!(false),
+            Err(result) => match result {
+                Error::Duplicated(_) => assert!(false),
+                Error::Full(_) => assert!(false),
+                Error::Retry(entry) => assert_eq!(entry, (240, 11)),
+            },
+        }
+        // induce split
+        let node = Node::new(0);
+        for i in 0..ARRAY_SIZE {
+            for j in 0..ARRAY_SIZE {
+                if j == ARRAY_SIZE / 2 {
+                    continue;
+                }
+                assert!(node
+                    .insert((j + 1) * (ARRAY_SIZE + 1) - i, 10, &guard)
+                    .is_ok());
+                match node.insert((j + 1) * (ARRAY_SIZE + 1) - i, 11, &guard) {
+                    Ok(_) => assert!(false),
+                    Err(result) => match result {
+                        Error::Duplicated(entry) => {
+                            assert_eq!(entry, ((j + 1) * (ARRAY_SIZE + 1) - i, 11))
+                        }
+                        Error::Full(_) => assert!(false),
+                        Error::Retry(_) => assert!(false),
+                    },
+                }
+            }
+        }
+        for i in 0..(ARRAY_SIZE / 2) {
+            assert!(node
+                .insert((ARRAY_SIZE / 2 + 1) * (ARRAY_SIZE + 1) - i, 10, &guard)
+                .is_ok());
+            match node.insert((ARRAY_SIZE / 2 + 1) * (ARRAY_SIZE + 1) - i, 11, &guard) {
+                Ok(_) => assert!(false),
+                Err(result) => match result {
+                    Error::Duplicated(entry) => {
+                        assert_eq!(entry, ((ARRAY_SIZE / 2 + 1) * (ARRAY_SIZE + 1) - i, 11))
+                    }
+                    Error::Full(_) => assert!(false),
+                    Error::Retry(_) => assert!(false),
+                },
+            }
+        }
+        for i in 0..ARRAY_SIZE {
+            assert!(node
+                .insert((ARRAY_SIZE + 2) * (ARRAY_SIZE + 1) - i, 10, &guard)
+                .is_ok());
+            match node.insert((ARRAY_SIZE + 2) * (ARRAY_SIZE + 1) - i, 11, &guard) {
+                Ok(_) => assert!(false),
+                Err(result) => match result {
+                    Error::Duplicated(entry) => {
+                        assert_eq!(entry, ((ARRAY_SIZE + 2) * (ARRAY_SIZE + 1) - i, 11))
+                    }
+                    Error::Full(_) => assert!(false),
+                    Error::Retry(_) => assert!(false),
+                },
+            }
+        }
+        match node.insert(240, 11, &guard) {
+            Ok(_) => assert!(false),
+            Err(result) => match result {
+                Error::Duplicated(_) => assert!(false),
+                Error::Full(_) => assert!(false),
+                Error::Retry(entry) => assert_eq!(entry, (240, 11)),
+            },
+        }
     }
 }
