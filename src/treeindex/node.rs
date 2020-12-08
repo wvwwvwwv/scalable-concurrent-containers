@@ -1,4 +1,4 @@
-use super::leaf::{Scanner, ARRAY_SIZE};
+use super::leaf::{LeafScanner, ARRAY_SIZE};
 use super::Leaf;
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::cmp::Ordering;
@@ -60,6 +60,43 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         }
     }
 
+    pub fn search<'a>(&'a self, key: &K, guard: &'a Guard) -> Option<&'a V> {
+        match &self.entry {
+            NodeType::InternalNode {
+                bounded_children,
+                unbounded_child,
+                reserved_low_key,
+                reserved_high_key,
+            } => {
+                if let Some((_, child)) = bounded_children.min_ge(&key) {
+                    unsafe { child.load(Acquire, guard).deref().search(key, guard) }
+                } else {
+                    let current_tail_node = unbounded_child.load(Relaxed, guard);
+                    if current_tail_node.is_null() {
+                        return None;
+                    }
+                    unsafe { current_tail_node.deref().search(key, guard) }
+                }
+            }
+            NodeType::LeafNode {
+                bounded_children,
+                unbounded_child,
+                reserved_low_key,
+                reserved_high_key,
+            } => {
+                if let Some((_, child)) = bounded_children.min_ge(&key) {
+                    unsafe { child.load(Acquire, guard).deref().search(key) }
+                } else {
+                    let current_tail_node = unbounded_child.load(Relaxed, guard);
+                    if current_tail_node.is_null() {
+                        return None;
+                    }
+                    unsafe { current_tail_node.deref().search(key) }
+                }
+            }
+        }
+    }
+
     /// Inserts a key-value pair.
     ///
     /// It is a recursive call, and therefore stack-overflow may occur.
@@ -72,7 +109,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 reserved_low_key,
                 reserved_high_key,
             } => {
-                // firstly, try to insert into an existing child node
                 loop {
                     if let Some((_, child)) = bounded_children.min_ge(&key) {
                         let child_node = child.load(Acquire, guard);
@@ -90,8 +126,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                         break;
                     }
                 }
-
-                // secondly, try to insert into the tail
                 let mut current_tail_node = unbounded_child.load(Relaxed, guard);
                 if current_tail_node.is_null() {
                     match unbounded_child.compare_and_set(
@@ -113,75 +147,68 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 reserved_low_key,
                 reserved_high_key,
             } => {
-                {
-                    // firstly, try to insert into an existing child node
-                    loop {
-                        if let Some((_, child)) = bounded_children.min_ge(&key) {
-                            let child_node = child.load(Acquire, guard);
-                            return unsafe { child_node.deref().insert(key, value, false) }
-                                .map_or_else(
-                                    || Ok(()),
-                                    |result| {
-                                        if result.1 {
-                                            Err(Error::Duplicated(result.0))
-                                        } else {
-                                            self.split_leaf(
-                                                result.0,
-                                                false,
-                                                &bounded_children,
-                                                &child,
-                                                &reserved_low_key,
-                                                &reserved_high_key,
-                                                guard,
-                                            )
-                                        }
-                                    },
-                                );
-                        } else if !bounded_children.full() {
-                            if let Some(result) = bounded_children.insert(
-                                key.clone(),
-                                Atomic::new(Leaf::new()),
-                                false,
-                            ) {
-                                drop(unsafe { (result.0).1.into_owned() });
-                            }
-                        } else {
-                            break;
+                loop {
+                    if let Some((_, child)) = bounded_children.min_ge(&key) {
+                        let child_node = child.load(Acquire, guard);
+                        return unsafe { child_node.deref().insert(key, value, false) }
+                            .map_or_else(
+                                || Ok(()),
+                                |result| {
+                                    if result.1 {
+                                        Err(Error::Duplicated(result.0))
+                                    } else {
+                                        self.split_leaf(
+                                            result.0,
+                                            false,
+                                            &bounded_children,
+                                            &child,
+                                            &reserved_low_key,
+                                            &reserved_high_key,
+                                            guard,
+                                        )
+                                    }
+                                },
+                            );
+                    } else if !bounded_children.full() {
+                        if let Some(result) =
+                            bounded_children.insert(key.clone(), Atomic::new(Leaf::new()), false)
+                        {
+                            drop(unsafe { (result.0).1.into_owned() });
                         }
+                    } else {
+                        break;
                     }
-                    // secondly, try to insert into the tail
-                    let mut current_tail_node = unbounded_child.load(Relaxed, guard);
-                    if current_tail_node.is_null() {
-                        match unbounded_child.compare_and_set(
-                            current_tail_node,
-                            Owned::new(Leaf::new()),
-                            Relaxed,
-                            guard,
-                        ) {
-                            Ok(result) => current_tail_node = result,
-                            Err(result) => current_tail_node = result.current,
-                        }
-                    }
-                    return unsafe { current_tail_node.deref().insert(key, value, false) }
-                        .map_or_else(
-                            || Ok(()),
-                            |result| {
-                                if result.1 {
-                                    Err(Error::Duplicated(result.0))
-                                } else {
-                                    self.split_leaf(
-                                        result.0,
-                                        true,
-                                        &bounded_children,
-                                        &unbounded_child,
-                                        &reserved_low_key,
-                                        &reserved_high_key,
-                                        guard,
-                                    )
-                                }
-                            },
-                        );
                 }
+                let mut current_tail_node = unbounded_child.load(Relaxed, guard);
+                if current_tail_node.is_null() {
+                    match unbounded_child.compare_and_set(
+                        current_tail_node,
+                        Owned::new(Leaf::new()),
+                        Relaxed,
+                        guard,
+                    ) {
+                        Ok(result) => current_tail_node = result,
+                        Err(result) => current_tail_node = result.current,
+                    }
+                }
+                return unsafe { current_tail_node.deref().insert(key, value, false) }.map_or_else(
+                    || Ok(()),
+                    |result| {
+                        if result.1 {
+                            Err(Error::Duplicated(result.0))
+                        } else {
+                            self.split_leaf(
+                                result.0,
+                                true,
+                                &bounded_children,
+                                &unbounded_child,
+                                &reserved_low_key,
+                                &reserved_high_key,
+                                guard,
+                            )
+                        }
+                    },
+                );
             }
         }
     }
@@ -215,7 +242,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
 
         // copy entries to the newly allocated leaves
         let mut iterated = 0;
-        let mut scanner = Scanner::new(unsafe { full_leaf.load(Acquire, &guard).deref() });
+        let mut scanner = LeafScanner::new(unsafe { full_leaf.load(Acquire, &guard).deref() });
         while let Some(entry) = scanner.next() {
             if iterated < ARRAY_SIZE / 2 {
                 unsafe {
@@ -330,7 +357,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for Node<K, V> {
                 reserved_low_key,
                 reserved_high_key,
             } => {
-                let mut scanner = Scanner::new(&bounded_children);
+                let mut scanner = LeafScanner::new(&bounded_children);
                 while let Some(entry) = scanner.next() {
                     let child = entry.1.swap(Shared::null(), Acquire, &guard);
                     unsafe { guard.defer_destroy(child) };
@@ -352,7 +379,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for Node<K, V> {
                 reserved_low_key,
                 reserved_high_key,
             } => {
-                let mut scanner = Scanner::new(&bounded_children);
+                let mut scanner = LeafScanner::new(&bounded_children);
                 while let Some(entry) = scanner.next() {
                     let child = entry.1.swap(Shared::null(), Acquire, &guard);
                     unsafe { guard.defer_destroy(child) };
@@ -368,6 +395,22 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for Node<K, V> {
                     drop(unsafe { high_key_child.into_owned() });
                 }
             }
+        }
+    }
+}
+
+pub struct NodeScanner<'a, K: Ord + Sync, V: Sync> {
+    guard: Guard,
+    key: Option<K>,
+    value: Option<&'a V>,
+}
+
+impl<'a, K: Ord + Sync, V: Sync> NodeScanner<'a, K, V> {
+    fn new() -> NodeScanner<'a, K, V> {
+        NodeScanner::<'a, K, V> {
+            guard: crossbeam_epoch::pin(),
+            key: None,
+            value: None,
         }
     }
 }

@@ -277,27 +277,34 @@ impl<K: Ord + Sync, V: Sync> Leaf<K, V> {
         };
     }
 
-    pub fn next(&self, rank: usize) -> (usize, *const (K, V)) {
-        let metadata = self.metadata.load(Acquire);
-        if rank < ARRAY_SIZE {
-            let mut next_rank = ARRAY_SIZE + 1;
-            let mut next_index = ARRAY_SIZE;
-            for i in 0..ARRAY_SIZE {
-                if metadata & (OCCUPANCY_BIT << i) == 0 {
-                    continue;
-                }
-                let current_entry_rank =
-                    ((metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
+    pub fn next(&self, index: usize) -> (usize, *const (K, V)) {
+        if index != usize::MAX {
+            let metadata = self.metadata.load(Acquire);
+            let current_entry_rank = if index < ARRAY_SIZE {
+                ((metadata & (INDEX_RANK_ENTRY_MASK << (index * INDEX_RANK_ENTRY_SIZE)))
+                    >> (index * INDEX_RANK_ENTRY_SIZE)) as usize
+            } else {
+                0
+            };
+            if current_entry_rank < ARRAY_SIZE {
+                let mut next_rank = ARRAY_SIZE + 1;
+                let mut next_index = ARRAY_SIZE;
+                for i in 0..ARRAY_SIZE {
+                    if metadata & (OCCUPANCY_BIT << i) == 0 {
+                        continue;
+                    }
+                    let rank = ((metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
                         >> (i * INDEX_RANK_ENTRY_SIZE)) as usize;
-                if rank < current_entry_rank && current_entry_rank < next_rank {
-                    next_rank = current_entry_rank;
-                    next_index = i;
+                    if current_entry_rank < rank && rank < next_rank {
+                        next_rank = rank;
+                        next_index = i;
+                    }
                 }
-            }
-            if next_rank <= ARRAY_SIZE {
-                return (next_rank, unsafe {
-                    &*self.entry_array[next_index].as_ptr()
-                });
+                if next_rank <= ARRAY_SIZE {
+                    return (next_index, unsafe {
+                        &*self.entry_array[next_index].as_ptr()
+                    });
+                }
             }
         }
         (usize::MAX, std::ptr::null())
@@ -440,33 +447,33 @@ impl<'a, K: Ord + Sync, V: Sync> Drop for Inserter<'a, K, V> {
 }
 
 /// Leaf scanner.
-pub struct Scanner<'a, K: Ord + Sync, V: Sync> {
+pub struct LeafScanner<'a, K: Ord + Sync, V: Sync> {
     leaf: &'a Leaf<K, V>,
+    entry_index: usize,
     entry_ptr: *const (K, V),
-    entry_rank: usize,
 }
 
-impl<'a, K: Ord + Sync, V: Sync> Scanner<'a, K, V> {
-    pub fn new(leaf: &'a Leaf<K, V>) -> Scanner<'a, K, V> {
-        Scanner {
+impl<'a, K: Ord + Sync, V: Sync> LeafScanner<'a, K, V> {
+    pub fn new(leaf: &'a Leaf<K, V>) -> LeafScanner<'a, K, V> {
+        LeafScanner {
             leaf,
+            entry_index: ARRAY_SIZE,
             entry_ptr: std::ptr::null(),
-            entry_rank: 0,
         }
     }
 
     fn proceed(&mut self) {
         self.entry_ptr = std::ptr::null();
-        if self.entry_rank == usize::MAX {
+        if self.entry_index == usize::MAX {
             return;
         }
-        let (rank, entry_ptr) = self.leaf.next(self.entry_rank);
-        self.entry_rank = rank;
-        self.entry_ptr = entry_ptr;
+        let (index, ptr) = self.leaf.next(self.entry_index);
+        self.entry_index = index;
+        self.entry_ptr = ptr;
     }
 }
 
-impl<'a, K: Ord + Sync, V: Sync> Iterator for Scanner<'a, K, V> {
+impl<'a, K: Ord + Sync, V: Sync> Iterator for LeafScanner<'a, K, V> {
     type Item = (&'a K, &'a V);
     fn next(&mut self) -> Option<Self::Item> {
         self.proceed();
@@ -546,7 +553,7 @@ mod test {
         assert_eq!(leaf.max_key(), Some(&70));
         assert!(leaf.full());
 
-        let mut scanner = Scanner::new(&leaf);
+        let mut scanner = LeafScanner::new(&leaf);
         let mut prev_key = 0;
         let mut iterated = 0;
         while let Some(entry) = scanner.next() {
@@ -622,7 +629,7 @@ mod test {
         assert_eq!(leaf.num_removed(), 5);
         assert_eq!(leaf.cardinality(), 7);
 
-        let mut scanner = Scanner::new(&leaf);
+        let mut scanner = LeafScanner::new(&leaf);
         let mut prev_key = 0;
         let mut iterated = 0;
         while let Some(entry) = scanner.next() {
@@ -637,7 +644,6 @@ mod test {
 
     #[test]
     fn update() {
-        // [TODO]: fix BUGS in SCANNER!!
         let num_threads = (ARRAY_SIZE + 1) as usize;
         for _ in 0..256 {
             let barrier = Arc::new(Barrier::new(num_threads));
@@ -660,11 +666,11 @@ mod test {
                             assert!(leaf_copied.remove(&tid));
                         }
                     }
-                    let mut scanner = Scanner::new(&leaf_copied);
+                    let mut scanner = LeafScanner::new(&leaf_copied);
                     let mut prev_key = 0;
                     while let Some(entry) = scanner.next() {
                         assert_eq!(entry.1, &1);
-                        //assert!((prev_key == 0 && *entry.0 == 0) || prev_key < *entry.0);
+                        assert!((prev_key == 0 && *entry.0 == 0) || prev_key < *entry.0);
                         prev_key = *entry.0;
                     }
                 }));
@@ -672,10 +678,9 @@ mod test {
             for handle in thread_handles {
                 handle.join().unwrap();
             }
-            let mut scanner = Scanner::new(&leaf);
+            let mut scanner = LeafScanner::new(&leaf);
             let mut prev_key = 0;
             while let Some(entry) = scanner.next() {
-                println!("{}", entry.0);
                 assert_eq!(entry.1, &1);
                 assert!((prev_key == 0 && *entry.0 == 0) || prev_key < *entry.0);
                 assert!(entry.0 % 2 == 0);

@@ -3,7 +3,7 @@ extern crate crossbeam_epoch;
 pub mod leaf;
 pub mod node;
 
-use crossbeam_epoch::Atomic;
+use crossbeam_epoch::{Atomic, Guard};
 use leaf::Leaf;
 use node::Node;
 
@@ -21,8 +21,28 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
             root: Atomic::null(),
         }
     }
+
+    pub fn search<'a>(&'a self, key: &K) -> Scanner<'a, K, V> {
+        Scanner::new()
+    }
 }
 
 impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for TreeIndex<K, V> {
     fn drop(&mut self) {}
+}
+
+pub struct Scanner<'a, K: Ord + Sync, V: Sync> {
+    guard: Guard,
+    key: Option<K>,
+    value: Option<&'a V>,
+}
+
+impl<'a, K: Ord + Sync, V: Sync> Scanner<'a, K, V> {
+    fn new() -> Scanner<'a, K, V> {
+        Scanner::<'a, K, V> {
+            guard: crossbeam_epoch::pin(),
+            key: None,
+            value: None,
+        }
+    }
 }
