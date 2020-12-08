@@ -234,6 +234,42 @@ impl<K: Ord + Sync, V: Sync> Leaf<K, V> {
         None
     }
 
+    pub fn from(&self, key: &K, exact: bool) -> (usize, *const (K, V)) {
+        let metadata = self.metadata.load(Acquire);
+        let mut max_min_rank = 0;
+        let mut min_max_rank = ARRAY_SIZE + 1;
+        let mut min_max_index = ARRAY_SIZE;
+        for i in 0..ARRAY_SIZE {
+            let rank = ((metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
+                >> (i * INDEX_RANK_ENTRY_SIZE)) as usize;
+            if rank > max_min_rank && rank < min_max_rank && (metadata & (OCCUPANCY_BIT << i)) != 0
+            {
+                match self.compare(i, key) {
+                    Ordering::Less => {
+                        if max_min_rank < rank {
+                            max_min_rank = rank;
+                        }
+                    }
+                    Ordering::Greater => {
+                        if min_max_rank > rank {
+                            min_max_rank = rank;
+                            min_max_index = i;
+                        }
+                    }
+                    Ordering::Equal => {
+                        return (i, unsafe { &*self.entry_array[i].as_ptr() });
+                    }
+                }
+            }
+        }
+        if !exact && min_max_index < ARRAY_SIZE {
+            return (min_max_index, unsafe {
+                &*self.entry_array[min_max_index].as_ptr()
+            });
+        }
+        (usize::MAX, std::ptr::null())
+    }
+
     /// Returns the minimum entry among those that are not Ordering::Less than the given key.
     pub fn min_ge(&self, key: &K) -> Option<(&K, &V)> {
         let metadata = self.metadata.load(Acquire);
@@ -462,6 +498,32 @@ impl<'a, K: Ord + Sync, V: Sync> LeafScanner<'a, K, V> {
         }
     }
 
+    pub fn from(key: &K, leaf: &'a Leaf<K, V>) -> LeafScanner<'a, K, V> {
+        let (index, ptr) = leaf.from(key, true);
+        LeafScanner {
+            leaf,
+            entry_index: index,
+            entry_ptr: ptr,
+        }
+    }
+
+    pub fn from_ge(key: &K, leaf: &'a Leaf<K, V>) -> LeafScanner<'a, K, V> {
+        let (index, ptr) = leaf.from(key, false);
+        LeafScanner {
+            leaf,
+            entry_index: index,
+            entry_ptr: ptr,
+        }
+    }
+
+    /// Returns a reference to the entry that the scanner is currently pointing to
+    pub fn get(&self) -> Option<(&'a K, &'a V)> {
+        if self.entry_ptr.is_null() {
+            return None;
+        }
+        unsafe { Some((&(*self.entry_ptr).0, &(*self.entry_ptr).1)) }
+    }
+
     fn proceed(&mut self) {
         self.entry_ptr = std::ptr::null();
         if self.entry_index == usize::MAX {
@@ -477,10 +539,7 @@ impl<'a, K: Ord + Sync, V: Sync> Iterator for LeafScanner<'a, K, V> {
     type Item = (&'a K, &'a V);
     fn next(&mut self) -> Option<Self::Item> {
         self.proceed();
-        if self.entry_ptr.is_null() {
-            return None;
-        }
-        unsafe { Some((&(*self.entry_ptr).0, &(*self.entry_ptr).1)) }
+        self.get()
     }
 }
 
@@ -557,12 +616,41 @@ mod test {
         let mut prev_key = 0;
         let mut iterated = 0;
         while let Some(entry) = scanner.next() {
+            assert_eq!(scanner.get(), Some(entry));
             assert!(prev_key < *entry.0);
             assert_eq!(*entry.0 + 1, *entry.1);
             prev_key = *entry.0;
             iterated += 1;
         }
         assert_eq!(iterated, leaf.cardinality());
+        drop(scanner);
+
+        let mut scanner = LeafScanner::from(&50, &leaf);
+        assert_eq!(scanner.get(), Some((&50, &51)));
+        let mut prev_key = 50;
+        let mut iterated = 0;
+        while let Some(entry) = scanner.next() {
+            assert_eq!(scanner.get(), Some(entry));
+            assert!(prev_key < *entry.0);
+            assert_eq!(*entry.0 + 1, *entry.1);
+            prev_key = *entry.0;
+            iterated += 1;
+        }
+        assert_eq!(iterated, 2);
+        drop(scanner);
+
+        let mut scanner = LeafScanner::from_ge(&45, &leaf);
+        assert_eq!(scanner.get(), Some((&50, &51)));
+        let mut prev_key = 50;
+        let mut iterated = 0;
+        while let Some(entry) = scanner.next() {
+            assert_eq!(scanner.get(), Some(entry));
+            assert!(prev_key < *entry.0);
+            assert_eq!(*entry.0 + 1, *entry.1);
+            prev_key = *entry.0;
+            iterated += 1;
+        }
+        assert_eq!(iterated, 2);
         drop(scanner);
 
         let leaf = Leaf::new();
@@ -633,6 +721,7 @@ mod test {
         let mut prev_key = 0;
         let mut iterated = 0;
         while let Some(entry) = scanner.next() {
+            assert_eq!(scanner.get(), Some(entry));
             assert!(prev_key < *entry.0);
             assert_eq!(*entry.0 + 1, *entry.1);
             prev_key = *entry.0;
@@ -669,6 +758,7 @@ mod test {
                     let mut scanner = LeafScanner::new(&leaf_copied);
                     let mut prev_key = 0;
                     while let Some(entry) = scanner.next() {
+                        assert_eq!(scanner.get(), Some(entry));
                         assert_eq!(entry.1, &1);
                         assert!((prev_key == 0 && *entry.0 == 0) || prev_key < *entry.0);
                         prev_key = *entry.0;

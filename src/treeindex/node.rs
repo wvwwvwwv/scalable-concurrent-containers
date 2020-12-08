@@ -60,7 +60,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         }
     }
 
-    pub fn search<'a>(&'a self, key: &K, guard: &'a Guard) -> Option<&'a V> {
+    pub fn search<'a>(&'a self, key: &K, guard: &'a Guard) -> Option<LeafNodeScanner<'a, K, V>> {
         match &self.entry {
             NodeType::InternalNode {
                 bounded_children,
@@ -85,13 +85,13 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 reserved_high_key,
             } => {
                 if let Some((_, child)) = bounded_children.min_ge(&key) {
-                    unsafe { child.load(Acquire, guard).deref().search(key) }
+                    None //unsafe { child.load(Acquire, guard).deref().search(key) }
                 } else {
                     let current_tail_node = unbounded_child.load(Relaxed, guard);
                     if current_tail_node.is_null() {
                         return None;
                     }
-                    unsafe { current_tail_node.deref().search(key) }
+                    None //unsafe { current_tail_node.deref().search(key) }
                 }
             }
         }
@@ -399,19 +399,123 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for Node<K, V> {
     }
 }
 
-pub struct NodeScanner<'a, K: Ord + Sync, V: Sync> {
-    guard: Guard,
-    key: Option<K>,
-    value: Option<&'a V>,
+pub struct LeafNodeScanner<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
+    leaf_node: &'a Node<K, V>,
+    node_scanner: Option<LeafScanner<'a, K, Atomic<Leaf<K, V>>>>,
+    leaf_scanner: Option<LeafScanner<'a, K, V>>,
+    guard: &'a Guard,
 }
 
-impl<'a, K: Ord + Sync, V: Sync> NodeScanner<'a, K, V> {
-    fn new() -> NodeScanner<'a, K, V> {
-        NodeScanner::<'a, K, V> {
-            guard: crossbeam_epoch::pin(),
-            key: None,
-            value: None,
+impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNodeScanner<'a, K, V> {
+    fn new(leaf_node: &'a Node<K, V>, guard: &'a Guard) -> LeafNodeScanner<'a, K, V> {
+        LeafNodeScanner::<'a, K, V> {
+            leaf_node,
+            node_scanner: None,
+            leaf_scanner: None,
+            guard,
         }
+    }
+    fn from(key: &K, leaf_node: &'a Node<K, V>, guard: &'a Guard) -> LeafNodeScanner<'a, K, V> {
+        // TODO
+        LeafNodeScanner::<'a, K, V> {
+            leaf_node,
+            node_scanner: None,
+            leaf_scanner: None,
+            guard,
+        }
+    }
+    fn from_ge(key: &K, leaf_node: &'a Node<K, V>, guard: &'a Guard) -> LeafNodeScanner<'a, K, V> {
+        // TODO
+        LeafNodeScanner::<'a, K, V> {
+            leaf_node,
+            node_scanner: None,
+            leaf_scanner: None,
+            guard,
+        }
+    }
+}
+
+impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator
+    for LeafNodeScanner<'a, K, V>
+{
+    type Item = (&'a K, &'a V);
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(leaf_scanner) = self.leaf_scanner.as_mut() {
+            // leaf iteration
+            if let Some(entry) = leaf_scanner.next() {
+                return Some(entry);
+            }
+            // end of iteration
+            if self.node_scanner.is_none() {
+                return None;
+            }
+        }
+
+        if self.node_scanner.is_none() && self.leaf_scanner.is_none() {
+            // start scanning
+            match &self.leaf_node.entry {
+                NodeType::InternalNode {
+                    bounded_children: _,
+                    unbounded_child: _,
+                    reserved_low_key: _,
+                    reserved_high_key: _,
+                } => return None,
+                NodeType::LeafNode {
+                    bounded_children,
+                    unbounded_child: _,
+                    reserved_low_key: _,
+                    reserved_high_key: _,
+                } => {
+                    self.node_scanner
+                        .replace(LeafScanner::new(bounded_children));
+                }
+            }
+        }
+
+        if let Some(node_scanner) = self.node_scanner.as_mut() {
+            // proceed to the next leaf
+            while let Some(leaf) = node_scanner.next() {
+                self.leaf_scanner.replace(LeafScanner::new(unsafe {
+                    leaf.1.load(Acquire, self.guard).deref()
+                }));
+                if let Some(leaf_scanner) = self.leaf_scanner.as_mut() {
+                    // leaf iteration
+                    if let Some(entry) = leaf_scanner.next() {
+                        return Some(entry);
+                    }
+                }
+                self.leaf_scanner.take();
+            }
+        }
+        self.node_scanner.take();
+
+        let unbounded_child = match &self.leaf_node.entry {
+            NodeType::InternalNode {
+                bounded_children: _,
+                unbounded_child: _,
+                reserved_low_key: _,
+                reserved_high_key: _,
+            } => Shared::null(),
+            NodeType::LeafNode {
+                bounded_children: _,
+                unbounded_child,
+                reserved_low_key: _,
+                reserved_high_key: _,
+            } => unbounded_child.load(Acquire, self.guard),
+        };
+        if !unbounded_child.is_null() {
+            self.leaf_scanner
+                .replace(LeafScanner::new(unsafe { unbounded_child.deref() }));
+            if let Some(leaf_scanner) = self.leaf_scanner.as_mut() {
+                // leaf iteration
+                if let Some(entry) = leaf_scanner.next() {
+                    return Some(entry);
+                }
+            }
+        }
+
+        // end of iteration
+        None
     }
 }
 
@@ -519,5 +623,16 @@ mod test {
                 Error::Retry(entry) => assert_eq!(entry, (240, 11)),
             },
         }
+
+        let mut scanner = LeafNodeScanner::new(&node, &guard);
+        let mut iterated = 0;
+        let mut prev = 0;
+        while let Some(entry) = scanner.next() {
+            assert!(prev < *entry.0);
+            assert_eq!(*entry.1, 10);
+            prev = *entry.0;
+            iterated += 1;
+        }
+        assert_eq!(iterated, ARRAY_SIZE * (ARRAY_SIZE + 1) - ARRAY_SIZE / 2);
     }
 }
