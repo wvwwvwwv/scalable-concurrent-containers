@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 use std::mem::MaybeUninit;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-enum Error<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
+pub enum Error<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
     /// Duplicated key found: returns the given key-value pair.
     Duplicated((K, V)),
     /// Full: returns a newly allocated node for the parent to consume
@@ -73,6 +73,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 } else {
                     let current_tail_node = unbounded_child.load(Relaxed, guard);
                     if current_tail_node.is_null() {
+                        // non-leaf node: invalid
                         return None;
                     }
                     unsafe { current_tail_node.deref().search(key, guard) }
@@ -85,13 +86,33 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 reserved_high_key,
             } => {
                 if let Some((_, child)) = bounded_children.min_ge(&key) {
-                    None //unsafe { child.load(Acquire, guard).deref().search(key) }
+                    let leaf_node_scanner = LeafNodeScanner::from(
+                        key,
+                        self,
+                        unsafe { child.load(Acquire, guard).deref() },
+                        guard,
+                    );
+                    if leaf_node_scanner.get().is_some() {
+                        Some(leaf_node_scanner)
+                    } else {
+                        None
+                    }
                 } else {
                     let current_tail_node = unbounded_child.load(Relaxed, guard);
                     if current_tail_node.is_null() {
                         return None;
                     }
-                    None //unsafe { current_tail_node.deref().search(key) }
+                    let leaf_node_scanner = LeafNodeScanner::from(
+                        key,
+                        self,
+                        unsafe { current_tail_node.deref() },
+                        guard,
+                    );
+                    if leaf_node_scanner.get().is_some() {
+                        Some(leaf_node_scanner)
+                    } else {
+                        None
+                    }
                 }
             }
         }
@@ -415,15 +436,21 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNodeScanner<'
             guard,
         }
     }
-    fn from(key: &K, leaf_node: &'a Node<K, V>, guard: &'a Guard) -> LeafNodeScanner<'a, K, V> {
-        // TODO
+
+    fn from(
+        key: &K,
+        leaf_node: &'a Node<K, V>,
+        leaf: &'a Leaf<K, V>,
+        guard: &'a Guard,
+    ) -> LeafNodeScanner<'a, K, V> {
         LeafNodeScanner::<'a, K, V> {
             leaf_node,
             node_scanner: None,
-            leaf_scanner: None,
+            leaf_scanner: Some(LeafScanner::from(key, leaf)),
             guard,
         }
     }
+
     fn from_ge(key: &K, leaf_node: &'a Node<K, V>, guard: &'a Guard) -> LeafNodeScanner<'a, K, V> {
         // TODO
         LeafNodeScanner::<'a, K, V> {
@@ -432,6 +459,14 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNodeScanner<'
             leaf_scanner: None,
             guard,
         }
+    }
+
+    /// Returns a reference to the entry that the scanner is currently pointing to
+    pub fn get(&self) -> Option<(&'a K, &'a V)> {
+        if let Some(leaf_scanner) = self.leaf_scanner.as_ref() {
+            return leaf_scanner.get();
+        }
+        None
     }
 }
 
@@ -632,6 +667,14 @@ mod test {
             assert_eq!(*entry.1, 10);
             prev = *entry.0;
             iterated += 1;
+            let searched = node.search(entry.0, &guard);
+            assert_eq!(
+                searched.map_or_else(
+                    || 0,
+                    |scanner| scanner.get().map_or_else(|| 0, |entry| *entry.1)
+                ),
+                10
+            )
         }
         assert_eq!(iterated, ARRAY_SIZE * (ARRAY_SIZE + 1) - ARRAY_SIZE / 2);
     }
