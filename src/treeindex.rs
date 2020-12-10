@@ -5,13 +5,14 @@ pub mod node;
 
 use crossbeam_epoch::{Atomic, Guard};
 use leaf::Leaf;
-use node::{LeafNodeScanner, Node};
+use node::{Error, LeafNodeScanner, Node};
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 /// A scalable concurrent tree map implementation.
 ///
-/// It implements an in-memory B+-tree variant.
-/// The customized structure of TreeIndex allows the scanning operation to perform very efficiently without being blocked.
+/// scc::TreeIndex is a B+ tree variant that is aimed at serving read requests efficiently.
+/// Read operations, such as scan, read, are neither blocked nor interrupted by all the other types of operations.
+/// Write operations, such as insert, remove, do not block if they do not entail structural changes to the tree.
 pub struct TreeIndex<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
     root: Atomic<Node<K, V>>,
 }
@@ -25,48 +26,13 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
-    /// let guard = crossbeam_epoch::pin();
-    /// let result = treeindex.search(&1, &guard);
+    /// let result = treeindex.read(&1, |key, value| *value);
     /// assert!(result.is_none());
-    ///
-    /// treeindex.insert(1, 0);
-    /// let result = treeindex.search(&1, &guard);
-    /// assert_eq!(result.map_or_else(|| (&1, &1), |scanner| scanner.get().unwrap()), (&1, &0));
     /// ```
     pub fn new() -> TreeIndex<K, V> {
         TreeIndex {
             root: Atomic::new(Node::new(0)),
         }
-    }
-
-    /// Returns a reference to the key-value pair.
-    ///
-    /// # Examples
-    /// ```
-    /// use scc::TreeIndex;
-    ///
-    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
-    ///
-    /// let guard = crossbeam_epoch::pin();
-    /// let result = treeindex.search(&1, &guard);
-    /// assert!(result.is_none());
-    ///
-    /// treeindex.insert(1, 0);
-    /// let result = treeindex.search(&1, &guard);
-    /// assert_eq!(result.map_or_else(|| (&1, &1), |scanner| scanner.get().unwrap()), (&1, &0));
-    /// ```
-    pub fn search<'a>(&'a self, key: &K, guard: &'a Guard) -> Option<Scanner<'a, K, V>> {
-        let mut scanner = Scanner::new(guard);
-        let root_node = self.root.load(Acquire, scanner.guard);
-        if root_node.is_null() {
-            return None;
-        }
-        let leaf_node_scanner = unsafe { root_node.deref().search(key, scanner.guard) };
-        if leaf_node_scanner.is_none() {
-            return None;
-        }
-        scanner.leaf_node_scanner = leaf_node_scanner;
-        Some(scanner)
     }
 
     /// Inserts a a key-value pair.
@@ -77,21 +43,76 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
-    /// let guard = crossbeam_epoch::pin();
-    /// let result = treeindex.search(&1, &guard);
-    /// assert!(result.is_none());
+    /// let result = treeindex.insert(1, 10);
+    /// assert!(result.is_ok());
     ///
-    /// treeindex.insert(1, 0);
-    /// let result = treeindex.search(&1, &guard);
-    /// assert_eq!(result.map_or_else(|| (&1, &1), |scanner| scanner.get().unwrap()), (&1, &0));
+    /// let result = treeindex.insert(1, 11);
+    /// assert_eq!(result.err().unwrap(), (1, 11));
+    ///
+    /// let result = treeindex.read(&1, |key, value| *value);
+    /// assert_eq!(result.unwrap(), 10);
     /// ```
-    pub fn insert(&self, key: K, value: V) {
+    pub fn insert(&self, key: K, value: V) -> Result<(), (K, V)> {
         let guard = crossbeam_epoch::pin();
         let root_node = self.root.load(Acquire, &guard);
         if root_node.is_null() {
-            return;
+            return Err((key, value));
         }
-        unsafe { root_node.deref().insert(key, value, &guard) };
+        match unsafe { root_node.deref().insert(key, value, &guard) } {
+            Ok(_) => Ok(()),
+            Err(error) => match error {
+                Error::Duplicated((key, value)) => Err((key, value)),
+                Error::Full((key, value)) => Err((key, value)),
+                Error::Retry((key, value)) => Err((key, value)),
+            },
+        }
+    }
+
+    /// Reads a key-value pair.
+    ///
+    /// # Examples
+    /// ```
+    /// use scc::TreeIndex;
+    ///
+    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    ///
+    /// let result = treeindex.read(&1, |key, value| *value);
+    /// assert!(result.is_none());
+    ///
+    /// let result = treeindex.insert(1, 10);
+    /// assert!(result.is_ok());
+    ///
+    /// let result = treeindex.read(&1, |key, value| *value);
+    /// assert_eq!(result.unwrap(), 10);
+    /// ```
+    pub fn read<U, F: FnOnce(&K, &V) -> U>(&self, key: &K, f: F) -> Option<U> {
+        let guard = crossbeam_epoch::pin();
+        let root_node = self.root.load(Acquire, &guard);
+        if root_node.is_null() {
+            return None;
+        }
+        let leaf_node_scanner = unsafe { root_node.deref().search(key, &guard) };
+        leaf_node_scanner.map_or_else(
+            || None,
+            |scanner| {
+                let entry = scanner.get();
+                entry.map(|(key, value)| f(key, value))
+            },
+        )
+    }
+
+    /// Returns a Scanner.
+    ///
+    /// # Examples
+    /// ```
+    /// use scc::TreeIndex;
+    ///
+    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    ///
+    /// let scanner = treeindex.iter();
+    /// ```
+    pub fn iter(&self) -> Scanner<K, V> {
+        Scanner::new(self)
     }
 }
 
@@ -100,15 +121,17 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for TreeIndex<K,
 }
 
 pub struct Scanner<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
+    tree_index: &'a TreeIndex<K, V>,
     leaf_node_scanner: Option<LeafNodeScanner<'a, K, V>>,
-    guard: &'a Guard,
+    guard: Guard,
 }
 
 impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Scanner<'a, K, V> {
-    fn new(guard: &'a Guard) -> Scanner<'a, K, V> {
+    fn new(tree_index: &'a TreeIndex<K, V>) -> Scanner<'a, K, V> {
         Scanner::<'a, K, V> {
+            tree_index,
             leaf_node_scanner: None,
-            guard,
+            guard: crossbeam_epoch::pin(),
         }
     }
 
@@ -117,6 +140,13 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Scanner<'a, K, V>
         if let Some(leaf_node_scanner) = self.leaf_node_scanner.as_ref() {
             return leaf_node_scanner.get();
         }
+        None
+    }
+}
+
+impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator for Scanner<'a, K, V> {
+    type Item = (&'a K, &'a V);
+    fn next(&mut self) -> Option<Self::Item> {
         None
     }
 }

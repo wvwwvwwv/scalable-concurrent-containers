@@ -262,28 +262,15 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         }
 
         // copy entries to the newly allocated leaves
-        let mut iterated = 0;
-        let mut scanner = LeafScanner::new(unsafe { full_leaf.load(Acquire, &guard).deref() });
-        while let Some(entry) = scanner.next() {
-            if iterated < ARRAY_SIZE / 2 {
-                unsafe {
-                    low_key_leaf
-                        .deref()
-                        .insert(entry.0.clone(), entry.1.clone(), false);
-                }
-            } else {
-                unsafe {
-                    high_key_leaf
-                        .deref()
-                        .insert(entry.0.clone(), entry.1.clone(), false);
-                }
-            }
-            iterated += 1;
-        }
+        let distributed = unsafe {
+            full_leaf
+                .load(Acquire, &guard)
+                .deref()
+                .distribute(low_key_leaf.deref(), high_key_leaf.deref())
+        };
 
         // insert the given entry
-        let high_key_leaf_empty = iterated <= ARRAY_SIZE / 2;
-        if high_key_leaf_empty || unsafe { low_key_leaf.deref().min_ge(&entry.0).is_some() } {
+        if distributed.1 == 0 || unsafe { low_key_leaf.deref().min_ge(&entry.0).is_some() } {
             // insert the entry into the low-key leaf if the high-key leaf is empty, or the key fits the low-key leaf
             unsafe {
                 low_key_leaf
@@ -305,7 +292,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         }
 
         // insert the newly added leaf into the main array
-        if high_key_leaf_empty {
+        if distributed.1 == 0 {
             // replace the full leaf with the low-key leaf
             let old_full_leaf = full_leaf.swap(low_key_leaf, Release, &guard);
             // deallocate the deprecated leaf
@@ -346,6 +333,35 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         }
     }
 
+    fn split_node(
+        &self,
+        entry: (K, V),
+        is_undounded: bool,
+        leaf_array: &Leaf<K, Atomic<Leaf<K, Node<K, V>>>>,
+        full_leaf: &Atomic<Node<K, V>>,
+        low_key: &Atomic<Node<K, V>>,
+        high_key: &Atomic<Node<K, V>>,
+        guard: &Guard,
+    ) -> Result<(), Error<K, V>> {
+        // [TODO]
+        let new_leaf_low_key = Owned::new(Node::new(self.floor - 1));
+        let new_leaf_high_key = Owned::new(Node::new(self.floor - 1));
+        let mut low_key_leaf = Shared::null();
+        let mut high_key_leaf = Shared::null();
+        match low_key.compare_and_set(Shared::null(), new_leaf_low_key, Relaxed, guard) {
+            Ok(result) => low_key_leaf = result,
+            Err(_) => return Err(Error::Retry(entry)),
+        }
+        match high_key.compare_and_set(Shared::null(), new_leaf_high_key, Relaxed, guard) {
+            Ok(result) => high_key_leaf = result,
+            Err(_) => {
+                drop(unsafe { low_key.swap(Shared::null(), Relaxed, guard).into_owned() });
+                return Err(Error::Retry(entry));
+            }
+        }
+        return Err(Error::Retry(entry));
+    }
+
     fn handle_result(
         &self,
         result: Result<(), Error<K, V>>,
@@ -357,14 +373,24 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             Err(err) => match err {
                 Error::Duplicated(_) => return Err(err),
                 Error::Full(_) => {
+                    // [TODO]
                     // try to split
                     // split the entry into two new entries => insert the new one => replace the old one with the new one
                     // return self.split_and_insert_locked(entry, child);
+                    // failure => revert & retry
+                    // success => commit (replace the pointers)
                     return Ok(());
                 }
                 Error::Retry(_) => return Err(err),
             },
         }
+    }
+}
+
+impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Clone for Node<K, V> {
+    fn clone(&self) -> Self {
+        unreachable!();
+        Node::new(self.floor)
     }
 }
 

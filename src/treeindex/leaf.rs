@@ -27,12 +27,12 @@ pub type EntryArray<K, V> = [MaybeUninit<(K, V)>; ARRAY_SIZE];
 /// Leaf is an ordered array of key-value pairs.
 ///
 /// A constructed key-value pair entry is never dropped until the entire Leaf instance is dropped.
-pub struct Leaf<K: Ord + Sync, V: Sync> {
+pub struct Leaf<K: Clone + Ord + Sync, V: Clone + Sync> {
     entry_array: EntryArray<K, V>,
     metadata: AtomicU64,
 }
 
-impl<K: Ord + Sync, V: Sync> Leaf<K, V> {
+impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
     pub fn new() -> Leaf<K, V> {
         Leaf {
             entry_array: unsafe { MaybeUninit::uninit().assume_init() },
@@ -346,6 +346,27 @@ impl<K: Ord + Sync, V: Sync> Leaf<K, V> {
         (usize::MAX, std::ptr::null())
     }
 
+    pub fn distribute(
+        &self,
+        low_key_leaf: &Leaf<K, V>,
+        high_key_leaf: &Leaf<K, V>,
+    ) -> (usize, usize) {
+        let mut iterated = 0;
+        let mut scanner = LeafScanner::new(self);
+        while let Some(entry) = scanner.next() {
+            if iterated < ARRAY_SIZE / 2 {
+                low_key_leaf.insert(entry.0.clone(), entry.1.clone(), false);
+            } else {
+                high_key_leaf.insert(entry.0.clone(), entry.1.clone(), false);
+            }
+            iterated += 1;
+        }
+        (
+            iterated.min(ARRAY_SIZE / 2),
+            iterated.max(ARRAY_SIZE / 2) - ARRAY_SIZE / 2,
+        )
+    }
+
     fn compare(&self, index: usize, key: &K) -> std::cmp::Ordering {
         let entry_ref = unsafe { &*self.entry_array[index].as_ptr() };
         entry_ref.0.cmp(key)
@@ -368,7 +389,7 @@ impl<K: Ord + Sync, V: Sync> Leaf<K, V> {
     }
 }
 
-impl<K: Ord + Sync, V: Sync> Drop for Leaf<K, V> {
+impl<K: Clone + Ord + Sync, V: Clone + Sync> Drop for Leaf<K, V> {
     fn drop(&mut self) {
         let metadata = self.metadata.swap(0, Acquire);
         for i in 0..ARRAY_SIZE {
@@ -379,14 +400,14 @@ impl<K: Ord + Sync, V: Sync> Drop for Leaf<K, V> {
     }
 }
 
-struct Inserter<'a, K: Ord + Sync, V: Sync> {
+struct Inserter<'a, K: Clone + Ord + Sync, V: Clone + Sync> {
     leaf: &'a Leaf<K, V>,
     committed: bool,
     metadata: u64,
     index: usize,
 }
 
-impl<'a, K: Ord + Sync, V: Sync> Inserter<'a, K, V> {
+impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Inserter<'a, K, V> {
     /// Returns Some if OCCUPIED && RANK == 0
     fn new(leaf: &'a Leaf<K, V>) -> Option<Inserter<'a, K, V>> {
         let mut current = leaf.metadata.load(Relaxed);
@@ -461,7 +482,7 @@ impl<'a, K: Ord + Sync, V: Sync> Inserter<'a, K, V> {
     }
 }
 
-impl<'a, K: Ord + Sync, V: Sync> Drop for Inserter<'a, K, V> {
+impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Drop for Inserter<'a, K, V> {
     fn drop(&mut self) {
         if !self.committed {
             // rollback metadata changes if not committed
@@ -483,13 +504,13 @@ impl<'a, K: Ord + Sync, V: Sync> Drop for Inserter<'a, K, V> {
 }
 
 /// Leaf scanner.
-pub struct LeafScanner<'a, K: Ord + Sync, V: Sync> {
+pub struct LeafScanner<'a, K: Clone + Ord + Sync, V: Clone + Sync> {
     leaf: &'a Leaf<K, V>,
     entry_index: usize,
     entry_ptr: *const (K, V),
 }
 
-impl<'a, K: Ord + Sync, V: Sync> LeafScanner<'a, K, V> {
+impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> LeafScanner<'a, K, V> {
     pub fn new(leaf: &'a Leaf<K, V>) -> LeafScanner<'a, K, V> {
         LeafScanner {
             leaf,
@@ -535,7 +556,7 @@ impl<'a, K: Ord + Sync, V: Sync> LeafScanner<'a, K, V> {
     }
 }
 
-impl<'a, K: Ord + Sync, V: Sync> Iterator for LeafScanner<'a, K, V> {
+impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Iterator for LeafScanner<'a, K, V> {
     type Item = (&'a K, &'a V);
     fn next(&mut self) -> Option<Self::Item> {
         self.proceed();
@@ -729,6 +750,38 @@ mod test {
         }
         assert_eq!(iterated, leaf.cardinality());
         drop(scanner);
+
+        let leaf_low = Leaf::new();
+        let leaf_high = Leaf::new();
+        let result = leaf.distribute(&leaf_low, &leaf_high);
+        assert_eq!(result, (6, 1));
+
+        let mut prev_key = 0;
+        let mut iterated_low = 0;
+        let mut scanner_low = LeafScanner::new(&leaf_low);
+        while let Some(entry) = scanner_low.next() {
+            assert_eq!(scanner_low.get(), Some(entry));
+            assert!(prev_key < *entry.0);
+            assert_eq!(*entry.0 + 1, *entry.1);
+            prev_key = *entry.0;
+            iterated_low += 1;
+        }
+        assert_eq!(iterated_low, 6);
+        assert_eq!(iterated_low, leaf_low.cardinality());
+        drop(scanner_low);
+
+        let mut iterated_high = 0;
+        let mut scanner_high = LeafScanner::new(&leaf_high);
+        while let Some(entry) = scanner_high.next() {
+            assert_eq!(scanner_high.get(), Some(entry));
+            assert!(prev_key < *entry.0);
+            assert_eq!(*entry.0 + 1, *entry.1);
+            prev_key = *entry.0;
+            iterated_high += 1;
+        }
+        assert_eq!(iterated_high, 1);
+        assert_eq!(iterated_high, leaf_high.cardinality());
+        drop(scanner_high);
     }
 
     #[test]
