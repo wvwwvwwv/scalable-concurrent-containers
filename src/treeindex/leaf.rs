@@ -234,8 +234,7 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         None
     }
 
-    pub fn from(&self, key: &K, exact: bool) -> (usize, *const (K, V)) {
-        let metadata = self.metadata.load(Acquire);
+    pub fn from(&self, metadata: u64, key: &K, exact: bool) -> (usize, *const (K, V)) {
         let mut max_min_rank = 0;
         let mut min_max_rank = ARRAY_SIZE + 1;
         let mut min_max_index = ARRAY_SIZE;
@@ -313,9 +312,8 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         };
     }
 
-    pub fn next(&self, index: usize) -> (usize, *const (K, V)) {
+    pub fn next(&self, metadata: u64, index: usize) -> (usize, *const (K, V)) {
         if index != usize::MAX {
-            let metadata = self.metadata.load(Acquire);
             let current_entry_rank = if index < ARRAY_SIZE {
                 ((metadata & (INDEX_RANK_ENTRY_MASK << (index * INDEX_RANK_ENTRY_SIZE)))
                     >> (index * INDEX_RANK_ENTRY_SIZE)) as usize
@@ -506,6 +504,7 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Drop for Inserter<'a, K, V> {
 /// Leaf scanner.
 pub struct LeafScanner<'a, K: Clone + Ord + Sync, V: Clone + Sync> {
     leaf: &'a Leaf<K, V>,
+    metadata: u64,
     entry_index: usize,
     entry_ptr: *const (K, V),
 }
@@ -514,24 +513,29 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> LeafScanner<'a, K, V> {
     pub fn new(leaf: &'a Leaf<K, V>) -> LeafScanner<'a, K, V> {
         LeafScanner {
             leaf,
+            metadata: leaf.metadata.load(Acquire),
             entry_index: ARRAY_SIZE,
             entry_ptr: std::ptr::null(),
         }
     }
 
     pub fn from(key: &K, leaf: &'a Leaf<K, V>) -> LeafScanner<'a, K, V> {
-        let (index, ptr) = leaf.from(key, true);
+        let metadata = leaf.metadata.load(Acquire);
+        let (index, ptr) = leaf.from(metadata, key, true);
         LeafScanner {
             leaf,
+            metadata,
             entry_index: index,
             entry_ptr: ptr,
         }
     }
 
     pub fn from_ge(key: &K, leaf: &'a Leaf<K, V>) -> LeafScanner<'a, K, V> {
-        let (index, ptr) = leaf.from(key, false);
+        let metadata = leaf.metadata.load(Acquire);
+        let (index, ptr) = leaf.from(metadata, key, false);
         LeafScanner {
             leaf,
+            metadata,
             entry_index: index,
             entry_ptr: ptr,
         }
@@ -550,7 +554,7 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> LeafScanner<'a, K, V> {
         if self.entry_index == usize::MAX {
             return;
         }
-        let (index, ptr) = self.leaf.next(self.entry_index);
+        let (index, ptr) = self.leaf.next(self.metadata, self.entry_index);
         self.entry_index = index;
         self.entry_ptr = ptr;
     }

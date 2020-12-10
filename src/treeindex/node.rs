@@ -359,6 +359,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 return Err(Error::Retry(entry));
             }
         }
+
+        // copy entries to the newly allocated nodes
+        // copy reserved nodes
+
         return Err(Error::Retry(entry));
     }
 
