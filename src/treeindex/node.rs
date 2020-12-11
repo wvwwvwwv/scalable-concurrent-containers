@@ -9,7 +9,7 @@ pub enum Error<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
     /// Duplicated key found: returns the given key-value pair.
     Duplicated((K, V)),
     /// Full: returns a newly allocated node for the parent to consume
-    Full((K, V), Option<K>),
+    Full((K, V)),
     /// Retry: return the given key-value pair.
     Retry((K, V)),
 }
@@ -131,10 +131,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 reserved_high_key,
             } => {
                 loop {
-                    if let Some((_, child)) = bounded_children.min_ge(&key) {
+                    if let Some((max_key, child)) = bounded_children.min_ge(&key) {
                         let child_node = child.load(Acquire, guard);
                         let result = unsafe { child_node.deref().insert(key, value, guard) };
-                        return self.handle_result(result, child_node, guard);
+                        return self.handle_result(result, child_node, Some(max_key), guard);
                     } else if !bounded_children.full() {
                         if let Some(result) = bounded_children.insert(
                             key.clone(),
@@ -160,7 +160,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     }
                 }
                 let result = unsafe { current_tail_node.deref().insert(key, value, guard) };
-                self.handle_result(result, current_tail_node, guard)
+                self.handle_result(result, current_tail_node, None, guard)
             }
             NodeType::LeafNode {
                 bounded_children,
@@ -169,7 +169,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 reserved_high_key,
             } => {
                 loop {
-                    if let Some((max_key, child)) = bounded_children.min_ge(&key) {
+                    if let Some((_, child)) = bounded_children.min_ge(&key) {
                         let child_node = child.load(Acquire, guard);
                         return unsafe { child_node.deref().insert(key, value, false) }
                             .map_or_else(
@@ -180,9 +180,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                                     } else {
                                         self.split_leaf(
                                             result.0,
-                                            &bounded_children,
+                                            Some(&bounded_children),
                                             &child,
-                                            Some(max_key.clone()),
                                             &reserved_low_key,
                                             &reserved_high_key,
                                             guard,
@@ -220,9 +219,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                         } else {
                             self.split_leaf(
                                 result.0,
-                                &bounded_children,
-                                &unbounded_child,
                                 None,
+                                &unbounded_child,
                                 &reserved_low_key,
                                 &reserved_high_key,
                                 guard,
@@ -237,9 +235,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
     fn split_leaf(
         &self,
         entry: (K, V),
-        leaf_array: &Leaf<K, Atomic<Leaf<K, V>>>,
+        leaf_array: Option<&Leaf<K, Atomic<Leaf<K, V>>>>,
         full_leaf: &Atomic<Leaf<K, V>>,
-        full_leaf_max_key: Option<K>,
         low_key: &Atomic<Leaf<K, V>>,
         high_key: &Atomic<Leaf<K, V>>,
         guard: &Guard,
@@ -287,8 +284,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         }
 
         // if the key is for the unbounded child leaf, return
-        if full_leaf_max_key.is_none() {
-            return Err(Error::Full(entry, None));
+        if leaf_array.is_none() {
+            return Err(Error::Full(entry));
         }
 
         // insert the newly added leaf into the main array
@@ -311,11 +308,12 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         } else {
             let max_key = unsafe { low_key_leaf.deref().max_key() }.unwrap();
             if leaf_array
+                .unwrap()
                 .insert(max_key.clone(), Atomic::from(low_key_leaf), false)
                 .is_some()
             {
                 // insertion failed: expect that the caller handles the situation
-                return Err(Error::Full(entry, full_leaf_max_key));
+                return Err(Error::Full(entry));
             }
 
             // replace the full leaf with the high-key leaf
@@ -516,7 +514,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 .is_some()
             {
                 // insertion failed: expect that the caller handles the situation
-                return Err(Error::Full(entry, full_node_max_key));
+                return Err(Error::Full(entry));
             }
 
             // replace the full leaf with the high-key leaf
@@ -540,13 +538,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         &self,
         result: Result<(), Error<K, V>>,
         child_node: Shared<Node<K, V>>,
+        child_node_max_key: Option<&K>,
         guard: &Guard,
     ) -> Result<(), Error<K, V>> {
         match result {
             Ok(_) => return Ok(()),
             Err(err) => match err {
                 Error::Duplicated(_) => return Err(err),
-                Error::Full(_, _) => {
+                Error::Full(_) => {
                     // [TODO]
                     // try to split
                     // split the entry into two new entries => insert the new one => replace the old one with the new one
@@ -776,7 +775,7 @@ mod test {
                         Error::Duplicated(entry) => {
                             assert_eq!(entry, ((j + 1) * (ARRAY_SIZE + 1) - i, 11))
                         }
-                        Error::Full(_, _) => assert!(false),
+                        Error::Full(_) => assert!(false),
                         Error::Retry(_) => assert!(false),
                     },
                 }
@@ -786,7 +785,7 @@ mod test {
             Ok(_) => assert!(false),
             Err(result) => match result {
                 Error::Duplicated(_) => assert!(false),
-                Error::Full(entry, _) => assert_eq!(entry, (0, 11)),
+                Error::Full(entry) => assert_eq!(entry, (0, 11)),
                 Error::Retry(_) => assert!(false),
             },
         }
@@ -794,7 +793,7 @@ mod test {
             Ok(_) => assert!(false),
             Err(result) => match result {
                 Error::Duplicated(_) => assert!(false),
-                Error::Full(_, _) => assert!(false),
+                Error::Full(_) => assert!(false),
                 Error::Retry(entry) => assert_eq!(entry, (240, 11)),
             },
         }
@@ -814,7 +813,7 @@ mod test {
                         Error::Duplicated(entry) => {
                             assert_eq!(entry, ((j + 1) * (ARRAY_SIZE + 1) - i, 11))
                         }
-                        Error::Full(_, _) => assert!(false),
+                        Error::Full(_) => assert!(false),
                         Error::Retry(_) => assert!(false),
                     },
                 }
@@ -830,7 +829,7 @@ mod test {
                     Error::Duplicated(entry) => {
                         assert_eq!(entry, ((ARRAY_SIZE / 2 + 1) * (ARRAY_SIZE + 1) - i, 11))
                     }
-                    Error::Full(_, _) => assert!(false),
+                    Error::Full(_) => assert!(false),
                     Error::Retry(_) => assert!(false),
                 },
             }
@@ -845,7 +844,7 @@ mod test {
                     Error::Duplicated(entry) => {
                         assert_eq!(entry, ((ARRAY_SIZE + 2) * (ARRAY_SIZE + 1) - i, 11))
                     }
-                    Error::Full(_, _) => assert!(false),
+                    Error::Full(_) => assert!(false),
                     Error::Retry(_) => assert!(false),
                 },
             }
@@ -854,7 +853,7 @@ mod test {
             Ok(_) => assert!(false),
             Err(result) => match result {
                 Error::Duplicated(_) => assert!(false),
-                Error::Full(_, _) => assert!(false),
+                Error::Full(_) => assert!(false),
                 Error::Retry(entry) => assert_eq!(entry, (240, 11)),
             },
         }
