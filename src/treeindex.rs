@@ -62,7 +62,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
             Ok(_) => Ok(()),
             Err(error) => match error {
                 Error::Duplicated((key, value)) => Err((key, value)),
-                Error::Full((key, value)) => Err((key, value)),
+                Error::Full((key, value), _) => Err((key, value)),
                 Error::Retry((key, value)) => Err((key, value)),
             },
         }
