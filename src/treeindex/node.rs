@@ -14,27 +14,28 @@ pub enum Error<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
     Retry((K, V)),
 }
 
+struct UnbornNode<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
+    low_key_node: (Option<K>, Option<Node<K, V>>),
+    high_key_node: (Option<K>, Option<Node<K, V>>),
+}
+
 enum NodeType<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
     /// InternalNode: |ptr(children)/max(child keys)|...|ptr(children)|
     InternalNode {
-        bounded_children: Leaf<K, Atomic<Node<K, V>>>,
-        unbounded_child: Atomic<Node<K, V>>,
-        reserved_low_key: Atomic<(K, Node<K, V>)>,
-        reserved_high_key: Atomic<(K, Node<K, V>)>,
+        children: (Leaf<K, Atomic<Node<K, V>>>, Atomic<Node<K, V>>),
+        unborn_children: Atomic<UnbornNode<K, V>>,
+        floor: usize,
     },
     /// LeafNode: |ptr(entry array)/max(child keys)|...|ptr(entry array)|
     LeafNode {
-        bounded_children: Leaf<K, Atomic<Leaf<K, V>>>,
-        unbounded_child: Atomic<Leaf<K, V>>,
-        reserved_low_key: Atomic<Leaf<K, V>>,
-        reserved_high_key: Atomic<Leaf<K, V>>,
+        leaves: (Leaf<K, Atomic<Leaf<K, V>>>, Atomic<Leaf<K, V>>),
+        unborn_leaves: Atomic<(Option<Leaf<K, V>>, Option<Leaf<K, V>>)>,
+        side_link: Atomic<Node<K, V>>,
     },
 }
 
 pub struct Node<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
     entry: NodeType<K, V>,
-    side_link: Atomic<Node<K, V>>,
-    floor: usize,
 }
 
 impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
@@ -42,36 +43,31 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         Node {
             entry: if floor > 0 {
                 NodeType::InternalNode {
-                    bounded_children: Leaf::new(),
-                    unbounded_child: Atomic::null(),
-                    reserved_low_key: Atomic::null(),
-                    reserved_high_key: Atomic::null(),
+                    children: (Leaf::new(), Atomic::null()),
+                    unborn_children: Atomic::null(),
+                    floor,
                 }
             } else {
                 NodeType::LeafNode {
-                    bounded_children: Leaf::new(),
-                    unbounded_child: Atomic::null(),
-                    reserved_low_key: Atomic::null(),
-                    reserved_high_key: Atomic::null(),
+                    leaves: (Leaf::new(), Atomic::null()),
+                    unborn_leaves: Atomic::null(),
+                    side_link: Atomic::null(),
                 }
             },
-            side_link: Atomic::null(),
-            floor,
         }
     }
 
     pub fn search<'a>(&'a self, key: &K, guard: &'a Guard) -> Option<LeafNodeScanner<'a, K, V>> {
         match &self.entry {
             NodeType::InternalNode {
-                bounded_children,
-                unbounded_child,
-                reserved_low_key,
-                reserved_high_key,
+                children,
+                unborn_children,
+                floor,
             } => {
-                if let Some((_, child)) = bounded_children.min_ge(&key) {
+                if let Some((_, child)) = (children.0).min_ge(&key) {
                     unsafe { child.load(Acquire, guard).deref().search(key, guard) }
                 } else {
-                    let current_tail_node = unbounded_child.load(Relaxed, guard);
+                    let current_tail_node = (children.1).load(Relaxed, guard);
                     if current_tail_node.is_null() {
                         // non-leaf node: invalid
                         return None;
@@ -80,12 +76,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 }
             }
             NodeType::LeafNode {
-                bounded_children,
-                unbounded_child,
-                reserved_low_key,
-                reserved_high_key,
+                leaves,
+                unborn_leaves,
+                side_link,
             } => {
-                if let Some((_, child)) = bounded_children.min_ge(&key) {
+                if let Some((_, child)) = (leaves.0).min_ge(&key) {
                     let leaf_node_scanner = LeafNodeScanner::from(
                         key,
                         self,
@@ -98,7 +93,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                         None
                     }
                 } else {
-                    let current_tail_node = unbounded_child.load(Relaxed, guard);
+                    let current_tail_node = (leaves.1).load(Relaxed, guard);
                     if current_tail_node.is_null() {
                         return None;
                     }
@@ -125,20 +120,19 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
     pub fn insert(&self, key: K, value: V, guard: &Guard) -> Result<(), Error<K, V>> {
         match &self.entry {
             NodeType::InternalNode {
-                bounded_children,
-                unbounded_child,
-                reserved_low_key,
-                reserved_high_key,
+                children,
+                unborn_children,
+                floor,
             } => {
                 loop {
-                    if let Some((max_key, child)) = bounded_children.min_ge(&key) {
+                    if let Some((max_key, child)) = (children.0).min_ge(&key) {
                         let child_node = child.load(Acquire, guard);
                         let result = unsafe { child_node.deref().insert(key, value, guard) };
                         return self.handle_result(result, child_node, Some(max_key), guard);
-                    } else if !bounded_children.full() {
-                        if let Some(result) = bounded_children.insert(
+                    } else if !(children.0).full() {
+                        if let Some(result) = (children.0).insert(
                             key.clone(),
-                            Atomic::new(Node::new(self.floor - 1)),
+                            Atomic::new(Node::new(floor - 1)),
                             false,
                         ) {
                             drop(unsafe { (result.0).1.into_owned() });
@@ -147,11 +141,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                         break;
                     }
                 }
-                let mut current_tail_node = unbounded_child.load(Relaxed, guard);
+                let mut current_tail_node = (children.1).load(Relaxed, guard);
                 if current_tail_node.is_null() {
-                    match unbounded_child.compare_and_set(
+                    match (children.1).compare_and_set(
                         current_tail_node,
-                        Owned::new(Node::new(self.floor - 1)),
+                        Owned::new(Node::new(floor - 1)),
                         Relaxed,
                         guard,
                     ) {
@@ -163,35 +157,26 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 self.handle_result(result, current_tail_node, None, guard)
             }
             NodeType::LeafNode {
-                bounded_children,
-                unbounded_child,
-                reserved_low_key,
-                reserved_high_key,
+                leaves,
+                unborn_leaves,
+                side_link,
             } => {
                 loop {
-                    if let Some((_, child)) = bounded_children.min_ge(&key) {
+                    if let Some((_, child)) = (leaves.0).min_ge(&key) {
                         let child_node = child.load(Acquire, guard);
                         return unsafe { child_node.deref().insert(key, value, false) }
                             .map_or_else(
                                 || Ok(()),
                                 |result| {
                                     if result.1 {
-                                        Err(Error::Duplicated(result.0))
-                                    } else {
-                                        self.split_leaf(
-                                            result.0,
-                                            Some(&bounded_children),
-                                            &child,
-                                            &reserved_low_key,
-                                            &reserved_high_key,
-                                            guard,
-                                        )
+                                        return Err(Error::Duplicated(result.0));
                                     }
+                                    self.split_leaf(result.0, &child, leaves, unborn_leaves, guard)
                                 },
                             );
-                    } else if !bounded_children.full() {
+                    } else if !(leaves.0).full() {
                         if let Some(result) =
-                            bounded_children.insert(key.clone(), Atomic::new(Leaf::new()), false)
+                            (leaves.0).insert(key.clone(), Atomic::new(Leaf::new()), false)
                         {
                             drop(unsafe { (result.0).1.into_owned() });
                         }
@@ -199,9 +184,9 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                         break;
                     }
                 }
-                let mut current_tail_node = unbounded_child.load(Relaxed, guard);
+                let mut current_tail_node = (leaves.1).load(Relaxed, guard);
                 if current_tail_node.is_null() {
-                    match unbounded_child.compare_and_set(
+                    match (leaves.1).compare_and_set(
                         current_tail_node,
                         Owned::new(Leaf::new()),
                         Relaxed,
@@ -215,17 +200,9 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     || Ok(()),
                     |result| {
                         if result.1 {
-                            Err(Error::Duplicated(result.0))
-                        } else {
-                            self.split_leaf(
-                                result.0,
-                                None,
-                                &unbounded_child,
-                                &reserved_low_key,
-                                &reserved_high_key,
-                                guard,
-                            )
+                            return Err(Error::Duplicated(result.0));
                         }
+                        self.split_leaf(result.0, &leaves.1, leaves, unborn_leaves, guard)
                     },
                 );
             }
@@ -235,303 +212,101 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
     fn split_leaf(
         &self,
         entry: (K, V),
-        leaf_array: Option<&Leaf<K, Atomic<Leaf<K, V>>>>,
         full_leaf: &Atomic<Leaf<K, V>>,
-        low_key: &Atomic<Leaf<K, V>>,
-        high_key: &Atomic<Leaf<K, V>>,
+        leaves: &(Leaf<K, Atomic<Leaf<K, V>>>, Atomic<Leaf<K, V>>),
+        unborn_leaves: &Atomic<(Option<Leaf<K, V>>, Option<Leaf<K, V>>)>,
         guard: &Guard,
     ) -> Result<(), Error<K, V>> {
-        debug_assert!(unsafe { full_leaf.load(Acquire, &guard).deref().full() });
-        let new_leaf_low_key = Owned::new(Leaf::new());
-        let new_leaf_high_key = Owned::new(Leaf::new());
-        let low_key_leaf;
-        let high_key_leaf;
-        match low_key.compare_and_set(Shared::null(), new_leaf_low_key, Relaxed, guard) {
-            Ok(result) => low_key_leaf = result,
+        let full_leaf_shared = full_leaf.load(Relaxed, guard);
+        debug_assert!(unsafe { full_leaf_shared.deref().full() });
+        let mut new_leaves;
+        match unborn_leaves.compare_and_set(
+            Shared::null(),
+            Owned::new((None, None)),
+            Relaxed,
+            guard,
+        ) {
+            Ok(result) => new_leaves = result,
             Err(_) => return Err(Error::Retry(entry)),
-        }
-        match high_key.compare_and_set(Shared::null(), new_leaf_high_key, Relaxed, guard) {
-            Ok(result) => high_key_leaf = result,
-            Err(_) => {
-                drop(unsafe { low_key.swap(Shared::null(), Relaxed, guard).into_owned() });
-                return Err(Error::Retry(entry));
-            }
         }
 
         // copy entries to the newly allocated leaves
-        let distributed = unsafe {
-            full_leaf
-                .load(Acquire, &guard)
-                .deref()
-                .distribute(low_key_leaf.deref(), high_key_leaf.deref())
-        };
+        let new_leaves_ref = unsafe { new_leaves.deref_mut() };
+        unsafe { full_leaf_shared.deref().distribute(new_leaves_ref) };
+
+        if new_leaves_ref.0.is_none() {
+            let unused_leaves = unborn_leaves.swap(Shared::null(), Release, guard);
+            unsafe {
+                guard.defer_destroy(unused_leaves);
+            };
+            return Err(Error::Retry(entry));
+        }
 
         // insert the given entry
-        if distributed.1 == 0 || unsafe { low_key_leaf.deref().min_ge(&entry.0).is_some() } {
+        if new_leaves_ref.1.is_none()
+            || new_leaves_ref
+                .0
+                .as_ref()
+                .unwrap()
+                .min_ge(&entry.0)
+                .is_some()
+        {
             // insert the entry into the low-key leaf if the high-key leaf is empty, or the key fits the low-key leaf
-            unsafe {
-                low_key_leaf
-                    .deref()
-                    .insert(entry.0.clone(), entry.1.clone(), false)
-            };
+            new_leaves_ref
+                .0
+                .as_ref()
+                .unwrap()
+                .insert(entry.0.clone(), entry.1.clone(), false);
         } else {
             // insert the entry into the high-key leaf
-            unsafe {
-                high_key_leaf
-                    .deref()
-                    .insert(entry.0.clone(), entry.1.clone(), false)
-            };
+            new_leaves_ref
+                .1
+                .as_ref()
+                .unwrap()
+                .insert(entry.0.clone(), entry.1.clone(), false);
         }
 
         // if the key is for the unbounded child leaf, return
-        if leaf_array.is_none() {
+        if full_leaf_shared.as_raw() == leaves.1.load(Relaxed, guard).as_raw() {
             return Err(Error::Full(entry));
         }
 
         // insert the newly added leaf into the main array
-        if distributed.1 == 0 {
+        let old_leaf;
+        if new_leaves_ref.1.is_none() {
             // replace the full leaf with the low-key leaf
-            let old_full_leaf = full_leaf.swap(low_key_leaf, Release, &guard);
-            // deallocate the deprecated leaf
-            unsafe {
-                guard.defer_destroy(old_full_leaf);
-            };
-            // everything's done
-            let unused_high_key_leaf = high_key.swap(Shared::null(), Release, guard);
-            drop(unsafe { unused_high_key_leaf.into_owned() });
-
-            // it is practically un-locking the leaf node
-            low_key.swap(Shared::null(), Release, guard);
-
-            // OK
-            return Ok(());
+            old_leaf = full_leaf.swap(
+                Owned::new(new_leaves_ref.0.take().unwrap()),
+                Release,
+                &guard,
+            );
         } else {
-            let max_key = unsafe { low_key_leaf.deref().max_key() }.unwrap();
-            if leaf_array
-                .unwrap()
-                .insert(max_key.clone(), Atomic::from(low_key_leaf), false)
-                .is_some()
-            {
+            let leaf = new_leaves_ref.0.take().unwrap();
+            let max_key = leaf.max_key().unwrap();
+            if let Some(leaf) = leaves.0.insert(max_key.clone(), Atomic::new(leaf), false) {
                 // insertion failed: expect that the caller handles the situation
+                new_leaves_ref
+                    .0
+                    .replace(unsafe { *(leaf.0).1.into_owned().into_box() });
                 return Err(Error::Full(entry));
             }
 
             // replace the full leaf with the high-key leaf
-            let old_full_leaf = full_leaf.swap(high_key_leaf, Release, &guard);
-            // deallocate the deprecated leaf
-            unsafe {
-                guard.defer_destroy(old_full_leaf);
-            };
-
-            // it is practically un-locking the leaf node
-            low_key.swap(Shared::null(), Release, guard);
-
-            // OK
-            return Ok(());
-        }
-    }
-
-    fn split_node(
-        &self,
-        entry: (K, V),
-        leaf_array: &Leaf<K, Atomic<Node<K, V>>>,
-        full_node: &Atomic<Node<K, V>>,
-        full_node_max_key: Option<K>,
-        low_key: &Atomic<Node<K, V>>,
-        high_key: &Atomic<Node<K, V>>,
-        guard: &Guard,
-    ) -> Result<(), Error<K, V>> {
-        // [TODO]
-        let new_node_low_key = Owned::new(Node::new(self.floor - 1));
-        let new_node_high_key = Owned::new(Node::new(self.floor - 1));
-        let low_key_node;
-        let high_key_node;
-        match low_key.compare_and_set(Shared::null(), new_node_low_key, Relaxed, guard) {
-            Ok(result) => low_key_node = result,
-            Err(_) => return Err(Error::Retry(entry)),
-        }
-        match high_key.compare_and_set(Shared::null(), new_node_high_key, Relaxed, guard) {
-            Ok(result) => high_key_node = result,
-            Err(_) => {
-                drop(unsafe { low_key.swap(Shared::null(), Relaxed, guard).into_owned() });
-                return Err(Error::Retry(entry));
-            }
+            let leaf = new_leaves_ref.1.take().unwrap();
+            old_leaf = full_leaf.swap(Owned::new(leaf), Release, &guard);
         }
 
-        // copy entries to the newly allocated nodes
-        let mut distributed: (usize, usize) = (0, 0);
-        match unsafe { &full_node.load(Acquire, guard).deref().entry } {
-            NodeType::InternalNode {
-                bounded_children,
-                unbounded_child,
-                reserved_low_key,
-                reserved_high_key,
-            } => {
-                // [TODO]
-                return Err(Error::Retry(entry));
-            }
-            NodeType::LeafNode {
-                bounded_children,
-                unbounded_child,
-                reserved_low_key,
-                reserved_high_key,
-            } => {
-                let mut scanner = LeafScanner::new(bounded_children);
-                let unbounded_key_node = unbounded_child.load(Acquire, guard);
-                let reserved_low_key_node = reserved_low_key.load(Acquire, guard);
-                let reserved_high_key_node = reserved_low_key.load(Acquire, guard);
-                if let NodeType::LeafNode {
-                    bounded_children,
-                    unbounded_child: _,
-                    reserved_low_key: _,
-                    reserved_high_key: _,
-                } = unsafe { &low_key_node.deref().entry }
-                {
-                    while let Some(entry) = scanner.next() {
-                        if full_node_max_key
-                            .as_ref()
-                            .map_or_else(|| false, |key| key.cmp(entry.0) == Ordering::Equal)
-                        {
-                            if !reserved_low_key_node.is_null() {
-                                unsafe {
-                                    bounded_children.insert(
-                                        reserved_low_key_node.deref().max_key().unwrap().clone(),
-                                        Atomic::from(reserved_low_key_node),
-                                        false,
-                                    )
-                                };
-                                distributed.0 += 1;
-                            }
-                            if !reserved_high_key_node.is_null() {
-                                unsafe {
-                                    bounded_children.insert(
-                                        reserved_high_key_node.deref().max_key().unwrap().clone(),
-                                        Atomic::from(reserved_high_key_node),
-                                        false,
-                                    )
-                                };
-                                distributed.0 += 1;
-                            }
-                            if distributed.0 > ARRAY_SIZE / 2 {
-                                break;
-                            } else {
-                                continue;
-                            }
-                        }
-                        bounded_children.insert(entry.0.clone(), entry.1.clone(), false);
-                        distributed.0 += 1;
-                        if distributed.0 > ARRAY_SIZE / 2 {
-                            break;
-                        }
-                    }
-                }
-                if let NodeType::LeafNode {
-                    bounded_children,
-                    unbounded_child,
-                    reserved_low_key,
-                    reserved_high_key,
-                } = unsafe { &high_key_node.deref().entry }
-                {
-                    while let Some(entry) = scanner.next() {
-                        if full_node_max_key
-                            .as_ref()
-                            .map_or_else(|| false, |key| key.cmp(entry.0) == Ordering::Equal)
-                        {
-                            if !reserved_low_key_node.is_null() {
-                                unsafe {
-                                    bounded_children.insert(
-                                        reserved_low_key_node.deref().max_key().unwrap().clone(),
-                                        Atomic::from(reserved_low_key_node),
-                                        false,
-                                    )
-                                };
-                                distributed.1 += 1;
-                            }
-                            if !reserved_high_key_node.is_null() {
-                                unsafe {
-                                    bounded_children.insert(
-                                        reserved_high_key_node.deref().max_key().unwrap().clone(),
-                                        Atomic::from(reserved_high_key_node),
-                                        false,
-                                    )
-                                };
-                                distributed.1 += 1;
-                            }
-                            continue;
-                        }
-                        bounded_children.insert(entry.0.clone(), entry.1.clone(), false);
-                        distributed.1 += 1;
-                    }
-                    if full_node_max_key.is_none() {
-                        if !reserved_low_key_node.is_null() {
-                            unsafe {
-                                bounded_children.insert(
-                                    reserved_low_key_node.deref().max_key().unwrap().clone(),
-                                    Atomic::from(reserved_low_key_node),
-                                    false,
-                                )
-                            };
-                            distributed.1 += 1;
-                        }
-                        if !reserved_high_key_node.is_null() {
-                            unbounded_child.store(reserved_high_key_node, Release);
-                            distributed.1 += 1;
-                        }
-                    }
-                }
-            }
-        }
+        // it is practically un-locking the leaf node
+        let unused_leaves = unborn_leaves.swap(Shared::null(), Release, guard);
 
-        if full_node_max_key.is_none() {
-            // [TODO]
-            return Ok(());
-        }
+        // deallocate the deprecated leaves
+        unsafe {
+            guard.defer_destroy(old_leaf);
+            guard.defer_destroy(unused_leaves);
+        };
 
-        // insert the newly added leaf into the main array
-        if distributed.1 == 0 {
-            // replace the full leaf with the low-key leaf
-            let old_full_leaf = full_node.swap(low_key_node, Release, &guard);
-            // deallocate the deprecated leaf
-            unsafe {
-                guard.defer_destroy(old_full_leaf);
-            };
-            // everything's done
-            let unused_high_key_leaf = high_key.swap(Shared::null(), Release, guard);
-            drop(unsafe { unused_high_key_leaf.into_owned() });
-
-            // it is practically un-locking the leaf node
-            low_key.swap(Shared::null(), Release, guard);
-
-            // OK
-            return Ok(());
-        } else {
-            if leaf_array
-                .insert(
-                    full_node_max_key.as_ref().unwrap().clone(),
-                    Atomic::from(low_key_node),
-                    false,
-                )
-                .is_some()
-            {
-                // insertion failed: expect that the caller handles the situation
-                return Err(Error::Full(entry));
-            }
-
-            // replace the full leaf with the high-key leaf
-            let old_full_leaf = full_node.swap(high_key_node, Release, &guard);
-            // deallocate the deprecated leaf
-            unsafe {
-                guard.defer_destroy(old_full_leaf);
-            };
-
-            // it is practically un-locking the leaf node
-            low_key.swap(Shared::null(), Release, guard);
-
-            // OK
-            return Ok(());
-        }
-
-        return Err(Error::Retry(entry));
+        // OK
+        return Ok(());
     }
 
     fn handle_result(
@@ -563,7 +338,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
 impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Clone for Node<K, V> {
     fn clone(&self) -> Self {
         unreachable!();
-        Node::new(self.floor)
+        Node::new(0)
     }
 }
 
@@ -572,47 +347,37 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for Node<K, V> {
         let guard = crossbeam_epoch::pin();
         match &self.entry {
             NodeType::InternalNode {
-                bounded_children,
-                unbounded_child,
-                reserved_low_key,
-                reserved_high_key,
+                children,
+                unborn_children,
+                floor,
             } => {
-                let mut scanner = LeafScanner::new(&bounded_children);
+                let mut scanner = LeafScanner::new(&children.0);
                 while let Some(entry) = scanner.next() {
                     let child = entry.1.swap(Shared::null(), Acquire, &guard);
                     unsafe { guard.defer_destroy(child) };
                 }
-                let tail = unbounded_child.load(Acquire, &guard);
+                let tail = children.1.load(Acquire, &guard);
                 unsafe { guard.defer_destroy(tail) };
-                let low_key_child = reserved_low_key.swap(Shared::null(), Relaxed, &guard);
-                if !low_key_child.is_null() {
-                    drop(unsafe { low_key_child.into_owned() });
-                }
-                let high_key_child = reserved_high_key.swap(Shared::null(), Relaxed, &guard);
-                if !high_key_child.is_null() {
-                    drop(unsafe { high_key_child.into_owned() });
+                let unused_nodes = unborn_children.swap(Shared::null(), Relaxed, &guard);
+                if !unused_nodes.is_null() {
+                    drop(unsafe { unused_nodes.into_owned() });
                 }
             }
             NodeType::LeafNode {
-                bounded_children,
-                unbounded_child,
-                reserved_low_key,
-                reserved_high_key,
+                leaves,
+                unborn_leaves,
+                side_link,
             } => {
-                let mut scanner = LeafScanner::new(&bounded_children);
+                let mut scanner = LeafScanner::new(&leaves.0);
                 while let Some(entry) = scanner.next() {
                     let child = entry.1.swap(Shared::null(), Acquire, &guard);
                     unsafe { guard.defer_destroy(child) };
                 }
-                let tail = unbounded_child.load(Acquire, &guard);
+                let tail = leaves.1.load(Acquire, &guard);
                 unsafe { guard.defer_destroy(tail) };
-                let low_key_child = reserved_low_key.swap(Shared::null(), Relaxed, &guard);
-                if !low_key_child.is_null() {
-                    drop(unsafe { low_key_child.into_owned() });
-                }
-                let high_key_child = reserved_high_key.swap(Shared::null(), Relaxed, &guard);
-                if !high_key_child.is_null() {
-                    drop(unsafe { high_key_child.into_owned() });
+                let unused_leaves = unborn_leaves.swap(Shared::null(), Relaxed, &guard);
+                if !unused_leaves.is_null() {
+                    drop(unsafe { unused_leaves.into_owned() });
                 }
             }
         }
@@ -689,19 +454,16 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator
             // start scanning
             match &self.leaf_node.entry {
                 NodeType::InternalNode {
-                    bounded_children: _,
-                    unbounded_child: _,
-                    reserved_low_key: _,
-                    reserved_high_key: _,
+                    children: _,
+                    unborn_children: _,
+                    floor: _,
                 } => return None,
                 NodeType::LeafNode {
-                    bounded_children,
-                    unbounded_child: _,
-                    reserved_low_key: _,
-                    reserved_high_key: _,
+                    leaves,
+                    unborn_leaves: _,
+                    side_link: _,
                 } => {
-                    self.node_scanner
-                        .replace(LeafScanner::new(bounded_children));
+                    self.node_scanner.replace(LeafScanner::new(&leaves.0));
                 }
             }
         }
@@ -725,17 +487,15 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator
 
         let unbounded_child = match &self.leaf_node.entry {
             NodeType::InternalNode {
-                bounded_children: _,
-                unbounded_child: _,
-                reserved_low_key: _,
-                reserved_high_key: _,
+                children: _,
+                unborn_children: _,
+                floor: _,
             } => Shared::null(),
             NodeType::LeafNode {
-                bounded_children: _,
-                unbounded_child,
-                reserved_low_key: _,
-                reserved_high_key: _,
-            } => unbounded_child.load(Acquire, self.guard),
+                leaves,
+                unborn_leaves: _,
+                side_link: _,
+            } => leaves.1.load(Acquire, self.guard),
         };
         if !unbounded_child.is_null() {
             self.leaf_scanner
@@ -789,6 +549,8 @@ mod test {
                 Error::Retry(_) => assert!(false),
             },
         }
+
+        // expect that the previous attempt left unborn children
         match node.insert(240, 11, &guard) {
             Ok(_) => assert!(false),
             Err(result) => match result {
@@ -849,6 +611,18 @@ mod test {
                 },
             }
         }
+
+        // full
+        match node.insert(240, 11, &guard) {
+            Ok(_) => assert!(false),
+            Err(result) => match result {
+                Error::Duplicated(_) => assert!(false),
+                Error::Full(entry) => assert_eq!(entry, (240, 11)),
+                Error::Retry(_) => assert!(false),
+            },
+        }
+
+        // retry
         match node.insert(240, 11, &guard) {
             Ok(_) => assert!(false),
             Err(result) => match result {
