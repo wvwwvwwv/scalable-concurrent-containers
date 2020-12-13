@@ -2,7 +2,6 @@ use super::leaf::{LeafScanner, ARRAY_SIZE};
 use super::Leaf;
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::cmp::Ordering;
-use std::mem::MaybeUninit;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 pub enum Error<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
@@ -15,8 +14,10 @@ pub enum Error<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
 }
 
 struct UnbornNode<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
-    low_key_node: (Option<K>, Option<Node<K, V>>),
-    high_key_node: (Option<K>, Option<Node<K, V>>),
+    low_key_node_key: Option<K>,
+    low_key_node: Option<Box<Node<K, V>>>,
+    high_key_node_key: Option<K>,
+    high_key_node: Option<Box<Node<K, V>>>,
 }
 
 enum NodeType<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
@@ -29,7 +30,7 @@ enum NodeType<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
     /// LeafNode: |ptr(entry array)/max(child keys)|...|ptr(entry array)|
     LeafNode {
         leaves: (Leaf<K, Atomic<Leaf<K, V>>>, Atomic<Leaf<K, V>>),
-        unborn_leaves: Atomic<(Option<Leaf<K, V>>, Option<Leaf<K, V>>)>,
+        unborn_leaves: Atomic<(Option<Box<Leaf<K, V>>>, Option<Box<Leaf<K, V>>>)>,
         side_link: Atomic<Node<K, V>>,
     },
 }
@@ -61,8 +62,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         match &self.entry {
             NodeType::InternalNode {
                 children,
-                unborn_children,
-                floor,
+                unborn_children: _,
+                floor: _,
             } => {
                 if let Some((_, child)) = (children.0).min_ge(&key) {
                     unsafe { child.load(Acquire, guard).deref().search(key, guard) }
@@ -77,8 +78,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             }
             NodeType::LeafNode {
                 leaves,
-                unborn_leaves,
-                side_link,
+                unborn_leaves: _,
+                side_link: _,
             } => {
                 if let Some((_, child)) = (leaves.0).min_ge(&key) {
                     let leaf_node_scanner = LeafNodeScanner::from(
@@ -125,10 +126,24 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 floor,
             } => {
                 loop {
-                    if let Some((max_key, child)) = (children.0).min_ge(&key) {
+                    if let Some((_, child)) = (children.0).min_ge(&key) {
                         let child_node = child.load(Acquire, guard);
-                        let result = unsafe { child_node.deref().insert(key, value, guard) };
-                        return self.handle_result(result, child_node, Some(max_key), guard);
+                        match unsafe { child_node.deref().insert(key, value, guard) } {
+                            Ok(_) => return Ok(()),
+                            Err(err) => match err {
+                                Error::Duplicated(_) => return Err(err),
+                                Error::Full(entry) => {
+                                    return self.split_node(
+                                        entry,
+                                        &child,
+                                        &children,
+                                        &unborn_children,
+                                        guard,
+                                    )
+                                }
+                                Error::Retry(_) => return Err(err),
+                            },
+                        }
                     } else if !(children.0).full() {
                         if let Some(result) = (children.0).insert(
                             key.clone(),
@@ -153,13 +168,25 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                         Err(result) => current_tail_node = result.current,
                     }
                 }
-                let result = unsafe { current_tail_node.deref().insert(key, value, guard) };
-                self.handle_result(result, current_tail_node, None, guard)
+                match unsafe { current_tail_node.deref().insert(key, value, guard) } {
+                    Ok(_) => return Ok(()),
+                    Err(err) => match err {
+                        Error::Duplicated(_) => Err(err),
+                        Error::Full(entry) => self.split_node(
+                            entry,
+                            &(children.1),
+                            &children,
+                            &unborn_children,
+                            guard,
+                        ),
+                        Error::Retry(_) => Err(err),
+                    },
+                }
             }
             NodeType::LeafNode {
                 leaves,
                 unborn_leaves,
-                side_link,
+                side_link: _,
             } => {
                 loop {
                     if let Some((_, child)) = (leaves.0).min_ge(&key) {
@@ -209,12 +236,115 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         }
     }
 
+    fn full(&self, guard: &Guard) -> bool {
+        match &self.entry {
+            NodeType::InternalNode {
+                children,
+                unborn_children,
+                floor,
+            } => children.0.full() && !children.1.load(Relaxed, guard).is_null(),
+            NodeType::LeafNode {
+                leaves,
+                unborn_leaves,
+                side_link: _,
+            } => leaves.0.full() && !leaves.1.load(Relaxed, guard).is_null(),
+        }
+    }
+
+    /// Rollback the ongoing split operation recursively.
+    fn rollback(&self, key: &K, guard: &Guard) {
+        match &self.entry {
+            NodeType::InternalNode {
+                children,
+                unborn_children,
+                floor: _,
+            } => {
+                let intermediate_split = unborn_children.swap(Shared::null(), Release, guard);
+                drop(unsafe { intermediate_split.into_owned() });
+                if let Some((_, child)) = (children.0).min_ge(&key) {
+                    unsafe { child.load(Acquire, guard).deref().rollback(key, guard) };
+                } else {
+                    let current_tail_node = (children.1).load(Relaxed, guard);
+                    if !current_tail_node.is_null() {
+                        unsafe { current_tail_node.deref().rollback(key, guard) }
+                    }
+                }
+            }
+            NodeType::LeafNode {
+                leaves,
+                unborn_leaves,
+                side_link: _,
+            } => {
+                let intermediate_split = unborn_leaves.swap(Shared::null(), Release, guard);
+                drop(unsafe { intermediate_split.into_owned() });
+            }
+        }
+    }
+
+    fn split_node(
+        &self,
+        entry: (K, V),
+        full_node: &Atomic<Node<K, V>>,
+        children: &(Leaf<K, Atomic<Node<K, V>>>, Atomic<Node<K, V>>),
+        unborn_children: &Atomic<UnbornNode<K, V>>,
+        guard: &Guard,
+    ) -> Result<(), Error<K, V>> {
+        let full_node_shared = full_node.load(Relaxed, guard);
+        debug_assert!(unsafe { full_node_shared.deref().full(guard) });
+        let mut new_nodes;
+        match unborn_children.compare_and_set(
+            Shared::null(),
+            Owned::new(UnbornNode {
+                low_key_node_key: None,
+                low_key_node: None,
+                high_key_node_key: None,
+                high_key_node: None,
+            }),
+            Relaxed,
+            guard,
+        ) {
+            Ok(result) => new_nodes = result,
+            Err(_) => {
+                unsafe {
+                    full_node_shared.deref().rollback(&entry.0, guard);
+                };
+                return Err(Error::Retry(entry));
+            }
+        }
+
+        // copy entries to the newly allocated leaves
+        let new_nodes_ref = unsafe { new_nodes.deref_mut() };
+        match unsafe { &full_node_shared.deref().entry } {
+            NodeType::InternalNode {
+                children,
+                unborn_children,
+                floor,
+            } => {
+                debug_assert!(!unborn_children.load(Relaxed, guard).is_null());
+                // [TODO]
+                return Ok(());
+            }
+            NodeType::LeafNode {
+                leaves,
+                unborn_leaves,
+                side_link: _,
+            } => {
+                debug_assert!(!unborn_leaves.load(Relaxed, guard).is_null());
+
+                // copy leaves to the newly allocated nodes
+                let mut distributed = (None, None);
+                (leaves.0).distribute(&mut distributed);
+                return Ok(());
+            }
+        };
+    }
+
     fn split_leaf(
         &self,
         entry: (K, V),
         full_leaf: &Atomic<Leaf<K, V>>,
         leaves: &(Leaf<K, Atomic<Leaf<K, V>>>, Atomic<Leaf<K, V>>),
-        unborn_leaves: &Atomic<(Option<Leaf<K, V>>, Option<Leaf<K, V>>)>,
+        unborn_leaves: &Atomic<(Option<Box<Leaf<K, V>>>, Option<Box<Leaf<K, V>>>)>,
         guard: &Guard,
     ) -> Result<(), Error<K, V>> {
         let full_leaf_shared = full_leaf.load(Relaxed, guard);
@@ -276,24 +406,28 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         if new_leaves_ref.1.is_none() {
             // replace the full leaf with the low-key leaf
             old_leaf = full_leaf.swap(
-                Owned::new(new_leaves_ref.0.take().unwrap()),
+                unsafe { Owned::from_raw(Box::into_raw(new_leaves_ref.0.take().unwrap())) },
                 Release,
                 &guard,
             );
         } else {
             let leaf = new_leaves_ref.0.take().unwrap();
             let max_key = leaf.max_key().unwrap();
-            if let Some(leaf) = leaves.0.insert(max_key.clone(), Atomic::new(leaf), false) {
+            if let Some(leaf) = leaves.0.insert(max_key.clone(), Atomic::from(leaf), false) {
                 // insertion failed: expect that the caller handles the situation
                 new_leaves_ref
                     .0
-                    .replace(unsafe { *(leaf.0).1.into_owned().into_box() });
+                    .replace(unsafe { (leaf.0).1.into_owned().into_box() });
                 return Err(Error::Full(entry));
             }
 
             // replace the full leaf with the high-key leaf
             let leaf = new_leaves_ref.1.take().unwrap();
-            old_leaf = full_leaf.swap(Owned::new(leaf), Release, &guard);
+            old_leaf = full_leaf.swap(
+                unsafe { Owned::from_raw(Box::into_raw(leaf)) },
+                Release,
+                &guard,
+            );
         }
 
         // it is practically un-locking the leaf node
@@ -308,38 +442,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         // OK
         return Ok(());
     }
-
-    fn handle_result(
-        &self,
-        result: Result<(), Error<K, V>>,
-        child_node: Shared<Node<K, V>>,
-        child_node_max_key: Option<&K>,
-        guard: &Guard,
-    ) -> Result<(), Error<K, V>> {
-        match result {
-            Ok(_) => return Ok(()),
-            Err(err) => match err {
-                Error::Duplicated(_) => return Err(err),
-                Error::Full(_) => {
-                    // [TODO]
-                    // try to split
-                    // split the entry into two new entries => insert the new one => replace the old one with the new one
-                    // return self.split_and_insert_locked(entry, child);
-                    // failure => revert & retry
-                    // success => commit (replace the pointers)
-                    return Ok(());
-                }
-                Error::Retry(_) => return Err(err),
-            },
-        }
-    }
-}
-
-impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Clone for Node<K, V> {
-    fn clone(&self) -> Self {
-        unreachable!();
-        Node::new(0)
-    }
 }
 
 impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for Node<K, V> {
@@ -349,7 +451,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for Node<K, V> {
             NodeType::InternalNode {
                 children,
                 unborn_children,
-                floor,
+                floor: _,
             } => {
                 let mut scanner = LeafScanner::new(&children.0);
                 while let Some(entry) = scanner.next() {

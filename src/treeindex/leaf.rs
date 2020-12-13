@@ -344,13 +344,13 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         (usize::MAX, std::ptr::null())
     }
 
-    pub fn distribute(&self, leaves: &mut (Option<Leaf<K, V>>, Option<Leaf<K, V>>)) {
+    pub fn distribute(&self, leaves: &mut (Option<Box<Leaf<K, V>>>, Option<Box<Leaf<K, V>>>)) {
         let mut iterated = 0;
         let mut scanner = LeafScanner::new(self);
         while let Some(entry) = scanner.next() {
             if iterated < ARRAY_SIZE / 2 {
                 if leaves.0.is_none() {
-                    leaves.0.replace(Leaf::new());
+                    leaves.0.replace(Box::new(Leaf::new()));
                 }
                 leaves
                     .0
@@ -360,7 +360,7 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
                 iterated += 1;
             } else {
                 if leaves.1.is_none() {
-                    leaves.1.replace(Leaf::new());
+                    leaves.1.replace(Box::new(Leaf::new()));
                 }
                 leaves
                     .1
