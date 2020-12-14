@@ -414,6 +414,41 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     }
                 }
 
+                // turn the new leaves into nodes
+                if let Some(leaf) = distributed.0.take() {
+                    new_nodes_ref
+                        .low_key_node_key
+                        .replace(leaf.max_key().unwrap().clone());
+                    new_nodes_ref.low_key_node.replace(Box::new(Node {
+                        entry: {
+                            NodeType::LeafNode {
+                                leaves: (leaf, Atomic::null()),
+                                unborn_leaves: Atomic::null(),
+                                side_link: Atomic::null(),
+                            }
+                        },
+                    }));
+                }
+                if let Some(leaf) = distributed.1.take() {
+                    new_nodes_ref
+                        .high_key_node_key
+                        .replace(leaf.max_key().unwrap().clone());
+                    new_nodes_ref.high_key_node.replace(Box::new(Node {
+                        entry: {
+                            NodeType::LeafNode {
+                                leaves: (leaf, Atomic::null()),
+                                unborn_leaves: Atomic::null(),
+                                side_link: Atomic::null(),
+                            }
+                        },
+                    }));
+                }
+
+                // if the key is for the unbounded child leaf, return
+                if full_node_shared.as_raw() == children.1.load(Relaxed, guard).as_raw() {
+                    return Err(Error::Full(entry));
+                }
+
                 // insert the split leaves into the main leaf array
                 // OK
                 return Ok(());
