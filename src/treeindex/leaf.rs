@@ -344,7 +344,47 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         (usize::MAX, std::ptr::null())
     }
 
-    pub fn distribute(&self, leaves: &mut (Option<Box<Leaf<K, V>>>, Option<Box<Leaf<K, V>>>)) {
+    pub fn distribute_except(
+        &self,
+        key: &K,
+        leaves: &mut (Option<Leaf<K, V>>, Option<Leaf<K, V>>),
+    ) -> bool {
+        let mut matched = false;
+        let mut iterated = 0;
+        let mut scanner = LeafScanner::new(self);
+        while let Some(entry) = scanner.next() {
+            if entry.0.cmp(key) == Ordering::Equal {
+                matched = true;
+                continue;
+            }
+            if iterated < ARRAY_SIZE / 2 {
+                if leaves.0.is_none() {
+                    leaves.0.replace(Leaf::new());
+                }
+                leaves
+                    .0
+                    .as_ref()
+                    .unwrap()
+                    .insert(entry.0.clone(), entry.1.clone(), false);
+                iterated += 1;
+            } else {
+                if leaves.1.is_none() {
+                    leaves.1.replace(Leaf::new());
+                }
+                leaves
+                    .1
+                    .as_ref()
+                    .unwrap()
+                    .insert(entry.0.clone(), entry.1.clone(), false);
+            }
+        }
+        matched
+    }
+
+    pub fn distribute_boxed(
+        &self,
+        leaves: &mut (Option<Box<Leaf<K, V>>>, Option<Box<Leaf<K, V>>>),
+    ) {
         let mut iterated = 0;
         let mut scanner = LeafScanner::new(self);
         while let Some(entry) = scanner.next() {
@@ -737,16 +777,13 @@ mod test {
         assert!(leaf.search(&11).is_none());
         assert!(!leaf.remove(&10));
         assert!(!leaf.remove(&11));
-        assert!(leaf.remove(&12));
-        assert_eq!(leaf.cardinality(), 5);
-        assert!(leaf.search(&12).is_none());
         assert_eq!(*leaf.search(&20).unwrap(), 21);
         assert!(leaf.insert(10, 11, false).is_none());
-        assert!(leaf.insert(12, 13, false).is_none());
+        assert!(leaf.insert(15, 16, false).is_none());
         assert_eq!(leaf.max_key(), Some(&20));
         assert!(leaf.full());
-        assert_eq!(leaf.num_removed(), 5);
-        assert_eq!(leaf.cardinality(), 7);
+        assert_eq!(leaf.num_removed(), 4);
+        assert_eq!(leaf.cardinality(), 8);
 
         let mut scanner = LeafScanner::new(&leaf);
         let mut prev_key = 0;
@@ -761,35 +798,61 @@ mod test {
         assert_eq!(iterated, leaf.cardinality());
         drop(scanner);
 
-        let mut leaves = (None, None);
-        leaf.distribute(&mut leaves);
-
-        let mut prev_key = 0;
-        let mut iterated_low = 0;
-        let mut scanner_low = LeafScanner::new(leaves.0.as_ref().unwrap());
-        while let Some(entry) = scanner_low.next() {
-            assert_eq!(scanner_low.get(), Some(entry));
-            assert!(prev_key < *entry.0);
-            assert_eq!(*entry.0 + 1, *entry.1);
-            prev_key = *entry.0;
-            iterated_low += 1;
+        for i in 0..2 {
+            let mut leaves_boxed = (None, None);
+            let mut leaves = (None, None);
+            if i == 0 {
+                leaf.distribute_boxed(&mut leaves_boxed);
+            } else {
+                let result = leaf.distribute_except(&10, &mut leaves);
+                assert!(result);
+            }
+            let mut prev_key = 0;
+            let mut iterated_low = 0;
+            let mut scanner_low = if i == 0 {
+                LeafScanner::new(leaves_boxed.0.as_ref().unwrap())
+            } else {
+                LeafScanner::new(leaves.0.as_ref().unwrap())
+            };
+            while let Some(entry) = scanner_low.next() {
+                assert_eq!(scanner_low.get(), Some(entry));
+                assert!(prev_key < *entry.0);
+                assert_eq!(*entry.0 + 1, *entry.1);
+                prev_key = *entry.0;
+                iterated_low += 1;
+            }
+            assert_eq!(iterated_low, 6);
+            if i == 0 {
+                assert_eq!(iterated_low, leaves_boxed.0.as_ref().unwrap().cardinality());
+            } else {
+                assert_eq!(iterated_low, leaves.0.as_ref().unwrap().cardinality());
+            }
+            drop(scanner_low);
+            let mut iterated_high = 0;
+            let mut scanner_high = if i == 0 {
+                LeafScanner::new(leaves_boxed.1.as_ref().unwrap())
+            } else {
+                LeafScanner::new(leaves.1.as_ref().unwrap())
+            };
+            while let Some(entry) = scanner_high.next() {
+                assert_eq!(scanner_high.get(), Some(entry));
+                assert!(prev_key < *entry.0);
+                assert_eq!(*entry.0 + 1, *entry.1);
+                prev_key = *entry.0;
+                iterated_high += 1;
+            }
+            if i == 0 {
+                assert_eq!(iterated_high, 2);
+                assert_eq!(
+                    iterated_high,
+                    leaves_boxed.1.as_ref().unwrap().cardinality()
+                );
+            } else {
+                assert_eq!(iterated_high, 1);
+                assert_eq!(iterated_high, leaves.1.as_ref().unwrap().cardinality());
+            }
+            drop(scanner_high);
         }
-        assert_eq!(iterated_low, 6);
-        assert_eq!(iterated_low, leaves.0.as_ref().unwrap().cardinality());
-        drop(scanner_low);
-
-        let mut iterated_high = 0;
-        let mut scanner_high = LeafScanner::new(leaves.1.as_ref().unwrap());
-        while let Some(entry) = scanner_high.next() {
-            assert_eq!(scanner_high.get(), Some(entry));
-            assert!(prev_key < *entry.0);
-            assert_eq!(*entry.0 + 1, *entry.1);
-            prev_key = *entry.0;
-            iterated_high += 1;
-        }
-        assert_eq!(iterated_high, 1);
-        assert_eq!(iterated_high, leaves.1.as_ref().unwrap().cardinality());
-        drop(scanner_high);
     }
 
     #[test]

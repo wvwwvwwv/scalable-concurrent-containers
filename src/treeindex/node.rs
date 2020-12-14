@@ -330,10 +330,92 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 side_link: _,
             } => {
                 debug_assert!(!unborn_leaves.load(Relaxed, guard).is_null());
+                let unborn_leaves_ref = unsafe { unborn_leaves.load(Relaxed, guard).deref_mut() };
+                let highest_key = unborn_leaves_ref.1.as_ref().map_or_else(
+                    || {
+                        unborn_leaves_ref
+                            .0
+                            .as_ref()
+                            .map_or_else(|| None, |leaf| leaf.max_key())
+                    },
+                    |leaf| leaf.max_key(),
+                );
+                if highest_key.is_none() {
+                    // nothing to adjust
+                    self.rollback(&entry.0, guard);
+                    return Ok(());
+                }
 
                 // copy leaves to the newly allocated nodes
                 let mut distributed = (None, None);
-                (leaves.0).distribute(&mut distributed);
+                if (leaves.0).distribute_except(highest_key.as_ref().unwrap(), &mut distributed) {
+                    // need to move the unbounded leaf
+                    let unbounded_leaf_ref = unsafe { leaves.1.load(Acquire, guard).deref() };
+                    if let Some(max_key) = unbounded_leaf_ref.max_key() {
+                        if distributed.1.is_none() {
+                            if distributed.0.is_none() {
+                                distributed.0.replace(Leaf::new());
+                            }
+                            distributed.0.as_ref().unwrap().insert(
+                                max_key.clone(),
+                                leaves.1.clone(),
+                                false,
+                            );
+                        } else {
+                            distributed.1.as_ref().unwrap().insert(
+                                max_key.clone(),
+                                leaves.1.clone(),
+                                false,
+                            );
+                        }
+                    }
+                }
+
+                if distributed.1.is_none() {
+                    // trivial insert
+                    if distributed.0.is_none() {
+                        distributed.0.replace(Leaf::new());
+                    }
+                    distributed.0.as_ref().map(|leaf| {
+                        for unborn_leaf in
+                            [unborn_leaves_ref.0.take(), unborn_leaves_ref.1.take()].iter_mut()
+                        {
+                            if let Some(unborn_leaf) = unborn_leaf.take() {
+                                leaf.insert(
+                                    unborn_leaf.max_key().unwrap().clone(),
+                                    Atomic::from(unborn_leaf),
+                                    false,
+                                );
+                            }
+                        }
+                    });
+                } else {
+                    // insert into an appropriate node
+                    for unborn_leaf in
+                        [unborn_leaves_ref.0.take(), unborn_leaves_ref.1.take()].iter_mut()
+                    {
+                        if let Some(unborn_leaf) = unborn_leaf.take() {
+                            for target in [
+                                distributed.0.as_ref().unwrap(),
+                                distributed.0.as_ref().unwrap(),
+                            ]
+                            .iter()
+                            {
+                                if target.min_ge(unborn_leaf.max_key().unwrap()).is_some() {
+                                    target.insert(
+                                        unborn_leaf.max_key().unwrap().clone(),
+                                        Atomic::from(unborn_leaf),
+                                        false,
+                                    );
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // insert the split leaves into the main leaf array
+                // OK
                 return Ok(());
             }
         };
@@ -362,7 +444,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
 
         // copy entries to the newly allocated leaves
         let new_leaves_ref = unsafe { new_leaves.deref_mut() };
-        unsafe { full_leaf_shared.deref().distribute(new_leaves_ref) };
+        unsafe { full_leaf_shared.deref().distribute_boxed(new_leaves_ref) };
 
         if new_leaves_ref.0.is_none() {
             let unused_leaves = unborn_leaves.swap(Shared::null(), Release, guard);
