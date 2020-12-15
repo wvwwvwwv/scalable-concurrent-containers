@@ -346,15 +346,13 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
 
     pub fn distribute_except(
         &self,
-        key: &K,
+        key: Option<&K>,
         leaves: &mut (Option<Leaf<K, V>>, Option<Leaf<K, V>>),
-    ) -> bool {
-        let mut matched = false;
+    ) {
         let mut iterated = 0;
         let mut scanner = LeafScanner::new(self);
         while let Some(entry) = scanner.next() {
-            if entry.0.cmp(key) == Ordering::Equal {
-                matched = true;
+            if key.map_or_else(|| false, |key| entry.0.cmp(key) == Ordering::Equal) {
                 continue;
             }
             if iterated < ARRAY_SIZE / 2 {
@@ -378,32 +376,30 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
                     .insert(entry.0.clone(), entry.1.clone(), false);
             }
         }
-        matched
     }
 
     pub fn distribute_boxed(
         &self,
-        leaves: &mut (Option<Box<Leaf<K, V>>>, Option<Box<Leaf<K, V>>>),
+        low_key_leaf: &mut Option<Box<Leaf<K, V>>>,
+        high_key_leaf: &mut Option<Box<Leaf<K, V>>>,
     ) {
         let mut iterated = 0;
         let mut scanner = LeafScanner::new(self);
         while let Some(entry) = scanner.next() {
             if iterated < ARRAY_SIZE / 2 {
-                if leaves.0.is_none() {
-                    leaves.0.replace(Box::new(Leaf::new()));
+                if low_key_leaf.is_none() {
+                    low_key_leaf.replace(Box::new(Leaf::new()));
                 }
-                leaves
-                    .0
+                low_key_leaf
                     .as_ref()
                     .unwrap()
                     .insert(entry.0.clone(), entry.1.clone(), false);
                 iterated += 1;
             } else {
-                if leaves.1.is_none() {
-                    leaves.1.replace(Box::new(Leaf::new()));
+                if high_key_leaf.is_none() {
+                    high_key_leaf.replace(Box::new(Leaf::new()));
                 }
-                leaves
-                    .1
+                high_key_leaf
                     .as_ref()
                     .unwrap()
                     .insert(entry.0.clone(), entry.1.clone(), false);
@@ -802,10 +798,9 @@ mod test {
             let mut leaves_boxed = (None, None);
             let mut leaves = (None, None);
             if i == 0 {
-                leaf.distribute_boxed(&mut leaves_boxed);
+                leaf.distribute_boxed(&mut leaves_boxed.0, &mut leaves_boxed.1);
             } else {
-                let result = leaf.distribute_except(&10, &mut leaves);
-                assert!(result);
+                leaf.distribute_except(Some(&10), &mut leaves);
             }
             let mut prev_key = 0;
             let mut iterated_low = 0;
