@@ -466,7 +466,54 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     return Err(Error::Full(entry));
                 }
 
-                // insert the new leaf nodes into the main leaf array
+                // insert the newly added leaf nodes into the main array
+                let unused_node;
+                if new_nodes_ref.high_key_node.is_none() {
+                    // replace the full leaf with the low-key leaf
+                    unused_node = full_node.swap(
+                        unsafe {
+                            Owned::from_raw(Box::into_raw(
+                                new_nodes_ref.low_key_node.take().unwrap(),
+                            ))
+                        },
+                        Release,
+                        &guard,
+                    );
+                } else {
+                    let max_key = new_nodes_ref.low_key_node_key.as_ref().unwrap();
+                    if let Some(node) = children.0.insert(
+                        max_key.clone(),
+                        Atomic::from(new_nodes_ref.low_key_node.take().unwrap()),
+                        false,
+                    ) {
+                        // insertion failed: expect that the caller handles the situation
+                        new_nodes_ref
+                            .low_key_node
+                            .replace(unsafe { (node.0).1.into_owned().into_box() });
+                        return Err(Error::Full(entry));
+                    }
+
+                    // replace the full leaf with the high-key leaf
+                    unused_node = full_node.swap(
+                        unsafe {
+                            Owned::from_raw(Box::into_raw(
+                                new_nodes_ref.high_key_node.take().unwrap(),
+                            ))
+                        },
+                        Release,
+                        &guard,
+                    );
+                }
+
+                // it is practically un-locking the node
+                let unused_children = new_children.swap(Shared::null(), Release, guard);
+
+                // deallocate the deprecated nodes
+                unsafe {
+                    guard.defer_destroy(unused_node);
+                    guard.defer_destroy(unused_children);
+                };
+
                 // OK
                 return Ok(());
             }
@@ -545,7 +592,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             return Err(Error::Full(entry));
         }
 
-        // insert the newly added leaf into the main array
+        // insert the newly added leaves into the main array
         let unused_leaf;
         if new_leaves_ref.high_key_leaf.is_none() {
             // replace the full leaf with the low-key leaf
@@ -907,5 +954,29 @@ mod test {
             )
         }
         assert_eq!(iterated, ARRAY_SIZE * (ARRAY_SIZE + 1) - ARRAY_SIZE / 2);
+    }
+
+    #[test]
+    fn internal_leaf_node() {
+        let guard = crossbeam_epoch::pin();
+        // sequential
+        let node = Node::new(1);
+        for i in 0..ARRAY_SIZE {
+            for j in 0..(ARRAY_SIZE + 1) {
+                assert!(node
+                    .insert((j + 1) * (ARRAY_SIZE + 1) - i, 10, &guard)
+                    .is_ok());
+                match node.insert((j + 1) * (ARRAY_SIZE + 1) - i, 11, &guard) {
+                    Ok(_) => assert!(false),
+                    Err(result) => match result {
+                        Error::Duplicated(entry) => {
+                            assert_eq!(entry, ((j + 1) * (ARRAY_SIZE + 1) - i, 11))
+                        }
+                        Error::Full(_) => assert!(false),
+                        Error::Retry(_) => assert!(false),
+                    },
+                }
+            }
+        }
     }
 }
