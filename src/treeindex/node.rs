@@ -166,18 +166,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                         break;
                     }
                 }
-                let mut current_tail_node = (children.1).load(Relaxed, guard);
-                if current_tail_node.is_null() {
-                    match (children.1).compare_and_set(
-                        current_tail_node,
-                        Owned::new(Node::new(floor - 1)),
-                        Relaxed,
-                        guard,
-                    ) {
-                        Ok(result) => current_tail_node = result,
-                        Err(result) => current_tail_node = result.current,
-                    }
-                }
+                let current_tail_node =
+                    self.get_or_allocate_tail(&children.1, || Node::new(floor - 1), guard);
                 match unsafe { current_tail_node.deref().insert(key, value, guard) } {
                     Ok(_) => return Ok(()),
                     Err(err) => match err {
@@ -229,19 +219,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                         break;
                     }
                 }
-                let mut current_tail_node = (leaves.1).load(Relaxed, guard);
-                if current_tail_node.is_null() {
-                    match (leaves.1).compare_and_set(
-                        current_tail_node,
-                        Owned::new(Leaf::new()),
-                        Relaxed,
-                        guard,
-                    ) {
-                        Ok(result) => current_tail_node = result,
-                        Err(result) => current_tail_node = result.current,
-                    }
-                }
-                return unsafe { current_tail_node.deref().insert(key, value, false) }.map_or_else(
+                let current_tail_leaf = self.get_or_allocate_tail(&leaves.1, Leaf::new, guard);
+                return unsafe { current_tail_leaf.deref().insert(key, value, false) }.map_or_else(
                     || Ok(()),
                     |result| {
                         if result.1 {
@@ -254,16 +233,37 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         }
     }
 
+    fn get_or_allocate_tail<'a, T, F: FnOnce() -> T>(
+        &self,
+        tail_ptr: &Atomic<T>,
+        constructor: F,
+        guard: &'a Guard,
+    ) -> Shared<'a, T> {
+        let mut current_tail_node = tail_ptr.load(Relaxed, guard);
+        if current_tail_node.is_null() {
+            match tail_ptr.compare_and_set(
+                current_tail_node,
+                Owned::new(constructor()),
+                Relaxed,
+                guard,
+            ) {
+                Ok(result) => current_tail_node = result,
+                Err(result) => current_tail_node = result.current,
+            }
+        }
+        current_tail_node
+    }
+
     fn full(&self, guard: &Guard) -> bool {
         match &self.entry {
             NodeType::InternalNode {
                 children,
-                new_children,
-                floor,
+                new_children: _,
+                floor: _,
             } => children.0.full() && !children.1.load(Relaxed, guard).is_null(),
             NodeType::LeafNode {
                 leaves,
-                new_leaves,
+                new_leaves: _,
                 side_link: _,
             } => leaves.0.full() && !leaves.1.load(Relaxed, guard).is_null(),
         }
@@ -342,7 +342,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             } => {
                 debug_assert!(!new_children.load(Relaxed, guard).is_null());
                 // [TODO]
-                return Ok(());
+                return Err(Error::Full(entry));
             }
             NodeType::LeafNode {
                 leaves,
@@ -358,7 +358,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     .distribute_except(new_leaves_ref.origin_leaf_key.as_ref(), &mut leaf_entries);
 
                 // need to move the unbounded leaf if the origin is a bounded leaf
-                if new_leaves_ref.origin_leaf_key.is_some() {
+                let unbounded_leaf = leaves.1.load(Acquire, guard);
+                if !unbounded_leaf.is_null() && new_leaves_ref.origin_leaf_key.is_some() {
                     let unbounded_leaf_ref = unsafe { leaves.1.load(Acquire, guard).deref() };
                     if let Some(max_key) = unbounded_leaf_ref.max_key() {
                         // any key stored in the unbounded leaf is greater than any other keys in 'leaves'
@@ -490,6 +491,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                         new_nodes_ref
                             .low_key_node
                             .replace(unsafe { (node.0).1.into_owned().into_box() });
+                        // it is required to ensure that the tail node exists before returning Error::Full
+                        self.get_or_allocate_tail(&children.1, || Node::new(0), guard);
                         return Err(Error::Full(entry));
                     }
 
@@ -619,6 +622,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 new_leaves_ref
                     .low_key_leaf
                     .replace(unsafe { (leaf.0).1.into_owned().into_box() });
+                // it is required to ensure that the tail leaf exists before returning Error::Full
+                self.get_or_allocate_tail(&leaves.1, Leaf::new, guard);
                 return Err(Error::Full(entry));
             }
 
@@ -655,33 +660,36 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for Node<K, V> {
                 new_children,
                 floor: _,
             } => {
-                let mut scanner = LeafScanner::new(&children.0);
-                while let Some(entry) = scanner.next() {
-                    let child = entry.1.swap(Shared::null(), Acquire, &guard);
-                    unsafe { guard.defer_destroy(child) };
-                }
-                let tail = children.1.load(Acquire, &guard);
-                unsafe { guard.defer_destroy(tail) };
-                let unused_nodes = new_children.swap(Shared::null(), Relaxed, &guard);
-                if !unused_nodes.is_null() {
-                    drop(unsafe { unused_nodes.into_owned() });
-                }
+                // [TODO]
             }
             NodeType::LeafNode {
                 leaves,
                 new_leaves,
-                side_link,
+                side_link: _,
             } => {
-                let mut scanner = LeafScanner::new(&leaves.0);
-                while let Some(entry) = scanner.next() {
-                    let child = entry.1.swap(Shared::null(), Acquire, &guard);
-                    unsafe { guard.defer_destroy(child) };
-                }
-                let tail = leaves.1.load(Acquire, &guard);
-                unsafe { guard.defer_destroy(tail) };
-                let unused_leaves = new_leaves.swap(Shared::null(), Relaxed, &guard);
+                let unused_leaves = new_leaves.swap(Shared::null(), Acquire, &guard);
                 if !unused_leaves.is_null() {
+                    // some pointers having been copied to new leaf nodes cannot be deallocated
+                    let unused_leaves_ref = unsafe { unused_leaves.deref() };
+                    if let Some(key) = &unused_leaves_ref.origin_leaf_key {
+                        if let Some(ptr) = leaves.0.search(key) {
+                            let leaf = ptr.load(Acquire, &guard);
+                            drop(unsafe { leaf.into_owned() });
+                        }
+                    } else {
+                        let tail = leaves.1.load(Acquire, &guard);
+                        drop(unsafe { tail.into_owned() });
+                    }
                     drop(unsafe { unused_leaves.into_owned() });
+                } else {
+                    // destroy all
+                    let mut scanner = LeafScanner::new(&leaves.0);
+                    while let Some(entry) = scanner.next() {
+                        let child = entry.1.load(Acquire, &guard);
+                        drop(unsafe { child.into_owned() });
+                    }
+                    let tail = leaves.1.load(Acquire, &guard);
+                    drop(unsafe { tail.into_owned() });
                 }
             }
         }
@@ -961,21 +969,29 @@ mod test {
         let guard = crossbeam_epoch::pin();
         // sequential
         let node = Node::new(1);
-        for i in 0..ARRAY_SIZE {
-            for j in 0..(ARRAY_SIZE + 1) {
-                assert!(node
-                    .insert((j + 1) * (ARRAY_SIZE + 1) - i, 10, &guard)
-                    .is_ok());
-                match node.insert((j + 1) * (ARRAY_SIZE + 1) - i, 11, &guard) {
+        for key in (0..(ARRAY_SIZE * ARRAY_SIZE * ARRAY_SIZE)).rev() {
+            match node.insert(key, 10, &guard) {
+                Ok(_) => match node.insert(key, 11, &guard) {
                     Ok(_) => assert!(false),
                     Err(result) => match result {
-                        Error::Duplicated(entry) => {
-                            assert_eq!(entry, ((j + 1) * (ARRAY_SIZE + 1) - i, 11))
-                        }
+                        Error::Duplicated(entry) => assert_eq!(entry, (key, 11)),
                         Error::Full(_) => assert!(false),
                         Error::Retry(_) => assert!(false),
                     },
-                }
+                },
+                Err(result) => match result {
+                    Error::Duplicated(_) => assert!(false),
+                    Error::Full(_) => {
+                        for key_to_check in (key + 1)..(ARRAY_SIZE * ARRAY_SIZE * ARRAY_SIZE) {
+                            assert_eq!(
+                                node.search(&key_to_check, &guard).unwrap().get().unwrap(),
+                                (&key_to_check, &10)
+                            );
+                        }
+                        break;
+                    }
+                    Error::Retry(_) => assert!(false),
+                },
             }
         }
     }

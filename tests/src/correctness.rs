@@ -357,10 +357,18 @@ mod hashmap_test {
 
 mod treemap_test {
     use proptest::prelude::*;
+    use scc::TreeIndex;
 
     proptest! {
         #[test]
         fn basic(_ in 0u64..10) {
         }
+    }
+
+    #[test]
+    fn basic_tree() {
+        // sequential
+        let tree = TreeIndex::new();
+        assert!(tree.insert(10, 10).is_ok());
     }
 }
