@@ -16,6 +16,7 @@ pub enum Error<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
 struct NewNodes<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
     /// None: unbounded node
     origin_node_key: Option<K>,
+    origin_node_unbounded: bool,
     low_key_node_key: Option<K>,
     low_key_node: Option<Box<Node<K, V>>>,
     high_key_node_key: Option<K>,
@@ -322,13 +323,16 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         new_children: &Atomic<NewNodes<K, V>>,
         guard: &Guard,
     ) -> Result<(), Error<K, V>> {
+        let full_node_unbounded = full_node_key.is_none();
         let full_node_shared = full_node.load(Relaxed, guard);
+
         debug_assert!(unsafe { full_node_shared.deref().full(guard) });
         let mut new_nodes;
         match new_children.compare_and_set(
             Shared::null(),
             Owned::new(NewNodes {
                 origin_node_key: full_node_key,
+                origin_node_unbounded: full_node_unbounded,
                 low_key_node_key: None,
                 low_key_node: None,
                 high_key_node_key: None,
@@ -484,9 +488,16 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     }));
                 }
 
-                // if the key is for the unbounded child leaf node, return
+                // if the key is for the unbounded child leaf node, calculate the max key
                 if new_nodes_ref.origin_node_key.is_none() {
-                    return Err(Error::Full(entry));
+                    let leaf_ref = if new_leaves_ref.high_key_leaf.is_some() {
+                        new_leaves_ref.high_key_leaf.as_ref().unwrap()
+                    } else {
+                        new_leaves_ref.low_key_leaf.as_ref().unwrap()
+                    };
+                    new_nodes_ref
+                        .origin_node_key
+                        .replace(leaf_ref.max_key().unwrap().clone());
                 }
 
                 // insert the newly added leaf nodes into the main array
@@ -668,7 +679,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         return Ok(());
     }
 
-    fn nullify_children(&self, guard: &Guard) {
+    fn nullify_children(&self) {
         match &self.entry {
             NodeType::InternalNode {
                 children,
@@ -708,17 +719,19 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for Node<K, V> {
                 if !unused_nodes.is_null() {
                     // some pointers having been copied to new internal nodes cannot be freed
                     let unused_nodes_ref = unsafe { unused_nodes.deref() };
-                    if let Some(key) = &unused_nodes_ref.origin_node_key {
-                        if let Some(target_ptr) = children.0.search(key) {
-                            let target_shr_ptr = target_ptr.load(Acquire, &guard);
-                            if !target_shr_ptr.is_null() {
-                                unsafe { target_shr_ptr.deref().nullify_children(&guard) };
+                    if !unused_nodes_ref.origin_node_unbounded {
+                        if let Some(key) = &unused_nodes_ref.origin_node_key {
+                            if let Some(target_ptr) = children.0.search(key) {
+                                let target_shr_ptr = target_ptr.load(Acquire, &guard);
+                                if !target_shr_ptr.is_null() {
+                                    unsafe { target_shr_ptr.deref().nullify_children() };
+                                }
                             }
                         }
                     } else {
                         let target_shr_ptr = children.1.load(Acquire, &guard);
                         if !target_shr_ptr.is_null() {
-                            unsafe { target_shr_ptr.deref().nullify_children(&guard) };
+                            unsafe { target_shr_ptr.deref().nullify_children() };
                         }
                     }
                     drop(unsafe { unused_nodes.into_owned() });
