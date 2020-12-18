@@ -58,7 +58,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
         if root_node.is_null() {
             return Err((key, value));
         }
-        match unsafe { root_node.deref().insert(key, value, &guard) } {
+        match unsafe { root_node.deref().insert(key, value, None, &guard) } {
             Ok(_) => Ok(()),
             Err(error) => match error {
                 Error::Duplicated((key, value)) => Err((key, value)),
