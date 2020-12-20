@@ -52,19 +52,28 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
     /// let result = treeindex.read(&1, |key, value| *value);
     /// assert_eq!(result.unwrap(), 10);
     /// ```
-    pub fn insert(&self, key: K, value: V) -> Result<(), (K, V)> {
-        let guard = crossbeam_epoch::pin();
-        let root_node = self.root.load(Acquire, &guard);
-        if root_node.is_null() {
-            return Err((key, value));
-        }
-        match unsafe { root_node.deref().insert(key, value, None, &guard) } {
-            Ok(_) => Ok(()),
-            Err(error) => match error {
-                Error::Duplicated((key, value)) => Err((key, value)),
-                Error::Full((key, value)) => Err((key, value)),
-                Error::Retry((key, value)) => Err((key, value)),
-            },
+    pub fn insert(&self, mut key: K, mut value: V) -> Result<(), (K, V)> {
+        loop {
+            let guard = crossbeam_epoch::pin();
+            let root_node = self.root.load(Acquire, &guard);
+            if root_node.is_null() {
+                return Err((key, value));
+            }
+            let root_node_ref = unsafe { root_node.deref() };
+            match root_node_ref.insert(key, value, None, &guard) {
+                Ok(_) => return Ok(()),
+                Err(error) => match error {
+                    Error::Duplicated(entry) => return Err(entry),
+                    Error::Full(entry) => {
+                        root_node_ref.split_root(entry, &self.root, &guard);
+                        return Ok(());
+                    }
+                    Error::Retry(entry) => {
+                        key = entry.0;
+                        value = entry.1;
+                    }
+                },
+            }
         }
     }
 

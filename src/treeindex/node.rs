@@ -169,6 +169,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                                         &child,
                                         &children,
                                         &new_children,
+                                        false,
                                         guard,
                                     )
                                 }
@@ -209,6 +210,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                             &(children.1),
                             &children,
                             &new_children,
+                            false,
                             guard,
                         ),
                         Error::Retry(_) => Err(err),
@@ -347,8 +349,74 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         }
     }
 
-    pub fn split_root(&self) -> Atomic<Node<K, V>> {
-        Atomic::null()
+    pub fn split_root(&self, entry: (K, V), root_ptr: &Atomic<Node<K, V>>, guard: &Guard) {
+        // the fact that the TreeIndex calls this function means that the root is in a split procedure,
+        // and the procedure has not been intervened by other threads, thus concluding that the root has stayed the same.
+        debug_assert_eq!(
+            self as *const Node<K, V>,
+            root_ptr.load(Relaxed, guard).as_raw()
+        );
+        let new_root: Node<K, V> = if let NodeType::InternalNode {
+            children: _,
+            new_children: _,
+            floor,
+        } = &self.entry
+        {
+            Node::new(floor + 1)
+        } else {
+            Node::new(1)
+        };
+        if let NodeType::InternalNode {
+            children,
+            new_children,
+            floor: _,
+        } = &new_root.entry
+        {
+            if new_root
+                .split_node(entry, None, root_ptr, &children, &new_children, true, guard)
+                .is_ok()
+            {
+                // it is practically un-locking the node
+                let mut new_nodes = unsafe {
+                    new_children
+                        .swap(Shared::null(), Release, guard)
+                        .into_owned()
+                };
+
+                // insert the newly allocated internal nodes into the main array
+                if !new_nodes.low_key_node.is_none() {
+                    if children
+                        .0
+                        .insert(
+                            new_nodes.low_key_node_key.as_ref().unwrap().clone(),
+                            new_nodes.low_key_node.take().unwrap(),
+                            false,
+                        )
+                        .is_none()
+                    {
+                        if !new_nodes.high_key_node.is_none() {
+                            if children
+                                .0
+                                .insert(
+                                    new_nodes.high_key_node_key.as_ref().unwrap().clone(),
+                                    new_nodes.high_key_node.take().unwrap(),
+                                    false,
+                                )
+                                .is_none()
+                            {
+                                unsafe {
+                                    guard.defer_destroy(root_ptr.swap(
+                                        Owned::new(new_root),
+                                        Release,
+                                        guard,
+                                    ));
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn split_node(
@@ -358,6 +426,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         full_node: &Atomic<Node<K, V>>,
         children: &(Leaf<K, Atomic<Node<K, V>>>, Atomic<Node<K, V>>),
         new_children: &Atomic<NewNodes<K, V>>,
+        root_node_split: bool,
         guard: &Guard,
     ) -> Result<(), Error<K, V>> {
         let full_node_unbounded = full_node_key.is_none();
@@ -595,6 +664,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 }
             }
         };
+
+        // the full node is the current root: split_root processes the rest.
+        if root_node_split {
+            return Ok(());
+        }
 
         // insert the newly allocated internal nodes into the main array
         let unused_node;
