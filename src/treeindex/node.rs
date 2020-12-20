@@ -50,6 +50,8 @@ enum NodeType<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
         floor: usize,
     },
     /// LeafNode: |ptr(entry array)/max(child keys)|...|ptr(entry array)|
+    ///
+    /// [TODO]: leaves => leaf: Atomic<Leaf<K, V>>, new_leaf_low/high: Atomic<Leaf<K, V>>
     LeafNode {
         leaves: (Leaf<K, Atomic<Leaf<K, V>>>, Atomic<Leaf<K, V>>),
         new_leaves: Atomic<NewLeaves<K, V>>,
@@ -163,6 +165,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                             Err(err) => match err {
                                 Error::Duplicated(_) => return Err(err),
                                 Error::Full(entry) => {
+                                    self.get_or_allocate_unbounded_child(
+                                        &children.1,
+                                        || Node::new(floor - 1),
+                                        guard,
+                                    );
                                     return self.split_node(
                                         entry,
                                         Some(&child_key),
@@ -171,7 +178,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                                         &new_children,
                                         false,
                                         guard,
-                                    )
+                                    );
                                 }
                                 Error::Retry(_) => return Err(err),
                             },
@@ -369,14 +376,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         if let NodeType::InternalNode {
             children,
             new_children,
-            floor: _,
+            floor,
         } = &new_root.entry
         {
+            children.1.store(Owned::new(Node::new(floor - 1)), Relaxed);
             if new_root
                 .split_node(entry, None, root_ptr, &children, &new_children, true, guard)
                 .is_ok()
             {
-                // it is practically un-locking the node
                 let mut new_nodes = unsafe {
                     new_children
                         .swap(Shared::null(), Release, guard)
@@ -384,37 +391,32 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 };
 
                 // insert the newly allocated internal nodes into the main array
-                if !new_nodes.low_key_node.is_none() {
-                    if children
-                        .0
-                        .insert(
-                            new_nodes.low_key_node_key.as_ref().unwrap().clone(),
-                            new_nodes.low_key_node.take().unwrap(),
-                            false,
-                        )
-                        .is_none()
-                    {
-                        if !new_nodes.high_key_node.is_none() {
-                            if children
-                                .0
-                                .insert(
-                                    new_nodes.high_key_node_key.as_ref().unwrap().clone(),
-                                    new_nodes.high_key_node.take().unwrap(),
-                                    false,
-                                )
-                                .is_none()
-                            {
-                                unsafe {
-                                    guard.defer_destroy(root_ptr.swap(
-                                        Owned::new(new_root),
-                                        Release,
-                                        guard,
-                                    ));
-                                };
-                            }
-                        }
-                    }
+                for node in [
+                    (
+                        new_nodes.low_key_node_key.take(),
+                        new_nodes.low_key_node.take(),
+                    ),
+                    (
+                        new_nodes.high_key_node_key.take(),
+                        new_nodes.high_key_node.take(),
+                    ),
+                ]
+                .iter_mut()
+                {
+                    children.0.insert(
+                        node.0.take().unwrap().clone(),
+                        node.1.take().unwrap(),
+                        false,
+                    );
                 }
+
+                debug_assert_eq!(
+                    self as *const Node<K, V>,
+                    root_ptr.load(Relaxed, guard).as_raw()
+                );
+                unsafe {
+                    guard.defer_destroy(root_ptr.swap(Owned::new(new_root), Release, guard));
+                };
             }
         }
     }
@@ -433,6 +435,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         let full_node_shared = full_node.load(Relaxed, guard);
 
         debug_assert!(unsafe { full_node_shared.deref().full(guard) });
+        debug_assert!(!children.1.load(Relaxed, guard).is_null());
+
         let mut new_split_nodes;
         match new_children.compare_and_set(
             Shared::null(),
@@ -477,14 +481,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 );
 
                 // move the new leaves attached to the full node to the newly allocated node entries
-                for (new_node, new_node_key) in [
+                for (new_node_key, new_node) in [
                     (
-                        new_children_ref.low_key_node.as_ref(),
                         new_children_ref.low_key_node_key.take(),
+                        new_children_ref.low_key_node.as_ref(),
                     ),
                     (
-                        new_children_ref.high_key_node.as_ref(),
                         new_children_ref.high_key_node_key.take(),
+                        new_children_ref.high_key_node.as_ref(),
                     ),
                 ]
                 .iter_mut()
@@ -686,16 +690,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 &guard,
             );
         } else {
-            let max_key = new_split_nodes_ref.low_key_node_key.as_ref().unwrap();
             if let Some(node) = children.0.insert(
-                max_key.clone(),
+                new_split_nodes_ref.low_key_node_key.take().unwrap(),
                 new_split_nodes_ref.low_key_node.take().unwrap(),
                 false,
             ) {
                 // insertion failed: expect that the caller handles the situation
+                new_split_nodes_ref.low_key_node_key.replace((node.0).0);
                 new_split_nodes_ref.low_key_node.replace((node.0).1);
-                // it is required to ensure that the unbounded node exists before returning Error::Full
-                self.get_or_allocate_unbounded_child(&children.1, || Node::new(0), guard);
                 return Err(Error::Full(entry));
             }
 

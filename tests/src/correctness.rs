@@ -358,17 +358,35 @@ mod hashmap_test {
 mod treemap_test {
     use proptest::prelude::*;
     use scc::TreeIndex;
-
-    proptest! {
-        #[test]
-        fn basic(_ in 0u64..10) {
-        }
-    }
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering::Relaxed;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
 
     #[test]
-    fn basic_tree() {
-        // sequential
-        let tree = TreeIndex::new();
-        assert!(tree.insert(10, 10).is_ok());
+    fn basic() {
+        let range = 4096;
+        let num_threads = 1;
+        let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::new());
+        let barrier = Arc::new(Barrier::new(num_threads));
+        let mut thread_handles = Vec::with_capacity(num_threads);
+        for thread_id in 0..num_threads {
+            let tree_copied = tree.clone();
+            let barrier_copied = barrier.clone();
+            thread_handles.push(thread::spawn(move || {
+                barrier_copied.wait();
+                for key in thread_id * range..(thread_id + 1) * range {
+                    assert!(tree_copied.insert(key, key).is_ok());
+                }
+                for key in thread_id * range..(thread_id + 1) * range {
+                    assert!(tree_copied
+                        .read(&key, |key, value| assert_eq!(key, value))
+                        .is_some());
+                }
+            }));
+        }
+        for handle in thread_handles {
+            handle.join().unwrap();
+        }
     }
 }
