@@ -278,21 +278,19 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 };
 
                 // insert the newly allocated internal nodes into the main array
-                for node in [
-                    new_nodes.low_key_node.take(),
-                    new_nodes.high_key_node.take(),
-                ]
-                .iter_mut()
-                {
+                if let Some(new_low_key_node) = new_nodes.low_key_node.take() {
                     children.0.insert(
-                        node.as_ref()
-                            .unwrap()
-                            .max_bounded_child_key()
-                            .unwrap()
-                            .clone(),
-                        Atomic::from(node.take().unwrap()),
+                        new_low_key_node.max_bounded_child_key().unwrap().clone(),
+                        Atomic::from(new_low_key_node),
                         false,
                     );
+                }
+                if let Some(new_high_key_node) = new_nodes.high_key_node.take() {
+                    let unused_unbounded_node =
+                        children
+                            .1
+                            .swap(Owned::from(new_high_key_node), Relaxed, guard);
+                    drop(unsafe { unused_unbounded_node.into_owned() });
                 }
 
                 debug_assert_eq!(
@@ -1120,11 +1118,11 @@ mod test {
 
     #[test]
     fn node() {
-        let guard = crossbeam_epoch::pin();
         for depth in 0..4 {
             // sequential
             let node = Node::new(depth);
             for key in 0..(ARRAY_SIZE * ARRAY_SIZE * ARRAY_SIZE * ARRAY_SIZE) {
+                let guard = crossbeam_epoch::pin();
                 match node.insert(key, 10, &guard) {
                     Ok(_) => match node.insert(key, 11, &guard) {
                         Ok(_) => assert!(false),
@@ -1156,6 +1154,7 @@ mod test {
             for i in 0..ARRAY_SIZE {
                 for j in 0..ARRAY_SIZE * ARRAY_SIZE {
                     let key = (i + 1) * ARRAY_SIZE * ARRAY_SIZE - j + ARRAY_SIZE * ARRAY_SIZE / 2;
+                    let guard = crossbeam_epoch::pin();
                     match node.insert(key, 10, &guard) {
                         Ok(_) => {
                             inserted.push(key);
