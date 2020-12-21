@@ -355,7 +355,8 @@ mod hashmap_test {
     }
 }
 
-mod treemap_test {
+#[cfg(test)]
+mod treeindex_test {
     use proptest::prelude::*;
     use scc::TreeIndex;
     use std::sync::atomic::AtomicUsize;

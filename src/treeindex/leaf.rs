@@ -347,7 +347,8 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
     pub fn distribute_except(
         &self,
         key: Option<&K>,
-        leaves: &mut (Option<Leaf<K, V>>, Option<Leaf<K, V>>),
+        low_key_leaf: &Leaf<K, V>,
+        high_key_leaf: &Leaf<K, V>,
     ) {
         let mut iterated = 0;
         let mut scanner = LeafScanner::new(self);
@@ -356,24 +357,10 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
                 continue;
             }
             if iterated < ARRAY_SIZE / 2 {
-                if leaves.0.is_none() {
-                    leaves.0.replace(Leaf::new());
-                }
-                leaves
-                    .0
-                    .as_ref()
-                    .unwrap()
-                    .insert(entry.0.clone(), entry.1.clone(), false);
+                low_key_leaf.insert(entry.0.clone(), entry.1.clone(), false);
                 iterated += 1;
             } else {
-                if leaves.1.is_none() {
-                    leaves.1.replace(Leaf::new());
-                }
-                leaves
-                    .1
-                    .as_ref()
-                    .unwrap()
-                    .insert(entry.0.clone(), entry.1.clone(), false);
+                high_key_leaf.insert(entry.0.clone(), entry.1.clone(), false);
             }
         }
     }
@@ -796,18 +783,18 @@ mod test {
 
         for i in 0..2 {
             let mut leaves_boxed = (None, None);
-            let mut leaves = (None, None);
+            let mut leaves = (Leaf::new(), Leaf::new());
             if i == 0 {
                 leaf.distribute_boxed(&mut leaves_boxed.0, &mut leaves_boxed.1);
             } else {
-                leaf.distribute_except(Some(&10), &mut leaves);
+                leaf.distribute_except(Some(&10), &leaves.0, &leaves.1);
             }
             let mut prev_key = 0;
             let mut iterated_low = 0;
             let mut scanner_low = if i == 0 {
                 LeafScanner::new(leaves_boxed.0.as_ref().unwrap())
             } else {
-                LeafScanner::new(leaves.0.as_ref().unwrap())
+                LeafScanner::new(&leaves.0)
             };
             while let Some(entry) = scanner_low.next() {
                 assert_eq!(scanner_low.get(), Some(entry));
@@ -820,14 +807,14 @@ mod test {
             if i == 0 {
                 assert_eq!(iterated_low, leaves_boxed.0.as_ref().unwrap().cardinality());
             } else {
-                assert_eq!(iterated_low, leaves.0.as_ref().unwrap().cardinality());
+                assert_eq!(iterated_low, leaves.0.cardinality());
             }
             drop(scanner_low);
             let mut iterated_high = 0;
             let mut scanner_high = if i == 0 {
                 LeafScanner::new(leaves_boxed.1.as_ref().unwrap())
             } else {
-                LeafScanner::new(leaves.1.as_ref().unwrap())
+                LeafScanner::new(&leaves.1)
             };
             while let Some(entry) = scanner_high.next() {
                 assert_eq!(scanner_high.get(), Some(entry));
@@ -844,7 +831,7 @@ mod test {
                 );
             } else {
                 assert_eq!(iterated_high, 1);
-                assert_eq!(iterated_high, leaves.1.as_ref().unwrap().cardinality());
+                assert_eq!(iterated_high, leaves.1.cardinality());
             }
             drop(scanner_high);
         }
