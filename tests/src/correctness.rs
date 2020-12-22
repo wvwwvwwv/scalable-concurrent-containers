@@ -367,7 +367,7 @@ mod treeindex_test {
     #[test]
     fn basic() {
         let range = 4096;
-        let num_threads = 12;
+        let num_threads = 24;
         let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::new());
         let barrier = Arc::new(Barrier::new(num_threads));
         let mut thread_handles = Vec::with_capacity(num_threads);

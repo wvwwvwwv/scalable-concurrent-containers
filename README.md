@@ -65,7 +65,7 @@ scc::TreeIndex is a B+-tree variant optimized for read operations. Locks are onl
 
 ## Changelog
 
-#### 0.3.3
+#### 0.3.4
 Implement scc::TreeIndex::insert and scc::TreeIndex::read
 #### 0.3.2
 Make scc::HashMap pass Valgrind by deallocating arrays immediately on drop

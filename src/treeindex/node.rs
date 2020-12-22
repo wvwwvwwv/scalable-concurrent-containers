@@ -162,12 +162,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     let unbounded_child = children.1.load(Relaxed, guard);
                     let result = (children.0).min_greater_equal(&key);
                     if let Some((child_key, child)) = result.0 {
+                        let child_node = child.load(Acquire, guard);
                         if !(children.0).validate(result.1) {
                             // after reading the pointer, need to validate the version
                             continue;
                         }
-                        // found an appropriate child
-                        let child_node = child.load(Acquire, guard);
                         match unsafe { child_node.deref().insert(key, value, guard) } {
                             Ok(_) => return Ok(()),
                             Err(err) => match err {
@@ -225,7 +224,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 let unbounded_leaf = leaves.1.load(Relaxed, guard);
                 let result = (leaves.0).min_greater_equal(&key);
                 if let Some((child_key, child)) = result.0 {
-                    // found an appropriate leaf
                     let child_leaf = child.load(Acquire, guard);
                     if !(leaves.0).validate(result.1) {
                         // after reading the pointer, need to validate the version
