@@ -159,6 +159,7 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         }
 
         // full
+        debug_assert!(self.full());
         let duplicate_key = self.search(&entry.0).is_some();
         Some((entry, duplicate_key))
     }

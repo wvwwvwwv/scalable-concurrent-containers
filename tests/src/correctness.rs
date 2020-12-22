@@ -367,7 +367,7 @@ mod treeindex_test {
     #[test]
     fn basic() {
         let range = 4096;
-        let num_threads = 24;
+        let num_threads = 16;
         let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::new());
         let barrier = Arc::new(Barrier::new(num_threads));
         let mut thread_handles = Vec::with_capacity(num_threads);
@@ -375,8 +375,8 @@ mod treeindex_test {
             let tree_copied = tree.clone();
             let barrier_copied = barrier.clone();
             thread_handles.push(thread::spawn(move || {
-                barrier_copied.wait();
                 let first_key = thread_id * range;
+                barrier_copied.wait();
                 for key in first_key..(first_key + range / 2) {
                     assert!(tree_copied.insert(key, key).is_ok());
                 }
@@ -408,6 +408,7 @@ mod treeindex_test {
                 found += 1;
             } else {
                 missing += 1;
+                println!("{}", key);
             }
         }
         println!("{} {}", found, missing);

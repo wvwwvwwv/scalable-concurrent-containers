@@ -61,13 +61,13 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         Node {
             entry: if floor > 0 {
                 NodeType::InternalNode {
-                    children: (Leaf::new(), Atomic::new(Node::new(floor - 1))),
+                    children: (Leaf::new(), Atomic::null()),
                     new_children: Atomic::null(),
                     floor,
                 }
             } else {
                 NodeType::LeafNode {
-                    leaves: (Leaf::new(), Atomic::new(Leaf::new())),
+                    leaves: (Leaf::new(), Atomic::null()),
                     new_leaves: Atomic::null(),
                     side_link: Atomic::null(),
                 }
@@ -96,6 +96,9 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     if !(children.0).validate(result.1) {
                         // after reading the pointer, need to validate the version
                         continue;
+                    }
+                    if unbounded_node.is_null() {
+                        return None;
                     }
                     return unsafe { unbounded_node.deref().search(key, guard) };
                 }
@@ -126,6 +129,9 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                             // after reading the pointer, need to validate the version
                             continue;
                         }
+                        if unbounded_leaf.is_null() {
+                            return None;
+                        }
                         let leaf_node_scanner = LeafNodeScanner::from(
                             key,
                             self,
@@ -146,7 +152,13 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
     /// Inserts a key-value pair.
     ///
     /// It is a recursive call, and therefore stack-overflow may occur.
-    pub fn insert(&self, key: K, value: V, guard: &Guard) -> Result<(), Error<K, V>> {
+    pub fn insert(
+        &self,
+        key: K,
+        value: V,
+        max_key: Option<&K>,
+        guard: &Guard,
+    ) -> Result<(), Error<K, V>> {
         // possible data race: the node is being split, for instance,
         //  - node state: ((15, ptr), (25, ptr)), 15 is being split
         //  - insert 10: min_greater_equal returns (15, ptr)
@@ -156,7 +168,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             NodeType::InternalNode {
                 children,
                 new_children,
-                floor: _,
+                floor,
             } => {
                 loop {
                     let unbounded_child = children.1.load(Relaxed, guard);
@@ -167,15 +179,26 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                             // after reading the pointer, need to validate the version
                             continue;
                         }
-                        match unsafe { child_node.deref().insert(key, value, guard) } {
+                        match unsafe {
+                            child_node
+                                .deref()
+                                .insert(key, value, Some(child_key), guard)
+                        } {
                             Ok(_) => return Ok(()),
                             Err(err) => match err {
                                 Error::Duplicated(_) => return Err(err),
                                 Error::Full(entry) => {
-                                    debug_assert!(unsafe { child_node.deref().full() });
+                                    let child_node_ref = unsafe { child_node.deref() };
+                                    if *floor >= 2 {
+                                        child_node_ref.unbounded_node(guard);
+                                    } else {
+                                        child_node_ref.unbounded_leaf(guard);
+                                    }
+                                    debug_assert!(child_node_ref.full(guard));
                                     return self.split_node(
                                         entry,
                                         Some(child_key.clone()),
+                                        Some(child_key),
                                         child_node,
                                         &child,
                                         &children,
@@ -187,21 +210,29 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                                 Error::Retry(_) => return Err(err),
                             },
                         }
-                    } else if unbounded_child == children.1.load(Acquire, guard) {
+                    } else if unbounded_child == self.unbounded_node(guard) {
                         if !(children.0).validate(result.1) {
                             // after reading the pointer, need to validate the version
                             continue;
                         }
                         // try to insert into the unbounded child, and try to split the unbounded if it is full
-                        match unsafe { unbounded_child.deref().insert(key, value, guard) } {
+                        match unsafe { unbounded_child.deref().insert(key, value, max_key, guard) }
+                        {
                             Ok(_) => return Ok(()),
                             Err(err) => match err {
                                 Error::Duplicated(_) => return Err(err),
                                 Error::Full(entry) => {
-                                    debug_assert!(unsafe { unbounded_child.deref().full() });
+                                    let child_node_ref = unsafe { unbounded_child.deref() };
+                                    if *floor >= 2 {
+                                        child_node_ref.unbounded_node(guard);
+                                    } else {
+                                        child_node_ref.unbounded_leaf(guard);
+                                    }
+                                    debug_assert!(child_node_ref.full(guard));
                                     return self.split_node(
                                         entry,
                                         None,
+                                        max_key,
                                         unbounded_child,
                                         &(children.1),
                                         &children,
@@ -247,7 +278,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                             )
                         },
                     );
-                } else if unbounded_leaf == leaves.1.load(Acquire, guard) {
+                } else if unbounded_leaf == self.unbounded_leaf(guard) {
                     if !(leaves.0).validate(result.1) {
                         // after reading the pointer, need to validate the version
                         continue;
@@ -306,6 +337,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 .split_node(
                     entry,
                     None,
+                    None,
                     root_ptr.load(Relaxed, guard),
                     root_ptr,
                     &children,
@@ -330,11 +362,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     );
                 }
                 if let Some(new_high_key_node) = new_nodes.high_key_node.take() {
-                    let unused_unbounded_node =
-                        children
-                            .1
-                            .swap(Owned::from(new_high_key_node), Relaxed, guard);
-                    drop(unsafe { unused_unbounded_node.into_owned() });
+                    children.1.store(Owned::from(new_high_key_node), Relaxed);
                 }
 
                 debug_assert_eq!(
@@ -353,15 +381,16 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         &self,
         entry: (K, V),
         full_node_key: Option<K>,
+        full_node_max_key: Option<&K>,
         full_node_shared: Shared<Node<K, V>>,
         full_node_ptr: &Atomic<Node<K, V>>,
-        children: &(Leaf<K, Atomic<Node<K, V>>>, Atomic<Node<K, V>>),
-        new_children: &Atomic<NewNodes<K, V>>,
+        self_children: &(Leaf<K, Atomic<Node<K, V>>>, Atomic<Node<K, V>>),
+        self_new_children: &Atomic<NewNodes<K, V>>,
         root_node_split: bool,
         guard: &Guard,
     ) -> Result<(), Error<K, V>> {
         let mut new_split_nodes;
-        match new_children.compare_and_set(
+        match self_new_children.compare_and_set(
             Shared::null(),
             Owned::new(NewNodes {
                 origin_node_key: full_node_key,
@@ -383,14 +412,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         // check the full node pointer after locking the node
         if full_node_shared != full_node_ptr.load(Relaxed, guard) {
             // overtaken by another thread
-            let unused_children = new_children.swap(Shared::null(), Relaxed, guard);
+            let unused_children = self_new_children.swap(Shared::null(), Relaxed, guard);
             drop(unsafe { unused_children.into_owned() });
             unsafe {
                 full_node_shared.deref().rollback(&entry.0, guard);
             };
             return Err(Error::Retry(entry));
         }
-        debug_assert!(unsafe { full_node_shared.deref().full() });
+        debug_assert!(unsafe { full_node_shared.deref().full(guard) });
 
         // copy entries to the newly allocated leaves
         let mut new_node_key = None;
@@ -439,6 +468,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 let mut high_key_nodes_empty = true;
                 if let Some(new_low_key_node) = new_children_ref.low_key_node.take() {
                     // the low key node never stores entries in its unbounded node
+                    debug_assert!(!new_low_key_node.has_unbounded_child(guard));
                     if low_key_nodes
                         .as_ref()
                         .unwrap()
@@ -464,44 +494,73 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 if let Some(new_high_key_node) = new_children_ref.high_key_node.take() {
                     // the high key node may store entries in its unbounded node
                     //  - if the origin node key is None, it comes from an unbounded node, therefore use the calculated value.
-                    //  - if the origin node key is Some, it comes from a bounded node, thus having copied an unbounded node / leaf, use the origin key.
-                    let max_key = new_children_ref.origin_node_key.as_ref().map_or_else(
-                        || new_high_key_node.max_bounded_child_key().unwrap(),
-                        |key| key,
-                    );
-                    if low_key_nodes
-                        .as_ref()
-                        .unwrap()
-                        .0
-                        .min_greater_equal(max_key)
-                        .0
-                        .is_some()
-                    {
-                        low_key_nodes.as_ref().unwrap().0.insert(
-                            max_key.clone(),
-                            Atomic::from(new_high_key_node),
-                            false,
-                        );
+                    //  - if the origin node key is Some, it comes from a bounded node, and thus having copied an unbounded node / leaf, use the origin key.
+                    let max_key = if new_high_key_node.has_unbounded_child(guard) {
+                        if let Some(full_node_key) = new_children_ref.origin_node_key.as_ref() {
+                            // origin is a bounded node
+                            Some(full_node_key)
+                        } else if let Some(full_node_max_key) = full_node_max_key {
+                            // origin is an unbounded node, but an ancestor is a bounded node
+                            Some(full_node_max_key)
+                        } else {
+                            // all the ancestors are unbounded
+                            None
+                        }
                     } else {
-                        high_key_nodes.as_ref().unwrap().0.insert(
-                            max_key.clone(),
-                            Atomic::from(new_high_key_node),
-                            false,
-                        );
+                        new_high_key_node.max_bounded_child_key()
+                    };
+
+                    if let Some(max_key) = max_key {
+                        if low_key_nodes
+                            .as_ref()
+                            .unwrap()
+                            .0
+                            .min_greater_equal(max_key)
+                            .0
+                            .is_some()
+                        {
+                            low_key_nodes.as_ref().unwrap().0.insert(
+                                max_key.clone(),
+                                Atomic::from(new_high_key_node),
+                                false,
+                            );
+                        } else {
+                            high_key_nodes.as_ref().unwrap().0.insert(
+                                max_key.clone(),
+                                Atomic::from(new_high_key_node),
+                                false,
+                            );
+                            high_key_nodes_empty = false;
+                        }
+                    } else {
+                        // cannot derive a max key value, implying that all the ancestors of the node are unbounded nodes
+                        high_key_nodes
+                            .as_ref()
+                            .unwrap()
+                            .1
+                            .store(Owned::from(new_high_key_node), Relaxed);
                         high_key_nodes_empty = false;
                     }
                 }
 
                 // move the unbounded node if the origin is a bounded node
+                //  - firstly, try to use the given max key
+                //  - otherwise, make it an unbounded node
                 if !new_children_ref.origin_node_key.is_none() {
-                    let unbounded_node = children.1.load(Acquire, guard);
-                    let unused_unbounded_node =
+                    if let Some(full_node_max_key) = full_node_max_key {
+                        high_key_nodes.as_ref().unwrap().0.insert(
+                            full_node_max_key.clone(),
+                            children.1.clone(),
+                            false,
+                        );
+                    } else {
+                        let unbounded_node = children.1.load(Acquire, guard);
                         high_key_nodes
                             .as_ref()
                             .unwrap()
                             .1
-                            .swap(unbounded_node, Relaxed, guard);
-                    drop(unsafe { unused_unbounded_node.into_owned() });
+                            .store(unbounded_node, Relaxed);
+                    }
                     high_key_nodes_empty = false;
                 } else if high_key_nodes_empty
                     && high_key_nodes.as_ref().unwrap().0.cardinality() > 0
@@ -591,15 +650,23 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 }
 
                 // move the unbounded leaf if the origin is a bounded leaf
+                //  - firstly, try to use the given max key
+                //  - otherwise, make it an unbounded node
                 if !new_leaves_ref.origin_leaf_key.is_none() {
-                    let unbounded_leaf = leaves.1.load(Acquire, guard);
-                    let unused_unbounded_leaf =
+                    if let Some(full_node_max_key) = full_node_max_key {
+                        high_key_leaves.as_ref().unwrap().0.insert(
+                            full_node_max_key.clone(),
+                            leaves.1.clone(),
+                            false,
+                        );
+                    } else {
+                        let unbounded_leaf = leaves.1.load(Acquire, guard);
                         high_key_leaves
                             .as_ref()
                             .unwrap()
                             .1
-                            .swap(unbounded_leaf, Relaxed, guard);
-                    drop(unsafe { unused_unbounded_leaf.into_owned() });
+                            .store(unbounded_leaf, Relaxed);
+                    }
                     high_key_leaves_empty = false;
                 } else if high_key_leaves_empty
                     && high_key_leaves.as_ref().unwrap().0.cardinality() > 0
@@ -643,7 +710,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 &guard,
             );
         } else {
-            if let Some(node) = children.0.insert(
+            if let Some(node) = self_children.0.insert(
                 new_node_key.unwrap().clone(),
                 Atomic::from(new_split_nodes_ref.low_key_node.take().unwrap()),
                 false,
@@ -664,7 +731,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         }
 
         // it is practically un-locking the node
-        let unused_children = new_children.swap(Shared::null(), Release, guard);
+        let unused_children = self_new_children.swap(Shared::null(), Release, guard);
 
         // prevent temporary nodes to be dropped as they are reachable
         if !deprecated_new_nodes.is_null() {
@@ -826,19 +893,92 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         }
     }
 
-    /// Checks if the node is full.
-    fn full(&self) -> bool {
+    fn has_unbounded_child(&self, guard: &Guard) -> bool {
         match &self.entry {
             NodeType::InternalNode {
                 children,
                 new_children: _,
                 floor: _,
-            } => children.0.full(),
+            } => !children.1.load(Relaxed, guard).is_null(),
             NodeType::LeafNode {
                 leaves,
                 new_leaves: _,
                 side_link: _,
-            } => leaves.0.full(),
+            } => !leaves.1.load(Relaxed, guard).is_null(),
+        }
+    }
+
+    fn unbounded_node<'a>(&self, guard: &'a Guard) -> Shared<'a, Node<K, V>> {
+        match &self.entry {
+            NodeType::InternalNode {
+                children,
+                new_children: _,
+                floor,
+            } => {
+                let shared_ptr = children.1.load(Relaxed, guard);
+                if shared_ptr.is_null() {
+                    match children.1.compare_and_set(
+                        Shared::null(),
+                        Owned::new(Node::new(floor - 1)),
+                        Relaxed,
+                        guard,
+                    ) {
+                        Ok(result) => return result,
+                        Err(result) => return result.current,
+                    }
+                }
+                shared_ptr
+            }
+            NodeType::LeafNode {
+                leaves,
+                new_leaves: _,
+                side_link: _,
+            } => Shared::null(),
+        }
+    }
+
+    fn unbounded_leaf<'a>(&self, guard: &'a Guard) -> Shared<'a, Leaf<K, V>> {
+        match &self.entry {
+            NodeType::InternalNode {
+                children,
+                new_children: _,
+                floor,
+            } => Shared::null(),
+            NodeType::LeafNode {
+                leaves,
+                new_leaves: _,
+                side_link: _,
+            } => {
+                let shared_ptr = leaves.1.load(Relaxed, guard);
+                if shared_ptr.is_null() {
+                    match leaves.1.compare_and_set(
+                        Shared::null(),
+                        Owned::new(Leaf::new()),
+                        Relaxed,
+                        guard,
+                    ) {
+                        Ok(result) => return result,
+                        Err(result) => return result.current,
+                    }
+                }
+                shared_ptr
+            }
+        }
+    }
+
+    /// Checks if the node is full.
+    fn full(&self, guard: &Guard) -> bool {
+        match &self.entry {
+            NodeType::InternalNode {
+                children,
+                new_children: _,
+                floor: _,
+            } => children.0.full() && !children.1.load(Relaxed, guard).is_null(),
+            NodeType::LeafNode {
+                leaves,
+                new_leaves: _,
+                side_link: _,
+            } => leaves.0.full() && !leaves.1.load(Relaxed, guard).is_null(),
         }
     }
 
@@ -1124,7 +1264,7 @@ mod test {
     use super::*;
     use crate::treeindex::leaf::ARRAY_SIZE;
     use std::fmt::Display;
-    use std::sync::{Arc, Barrier};
+    use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
 
     fn print_node<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync>(
@@ -1144,7 +1284,12 @@ mod test {
                     print_node(child_ref);
                 }
                 println!("floor {}, unbounded node", floor);
-                let unbounded_ref = unsafe { children.1.load(Relaxed, &guard).deref() };
+                let unbounded_ptr = children.1.load(Relaxed, &guard);
+                if unbounded_ptr.is_null() {
+                    println!(" null");
+                    return;
+                }
+                let unbounded_ref = unsafe { unbounded_ptr.deref() };
                 print_node(unbounded_ref);
             }
             NodeType::LeafNode {
@@ -1162,7 +1307,12 @@ mod test {
                     }
                 }
                 println!("unbounded node");
-                let unbounded_ref = unsafe { leaves.1.load(Relaxed, &guard).deref() };
+                let unbounded_ptr = leaves.1.load(Relaxed, &guard);
+                if unbounded_ptr.is_null() {
+                    println!(" null");
+                    return;
+                }
+                let unbounded_ref = unsafe { unbounded_ptr.deref() };
                 let mut inner_scanner = LeafScanner::new(unbounded_ref);
                 while let Some(entry) = inner_scanner.next() {
                     println!(" entry: {} {}", entry.0, entry.1);
@@ -1178,8 +1328,8 @@ mod test {
             let node = Node::new(depth);
             for key in 0..(ARRAY_SIZE * ARRAY_SIZE * ARRAY_SIZE * ARRAY_SIZE) {
                 let guard = crossbeam_epoch::pin();
-                match node.insert(key, 10, &guard) {
-                    Ok(_) => match node.insert(key, 11, &guard) {
+                match node.insert(key, 10, None, &guard) {
+                    Ok(_) => match node.insert(key, 11, None, &guard) {
                         Ok(_) => assert!(false),
                         Err(result) => match result {
                             Error::Duplicated(entry) => assert_eq!(entry, (key, 11)),
@@ -1210,10 +1360,10 @@ mod test {
                 for j in 0..ARRAY_SIZE * ARRAY_SIZE {
                     let key = (i + 1) * ARRAY_SIZE * ARRAY_SIZE - j + ARRAY_SIZE * ARRAY_SIZE / 2;
                     let guard = crossbeam_epoch::pin();
-                    match node.insert(key, 10, &guard) {
+                    match node.insert(key, 10, None, &guard) {
                         Ok(_) => {
                             inserted.push(key);
-                            match node.insert(key, 11, &guard) {
+                            match node.insert(key, 11, None, &guard) {
                                 Ok(_) => assert!(false),
                                 Err(result) => match result {
                                     Error::Duplicated(entry) => assert_eq!(entry, (key, 11)),
@@ -1244,6 +1394,56 @@ mod test {
                     break;
                 }
             }
+        }
+    }
+
+    #[test]
+    fn node_multithreaded() {
+        let num_threads = 16;
+        let range = 4096;
+        let barrier = Arc::new(Barrier::new(num_threads));
+        let node = Arc::new(Node::new(4));
+        let inserted = Arc::new(Mutex::new(Vec::new()));
+        let mut thread_handles = Vec::with_capacity(num_threads);
+        for thread_id in 0..num_threads {
+            let barrier_copied = barrier.clone();
+            let node_copied = node.clone();
+            let inserted_copied = inserted.clone();
+            thread_handles.push(thread::spawn(move || {
+                let mut inserted_keys = Vec::new();
+                let first_key = thread_id * range;
+                barrier_copied.wait();
+                for key in first_key..(first_key + range) {
+                    let guard = crossbeam_epoch::pin();
+                    if !node_copied.insert(key, key, None, &guard).is_ok() {
+                        for key_to_check in first_key..key {
+                            assert!(node_copied.search(&key_to_check, &guard).is_some());
+                        }
+                        break;
+                    } else {
+                        inserted_keys.push(key);
+                    }
+                }
+                let result = inserted_copied.lock();
+                let mut vector = result.unwrap();
+                for key in inserted_keys.iter() {
+                    vector.push(*key);
+                }
+            }));
+        }
+        for handle in thread_handles {
+            handle.join().unwrap();
+        }
+        for key in inserted.lock().unwrap().iter() {
+            let guard = crossbeam_epoch::pin();
+            if !node.search(key, &guard).is_some() {
+                println!("{}", key);
+            }
+        }
+        print_node(&(*node));
+        for key in inserted.lock().unwrap().iter() {
+            let guard = crossbeam_epoch::pin();
+            assert!(node.search(key, &guard).is_some());
         }
     }
 }
