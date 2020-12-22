@@ -81,39 +81,62 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 children,
                 new_children: _,
                 floor: _,
-            } => {
+            } => loop {
                 let unbounded_node = (children.1).load(Acquire, guard);
-                if let Some((_, child)) = (children.0).min_ge(&key) {
-                    unsafe { child.load(Acquire, guard).deref().search(key, guard) }
-                } else {
-                    unsafe { unbounded_node.deref().search(key, guard) }
+                let result = (children.0).min_greater_equal(&key);
+                if let Some((_, child)) = result.0 {
+                    let child_node = child.load(Acquire, guard);
+                    if !(children.0).validate(result.1) {
+                        // after reading the pointer, need to validate the version
+                        continue;
+                    }
+                    return unsafe { child_node.deref().search(key, guard) };
                 }
-            }
+                if unbounded_node == children.1.load(Acquire, guard) {
+                    if !(children.0).validate(result.1) {
+                        // after reading the pointer, need to validate the version
+                        continue;
+                    }
+                    return unsafe { unbounded_node.deref().search(key, guard) };
+                }
+            },
             NodeType::LeafNode {
                 leaves,
                 new_leaves: _,
                 side_link: _,
             } => {
-                let unbounded_leaf = (leaves.1).load(Relaxed, guard);
-                if let Some((_, child)) = (leaves.0).min_ge(&key) {
-                    let leaf_node_scanner = LeafNodeScanner::from(
-                        key,
-                        self,
-                        unsafe { child.load(Acquire, guard).deref() },
-                        guard,
-                    );
-                    if leaf_node_scanner.get().is_some() {
-                        Some(leaf_node_scanner)
-                    } else {
-                        None
-                    }
-                } else {
-                    let leaf_node_scanner =
-                        LeafNodeScanner::from(key, self, unsafe { unbounded_leaf.deref() }, guard);
-                    if leaf_node_scanner.get().is_some() {
-                        Some(leaf_node_scanner)
-                    } else {
-                        None
+                loop {
+                    let unbounded_leaf = (leaves.1).load(Relaxed, guard);
+                    let result = (leaves.0).min_greater_equal(&key);
+                    if let Some((_, child)) = result.0 {
+                        let child_leaf = child.load(Acquire, guard);
+                        if !(leaves.0).validate(result.1) {
+                            // after reading the pointer, need to validate the version
+                            continue;
+                        }
+                        let leaf_node_scanner =
+                            LeafNodeScanner::from(key, self, unsafe { child_leaf.deref() }, guard);
+                        if leaf_node_scanner.get().is_some() {
+                            return Some(leaf_node_scanner);
+                        } else {
+                            return None;
+                        }
+                    } else if unbounded_leaf == leaves.1.load(Acquire, guard) {
+                        if !(leaves.0).validate(result.1) {
+                            // after reading the pointer, need to validate the version
+                            continue;
+                        }
+                        let leaf_node_scanner = LeafNodeScanner::from(
+                            key,
+                            self,
+                            unsafe { unbounded_leaf.deref() },
+                            guard,
+                        );
+                        if leaf_node_scanner.get().is_some() {
+                            return Some(leaf_node_scanner);
+                        } else {
+                            return None;
+                        }
                     }
                 }
             }
@@ -124,6 +147,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
     ///
     /// It is a recursive call, and therefore stack-overflow may occur.
     pub fn insert(&self, key: K, value: V, guard: &Guard) -> Result<(), Error<K, V>> {
+        // possible data race: the node is being split, for instance,
+        //  - node state: ((15, ptr), (25, ptr)), 15 is being split
+        //  - insert 10: min_greater_equal returns (15, ptr)
+        //  - split 15: insert 11, and replace 15 with a new pointer, therefore ((11, ptr), (15, new_ptr), (25, ptr))
+        //  - insert 10: load new_ptr, and try insert, that is incorrect as it is supposed to be inserted into (11, ptr)
         match &self.entry {
             NodeType::InternalNode {
                 children,
@@ -132,7 +160,12 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             } => {
                 loop {
                     let unbounded_child = children.1.load(Relaxed, guard);
-                    if let Some((child_key, child)) = (children.0).min_ge(&key) {
+                    let result = (children.0).min_greater_equal(&key);
+                    if let Some((child_key, child)) = result.0 {
+                        if !(children.0).validate(result.1) {
+                            // after reading the pointer, need to validate the version
+                            continue;
+                        }
                         // found an appropriate child
                         let child_node = child.load(Acquire, guard);
                         match unsafe { child_node.deref().insert(key, value, guard) } {
@@ -156,6 +189,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                             },
                         }
                     } else if unbounded_child == children.1.load(Acquire, guard) {
+                        if !(children.0).validate(result.1) {
+                            // after reading the pointer, need to validate the version
+                            continue;
+                        }
                         // try to insert into the unbounded child, and try to split the unbounded if it is full
                         match unsafe { unbounded_child.deref().insert(key, value, guard) } {
                             Ok(_) => return Ok(()),
@@ -186,9 +223,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 side_link: _,
             } => loop {
                 let unbounded_leaf = leaves.1.load(Relaxed, guard);
-                if let Some((child_key, child)) = (leaves.0).min_ge(&key) {
+                let result = (leaves.0).min_greater_equal(&key);
+                if let Some((child_key, child)) = result.0 {
                     // found an appropriate leaf
                     let child_leaf = child.load(Acquire, guard);
+                    if !(leaves.0).validate(result.1) {
+                        // after reading the pointer, need to validate the version
+                        continue;
+                    }
                     return unsafe { child_leaf.deref().insert(key, value, false) }.map_or_else(
                         || Ok(()),
                         |result| {
@@ -208,6 +250,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                         },
                     );
                 } else if unbounded_leaf == leaves.1.load(Acquire, guard) {
+                    if !(leaves.0).validate(result.1) {
+                        // after reading the pointer, need to validate the version
+                        continue;
+                    }
                     // try to insert into the unbounded leaf, and try to split the unbounded if it is full
                     return unsafe { unbounded_leaf.deref().insert(key, value, false) }
                         .map_or_else(
@@ -399,7 +445,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                         .as_ref()
                         .unwrap()
                         .0
-                        .min_ge(new_low_key_node.max_bounded_child_key().unwrap())
+                        .min_greater_equal(new_low_key_node.max_bounded_child_key().unwrap())
+                        .0
                         .is_some()
                     {
                         low_key_nodes.as_ref().unwrap().0.insert(
@@ -424,7 +471,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                         || new_high_key_node.max_bounded_child_key().unwrap(),
                         |key| key,
                     );
-                    if low_key_nodes.as_ref().unwrap().0.min_ge(max_key).is_some() {
+                    if low_key_nodes
+                        .as_ref()
+                        .unwrap()
+                        .0
+                        .min_greater_equal(max_key)
+                        .0
+                        .is_some()
+                    {
                         low_key_nodes.as_ref().unwrap().0.insert(
                             max_key.clone(),
                             Atomic::from(new_high_key_node),
@@ -518,7 +572,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                             .as_ref()
                             .unwrap()
                             .0
-                            .min_ge(new_leaf.max_key().unwrap())
+                            .min_greater_equal(new_leaf.max_key().unwrap())
+                            .0
                             .is_some()
                         {
                             low_key_leaves.as_ref().unwrap().0.insert(
@@ -686,7 +741,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 .low_key_leaf
                 .as_ref()
                 .unwrap()
-                .min_ge(&entry.0)
+                .min_greater_equal(&entry.0)
+                .0
                 .is_some()
         {
             // insert the entry into the low-key leaf if the high-key leaf is empty, or the key fits the low-key leaf
@@ -796,9 +852,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 new_children,
                 floor: _,
             } => {
-                let intermediate_split = new_children.swap(Shared::null(), Release, guard);
-                drop(unsafe { intermediate_split.into_owned() });
-                if let Some((_, child)) = (children.0).min_ge(&key) {
+                debug_assert!(!new_children.load(Relaxed, guard).is_null());
+                if let Some((_, child)) = (children.0).min_greater_equal(&key).0 {
                     unsafe { child.load(Acquire, guard).deref().rollback(key, guard) };
                 } else {
                     let unbounded_child = (children.1).load(Relaxed, guard);
@@ -806,6 +861,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                         unsafe { unbounded_child.deref().rollback(key, guard) }
                     }
                 }
+                let intermediate_split = new_children.swap(Shared::null(), Release, guard);
+                drop(unsafe { intermediate_split.into_owned() });
             }
             NodeType::LeafNode {
                 leaves: _,

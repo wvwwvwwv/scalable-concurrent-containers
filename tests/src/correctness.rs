@@ -367,7 +367,7 @@ mod treeindex_test {
     #[test]
     fn basic() {
         let range = 4096;
-        let num_threads = 1;
+        let num_threads = 12;
         let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::new());
         let barrier = Arc::new(Barrier::new(num_threads));
         let mut thread_handles = Vec::with_capacity(num_threads);
@@ -376,10 +376,19 @@ mod treeindex_test {
             let barrier_copied = barrier.clone();
             thread_handles.push(thread::spawn(move || {
                 barrier_copied.wait();
-                for key in thread_id * range..(thread_id + 1) * range {
+                let first_key = thread_id * range;
+                for key in first_key..(first_key + range / 2) {
                     assert!(tree_copied.insert(key, key).is_ok());
                 }
-                for key in thread_id * range..(thread_id + 1) * range {
+                for key in first_key..(first_key + range / 2) {
+                    assert!(tree_copied
+                        .read(&key, |key, value| assert_eq!(key, value))
+                        .is_some());
+                }
+                for key in (first_key + range / 2)..(first_key + range) {
+                    assert!(tree_copied.insert(key, key).is_ok());
+                }
+                for key in (first_key + range / 2)..(first_key + range) {
                     assert!(tree_copied
                         .read(&key, |key, value| assert_eq!(key, value))
                         .is_some());
@@ -388,6 +397,24 @@ mod treeindex_test {
         }
         for handle in thread_handles {
             handle.join().unwrap();
+        }
+        let mut found = 0;
+        let mut missing = 0;
+        for key in 0..num_threads * range {
+            if tree
+                .read(&key, |key, value| assert_eq!(key, value))
+                .is_some()
+            {
+                found += 1;
+            } else {
+                missing += 1;
+            }
+        }
+        println!("{} {}", found, missing);
+        for key in 0..num_threads * range {
+            assert!(tree
+                .read(&key, |key, value| assert_eq!(key, value))
+                .is_some());
         }
     }
 }

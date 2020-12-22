@@ -205,6 +205,7 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         false
     }
 
+    /// Returns a value associated with the key.
     pub fn search(&self, key: &K) -> Option<&V> {
         let metadata = self.metadata.load(Acquire);
         let mut max_min_rank = 0;
@@ -234,6 +235,7 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         None
     }
 
+    /// Returns the index and a pointer to the key-value pair associated with the key.
     pub fn from(&self, metadata: u64, key: &K, exact: bool) -> (usize, *const (K, V)) {
         let mut max_min_rank = 0;
         let mut min_max_rank = ARRAY_SIZE + 1;
@@ -270,7 +272,9 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
     }
 
     /// Returns the minimum entry among those that are not Ordering::Less than the given key.
-    pub fn min_ge(&self, key: &K) -> Option<(&K, &V)> {
+    ///
+    /// It additionally returns the current version of its metadata in order for the caller to validate the sanity of the result.
+    pub fn min_greater_equal(&self, key: &K) -> (Option<(&K, &V)>, u64) {
         let metadata = self.metadata.load(Acquire);
         let mut max_min_rank = 0;
         let mut min_max_rank = ARRAY_SIZE + 1;
@@ -293,15 +297,20 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
                         }
                     }
                     Ordering::Equal => {
-                        return Some(self.read(i));
+                        return (Some(self.read(i)), metadata);
                     }
                 }
             }
         }
         if min_max_rank <= ARRAY_SIZE {
-            return Some(self.read(min_max_index));
+            return (Some(self.read(min_max_index)), metadata);
         }
-        None
+        (None, metadata)
+    }
+
+    /// Compares the given metadata value with the current one.
+    pub fn validate(&self, metadata: u64) -> bool {
+        self.metadata.load(Relaxed) == metadata
     }
 
     fn write(&self, index: usize, key: K, value: V) {
@@ -623,10 +632,16 @@ mod test {
                 .is_none());
         }
         for i in 0..ARRAY_SIZE {
-            assert_eq!(leaf.min_ge(&(i * 2)), Some((&(i * 2 + 1), &10)));
-            assert_eq!(leaf.min_ge(&(i * 2 + 1)), Some((&(i * 2 + 1), &10)));
+            assert_eq!(
+                leaf.min_greater_equal(&(i * 2)).0,
+                Some((&(i * 2 + 1), &10))
+            );
+            assert_eq!(
+                leaf.min_greater_equal(&(i * 2 + 1)).0,
+                Some((&(i * 2 + 1), &10))
+            );
         }
-        assert!(leaf.min_ge(&(ARRAY_SIZE * 3)).is_none());
+        assert!(leaf.min_greater_equal(&(ARRAY_SIZE * 3)).0.is_none());
         let leaf = Leaf::new();
         assert_eq!(leaf.num_removed(), 0);
         assert_eq!(leaf.cardinality(), 0);
@@ -640,15 +655,18 @@ mod test {
         assert!(leaf.insert(60, 61, true).is_none());
         assert_eq!(leaf.cardinality(), 3);
         assert_eq!(leaf.num_removed(), 1);
-        assert_eq!(leaf.min_ge(&71), None);
-        assert_eq!(leaf.min_ge(&51), Some((&60, &61)));
-        assert_eq!(leaf.min_ge(&50), Some((&50, &51)));
-        assert_eq!(leaf.min_ge(&49), Some((&50, &51)));
+        assert_eq!(leaf.min_greater_equal(&71).0, None);
+        assert_eq!(leaf.min_greater_equal(&51).0, Some((&60, &61)));
+        assert_eq!(leaf.min_greater_equal(&50).0, Some((&50, &51)));
+        let result = leaf.min_greater_equal(&49);
+        assert_eq!(result.0, Some((&50, &51)));
+        assert!(leaf.validate(result.1));
         assert!(leaf.remove(&60));
         assert_eq!(leaf.num_removed(), 2);
         assert_eq!(leaf.cardinality(), 2);
         assert!(!leaf.full());
         assert!(leaf.insert(40, 40, false).is_none());
+        assert!(!leaf.validate(result.1));
         assert!(leaf.insert(30, 31, false).is_none());
         assert_eq!(leaf.cardinality(), 4);
         assert!(!leaf.full());
@@ -724,15 +742,15 @@ mod test {
         assert!(leaf.insert(12, 13, false).is_none());
         assert_eq!(leaf.cardinality(), 4);
         assert_eq!(*leaf.search(&12).unwrap(), 13);
-        assert_eq!(leaf.min_ge(&21), None);
-        assert_eq!(leaf.min_ge(&20), Some((&20, &21)));
-        assert_eq!(leaf.min_ge(&19), Some((&20, &21)));
-        assert_eq!(leaf.min_ge(&0), Some((&10, &11)));
+        assert_eq!(leaf.min_greater_equal(&21).0, None);
+        assert_eq!(leaf.min_greater_equal(&20).0, Some((&20, &21)));
+        assert_eq!(leaf.min_greater_equal(&19).0, Some((&20, &21)));
+        assert_eq!(leaf.min_greater_equal(&0).0, Some((&10, &11)));
         assert!(leaf.insert(2, 3, false).is_none());
         assert_eq!(leaf.cardinality(), 5);
         assert_eq!(*leaf.search(&2).unwrap(), 3);
         assert_eq!(leaf.insert(2, 3, false), Some(((2, 3), true)));
-        assert_eq!(leaf.min_ge(&8), Some((&10, &11)));
+        assert_eq!(leaf.min_greater_equal(&8).0, Some((&10, &11)));
         assert_eq!(leaf.cardinality(), 5);
         assert_eq!(*leaf.search(&2).unwrap(), 3);
         assert!(leaf.insert(1, 2, false).is_none());

@@ -10,7 +10,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 /// A scalable concurrent tree map implementation.
 ///
-/// scc::TreeIndex is a B+ tree variant that is aimed at serving read requests efficiently.
+/// scc::TreeIndex is a B+ tree variant that is optimized for read operations.
 /// Read operations, such as scan, read, are neither blocked nor interrupted by all the other types of operations.
 /// Write operations, such as insert, remove, do not block if they do not entail structural changes to the tree.
 pub struct TreeIndex<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
