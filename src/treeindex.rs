@@ -110,7 +110,9 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
         )
     }
 
-    /// Returns a Scanner.
+    /// (unimplemented!) Returns a Scanner.
+    ///
+    /// The returned Scanner starts scanning from the minimum key-value pair.
     ///
     /// # Examples
     /// ```
@@ -118,7 +120,20 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
-    /// let scanner = treeindex.iter();
+    /// let result = treeindex.insert(1, 10);
+    /// assert!(result.is_ok());
+    ///
+    /// let result = treeindex.insert(2, 11);
+    /// assert!(result.is_ok());
+    ///
+    /// let result = treeindex.insert(3, 13);
+    /// assert!(result.is_ok());
+    ///
+    /// let mut scanner = treeindex.iter();
+    /// assert_eq!(scanner.next().unwrap(), (&1, &10));
+    /// assert_eq!(scanner.next().unwrap(), (&2, &11));
+    /// assert_eq!(scanner.next().unwrap(), (&3, &13));
+    /// assert!(scanner.next().is_none());
     /// ```
     pub fn iter(&self) -> Scanner<K, V> {
         Scanner::new(self)
@@ -156,6 +171,23 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Scanner<'a, K, V>
 impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator for Scanner<'a, K, V> {
     type Item = (&'a K, &'a V);
     fn next(&mut self) -> Option<Self::Item> {
-        None
+        if let Some(scanner) = &mut self.leaf_node_scanner {
+            return scanner.next();
+        } else {
+            let root_node = self.tree_index.root.load(Acquire, &self.guard);
+            if root_node.is_null() {
+                return None;
+            }
+            self.leaf_node_scanner = unsafe {
+                // prolong the lifetime as the rust typesystem cannot infer the actual lifetime correctly
+                std::mem::transmute::<_, Option<LeafNodeScanner<'a, K, V>>>(
+                    (*root_node.as_raw()).min(&self.guard),
+                )
+            };
+            return self
+                .leaf_node_scanner
+                .as_ref()
+                .map_or_else(|| None, |scanner| scanner.get());
+        }
     }
 }
