@@ -1414,13 +1414,6 @@ mod test {
     }
 
     #[test]
-    fn loop_x() {
-        loop {
-            node_multithreaded(); // TOOD: depth 4
-        }
-    }
-
-    #[test]
     fn node_multithreaded() {
         let num_threads = 16;
         let range = 16384;
