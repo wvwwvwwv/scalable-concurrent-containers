@@ -6,7 +6,7 @@ pub mod node;
 use crossbeam_epoch::{Atomic, Guard};
 use leaf::Leaf;
 use node::{Error, LeafNodeScanner, Node};
-use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use std::sync::atomic::Ordering::Acquire;
 
 /// A scalable concurrent tree map implementation.
 ///

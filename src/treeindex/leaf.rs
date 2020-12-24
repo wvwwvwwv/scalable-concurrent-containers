@@ -898,7 +898,7 @@ mod test {
 
         for i in 0..2 {
             let mut leaves_boxed = (None, None);
-            let mut leaves = (Leaf::new(), Leaf::new());
+            let leaves = (Leaf::new(), Leaf::new());
             if i == 0 {
                 leaf.distribute_boxed(&mut leaves_boxed.0, &mut leaves_boxed.1);
             } else {
