@@ -171,8 +171,23 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Scanner<'a, K, V>
 impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator for Scanner<'a, K, V> {
     type Item = (&'a K, &'a V);
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(scanner) = &mut self.leaf_node_scanner {
-            return scanner.next();
+        if self.leaf_node_scanner.is_some() {
+            while let Some(mut scanner) = self.leaf_node_scanner.take() {
+                if let Some(result) = scanner.next() {
+                    self.leaf_node_scanner.replace(scanner);
+                    return Some(result);
+                }
+                // proceed to the next leaf node
+                let next = unsafe {
+                    std::mem::transmute::<_, Option<LeafNodeScanner<'a, K, V>>>(
+                        scanner.jump(&self.guard),
+                    )
+                };
+                if let Some(next) = next {
+                    self.leaf_node_scanner.replace(next);
+                }
+            }
+            None
         } else {
             let root_node = self.tree_index.root.load(Acquire, &self.guard);
             if root_node.is_null() {

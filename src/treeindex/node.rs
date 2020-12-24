@@ -1086,6 +1086,22 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         }
     }
 
+    fn next_leaf_node<'a>(&self, guard: &'a Guard) -> Option<&'a Node<K, V>> {
+        if let NodeType::LeafNode {
+            leaves: _,
+            new_leaves: _,
+            next_node_anchor: _,
+            side_link,
+        } = &self.entry
+        {
+            let side_link_ptr = side_link.load(Acquire, guard);
+            if !side_link_ptr.is_null() {
+                return Some(unsafe { side_link_ptr.deref() });
+            }
+        }
+        None
+    }
+
     /// Checks if the node is full.
     fn full(&self, guard: &Guard) -> bool {
         match &self.entry {
@@ -1324,6 +1340,14 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNodeScanner<'
             node_scanner: None,
             leaf_scanner: None,
             guard,
+        }
+    }
+
+    pub fn jump(&self, guard: &'a Guard) -> Option<LeafNodeScanner<'a, K, V>> {
+        if let Some(next_node) = self.leaf_node.next_leaf_node(guard) {
+            Some(LeafNodeScanner::new(next_node, guard))
+        } else {
+            None
         }
     }
 
