@@ -79,7 +79,13 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 NodeType::InternalNode {
                     children: (Leaf::new(), Atomic::null()),
                     new_children: Atomic::null(),
-                    leaf_node_anchor: Atomic::null(),
+                    leaf_node_anchor: if floor == 1 {
+                        Atomic::new(LeafNodeAnchor {
+                            min_leaf_node: Atomic::null(),
+                        })
+                    } else {
+                        Atomic::null()
+                    },
                     floor,
                 }
             } else {
@@ -480,6 +486,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 leaf_node_anchor: _,
                 floor,
             } => {
+                // [TODO] if the full node manages a leaf node anchor (floor = 1), it needs to reconstruct links
                 debug_assert!(!new_children.load(Relaxed, guard).is_null());
                 let new_children_ref = unsafe { new_children.load(Relaxed, guard).deref_mut() };
 
@@ -773,7 +780,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 Release,
                 &guard,
             );
-            // get the node pointer for linked list construction
+            // get the node pointer for linked list adjustment
             if full_node_side_link.is_some() {
                 low_key_leaf_node = full_node_ptr.load(Relaxed, guard);
             }
@@ -801,10 +808,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 Release,
                 &guard,
             );
-            // get the node pointers for linked list construction
+            // get the node pointers for linked list adjustment
             if full_node_side_link.is_some() {
-                high_key_leaf_node = full_node_ptr.load(Relaxed, guard);
                 low_key_leaf_node = low_key_node_ptr.load(Relaxed, guard);
+                high_key_leaf_node = full_node_ptr.load(Relaxed, guard);
             }
         }
 
@@ -832,6 +839,9 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             if let Some(entry) = immediate_less_key_node {
                 let node = entry.1.load(Relaxed, guard);
                 unsafe { node.deref().update_side_link(low_key_leaf_node.clone()) };
+            } else {
+                // the low key node is the minimum node
+                // [TODO] update its anchor
             }
         }
 
@@ -1090,13 +1100,21 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         if let NodeType::LeafNode {
             leaves: _,
             new_leaves: _,
-            next_node_anchor: _,
+            next_node_anchor,
             side_link,
         } = &self.entry
         {
             let side_link_ptr = side_link.load(Acquire, guard);
             if !side_link_ptr.is_null() {
                 return Some(unsafe { side_link_ptr.deref() });
+            }
+            let next_node_anchor = next_node_anchor.load(Relaxed, guard);
+            if !next_node_anchor.is_null() {
+                let next_leaf_node_ptr =
+                    unsafe { next_node_anchor.deref().min_leaf_node.load(Acquire, guard) };
+                if !next_leaf_node_ptr.is_null() {
+                    return Some(unsafe { next_leaf_node_ptr.deref() });
+                }
             }
         }
         None
@@ -1188,9 +1206,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for Node<K, V> {
             NodeType::InternalNode {
                 children,
                 new_children,
-                leaf_node_anchor: _,
+                leaf_node_anchor,
                 floor: _,
             } => {
+                // destroy the leaf node anchor
+                let anchor = leaf_node_anchor.load(Relaxed, &guard);
+                if !anchor.is_null() {
+                    drop(unsafe { anchor.into_owned() });
+                }
                 // destroy entries related to the unused child
                 let unused_nodes = new_children.load(Acquire, &guard);
                 if !unused_nodes.is_null() {
@@ -1370,13 +1393,42 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNodeScanner<'
         leaf_node: &'a Node<K, V>,
         guard: &'a Guard,
     ) -> LeafNodeScanner<'a, K, V> {
-        // TODO
-        LeafNodeScanner::<'a, K, V> {
+        if let NodeType::LeafNode {
+            leaves,
+            new_leaves: _,
+            next_node_anchor: _,
+            side_link: _,
+        } = &leaf_node.entry
+        {
+            let result = leaves.0.min_greater_equal(key);
+            if let Some(leaf) = result.0 {
+                let leaf_ref = unsafe { leaf.1.load(Acquire, guard).deref() };
+                return LeafNodeScanner::<'a, K, V> {
+                    leaf_node,
+                    node_scanner: None,
+                    leaf_scanner: Some(LeafScanner::from_greater_equal(key, leaf_ref)),
+                    guard,
+                };
+            } else {
+                let unbounded_leaf = leaves.1.load(Acquire, guard);
+                if !unbounded_leaf.is_null() {
+                    return LeafNodeScanner::<'a, K, V> {
+                        leaf_node,
+                        node_scanner: None,
+                        leaf_scanner: Some(LeafScanner::from_greater_equal(key, unsafe {
+                            unbounded_leaf.deref()
+                        })),
+                        guard,
+                    };
+                }
+            }
+        }
+        return LeafNodeScanner::<'a, K, V> {
             leaf_node,
             node_scanner: None,
             leaf_scanner: None,
             guard,
-        }
+        };
     }
 
     /// Returns a reference to the entry that the scanner is currently pointing to

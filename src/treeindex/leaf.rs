@@ -291,6 +291,42 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
     }
 
     /// Returns the minimum entry among those that are not Ordering::Less than the given key.
+    pub fn from_min_greater_equal(&self, metadata: u64, key: &K) -> (usize, *const (K, V)) {
+        let mut max_min_rank = 0;
+        let mut min_max_rank = ARRAY_SIZE + 1;
+        let mut min_max_index = ARRAY_SIZE;
+        for i in 0..ARRAY_SIZE {
+            let rank = ((metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
+                >> (i * INDEX_RANK_ENTRY_SIZE)) as usize;
+            if rank > max_min_rank && rank < min_max_rank && (metadata & (OCCUPANCY_BIT << i)) != 0
+            {
+                match self.compare(i, key) {
+                    Ordering::Less => {
+                        if max_min_rank < rank {
+                            max_min_rank = rank;
+                        }
+                    }
+                    Ordering::Greater => {
+                        if min_max_rank > rank {
+                            min_max_rank = rank;
+                            min_max_index = i;
+                        }
+                    }
+                    Ordering::Equal => {
+                        return (i, unsafe { &*self.entry_array[i].as_ptr() });
+                    }
+                }
+            }
+        }
+        if min_max_rank <= ARRAY_SIZE {
+            return (min_max_index, unsafe {
+                &*self.entry_array[min_max_index].as_ptr()
+            });
+        }
+        (usize::MAX, std::ptr::null())
+    }
+
+    /// Returns the minimum entry among those that are not Ordering::Less than the given key.
     ///
     /// It additionally returns the current version of its metadata in order for the caller to validate the sanity of the result.
     pub fn min_greater_equal(&self, key: &K) -> (Option<(&K, &V)>, u64) {
@@ -624,9 +660,9 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> LeafScanner<'a, K, V> {
         }
     }
 
-    pub fn from_ge(key: &K, leaf: &'a Leaf<K, V>) -> LeafScanner<'a, K, V> {
+    pub fn from_greater_equal(key: &K, leaf: &'a Leaf<K, V>) -> LeafScanner<'a, K, V> {
         let metadata = leaf.metadata.load(Acquire);
-        let (index, ptr) = leaf.from(metadata, key, false);
+        let (index, ptr) = leaf.from_min_greater_equal(metadata, key);
         LeafScanner {
             leaf,
             metadata,
