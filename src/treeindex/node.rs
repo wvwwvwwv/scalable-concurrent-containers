@@ -34,7 +34,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for NewNodes<K, 
     }
 }
 
-/// Intermediate split leaf
+/// Intermediate split leaf.
 ///
 /// It owns all the instances, thus deallocating all when drop.
 struct NewLeaves<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
@@ -44,21 +44,30 @@ struct NewLeaves<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
     high_key_leaf: Option<Box<Leaf<K, V>>>,
 }
 
+/// Minimum leaf node anchor for Scanner.
+struct LeafNodeAnchor<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
+    min_leaf_node: Atomic<Node<K, V>>,
+}
+
+/// Node types.
 enum NodeType<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
     /// InternalNode: |ptr(children)/max(child keys)|...|ptr(children)|
     InternalNode {
         children: (Leaf<K, Atomic<Node<K, V>>>, Atomic<Node<K, V>>),
         new_children: Atomic<NewNodes<K, V>>,
+        leaf_node_anchor: Atomic<LeafNodeAnchor<K, V>>,
         floor: usize,
     },
     /// LeafNode: |ptr(entry array)/max(child keys)|...|ptr(entry array)|
     LeafNode {
         leaves: (Leaf<K, Atomic<Leaf<K, V>>>, Atomic<Leaf<K, V>>),
         new_leaves: Atomic<NewLeaves<K, V>>,
+        next_node_anchor: Atomic<LeafNodeAnchor<K, V>>,
         side_link: Atomic<Node<K, V>>,
     },
 }
 
+/// Node type.
 pub struct Node<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
     entry: NodeType<K, V>,
 }
@@ -70,12 +79,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 NodeType::InternalNode {
                     children: (Leaf::new(), Atomic::null()),
                     new_children: Atomic::null(),
+                    leaf_node_anchor: Atomic::null(),
                     floor,
                 }
             } else {
                 NodeType::LeafNode {
                     leaves: (Leaf::new(), Atomic::null()),
                     new_leaves: Atomic::null(),
+                    next_node_anchor: Atomic::null(),
                     side_link: Atomic::null(),
                 }
             },
@@ -88,6 +99,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             NodeType::InternalNode {
                 children,
                 new_children: _,
+                leaf_node_anchor: _,
                 floor: _,
             } => loop {
                 let unbounded_node = (children.1).load(Acquire, guard);
@@ -114,6 +126,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             NodeType::LeafNode {
                 leaves,
                 new_leaves: _,
+                next_node_anchor: _,
                 side_link: _,
             } => {
                 loop {
@@ -163,6 +176,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             NodeType::InternalNode {
                 children,
                 new_children: _,
+                leaf_node_anchor: _,
                 floor: _,
             } => loop {
                 let mut scanner = LeafScanner::new(&children.0);
@@ -178,6 +192,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             NodeType::LeafNode {
                 leaves: _,
                 new_leaves: _,
+                next_node_anchor: _,
                 side_link: _,
             } => {
                 let mut scanner = LeafNodeScanner::new(self, guard);
@@ -208,6 +223,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             NodeType::InternalNode {
                 children,
                 new_children,
+                leaf_node_anchor: _,
                 floor: _,
             } => {
                 loop {
@@ -277,6 +293,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             NodeType::LeafNode {
                 leaves,
                 new_leaves,
+                next_node_anchor: _,
                 side_link: _,
             } => loop {
                 let unbounded_leaf = leaves.1.load(Relaxed, guard);
@@ -347,6 +364,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         let new_root: Node<K, V> = if let NodeType::InternalNode {
             children: _,
             new_children: _,
+            leaf_node_anchor: _,
             floor,
         } = &self.entry
         {
@@ -357,6 +375,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         if let NodeType::InternalNode {
             children,
             new_children,
+            leaf_node_anchor: _,
             floor,
         } = &new_root.entry
         {
@@ -453,10 +472,12 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         // copy entries to the newly allocated leaves
         let mut new_node_key = None;
         let new_split_nodes_ref = unsafe { new_split_nodes.deref_mut() };
+        let mut full_node_side_link = None;
         match unsafe { &full_node_shared.deref().entry } {
             NodeType::InternalNode {
                 children,
                 new_children,
+                leaf_node_anchor: _,
                 floor,
             } => {
                 debug_assert!(!new_children.load(Relaxed, guard).is_null());
@@ -467,6 +488,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 let low_key_nodes = if let NodeType::InternalNode {
                     children,
                     new_children: _,
+                    leaf_node_anchor: _,
                     floor: _,
                 } = &internal_nodes.0.entry
                 {
@@ -477,6 +499,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 let high_key_nodes = if let NodeType::InternalNode {
                     children,
                     new_children: _,
+                    leaf_node_anchor: _,
                     floor: _,
                 } = &internal_nodes.1.entry
                 {
@@ -610,16 +633,21 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             NodeType::LeafNode {
                 leaves,
                 new_leaves,
-                side_link: _,
+                next_node_anchor: _,
+                side_link,
             } => {
                 debug_assert!(!new_leaves.load(Relaxed, guard).is_null());
                 let new_leaves_ref = unsafe { new_leaves.load(Relaxed, guard).deref_mut() };
+
+                // keep the side link
+                full_node_side_link.replace(side_link.clone());
 
                 // copy leaves except for the known full leaf to the newly allocated leaf node entries
                 let leaf_nodes = (Box::new(Node::new(0)), Box::new(Node::new(0)));
                 let low_key_leaves = if let NodeType::LeafNode {
                     leaves,
                     new_leaves: _,
+                    next_node_anchor: _,
                     side_link: _,
                 } = &leaf_nodes.0.entry
                 {
@@ -630,6 +658,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 let high_key_leaves = if let NodeType::LeafNode {
                     leaves,
                     new_leaves: _,
+                    next_node_anchor: _,
                     side_link: _,
                 } = &leaf_nodes.1.entry
                 {
@@ -723,19 +752,42 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
 
         // insert the newly allocated internal nodes into the main array
         let unused_node;
+        let mut immediate_less_key_node = None;
+        let mut low_key_leaf_node = Shared::null();
+        let mut high_key_leaf_node = Shared::null();
         if new_node_key.is_none() {
+            // get the immediate less key node for linked list construction
+            if full_node_side_link.is_some() {
+                if new_split_nodes_ref.origin_node_key.is_some() {
+                    immediate_less_key_node = self_children
+                        .0
+                        .max_less(new_split_nodes_ref.origin_node_key.as_ref().unwrap());
+                } else {
+                    // the origin node is an unbounded leaf node
+                    immediate_less_key_node = self_children.0.max();
+                }
+            }
             // replace the full leaf with the low-key leaf
             unused_node = full_node_ptr.swap(
                 Owned::from(new_split_nodes_ref.low_key_node.take().unwrap()),
                 Release,
                 &guard,
             );
+            // get the node pointer for linked list construction
+            if full_node_side_link.is_some() {
+                low_key_leaf_node = full_node_ptr.load(Relaxed, guard);
+            }
         } else {
-            if let Some(node) = self_children.0.insert(
-                new_node_key.unwrap().clone(),
-                Atomic::from(new_split_nodes_ref.low_key_node.take().unwrap()),
-                false,
-            ) {
+            // get the immediate less key node for linked list construction
+            if full_node_side_link.is_some() {
+                immediate_less_key_node = self_children.0.max_less(new_node_key.as_ref().unwrap());
+            }
+            let low_key_node_ptr = Atomic::from(new_split_nodes_ref.low_key_node.take().unwrap());
+            if let Some(node) =
+                self_children
+                    .0
+                    .insert(new_node_key.unwrap(), low_key_node_ptr.clone(), false)
+            {
                 // insertion failed: expect that the caller handles the situation
                 new_split_nodes_ref
                     .low_key_node
@@ -749,6 +801,38 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 Release,
                 &guard,
             );
+            // get the node pointers for linked list construction
+            if full_node_side_link.is_some() {
+                high_key_leaf_node = full_node_ptr.load(Relaxed, guard);
+                low_key_leaf_node = low_key_node_ptr.load(Relaxed, guard);
+            }
+        }
+
+        // reconstruct the linked list if the child is a leaf node
+        if let Some(new_side_link) = full_node_side_link.take() {
+            // firstly, replace the high key node's side link with the new side link
+            // secondly, link the low key node with the high key node
+            if !high_key_leaf_node.is_null() {
+                unsafe {
+                    low_key_leaf_node
+                        .deref()
+                        .update_side_link(high_key_leaf_node.clone());
+                    high_key_leaf_node
+                        .deref()
+                        .update_side_link(new_side_link.load(Relaxed, guard))
+                };
+            } else {
+                unsafe {
+                    low_key_leaf_node
+                        .deref()
+                        .update_side_link(new_side_link.load(Relaxed, guard))
+                };
+            }
+            // lastly, link the immediate less key node with the low key node
+            if let Some(entry) = immediate_less_key_node {
+                let node = entry.1.load(Relaxed, guard);
+                unsafe { node.deref().update_side_link(low_key_leaf_node.clone()) };
+            }
         }
 
         // deallocate the deprecated nodes
@@ -899,11 +983,13 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             NodeType::InternalNode {
                 children,
                 new_children: _,
+                leaf_node_anchor: _,
                 floor: _,
             } => children.0.max_key(),
             NodeType::LeafNode {
                 leaves,
                 new_leaves: _,
+                next_node_anchor: _,
                 side_link: _,
             } => leaves.0.max_key(),
         }
@@ -914,11 +1000,13 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             NodeType::InternalNode {
                 children,
                 new_children: _,
+                leaf_node_anchor: _,
                 floor: _,
             } => !children.1.load(Relaxed, guard).is_null(),
             NodeType::LeafNode {
                 leaves,
                 new_leaves: _,
+                next_node_anchor: _,
                 side_link: _,
             } => !leaves.1.load(Relaxed, guard).is_null(),
         }
@@ -929,6 +1017,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             NodeType::InternalNode {
                 children,
                 new_children: _,
+                leaf_node_anchor: _,
                 floor,
             } => {
                 let shared_ptr = children.1.load(Relaxed, guard);
@@ -948,6 +1037,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             NodeType::LeafNode {
                 leaves: _,
                 new_leaves: _,
+                next_node_anchor: _,
                 side_link: _,
             } => Shared::null(),
         }
@@ -958,11 +1048,13 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             NodeType::InternalNode {
                 children: _,
                 new_children: _,
+                leaf_node_anchor: _,
                 floor: _,
             } => Shared::null(),
             NodeType::LeafNode {
                 leaves,
                 new_leaves: _,
+                next_node_anchor: _,
                 side_link: _,
             } => {
                 let shared_ptr = leaves.1.load(Relaxed, guard);
@@ -982,17 +1074,31 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         }
     }
 
+    fn update_side_link(&self, ptr: Shared<Node<K, V>>) {
+        if let NodeType::LeafNode {
+            leaves: _,
+            new_leaves: _,
+            next_node_anchor: _,
+            side_link,
+        } = &self.entry
+        {
+            side_link.store(ptr, Relaxed);
+        }
+    }
+
     /// Checks if the node is full.
     fn full(&self, guard: &Guard) -> bool {
         match &self.entry {
             NodeType::InternalNode {
                 children,
                 new_children: _,
+                leaf_node_anchor: _,
                 floor: _,
             } => children.0.full() && !children.1.load(Relaxed, guard).is_null(),
             NodeType::LeafNode {
                 leaves,
                 new_leaves: _,
+                next_node_anchor: _,
                 side_link: _,
             } => leaves.0.full() && !leaves.1.load(Relaxed, guard).is_null(),
         }
@@ -1004,6 +1110,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             NodeType::InternalNode {
                 children: _,
                 new_children,
+                leaf_node_anchor: _,
                 floor: _,
             } => {
                 let intermediate_split = unsafe {
@@ -1019,6 +1126,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             NodeType::LeafNode {
                 leaves: _,
                 new_leaves,
+                next_node_anchor: _,
                 side_link: _,
             } => {
                 unsafe { new_leaves.swap(Shared::null(), Release, guard).into_owned() };
@@ -1032,6 +1140,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             NodeType::InternalNode {
                 children,
                 new_children: _,
+                leaf_node_anchor: _,
                 floor: _,
             } => {
                 let mut scanner = LeafScanner::new(&children.0);
@@ -1043,6 +1152,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             NodeType::LeafNode {
                 leaves,
                 new_leaves: _,
+                next_node_anchor: _,
                 side_link: _,
             } => {
                 let mut scanner = LeafScanner::new(&leaves.0);
@@ -1062,6 +1172,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for Node<K, V> {
             NodeType::InternalNode {
                 children,
                 new_children,
+                leaf_node_anchor: _,
                 floor: _,
             } => {
                 // destroy entries related to the unused child
@@ -1102,6 +1213,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for Node<K, V> {
             NodeType::LeafNode {
                 leaves,
                 new_leaves,
+                next_node_anchor: _,
                 side_link: _,
             } => {
                 // destroy entries related to the unused child
@@ -1142,6 +1254,7 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> N
             NodeType::InternalNode {
                 children,
                 new_children: _,
+                leaf_node_anchor: _,
                 floor,
             } => {
                 let mut index = 0;
@@ -1164,6 +1277,7 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> N
             NodeType::LeafNode {
                 leaves,
                 new_leaves: _,
+                next_node_anchor: _,
                 side_link: _,
             } => {
                 let mut index = 0;
@@ -1272,11 +1386,13 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator
                 NodeType::InternalNode {
                     children: _,
                     new_children: _,
+                    leaf_node_anchor: _,
                     floor: _,
                 } => return None,
                 NodeType::LeafNode {
                     leaves,
                     new_leaves: _,
+                    next_node_anchor: _,
                     side_link: _,
                 } => {
                     self.node_scanner.replace(LeafScanner::new(&leaves.0));
@@ -1305,11 +1421,13 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator
             NodeType::InternalNode {
                 children: _,
                 new_children: _,
+                leaf_node_anchor: _,
                 floor: _,
             } => Shared::null(),
             NodeType::LeafNode {
                 leaves,
                 new_leaves: _,
+                next_node_anchor: _,
                 side_link: _,
             } => leaves.1.load(Acquire, self.guard),
         };
@@ -1481,19 +1599,22 @@ mod test {
                 println!("{}", key);
             }
         }
-        //let num_entries = node.print();
-        //println!("{}", num_entries);
-        //assert_eq!(num_entries, inserted.lock().unwrap().len());
+        let num_entries = node.print();
+        println!("{}", num_entries);
+        assert_eq!(num_entries, inserted.lock().unwrap().len());
 
         let guard = crossbeam_epoch::pin();
         let mut prev = 0;
         let mut scanner = node.min(&guard).unwrap();
+        let mut iterated = 0;
         assert_eq!(*scanner.get().unwrap().0, 0);
         while let Some(entry) = scanner.next() {
             println!("{} {}", entry.0, entry.1);
             assert!(prev < *entry.0);
             assert_eq!(entry.0, entry.1);
+            iterated += 1;
             prev = *entry.0;
         }
+        println!("iterated: {}", iterated);
     }
 }

@@ -417,5 +417,13 @@ mod treeindex_test {
                 .read(&key, |key, value| assert_eq!(key, value))
                 .is_some());
         }
+
+        let mut scanner = tree.iter();
+        let mut prev = 0;
+        while let Some(entry) = scanner.next() {
+            assert!(prev == 0 || prev < *entry.0);
+            assert_eq!(*entry.0, *entry.1);
+            prev = *entry.0;
+        }
     }
 }
