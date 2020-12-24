@@ -803,7 +803,7 @@ mod test {
         assert_eq!(iterated, 2);
         drop(scanner);
 
-        let mut scanner = LeafScanner::from_ge(&45, &leaf);
+        let mut scanner = LeafScanner::from_greater_equal(&45, &leaf);
         assert_eq!(scanner.get(), Some((&50, &51)));
         let mut prev_key = 50;
         let mut iterated = 0;
