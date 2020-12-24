@@ -75,24 +75,6 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         None
     }
 
-    pub fn max(&self) -> Option<(&K, &V)> {
-        let metadata = self.metadata.load(Acquire);
-        let mut max_rank = 0;
-        let mut max_index = ARRAY_SIZE;
-        for i in 0..ARRAY_SIZE {
-            let rank = ((metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
-                >> (i * INDEX_RANK_ENTRY_SIZE)) as usize;
-            if rank > max_rank && (metadata & (OCCUPANCY_BIT << i)) != 0 {
-                max_rank = rank;
-                max_index = i;
-            }
-        }
-        if max_rank > 0 {
-            return Some(self.read(max_index));
-        }
-        None
-    }
-
     pub fn insert(&self, key: K, value: V, upsert: bool) -> Option<((K, V), bool)> {
         let mut duplicate_entry = usize::MAX;
         let mut entry = (key, value);

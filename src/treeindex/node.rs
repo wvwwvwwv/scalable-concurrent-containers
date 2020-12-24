@@ -214,13 +214,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
     /// Inserts a key-value pair.
     ///
     /// It is a recursive call, and therefore stack-overflow may occur.
-    pub fn insert(
-        &self,
-        key: K,
-        value: V,
-        max_key: Option<&K>,
-        guard: &Guard,
-    ) -> Result<(), Error<K, V>> {
+    pub fn insert(&self, key: K, value: V, guard: &Guard) -> Result<(), Error<K, V>> {
         // possible data race: the node is being split, for instance,
         //  - node state: ((15, ptr), (25, ptr)), 15 is being split
         //  - insert 10: min_greater_equal returns (15, ptr)
@@ -242,11 +236,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                             // after reading the pointer, need to validate the version
                             continue;
                         }
-                        match unsafe {
-                            child_node
-                                .deref()
-                                .insert(key, value, Some(child_key), guard)
-                        } {
+                        match unsafe { child_node.deref().insert(key, value, guard) } {
                             Ok(_) => return Ok(()),
                             Err(err) => match err {
                                 Error::Duplicated(_) => return Err(err),
@@ -254,7 +244,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                                     return self.split_node(
                                         entry,
                                         Some(child_key.clone()),
-                                        Some(child_key),
                                         child_node,
                                         &child,
                                         &children,
@@ -273,8 +262,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                             continue;
                         }
                         // try to insert into the unbounded child, and try to split the unbounded if it is full
-                        match unsafe { unbounded_child.deref().insert(key, value, max_key, guard) }
-                        {
+                        match unsafe { unbounded_child.deref().insert(key, value, guard) } {
                             Ok(_) => return Ok(()),
                             Err(err) => match err {
                                 Error::Duplicated(_) => return Err(err),
@@ -282,7 +270,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                                     return self.split_node(
                                         entry,
                                         None,
-                                        max_key,
                                         unbounded_child,
                                         &(children.1),
                                         &children,
@@ -391,7 +378,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 .split_node(
                     entry,
                     None,
-                    None,
                     root_ptr.load(Relaxed, guard),
                     root_ptr,
                     &children,
@@ -436,7 +422,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         &self,
         entry: (K, V),
         full_node_key: Option<K>,
-        full_node_max_key: Option<&K>,
         full_node_shared: Shared<Node<K, V>>,
         full_node_ptr: &Atomic<Node<K, V>>,
         self_children: &(Leaf<K, Atomic<Node<K, V>>>, Atomic<Node<K, V>>),
@@ -500,7 +485,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 leaf_node_anchor: _,
                 floor,
             } => {
-                // [TODO] if the full node manages a leaf node anchor (floor = 1), it needs to reconstruct links
                 debug_assert!(self_min_node_anchor.load(Relaxed, guard).is_null());
                 debug_assert!(!new_children.load(Relaxed, guard).is_null());
                 let new_children_ref = unsafe { new_children.load(Relaxed, guard).deref_mut() };
@@ -530,8 +514,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     None
                 };
 
-                // if the origin is an unbounded leaf, assign the high key leaf to the high key node's unbounded,
-                // otherwise, assign the unbounded leaf to the high key node's unbounded.
+                // if the origin is an unbounded node, assign the high key node to the high key node's unbounded,
+                // otherwise, assign the unbounded node to the high key node's unbounded.
                 let array_size = children.0.cardinality();
                 let low_key_node_array_size = array_size / 2;
                 let high_key_node_array_size = array_size - low_key_node_array_size;
@@ -616,7 +600,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     }
                 }
 
-                // turn the new leaves into leaf nodes
+                // turn the new nodes into internal nodes
                 new_split_nodes_ref.low_key_node.replace(internal_nodes.0);
                 new_split_nodes_ref.high_key_node.replace(internal_nodes.1);
             }
@@ -1536,8 +1520,8 @@ mod test {
             let node = Node::new(depth);
             for key in 0..(ARRAY_SIZE * ARRAY_SIZE * ARRAY_SIZE * ARRAY_SIZE) {
                 let guard = crossbeam_epoch::pin();
-                match node.insert(key, 10, None, &guard) {
-                    Ok(_) => match node.insert(key, 11, None, &guard) {
+                match node.insert(key, 10, &guard) {
+                    Ok(_) => match node.insert(key, 11, &guard) {
                         Ok(_) => assert!(false),
                         Err(result) => match result {
                             Error::Duplicated(entry) => assert_eq!(entry, (key, 11)),
@@ -1568,10 +1552,10 @@ mod test {
                 for j in 0..ARRAY_SIZE * ARRAY_SIZE {
                     let key = (i + 1) * ARRAY_SIZE * ARRAY_SIZE - j + ARRAY_SIZE * ARRAY_SIZE / 2;
                     let guard = crossbeam_epoch::pin();
-                    match node.insert(key, 10, None, &guard) {
+                    match node.insert(key, 10, &guard) {
                         Ok(_) => {
                             inserted.push(key);
-                            match node.insert(key, 11, None, &guard) {
+                            match node.insert(key, 11, &guard) {
                                 Ok(_) => assert!(false),
                                 Err(result) => match result {
                                     Error::Duplicated(entry) => assert_eq!(entry, (key, 11)),
@@ -1611,7 +1595,7 @@ mod test {
         let range = 16384;
         let barrier = Arc::new(Barrier::new(num_threads));
         let node = Arc::new(Node::new(4));
-        assert!(node.insert(0, 0, None, &crossbeam_epoch::pin()).is_ok());
+        assert!(node.insert(0, 0, &crossbeam_epoch::pin()).is_ok());
         let inserted = Arc::new(Mutex::new(Vec::new()));
         inserted.lock().unwrap().push(0);
         let full = Arc::new(AtomicBool::new(false));
@@ -1628,7 +1612,7 @@ mod test {
                 for key in first_key..(first_key + range) {
                     let guard = crossbeam_epoch::pin();
                     loop {
-                        match node_copied.insert(key, key, None, &guard) {
+                        match node_copied.insert(key, key, &guard) {
                             Ok(()) => {
                                 inserted_keys.push(key);
                                 break;
