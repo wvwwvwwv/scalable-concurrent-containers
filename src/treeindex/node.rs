@@ -80,13 +80,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 NodeType::InternalNode {
                     children: (Leaf::new(), Atomic::null()),
                     new_children: Atomic::null(),
-                    leaf_node_anchor: if floor == 1 {
-                        Atomic::new(LeafNodeAnchor {
-                            min_leaf_node: Atomic::null(),
-                        })
-                    } else {
-                        Atomic::null()
-                    },
+                    leaf_node_anchor: Atomic::null(),
                     floor,
                 }
             } else {
@@ -471,46 +465,50 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             NodeType::InternalNode {
                 children,
                 new_children,
-                leaf_node_anchor: _,
+                leaf_node_anchor,
                 floor,
             } => {
                 debug_assert!(self_min_node_anchor.load(Relaxed, guard).is_null());
                 debug_assert!(!new_children.load(Relaxed, guard).is_null());
                 let new_children_ref = unsafe { new_children.load(Relaxed, guard).deref_mut() };
 
-                // local variables to keep the information for level-1 leaf node anchor remedy
-                // [TODO]
-                // case 1: split floor 1 node
-                //  - the floor 1 internal node will be split into two floor 1 internal nodes having two link anchors
-                //  - the low key node has the floor 1 internal node's anchor: move
-                //  - the max key leaf node of the low key node will be linked to the high key link anchor
-                //  - the max key leaf node of the high key node will be linked to the node that the max key leaf node of the floor 1 node points to: copy
-                // case 2: split floor 2 node
-                //  - once inserted, all the anchor links must be adjusted
-
                 // copy nodes except for the known full node to the newly allocated internal node entries
                 let internal_nodes = (Box::new(Node::new(*floor)), Box::new(Node::new(*floor)));
+                let low_key_node_anchor = leaf_node_anchor.swap(Shared::null(), Relaxed, guard);
                 let low_key_nodes = if let NodeType::InternalNode {
                     children,
                     new_children: _,
-                    leaf_node_anchor: _,
+                    leaf_node_anchor,
                     floor: _,
                 } = &internal_nodes.0.entry
                 {
+                    // move the full node's anchor to the low key node
+                    leaf_node_anchor.swap(low_key_node_anchor, Relaxed, guard);
                     Some(children)
                 } else {
                     None
                 };
-                let high_key_nodes = if let NodeType::InternalNode {
+                let (high_key_nodes, high_key_node_anchor) = if let NodeType::InternalNode {
                     children,
                     new_children: _,
-                    leaf_node_anchor: _,
-                    floor: _,
+                    leaf_node_anchor,
+                    floor,
                 } = &internal_nodes.1.entry
                 {
-                    Some(children)
+                    // the low key node will link the last node to the high key node anchor
+                    if *floor == 1 {
+                        leaf_node_anchor.store(
+                            Owned::new(LeafNodeAnchor {
+                                min_leaf_node: Atomic::null(),
+                            }),
+                            Relaxed,
+                        );
+                        (Some(children), Some(leaf_node_anchor))
+                    } else {
+                        (Some(children), None)
+                    }
                 } else {
-                    None
+                    (None, None)
                 };
 
                 // if the origin is an unbounded node, assign the high key node to the high key node's unbounded,
@@ -528,6 +526,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                         .as_ref()
                         .map_or_else(|| false, |key| entry.0.cmp(key) == Ordering::Equal)
                     {
+                        // link state adjustment not required as the linked list is correctly constructed by the remedy_leaf_node_link function
                         if let Some(node) = new_children_ref.low_key_node.take() {
                             entries[0].replace((
                                 new_children_ref.middle_key.as_ref().unwrap().clone(),
@@ -551,13 +550,40 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                                 current_low_key_node_array_size += 1;
                             } else if current_low_key_node_array_size == low_key_node_array_size {
                                 new_split_nodes_ref.middle_key.replace(entry.0);
-                                current_low_key_node_array_size += 1;
                                 low_key_nodes
                                     .as_ref()
                                     .unwrap()
                                     .1
                                     .store(entry.1.load(Relaxed, guard), Relaxed);
+                                // link the node to the high key node anchor
+                                if let Some(anchor) = high_key_node_anchor.as_ref() {
+                                    unsafe {
+                                        entry
+                                            .1
+                                            .load(Relaxed, guard)
+                                            .deref()
+                                            .update_next_node_anchor(anchor.load(Relaxed, guard));
+                                        entry
+                                            .1
+                                            .load(Relaxed, guard)
+                                            .deref()
+                                            .update_side_link(Shared::null());
+                                    };
+                                }
+                                current_low_key_node_array_size += 1;
                             } else if current_high_key_node_array_size < high_key_node_array_size {
+                                if current_high_key_node_array_size == 0 {
+                                    // update the anchor
+                                    if let Some(anchor) = high_key_node_anchor.as_ref() {
+                                        let high_key_node_leaf_anchor = anchor.load(Relaxed, guard);
+                                        unsafe {
+                                            high_key_node_leaf_anchor
+                                                .deref()
+                                                .min_leaf_node
+                                                .store(entry.1.load(Relaxed, guard), Relaxed);
+                                        }
+                                    }
+                                }
                                 high_key_nodes
                                     .as_ref()
                                     .unwrap()
@@ -754,7 +780,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         let low_key_node_ptr = Atomic::from(new_split_nodes_ref.low_key_node.take().unwrap());
         if let Some(node) = self_children.0.insert(
             new_split_nodes_ref.middle_key.take().unwrap(),
-            low_key_node_ptr.clone(),
+            low_key_node_ptr,
             false,
         ) {
             // insertion failed: expect that the caller splits this node
@@ -771,9 +797,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             Release,
             &guard,
         );
-
-        // reconstruct the anchors if a level-1 node has been split
-        // [TODO]
 
         // deallocate the deprecated nodes
         let new_split_nodes = self_new_children.swap(Shared::null(), Release, guard);
@@ -805,8 +828,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         low_key_leaf_node.update_side_link(
             Atomic::from(&(**high_key_leaf_node) as *const _).load(Relaxed, guard),
         );
-        high_key_leaf_node.update_next_node_anchor(full_node_next_node_anchor.load(Relaxed, guard));
         high_key_leaf_node.update_side_link(full_node_side_link.load(Relaxed, guard));
+        high_key_leaf_node.update_next_node_anchor(full_node_next_node_anchor.load(Relaxed, guard));
 
         // lastly, link the immediate less key node with the low key node
         //  - the changes in this step need to be rolled back on operation failure
@@ -820,12 +843,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         } else {
             // the low key node is the minimum node
             let anchor = min_node_anchor.load(Relaxed, guard);
-            unsafe {
-                anchor.deref().min_leaf_node.store(
-                    Atomic::from(&(**low_key_leaf_node) as *const _).load(Relaxed, guard),
-                    Release,
-                )
-            };
+            if !anchor.is_null() {
+                unsafe {
+                    anchor.deref().min_leaf_node.store(
+                        Atomic::from(&(**low_key_leaf_node) as *const _).load(Relaxed, guard),
+                        Release,
+                    )
+                };
+            }
         }
     }
 
@@ -1020,20 +1045,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         }
     }
 
-    fn update_side_link(&self, ptr: Shared<Node<K, V>>) {
-        if let NodeType::LeafNode {
-            leaves: _,
-            new_leaves: _,
-            next_node_anchor: _,
-            side_link,
-        } = &self.entry
-        {
-            side_link.store(ptr, Relaxed);
-            return;
-        }
-        unreachable!()
-    }
-
     fn update_next_node_anchor(&self, ptr: Shared<LeafNodeAnchor<K, V>>) {
         if let NodeType::LeafNode {
             leaves: _,
@@ -1043,6 +1054,20 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         } = &self.entry
         {
             next_node_anchor.store(ptr, Relaxed);
+            return;
+        }
+        unreachable!()
+    }
+
+    fn update_side_link(&self, ptr: Shared<Node<K, V>>) {
+        if let NodeType::LeafNode {
+            leaves: _,
+            new_leaves: _,
+            next_node_anchor: _,
+            side_link,
+        } = &self.entry
+        {
+            side_link.store(ptr, Relaxed);
             return;
         }
         unreachable!()
@@ -1120,12 +1145,73 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                         };
                     } else {
                         let anchor = leaf_node_anchor.load(Relaxed, guard);
+                        if anchor.is_null() {
+                            unsafe {
+                                anchor.deref().min_leaf_node.store(
+                                    Atomic::from(origin_node_ref as *const _).load(Relaxed, guard),
+                                    Release,
+                                )
+                            };
+                        }
+                    }
+                } else if *floor == 2 {
+                    //  - the low key node has the full floor 1 internal node's anchor: move
+                    //  - the max key leaf node of the low key node is linked to the first leaf node of the high node
+                    let new_children_ref = unsafe { new_children.load(Relaxed, guard).deref() };
+                    let origin_node_ref = unsafe {
+                        new_children_ref
+                            .origin_node_ptr
+                            .load(Relaxed, guard)
+                            .deref()
+                    };
+                    // copy the pointer of the first high key node leaf node
+                    let min_high_key_node_leaf_node = if let NodeType::InternalNode {
+                        children,
+                        new_children: _,
+                        leaf_node_anchor: _,
+                        floor: _,
+                    } =
+                        &(**new_children_ref.high_key_node.as_ref().unwrap()).entry
+                    {
+                        let mut scanner = LeafScanner::new(&children.0);
+                        if let Some(entry) = scanner.next() {
+                            entry.1.load(Relaxed, guard)
+                        } else {
+                            children.1.load(Relaxed, guard)
+                        }
+                    } else {
+                        Shared::null()
+                    };
+                    // update the max key node link and extract the anchor
+                    let low_key_node_anchor = if let NodeType::InternalNode {
+                        children,
+                        new_children: _,
+                        leaf_node_anchor,
+                        floor: _,
+                    } =
+                        &(**new_children_ref.low_key_node.as_ref().unwrap()).entry
+                    {
+                        let max_key_node = children.1.load(Relaxed, guard);
                         unsafe {
-                            anchor.deref().min_leaf_node.store(
-                                Atomic::from(origin_node_ref as *const _).load(Relaxed, guard),
-                                Release,
-                            )
+                            max_key_node.deref().update_next_node_anchor(Shared::null());
+                            max_key_node
+                                .deref()
+                                .update_side_link(min_high_key_node_leaf_node);
                         };
+                        leaf_node_anchor.swap(Shared::null(), Relaxed, guard)
+                    } else {
+                        Shared::null()
+                    };
+                    // restore the anchor
+                    if let NodeType::InternalNode {
+                        children: _,
+                        new_children: _,
+                        leaf_node_anchor,
+                        floor,
+                    } = &origin_node_ref.entry
+                    {
+                        debug_assert_eq!(floor, &1);
+                        leaf_node_anchor.swap(low_key_node_anchor, Relaxed, guard);
                     }
                 }
 

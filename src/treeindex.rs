@@ -110,7 +110,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
         )
     }
 
-    /// (unimplemented!) Returns a Scanner.
+    /// Returns a Scanner.
     ///
     /// The returned Scanner starts scanning from the minimum key-value pair.
     ///

@@ -418,15 +418,13 @@ mod treeindex_test {
                 .is_some());
         }
 
-        /*
         let mut scanner = tree.iter();
         let mut prev = 0;
         while let Some(entry) = scanner.next() {
             println!("{} {}", entry.0, entry.1);
-            //assert!(prev == 0 || prev < *entry.0);
+            assert!(prev == 0 || prev < *entry.0);
             assert_eq!(*entry.0, *entry.1);
             prev = *entry.0;
         }
-        */
     }
 }
