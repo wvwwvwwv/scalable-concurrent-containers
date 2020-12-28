@@ -564,6 +564,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 let high_key_node_array_size = array_size - low_key_node_array_size;
                 let mut current_low_key_node_array_size = 0;
                 let mut current_high_key_node_array_size = 0;
+                let mut entry_to_link_to_anchor = Shared::null();
                 let mut scanner = LeafScanner::new(&children.0);
                 while let Some(entry) = scanner.next() {
                     let mut entries: [Option<(K, Atomic<Node<K, V>>)>; 2] = [None, None];
@@ -596,25 +597,15 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                                 current_low_key_node_array_size += 1;
                             } else if current_low_key_node_array_size == low_key_node_array_size {
                                 new_split_nodes_ref.middle_key.replace(entry.0);
+                                let child_node_ptr = entry.1.load(Relaxed, guard);
                                 low_key_nodes
                                     .as_ref()
                                     .unwrap()
                                     .1
-                                    .store(entry.1.load(Relaxed, guard), Relaxed);
-                                // link the node to the high key node anchor
-                                if let Some(anchor) = high_key_node_anchor.as_ref() {
-                                    unsafe {
-                                        entry
-                                            .1
-                                            .load(Relaxed, guard)
-                                            .deref()
-                                            .update_next_node_anchor(anchor.load(Relaxed, guard));
-                                        entry
-                                            .1
-                                            .load(Relaxed, guard)
-                                            .deref()
-                                            .update_side_link(Shared::null());
-                                    };
+                                    .store(child_node_ptr.clone(), Relaxed);
+                                if high_key_node_anchor.is_some() {
+                                    // the entry needs to be linked to the high key node anchor once the anchor is updated
+                                    entry_to_link_to_anchor = child_node_ptr;
                                 }
                                 current_low_key_node_array_size += 1;
                             } else if current_high_key_node_array_size < high_key_node_array_size {
@@ -669,6 +660,18 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                             .1
                             .store(Owned::from(node), Relaxed);
                     }
+                }
+
+                // link the max low key leaf node to the new anchor
+                if let Some(anchor) = high_key_node_anchor.as_ref() {
+                    unsafe {
+                        entry_to_link_to_anchor
+                            .deref()
+                            .update_next_node_anchor(anchor.load(Relaxed, guard));
+                        entry_to_link_to_anchor
+                            .deref()
+                            .update_side_link(Shared::null());
+                    };
                 }
 
                 // turn the new nodes into internal nodes
@@ -1130,10 +1133,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             side_link,
         } = &self.entry
         {
-            let side_link_ptr = side_link.load(Acquire, guard);
-            if !side_link_ptr.is_null() {
-                return Some(unsafe { side_link_ptr.deref() });
-            }
             let next_node_anchor = next_node_anchor.load(Relaxed, guard);
             if !next_node_anchor.is_null() {
                 let next_leaf_node_ptr =
@@ -1141,6 +1140,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 if !next_leaf_node_ptr.is_null() {
                     return Some(unsafe { next_leaf_node_ptr.deref() });
                 }
+            }
+            let side_link_ptr = side_link.load(Acquire, guard);
+            if !side_link_ptr.is_null() {
+                return Some(unsafe { side_link_ptr.deref() });
             }
         }
         None
@@ -1188,10 +1191,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     if let Some(entry) = immediate_less_key_node {
                         let node = entry.1.load(Relaxed, guard);
                         unsafe {
-                            node.deref().update_next_node_anchor(Shared::null());
+                            // need to update the side link first as there can be readers who are traversing the linked list
                             node.deref().update_side_link(
                                 Atomic::from(origin_node_ref as *const _).load(Relaxed, guard),
-                            )
+                            );
+                            node.deref().update_next_node_anchor(Shared::null());
                         };
                     } else {
                         let anchor = leaf_node_anchor.load(Relaxed, guard);

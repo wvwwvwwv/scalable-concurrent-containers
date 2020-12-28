@@ -55,7 +55,7 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 
 ## scc::TreeIndex <a name="treeindex"></a>
 
-[Work-in-progress](##Milestones)
+[Work-in-progress](##milestones)
 
 Only two APIs are implemented.
 - scc::TreeIndex::insert
@@ -66,7 +66,7 @@ scc::TreeIndex is a B+-tree variant optimized for read operations. Locks are onl
 ## Changelog
 
 #### 0.3.9
-Fix a data race issue between scc::TreeIndex::iter and scc::TreeIndex::insert
+Fix a data race between scc::TreeIndex::iter and scc::TreeIndex::insert
 #### 0.3.8
 Implement scc::TreeIndex::remove (work-in-progress), and fix a data race issue
 #### 0.3.7
@@ -82,6 +82,6 @@ Make scc::HashMap pass Valgrind by deallocating arrays immediately on drop
 #### 0.3.1
 APIs stabilized
 
-## Milestones
+## Milestones <a name="milestones"></a>
 
 [Milestones](https://github.com/wvwwvwwv/scc/milestones)
