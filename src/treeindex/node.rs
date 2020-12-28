@@ -1,4 +1,4 @@
-use super::leaf::LeafScanner;
+use super::leaf::{LeafScanner, ARRAY_SIZE};
 use super::Leaf;
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::cmp::Ordering;
@@ -94,7 +94,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
     }
 
     /// Searches for the given key.
-    pub fn search<'a>(&'a self, key: &K, guard: &'a Guard) -> Option<LeafNodeScanner<'a, K, V>> {
+    pub fn search<'a>(&'a self, key: &K, guard: &'a Guard) -> Option<&'a V> {
         match &self.entry {
             NodeType::InternalNode {
                 children,
@@ -138,13 +138,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                             // after reading the pointer, need to validate the version
                             continue;
                         }
-                        let leaf_node_scanner =
-                            LeafNodeScanner::from(key, self, unsafe { child_leaf.deref() }, guard);
-                        if leaf_node_scanner.get().is_some() {
-                            return Some(leaf_node_scanner);
-                        } else {
-                            return None;
-                        }
+                        return unsafe { child_leaf.deref().search(key) };
                     } else if unbounded_leaf == leaves.1.load(Acquire, guard) {
                         if !(leaves.0).validate(result.1) {
                             // after reading the pointer, need to validate the version
@@ -153,17 +147,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                         if unbounded_leaf.is_null() {
                             return None;
                         }
-                        let leaf_node_scanner = LeafNodeScanner::from(
-                            key,
-                            self,
-                            unsafe { unbounded_leaf.deref() },
-                            guard,
-                        );
-                        if leaf_node_scanner.get().is_some() {
-                            return Some(leaf_node_scanner);
-                        } else {
-                            return None;
-                        }
+                        return unsafe { unbounded_leaf.deref().search(key) };
                     }
                 }
             }
@@ -848,7 +832,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             low_key_node_ptr,
             false,
         ) {
-            // insertion failed: expect that the caller splits this node
+            // insertion failed: expect that the parent splits this node
             new_split_nodes_ref
                 .low_key_node
                 .replace(unsafe { (node.0).1.into_owned().into_box() });
@@ -1017,7 +1001,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 Atomic::from(new_leaves_ref.low_key_leaf.take().unwrap()),
                 false,
             ) {
-                // insertion failed: expect that the splits the leaf node
+                // insertion failed: expect that the parent splits the leaf node
                 new_leaves_ref
                     .low_key_leaf
                     .replace(unsafe { (leaf.0).1.into_owned().into_box() });
@@ -1440,7 +1424,8 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> N
 
 pub struct LeafNodeScanner<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
     leaf_node: &'a Node<K, V>,
-    node_scanner: Option<LeafScanner<'a, K, Atomic<Leaf<K, V>>>>,
+    leaf_pointer_array: [Option<Shared<'a, Leaf<K, V>>>; ARRAY_SIZE + 1],
+    current_leaf_index: usize,
     leaf_scanner: Option<LeafScanner<'a, K, V>>,
     guard: &'a Guard,
 }
@@ -1449,7 +1434,8 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNodeScanner<'
     fn new(leaf_node: &'a Node<K, V>, guard: &'a Guard) -> LeafNodeScanner<'a, K, V> {
         LeafNodeScanner::<'a, K, V> {
             leaf_node,
-            node_scanner: None,
+            leaf_pointer_array: [None; ARRAY_SIZE + 1],
+            current_leaf_index: 0,
             leaf_scanner: None,
             guard,
         }
@@ -1461,63 +1447,6 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNodeScanner<'
         } else {
             None
         }
-    }
-
-    fn from(
-        key: &K,
-        leaf_node: &'a Node<K, V>,
-        leaf: &'a Leaf<K, V>,
-        guard: &'a Guard,
-    ) -> LeafNodeScanner<'a, K, V> {
-        LeafNodeScanner::<'a, K, V> {
-            leaf_node,
-            node_scanner: None,
-            leaf_scanner: Some(LeafScanner::from(key, leaf)),
-            guard,
-        }
-    }
-
-    fn from_greater_equal(
-        key: &K,
-        leaf_node: &'a Node<K, V>,
-        guard: &'a Guard,
-    ) -> LeafNodeScanner<'a, K, V> {
-        if let NodeType::LeafNode {
-            leaves,
-            new_leaves: _,
-            next_node_anchor: _,
-            side_link: _,
-        } = &leaf_node.entry
-        {
-            let result = leaves.0.min_greater_equal(key);
-            if let Some(leaf) = result.0 {
-                let leaf_ref = unsafe { leaf.1.load(Acquire, guard).deref() };
-                return LeafNodeScanner::<'a, K, V> {
-                    leaf_node,
-                    node_scanner: None,
-                    leaf_scanner: Some(LeafScanner::from_greater_equal(key, leaf_ref)),
-                    guard,
-                };
-            } else {
-                let unbounded_leaf = leaves.1.load(Acquire, guard);
-                if !unbounded_leaf.is_null() {
-                    return LeafNodeScanner::<'a, K, V> {
-                        leaf_node,
-                        node_scanner: None,
-                        leaf_scanner: Some(LeafScanner::from_greater_equal(key, unsafe {
-                            unbounded_leaf.deref()
-                        })),
-                        guard,
-                    };
-                }
-            }
-        }
-        return LeafNodeScanner::<'a, K, V> {
-            leaf_node,
-            node_scanner: None,
-            leaf_scanner: None,
-            guard,
-        };
     }
 
     /// Returns a reference to the entry that the scanner is currently pointing to
@@ -1540,12 +1469,12 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator
                 return Some(entry);
             }
             // end of iteration
-            if self.node_scanner.is_none() {
+            if self.current_leaf_index == usize::MAX {
                 return None;
             }
         }
 
-        if self.node_scanner.is_none() && self.leaf_scanner.is_none() {
+        if self.current_leaf_index == 0 && self.leaf_scanner.is_none() {
             // start scanning
             match &self.leaf_node.entry {
                 NodeType::InternalNode {
@@ -1559,18 +1488,38 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator
                     new_leaves: _,
                     next_node_anchor: _,
                     side_link: _,
-                } => {
-                    self.node_scanner.replace(LeafScanner::new(&leaves.0));
-                }
+                } => loop {
+                    // read all the pointers prior to reading the contents
+                    let mut index = 0;
+                    let mut scanner = LeafScanner::new(&leaves.0);
+                    while let Some(entry) = scanner.next() {
+                        let ptr = entry.1.load(Relaxed, &self.guard);
+                        if !ptr.is_null() {
+                            self.leaf_pointer_array[index].replace(ptr);
+                            index += 1;
+                        }
+                    }
+                    let ptr = leaves.1.load(Relaxed, &self.guard);
+                    if !ptr.is_null() {
+                        self.leaf_pointer_array[index].replace(ptr);
+                        index += 1;
+                    }
+                    if leaves.0.validate(scanner.metadata()) {
+                        break;
+                    }
+                    for i in 0..index {
+                        self.leaf_pointer_array[i].take();
+                    }
+                },
             }
         }
 
-        if let Some(node_scanner) = self.node_scanner.as_mut() {
+        if self.current_leaf_index < self.leaf_pointer_array.len() {
             // proceed to the next leaf
-            while let Some(leaf) = node_scanner.next() {
-                self.leaf_scanner.replace(LeafScanner::new(unsafe {
-                    leaf.1.load(Acquire, self.guard).deref()
-                }));
+            while let Some(leaf_ptr) = self.leaf_pointer_array[self.current_leaf_index].take() {
+                self.leaf_scanner
+                    .replace(LeafScanner::new(unsafe { leaf_ptr.deref() }));
+                self.current_leaf_index += 1;
                 if let Some(leaf_scanner) = self.leaf_scanner.as_mut() {
                     // leaf iteration
                     if let Some(entry) = leaf_scanner.next() {
@@ -1578,34 +1527,12 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator
                     }
                 }
                 self.leaf_scanner.take();
-            }
-        }
-        self.node_scanner.take();
-
-        let unbounded_child = match &self.leaf_node.entry {
-            NodeType::InternalNode {
-                children: _,
-                new_children: _,
-                leaf_node_anchor: _,
-                floor: _,
-            } => Shared::null(),
-            NodeType::LeafNode {
-                leaves,
-                new_leaves: _,
-                next_node_anchor: _,
-                side_link: _,
-            } => leaves.1.load(Acquire, self.guard),
-        };
-        if !unbounded_child.is_null() {
-            self.leaf_scanner
-                .replace(LeafScanner::new(unsafe { unbounded_child.deref() }));
-            if let Some(leaf_scanner) = self.leaf_scanner.as_mut() {
-                // leaf iteration
-                if let Some(entry) = leaf_scanner.next() {
-                    return Some(entry);
+                if self.current_leaf_index >= self.leaf_pointer_array.len() {
+                    break;
                 }
             }
         }
+        self.current_leaf_index = usize::MAX;
 
         // end of iteration
         None
@@ -1640,10 +1567,7 @@ mod test {
                         Error::Duplicated(_) => assert!(false),
                         Error::Full(_) => {
                             for key_to_check in 0..key {
-                                assert_eq!(
-                                    node.search(&key_to_check, &guard).unwrap().get().unwrap(),
-                                    (&key_to_check, &10)
-                                );
+                                assert_eq!(node.search(&key_to_check, &guard).unwrap(), &10);
                             }
                             break;
                         }
@@ -1675,10 +1599,7 @@ mod test {
                             Error::Duplicated(_) => assert!(false),
                             Error::Full(_) => {
                                 for key_to_check in inserted.iter() {
-                                    assert_eq!(
-                                        node.search(key_to_check, &guard).unwrap().get().unwrap(),
-                                        (key_to_check, &10)
-                                    );
+                                    assert_eq!(node.search(key_to_check, &guard).unwrap(), &10);
                                 }
                                 done = true;
                             }

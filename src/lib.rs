@@ -11,7 +11,8 @@ mod treeindex;
 
 pub use hashmap::Accessor;
 pub use hashmap::HashMap;
-pub use hashmap::Scanner;
+pub use hashmap::Cursor;
 pub use hashmap::Statistics;
 
 pub use treeindex::TreeIndex;
+pub use treeindex::Scanner;

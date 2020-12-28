@@ -17,6 +17,23 @@ pub struct TreeIndex<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
     root: Atomic<Node<K, V>>,
 }
 
+impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Default for TreeIndex<K, V> {
+    /// Creates a TreeIndex instance with the default parameters.
+    ///
+    /// # Examples
+    /// ```
+    /// use scc::TreeIndex;
+    ///
+    /// let treeindex: TreeIndex<u64, u32> = Default::default();
+    ///
+    /// let result = treeindex.read(&1, |key, value| *value);
+    /// assert!(result.is_none());
+    /// ```
+    fn default() -> Self {
+        TreeIndex::new()
+    }
+}
+
 impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
     /// Creates an empty TreeIndex instance.
     ///
@@ -136,14 +153,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
         if root_node.is_null() {
             return None;
         }
-        let leaf_node_scanner = unsafe { root_node.deref().search(key, &guard) };
-        leaf_node_scanner.map_or_else(
-            || None,
-            |scanner| {
-                let entry = scanner.get();
-                entry.map(|(key, value)| f(key, value))
-            },
-        )
+        if let Some(value) = unsafe { root_node.deref().search(key, &guard) } {
+            Some(f(key, value))
+        } else {
+            None
+        }
     }
 
     /// Returns a Scanner.

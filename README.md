@@ -65,6 +65,8 @@ scc::TreeIndex is a B+-tree variant optimized for read operations. Locks are onl
 
 ## Changelog
 
+#### 0.3.9
+Fix a data race issue between scc::TreeIndex::iter and scc::TreeIndex::insert
 #### 0.3.8
 Implement scc::TreeIndex::remove (work-in-progress), and fix a data race issue
 #### 0.3.7

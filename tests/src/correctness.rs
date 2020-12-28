@@ -167,7 +167,7 @@ mod hashmap_test {
     }
 
     #[test]
-    fn basic_scanner() {
+    fn scanner() {
         for _ in 0..256 {
             let hashmap: Arc<HashMap<u64, u64, RandomState>> = Arc::new(Default::default());
             let hashmap_copied = hashmap.clone();
@@ -358,9 +358,12 @@ mod hashmap_test {
 #[cfg(test)]
 mod treeindex_test {
     use proptest::prelude::*;
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
     use scc::TreeIndex;
+    use std::collections::BTreeSet;
     use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering::Relaxed;
+    use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
     use std::sync::{Arc, Barrier};
     use std::thread;
 
@@ -421,10 +424,71 @@ mod treeindex_test {
         let mut scanner = tree.iter();
         let mut prev = 0;
         while let Some(entry) = scanner.next() {
-            println!("{} {}", entry.0, entry.1);
             assert!(prev == 0 || prev < *entry.0);
             assert_eq!(*entry.0, *entry.1);
             prev = *entry.0;
+        }
+    }
+
+    #[test]
+    fn string_key() {
+        let tree1: TreeIndex<String, u32> = Default::default();
+        let tree2: TreeIndex<u32, String> = Default::default();
+        let mut checker1 = BTreeSet::new();
+        let mut checker2 = BTreeSet::new();
+        let mut runner = TestRunner::default();
+        let test_size = 4096;
+        for i in 0..test_size {
+            let prop_str = "[a-z]{1,16}".new_tree(&mut runner).unwrap();
+            let str_val = prop_str.current();
+            if tree1.insert(str_val.clone(), i).is_ok() {
+                checker1.insert((str_val.clone(), i));
+            }
+            if tree2.insert(i, str_val.clone()).is_ok() {
+                checker2.insert((i, str_val.clone()));
+            }
+        }
+        for iter in checker1 {
+            let v = tree1.read(&iter.0, |_, v| v.clone());
+            assert_eq!(v.unwrap(), iter.1);
+        }
+        for iter in checker2 {
+            let v = tree2.read(&iter.0, |_, v| v.clone());
+            assert_eq!(v.unwrap(), iter.1);
+        }
+    }
+
+    #[test]
+    fn scanner() {
+        for _ in 0..256 {
+            let tree: Arc<TreeIndex<usize, u64>> = Arc::new(Default::default());
+            let tree_copied = tree.clone();
+            let inserted = Arc::new(AtomicUsize::new(0));
+            let inserted_copied = inserted.clone();
+            let thread_handle = thread::spawn(move || {
+                for _ in 0..8 {
+                    let mut scanned = 0;
+                    let mut checker = BTreeSet::new();
+                    let max = inserted_copied.load(Acquire);
+                    let mut prev = 0;
+                    for iter in tree_copied.iter() {
+                        scanned += 1;
+                        checker.insert(*iter.0);
+                        println!("{}", *iter.0);
+                        assert!(prev == 0 || prev < *iter.0);
+                        prev = *iter.0;
+                    }
+                    println!("scanned: {}, max: {}", scanned, max);
+                    for key in 0..max {
+                        assert!(checker.contains(&key));
+                    }
+                }
+            });
+            for i in 0..4096 {
+                assert!(tree.insert(i, 0).is_ok());
+                inserted.store(i, Release);
+            }
+            thread_handle.join().unwrap();
         }
     }
 }

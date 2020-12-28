@@ -610,6 +610,10 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> LeafScanner<'a, K, V> {
         }
     }
 
+    pub fn metadata(&self) -> u64 {
+        self.metadata
+    }
+
     pub fn from(key: &K, leaf: &'a Leaf<K, V>) -> LeafScanner<'a, K, V> {
         let metadata = leaf.metadata.load(Acquire);
         let (index, ptr) = leaf.from(metadata, key, true);

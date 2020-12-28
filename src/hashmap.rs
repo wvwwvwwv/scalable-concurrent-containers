@@ -27,7 +27,7 @@ const DEFAULT_CAPACITY: usize = cell::ARRAY_SIZE * cell::ARRAY_SIZE;
 /// A metadata cell resolves hash collisions by allocating a linked list of key-value pair arrays.
 ///
 /// ## The key features of scc::HashMap
-/// * No sharding: the data is stored in a single entry array.
+/// * Non-sharded: the data is stored in a single entry array.
 /// * Automatic resizing: it automatically grows or shrinks.
 /// * Non-blocking resizing: resizing does not block other threads.
 /// * Incremental resizing: each access to the data structure relocates a certain number of key-value pairs.
@@ -581,7 +581,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         statistics
     }
 
-    /// Returns a Scanner.
+    /// Returns a Cursor.
     ///
     /// It is guaranteed to scan all the key-value pairs pertaining in the HashMap at the moment,
     /// however the same key-value pair can be scanned more than once if the HashMap is being resized.
@@ -605,14 +605,14 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     ///     assert_eq!(iter, (&1, &mut 0));
     /// }
     /// ```
-    pub fn iter(&self) -> Scanner<K, V, H> {
+    pub fn iter(&self) -> Cursor<K, V, H> {
         let (cell_locker, array_ptr, cell_index) = self.first();
         if let Some(cell_locker) = cell_locker {
             if let Some(scanner) = self.pick(cell_locker, array_ptr, cell_index) {
                 return scanner;
             }
         }
-        Scanner {
+        Cursor {
             accessor: None,
             array_ptr: std::ptr::null(),
             activated: false,
@@ -815,7 +815,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         &'a self,
         array_ptr: *const Array<K, V>,
         current_index: usize,
-    ) -> Option<Scanner<'a, K, V, H>> {
+    ) -> Option<Cursor<'a, K, V, H>> {
         let guard = crossbeam_epoch::pin();
 
         // an acquire fence is required to correctly load the contents of the array
@@ -890,9 +890,9 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         cell_locker: CellLocker<'a, K, V>,
         array_ptr: *const Array<K, V>,
         cell_index: usize,
-    ) -> Option<Scanner<'a, K, V, H>> {
+    ) -> Option<Cursor<'a, K, V, H>> {
         if let Some((sub_index, entry_array_link_ptr, entry_ptr)) = cell_locker.first() {
-            return Some(Scanner {
+            return Some(Cursor {
                 accessor: Some(Accessor {
                     hash_map: &self,
                     cell_locker,
@@ -1029,7 +1029,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Drop for HashMap<K, V, H> {
 ///
 /// It is !Send, thus disallowing other threads to have references to it.
 /// It acquires an exclusive lock on the cell managing the key.
-/// A thread having multiple Accessor of Scanner instances poses a possibility of deadlock.
+/// A thread having multiple Accessor of Cursor instances poses a possibility of deadlock.
 pub struct Accessor<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> {
     hash_map: &'a HashMap<K, V, H>,
     cell_locker: CellLocker<'a, K, V>,
@@ -1090,19 +1090,19 @@ impl<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Accessor<'a, K, V, H> {
     }
 }
 
-/// Scanner implements Iterator.
+/// Cursor implements Iterator.
 ///
 /// It is !Send, thus disallowing other threads to have references to it.
 /// It acquires an exclusive lock on a cell that is currently being scanned.
-/// A thread having multiple Accessor of Scanner instances poses a possibility of deadlock.
-pub struct Scanner<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> {
+/// A thread having multiple Accessor of Cursor instances poses a possibility of deadlock.
+pub struct Cursor<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> {
     accessor: Option<Accessor<'a, K, V, H>>,
     array_ptr: *const Array<K, V>,
     activated: bool,
     erase_on_next: bool,
 }
 
-impl<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Iterator for Scanner<'a, K, V, H> {
+impl<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Iterator for Cursor<'a, K, V, H> {
     type Item = (&'a K, &'a mut V);
     fn next(&mut self) -> Option<Self::Item> {
         if !self.activated {
