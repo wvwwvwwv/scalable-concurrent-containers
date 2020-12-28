@@ -1,6 +1,6 @@
 [package]
 name = "scc-tests"
-version = "0.3.7"
+version = "0.3.8"
 authors = ["wvwwvwwv <wvwwvwwv@me.com>", "Changgyoo Park <changgyoo.park@sap.com>"]
 edition = "2018"
 

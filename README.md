@@ -65,6 +65,8 @@ scc::TreeIndex is a B+-tree variant optimized for read operations. Locks are onl
 
 ## Changelog
 
+#### 0.3.8
+Implement scc::TreeIndex::remove (work-in-progress), and fix a data race issue
 #### 0.3.7
 Implement scc::TreeIndex::iter
 #### 0.3.6
@@ -77,22 +79,6 @@ Implement scc::TreeIndex::insert and scc::TreeIndex::read
 Make scc::HashMap pass Valgrind by deallocating arrays immediately on drop
 #### 0.3.1
 APIs stabilized
-#### 0.2.13
-Add 'contains' and 'hasher' APIs
-#### 0.2.12
-Update crossbeam_epoch to 0.9.1
-#### 0.2.11
-Remove libc dependencies
-
-Adjust memory alignment
-#### 0.2.10
-Fix memory leak
-#### 0.2.8
-Make scc::HashMap stack-unwinding-safe, meaning that it does not leave resources (memory, locks) unreleased after stack-unwinding on one condition; moving instances of K, and V types must always be successful (in C++ terms, K and V satisfy std::is_nothrow_move_constructible).
-
-Refine resizing strategies
-#### 0.2.7
-Remove unnecessary heap allocation during read
 
 ## Milestones
 

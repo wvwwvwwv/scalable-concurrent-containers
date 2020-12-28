@@ -77,7 +77,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
         }
     }
 
-    /// Removes a a key-value pair.
+    /// (work-in-progress) Removes a key-value pair.
     ///
     /// # Examples
     /// ```

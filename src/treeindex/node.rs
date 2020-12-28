@@ -1,4 +1,4 @@
-use super::leaf::{LeafScanner, ARRAY_SIZE};
+use super::leaf::LeafScanner;
 use super::Leaf;
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::cmp::Ordering;

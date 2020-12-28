@@ -45,7 +45,7 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         (metadata & OCCUPANCY_MASK).count_ones() as usize
     }
 
-    pub fn num_removed(&self) -> usize {
+    fn num_removed(&self) -> usize {
         let metadata = self.metadata.load(Relaxed);
         ((metadata & REMOVED) / REMOVED_BIT) as usize
     }
