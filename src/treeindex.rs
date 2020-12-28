@@ -77,6 +77,42 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
         }
     }
 
+    /// Removes a a key-value pair.
+    ///
+    /// # Examples
+    /// ```
+    /// use scc::TreeIndex;
+    ///
+    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    ///
+    /// let result = treeindex.remove(&1);
+    /// assert!(!result);
+    ///
+    /// let result = treeindex.insert(1, 10);
+    /// assert!(result.is_ok());
+    ///
+    /// let result = treeindex.remove(&1);
+    /// assert!(result);
+    /// ```
+    pub fn remove(&self, key: &K) -> bool {
+        let guard = crossbeam_epoch::pin();
+        let mut root_node = self.root.load(Acquire, &guard);
+        loop {
+            if root_node.is_null() {
+                return false;
+            }
+            let root_node_ref = unsafe { root_node.deref() };
+            if root_node_ref.remove(key, &guard) {
+                return true;
+            }
+            let root_node_new = self.root.load(Acquire, &guard);
+            if root_node == root_node_new {
+                return false;
+            }
+            root_node = root_node_new;
+        }
+    }
+
     /// Reads a key-value pair.
     ///
     /// # Examples

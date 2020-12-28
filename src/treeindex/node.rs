@@ -21,6 +21,7 @@ struct NewNodes<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
     /// None: unbounded node
     origin_node_key: Option<K>,
     origin_node_ptr: Atomic<Node<K, V>>,
+    low_key_node_anchor: Atomic<LeafNodeAnchor<K, V>>,
     low_key_node: Option<Box<Node<K, V>>>,
     middle_key: Option<K>,
     high_key_node: Option<Box<Node<K, V>>>,
@@ -28,10 +29,8 @@ struct NewNodes<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
 
 impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for NewNodes<K, V> {
     fn drop(&mut self) {
-        self.low_key_node.take().map(|node| node.nullify_children());
-        self.high_key_node
-            .take()
-            .map(|node| node.nullify_children());
+        self.low_key_node.take().map(|node| node.unlink(true));
+        self.high_key_node.take().map(|node| node.unlink(false));
     }
 }
 
@@ -341,6 +340,67 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         }
     }
 
+    /// Removes the given key.
+    pub fn remove<'a>(&'a self, key: &K, guard: &'a Guard) -> bool {
+        match &self.entry {
+            NodeType::InternalNode {
+                children,
+                new_children: _,
+                leaf_node_anchor: _,
+                floor: _,
+            } => loop {
+                let unbounded_node = (children.1).load(Acquire, guard);
+                let result = (children.0).min_greater_equal(&key);
+                if let Some((_, child)) = result.0 {
+                    let child_node = child.load(Acquire, guard);
+                    if !(children.0).validate(result.1) {
+                        // after reading the pointer, need to validate the version
+                        continue;
+                    }
+                    return unsafe { child_node.deref().remove(key, guard) };
+                }
+                if unbounded_node == children.1.load(Acquire, guard) {
+                    if !(children.0).validate(result.1) {
+                        // after reading the pointer, need to validate the version
+                        continue;
+                    }
+                    if unbounded_node.is_null() {
+                        return false;
+                    }
+                    return unsafe { unbounded_node.deref().remove(key, guard) };
+                }
+            },
+            NodeType::LeafNode {
+                leaves,
+                new_leaves: _,
+                next_node_anchor: _,
+                side_link: _,
+            } => {
+                loop {
+                    let unbounded_leaf = (leaves.1).load(Relaxed, guard);
+                    let result = (leaves.0).min_greater_equal(&key);
+                    if let Some((_, child)) = result.0 {
+                        let child_leaf = child.load(Acquire, guard);
+                        if !(leaves.0).validate(result.1) {
+                            // after reading the pointer, need to validate the version
+                            continue;
+                        }
+                        return unsafe { child_leaf.deref().remove(key) };
+                    } else if unbounded_leaf == leaves.1.load(Acquire, guard) {
+                        if !(leaves.0).validate(result.1) {
+                            // after reading the pointer, need to validate the version
+                            continue;
+                        }
+                        if unbounded_leaf.is_null() {
+                            return false;
+                        }
+                        return unsafe { unbounded_leaf.deref().remove(key) };
+                    }
+                }
+            }
+        }
+    }
+
     /// Splits the current root node.
     pub fn split_root(&self, entry: (K, V), root_ptr: &Atomic<Node<K, V>>, guard: &Guard) {
         // the fact that the TreeIndex calls this function means that the root is in a split procedure,
@@ -430,6 +490,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             Owned::new(NewNodes {
                 origin_node_key: full_node_key,
                 origin_node_ptr: full_node_ptr.clone(),
+                low_key_node_anchor: Atomic::null(),
                 low_key_node: None,
                 middle_key: None,
                 high_key_node: None,
@@ -482,8 +543,9 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     floor: _,
                 } = &internal_nodes.0.entry
                 {
+                    // copy the full node's anchor to the
                     // move the full node's anchor to the low key node
-                    leaf_node_anchor.swap(low_key_node_anchor, Relaxed, guard);
+                    leaf_node_anchor.swap(low_key_node_anchor.clone(), Relaxed, guard);
                     Some(children)
                 } else {
                     None
@@ -626,6 +688,9 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 }
 
                 // turn the new nodes into internal nodes
+                new_split_nodes_ref
+                    .low_key_node_anchor
+                    .store(low_key_node_anchor, Relaxed);
                 new_split_nodes_ref.low_key_node.replace(internal_nodes.0);
                 new_split_nodes_ref.high_key_node.replace(internal_nodes.1);
             }
@@ -1139,6 +1204,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     if let Some(entry) = immediate_less_key_node {
                         let node = entry.1.load(Relaxed, guard);
                         unsafe {
+                            node.deref().update_next_node_anchor(Shared::null());
                             node.deref().update_side_link(
                                 Atomic::from(origin_node_ref as *const _).load(Relaxed, guard),
                             )
@@ -1155,52 +1221,12 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                         }
                     }
                 } else if *floor == 2 {
-                    //  - the low key node has the full floor 1 internal node's anchor: move
-                    //  - the max key leaf node of the low key node is linked to the first leaf node of the high node
                     let new_children_ref = unsafe { new_children.load(Relaxed, guard).deref() };
                     let origin_node_ref = unsafe {
                         new_children_ref
                             .origin_node_ptr
                             .load(Relaxed, guard)
                             .deref()
-                    };
-                    // copy the pointer of the first high key node leaf node
-                    let min_high_key_node_leaf_node = if let NodeType::InternalNode {
-                        children,
-                        new_children: _,
-                        leaf_node_anchor: _,
-                        floor: _,
-                    } =
-                        &(**new_children_ref.high_key_node.as_ref().unwrap()).entry
-                    {
-                        let mut scanner = LeafScanner::new(&children.0);
-                        if let Some(entry) = scanner.next() {
-                            entry.1.load(Relaxed, guard)
-                        } else {
-                            children.1.load(Relaxed, guard)
-                        }
-                    } else {
-                        Shared::null()
-                    };
-                    // update the max key node link and extract the anchor
-                    let low_key_node_anchor = if let NodeType::InternalNode {
-                        children,
-                        new_children: _,
-                        leaf_node_anchor,
-                        floor: _,
-                    } =
-                        &(**new_children_ref.low_key_node.as_ref().unwrap()).entry
-                    {
-                        let max_key_node = children.1.load(Relaxed, guard);
-                        unsafe {
-                            max_key_node.deref().update_next_node_anchor(Shared::null());
-                            max_key_node
-                                .deref()
-                                .update_side_link(min_high_key_node_leaf_node);
-                        };
-                        leaf_node_anchor.swap(Shared::null(), Relaxed, guard)
-                    } else {
-                        Shared::null()
                     };
                     // restore the anchor
                     if let NodeType::InternalNode {
@@ -1211,7 +1237,12 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     } = &origin_node_ref.entry
                     {
                         debug_assert_eq!(floor, &1);
-                        leaf_node_anchor.swap(low_key_node_anchor, Relaxed, guard);
+                        let origin_anchor = new_children_ref.low_key_node_anchor.swap(
+                            Shared::null(),
+                            Relaxed,
+                            guard,
+                        );
+                        leaf_node_anchor.swap(origin_anchor, Relaxed, guard);
                     }
                 }
 
@@ -1237,12 +1268,12 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
     }
 
     /// Clear all the children for drop the deprecated split nodes.
-    fn nullify_children(&self) {
+    fn unlink(&self, reset_anchor: bool) {
         match &self.entry {
             NodeType::InternalNode {
                 children,
                 new_children: _,
-                leaf_node_anchor: _,
+                leaf_node_anchor,
                 floor: _,
             } => {
                 let mut scanner = LeafScanner::new(&children.0);
@@ -1250,6 +1281,9 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     entry.1.store(Shared::null(), Relaxed);
                 }
                 children.1.store(Shared::null(), Relaxed);
+                if reset_anchor {
+                    leaf_node_anchor.store(Shared::null(), Relaxed);
+                }
             }
             NodeType::LeafNode {
                 leaves,
@@ -1277,44 +1311,33 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for Node<K, V> {
                 leaf_node_anchor,
                 floor: _,
             } => {
-                // destroy the leaf node anchor
-                let anchor = leaf_node_anchor.load(Relaxed, &guard);
-                if !anchor.is_null() {
-                    drop(unsafe { anchor.into_owned() });
-                }
                 // destroy entries related to the unused child
                 let unused_nodes = new_children.load(Acquire, &guard);
                 if !unused_nodes.is_null() {
                     // destroy only the origin node, assuming that the rest are copied
+                    debug_assert!(leaf_node_anchor.load(Relaxed, &guard).is_null());
                     let unused_nodes = unsafe { unused_nodes.into_owned() };
                     let obsolete_node = unused_nodes.origin_node_ptr.load(Relaxed, &guard);
-                    let mut target_node = None;
                     if !obsolete_node.is_null() {
-                        target_node.replace(unsafe { obsolete_node.into_owned() });
+                        drop(unsafe { obsolete_node.into_owned() });
                     }
-                    drop(guard);
-                    drop(target_node);
                 } else {
                     // destroy all: in order to avoid stack overflow, destroy them without the thread pinned
                     let mut scanner = LeafScanner::new(&children.0);
-                    let mut child_nodes: [Option<Owned<Node<K, V>>>; ARRAY_SIZE + 1] = [
-                        None, None, None, None, None, None, None, None, None, None, None, None,
-                        None,
-                    ];
-                    let mut child_node_index = 0;
                     while let Some(entry) = scanner.next() {
                         let child = entry.1.load(Acquire, &guard);
                         if !child.is_null() {
-                            child_nodes[child_node_index].replace(unsafe { child.into_owned() });
-                            child_node_index += 1;
+                            drop(unsafe { child.into_owned() });
                         }
                     }
                     let unbounded_child = children.1.load(Acquire, &guard);
                     if !unbounded_child.is_null() {
-                        child_nodes[ARRAY_SIZE].replace(unsafe { unbounded_child.into_owned() });
+                        drop(unsafe { unbounded_child.into_owned() });
                     }
-                    drop(guard);
-                    drop(child_nodes);
+                    let anchor = leaf_node_anchor.load(Relaxed, &guard);
+                    if !anchor.is_null() {
+                        drop(unsafe { anchor.into_owned() });
+                    }
                 }
             }
             NodeType::LeafNode {
@@ -1330,9 +1353,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for Node<K, V> {
                     let unused_leaves = unsafe { unused_leaves.into_owned() };
                     let obsolete_leaf = unused_leaves.origin_leaf_ptr.load(Relaxed, &guard);
                     if !obsolete_leaf.is_null() {
-                        let obsolete_leaf = unsafe { obsolete_leaf.into_owned() };
-                        drop(guard);
-                        drop(obsolete_leaf);
+                        drop(unsafe { obsolete_leaf.into_owned() });
                     }
                 } else {
                     // destroy all
