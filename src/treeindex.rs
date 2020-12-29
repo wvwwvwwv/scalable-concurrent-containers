@@ -6,6 +6,7 @@ pub mod node;
 use crossbeam_epoch::{Atomic, Guard};
 use leaf::Leaf;
 use node::{Error, LeafNodeScanner, Node};
+use std::fmt;
 use std::sync::atomic::Ordering::Acquire;
 
 /// A scalable concurrent tree map implementation.
@@ -160,6 +161,32 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
         }
     }
 
+    /// Returns the size of the TreeIndex.
+    ///
+    /// It internally scans all the leaf nodes, and therefore the time complexity is O(N).
+    ///
+    /// # Examples
+    /// ```
+    /// use scc::TreeIndex;
+    ///
+    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    ///
+    /// for key in 0..16u64 {
+    ///     let result = treeindex.insert(key, 10);
+    ///     assert!(result.is_ok());
+    /// }
+    ///
+    /// let result = treeindex.len();
+    /// assert_eq!(result, 16);
+    /// ```
+    pub fn len(&self) -> usize {
+        let mut num_entries = 0;
+        for _ in self.iter() {
+            num_entries += 1;
+        }
+        num_entries
+    }
+
     /// Returns a Scanner.
     ///
     /// The returned Scanner starts scanning from the minimum key-value pair.
@@ -188,12 +215,45 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
     pub fn iter(&self) -> Scanner<K, V> {
         Scanner::new(self)
     }
+
+    /// (work-in-progress) Returns a Scanner that starts from the specified key.
+    ///
+    /// The returned Scanner starts scanning from the minimum key-value pair.
+    ///
+    /// # Examples
+    /// ```
+    /// use scc::TreeIndex;
+    ///
+    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    /// ```
+    pub fn from(&self, _: &K) -> Scanner<K, V> {
+        Scanner::new(self)
+    }
+
+    /// (work-in-progress) Returns the statistics of the current state of the TreeIndex.
+    ///
+    /// It returns the size, depth, allocated nodes, and load factor.
+    ///
+    /// # Examples
+    /// ```
+    /// use scc::TreeIndex;
+    ///
+    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    /// ```
+    pub fn statistics(&self) -> Statistics {
+        Statistics {
+            capacity: 0,
+            num_entries: 0,
+            depth: 0,
+        }
+    }
 }
 
 impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for TreeIndex<K, V> {
     fn drop(&mut self) {}
 }
 
+/// Scanner implements Iterator for TreeIndex.
 pub struct Scanner<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
     tree_index: &'a TreeIndex<K, V>,
     leaf_node_scanner: Option<LeafNodeScanner<'a, K, V>>,
@@ -254,5 +314,41 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator for Scan
                 .as_ref()
                 .map_or_else(|| None, |scanner| scanner.get());
         }
+    }
+}
+
+/// Statistics shows aggregated views of the TreeIndex.
+///
+/// # Examples
+/// ```
+/// use scc::TreeIndex;
+///
+/// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+/// ```
+pub struct Statistics {
+    capacity: usize,
+    num_entries: usize,
+    depth: usize,
+}
+
+impl Statistics {
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+    pub fn num_entries(&self) -> usize {
+        self.num_entries
+    }
+    pub fn depth(&self) -> usize {
+        self.depth
+    }
+}
+
+impl fmt::Display for Statistics {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "capacity: {}, entries: {}, depth: {}",
+            self.capacity, self.num_entries, self.depth,
+        )
     }
 }

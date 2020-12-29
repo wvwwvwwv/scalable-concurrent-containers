@@ -9,10 +9,11 @@
 mod hashmap;
 mod treeindex;
 
+// scc::HashMap
 pub use hashmap::Accessor;
-pub use hashmap::HashMap;
 pub use hashmap::Cursor;
-pub use hashmap::Statistics;
+pub use hashmap::HashMap;
 
-pub use treeindex::TreeIndex;
+// scc::TreeIndex
 pub use treeindex::Scanner;
+pub use treeindex::TreeIndex;

@@ -34,6 +34,7 @@ pub struct Leaf<K: Clone + Ord + Sync, V: Clone + Sync> {
 }
 
 impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
+    /// Creates a new Leaf.
     pub fn new() -> Leaf<K, V> {
         Leaf {
             entry_array: unsafe { MaybeUninit::uninit().assume_init() },
@@ -41,16 +42,13 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         }
     }
 
+    /// Returns the cardinality.
     pub fn cardinality(&self) -> usize {
         let metadata = self.metadata.load(Relaxed);
         (metadata & OCCUPANCY_MASK).count_ones() as usize
     }
 
-    fn num_removed(&self) -> usize {
-        let metadata = self.metadata.load(Relaxed);
-        ((metadata & REMOVED) / REMOVED_BIT) as usize
-    }
-
+    /// Returns true if the leaf is full.
     pub fn full(&self) -> bool {
         let metadata = self.metadata.load(Relaxed);
         let cardinality = (metadata & OCCUPANCY_MASK).count_ones() as usize;
@@ -58,6 +56,7 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         cardinality + removed == ARRAY_SIZE
     }
 
+    /// Returns a reference to the max key.
     pub fn max_key(&self) -> Option<&K> {
         let metadata = self.metadata.load(Acquire);
         let mut max_rank = 0;
@@ -76,6 +75,10 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         None
     }
 
+    /// Inserts a key value pair.ARRAY_SIZE
+    ///
+    /// It returns the passed key value pair on failure.
+    /// The second returned value being true indicates that the same key exists.
     pub fn insert(&self, key: K, value: V, upsert: bool) -> Option<((K, V), bool)> {
         let mut duplicate_entry = usize::MAX;
         let mut entry = (key, value);
@@ -165,7 +168,11 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         Some((entry, duplicate_key))
     }
 
-    pub fn remove(&self, key: &K) -> bool {
+    /// Removes the key.
+    ///
+    /// The first returned value indicates that the key has been removed,
+    /// and the second returned value indicates that the leaf becomes full.
+    pub fn remove(&self, key: &K) -> (bool, bool) {
         let mut metadata = self.metadata.load(Acquire);
         let mut max_min_rank = 0;
         let mut min_max_rank = ARRAY_SIZE + 1;
@@ -192,10 +199,15 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
                             Release,
                             Relaxed,
                         ) {
-                            Ok(_) => return true,
+                            Ok(_) => {
+                                return (
+                                    true,
+                                    ((metadata & REMOVED) / REMOVED_BIT) as usize == ARRAY_SIZE - 1,
+                                )
+                            }
                             Err(result) => {
                                 if result & (OCCUPANCY_BIT << i) == 0 {
-                                    return false;
+                                    return (false, false);
                                 }
                                 metadata = result;
                             }
@@ -204,7 +216,7 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
                 }
             }
         }
-        false
+        (false, false)
     }
 
     /// Returns a value associated with the key.
@@ -436,8 +448,7 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         high_key_leaf: &mut Option<Box<Leaf<K, V>>>,
     ) {
         let mut iterated = 0;
-        let mut scanner = LeafScanner::new(self);
-        while let Some(entry) = scanner.next() {
+        for entry in LeafScanner::new(self) {
             if iterated < ARRAY_SIZE / 2 {
                 if low_key_leaf.is_none() {
                     low_key_leaf.replace(Box::new(Leaf::new()));
@@ -706,7 +717,6 @@ mod test {
         }
         assert!(leaf.min_greater_equal(&(ARRAY_SIZE * 3)).0.is_none());
         let leaf = Leaf::new();
-        assert_eq!(leaf.num_removed(), 0);
         assert_eq!(leaf.cardinality(), 0);
         assert!(leaf.insert(50, 51, false).is_none());
         assert_eq!(leaf.cardinality(), 1);
@@ -717,15 +727,13 @@ mod test {
         assert_eq!(leaf.cardinality(), 3);
         assert!(leaf.insert(60, 61, true).is_none());
         assert_eq!(leaf.cardinality(), 3);
-        assert_eq!(leaf.num_removed(), 1);
         assert_eq!(leaf.min_greater_equal(&71).0, None);
         assert_eq!(leaf.min_greater_equal(&51).0, Some((&60, &61)));
         assert_eq!(leaf.min_greater_equal(&50).0, Some((&50, &51)));
         let result = leaf.min_greater_equal(&49);
         assert_eq!(result.0, Some((&50, &51)));
         assert!(leaf.validate(result.1));
-        assert!(leaf.remove(&60));
-        assert_eq!(leaf.num_removed(), 2);
+        assert_eq!(leaf.remove(&60), (true, false));
         assert_eq!(leaf.cardinality(), 2);
         assert!(!leaf.full());
         assert!(leaf.insert(40, 40, false).is_none());
@@ -735,14 +743,12 @@ mod test {
         assert!(!leaf.full());
         assert!(leaf.insert(40, 41, true).is_none());
         assert_eq!(leaf.insert(30, 33, false), Some(((30, 33), true)));
-        assert_eq!(leaf.num_removed(), 3);
         assert_eq!(leaf.cardinality(), 4);
         assert!(leaf.insert(10, 11, false).is_none());
         assert!(leaf.insert(11, 12, false).is_none());
         assert!(leaf.insert(13, 13, false).is_none());
         assert!(leaf.insert(54, 55, false).is_none());
         assert!(leaf.insert(13, 14, true).is_none());
-        assert_eq!(leaf.num_removed(), 4);
         assert_eq!(leaf.cardinality(), 8);
         assert_eq!(leaf.max_key(), Some(&70));
         assert!(leaf.full());
@@ -789,7 +795,6 @@ mod test {
         drop(scanner);
 
         let leaf = Leaf::new();
-        assert_eq!(leaf.num_removed(), 0);
         assert_eq!(leaf.cardinality(), 0);
         assert!(leaf.insert(20, 21, false).is_none());
         assert_eq!(leaf.cardinality(), 1);
@@ -829,29 +834,26 @@ mod test {
         assert_eq!(*leaf.search(&13).unwrap(), 14);
         assert_eq!(leaf.insert(13, 14, false), Some(((13, 14), true)));
         assert_eq!(leaf.cardinality(), 7);
-        assert!(leaf.remove(&10));
+        assert_eq!(leaf.remove(&10), (true, false));
         assert_eq!(leaf.cardinality(), 6);
-        assert!(leaf.remove(&11));
+        assert_eq!(leaf.remove(&11), (true, false));
         assert_eq!(leaf.cardinality(), 5);
-        assert!(leaf.remove(&12));
+        assert_eq!(leaf.remove(&12), (true, false));
         assert_eq!(leaf.cardinality(), 4);
-        assert_eq!(leaf.num_removed(), 3);
         assert!(!leaf.full());
         assert!(leaf.insert(20, 21, true).is_none());
-        assert_eq!(leaf.num_removed(), 4);
         assert_eq!(leaf.cardinality(), 4);
         assert!(leaf.insert(12, 13, false).is_none());
         assert!(leaf.insert(14, 15, false).is_none());
         assert_eq!(leaf.cardinality(), 6);
         assert!(leaf.search(&11).is_none());
-        assert!(!leaf.remove(&10));
-        assert!(!leaf.remove(&11));
+        assert_eq!(leaf.remove(&10), (false, false));
+        assert_eq!(leaf.remove(&11), (false, false));
         assert_eq!(*leaf.search(&20).unwrap(), 21);
         assert!(leaf.insert(10, 11, false).is_none());
         assert!(leaf.insert(15, 16, false).is_none());
         assert_eq!(leaf.max_key(), Some(&20));
         assert!(leaf.full());
-        assert_eq!(leaf.num_removed(), 4);
         assert_eq!(leaf.cardinality(), 8);
 
         let mut scanner = LeafScanner::new(&leaf);
@@ -897,6 +899,17 @@ mod test {
             leaves_boxed.1.as_ref().unwrap().cardinality()
         );
         drop(scanner_high);
+
+        let leaf = Leaf::new();
+        assert_eq!(leaf.cardinality(), 0);
+        for key in 0..ARRAY_SIZE {
+            assert!(leaf.insert(key, key, false).is_none());
+            assert_eq!(leaf.cardinality(), key + 1);
+        }
+        for key in 0..ARRAY_SIZE {
+            assert_eq!(leaf.remove(&key), (true, key == ARRAY_SIZE - 1));
+            assert_eq!(leaf.cardinality(), ARRAY_SIZE - key - 1);
+        }
     }
 
     #[test]
@@ -920,7 +933,7 @@ mod test {
                     if result.is_none() {
                         assert_eq!(*leaf_copied.search(&tid).unwrap(), 1);
                         if tid % 2 != 0 {
-                            assert!(leaf_copied.remove(&tid));
+                            assert_eq!(leaf_copied.remove(&tid), (true, false));
                         }
                     }
                     let mut scanner = LeafScanner::new(&leaf_copied);

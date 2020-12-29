@@ -323,7 +323,7 @@ mod hashmap_test {
 
     #[test]
     fn sample() {
-        for s in vec![65536, 2097152, 16777216] {
+        for s in vec![65536, 2097152] {
             let hashmap: HashMap<usize, u8, RandomState> = HashMap::new(s, RandomState::new());
             let step_size = s / 16;
             let mut sample_warning_count = [(0usize, 0.0f32); 16];
@@ -364,13 +364,12 @@ mod hashmap_test {
 
 #[cfg(test)]
 mod treeindex_test {
-    use proptest::prelude::*;
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
     use scc::TreeIndex;
     use std::collections::BTreeSet;
     use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+    use std::sync::atomic::Ordering::{Acquire, Release};
     use std::sync::{Arc, Barrier};
     use std::thread;
 

@@ -29,8 +29,12 @@ struct NewNodes<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
 
 impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for NewNodes<K, V> {
     fn drop(&mut self) {
-        self.low_key_node.take().map(|node| node.unlink(true));
-        self.high_key_node.take().map(|node| node.unlink(false));
+        if let Some(node) = self.low_key_node.take() {
+            node.unlink(true)
+        }
+        if let Some(node) = self.high_key_node.take() {
+            node.unlink(false)
+        }
     }
 }
 
@@ -202,7 +206,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 side_link: _,
             } => {
                 let mut scanner = LeafNodeScanner::new(self, guard);
-                if let Some(_) = scanner.next() {
+                if scanner.next().is_some() {
                     return Some(scanner);
                 }
                 None
@@ -391,7 +395,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                             // data race resolution: validate metadata - see the 'search' function
                             continue;
                         }
-                        return unsafe { child_leaf.deref().remove(key) };
+                        return unsafe { child_leaf.deref().remove(key).0 };
                     } else if unbounded_leaf == leaves.1.load(Acquire, guard) {
                         if !(leaves.0).validate(result.1) {
                             // data race resolution: validate metadata - see the 'search' function
@@ -400,7 +404,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                         if unbounded_leaf.is_null() {
                             return false;
                         }
-                        return unsafe { unbounded_leaf.deref().remove(key) };
+                        return unsafe { unbounded_leaf.deref().remove(key).0 };
                     }
                 }
             }
@@ -457,7 +461,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 // insert the newly allocated internal nodes into the main array
                 if let Some(new_low_key_node) = new_nodes.low_key_node.take() {
                     children.0.insert(
-                        new_nodes.middle_key.take().unwrap().clone(),
+                        new_nodes.middle_key.take().unwrap(),
                         Atomic::from(new_low_key_node),
                         false,
                     );
@@ -587,8 +591,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 let mut current_low_key_node_array_size = 0;
                 let mut current_high_key_node_array_size = 0;
                 let mut entry_to_link_to_anchor = Shared::null();
-                let mut scanner = LeafScanner::new(&children.0);
-                while let Some(entry) = scanner.next() {
+                for entry in LeafScanner::new(&children.0) {
                     let mut entries: [Option<(K, Atomic<Node<K, V>>)>; 2] = [None, None];
                     if new_children_ref
                         .origin_node_key
@@ -659,7 +662,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                         }
                     }
                 }
-                if !new_children_ref.origin_node_key.is_none() {
+                if new_children_ref.origin_node_key.is_some() {
                     let unbounded_node = children.1.load(Acquire, guard);
                     debug_assert!(!unbounded_node.is_null());
                     high_key_nodes
@@ -744,8 +747,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 let high_key_leaf_array_size = array_size - low_key_leaf_array_size;
                 let mut current_low_key_leaf_array_size = 0;
                 let mut current_high_key_leaf_array_size = 0;
-                let mut scanner = LeafScanner::new(&leaves.0);
-                while let Some(entry) = scanner.next() {
+                for entry in LeafScanner::new(&leaves.0) {
                     let mut entries: [Option<(K, Atomic<Leaf<K, V>>)>; 2] = [None, None];
                     if new_leaves_ref
                         .origin_leaf_key
@@ -799,7 +801,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                         }
                     }
                 }
-                if !new_leaves_ref.origin_leaf_key.is_none() {
+                if new_leaves_ref.origin_leaf_key.is_some() {
                     let unbounded_leaf = leaves.1.load(Acquire, guard);
                     debug_assert!(!unbounded_leaf.is_null());
                     high_key_leaves
@@ -1054,7 +1056,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         };
 
         // OK
-        return Ok(());
+        Ok(())
     }
 
     fn unbounded_node<'a>(&self, guard: &'a Guard) -> Shared<'a, Node<K, V>> {
@@ -1286,8 +1288,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 leaf_node_anchor,
                 floor: _,
             } => {
-                let mut scanner = LeafScanner::new(&children.0);
-                while let Some(entry) = scanner.next() {
+                for entry in LeafScanner::new(&children.0) {
                     entry.1.store(Shared::null(), Relaxed);
                 }
                 children.1.store(Shared::null(), Relaxed);
@@ -1301,8 +1302,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 next_node_anchor: _,
                 side_link: _,
             } => {
-                let mut scanner = LeafScanner::new(&leaves.0);
-                while let Some(entry) = scanner.next() {
+                for entry in LeafScanner::new(&leaves.0) {
                     entry.1.store(Shared::null(), Relaxed);
                 }
                 leaves.1.store(Shared::null(), Relaxed);
@@ -1333,8 +1333,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for Node<K, V> {
                     }
                 } else {
                     // destroy all: in order to avoid stack overflow, destroy them without the thread pinned
-                    let mut scanner = LeafScanner::new(&children.0);
-                    while let Some(entry) = scanner.next() {
+                    for entry in LeafScanner::new(&children.0) {
                         let child = entry.1.load(Acquire, &guard);
                         if !child.is_null() {
                             drop(unsafe { child.into_owned() });
@@ -1367,8 +1366,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for Node<K, V> {
                     }
                 } else {
                     // destroy all
-                    let mut scanner = LeafScanner::new(&leaves.0);
-                    while let Some(entry) = scanner.next() {
+                    for entry in LeafScanner::new(&leaves.0) {
                         let child = entry.1.load(Acquire, &guard);
                         if !child.is_null() {
                             drop(unsafe { child.into_owned() });
@@ -1395,13 +1393,10 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> N
                 leaf_node_anchor: _,
                 floor,
             } => {
-                let mut index = 0;
-                let mut scanner = LeafScanner::new(&children.0);
-                while let Some(entry) = scanner.next() {
+                for (index, entry) in LeafScanner::new(&children.0).enumerate() {
                     println!("floor: {}, index: {}, node_key: {}", floor, index, entry.0);
                     let child_ref = unsafe { entry.1.load(Relaxed, &guard).deref() };
                     scanned += child_ref.print();
-                    index += 1;
                 }
                 println!("floor {}, unbounded node", floor);
                 let unbounded_ptr = children.1.load(Relaxed, &guard);
@@ -1418,17 +1413,13 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> N
                 next_node_anchor: _,
                 side_link: _,
             } => {
-                let mut index = 0;
-                let mut scanner = LeafScanner::new(&leaves.0);
-                while let Some(entry) = scanner.next() {
+                for (index, entry) in LeafScanner::new(&leaves.0).enumerate() {
                     println!("index: {}, leaf_max_key: {}", index, entry.0);
                     let leaf_ref = unsafe { entry.1.load(Relaxed, &guard).deref() };
-                    let mut inner_scanner = LeafScanner::new(leaf_ref);
-                    while let Some(entry) = inner_scanner.next() {
+                    for entry in LeafScanner::new(leaf_ref) {
                         scanned += 1;
                         println!(" entry: {} {}", entry.0, entry.1);
                     }
-                    index += 1;
                 }
                 println!("unbounded node");
                 let unbounded_ptr = leaves.1.load(Relaxed, &guard);
@@ -1437,8 +1428,7 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> N
                     return scanned;
                 }
                 let unbounded_ref = unsafe { unbounded_ptr.deref() };
-                let mut inner_scanner = LeafScanner::new(unbounded_ref);
-                while let Some(entry) = inner_scanner.next() {
+                for entry in LeafScanner::new(unbounded_ref) {
                     scanned += 1;
                     println!(" entry: {} {}", entry.0, entry.1);
                 }
@@ -1549,7 +1539,7 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator
                 self.current_leaf_index += 1;
                 if let Some(leaf_scanner) = self.leaf_scanner.as_mut() {
                     // leaf iteration
-                    while let Some(entry) = leaf_scanner.next() {
+                    for entry in leaf_scanner {
                         // data race resolution: compare keys
                         //  - writer: insert an intermediate low key leaf
                         //  - reader: read the low key leaf pointer

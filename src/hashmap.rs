@@ -529,13 +529,13 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         let mut statistics = Statistics {
             effective_capacity: 0,
             deprecated_capacity: 0,
-            cells: 0,
-            killed_entries: 0,
-            empty_cells: 0,
-            max_consecutive_empty_cells: 0,
-            entries: 0,
-            linked_entries: 0,
-            cells_having_link: 0,
+            num_entries: 0,
+            num_killed_entries: 0,
+            num_linked_entries: 0,
+            num_cells: 0,
+            num_empty_cells: 0,
+            num_cells_having_link: 0,
+            num_max_consecutive_empty_cells: 0,
             max_link_length: 0,
         };
         let guard = crossbeam_epoch::pin();
@@ -553,28 +553,28 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             } else {
                 statistics.deprecated_capacity += array_ref.capacity();
             }
-            statistics.cells += num_cells;
+            statistics.num_cells += num_cells;
             for i in 0..num_cells {
                 let (size, linked_entries) = array_ref.cell(i).size();
-                statistics.entries += size + linked_entries;
+                statistics.num_entries += size + linked_entries;
                 if size == 0 {
-                    statistics.empty_cells += 1;
+                    statistics.num_empty_cells += 1;
                     consecutive_empty_cells += 1;
                 } else {
-                    if statistics.max_consecutive_empty_cells < consecutive_empty_cells {
-                        statistics.max_consecutive_empty_cells = consecutive_empty_cells;
+                    if statistics.num_max_consecutive_empty_cells < consecutive_empty_cells {
+                        statistics.num_max_consecutive_empty_cells = consecutive_empty_cells;
                     }
                     consecutive_empty_cells = 0;
                 }
                 if linked_entries > 0 {
-                    statistics.linked_entries += linked_entries;
-                    statistics.cells_having_link += 1;
+                    statistics.num_linked_entries += linked_entries;
+                    statistics.num_cells_having_link += 1;
                     if statistics.max_link_length < linked_entries {
                         statistics.max_link_length = linked_entries;
                     }
                 }
                 if array_ref.cell(i).killed() {
-                    statistics.killed_entries += 1;
+                    statistics.num_killed_entries += 1;
                 }
             }
         }
@@ -1090,7 +1090,7 @@ impl<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Accessor<'a, K, V, H> {
     }
 }
 
-/// Cursor implements Iterator.
+/// Cursor implements Iterator for HashMap.
 ///
 /// It is !Send, thus disallowing other threads to have references to it.
 /// It acquires an exclusive lock on a cell that is currently being scanned.
@@ -1176,13 +1176,13 @@ impl<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Iterator for Cursor<'a, K
 pub struct Statistics {
     effective_capacity: usize,
     deprecated_capacity: usize,
-    entries: usize,
-    killed_entries: usize,
-    cells: usize,
-    empty_cells: usize,
-    max_consecutive_empty_cells: usize,
-    linked_entries: usize,
-    cells_having_link: usize,
+    num_entries: usize,
+    num_killed_entries: usize,
+    num_linked_entries: usize,
+    num_cells: usize,
+    num_empty_cells: usize,
+    num_cells_having_link: usize,
+    num_max_consecutive_empty_cells: usize,
     max_link_length: usize,
 }
 
@@ -1194,25 +1194,25 @@ impl Statistics {
         self.deprecated_capacity
     }
     pub fn num_entries(&self) -> usize {
-        self.entries
+        self.num_entries
     }
     pub fn num_killed_entries(&self) -> usize {
-        self.killed_entries
-    }
-    pub fn num_cells(&self) -> usize {
-        self.cells
-    }
-    pub fn num_empty_cells(&self) -> usize {
-        self.empty_cells
-    }
-    pub fn max_consecutive_empty_cells(&self) -> usize {
-        self.max_consecutive_empty_cells
+        self.num_killed_entries
     }
     pub fn num_linked_entries(&self) -> usize {
-        self.linked_entries
+        self.num_linked_entries
+    }
+    pub fn num_cells(&self) -> usize {
+        self.num_cells
+    }
+    pub fn num_empty_cells(&self) -> usize {
+        self.num_empty_cells
     }
     pub fn num_cells_having_link(&self) -> usize {
-        self.cells_having_link
+        self.num_cells_having_link
+    }
+    pub fn num_max_consecutive_empty_cells(&self) -> usize {
+        self.num_max_consecutive_empty_cells
     }
     pub fn max_link_length(&self) -> usize {
         self.max_link_length
@@ -1223,16 +1223,16 @@ impl fmt::Display for Statistics {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "effective_capacity: {}, deprecated_capacity: {}, cells: {}, killed_entries: {}, empty_cells: {}, max_consecutive_empty_cells: {}, entries: {}, linked_entries: {}, cells_having_link: {}, max_link_length: {}",
+            "effective_capacity: {}, deprecated_capacity: {}, entries: {}, killed_entries: {}, linked_entries: {}, cells: {}, empty_cells: {}, cells_having_link: {}, max_consecutive_empty_cells: {}, max_link_length: {}",
             self.effective_capacity,
             self.deprecated_capacity,
-            self.cells,
-            self.killed_entries,
-            self.empty_cells,
-            self.max_consecutive_empty_cells,
-            self.entries,
-            self.linked_entries,
-            self.cells_having_link,
+            self.num_entries,
+            self.num_killed_entries,
+            self.num_linked_entries,
+            self.num_cells,
+            self.num_empty_cells,
+            self.num_cells_having_link,
+            self.num_max_consecutive_empty_cells,
             self.max_link_length
         )
     }

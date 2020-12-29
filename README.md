@@ -69,6 +69,8 @@ scc::TreeIndex is a B+-tree variant optimized for read operations. Locks are onl
 
 ## Changelog
 
+#### 0.3.11
+Refine scc::TreeIndex APIs
 #### 0.3.10
 API change: scc::HashMap::Scanner -> scc::HashMap::Cursor
 #### 0.3.9
