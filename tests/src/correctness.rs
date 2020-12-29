@@ -10,7 +10,7 @@ mod hashmap_test {
     use std::hash::{Hash, Hasher};
     use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
-    use std::sync::Arc;
+    use std::sync::{Arc, Barrier};
     use std::thread;
 
     struct MemoryTester {
@@ -167,14 +167,17 @@ mod hashmap_test {
     }
 
     #[test]
-    fn scanner() {
-        for _ in 0..256 {
+    fn cursor() {
+        for _ in 0..64 {
             let hashmap: Arc<HashMap<u64, u64, RandomState>> = Arc::new(Default::default());
             let hashmap_copied = hashmap.clone();
+            let barrier = Arc::new(Barrier::new(2));
+            let barrier_copied = barrier.clone();
             let inserted = Arc::new(AtomicU64::new(0));
             let inserted_copied = inserted.clone();
             let thread_handle = thread::spawn(move || {
-                for _ in 0..8 {
+                for _ in 0..2 {
+                    barrier_copied.wait();
                     let mut scanned = 0;
                     let mut checker = BTreeSet::new();
                     let max = inserted_copied.load(Acquire);
@@ -188,7 +191,11 @@ mod hashmap_test {
                     }
                 }
             });
+            barrier.wait();
             for i in 0..4096 {
+                if i == 1024 {
+                    barrier.wait();
+                }
                 assert!(hashmap.insert(i, i).is_ok());
                 inserted.store(i, Release);
             }
@@ -460,13 +467,16 @@ mod treeindex_test {
 
     #[test]
     fn scanner() {
-        for _ in 0..256 {
+        for _ in 0..64 {
             let tree: Arc<TreeIndex<usize, u64>> = Arc::new(Default::default());
             let tree_copied = tree.clone();
+            let barrier = Arc::new(Barrier::new(2));
+            let barrier_copied = barrier.clone();
             let inserted = Arc::new(AtomicUsize::new(0));
             let inserted_copied = inserted.clone();
             let thread_handle = thread::spawn(move || {
-                for _ in 0..8 {
+                for _ in 0..2 {
+                    barrier_copied.wait();
                     let mut scanned = 0;
                     let mut checker = BTreeSet::new();
                     let max = inserted_copied.load(Acquire);
@@ -474,7 +484,6 @@ mod treeindex_test {
                     for iter in tree_copied.iter() {
                         scanned += 1;
                         checker.insert(*iter.0);
-                        println!("{}", *iter.0);
                         assert!(prev == 0 || prev < *iter.0);
                         prev = *iter.0;
                     }
@@ -484,7 +493,11 @@ mod treeindex_test {
                     }
                 }
             });
+            barrier.wait();
             for i in 0..4096 {
+                if i == 1024 {
+                    barrier.wait();
+                }
                 assert!(tree.insert(i, 0).is_ok());
                 inserted.store(i, Release);
             }

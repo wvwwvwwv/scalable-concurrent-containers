@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 use std::convert::TryInto;
 use std::mem::MaybeUninit;
+use std::sync::atomic::fence;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
@@ -384,6 +385,8 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
 
     /// Compares the given metadata value with the current one.
     pub fn validate(&self, metadata: u64) -> bool {
+        // the acquire fence ensures that a reader having read the latest state must read the updated metadata
+        fence(Acquire);
         self.metadata.load(Relaxed) == metadata
     }
 
@@ -537,7 +540,7 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Inserter<'a, K, V> {
                         committed: false,
                         metadata: result | (OCCUPANCY_BIT << position),
                         index: position,
-                    })
+                    });
                 }
                 Err(result) => current = result,
             }
@@ -567,6 +570,9 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Inserter<'a, K, V> {
             break;
         }
         self.committed = true;
+
+        // every store after commit must be visible along with the metadata update
+        fence(Release);
         true
     }
 }

@@ -8,13 +8,13 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 pub enum Error<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
     /// Duplicated key found: returns the given key-value pair.
     Duplicated((K, V)),
-    /// Full: the tree, node, or leaf could not accommodate the entry
+    /// Full: the tree, node, or leaf could not accommodate the entry.
     Full((K, V)),
     /// Retry: return the given key-value pair.
     Retry((K, V)),
 }
 
-/// Intermediate split node
+/// Intermediate split node.
 ///
 /// It does not own the children, thus only nullifying pointers when drop.
 struct NewNodes<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
@@ -53,16 +53,28 @@ struct LeafNodeAnchor<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
 enum NodeType<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
     /// InternalNode: |ptr(children)/max(child keys)|...|ptr(children)|
     InternalNode {
+        /// Child nodes.
         children: (Leaf<K, Atomic<Node<K, V>>>, Atomic<Node<K, V>>),
+        /// New nodes in an intermediate state during merge and split.
+        ///
+        /// A valid pointer stored in the variable acts as a mutex for merge and split operations.
         new_children: Atomic<NewNodes<K, V>>,
+        /// An anchor for scan operations that moves around during merge and split.
         leaf_node_anchor: Atomic<LeafNodeAnchor<K, V>>,
+        /// The floor that the node is on.
         floor: usize,
     },
     /// LeafNode: |ptr(entry array)/max(child keys)|...|ptr(entry array)|
     LeafNode {
+        /// Child leaves.
+        ///
+        /// A null pointer stored in the variable acts as a mutex for scan, merge, and split operations.
         leaves: (Leaf<K, Atomic<Leaf<K, V>>>, Atomic<Leaf<K, V>>),
+        /// New leaves in an intermediate state during merge and split.
         new_leaves: Atomic<NewLeaves<K, V>>,
+        /// A pointer that points to a node anchor.
         next_node_anchor: Atomic<LeafNodeAnchor<K, V>>,
+        /// A pointer that points to an adjacent leaf node.
         side_link: Atomic<Node<K, V>>,
     },
 }
@@ -107,14 +119,19 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 if let Some((_, child)) = result.0 {
                     let child_node = child.load(Acquire, guard);
                     if !(children.0).validate(result.1) {
-                        // after reading the pointer, need to validate the version
+                        // data race resolution: validate metadata
+                        //  - writer: start to insert an intermediate low key node
+                        //  - reader: read the metadata not including the intermediate low key node
+                        //  - writer: insert the intermediate low key node and replace the high key node pointer
+                        //  - reader: read the new high key node pointer
+                        // consequently, the reader may miss keys in the low key node
                         continue;
                     }
                     return unsafe { child_node.deref().search(key, guard) };
                 }
                 if unbounded_node == children.1.load(Acquire, guard) {
                     if !(children.0).validate(result.1) {
-                        // after reading the pointer, need to validate the version
+                        // data race resolution: validate metadata - see above
                         continue;
                     }
                     if unbounded_node.is_null() {
@@ -135,13 +152,18 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     if let Some((_, child)) = result.0 {
                         let child_leaf = child.load(Acquire, guard);
                         if !(leaves.0).validate(result.1) {
-                            // after reading the pointer, need to validate the version
+                            // data race resolution: validate metadata
+                            //  - writer: start to insert an intermediate low key leaf
+                            //  - reader: read the metadata not including the intermediate low key leaf
+                            //  - writer: insert the intermediate low key leaf and replace the high key leaf pointer
+                            //  - reader: read the new high key leaf pointer
+                            // consequently, the reader may miss keys in the low key leaf
                             continue;
                         }
                         return unsafe { child_leaf.deref().search(key) };
                     } else if unbounded_leaf == leaves.1.load(Acquire, guard) {
                         if !(leaves.0).validate(result.1) {
-                            // after reading the pointer, need to validate the version
+                            // data race resolution: validate metadata - see above
                             continue;
                         }
                         if unbounded_leaf.is_null() {
@@ -210,7 +232,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     if let Some((child_key, child)) = result.0 {
                         let child_node = child.load(Acquire, guard);
                         if !(children.0).validate(result.1) {
-                            // after reading the pointer, need to validate the version
+                            // data race resolution: validate metadata - see the 'search' function
                             continue;
                         }
                         match unsafe { child_node.deref().insert(key, value, guard) } {
@@ -235,7 +257,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                         }
                     } else if unbounded_child == self.unbounded_node(guard) {
                         if !(children.0).validate(result.1) {
-                            // after reading the pointer, need to validate the version
+                            // data race resolution: validate metadata - see the 'search' function
                             continue;
                         }
                         // try to insert into the unbounded child, and try to split the unbounded if it is full
@@ -273,7 +295,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 if let Some((child_key, child)) = result.0 {
                     let child_leaf = child.load(Acquire, guard);
                     if !(leaves.0).validate(result.1) {
-                        // after reading the pointer, need to validate the version
+                        // data race resolution: validate metadata - see the 'search' function
                         continue;
                     }
                     return unsafe { child_leaf.deref().insert(key, value, false) }.map_or_else(
@@ -296,7 +318,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     );
                 } else if unbounded_leaf == self.unbounded_leaf(guard) {
                     if !(leaves.0).validate(result.1) {
-                        // after reading the pointer, need to validate the version
+                        // data race resolution: validate metadata - see the 'search' function
                         continue;
                     }
                     // try to insert into the unbounded leaf, and try to split the unbounded if it is full
@@ -338,14 +360,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 if let Some((_, child)) = result.0 {
                     let child_node = child.load(Acquire, guard);
                     if !(children.0).validate(result.1) {
-                        // after reading the pointer, need to validate the version
+                        // data race resolution: validate metadata - see the 'search' function
                         continue;
                     }
                     return unsafe { child_node.deref().remove(key, guard) };
                 }
                 if unbounded_node == children.1.load(Acquire, guard) {
                     if !(children.0).validate(result.1) {
-                        // after reading the pointer, need to validate the version
+                        // data race resolution: validate metadata - see the 'search' function
                         continue;
                     }
                     if unbounded_node.is_null() {
@@ -366,13 +388,13 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     if let Some((_, child)) = result.0 {
                         let child_leaf = child.load(Acquire, guard);
                         if !(leaves.0).validate(result.1) {
-                            // after reading the pointer, need to validate the version
+                            // data race resolution: validate metadata - see the 'search' function
                             continue;
                         }
                         return unsafe { child_leaf.deref().remove(key) };
                     } else if unbounded_leaf == leaves.1.load(Acquire, guard) {
                         if !(leaves.0).validate(result.1) {
-                            // after reading the pointer, need to validate the version
+                            // data race resolution: validate metadata - see the 'search' function
                             continue;
                         }
                         if unbounded_leaf.is_null() {
@@ -1467,6 +1489,10 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator
 {
     type Item = (&'a K, &'a V);
     fn next(&mut self) -> Option<Self::Item> {
+        let current_key = self
+            .leaf_scanner
+            .as_ref()
+            .map_or_else(|| None, |scanner| scanner.get());
         if let Some(leaf_scanner) = self.leaf_scanner.as_mut() {
             // leaf iteration
             if let Some(entry) = leaf_scanner.next() {
@@ -1493,15 +1519,12 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator
                     next_node_anchor: _,
                     side_link: _,
                 } => loop {
-                    // read all the pointers prior to reading the contents
+                    // data race resolution: validate metadata - see the 'search' function
                     let mut index = 0;
                     let mut scanner = LeafScanner::new(&leaves.0);
                     while let Some(entry) = scanner.next() {
-                        let ptr = entry.1.load(Relaxed, &self.guard);
-                        if !ptr.is_null() {
-                            self.leaf_pointer_array[index].replace(ptr);
-                            index += 1;
-                        }
+                        self.leaf_pointer_array[index].replace(entry.1.load(Relaxed, &self.guard));
+                        index += 1;
                     }
                     let ptr = leaves.1.load(Relaxed, &self.guard);
                     if !ptr.is_null() {
@@ -1526,8 +1549,18 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator
                 self.current_leaf_index += 1;
                 if let Some(leaf_scanner) = self.leaf_scanner.as_mut() {
                     // leaf iteration
-                    if let Some(entry) = leaf_scanner.next() {
-                        return Some(entry);
+                    while let Some(entry) = leaf_scanner.next() {
+                        // data race resolution: compare keys
+                        //  - writer: insert an intermediate low key leaf
+                        //  - reader: read the low key leaf pointer
+                        //  - reader: read the old full leaf pointer
+                        //  - writer: replace the old full leaf pointer with a new one
+                        // consequently, the scanner reads outdated smaller values
+                        if current_key
+                            .map_or_else(|| true, |(key, _)| key.cmp(entry.0) == Ordering::Less)
+                        {
+                            return Some(entry);
+                        }
                     }
                 }
                 self.leaf_scanner.take();
