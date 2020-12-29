@@ -156,7 +156,7 @@ mod hashmap_test {
 
     #[test]
     fn hashmap_benchmark() {
-        let num_threads_vector = vec![1, 2, 4, 8, 16];
+        let num_threads_vector = vec![1, 4, 16];
 
         for num_threads in num_threads_vector {
             let hashmap: Arc<HashMap<usize, usize, RandomState>> = Arc::new(Default::default());

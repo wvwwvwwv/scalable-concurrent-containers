@@ -381,10 +381,10 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     pub fn retain<F: Fn(&K, &mut V) -> bool>(&self, f: F) -> (usize, usize) {
         let mut retained_entries = 0;
         let mut removed_entries = 0;
-        let mut scanner = self.iter();
-        while let Some((key, value)) = scanner.next() {
+        let mut cursor = self.iter();
+        while let Some((key, value)) = cursor.next() {
             if !f(key, value) {
-                scanner.erase_on_next = true;
+                cursor.erase_on_next = true;
                 removed_entries += 1;
             } else {
                 retained_entries += 1;
@@ -608,8 +608,8 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     pub fn iter(&self) -> Cursor<K, V, H> {
         let (cell_locker, array_ptr, cell_index) = self.first();
         if let Some(cell_locker) = cell_locker {
-            if let Some(scanner) = self.pick(cell_locker, array_ptr, cell_index) {
-                return scanner;
+            if let Some(cursor) = self.pick(cell_locker, array_ptr, cell_index) {
+                return cursor;
             }
         }
         Cursor {
@@ -837,8 +837,8 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                     old_array_ref.entry_array(cell_index),
                 );
                 if !cell_locker.killed() && !cell_locker.empty() {
-                    if let Some(scanner) = self.pick(cell_locker, old_array.as_raw(), cell_index) {
-                        return Some(scanner);
+                    if let Some(cursor) = self.pick(cell_locker, old_array.as_raw(), cell_index) {
+                        return Some(cursor);
                     }
                 }
             }
@@ -857,8 +857,8 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 current_array_ref.entry_array(cell_index),
             );
             if !cell_locker.killed() && !cell_locker.empty() {
-                if let Some(scanner) = self.pick(cell_locker, current_array.as_raw(), cell_index) {
-                    return Some(scanner);
+                if let Some(cursor) = self.pick(cell_locker, current_array.as_raw(), cell_index) {
+                    return Some(cursor);
                 }
             } else if cell_locker.killed() && new_array.is_null() {
                 new_array = self.array.load(Acquire, &guard);
@@ -875,8 +875,8 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                     new_array_ref.entry_array(cell_index),
                 );
                 if !cell_locker.killed() && !cell_locker.empty() {
-                    if let Some(scanner) = self.pick(cell_locker, new_array.as_raw(), cell_index) {
-                        return Some(scanner);
+                    if let Some(cursor) = self.pick(cell_locker, new_array.as_raw(), cell_index) {
+                        return Some(cursor);
                     }
                 }
             }
@@ -1136,7 +1136,7 @@ impl<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Iterator for Cursor<'a, K
                 );
             } else {
                 let current_array_ptr = self.array_ptr;
-                let scanner = self.accessor.as_ref().map_or_else(
+                let cursor = self.accessor.as_ref().map_or_else(
                     || None,
                     |accessor| {
                         accessor
@@ -1145,9 +1145,9 @@ impl<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Iterator for Cursor<'a, K
                     },
                 );
                 self.accessor.take();
-                if let Some(mut scanner) = scanner {
-                    self.accessor = scanner.accessor.take();
-                    self.array_ptr = scanner.array_ptr;
+                if let Some(mut cursor) = cursor {
+                    self.accessor = cursor.accessor.take();
+                    self.array_ptr = cursor.array_ptr;
                 }
             }
         }
