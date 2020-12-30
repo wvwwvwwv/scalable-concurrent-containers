@@ -1,3 +1,5 @@
+extern crate scopeguard;
+
 use super::leaf::{LeafScanner, ARRAY_SIZE};
 use super::Leaf;
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
@@ -351,7 +353,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
     }
 
     /// Removes the given key.
-    pub fn remove<'a>(&'a self, key: &K, guard: &'a Guard) -> bool {
+    ///
+    /// The first value of the result tuple indicates that the key has been removed.
+    /// The second value of the result tuple indicates that a retry is required.
+    /// The third value of the result tuple indicates that the leaf/node is no longer valid.
+    pub fn remove<'a>(&'a self, key: &K, guard: &'a Guard) -> (bool, bool, bool) {
         match &self.entry {
             NodeType::InternalNode {
                 children,
@@ -375,14 +381,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                         continue;
                     }
                     if unbounded_node.is_null() {
-                        return false;
+                        return (false, false, false);
                     }
                     return unsafe { unbounded_node.deref().remove(key, guard) };
                 }
             },
             NodeType::LeafNode {
                 leaves,
-                new_leaves: _,
+                new_leaves,
                 next_node_anchor: _,
                 side_link: _,
             } => {
@@ -395,19 +401,98 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                             // data race resolution: validate metadata - see the 'search' function
                             continue;
                         }
-                        return unsafe { child_leaf.deref().remove(key).0 };
+                        let (removed, full, invalid) = unsafe { child_leaf.deref().remove(key) };
+                        if !full {
+                            return (removed, false, false);
+                        }
+                        let (retry, invalid) = self.remove_full_leaf(
+                            invalid,
+                            unbounded_leaf,
+                            &leaves.1,
+                            leaves,
+                            new_leaves,
+                            guard,
+                        );
+                        return (removed, retry, invalid);
                     } else if unbounded_leaf == leaves.1.load(Acquire, guard) {
                         if !(leaves.0).validate(result.1) {
                             // data race resolution: validate metadata - see the 'search' function
                             continue;
                         }
                         if unbounded_leaf.is_null() {
-                            return false;
+                            return (false, false, false);
                         }
-                        return unsafe { unbounded_leaf.deref().remove(key).0 };
+                        let (removed, full, invalid) =
+                            unsafe { unbounded_leaf.deref().remove(key) };
+                        if !full {
+                            return (removed, false, false);
+                        }
+                        let (retry, invalid) = self.remove_full_leaf(
+                            invalid,
+                            unbounded_leaf,
+                            &leaves.1,
+                            leaves,
+                            new_leaves,
+                            guard,
+                        );
+                        return (removed, retry, invalid);
                     }
                 }
             }
+        }
+    }
+
+    /// Removes the full leaf.
+    ///
+    /// The first value of the result tuple indicates that a retry is required.
+    /// The second value of the result tuple indicates that the current leaf node is invalidated.
+    fn remove_full_leaf(
+        &self,
+        invalid: bool,
+        leaf_shared: Shared<Leaf<K, V>>,
+        leaf_ptr: &Atomic<Leaf<K, V>>,
+        leaves: &(Leaf<K, Atomic<Leaf<K, V>>>, Atomic<Leaf<K, V>>),
+        new_leaves: &Atomic<NewLeaves<K, V>>,
+        guard: &Guard,
+    ) -> (bool, bool) {
+        // there is a chance that the target key value pair has been copied to new_leaves
+        if !invalid {
+            if !new_leaves.load(Acquire, guard).is_null() {
+                return (true, false);
+            }
+            if leaf_ptr.load(Relaxed, guard) != leaf_shared {
+                return (true, false);
+            }
+            return (false, false);
+        } else {
+            // if locked and the pointer has remained the same, invalidate the leaf, and return invalid
+            let new_leaves_ptr: Shared<NewLeaves<K, V>> = Shared::null();
+            let mut new_leaves_dummy = NewLeaves {
+                origin_leaf_key: None,
+                origin_leaf_ptr: Atomic::null(),
+                low_key_leaf: None,
+                high_key_leaf: None,
+            };
+            if let Err(error) = new_leaves.compare_and_set(
+                Shared::null(),
+                unsafe { Owned::from_raw(&mut new_leaves_dummy as *mut NewLeaves<K, V>) },
+                Acquire,
+                guard,
+            ) {
+                error.new.into_shared(guard);
+                return (true, false);
+            }
+            let lock_guard = scopeguard::guard(new_leaves, |new_leaves| {
+                new_leaves.store(Shared::null(), Release);
+            });
+
+            if leaf_ptr.load(Relaxed, guard) != leaf_shared {
+                return (true, false);
+            }
+
+            // [TODO]
+
+            return (false, false);
         }
     }
 
@@ -598,7 +683,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                         .as_ref()
                         .map_or_else(|| false, |key| entry.0.cmp(key) == Ordering::Equal)
                     {
-                        // link state adjustment not required as the linked list is correctly constructed by the remedy_leaf_node_link function
+                        // link state adjustment not required as the linked list is correctly constructed by the remediate_leaf_node_link function
                         if let Some(node) = new_children_ref.low_key_node.take() {
                             entries[0].replace((
                                 new_children_ref.middle_key.as_ref().unwrap().clone(),
@@ -830,7 +915,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 let immediate_less_key_node = self_children
                     .0
                     .max_less(new_split_nodes_ref.middle_key.as_ref().unwrap());
-                self.remedy_leaf_node_link(
+                self.remediate_leaf_node_link(
                     self_min_node_anchor,
                     immediate_less_key_node,
                     &leaf_nodes.0,
@@ -888,8 +973,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         Ok(())
     }
 
-    /// Remedy the broken link state
-    fn remedy_leaf_node_link(
+    /// Remediates the broken link state
+    fn remediate_leaf_node_link(
         &self,
         min_node_anchor: &Atomic<LeafNodeAnchor<K, V>>,
         immediate_less_key_node: Option<(&K, &Atomic<Node<K, V>>)>,
@@ -1059,6 +1144,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         Ok(())
     }
 
+    /// Returns or allocates a new unbounded node
     fn unbounded_node<'a>(&self, guard: &'a Guard) -> Shared<'a, Node<K, V>> {
         match &self.entry {
             NodeType::InternalNode {
@@ -1090,6 +1176,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         }
     }
 
+    /// Returns or allocates a new unbounded leaf
     fn unbounded_leaf<'a>(&self, guard: &'a Guard) -> Shared<'a, Leaf<K, V>> {
         match &self.entry {
             NodeType::InternalNode {

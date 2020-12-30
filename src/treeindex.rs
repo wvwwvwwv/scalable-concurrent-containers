@@ -113,20 +113,23 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
     /// assert!(result);
     /// ```
     pub fn remove(&self, key: &K) -> bool {
+        let mut has_been_removed = false;
         let guard = crossbeam_epoch::pin();
         let mut root_node = self.root.load(Acquire, &guard);
         loop {
             if root_node.is_null() {
-                return false;
+                return has_been_removed;
             }
             let root_node_ref = unsafe { root_node.deref() };
-            if root_node_ref.remove(key, &guard) {
-                return true;
+            let (removed, retry, invalid) = root_node_ref.remove(key, &guard);
+            if removed && !has_been_removed {
+                has_been_removed = true;
             }
             let root_node_new = self.root.load(Acquire, &guard);
-            if root_node == root_node_new {
-                return false;
+            if !retry && root_node == root_node_new {
+                return has_been_removed;
             }
+            // [TODO] handle 'invalid'
             root_node = root_node_new;
         }
     }
