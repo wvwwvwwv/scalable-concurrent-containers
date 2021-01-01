@@ -121,7 +121,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
                 return has_been_removed;
             }
             let root_node_ref = unsafe { root_node.deref() };
-            let (removed, retry, invalid) = root_node_ref.remove(key, &guard);
+            let (removed, retry, invalidate) = root_node_ref.remove(key, &guard);
             if removed && !has_been_removed {
                 has_been_removed = true;
             }

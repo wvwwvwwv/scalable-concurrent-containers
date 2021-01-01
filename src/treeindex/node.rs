@@ -356,7 +356,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
     ///
     /// The first value of the result tuple indicates that the key has been removed.
     /// The second value of the result tuple indicates that a retry is required.
-    /// The third value of the result tuple indicates that the leaf/node is no longer valid.
+    /// The third value of the result tuple indicates that the leaf/node has become obsolete.
     pub fn remove<'a>(&'a self, key: &K, guard: &'a Guard) -> (bool, bool, bool) {
         match &self.entry {
             NodeType::InternalNode {
@@ -395,25 +395,26 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 loop {
                     let unbounded_leaf = (leaves.1).load(Relaxed, guard);
                     let result = (leaves.0).min_greater_equal(&key);
-                    if let Some((_, child)) = result.0 {
+                    if let Some((child_key, child)) = result.0 {
                         let child_leaf = child.load(Acquire, guard);
                         if !(leaves.0).validate(result.1) {
                             // data race resolution: validate metadata - see the 'search' function
                             continue;
                         }
-                        let (removed, full, invalid) = unsafe { child_leaf.deref().remove(key) };
+                        let (removed, full, unusable) = unsafe { child_leaf.deref().remove(key) };
                         if !full {
                             return (removed, false, false);
                         }
-                        let (retry, invalid) = self.remove_full_leaf(
-                            invalid,
-                            unbounded_leaf,
-                            &leaves.1,
+                        let (retry, obsolete) = self.remove_full_leaf(
+                            unusable,
+                            Some(child_key),
+                            child_leaf,
+                            &child,
                             leaves,
                             new_leaves,
                             guard,
                         );
-                        return (removed, retry, invalid);
+                        return (removed, retry, obsolete);
                     } else if unbounded_leaf == leaves.1.load(Acquire, guard) {
                         if !(leaves.0).validate(result.1) {
                             // data race resolution: validate metadata - see the 'search' function
@@ -422,20 +423,21 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                         if unbounded_leaf.is_null() {
                             return (false, false, false);
                         }
-                        let (removed, full, invalid) =
+                        let (removed, full, unusable) =
                             unsafe { unbounded_leaf.deref().remove(key) };
                         if !full {
                             return (removed, false, false);
                         }
-                        let (retry, invalid) = self.remove_full_leaf(
-                            invalid,
+                        let (retry, obsolete) = self.remove_full_leaf(
+                            unusable,
+                            None,
                             unbounded_leaf,
                             &leaves.1,
                             leaves,
                             new_leaves,
                             guard,
                         );
-                        return (removed, retry, invalid);
+                        return (removed, retry, obsolete);
                     }
                 }
             }
@@ -445,10 +447,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
     /// Removes the full leaf.
     ///
     /// The first value of the result tuple indicates that a retry is required.
-    /// The second value of the result tuple indicates that the current leaf node is invalidated.
+    /// The second value of the result tuple indicates that the current leaf node has become obsolete.
     fn remove_full_leaf(
         &self,
-        invalid: bool,
+        unusable: bool,
+        child_key: Option<&K>,
         leaf_shared: Shared<Leaf<K, V>>,
         leaf_ptr: &Atomic<Leaf<K, V>>,
         leaves: &(Leaf<K, Atomic<Leaf<K, V>>>, Atomic<Leaf<K, V>>),
@@ -456,7 +459,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         guard: &Guard,
     ) -> (bool, bool) {
         // there is a chance that the target key value pair has been copied to new_leaves
-        if !invalid {
+        if !unusable {
             if !new_leaves.load(Acquire, guard).is_null() {
                 return (true, false);
             }
@@ -466,7 +469,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             return (false, false);
         } else {
             // if locked and the pointer has remained the same, invalidate the leaf, and return invalid
-            let new_leaves_ptr: Shared<NewLeaves<K, V>> = Shared::null();
             let mut new_leaves_dummy = NewLeaves {
                 origin_leaf_key: None,
                 origin_leaf_ptr: Atomic::null(),
@@ -486,13 +488,37 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 new_leaves.store(Shared::null(), Release);
             });
 
-            if leaf_ptr.load(Relaxed, guard) != leaf_shared {
+            let obsolete_leaf = leaf_ptr.load(Relaxed, guard);
+            if obsolete_leaf != leaf_shared {
                 return (true, false);
             }
 
-            // [TODO]
+            let obsolete = child_key.map_or_else(
+                || {
+                    // unbounded leaf: do not deallocate
+                    leaves.0.unusable()
+                },
+                |key| {
+                    // bounded leaf
+                    let obsolete = leaves.0.remove(key).2;
+                    // once the key is removed, it is safe to deallocate the leaf as the validation loop ensures the absence of readers
+                    leaf_ptr.store(Shared::null(), Release);
+                    unsafe { guard.defer_destroy(obsolete_leaf) };
+                    if obsolete {
+                        let unbounded_leaf = leaves.1.load(Acquire, guard);
+                        if unbounded_leaf.is_null() {
+                            false
+                        } else {
+                            unsafe { unbounded_leaf.deref().unusable() }
+                        }
+                    } else {
+                        false
+                    }
+                },
+            );
 
-            return (false, false);
+            drop(lock_guard);
+            return (false, obsolete);
         }
     }
 

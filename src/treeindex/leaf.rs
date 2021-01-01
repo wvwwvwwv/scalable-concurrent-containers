@@ -56,6 +56,13 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         cardinality + removed == ARRAY_SIZE
     }
 
+    /// Returns true if the leaf is unusable.
+    pub fn unusable(&self) -> bool {
+        let metadata = self.metadata.load(Relaxed);
+        let removed = ((metadata & REMOVED) / REMOVED_BIT) as usize;
+        removed == ARRAY_SIZE
+    }
+
     /// Returns a reference to the max key.
     pub fn max_key(&self) -> Option<&K> {
         let metadata = self.metadata.load(Acquire);
