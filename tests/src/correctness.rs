@@ -168,6 +168,7 @@ mod hashmap_test {
 
     #[test]
     fn cursor() {
+        let data_size = 4096;
         for _ in 0..64 {
             let hashmap: Arc<HashMap<u64, u64, RandomState>> = Arc::new(Default::default());
             let hashmap_copied = hashmap.clone();
@@ -175,7 +176,10 @@ mod hashmap_test {
             let barrier_copied = barrier.clone();
             let inserted = Arc::new(AtomicU64::new(0));
             let inserted_copied = inserted.clone();
+            let removed = Arc::new(AtomicU64::new(data_size));
+            let removed_copied = removed.clone();
             let thread_handle = thread::spawn(move || {
+                // test insert
                 for _ in 0..2 {
                     barrier_copied.wait();
                     let mut scanned = 0;
@@ -190,14 +194,35 @@ mod hashmap_test {
                         assert!(checker.contains(&key));
                     }
                 }
+                // test remove
+                for _ in 0..2 {
+                    barrier_copied.wait();
+                    let mut scanned = 0;
+                    let max = removed_copied.load(Acquire);
+                    for iter in hashmap_copied.iter() {
+                        scanned += 1;
+                        assert!(*iter.0 < max);
+                    }
+                    println!("scanned: {}, max: {}", scanned, max);
+                }
             });
+            // insert
             barrier.wait();
-            for i in 0..4096 {
-                if i == 1024 {
+            for i in 0..data_size {
+                if i == data_size / 2 {
                     barrier.wait();
                 }
                 assert!(hashmap.insert(i, i).is_ok());
                 inserted.store(i, Release);
+            }
+            // remove
+            barrier.wait();
+            for i in (0..data_size).rev() {
+                if i == data_size / 2 {
+                    barrier.wait();
+                }
+                assert!(hashmap.remove(&i).is_some());
+                removed.store(i, Release);
             }
             thread_handle.join().unwrap();
         }
@@ -466,6 +491,7 @@ mod treeindex_test {
 
     #[test]
     fn scanner() {
+        let data_size = 4096;
         for _ in 0..64 {
             let tree: Arc<TreeIndex<usize, u64>> = Arc::new(Default::default());
             let tree_copied = tree.clone();
@@ -473,7 +499,10 @@ mod treeindex_test {
             let barrier_copied = barrier.clone();
             let inserted = Arc::new(AtomicUsize::new(0));
             let inserted_copied = inserted.clone();
+            let removed = Arc::new(AtomicUsize::new(data_size));
+            let removed_copied = removed.clone();
             let thread_handle = thread::spawn(move || {
+                // test insert
                 for _ in 0..2 {
                     barrier_copied.wait();
                     let mut scanned = 0;
@@ -491,14 +520,37 @@ mod treeindex_test {
                         assert!(checker.contains(&key));
                     }
                 }
+                // test remove
+                for _ in 0..2 {
+                    barrier_copied.wait();
+                    let mut prev = 0;
+                    let max = removed_copied.load(Acquire);
+                    for iter in tree_copied.iter() {
+                        let current = *iter.0;
+                        assert!(current < max);
+                        assert!(prev + 1 == current || prev == 0);
+                        prev = current;
+                    }
+                    println!("scanned: {}, max: {}", prev + 1, max);
+                }
             });
+            // insert
             barrier.wait();
-            for i in 0..4096 {
-                if i == 1024 {
+            for i in 0..data_size {
+                if i == data_size / 2 {
                     barrier.wait();
                 }
                 assert!(tree.insert(i, 0).is_ok());
                 inserted.store(i, Release);
+            }
+            // remove
+            barrier.wait();
+            for i in (0..data_size).rev() {
+                if i == data_size / 2 {
+                    barrier.wait();
+                }
+                assert!(tree.remove(&i));
+                removed.store(i, Release);
             }
             thread_handle.join().unwrap();
         }
