@@ -1,14 +1,14 @@
 [package]
 name = "scc"
 description = "scalable concurrent data structures for database management systems"
-version = "0.3.12"
+version = "0.3.13"
 authors = ["wvwwvwwv <wvwwvwwv@me.com>", "Changgyoo Park <changgyoo.park@sap.com>"]
 edition = "2018"
 readme = "README.md"
 repository = "https://github.com/wvwwvwwv/scc/"
 license = "MIT"
 categories = ["concurrency", "data-structures"]
-keywords = ["concurrent", "hashmap", "map"]
+keywords = ["concurrent", "hashmap", "map", "tree", "index"]
 
 [dependencies]
 crossbeam-epoch = "^0.9.1"

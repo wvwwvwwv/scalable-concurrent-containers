@@ -1,11 +1,15 @@
 extern crate crossbeam_epoch;
 
+pub mod error;
 pub mod leaf;
+pub mod leafnode;
 pub mod node;
 
 use crossbeam_epoch::{Atomic, Guard};
+use error::Error;
 use leaf::Leaf;
-use node::{Error, LeafNodeScanner, Node};
+use leafnode::LeafNodeScanner;
+use node::Node;
 use std::fmt;
 use std::sync::atomic::Ordering::Acquire;
 
