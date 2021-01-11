@@ -1,9 +1,10 @@
 use super::leaf::{LeafScanner, ARRAY_SIZE};
-use super::Error;
 use super::Leaf;
+use super::{InsertError, RemoveError};
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::cmp::Ordering;
 use std::fmt::Display;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 /// Leaf node.
@@ -20,6 +21,10 @@ pub struct LeafNode<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
     next_node_anchor: Atomic<LeafNodeAnchor<K, V>>,
     /// A pointer that points to an adjacent leaf node.
     side_link: Atomic<LeafNode<K, V>>,
+    /// Indicates that the node is obsolete.
+    ///
+    /// The value is set only when the node is locked.
+    obsolete: AtomicBool,
 }
 
 impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
@@ -29,6 +34,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             new_leaves: Atomic::null(),
             next_node_anchor: Atomic::null(),
             side_link: Atomic::null(),
+            obsolete: AtomicBool::new(false),
         }
     }
 
@@ -36,13 +42,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         self.leaves.0.full() && !self.leaves.1.load(Relaxed, guard).is_null()
     }
 
-    pub fn unusable(&self, guard: &Guard) -> bool {
-        let unbounded_leaf = self.leaves.1.load(Relaxed, guard);
-        if !unbounded_leaf.is_null() {
-            self.leaves.0.unusable() && unsafe { unbounded_leaf.deref().unusable() }
-        } else {
-            false
-        }
+    pub fn obsolete(&self) -> bool {
+        self.obsolete.load(Relaxed)
     }
 
     pub fn unlink(&self) {
@@ -89,7 +90,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         None
     }
 
-    pub fn insert(&self, key: K, value: V, guard: &Guard) -> Result<(), Error<K, V>> {
+    pub fn insert(&self, key: K, value: V, guard: &Guard) -> Result<(), InsertError<K, V>> {
         loop {
             let unbounded_leaf = self.leaves.1.load(Relaxed, guard);
             let result = (self.leaves.0).min_greater_equal(&key);
@@ -103,7 +104,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                     || Ok(()),
                     |result| {
                         if result.1 {
-                            return Err(Error::Duplicated(result.0));
+                            return Err(InsertError::Duplicated(result.0));
                         }
                         debug_assert!(unsafe { child_leaf.deref().full() });
                         self.split_leaf(
@@ -125,7 +126,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                     || Ok(()),
                     |result| {
                         if result.1 {
-                            return Err(Error::Duplicated(result.0));
+                            return Err(InsertError::Duplicated(result.0));
                         }
                         debug_assert!(unsafe { unbounded_leaf.deref().full() });
                         self.split_leaf(result.0, None, unbounded_leaf, &self.leaves.1, guard)
@@ -135,8 +136,12 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         }
     }
 
-    pub fn remove<'a>(&'a self, key: &K, guard: &'a Guard) -> (bool, bool, bool) {
+    pub fn remove<'a>(&'a self, key: &K, guard: &'a Guard) -> Result<bool, RemoveError> {
         loop {
+            if self.obsolete.load(Relaxed) {
+                // it finds the node obsolete
+                return Err(RemoveError::Obsolete(false));
+            }
             let unbounded_leaf = (self.leaves.1).load(Relaxed, guard);
             let result = (self.leaves.0).min_greater_equal(&key);
             if let Some((child_key, child)) = result.0 {
@@ -147,26 +152,36 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 }
                 let (removed, full, unusable) = unsafe { child_leaf.deref().remove(key) };
                 if !full {
-                    return (removed, false, false);
+                    return Ok(removed);
                 }
-                let (retry, obsolete) =
-                    self.remove_full_leaf(unusable, Some(child_key), child_leaf, &child, guard);
-                return (removed, retry, obsolete);
+                return self.remove_full_leaf(
+                    removed,
+                    unusable,
+                    Some(child_key),
+                    child_leaf,
+                    &child,
+                    guard,
+                );
             } else if unbounded_leaf == self.leaves.1.load(Acquire, guard) {
                 if !(self.leaves.0).validate(result.1) {
                     // data race resolution: validate metadata - see the 'search' function
                     continue;
                 }
                 if unbounded_leaf.is_null() {
-                    return (false, false, false);
+                    return Ok(false);
                 }
                 let (removed, full, unusable) = unsafe { unbounded_leaf.deref().remove(key) };
                 if !full {
-                    return (removed, false, false);
+                    return Ok(removed);
                 }
-                let (retry, obsolete) =
-                    self.remove_full_leaf(unusable, None, unbounded_leaf, &self.leaves.1, guard);
-                return (removed, retry, obsolete);
+                return self.remove_full_leaf(
+                    removed,
+                    unusable,
+                    None,
+                    unbounded_leaf,
+                    &self.leaves.1,
+                    guard,
+                );
             }
         }
     }
@@ -177,6 +192,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 .swap(Shared::null(), Release, guard)
                 .into_owned()
         };
+    }
+
+    pub fn next_node_anchor<'a>(&self, guard: &'a Guard) -> Shared<'a, LeafNodeAnchor<K, V>> {
+        self.next_node_anchor.load(Relaxed, guard)
+    }
+
+    pub fn side_link<'a>(&self, guard: &'a Guard) -> Shared<'a, LeafNode<K, V>> {
+        self.side_link.load(Relaxed, guard)
     }
 
     pub fn update_next_node_anchor(&self, ptr: Shared<LeafNodeAnchor<K, V>>) {
@@ -217,7 +240,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 .map_or_else(|| false, |key| entry.0.cmp(key) == Ordering::Equal)
             {
                 if let Some(leaf) = new_leaves_ref.low_key_leaf.take() {
-                    entries[0].replace((leaf.max_key().unwrap().clone(), Atomic::from(leaf)));
+                    entries[0].replace((leaf.max().unwrap().0.clone(), Atomic::from(leaf)));
                 }
                 if let Some(leaf) = new_leaves_ref.high_key_leaf.take() {
                     entries[1].replace((
@@ -254,11 +277,9 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             high_key_leaves.1.store(unbounded_leaf, Relaxed);
         } else {
             if let Some(leaf) = new_leaves_ref.low_key_leaf.take() {
-                high_key_leaves.0.insert(
-                    leaf.max_key().unwrap().clone(),
-                    Atomic::from(leaf),
-                    false,
-                );
+                high_key_leaves
+                    .0
+                    .insert(leaf.max().unwrap().0.clone(), Atomic::from(leaf), false);
             }
             if let Some(leaf) = new_leaves_ref.high_key_leaf.take() {
                 high_key_leaves.1.store(Owned::from(leaf), Relaxed);
@@ -302,6 +323,35 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         }
     }
 
+    pub fn coalesce_next_node_anchor<'a>(
+        &self,
+        guard: &'a Guard,
+    ) -> Shared<'a, LeafNodeAnchor<K, V>> {
+        let mut next_node_anchor = self.next_node_anchor.load(Relaxed, guard);
+        while !next_node_anchor.is_null() {
+            let next_node_anchor_ref = unsafe { next_node_anchor.deref() };
+            let next_next_node_anchor = next_node_anchor_ref.next_node_anchor.load(Acquire, guard);
+            if !next_next_node_anchor.is_null() {
+                // it is safe to remove the current next_node_anchor
+                match self.next_node_anchor.compare_and_set(
+                    next_node_anchor,
+                    next_next_node_anchor,
+                    Release,
+                    guard,
+                ) {
+                    Ok(result) => {
+                        unsafe { guard.defer_destroy(next_node_anchor) };
+                        next_node_anchor = result;
+                    }
+                    Err(result) => next_node_anchor = result.current,
+                };
+            } else {
+                break;
+            }
+        }
+        next_node_anchor
+    }
+
     /// Returns or allocates a new unbounded leaf
     fn unbounded_leaf<'a>(&self, guard: &'a Guard) -> Shared<'a, Leaf<K, V>> {
         let shared_ptr = self.leaves.1.load(Relaxed, guard);
@@ -327,7 +377,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         full_leaf_shared: Shared<Leaf<K, V>>,
         full_leaf_ptr: &Atomic<Leaf<K, V>>,
         guard: &Guard,
-    ) -> Result<(), Error<K, V>> {
+    ) -> Result<(), InsertError<K, V>> {
         let mut new_leaves_ptr;
         match self.new_leaves.compare_and_set(
             Shared::null(),
@@ -341,15 +391,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             guard,
         ) {
             Ok(result) => new_leaves_ptr = result,
-            Err(_) => return Err(Error::Retry(entry)),
+            Err(_) => return Err(InsertError::Retry(entry)),
         }
 
-        // check the full leaf pointer after locking the leaf node
-        if full_leaf_shared != full_leaf_ptr.load(Relaxed, guard) {
-            // overtaken by another thread
+        // check the full leaf pointer and the leaf node state after locking the leaf node
+        if full_leaf_shared != full_leaf_ptr.load(Relaxed, guard) || self.obsolete.load(Relaxed) {
             let unused_leaf = self.new_leaves.swap(Shared::null(), Relaxed, guard);
             drop(unsafe { unused_leaf.into_owned() });
-            return Err(Error::Retry(entry));
+            return Err(InsertError::Retry(entry));
         }
         debug_assert!(unsafe { full_leaf_shared.deref().full() });
 
@@ -408,8 +457,9 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 .low_key_leaf
                 .as_ref()
                 .unwrap()
-                .max_key()
-                .unwrap();
+                .max()
+                .unwrap()
+                .0;
             if let Some(leaf) = self.leaves.0.insert(
                 max_key.clone(),
                 Atomic::from(new_leaves_ref.low_key_leaf.take().unwrap()),
@@ -419,7 +469,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 new_leaves_ref
                     .low_key_leaf
                     .replace(unsafe { (leaf.0).1.into_owned().into_box() });
-                return Err(Error::Full(entry));
+                return Err(InsertError::Full(entry));
             }
 
             // replace the full leaf with the high-key leaf
@@ -452,21 +502,25 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
     /// The second value of the result tuple indicates that the current leaf node has become obsolete.
     fn remove_full_leaf(
         &self,
+        removed: bool,
         unusable: bool,
         child_key: Option<&K>,
         leaf_shared: Shared<Leaf<K, V>>,
         leaf_ptr: &Atomic<Leaf<K, V>>,
         guard: &Guard,
-    ) -> (bool, bool) {
-        // there is a chance that the target key value pair has been copied to new_leaves
+    ) -> Result<bool, RemoveError> {
         if !unusable {
+            // there is a chance that the target key value pair has been copied to new_leaves.
+            //  - remove: release(leaf)|load(mutex)|acquire|load(leaf_ptr)
+            //  - insert: load(leaf)|store(mutex)|acquire|release|store(leaf_ptr)|release|store(mutex)
+            // the remove thread either reads the locked mutex state or the updated leaf pointer value.
             if !self.new_leaves.load(Acquire, guard).is_null() {
-                return (true, false);
+                return Err(RemoveError::Retry(removed));
             }
             if leaf_ptr.load(Relaxed, guard) != leaf_shared {
-                return (true, false);
+                return Err(RemoveError::Retry(removed));
             }
-            (false, false)
+            return Ok(removed);
         } else {
             // if locked and the pointer has remained the same, invalidate the leaf, and return invalid
             let mut new_leaves_dummy = NewLeaves {
@@ -481,16 +535,17 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 Acquire,
                 guard,
             ) {
+                // need to convert the new value into a shared pointer in order not to deallocate it
                 error.new.into_shared(guard);
-                return (true, false);
+                return Err(RemoveError::Retry(removed));
             }
-            let lock_guard = scopeguard::guard(&self.new_leaves, |new_leaves| {
+            let _lock_guard = scopeguard::guard(&self.new_leaves, |new_leaves| {
                 new_leaves.store(Shared::null(), Release);
             });
 
             let obsolete_leaf = leaf_ptr.load(Relaxed, guard);
             if obsolete_leaf != leaf_shared {
-                return (true, false);
+                return Err(RemoveError::Retry(removed));
             }
 
             let obsolete = child_key.map_or_else(
@@ -506,27 +561,26 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                     unsafe { guard.defer_destroy(obsolete_leaf) };
                     if obsolete {
                         let unbounded_leaf = self.leaves.1.load(Acquire, guard);
-                        if unbounded_leaf.is_null() {
-                            false
-                        } else {
-                            unsafe { unbounded_leaf.deref().unusable() }
-                        }
+                        unsafe { unbounded_leaf.deref().unusable() }
                     } else {
                         false
                     }
                 },
             );
-
-            drop(lock_guard);
-            (false, obsolete)
+            if obsolete {
+                self.obsolete.store(true, Relaxed);
+                Err(RemoveError::Obsolete(removed))
+            } else {
+                Ok(removed)
+            }
         }
     }
 
     fn next<'a>(&self, guard: &'a Guard) -> Option<&'a LeafNode<K, V>> {
-        let next_node_anchor = self.next_node_anchor.load(Relaxed, guard);
+        let next_node_anchor = self.coalesce_next_node_anchor(guard);
         if !next_node_anchor.is_null() {
-            let next_leaf_node_ptr =
-                unsafe { next_node_anchor.deref().min_leaf_node.load(Acquire, guard) };
+            let next_node_anchor_ref = unsafe { next_node_anchor.deref() };
+            let next_leaf_node_ptr = next_node_anchor_ref.min_leaf_node.load(Acquire, guard);
             if !next_leaf_node_ptr.is_null() {
                 return Some(unsafe { next_leaf_node_ptr.deref() });
             }
@@ -721,18 +775,31 @@ pub struct NewLeaves<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
 }
 
 /// Minimum leaf node anchor for Scanner.
+///
+/// An instance of LeafNodeAnchor is deallocated by Scanner, or adjacent node cleanup.
 pub struct LeafNodeAnchor<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
+    /// Next node anchor pointer.
+    ///
+    /// It is only set when the owner node is being deprecated.
+    next_node_anchor: Atomic<LeafNodeAnchor<K, V>>,
+    /// Minimum leaf node pointer.
     min_leaf_node: Atomic<LeafNode<K, V>>,
 }
 
 impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNodeAnchor<K, V> {
     pub fn new() -> LeafNodeAnchor<K, V> {
         LeafNodeAnchor {
+            next_node_anchor: Atomic::null(),
             min_leaf_node: Atomic::null(),
         }
     }
 
     pub fn set(&self, ptr: Atomic<LeafNode<K, V>>, guard: &Guard) {
         self.min_leaf_node.store(ptr.load(Relaxed, guard), Release);
+    }
+
+    pub fn deprecate(&self, ptr: Shared<LeafNodeAnchor<K, V>>, guard: &Guard) {
+        debug_assert!(self.next_node_anchor.load(Relaxed, guard).is_null());
+        self.next_node_anchor.swap(ptr, Release, guard);
     }
 }

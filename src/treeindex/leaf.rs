@@ -64,7 +64,7 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
     }
 
     /// Returns a reference to the max key.
-    pub fn max_key(&self) -> Option<&K> {
+    pub fn max(&self) -> Option<(&K, &V)> {
         let metadata = self.metadata.load(Acquire);
         let mut max_rank = 0;
         let mut max_index = ARRAY_SIZE;
@@ -77,7 +77,7 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
             }
         }
         if max_rank > 0 {
-            return Some(self.read(max_index).0);
+            return Some(self.read(max_index));
         }
         None
     }
@@ -370,6 +370,41 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
             return (Some(self.read(min_max_index)), metadata);
         }
         (None, metadata)
+    }
+
+    /// Returns the minimum entry among those that are Ordering::Greater than the given key.
+    pub fn min_greater(&self, key: &K) -> Option<(&K, &V)> {
+        let metadata = self.metadata.load(Acquire);
+        let mut max_min_rank = 0;
+        let mut min_max_rank = ARRAY_SIZE + 1;
+        let mut min_max_index = ARRAY_SIZE;
+        for i in 0..ARRAY_SIZE {
+            let rank = ((metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
+                >> (i * INDEX_RANK_ENTRY_SIZE)) as usize;
+            if rank > max_min_rank && rank < min_max_rank && (metadata & (OCCUPANCY_BIT << i)) != 0
+            {
+                match self.compare(i, key) {
+                    Ordering::Less => {
+                        if max_min_rank < rank {
+                            max_min_rank = rank;
+                        }
+                    }
+                    Ordering::Greater => {
+                        if min_max_rank > rank {
+                            min_max_rank = rank;
+                            min_max_index = i;
+                        }
+                    }
+                    Ordering::Equal => {
+                        max_min_rank = rank;
+                    }
+                }
+            }
+        }
+        if min_max_rank <= ARRAY_SIZE {
+            return Some(self.read(min_max_index));
+        }
+        None
     }
 
     /// Returns the maximum entry among those that are Ordering::Less than the given key.
@@ -734,7 +769,7 @@ mod test {
         assert_eq!(leaf.cardinality(), 0);
         assert!(leaf.insert(50, 51, false).is_none());
         assert_eq!(leaf.cardinality(), 1);
-        assert_eq!(leaf.max_key(), Some(&50));
+        assert_eq!(leaf.max(), Some((&50, &51)));
         assert!(leaf.insert(60, 60, false).is_none());
         assert_eq!(leaf.cardinality(), 2);
         assert!(leaf.insert(70, 71, false).is_none());
@@ -764,7 +799,7 @@ mod test {
         assert!(leaf.insert(54, 55, false).is_none());
         assert!(leaf.insert(13, 14, true).is_none());
         assert_eq!(leaf.cardinality(), 8);
-        assert_eq!(leaf.max_key(), Some(&70));
+        assert_eq!(leaf.max(), Some((&70, &71)));
         assert!(leaf.full());
 
         let mut scanner = LeafScanner::new(&leaf);
@@ -820,7 +855,7 @@ mod test {
         assert_eq!(leaf.max_less(&11), Some((&10, &11)));
         assert_eq!(leaf.max_less(&12), Some((&11, &12)));
         assert_eq!(leaf.max_less(&100), Some((&20, &21)));
-        assert_eq!(leaf.max_key(), Some(&20));
+        assert_eq!(leaf.max(), Some((&20, &21)));
         assert_eq!(leaf.cardinality(), 3);
         assert_eq!(leaf.insert(11, 12, false), Some(((11, 12), true)));
         assert_eq!(leaf.cardinality(), 3);
@@ -866,7 +901,7 @@ mod test {
         assert_eq!(*leaf.search(&20).unwrap(), 21);
         assert!(leaf.insert(10, 11, false).is_none());
         assert!(leaf.insert(15, 16, false).is_none());
-        assert_eq!(leaf.max_key(), Some(&20));
+        assert_eq!(leaf.max(), Some((&20, &21)));
         assert!(leaf.full());
         assert_eq!(leaf.cardinality(), 8);
 

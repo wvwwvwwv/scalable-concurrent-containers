@@ -5,13 +5,14 @@ pub mod leaf;
 pub mod leafnode;
 pub mod node;
 
-use crossbeam_epoch::{Atomic, Guard};
-use error::Error;
+use crossbeam_epoch::{Atomic, Guard, Owned};
+use error::{InsertError, RemoveError};
 use leaf::Leaf;
 use leafnode::LeafNodeScanner;
 use node::Node;
 use std::fmt;
 use std::sync::atomic::Ordering::Acquire;
+use std::sync::atomic::Ordering::Relaxed;
 
 /// A scalable concurrent tree map implementation.
 ///
@@ -53,7 +54,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
     /// ```
     pub fn new() -> TreeIndex<K, V> {
         TreeIndex {
-            root: Atomic::new(Node::new(0)),
+            root: Atomic::null(),
         }
     }
 
@@ -77,20 +78,27 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
     pub fn insert(&self, mut key: K, mut value: V) -> Result<(), (K, V)> {
         loop {
             let guard = crossbeam_epoch::pin();
-            let root_node = self.root.load(Acquire, &guard);
+            let mut root_node = self.root.load(Acquire, &guard);
             if root_node.is_null() {
-                return Err((key, value));
+                let new_root = Owned::new(Node::new(0));
+                match self
+                    .root
+                    .compare_and_set(root_node, new_root, Relaxed, &guard)
+                {
+                    Ok(new_root) => root_node = new_root,
+                    Err(_) => continue,
+                }
             }
             let root_node_ref = unsafe { root_node.deref() };
             match root_node_ref.insert(key, value, &guard) {
                 Ok(_) => return Ok(()),
                 Err(error) => match error {
-                    Error::Duplicated(entry) => return Err(entry),
-                    Error::Full(entry) => {
+                    InsertError::Duplicated(entry) => return Err(entry),
+                    InsertError::Full(entry) => {
                         root_node_ref.split_root(entry, &self.root, &guard);
                         return Ok(());
                     }
-                    Error::Retry(entry) => {
+                    InsertError::Retry(entry) => {
                         key = entry.0;
                         value = entry.1;
                     }
@@ -125,15 +133,25 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
                 return has_been_removed;
             }
             let root_node_ref = unsafe { root_node.deref() };
-            let (removed, retry, invalidate) = root_node_ref.remove(key, &guard);
-            if removed && !has_been_removed {
-                has_been_removed = true;
-            }
+            match root_node_ref.remove(key, &guard) {
+                Ok(removed) => return removed || has_been_removed,
+                Err(remove_error) => match remove_error {
+                    RemoveError::Obsolete(removed) => {
+                        if removed && !has_been_removed {
+                            has_been_removed = true;
+                        }
+                        Node::retire_root(root_node, &self.root, &guard);
+                        return has_been_removed;
+                    }
+                    RemoveError::Retry(removed) => {
+                        if removed && !has_been_removed {
+                            has_been_removed = true;
+                        }
+                    }
+                },
+            };
             let root_node_new = self.root.load(Acquire, &guard);
-            if !retry && root_node == root_node_new {
-                return has_been_removed;
-            }
-            // [TODO] handle 'invalid'
+            // [TODO] handle 'replace'
             root_node = root_node_new;
         }
     }
@@ -225,8 +243,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
 
     /// (work-in-progress) Returns a Scanner that starts from the specified key.
     ///
-    /// The returned Scanner starts scanning from the minimum key-value pair.
-    ///
     /// # Examples
     /// ```
     /// use scc::TreeIndex;
@@ -248,10 +264,25 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     /// ```
     pub fn statistics(&self) -> Statistics {
-        Statistics {
-            capacity: 0,
-            num_entries: 0,
-            depth: 0,
+        let scanner = Scanner::new(self);
+        let root_ptr = self.root.load(Relaxed, &scanner.guard);
+        if root_ptr.is_null() {
+            Statistics {
+                capacity: 0,
+                num_entries: 0,
+                depth: 0,
+            }
+        } else {
+            let root_ref = unsafe { root_ptr.deref() };
+            let mut num_entries = 0;
+            for _ in self.iter() {
+                num_entries += 1;
+            }
+            Statistics {
+                capacity: 0,
+                num_entries,
+                depth: root_ref.floor() + 1,
+            }
         }
     }
 }
