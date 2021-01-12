@@ -246,7 +246,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                     //  - reader: read the metadata not including the intermediate low key node
                     //  - writer: insert the intermediate low key node and replace the high key node pointer
                     //  - reader: read the new high key node pointer
-                    // consequently, the reader may miss keys in the low key node
+                    // consequently, the reader may miss keys in the low key node.
+                    // in order to resolve this, the leaf metadata is validated.
                     continue;
                 }
                 return unsafe { child_node.deref().search(key, guard) };
@@ -290,7 +291,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             if let Some((child_key, child)) = result.0 {
                 let child_node = child.load(Acquire, guard);
                 if !(self.children.0).validate(result.1) {
-                    // data race resolution: validate metadata - see the 'search' function
+                    // data race resolution: validate metadata - see 'InternalNode::search'
                     continue;
                 }
                 match unsafe { child_node.deref().insert(key, value, guard) } {
@@ -312,7 +313,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 }
             } else if unbounded_child == self.unbounded_node(guard) {
                 if !(self.children.0).validate(result.1) {
-                    // data race resolution: validate metadata - see the 'search' function
+                    // data race resolution: validate metadata - see 'InternalNode::search'
                     continue;
                 }
                 // try to insert into the unbounded child, and try to split the unbounded if it is full
@@ -738,7 +739,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             if let Some((child_key, child)) = result.0 {
                 let child_node = child.load(Acquire, guard);
                 if !(self.children.0).validate(result.1) {
-                    // data race resolution: validate metadata - see the 'search' function
+                    // data race resolution: validate metadata - see 'InternalNode::search'
                     continue;
                 }
                 return match unsafe { child_node.deref().remove(key, guard) } {
@@ -750,7 +751,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             }
             if unbounded_node == self.children.1.load(Acquire, guard) {
                 if !(self.children.0).validate(result.1) {
-                    // data race resolution: validate metadata - see the 'search' function
+                    // data race resolution: validate metadata - see 'InternalNode::search'
                     continue;
                 }
                 if unbounded_node.is_null() {

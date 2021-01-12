@@ -393,8 +393,8 @@ mod treeindex_test {
     use proptest::test_runner::TestRunner;
     use scc::TreeIndex;
     use std::collections::BTreeSet;
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering::{Acquire, Release};
+    use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::sync::{Arc, Barrier};
     use std::thread;
 
@@ -458,6 +458,68 @@ mod treeindex_test {
             assert!(prev == 0 || prev < *entry.0);
             assert_eq!(*entry.0, *entry.1);
             prev = *entry.0;
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn complex() {
+        let range = 4096;
+        let num_threads = 16;
+        let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::new());
+        for t in 0..num_threads {
+            // insert markers
+            tree.insert(t * range, t * range);
+        }
+        let stopped: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+        let barrier = Arc::new(Barrier::new(num_threads + 1));
+        let mut thread_handles = Vec::with_capacity(num_threads);
+        for thread_id in 0..num_threads {
+            let tree_copied = tree.clone();
+            let stopped_copied = stopped.clone();
+            let barrier_copied = barrier.clone();
+            thread_handles.push(thread::spawn(move || {
+                let first_key = thread_id * range;
+                barrier_copied.wait();
+                while !stopped_copied.load(Relaxed) {
+                    for key in (first_key + 1)..(first_key + range) {
+                        assert!(tree_copied.insert(key, key).is_ok());
+                    }
+                    for key in (first_key + 1)..(first_key + range) {
+                        assert!(tree_copied
+                            .read(&key, |key, value| assert_eq!(key, value))
+                            .is_some());
+                    }
+                    for key in (first_key + 1)..(first_key + range) {
+                        assert!(tree_copied.remove(&key));
+                        assert!(!tree_copied.remove(&key));
+                    }
+                    for key in (first_key + 1)..(first_key + range) {
+                        assert!(tree_copied
+                            .read(&key, |key, value| assert_eq!(key, value))
+                            .is_none());
+                    }
+                }
+            }));
+        }
+        barrier.wait();
+        for _ in 0..4096 {
+            let mut found_markers = 0;
+            let mut prev = 0;
+            for iter in tree.iter() {
+                let current = *iter.0;
+                if current % range == 0 {
+                    found_markers += 1;
+                }
+                assert!(prev == 0 || prev < current);
+                prev = current
+            }
+            assert_eq!(found_markers, num_threads);
+        }
+
+        stopped.store(true, Release);
+        for handle in thread_handles {
+            handle.join().unwrap();
         }
     }
 

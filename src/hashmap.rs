@@ -645,7 +645,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         // procedure is correct.
         //  - the thread reads self.array, and it kills the target cell in the old array
         //    if there is one attached to it, and inserts the key into array.
-        // There are two cases.
+        // there are two cases.
         //  1. the thread reads an old version of self.array.
         //    if there is another thread having read the latest version of self.array,
         //    trying to insert the same key, it will try to kill the cell in the old version

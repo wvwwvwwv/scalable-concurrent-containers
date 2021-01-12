@@ -178,7 +178,6 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
     /// Removes the key.
     ///
     /// The first value of the result tuple indicates that the key has been removed,
-    /// The second and third values of the result tuple mean nothing if not removed.
     /// The second value of the result tuple indicates that the leaf is full.
     /// The last value of the result tuple indicates that the leaf is unusable.
     pub fn remove(&self, key: &K) -> (bool, bool, bool) {
@@ -220,17 +219,31 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
                                 );
                             }
                             Err(result) => {
-                                if result & (OCCUPANCY_BIT << i) == 0 {
-                                    return (false, false, false);
-                                }
                                 metadata = result;
+                                if metadata & (OCCUPANCY_BIT << i) == 0 {
+                                    // removed by another thread
+                                    let cardinality =
+                                        (metadata & OCCUPANCY_MASK).count_ones() as usize;
+                                    let removed = ((metadata & REMOVED) / REMOVED_BIT) as usize;
+                                    return (
+                                        false,
+                                        cardinality + removed == ARRAY_SIZE,
+                                        removed == ARRAY_SIZE,
+                                    );
+                                }
                             }
                         }
                     },
                 }
             }
         }
-        (false, false, false)
+        let cardinality = (metadata & OCCUPANCY_MASK).count_ones() as usize;
+        let removed = ((metadata & REMOVED) / REMOVED_BIT) as usize;
+        (
+            false,
+            cardinality + removed == ARRAY_SIZE,
+            removed == ARRAY_SIZE,
+        )
     }
 
     /// Returns a value associated with the key.

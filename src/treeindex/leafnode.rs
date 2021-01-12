@@ -97,7 +97,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             if let Some((child_key, child)) = result.0 {
                 let child_leaf = child.load(Acquire, guard);
                 if !(self.leaves.0).validate(result.1) {
-                    // data race resolution: validate metadata - see the 'search' function
+                    // data race resolution: validate metadata - see 'InternalNode::search'
                     continue;
                 }
                 return unsafe { child_leaf.deref().insert(key, value, false) }.map_or_else(
@@ -118,7 +118,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 );
             } else if unbounded_leaf == self.unbounded_leaf(guard) {
                 if !(self.leaves.0).validate(result.1) {
-                    // data race resolution: validate metadata - see the 'search' function
+                    // data race resolution: validate metadata - see 'InternalNode::search'
                     continue;
                 }
                 // try to insert into the unbounded leaf, and try to split the unbounded if it is full
@@ -147,24 +147,26 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             if let Some((child_key, child)) = result.0 {
                 let child_leaf = child.load(Acquire, guard);
                 if !(self.leaves.0).validate(result.1) {
-                    // data race resolution: validate metadata - see the 'search' function
+                    // data race resolution: validate metadata - see 'InternalNode::search'
                     continue;
                 }
                 let (removed, full, unusable) = unsafe { child_leaf.deref().remove(key) };
                 if !full {
                     return Ok(removed);
+                } else if !unusable {
+                    // data race resolution
+                    //  - insert: start to insert into a full leaf
+                    //  - remove: start removing an entry from the leaf after pointer validation
+                    //  - insert: find the leaf full, thus splitting and update
+                    //  - remove: find the leaf full, and the leaf node is not locked, returning 'Ok(true)'
+                    // consequently, the key remains.
+                    // in order to resolve this, check the pointer again.
+                    return self.check_full_leaf(removed, key, child_leaf, guard);
                 }
-                return self.remove_full_leaf(
-                    removed,
-                    unusable,
-                    Some(child_key),
-                    child_leaf,
-                    &child,
-                    guard,
-                );
+                return self.remove_unusable_leaf(removed, key, Some(child_key), child_leaf, guard);
             } else if unbounded_leaf == self.leaves.1.load(Acquire, guard) {
                 if !(self.leaves.0).validate(result.1) {
-                    // data race resolution: validate metadata - see the 'search' function
+                    // data race resolution: validate metadata - see 'InternalNode::search'
                     continue;
                 }
                 if unbounded_leaf.is_null() {
@@ -173,15 +175,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 let (removed, full, unusable) = unsafe { unbounded_leaf.deref().remove(key) };
                 if !full {
                     return Ok(removed);
+                } else if !unusable {
+                    return self.check_full_leaf(removed, key, unbounded_leaf, guard);
                 }
-                return self.remove_full_leaf(
-                    removed,
-                    unusable,
-                    None,
-                    unbounded_leaf,
-                    &self.leaves.1,
-                    guard,
-                );
+                return self.remove_unusable_leaf(removed, key, None, unbounded_leaf, guard);
             }
         }
     }
@@ -277,9 +274,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             high_key_leaves.1.store(unbounded_leaf, Relaxed);
         } else {
             if let Some(leaf) = new_leaves_ref.low_key_leaf.take() {
-                high_key_leaves
-                    .0
-                    .insert(leaf.max().unwrap().0.clone(), Atomic::from(leaf), false);
+                let max_key = leaf.max().unwrap().0.clone();
+                if middle_key.is_none() {
+                    // the children of the leaf node are all removed, therefore take the max key as middle_key
+                    low_key_leaves.1.store(Owned::from(leaf), Relaxed);
+                    middle_key.replace(max_key);
+                } else {
+                    high_key_leaves.0.insert(max_key, Atomic::from(leaf), false);
+                }
             }
             if let Some(leaf) = new_leaves_ref.high_key_leaf.take() {
                 high_key_leaves.1.store(Owned::from(leaf), Relaxed);
@@ -496,83 +498,99 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         Ok(())
     }
 
+    fn check_full_leaf(
+        &self,
+        removed: bool,
+        key: &K,
+        leaf_shared: Shared<Leaf<K, V>>,
+        guard: &Guard,
+    ) -> Result<bool, RemoveError> {
+        // there is a chance that the target key value pair has been copied to new_leaves.
+        //  - remove: release(leaf)|load(mutex)|acquire|load(leaf_ptr)
+        //  - insert: load(leaf)|store(mutex)|acquire|release|store(leaf_ptr)|release|store(mutex)
+        // the remove thread either reads the locked mutex state or the updated leaf pointer value.
+        if !self.new_leaves.load(Acquire, guard).is_null() {
+            return Err(RemoveError::Retry(removed));
+        }
+        let result = (self.leaves.0).min_greater_equal(&key);
+        let leaf_current_shared = if let Some((_, child)) = result.0 {
+            child.load(Relaxed, guard)
+        } else {
+            self.leaves.1.load(Relaxed, guard)
+        };
+        if leaf_current_shared != leaf_shared {
+            return Err(RemoveError::Retry(removed));
+        }
+        return Ok(removed);
+    }
+
     /// Removes the full leaf.
     ///
     /// The first value of the result tuple indicates that a retry is required.
     /// The second value of the result tuple indicates that the current leaf node has become obsolete.
-    fn remove_full_leaf(
+    fn remove_unusable_leaf(
         &self,
         removed: bool,
-        unusable: bool,
+        key: &K,
         child_key: Option<&K>,
         leaf_shared: Shared<Leaf<K, V>>,
-        leaf_ptr: &Atomic<Leaf<K, V>>,
         guard: &Guard,
     ) -> Result<bool, RemoveError> {
-        if !unusable {
-            // there is a chance that the target key value pair has been copied to new_leaves.
-            //  - remove: release(leaf)|load(mutex)|acquire|load(leaf_ptr)
-            //  - insert: load(leaf)|store(mutex)|acquire|release|store(leaf_ptr)|release|store(mutex)
-            // the remove thread either reads the locked mutex state or the updated leaf pointer value.
-            if !self.new_leaves.load(Acquire, guard).is_null() {
-                return Err(RemoveError::Retry(removed));
-            }
-            if leaf_ptr.load(Relaxed, guard) != leaf_shared {
-                return Err(RemoveError::Retry(removed));
-            }
-            return Ok(removed);
+        // if locked and the pointer has remained the same, invalidate the leaf, and return invalid
+        let mut new_leaves_dummy = NewLeaves {
+            origin_leaf_key: None,
+            origin_leaf_ptr: Atomic::null(),
+            low_key_leaf: None,
+            high_key_leaf: None,
+        };
+        if let Err(error) = self.new_leaves.compare_and_set(
+            Shared::null(),
+            unsafe { Owned::from_raw(&mut new_leaves_dummy as *mut NewLeaves<K, V>) },
+            Acquire,
+            guard,
+        ) {
+            // need to convert the new value into a shared pointer in order not to deallocate it
+            error.new.into_shared(guard);
+            return Err(RemoveError::Retry(removed));
+        }
+        let _lock_guard = scopeguard::guard(&self.new_leaves, |new_leaves| {
+            new_leaves.store(Shared::null(), Release);
+        });
+
+        let result = (self.leaves.0).min_greater_equal(&key);
+        let leaf_ptr = if let Some((_, child)) = result.0 {
+            &child
         } else {
-            // if locked and the pointer has remained the same, invalidate the leaf, and return invalid
-            let mut new_leaves_dummy = NewLeaves {
-                origin_leaf_key: None,
-                origin_leaf_ptr: Atomic::null(),
-                low_key_leaf: None,
-                high_key_leaf: None,
-            };
-            if let Err(error) = self.new_leaves.compare_and_set(
-                Shared::null(),
-                unsafe { Owned::from_raw(&mut new_leaves_dummy as *mut NewLeaves<K, V>) },
-                Acquire,
-                guard,
-            ) {
-                // need to convert the new value into a shared pointer in order not to deallocate it
-                error.new.into_shared(guard);
-                return Err(RemoveError::Retry(removed));
-            }
-            let _lock_guard = scopeguard::guard(&self.new_leaves, |new_leaves| {
-                new_leaves.store(Shared::null(), Release);
-            });
+            &self.leaves.1
+        };
+        if leaf_ptr.load(Relaxed, guard) != leaf_shared {
+            return Err(RemoveError::Retry(removed));
+        }
 
-            let obsolete_leaf = leaf_ptr.load(Relaxed, guard);
-            if obsolete_leaf != leaf_shared {
-                return Err(RemoveError::Retry(removed));
-            }
-
-            let obsolete = child_key.map_or_else(
-                || {
-                    // unbounded leaf: do not deallocate
-                    self.leaves.0.unusable()
-                },
-                |key| {
-                    // bounded leaf
-                    let obsolete = self.leaves.0.remove(key).2;
-                    // once the key is removed, it is safe to deallocate the leaf as the validation loop ensures the absence of readers
-                    leaf_ptr.store(Shared::null(), Release);
-                    unsafe { guard.defer_destroy(obsolete_leaf) };
-                    if obsolete {
-                        let unbounded_leaf = self.leaves.1.load(Acquire, guard);
-                        unsafe { unbounded_leaf.deref().unusable() }
-                    } else {
-                        false
-                    }
-                },
-            );
-            if obsolete {
-                self.obsolete.store(true, Relaxed);
-                Err(RemoveError::Obsolete(removed))
-            } else {
-                Ok(removed)
-            }
+        let obsolete = child_key.map_or_else(
+            || {
+                // unbounded leaf: do not deallocate
+                self.leaves.0.unusable()
+            },
+            |key| {
+                // bounded leaf
+                let obsolete = self.leaves.0.remove(key).2;
+                // once the key is removed, it is safe to deallocate the leaf as the validation loop ensures the absence of readers
+                leaf_ptr.store(Shared::null(), Release);
+                unsafe { guard.defer_destroy(leaf_shared) };
+                if obsolete {
+                    let unbounded_leaf = self.leaves.1.load(Acquire, guard);
+                    unsafe { unbounded_leaf.deref().unusable() }
+                } else {
+                    false
+                }
+            },
+        );
+        if obsolete {
+            self.obsolete.store(true, Relaxed);
+            Err(RemoveError::Obsolete(removed))
+        } else {
+            Ok(removed)
         }
     }
 
@@ -708,7 +726,7 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator
         if self.current_leaf_index == 0 && self.leaf_scanner.is_none() {
             // start scanning
             loop {
-                // data race resolution: validate metadata - see the 'search' function
+                // data race resolution: validate metadata - see 'InternalNode::search'
                 let mut index = 0;
                 let mut scanner = LeafScanner::new(&self.leaf_node.leaves.0);
                 while let Some(entry) = scanner.next() {
