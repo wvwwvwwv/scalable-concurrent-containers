@@ -133,12 +133,13 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         }
     }
 
-    /// Retires the current root node.
-    pub fn retire_root(
+    /// Updates the current root node.
+    pub fn update_root(
         current_root: Shared<Node<K, V>>,
         root_ptr: &Atomic<Node<K, V>>,
         guard: &Guard,
-    ) -> bool {
+    ) {
+        /* [TODO]
         match root_ptr.compare_and_set(current_root, Shared::null(), Relaxed, guard) {
             Ok(_) => {
                 unsafe { guard.defer_destroy(current_root) };
@@ -146,6 +147,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             }
             Err(_) => false,
         }
+        */
     }
 
     /// Checks if the node is full.
@@ -164,14 +166,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         }
     }
 
-    /// Returns true if the node is obsolete.
-    fn obsolete(&self) -> bool {
-        match &self.entry {
-            NodeType::Internal(internal_node) => internal_node.obsolete.load(Relaxed),
-            NodeType::Leaf(leaf_node) => leaf_node.obsolete(),
-        }
-    }
-
     /// Rolls back the ongoing split operation recursively.
     fn rollback(&self, guard: &Guard) {
         match &self.entry {
@@ -185,6 +179,19 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         match &self.entry {
             NodeType::Internal(internal_node) => internal_node.unlink(reset_anchor),
             NodeType::Leaf(leaf_node) => leaf_node.unlink(),
+        }
+    }
+
+    /// Tries to coalesce two adjacent nodes.
+    fn try_coalesce(&self, prev_node_key: &K, prev_node: &Node<K, V>) -> bool {
+        match (&self.entry, &prev_node.entry) {
+            (NodeType::Internal(internal_node), NodeType::Internal(prev_internal_node)) => {
+                internal_node.try_coalesce(prev_node_key, prev_internal_node)
+            }
+            (NodeType::Leaf(leaf_node), NodeType::Leaf(prev_leaf_node)) => {
+                leaf_node.try_coalesce(prev_node_key, prev_leaf_node)
+            }
+            (_, _) => false,
         }
     }
 }
@@ -212,10 +219,6 @@ struct InternalNode<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
     leaf_node_anchor: Atomic<LeafNodeAnchor<K, V>>,
     /// The floor that the node is on.
     floor: usize,
-    /// Indicates that the node is obsolete.
-    ///
-    /// The value is set only when the node is locked.
-    obsolete: AtomicBool,
 }
 
 impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
@@ -226,7 +229,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             new_children: Atomic::null(),
             leaf_node_anchor: Atomic::null(),
             floor,
-            obsolete: AtomicBool::new(false),
         }
     }
 
@@ -744,9 +746,12 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 }
                 return match unsafe { child_node.deref().remove(key, guard) } {
                     Ok(removed) => Ok(removed),
-                    Err(err) => {
-                        self.remove_full_node(err, Some(child_key), child_node, child, guard)
-                    }
+                    Err(remove_error) => match remove_error {
+                        RemoveError::Coalesce(removed) => {
+                            self.coalesce_node(removed, child_key, child_node, guard)
+                        }
+                        RemoveError::Retry(_) => Err(remove_error),
+                    },
                 };
             }
             if unbounded_node == self.children.1.load(Acquire, guard) {
@@ -759,9 +764,16 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 }
                 return match unsafe { unbounded_node.deref().remove(key, guard) } {
                     Ok(removed) => Ok(removed),
-                    Err(err) => {
-                        self.remove_full_node(err, None, unbounded_node, &self.children.1, guard)
-                    }
+                    Err(remove_error) => match remove_error {
+                        RemoveError::Coalesce(removed) => {
+                            if self.children.0.obsolete() {
+                                Err(remove_error)
+                            } else {
+                                Ok(removed)
+                            }
+                        }
+                        RemoveError::Retry(_) => Err(remove_error),
+                    },
                 };
             }
         }
@@ -783,90 +795,83 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         }
     }
 
-    /// Removes the full node.
-    ///
-    /// The first value of the result tuple indicates that a retry is required.
-    /// The second value of the result tuple indicates that the current node has become obsolete.
-    fn remove_full_node(
+    /// Coalesce the node with the adjacent node.
+    fn coalesce_node(
         &self,
-        remove_error: RemoveError,
-        child_key: Option<&K>,
+        removed: bool,
+        child_key: &K,
         node_shared: Shared<Node<K, V>>,
-        node_ptr: &Atomic<Node<K, V>>,
         guard: &Guard,
     ) -> Result<bool, RemoveError> {
-        // there is a chance that the target key value pair has been copied to new_leaves
-        match remove_error {
-            RemoveError::Obsolete(removed) => {
-                // if locked and the pointer has remained the same, invalidate the leaf, and return invalid
-                let mut new_nodes_dummy = NewNodes {
-                    origin_node_key: None,
-                    origin_node_ptr: Atomic::null(),
-                    low_key_node_anchor: Atomic::null(),
-                    low_key_node: None,
-                    middle_key: None,
-                    high_key_node: None,
-                };
-                if let Err(error) = self.new_children.compare_and_set(
-                    Shared::null(),
-                    unsafe { Owned::from_raw(&mut new_nodes_dummy as *mut NewNodes<K, V>) },
-                    Acquire,
+        // if locked and the pointer has remained the same, invalidate the leaf, and return invalid
+        let mut new_nodes_dummy = NewNodes {
+            origin_node_key: None,
+            origin_node_ptr: Atomic::null(),
+            low_key_node_anchor: Atomic::null(),
+            low_key_node: None,
+            middle_key: None,
+            high_key_node: None,
+        };
+        if let Err(error) = self.new_children.compare_and_set(
+            Shared::null(),
+            unsafe { Owned::from_raw(&mut new_nodes_dummy as *mut NewNodes<K, V>) },
+            Acquire,
+            guard,
+        ) {
+            error.new.into_shared(guard);
+            return Err(RemoveError::Retry(removed));
+        }
+        let _lock_guard = scopeguard::guard(&self.new_children, |new_children| {
+            new_children.store(Shared::null(), Release);
+        });
+
+        // coalesce the node only if the pointers match, otherwise retry
+        let result = (self.children.0).min_greater_equal(child_key);
+        if let Some((_, child)) = result.0 {
+            let child_shared = child.load(Relaxed, guard);
+            if child_shared == node_shared {
+                let adjacent_node =
+                    if let Some((_, next_child)) = self.children.0.min_greater(child_key) {
+                        next_child.load(Acquire, guard)
+                    } else {
+                        self.children.1.load(Acquire, guard)
+                    };
+
+                if !unsafe { adjacent_node.deref().try_coalesce(child_key, child_shared.deref()) } {
+                    // fail to coalesce
+                    return Ok(removed);
+                }
+
+                self.remove_node_from_link(
+                    Some(child_key),
+                    unsafe { &child_shared.deref() },
                     guard,
-                ) {
-                    error.new.into_shared(guard);
-                    return Err(RemoveError::Retry(removed));
-                }
-                let _lock_guard = scopeguard::guard(&self.new_children, |new_children| {
-                    new_children.store(Shared::null(), Release);
-                });
-
-                let obsolete_node = node_ptr.load(Relaxed, guard);
-                if obsolete_node != node_shared {
-                    return Err(RemoveError::Retry(removed));
-                }
-
-                // reconstruct the linked list
-                self.remove_node_from_link(&child_key, unsafe { &obsolete_node.deref() }, guard);
-
-                // check if the current node becomes obsolete
-                let obsolete = child_key.map_or_else(
-                    || {
-                        // unbounded node: do not deallocate
-                        self.children.0.unusable()
-                    },
-                    |key| {
-                        // remove the node
-                        let obsolete = self.children.0.remove(key).2;
-                        // once the key is removed, it is safe to deallocate the leaf as the validation loop ensures the absence of readers
-                        node_ptr.store(Shared::null(), Release);
-
-                        unsafe { guard.defer_destroy(obsolete_node) };
-                        if obsolete {
-                            let unbounded_node = self.children.1.load(Acquire, guard);
-                            if unbounded_node.is_null() {
-                                false
-                            } else {
-                                unsafe { unbounded_node.deref().obsolete() }
-                            }
-                        } else {
-                            false
-                        }
-                    },
                 );
-                if obsolete {
-                    self.obsolete.store(true, Relaxed);
-                    Err(RemoveError::Obsolete(removed))
+
+                // remove the node
+                let coalesce = self.children.0.remove(child_key).2;
+                // once the key is removed, it is safe to deallocate the leaf as the validation loop ensures the absence of readers
+                child.store(Shared::null(), Release);
+                unsafe { guard.defer_destroy(node_shared) };
+
+                if coalesce {
+                    return Err(RemoveError::Coalesce(removed));
                 } else {
-                    Ok(removed)
+                    return Ok(removed);
                 }
             }
-            RemoveError::Retry(_) => Err(remove_error),
         }
+        Err(RemoveError::Retry(removed))
+    }
+
+    /// Tries to coalesce two adjacent internal nodes.
+    fn try_coalesce(&self, prev_internal_node_key: &K, prev_internal_node: &InternalNode<K, V>) -> bool {
+        false
     }
 
     fn remove_node_from_link(
         &self,
-        obsolete_node_key: &Option<&K>,
+        obsolete_node_key: Option<&K>,
         obsolete_node: &Node<K, V>,
         guard: &Guard,
     ) {

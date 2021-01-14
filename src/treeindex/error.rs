@@ -12,9 +12,8 @@ pub enum InsertError<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
 ///
 /// The boolean value tagged to the error code indicates that the target entry has been removed.
 pub enum RemoveError {
-    /// Obsolete: the node, or leaf has become obsolete.
-    Obsolete(bool),
-    /// [TODO] replace: when the cardinality of the root node becomes 1.
+    /// Coalesce: the node, or leaf cannot accommodate any other key-value pairs.
+    Coalesce(bool),
     /// Retry: a conflict detected.
     Retry(bool),
 }
