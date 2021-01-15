@@ -341,9 +341,56 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         next_node_anchor
     }
 
-    /// Tries to coalesce two adjacent leaf nodes.
-    pub fn try_coalesce(&self, prev_leaf_node_key: &K, prev_leaf_node: &LeafNode<K, V>) -> bool {
-        false
+    /// Tries to merge two adjacent leaf nodes.
+    pub fn try_merge(
+        &self,
+        prev_leaf_node_key: &K,
+        prev_leaf_node: &LeafNode<K, V>,
+        prev_prev_leaf_node: Option<&LeafNode<K, V>>,
+        guard: &Guard,
+    ) -> bool {
+        // in order to avoid conflicts with a thread splitting the node, lock itself
+        let mut new_leaves_dummy = NewLeaves {
+            origin_leaf_key: None,
+            origin_leaf_ptr: Atomic::null(),
+            low_key_leaf: None,
+            high_key_leaf: None,
+        };
+        if let Err(error) = self.new_leaves.compare_and_set(
+            Shared::null(),
+            unsafe { Owned::from_raw(&mut new_leaves_dummy as *mut NewLeaves<K, V>) },
+            Acquire,
+            guard,
+        ) {
+            // need to convert the new value into a shared pointer in order not to deallocate it
+            error.new.into_shared(guard);
+            return false;
+        }
+        let _lock_guard = scopeguard::guard(&self.new_leaves, |new_leaves| {
+            new_leaves.store(Shared::null(), Release);
+        });
+
+        // insert the unbounded leaf of the previous leaf node into the leaf array
+        if self
+            .leaves
+            .0
+            .insert(
+                prev_leaf_node_key.clone(),
+                prev_leaf_node.leaves.1.clone(),
+                false,
+            )
+            .is_none()
+        {
+            // update the side link of the prev-prev leaf node
+            let next_leaf_node = prev_leaf_node.side_link(guard);
+            if let Some(prev_prev_leaf_node) = prev_prev_leaf_node {
+                // copy the link to the low smaller key leaf node
+                prev_prev_leaf_node.update_side_link(next_leaf_node);
+            }
+            true
+        } else {
+            false
+        }
     }
 
     /// Returns or allocates a new unbounded leaf
@@ -511,9 +558,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             self.leaves.1.load(Relaxed, guard)
         };
         if leaf_current_shared != leaf_shared {
-            return Err(RemoveError::Retry(removed));
+            Err(RemoveError::Retry(removed))
+        } else {
+            Ok(removed)
         }
-        return Ok(removed);
     }
 
     /// Removes the obsolete leaf.

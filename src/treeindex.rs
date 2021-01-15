@@ -140,8 +140,9 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
                         if removed && !has_been_removed {
                             has_been_removed = true;
                         }
-                        Node::update_root(root_node, &self.root, &guard);
-                        return has_been_removed;
+                        if !Node::update_root(root_node, &self.root, &guard) {
+                            return has_been_removed;
+                        }
                     }
                     RemoveError::Retry(removed) => {
                         if removed && !has_been_removed {

@@ -138,16 +138,22 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         current_root: Shared<Node<K, V>>,
         root_ptr: &Atomic<Node<K, V>>,
         guard: &Guard,
-    ) {
-        /* [TODO]
-        match root_ptr.compare_and_set(current_root, Shared::null(), Relaxed, guard) {
-            Ok(_) => {
-                unsafe { guard.defer_destroy(current_root) };
-                true
+    ) -> bool {
+        if let NodeType::Internal(internal_node) = unsafe { &current_root.deref().entry } {
+            if let Ok(_) = root_ptr.compare_and_set(
+                current_root,
+                internal_node.children.1.load(Acquire, guard),
+                Release,
+                guard,
+            ) {
+                unsafe {
+                    current_root.deref().unlink(false);
+                    guard.defer_destroy(current_root)
+                };
+                return true;
             }
-            Err(_) => false,
-        }
-        */
+        };
+        false
     }
 
     /// Checks if the node is full.
@@ -183,14 +189,33 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
     }
 
     /// Tries to coalesce two adjacent nodes.
-    fn try_coalesce(&self, prev_node_key: &K, prev_node: &Node<K, V>) -> bool {
+    fn try_merge(
+        &self,
+        prev_node_key: &K,
+        prev_node: &Node<K, V>,
+        prev_prev_node: Option<&Node<K, V>>,
+        guard: &Guard,
+    ) -> bool {
         match (&self.entry, &prev_node.entry) {
             (NodeType::Internal(internal_node), NodeType::Internal(prev_internal_node)) => {
-                internal_node.try_coalesce(prev_node_key, prev_internal_node)
+                internal_node.try_merge(prev_node_key, prev_internal_node, guard)
             }
-            (NodeType::Leaf(leaf_node), NodeType::Leaf(prev_leaf_node)) => {
-                leaf_node.try_coalesce(prev_node_key, prev_leaf_node)
-            }
+            (NodeType::Leaf(leaf_node), NodeType::Leaf(prev_leaf_node)) => prev_prev_node
+                .map_or_else(
+                    || leaf_node.try_merge(prev_node_key, prev_leaf_node, None, guard),
+                    |prev_prev_node| {
+                        if let NodeType::Leaf(prev_prev_leaf_node) = &prev_prev_node.entry {
+                            leaf_node.try_merge(
+                                prev_node_key,
+                                prev_leaf_node,
+                                Some(prev_prev_leaf_node),
+                                guard,
+                            )
+                        } else {
+                            false
+                        }
+                    },
+                ),
             (_, _) => false,
         }
     }
@@ -837,22 +862,53 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                         self.children.1.load(Acquire, guard)
                     };
 
-                if !unsafe { adjacent_node.deref().try_coalesce(child_key, child_shared.deref()) } {
+                let prev_node = if self.floor == 1 {
+                    if let Some((_, prev_child)) = self.children.0.max_less(child_key) {
+                        unsafe { Some(prev_child.load(Acquire, guard).deref()) }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                let update_anchor = prev_node.is_none() && self.floor == 1;
+                if !unsafe {
+                    adjacent_node.deref().try_merge(
+                        child_key,
+                        child_shared.deref(),
+                        prev_node,
+                        guard,
+                    )
+                } {
                     // fail to coalesce
                     return Ok(removed);
                 }
 
-                self.remove_node_from_link(
-                    Some(child_key),
-                    unsafe { &child_shared.deref() },
-                    guard,
-                );
+                // update the leaf node anchor
+                if update_anchor {
+                    let anchor = self.leaf_node_anchor.load(Relaxed, guard);
+                    if !anchor.is_null() {
+                        if let NodeType::Leaf(next_leaf_node) =
+                            unsafe { &adjacent_node.deref().entry }
+                        {
+                            unsafe {
+                                anchor
+                                    .deref()
+                                    .set(Atomic::from(next_leaf_node as *const _), guard)
+                            };
+                        }
+                    }
+                }
 
                 // remove the node
                 let coalesce = self.children.0.remove(child_key).2;
                 // once the key is removed, it is safe to deallocate the leaf as the validation loop ensures the absence of readers
                 child.store(Shared::null(), Release);
-                unsafe { guard.defer_destroy(node_shared) };
+                unsafe {
+                    // need to nullify the unbounded node/leaf pointer as the instance is referenced by the adjacent node
+                    node_shared.deref().unlink(true);
+                    guard.defer_destroy(node_shared)
+                };
 
                 if coalesce {
                     return Err(RemoveError::Coalesce(removed));
@@ -864,93 +920,59 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         Err(RemoveError::Retry(removed))
     }
 
-    /// Tries to coalesce two adjacent internal nodes.
-    fn try_coalesce(&self, prev_internal_node_key: &K, prev_internal_node: &InternalNode<K, V>) -> bool {
-        false
-    }
-
-    fn remove_node_from_link(
+    /// Tries to merge two adjacent internal nodes.
+    fn try_merge(
         &self,
-        obsolete_node_key: Option<&K>,
-        obsolete_node: &Node<K, V>,
+        prev_internal_node_key: &K,
+        prev_internal_node: &InternalNode<K, V>,
         guard: &Guard,
-    ) {
-        match &obsolete_node.entry {
-            NodeType::Internal(internal_node) => {
-                if internal_node.floor == 1 {
-                    let current_node_anchor = internal_node.leaf_node_anchor.load(Relaxed, guard);
-                    // get the next anchor, coalescing it
-                    if !current_node_anchor.is_null() {
-                        let current_node_anchor_ref = unsafe { current_node_anchor.deref() };
-                        let unbounded_node = internal_node.children.1.load(Relaxed, guard);
-                        if let NodeType::Leaf(unbounded_leaf_node) =
-                            unsafe { &unbounded_node.deref().entry }
-                        {
-                            let next_node_anchor =
-                                unbounded_leaf_node.coalesce_next_node_anchor(guard);
-                            current_node_anchor_ref.deprecate(next_node_anchor, guard);
-                        }
-                    }
-                }
-            }
-            NodeType::Leaf(leaf_node) => {
-                let next_node_anchor = leaf_node.next_node_anchor(guard);
-                let next_leaf_node = leaf_node.side_link(guard);
-                let immediate_smaller_key_node = obsolete_node_key.map_or_else(
-                    || {
-                        self.children
-                            .0
-                            .max()
-                            .map_or_else(|| None, |(_, node_ptr)| Some(node_ptr))
-                    },
-                    |key| {
-                        self.children
-                            .0
-                            .max_less(key)
-                            .map_or_else(|| None, |(_, node_ptr)| Some(node_ptr))
-                    },
-                );
-                let immediate_smaller_key_leaf_node =
-                    if let Some(node_ptr) = immediate_smaller_key_node {
-                        Self::cast_to_leaf_node(node_ptr, guard)
-                    } else {
-                        None
-                    };
-
-                if let Some(smaller_key_node) = immediate_smaller_key_leaf_node {
-                    // copy the link to the low smaller key leaf node
-                    smaller_key_node.update_next_node_anchor(next_node_anchor);
-                    smaller_key_node.update_side_link(next_leaf_node);
-                } else {
-                    // update the anchor
-                    let immediate_greater_key_node = obsolete_node_key.map_or_else(
-                        || None,
-                        |key| {
-                            self.children
-                                .0
-                                .min_greater(key)
-                                .map_or_else(|| None, |(_, node_ptr)| Some(node_ptr))
-                        },
-                    );
-                    let immediate_greater_key_leaf_node =
-                        if let Some(node_ptr) = immediate_greater_key_node {
-                            Self::cast_to_leaf_node(node_ptr, guard)
-                        } else {
-                            // the unbounded leaf node is not deallocated until the node is freed
-                            Self::cast_to_leaf_node(&self.children.1, guard)
-                        };
-                    let anchor = self.leaf_node_anchor.load(Relaxed, guard);
-                    if !anchor.is_null() {
-                        unsafe {
-                            anchor.deref().set(
-                                Atomic::from(immediate_greater_key_leaf_node.unwrap() as *const _),
-                                guard,
-                            )
-                        };
-                    }
-                }
-            }
+    ) -> bool {
+        // in order to avoid conflicts with a thread splitting the node, lock itself
+        let mut new_nodes_dummy = NewNodes {
+            origin_node_key: None,
+            origin_node_ptr: Atomic::null(),
+            low_key_node_anchor: Atomic::null(),
+            low_key_node: None,
+            middle_key: None,
+            high_key_node: None,
         };
+        if let Err(error) = self.new_children.compare_and_set(
+            Shared::null(),
+            unsafe { Owned::from_raw(&mut new_nodes_dummy as *mut NewNodes<K, V>) },
+            Acquire,
+            guard,
+        ) {
+            error.new.into_shared(guard);
+            return false;
+        }
+        let _lock_guard = scopeguard::guard(&self.new_children, |new_children| {
+            new_children.store(Shared::null(), Release);
+        });
+
+        // insert the unbounded child of the previous internal node into the node array
+        if self
+            .children
+            .0
+            .insert(
+                prev_internal_node_key.clone(),
+                prev_internal_node.children.1.clone(),
+                false,
+            )
+            .is_none()
+        {
+            if self.floor == 1 {
+                let prev_node_anchor = prev_internal_node.leaf_node_anchor.load(Relaxed, guard);
+                // get the next anchor, coalescing it
+                if !prev_node_anchor.is_null() {
+                    let prev_node_anchor_ref = unsafe { prev_node_anchor.deref() };
+                    prev_node_anchor_ref
+                        .deprecate(self.leaf_node_anchor.load(Relaxed, guard), guard);
+                }
+            }
+            true
+        } else {
+            false
+        }
     }
 
     fn unlink(&self, reset_anchor: bool) {
