@@ -468,7 +468,7 @@ mod treeindex_test {
         let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::new());
         for t in 0..num_threads {
             // insert markers
-            tree.insert(t * range, t * range);
+            tree.insert(t * range, t * range).unwrap();
         }
         let stopped: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
         let barrier = Arc::new(Barrier::new(num_threads + 1));
@@ -502,8 +502,7 @@ mod treeindex_test {
             }));
         }
         barrier.wait();
-        /* #16
-        for _ in 0..4096 {
+        for _ in 0..256 {
             let mut found_markers = 0;
             let mut prev = 0;
             for iter in tree.iter() {
@@ -516,8 +515,6 @@ mod treeindex_test {
             }
             assert_eq!(found_markers, num_threads);
         }
-        */
-        std::thread::sleep(std::time::Duration::from_secs(3));
 
         stopped.store(true, Release);
         for handle in thread_handles {

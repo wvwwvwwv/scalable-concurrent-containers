@@ -140,9 +140,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
                         if removed && !has_been_removed {
                             has_been_removed = true;
                         }
-                        if !Node::update_root(root_node, &self.root, &guard) {
-                            return has_been_removed;
-                        }
+                        Node::update_root(root_node, &self.root, &guard);
+                        return has_been_removed;
                     }
                     RemoveError::Retry(removed) => {
                         if removed && !has_been_removed {
@@ -321,14 +320,18 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator for Scan
     fn next(&mut self) -> Option<Self::Item> {
         if self.leaf_node_scanner.is_some() {
             while let Some(mut scanner) = self.leaf_node_scanner.take() {
+                let min_allowed_key = scanner.get().map(|(key, _)| key);
                 if let Some(result) = scanner.next() {
                     self.leaf_node_scanner.replace(scanner);
                     return Some(result);
                 }
                 // proceed to the next leaf node
                 let next = unsafe {
+                    // giving the min_allowed_key argument is necessary, because
+                    //  - remove: merge two leaf nodes, therefore the unbounded leaf of the lower key node is relocated
+                    //  - scanner: the unbounded leaf of the lower key node can be scanned twice after a jump
                     std::mem::transmute::<_, Option<LeafNodeScanner<'a, K, V>>>(
-                        scanner.jump(&self.guard),
+                        scanner.jump(min_allowed_key, &self.guard),
                     )
                 };
                 if let Some(next) = next {

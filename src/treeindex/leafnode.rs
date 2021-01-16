@@ -74,7 +74,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
     }
 
     pub fn min<'a>(&'a self, guard: &'a Guard) -> Option<LeafNodeScanner<'a, K, V>> {
-        let mut scanner = LeafNodeScanner::new(self, guard);
+        let mut scanner = LeafNodeScanner::new(None, self, guard);
         if scanner.next().is_some() {
             return Some(scanner);
         }
@@ -698,6 +698,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for LeafNode<K, 
 
 /// Leaf node scanner.
 pub struct LeafNodeScanner<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
+    min_allowed_key: Option<&'a K>,
     leaf_node: &'a LeafNode<K, V>,
     leaf_pointer_array: [Option<Shared<'a, Leaf<K, V>>>; ARRAY_SIZE + 1],
     current_leaf_index: usize,
@@ -706,8 +707,13 @@ pub struct LeafNodeScanner<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + S
 }
 
 impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNodeScanner<'a, K, V> {
-    fn new(leaf_node: &'a LeafNode<K, V>, guard: &'a Guard) -> LeafNodeScanner<'a, K, V> {
+    fn new(
+        min_allowed_key: Option<&'a K>,
+        leaf_node: &'a LeafNode<K, V>,
+        guard: &'a Guard,
+    ) -> LeafNodeScanner<'a, K, V> {
         LeafNodeScanner::<'a, K, V> {
+            min_allowed_key,
             leaf_node,
             leaf_pointer_array: [None; ARRAY_SIZE + 1],
             current_leaf_index: 0,
@@ -716,9 +722,13 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNodeScanner<'
         }
     }
 
-    pub fn jump(&self, guard: &'a Guard) -> Option<LeafNodeScanner<'a, K, V>> {
+    pub fn jump(
+        &self,
+        min_allowed_key: Option<&'a K>,
+        guard: &'a Guard,
+    ) -> Option<LeafNodeScanner<'a, K, V>> {
         if let Some(next_node) = self.leaf_node.next(guard) {
-            Some(LeafNodeScanner::new(next_node, guard))
+            Some(LeafNodeScanner::new(min_allowed_key, next_node, guard))
         } else {
             None
         }
@@ -738,10 +748,14 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator
 {
     type Item = (&'a K, &'a V);
     fn next(&mut self) -> Option<Self::Item> {
-        let current_key = self
-            .leaf_scanner
-            .as_ref()
-            .map_or_else(|| None, |scanner| scanner.get());
+        let min_allowed_key = self.leaf_scanner.as_ref().map_or_else(
+            || {
+                self.min_allowed_key
+                    .as_ref()
+                    .map_or_else(|| None, |key| Some(*key))
+            },
+            |scanner| scanner.get().map_or_else(|| None, |(key, _)| Some(key)),
+        );
         if let Some(leaf_scanner) = self.leaf_scanner.as_mut() {
             // leaf iteration
             if let Some(entry) = leaf_scanner.next() {
@@ -792,8 +806,8 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator
                         //  - reader: read the old full leaf pointer
                         //  - writer: replace the old full leaf pointer with a new one
                         // consequently, the scanner reads outdated smaller values
-                        if current_key
-                            .map_or_else(|| true, |(key, _)| key.cmp(entry.0) == Ordering::Less)
+                        if min_allowed_key
+                            .map_or_else(|| true, |key| key.cmp(entry.0) == Ordering::Less)
                         {
                             return Some(entry);
                         }

@@ -135,25 +135,49 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
 
     /// Updates the current root node.
     pub fn update_root(
-        current_root: Shared<Node<K, V>>,
+        mut current_root: Shared<Node<K, V>>,
         root_ptr: &Atomic<Node<K, V>>,
         guard: &Guard,
-    ) -> bool {
-        if let NodeType::Internal(internal_node) = unsafe { &current_root.deref().entry } {
-            if let Ok(_) = root_ptr.compare_and_set(
-                current_root,
-                internal_node.children.1.load(Acquire, guard),
-                Release,
+    ) {
+        while let NodeType::Internal(internal_node) = unsafe { &current_root.deref().entry } {
+            // if locked and the pointer has remained the same, invalidate the leaf, and return invalid
+            let mut new_nodes_dummy = NewNodes {
+                origin_node_key: None,
+                origin_node_ptr: Atomic::null(),
+                low_key_node_anchor: Atomic::null(),
+                low_key_node: None,
+                middle_key: None,
+                high_key_node: None,
+            };
+            if let Err(error) = internal_node.new_children.compare_and_set(
+                Shared::null(),
+                unsafe { Owned::from_raw(&mut new_nodes_dummy as *mut NewNodes<K, V>) },
+                Acquire,
                 guard,
             ) {
+                error.new.into_shared(guard);
+                return;
+            }
+            let _lock_guard = scopeguard::guard(&internal_node.new_children, |new_children| {
+                new_children.store(Shared::null(), Release);
+            });
+            let new_root = internal_node.children.1.load(Acquire, guard);
+            if let Ok(_) = root_ptr.compare_and_set(current_root, new_root, Release, guard) {
                 unsafe {
                     current_root.deref().unlink(false);
                     guard.defer_destroy(current_root)
                 };
-                return true;
+                if let NodeType::Internal(new_internal_root_node) =
+                    unsafe { &new_root.deref().entry }
+                {
+                    if new_internal_root_node.children.0.obsolete() {
+                        current_root = Shared::from(new_root.as_raw());
+                        continue;
+                    }
+                }
             }
-        };
-        false
+            return;
+        }
     }
 
     /// Checks if the node is full.
@@ -851,8 +875,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         });
 
         // coalesce the node only if the pointers match, otherwise retry
-        let result = (self.children.0).min_greater_equal(child_key);
-        if let Some((_, child)) = result.0 {
+        let result = (self.children.0).search(child_key);
+        if let Some(child) = result {
             let child_shared = child.load(Relaxed, guard);
             if child_shared == node_shared {
                 let adjacent_node =
