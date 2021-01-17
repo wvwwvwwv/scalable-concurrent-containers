@@ -266,7 +266,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
         Scanner::new(self)
     }
 
-    /// (work-in-progress) Returns a Scanner that starts from a key that is equal to the given key.
+    /// Returns a Scanner that starts from a key that is equal to the given key.
     ///
     /// In case the key does not exist, the adjacent key that is greater than the given key is returned.
     /// If the given key does not exists, and no keys are greater than the given key, None is returned.
@@ -286,9 +286,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
     /// let result = treeindex.insert(3, 13);
     /// assert!(result.is_ok());
     ///
-    /// if let Some(mut scanner) = treeindex.from(&1) {
-    ///     assert_eq!(scanner.get().unwrap(), (&1, &10));
-    ///     assert_eq!(scanner.next().unwrap(), (&2, &11));
+    /// if let Some(mut scanner) = treeindex.from(&2) {
+    ///     assert_eq!(scanner.get().unwrap(), (&2, &11));
     ///     assert_eq!(scanner.next().unwrap(), (&3, &13));
     ///     assert!(scanner.next().is_none());
     /// }

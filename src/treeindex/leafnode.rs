@@ -82,11 +82,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
     }
 
     pub fn from<'a>(&'a self, key: &K, guard: &'a Guard) -> Option<LeafNodeScanner<'a, K, V>> {
-        let mut scanner = LeafNodeScanner::new(None, self, guard);
-        if scanner.next().is_some() {
-            return Some(scanner);
-        }
-        None
+        LeafNodeScanner::from(key, self, guard)
     }
 
     pub fn insert(&self, key: K, value: V, guard: &Guard) -> Result<(), InsertError<K, V>> {
@@ -730,6 +726,70 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNodeScanner<'
         }
     }
 
+    fn from(
+        min_allowed_key: &K,
+        leaf_node: &'a LeafNode<K, V>,
+        guard: &'a Guard,
+    ) -> Option<LeafNodeScanner<'a, K, V>> {
+        let mut leaf_node_scanner = LeafNodeScanner::<'a, K, V> {
+            min_allowed_key: None,
+            leaf_node,
+            leaf_pointer_array: [None; ARRAY_SIZE + 1],
+            current_leaf_index: 0,
+            leaf_scanner: None,
+            guard,
+        };
+        leaf_node_scanner.start();
+        // proceed to the next leaf
+        while let Some(leaf_ptr) =
+            leaf_node_scanner.leaf_pointer_array[leaf_node_scanner.current_leaf_index].take()
+        {
+            leaf_node_scanner
+                .leaf_scanner
+                .replace(LeafScanner::new(unsafe { leaf_ptr.deref() }));
+            leaf_node_scanner.current_leaf_index += 1;
+            if let Some(leaf_scanner) = leaf_node_scanner.leaf_scanner.as_mut() {
+                // leaf iteration
+                for entry in leaf_scanner {
+                    // data race resolution: compare keys - see 'LeafNodeScanner::next'
+                    let order = min_allowed_key.cmp(entry.0);
+                    if order == Ordering::Less || order == Ordering::Equal {
+                        return Some(leaf_node_scanner);
+                    }
+                }
+            }
+            leaf_node_scanner.leaf_scanner.take();
+            if leaf_node_scanner.current_leaf_index >= leaf_node_scanner.leaf_pointer_array.len() {
+                break;
+            }
+        }
+        None
+    }
+
+    fn start(&mut self) {
+        // start scanning
+        loop {
+            // data race resolution: validate metadata - see 'InternalNode::search'
+            let mut index = 0;
+            let mut scanner = LeafScanner::new(&self.leaf_node.leaves.0);
+            while let Some(entry) = scanner.next() {
+                self.leaf_pointer_array[index].replace(entry.1.load(Relaxed, &self.guard));
+                index += 1;
+            }
+            let ptr = self.leaf_node.leaves.1.load(Relaxed, &self.guard);
+            if !ptr.is_null() {
+                self.leaf_pointer_array[index].replace(ptr);
+                index += 1;
+            }
+            if self.leaf_node.leaves.0.validate(scanner.metadata()) {
+                break;
+            }
+            for i in 0..index {
+                self.leaf_pointer_array[i].take();
+            }
+        }
+    }
+
     pub fn jump(
         &self,
         min_allowed_key: Option<&'a K>,
@@ -776,27 +836,7 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator
         }
 
         if self.current_leaf_index == 0 && self.leaf_scanner.is_none() {
-            // start scanning
-            loop {
-                // data race resolution: validate metadata - see 'InternalNode::search'
-                let mut index = 0;
-                let mut scanner = LeafScanner::new(&self.leaf_node.leaves.0);
-                while let Some(entry) = scanner.next() {
-                    self.leaf_pointer_array[index].replace(entry.1.load(Relaxed, &self.guard));
-                    index += 1;
-                }
-                let ptr = self.leaf_node.leaves.1.load(Relaxed, &self.guard);
-                if !ptr.is_null() {
-                    self.leaf_pointer_array[index].replace(ptr);
-                    index += 1;
-                }
-                if self.leaf_node.leaves.0.validate(scanner.metadata()) {
-                    break;
-                }
-                for i in 0..index {
-                    self.leaf_pointer_array[i].take();
-                }
-            }
+            self.start();
         }
 
         if self.current_leaf_index < self.leaf_pointer_array.len() {

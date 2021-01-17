@@ -339,12 +339,27 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
     }
 
     fn from<'a>(&'a self, key: &K, guard: &'a Guard) -> Option<LeafNodeScanner<'a, K, V>> {
-        let scanner = LeafScanner::from(&self.children.0, key, false);
-        if let Some(child) = scanner.get() {
-            let child_node = child.1.load(Acquire, guard);
-            unsafe { child_node.deref().from(key, guard) }
-        } else {
-            None
+        loop {
+            let unbounded_node = (self.children.1).load(Acquire, guard);
+            let result = (self.children.0).min_greater_equal(&key);
+            if let Some((_, child)) = result.0 {
+                let child_node = child.load(Acquire, guard);
+                if !(self.children.0).validate(result.1) {
+                    // data race resolution: validate metadata - see 'InternalNode::search'
+                    continue;
+                }
+                return unsafe { child_node.deref().from(key, guard) };
+            }
+            if unbounded_node == self.children.1.load(Acquire, guard) {
+                if !(self.children.0).validate(result.1) {
+                    // data race resolution: validate metadata - see above
+                    continue;
+                }
+                if unbounded_node.is_null() {
+                    return None;
+                }
+                return unsafe { unbounded_node.deref().from(key, guard) };
+            }
         }
     }
 
