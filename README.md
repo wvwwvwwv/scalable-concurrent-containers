@@ -57,14 +57,15 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 
 [Work-in-progress](##milestones)
 - Unimplemented: scc::TreeIndex::export
+- Not fully validated
 - Not fully optimized
 
 scc::TreeIndex is a B+-tree variant optimized for read operations. Locks are only acquired on structural changes, and read/scan operations are neither blocked nor interrupted by other threads. The semantics of each API is similar to the read-committed isolation level in terms of database management software, as readers may not see the snapshot of data that is newer than the read snapshot.
 
 ## Changelog
 
-#### 0.4.0
-Stabilize key APIs of scc::TreeIndex
+#### 0.3.16
+Implement TreeIndex::clear and TreeIndex::from
 #### 0.3.15
 Fix a data race between TreeIndex::remove and Scanner
 #### 0.3.14
