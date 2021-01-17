@@ -81,6 +81,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         None
     }
 
+    pub fn from<'a>(&'a self, key: &K, guard: &'a Guard) -> Option<LeafNodeScanner<'a, K, V>> {
+        let mut scanner = LeafNodeScanner::new(None, self, guard);
+        if scanner.next().is_some() {
+            return Some(scanner);
+        }
+        None
+    }
+
     pub fn insert(&self, key: K, value: V, guard: &Guard) -> Result<(), InsertError<K, V>> {
         loop {
             let unbounded_leaf = self.leaves.1.load(Relaxed, guard);

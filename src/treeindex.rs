@@ -5,7 +5,7 @@ pub mod leaf;
 pub mod leafnode;
 pub mod node;
 
-use crossbeam_epoch::{Atomic, Guard, Owned};
+use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use error::{InsertError, RemoveError};
 use leaf::Leaf;
 use leafnode::LeafNodeScanner;
@@ -107,7 +107,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
         }
     }
 
-    /// (work-in-progress) Removes a key-value pair.
+    /// Removes a key-value pair.
     ///
     /// # Examples
     /// ```
@@ -185,6 +185,32 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
         }
     }
 
+    /// Clears the TreeIndex.
+    ///
+    /// # Examples
+    /// ```
+    /// use scc::TreeIndex;
+    ///
+    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    ///
+    /// for key in 0..16u64 {
+    ///     let result = treeindex.insert(key, 10);
+    ///     assert!(result.is_ok());
+    /// }
+    ///
+    /// treeindex.clear();
+    ///
+    /// let result = treeindex.len();
+    /// assert_eq!(result, 0);
+    /// ```
+    pub fn clear(&self) {
+        let guard = crossbeam_epoch::pin();
+        let old_root_node = self.root.swap(Shared::null(), Acquire, &guard);
+        if !old_root_node.is_null() {
+            unsafe { guard.defer_destroy(old_root_node) };
+        }
+    }
+
     /// Returns the size of the TreeIndex.
     ///
     /// It internally scans all the leaf nodes, and therefore the time complexity is O(N).
@@ -240,16 +266,35 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
         Scanner::new(self)
     }
 
-    /// (work-in-progress) Returns a Scanner that starts from the specified key.
+    /// (work-in-progress) Returns a Scanner that starts from a key that is equal to the given key.
+    ///
+    /// In case the key does not exist, the adjacent key that is greater than the given key is returned.
+    /// If the given key does not exists, and no keys are greater than the given key, None is returned.
     ///
     /// # Examples
     /// ```
     /// use scc::TreeIndex;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    ///
+    /// let result = treeindex.insert(1, 10);
+    /// assert!(result.is_ok());
+    ///
+    /// let result = treeindex.insert(2, 11);
+    /// assert!(result.is_ok());
+    ///
+    /// let result = treeindex.insert(3, 13);
+    /// assert!(result.is_ok());
+    ///
+    /// if let Some(mut scanner) = treeindex.from(&1) {
+    ///     assert_eq!(scanner.get().unwrap(), (&1, &10));
+    ///     assert_eq!(scanner.next().unwrap(), (&2, &11));
+    ///     assert_eq!(scanner.next().unwrap(), (&3, &13));
+    ///     assert!(scanner.next().is_none());
+    /// }
     /// ```
-    pub fn from(&self, _: &K) -> Scanner<K, V> {
-        Scanner::new(self)
+    pub fn from(&self, key: &K) -> Option<Scanner<K, V>> {
+        Scanner::from(self, key)
     }
 
     /// (work-in-progress) Returns the statistics of the current state of the TreeIndex.
@@ -306,6 +351,30 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Scanner<'a, K, V>
         }
     }
 
+    fn from(tree_index: &'a TreeIndex<K, V>, key: &K) -> Option<Scanner<'a, K, V>> {
+        let mut scanner = Scanner::<'a, K, V> {
+            tree_index,
+            leaf_node_scanner: None,
+            guard: crossbeam_epoch::pin(),
+        };
+        let root_node = scanner.tree_index.root.load(Acquire, &scanner.guard);
+        if root_node.is_null() {
+            return None;
+        }
+        scanner.leaf_node_scanner = unsafe {
+            // prolong the lifetime as the rust typesystem cannot infer the actual lifetime correctly
+            std::mem::transmute::<_, Option<LeafNodeScanner<'a, K, V>>>(
+                (*root_node.as_raw()).from(key, &scanner.guard),
+            )
+        };
+
+        if scanner.leaf_node_scanner.is_none() {
+            None
+        } else {
+            Some(scanner)
+        }
+    }
+
     /// Returns a reference to the entry that the scanner is currently pointing to
     pub fn get(&self) -> Option<(&'a K, &'a V)> {
         if let Some(leaf_node_scanner) = self.leaf_node_scanner.as_ref() {
@@ -350,10 +419,9 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator for Scan
                     (*root_node.as_raw()).min(&self.guard),
                 )
             };
-            return self
-                .leaf_node_scanner
+            self.leaf_node_scanner
                 .as_ref()
-                .map_or_else(|| None, |scanner| scanner.get());
+                .map_or_else(|| None, |scanner| scanner.get())
         }
     }
 }

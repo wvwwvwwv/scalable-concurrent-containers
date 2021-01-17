@@ -277,6 +277,9 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
     }
 
     /// Returns the index and a pointer to the key-value pair associated with the key.
+    ///
+    /// When the 'exact' argument is false the key does not exists,
+    /// the minimum key of those that are greater than the key is returned.
     pub fn from(&self, metadata: u64, key: &K, exact: bool) -> (usize, *const (K, V)) {
         let mut max_min_rank = 0;
         let mut min_max_rank = ARRAY_SIZE + 1;
@@ -305,42 +308,6 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
             }
         }
         if !exact && min_max_index < ARRAY_SIZE {
-            return (min_max_index, unsafe {
-                &*self.entry_array[min_max_index].as_ptr()
-            });
-        }
-        (usize::MAX, std::ptr::null())
-    }
-
-    /// Returns the minimum entry among those that are not Ordering::Less than the given key.
-    pub fn from_min_greater_equal(&self, metadata: u64, key: &K) -> (usize, *const (K, V)) {
-        let mut max_min_rank = 0;
-        let mut min_max_rank = ARRAY_SIZE + 1;
-        let mut min_max_index = ARRAY_SIZE;
-        for i in 0..ARRAY_SIZE {
-            let rank = ((metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
-                >> (i * INDEX_RANK_ENTRY_SIZE)) as usize;
-            if rank > max_min_rank && rank < min_max_rank && (metadata & (OCCUPANCY_BIT << i)) != 0
-            {
-                match self.compare(i, key) {
-                    Ordering::Less => {
-                        if max_min_rank < rank {
-                            max_min_rank = rank;
-                        }
-                    }
-                    Ordering::Greater => {
-                        if min_max_rank > rank {
-                            min_max_rank = rank;
-                            min_max_index = i;
-                        }
-                    }
-                    Ordering::Equal => {
-                        return (i, unsafe { &*self.entry_array[i].as_ptr() });
-                    }
-                }
-            }
-        }
-        if min_max_rank <= ARRAY_SIZE {
             return (min_max_index, unsafe {
                 &*self.entry_array[min_max_index].as_ptr()
             });
@@ -693,20 +660,9 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> LeafScanner<'a, K, V> {
         self.metadata
     }
 
-    pub fn from(key: &K, leaf: &'a Leaf<K, V>) -> LeafScanner<'a, K, V> {
+    pub fn from(leaf: &'a Leaf<K, V>, key: &K, exact: bool) -> LeafScanner<'a, K, V> {
         let metadata = leaf.metadata.load(Acquire);
-        let (index, ptr) = leaf.from(metadata, key, true);
-        LeafScanner {
-            leaf,
-            metadata,
-            entry_index: index,
-            entry_ptr: ptr,
-        }
-    }
-
-    pub fn from_greater_equal(key: &K, leaf: &'a Leaf<K, V>) -> LeafScanner<'a, K, V> {
-        let metadata = leaf.metadata.load(Acquire);
-        let (index, ptr) = leaf.from_min_greater_equal(metadata, key);
+        let (index, ptr) = leaf.from(metadata, key, exact);
         LeafScanner {
             leaf,
             metadata,
@@ -767,17 +723,6 @@ mod test {
                 .insert((ARRAY_SIZE - i - 1) * 2 + 1, 10, false)
                 .is_none());
         }
-        for i in 0..ARRAY_SIZE {
-            assert_eq!(
-                leaf.min_greater_equal(&(i * 2)).0,
-                Some((&(i * 2 + 1), &10))
-            );
-            assert_eq!(
-                leaf.min_greater_equal(&(i * 2 + 1)).0,
-                Some((&(i * 2 + 1), &10))
-            );
-        }
-        assert!(leaf.min_greater_equal(&(ARRAY_SIZE * 3)).0.is_none());
         let leaf = Leaf::new();
         assert_eq!(leaf.cardinality(), 0);
         assert!(leaf.insert(50, 51, false).is_none());
@@ -789,17 +734,10 @@ mod test {
         assert_eq!(leaf.cardinality(), 3);
         assert!(leaf.insert(60, 61, true).is_none());
         assert_eq!(leaf.cardinality(), 3);
-        assert_eq!(leaf.min_greater_equal(&71).0, None);
-        assert_eq!(leaf.min_greater_equal(&51).0, Some((&60, &61)));
-        assert_eq!(leaf.min_greater_equal(&50).0, Some((&50, &51)));
-        let result = leaf.min_greater_equal(&49);
-        assert_eq!(result.0, Some((&50, &51)));
-        assert!(leaf.validate(result.1));
         assert_eq!(leaf.remove(&60), (true, false, false));
         assert_eq!(leaf.cardinality(), 2);
         assert!(!leaf.full());
         assert!(leaf.insert(40, 40, false).is_none());
-        assert!(!leaf.validate(result.1));
         assert!(leaf.insert(30, 31, false).is_none());
         assert_eq!(leaf.cardinality(), 4);
         assert!(!leaf.full());
@@ -828,7 +766,7 @@ mod test {
         assert_eq!(iterated, leaf.cardinality());
         drop(scanner);
 
-        let mut scanner = LeafScanner::from(&50, &leaf);
+        let mut scanner = LeafScanner::from(&leaf, &50, true);
         assert_eq!(scanner.get(), Some((&50, &51)));
         let mut prev_key = 50;
         let mut iterated = 0;
@@ -842,7 +780,7 @@ mod test {
         assert_eq!(iterated, 2);
         drop(scanner);
 
-        let mut scanner = LeafScanner::from_greater_equal(&45, &leaf);
+        let mut scanner = LeafScanner::from(&leaf, &49, false);
         assert_eq!(scanner.get(), Some((&50, &51)));
         let mut prev_key = 50;
         let mut iterated = 0;

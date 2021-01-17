@@ -49,6 +49,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         }
     }
 
+    /// Returns a LeafNodeScanner pointing to a key-value pair that satisfies the ordering predicate.
+    pub fn from<'a>(&'a self, key: &K, guard: &'a Guard) -> Option<LeafNodeScanner<'a, K, V>> {
+        match &self.entry {
+            NodeType::Internal(internal_node) => internal_node.from(key, guard),
+            NodeType::Leaf(leaf_node) => leaf_node.from(key, guard),
+        }
+    }
+
     /// Inserts a key-value pair.
     ///
     /// It is a recursive call, and therefore stack-overflow may occur.
@@ -327,6 +335,16 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             if !unbounded_node.is_null() {
                 return unsafe { unbounded_node.deref().min(guard) };
             }
+        }
+    }
+
+    fn from<'a>(&'a self, key: &K, guard: &'a Guard) -> Option<LeafNodeScanner<'a, K, V>> {
+        let scanner = LeafScanner::from(&self.children.0, key, false);
+        if let Some(child) = scanner.get() {
+            let child_node = child.1.load(Acquire, guard);
+            unsafe { child_node.deref().from(key, guard) }
+        } else {
+            None
         }
     }
 
