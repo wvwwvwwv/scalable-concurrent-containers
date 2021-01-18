@@ -4,7 +4,6 @@ use super::{InsertError, RemoveError};
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::cmp::Ordering;
 use std::fmt::Display;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 /// Leaf node.
@@ -182,20 +181,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         };
     }
 
-    pub fn next_node_anchor<'a>(&self, guard: &'a Guard) -> Shared<'a, LeafNodeAnchor<K, V>> {
-        self.next_node_anchor.load(Relaxed, guard)
-    }
-
-    pub fn side_link<'a>(&self, guard: &'a Guard) -> Shared<'a, LeafNode<K, V>> {
-        self.side_link.load(Relaxed, guard)
-    }
-
-    pub fn update_next_node_anchor(&self, ptr: Shared<LeafNodeAnchor<K, V>>) {
-        self.next_node_anchor.store(ptr, Relaxed);
-    }
-
-    pub fn update_side_link(&self, ptr: Shared<LeafNode<K, V>>) {
-        self.side_link.store(ptr, Relaxed);
+    pub fn update_link(
+        &self,
+        anchor_ptr: Shared<LeafNodeAnchor<K, V>>,
+        link_ptr: Shared<LeafNode<K, V>>,
+    ) {
+        // update order: store(side_link)|release|store(anchor)
+        self.side_link.store(link_ptr, Relaxed);
+        self.next_node_anchor.store(anchor_ptr, Release);
     }
 
     /// Splits itself into the given leaf nodes, and returns the middle key value.
@@ -293,15 +286,22 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
     ) {
         // firstly, replace the high key node's side link with the new side link
         // secondly, link the low key node with the high key node
-        low_key_leaf_node
-            .update_side_link(Atomic::from(high_key_leaf_node as *const _).load(Relaxed, guard));
-        high_key_leaf_node.update_side_link(self.side_link.load(Relaxed, guard));
-        high_key_leaf_node.update_next_node_anchor(self.next_node_anchor.load(Relaxed, guard));
+        low_key_leaf_node.update_link(
+            Shared::null(),
+            Atomic::from(high_key_leaf_node as *const _).load(Relaxed, guard),
+        );
+        high_key_leaf_node.update_link(
+            self.next_node_anchor.load(Acquire, guard),
+            self.side_link.load(Relaxed, guard),
+        );
 
         // lastly, link the immediate less key node with the low key node
         //  - the changes in this step need to be rolled back on operation failure
         if let Some(node) = immediate_smaller_key_leaf_node {
-            node.update_side_link(Atomic::from(low_key_leaf_node as *const _).load(Relaxed, guard));
+            node.update_link(
+                Shared::null(),
+                Atomic::from(low_key_leaf_node as *const _).load(Relaxed, guard),
+            );
         } else {
             // the low key node is the minimum node
             let anchor = min_node_anchor.load(Relaxed, guard);
@@ -320,10 +320,12 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         &self,
         guard: &'a Guard,
     ) -> Shared<'a, LeafNodeAnchor<K, V>> {
-        let mut next_node_anchor = self.next_node_anchor.load(Relaxed, guard);
+        let mut next_node_anchor = self.next_node_anchor.load(Acquire, guard);
         while !next_node_anchor.is_null() {
             let next_node_anchor_ref = unsafe { next_node_anchor.deref() };
-            let next_next_node_anchor = next_node_anchor_ref.next_node_anchor.load(Acquire, guard);
+            let next_next_node_anchor = next_node_anchor_ref
+                .next_valid_node_anchor
+                .load(Acquire, guard);
             if !next_next_node_anchor.is_null() {
                 // it is safe to remove the current next_node_anchor
                 match self.next_node_anchor.compare_and_set(
@@ -386,10 +388,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             .is_none()
         {
             // update the side link of the prev-prev leaf node
-            let next_leaf_node = prev_leaf_node.side_link(guard);
+            let next_leaf_node = prev_leaf_node.side_link.load(Relaxed, guard);
             if let Some(prev_prev_leaf_node) = prev_prev_leaf_node {
                 // copy the link to the low smaller key leaf node
-                prev_prev_leaf_node.update_side_link(next_leaf_node);
+                prev_prev_leaf_node.update_link(Shared::null(), next_leaf_node);
             }
             true
         } else {
@@ -629,6 +631,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
     }
 
     fn next<'a>(&self, guard: &'a Guard) -> Option<&'a LeafNode<K, V>> {
+        // read order: load(anchor)|acquire|load(side_link)
         let next_node_anchor = self.coalesce_next_node_anchor(guard);
         if !next_node_anchor.is_null() {
             let next_node_anchor_ref = unsafe { next_node_anchor.deref() };
@@ -637,7 +640,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 return Some(unsafe { next_leaf_node_ptr.deref() });
             }
         }
-        let side_link_ptr = self.side_link.load(Acquire, guard);
+        // then, read the side link
+        let side_link_ptr = self.side_link.load(Relaxed, guard);
         if !side_link_ptr.is_null() {
             Some(unsafe { side_link_ptr.deref() })
         } else {
@@ -740,27 +744,25 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNodeScanner<'
             guard,
         };
         leaf_node_scanner.start();
-        // proceed to the next leaf
         while let Some(leaf_ptr) =
             leaf_node_scanner.leaf_pointer_array[leaf_node_scanner.current_leaf_index].take()
         {
-            leaf_node_scanner
-                .leaf_scanner
-                .replace(LeafScanner::new(unsafe { leaf_ptr.deref() }));
             leaf_node_scanner.current_leaf_index += 1;
-            if let Some(leaf_scanner) = leaf_node_scanner.leaf_scanner.as_mut() {
-                // leaf iteration
-                for entry in leaf_scanner {
-                    // data race resolution: compare keys - see 'LeafNodeScanner::next'
-                    let order = min_allowed_key.cmp(entry.0);
-                    if order == Ordering::Less || order == Ordering::Equal {
-                        return Some(leaf_node_scanner);
-                    }
-                }
+            let leaf_scanner =
+                LeafScanner::from(unsafe { leaf_ptr.deref() }, min_allowed_key, false);
+            if let Some(leaf_scanner) = leaf_scanner {
+                leaf_node_scanner.leaf_scanner.replace(leaf_scanner);
+                return Some(leaf_node_scanner);
             }
-            leaf_node_scanner.leaf_scanner.take();
             if leaf_node_scanner.current_leaf_index >= leaf_node_scanner.leaf_pointer_array.len() {
-                break;
+                // return the first valid leaf node scanner
+                let mut jump_scanner = leaf_node_scanner.jump(None, guard);
+                while let Some(mut scanner) = jump_scanner.take() {
+                    if scanner.next().is_some() {
+                        return Some(scanner);
+                    }
+                    jump_scanner = scanner.jump(None, guard);
+                }
             }
         }
         None
@@ -891,7 +893,7 @@ pub struct LeafNodeAnchor<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> 
     /// Next node anchor pointer.
     ///
     /// It is only set when the owner node is being deprecated.
-    next_node_anchor: Atomic<LeafNodeAnchor<K, V>>,
+    next_valid_node_anchor: Atomic<LeafNodeAnchor<K, V>>,
     /// Minimum leaf node pointer.
     min_leaf_node: Atomic<LeafNode<K, V>>,
 }
@@ -899,7 +901,7 @@ pub struct LeafNodeAnchor<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> 
 impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNodeAnchor<K, V> {
     pub fn new() -> LeafNodeAnchor<K, V> {
         LeafNodeAnchor {
-            next_node_anchor: Atomic::null(),
+            next_valid_node_anchor: Atomic::null(),
             min_leaf_node: Atomic::null(),
         }
     }
@@ -909,7 +911,27 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNodeAnchor<K, V> 
     }
 
     pub fn deprecate(&self, ptr: Shared<LeafNodeAnchor<K, V>>, guard: &Guard) {
-        debug_assert!(self.next_node_anchor.load(Relaxed, guard).is_null());
-        self.next_node_anchor.swap(ptr, Release, guard);
+        debug_assert!(self.next_valid_node_anchor.load(Relaxed, guard).is_null());
+        self.next_valid_node_anchor.swap(ptr, Release, guard);
+    }
+}
+
+impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for LeafNodeAnchor<K, V> {
+    fn drop(&mut self) {
+        let guard = crossbeam_epoch::pin();
+        let mut next_node_anchor = self.next_valid_node_anchor.load(Acquire, &guard);
+        while !next_node_anchor.is_null() {
+            let next_node_anchor_ref = unsafe { next_node_anchor.deref() };
+            let next_next_node_anchor = next_node_anchor_ref
+                .next_valid_node_anchor
+                .load(Acquire, &guard);
+            if !next_next_node_anchor.is_null() {
+                // it is safe to remove the current next_node_anchor immediately
+                drop(unsafe { next_node_anchor.into_owned() });
+                next_node_anchor = next_next_node_anchor;
+            } else {
+                break;
+            }
+        }
     }
 }

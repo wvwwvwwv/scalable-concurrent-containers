@@ -230,11 +230,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
     /// assert_eq!(result, 16);
     /// ```
     pub fn len(&self) -> usize {
-        let mut num_entries = 0;
-        for _ in self.iter() {
-            num_entries += 1;
-        }
-        num_entries
+        self.iter().count()
     }
 
     /// Returns a Scanner.
@@ -266,7 +262,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
         Scanner::new(self)
     }
 
-    /// Returns a Scanner that starts from a key that is equal to the given key.
+    /// (work-in-progress) Returns a Scanner that starts from a key that is equal to the given key.
     ///
     /// In case the key does not exist, the adjacent key that is greater than the given key is returned.
     /// If the given key does not exists, and no keys are greater than the given key, None is returned.
@@ -326,6 +322,31 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
                 num_entries,
                 depth: root_ref.floor() + 1,
             }
+        }
+    }
+}
+
+impl<K: Clone + fmt::Display + Ord + Send + Sync, V: Clone + fmt::Display + Send + Sync>
+    TreeIndex<K, V>
+{
+    /// (work-in-progress) Export the TreeIndex.
+    ///
+    /// # Examples
+    /// ```
+    /// use scc::TreeIndex;
+    ///
+    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    ///
+    /// let result = treeindex.insert(1, 10);
+    /// assert!(result.is_ok());
+    ///
+    /// treeindex.export();
+    /// ```
+    pub fn export(&self) {
+        let guard = crossbeam_epoch::pin();
+        let root_node = self.root.load(Acquire, &guard);
+        if !root_node.is_null() {
+            unsafe { root_node.deref().print(&guard) };
         }
     }
 }

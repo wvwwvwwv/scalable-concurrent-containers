@@ -660,14 +660,18 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> LeafScanner<'a, K, V> {
         self.metadata
     }
 
-    pub fn from(leaf: &'a Leaf<K, V>, key: &K, exact: bool) -> LeafScanner<'a, K, V> {
+    pub fn from(leaf: &'a Leaf<K, V>, key: &K, exact: bool) -> Option<LeafScanner<'a, K, V>> {
         let metadata = leaf.metadata.load(Acquire);
         let (index, ptr) = leaf.from(metadata, key, exact);
-        LeafScanner {
-            leaf,
-            metadata,
-            entry_index: index,
-            entry_ptr: ptr,
+        if !ptr.is_null() {
+            Some(LeafScanner {
+                leaf,
+                metadata,
+                entry_index: index,
+                entry_ptr: ptr,
+            })
+        } else {
+            None
         }
     }
 
@@ -766,7 +770,7 @@ mod test {
         assert_eq!(iterated, leaf.cardinality());
         drop(scanner);
 
-        let mut scanner = LeafScanner::from(&leaf, &50, true);
+        let mut scanner = LeafScanner::from(&leaf, &50, true).unwrap();
         assert_eq!(scanner.get(), Some((&50, &51)));
         let mut prev_key = 50;
         let mut iterated = 0;
@@ -780,7 +784,7 @@ mod test {
         assert_eq!(iterated, 2);
         drop(scanner);
 
-        let mut scanner = LeafScanner::from(&leaf, &49, false);
+        let mut scanner = LeafScanner::from(&leaf, &49, false).unwrap();
         assert_eq!(scanner.get(), Some((&50, &51)));
         let mut prev_key = 50;
         let mut iterated = 0;

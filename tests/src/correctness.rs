@@ -502,7 +502,7 @@ mod treeindex_test {
             }));
         }
         barrier.wait();
-        for _ in 0..256 {
+        for _ in 0..1024 {
             let mut found_markers = 0;
             let mut prev = 0;
             for iter in tree.iter() {

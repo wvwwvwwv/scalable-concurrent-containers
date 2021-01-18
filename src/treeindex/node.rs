@@ -7,7 +7,6 @@ use super::{InsertError, RemoveError};
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::cmp::Ordering;
 use std::fmt::Display;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 /// Node types.
@@ -254,7 +253,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
 }
 
 impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> Node<K, V> {
-    fn print(&self, guard: &Guard) -> usize {
+    pub fn print(&self, guard: &Guard) -> usize {
         match &self.entry {
             NodeType::Internal(internal_node) => internal_node.print(guard),
             NodeType::Leaf(leaf_node) => leaf_node.print(guard),
@@ -654,8 +653,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 if let Some(anchor) = high_key_node_anchor.as_ref() {
                     let entry_ref = unsafe { entry_to_link_to_anchor.deref() };
                     if let NodeType::Leaf(leaf_node) = &entry_ref.entry {
-                        leaf_node.update_next_node_anchor(anchor.load(Relaxed, guard));
-                        leaf_node.update_side_link(Shared::null());
+                        leaf_node.update_link(anchor.load(Relaxed, guard), Shared::null());
                     }
                 }
 
@@ -777,10 +775,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 };
             if let Some(node) = immediate_smaller_key_leaf_node {
                 // need to update the side link first as there can be readers who are traversing the linked list
-                node.update_side_link(
+                node.update_link(
+                    Shared::null(),
                     Atomic::from(origin_leaf_node as *const _).load(Relaxed, guard),
                 );
-                node.update_next_node_anchor(Shared::null());
             } else {
                 let anchor = self.leaf_node_anchor.load(Relaxed, guard);
                 if !anchor.is_null() {
