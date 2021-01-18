@@ -65,7 +65,7 @@ scc::TreeIndex is a B+-tree variant optimized for read operations. Locks are onl
 ## Changelog
 
 #### 0.3.16
-Implement TreeIndex::clear and (WIP)TreeIndex::from
+Implement TreeIndex::clear and (WIP)TreeIndex::from / license changed from MIT -> Apache 2.0 to comply with the company policies (SAP)
 #### 0.3.15
 Fix a data race between TreeIndex::remove and Scanner
 #### 0.3.14

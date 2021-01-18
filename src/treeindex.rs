@@ -262,10 +262,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
         Scanner::new(self)
     }
 
-    /// (work-in-progress) Returns a Scanner that starts from a key that is equal to the given key.
+    /// (work-in-progress) Returns a Scanner that starts from the given key if it exists.
     ///
-    /// In case the key does not exist, the adjacent key that is greater than the given key is returned.
-    /// If the given key does not exists, and no keys are greater than the given key, None is returned.
+    /// In case the key does not exist, and there is a key that is greater than the given key,
+    /// a Scanner pointing to the key is returned.
+    ///
     ///
     /// # Examples
     /// ```
