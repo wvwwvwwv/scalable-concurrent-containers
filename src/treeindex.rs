@@ -233,6 +233,32 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
         self.iter().count()
     }
 
+    /// Returns the depth of the TreeIndex.
+    ///
+    /// # Examples
+    /// ```
+    /// use scc::TreeIndex;
+    ///
+    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    ///
+    /// for key in 0..16u64 {
+    ///     let result = treeindex.insert(key, 10);
+    ///     assert!(result.is_ok());
+    /// }
+    ///
+    /// let result = treeindex.depth();
+    /// assert_eq!(result, 1);
+    /// ```
+    pub fn depth(&self) -> usize {
+        let guard = crossbeam_epoch::pin();
+        let root_node = self.root.load(Acquire, &guard);
+        if !root_node.is_null() {
+            unsafe { root_node.deref().floor() + 1 }
+        } else {
+            0
+        }
+    }
+
     /// Returns a Scanner.
     ///
     /// The returned Scanner starts scanning from the minimum key-value pair.
@@ -262,7 +288,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
         Scanner::new(self)
     }
 
-    /// (work-in-progress) Returns a Scanner that starts from the given key if it exists.
+    /// Returns a Scanner that starts from the given key if it exists.
     ///
     /// In case the key does not exist, and there is a key that is greater than the given key,
     /// a Scanner pointing to the key is returned.
@@ -293,44 +319,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
         Scanner::from(self, key)
     }
 
-    /// (work-in-progress) Returns the statistics of the current state of the TreeIndex.
-    ///
-    /// It returns the size, depth, allocated nodes, and load factor.
-    ///
-    /// # Examples
-    /// ```
-    /// use scc::TreeIndex;
-    ///
-    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
-    /// ```
-    pub fn statistics(&self) -> Statistics {
-        let scanner = Scanner::new(self);
-        let root_ptr = self.root.load(Relaxed, &scanner.guard);
-        if root_ptr.is_null() {
-            Statistics {
-                capacity: 0,
-                num_entries: 0,
-                depth: 0,
-            }
-        } else {
-            let root_ref = unsafe { root_ptr.deref() };
-            let mut num_entries = 0;
-            for _ in self.iter() {
-                num_entries += 1;
-            }
-            Statistics {
-                capacity: 0,
-                num_entries,
-                depth: root_ref.floor() + 1,
-            }
-        }
-    }
-}
-
-impl<K: Clone + fmt::Display + Ord + Send + Sync, V: Clone + fmt::Display + Send + Sync>
-    TreeIndex<K, V>
-{
-    /// (work-in-progress) Export the TreeIndex.
+    /// (work-in-progress) Export the structure of the TreeIndex and its contents.
     ///
     /// # Examples
     /// ```
@@ -347,13 +336,40 @@ impl<K: Clone + fmt::Display + Ord + Send + Sync, V: Clone + fmt::Display + Send
         let guard = crossbeam_epoch::pin();
         let root_node = self.root.load(Acquire, &guard);
         if !root_node.is_null() {
+            unsafe { root_node.deref().export(&guard) };
+        }
+    }
+}
+
+impl<K: Clone + fmt::Display + Ord + Send + Sync, V: Clone + fmt::Display + Send + Sync>
+    TreeIndex<K, V>
+{
+    /// Print the TreeIndex contents to the standard output.
+    ///
+    /// # Examples
+    /// ```
+    /// use scc::TreeIndex;
+    ///
+    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    ///
+    /// let result = treeindex.insert(1, 10);
+    /// assert!(result.is_ok());
+    ///
+    /// treeindex.print();
+    /// ```
+    pub fn print(&self) {
+        let guard = crossbeam_epoch::pin();
+        let root_node = self.root.load(Acquire, &guard);
+        if !root_node.is_null() {
             unsafe { root_node.deref().print(&guard) };
         }
     }
 }
 
 impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for TreeIndex<K, V> {
-    fn drop(&mut self) {}
+    fn drop(&mut self) {
+        self.clear();
+    }
 }
 
 /// Scanner implements Iterator for TreeIndex.
@@ -383,7 +399,7 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Scanner<'a, K, V>
             return None;
         }
         scanner.leaf_node_scanner = unsafe {
-            // prolong the lifetime as the rust typesystem cannot infer the actual lifetime correctly
+            // prolong the lifetime as the rust type system cannot infer the actual lifetime correctly
             std::mem::transmute::<_, Option<LeafNodeScanner<'a, K, V>>>(
                 (*root_node.as_raw()).from(key, &scanner.guard),
             )
@@ -396,7 +412,7 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Scanner<'a, K, V>
         }
     }
 
-    /// Returns a reference to the entry that the scanner is currently pointing to
+    /// Returns a reference to the entry that the scanner is currently pointing to.
     pub fn get(&self) -> Option<(&'a K, &'a V)> {
         if let Some(leaf_node_scanner) = self.leaf_node_scanner.as_ref() {
             return leaf_node_scanner.get();
@@ -435,7 +451,7 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator for Scan
                 return None;
             }
             self.leaf_node_scanner = unsafe {
-                // prolong the lifetime as the rust typesystem cannot infer the actual lifetime correctly
+                // prolong the lifetime as the rust type system cannot infer the actual lifetime correctly
                 std::mem::transmute::<_, Option<LeafNodeScanner<'a, K, V>>>(
                     (*root_node.as_raw()).min(&self.guard),
                 )
@@ -444,41 +460,5 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator for Scan
                 .as_ref()
                 .map_or_else(|| None, |scanner| scanner.get())
         }
-    }
-}
-
-/// Statistics shows aggregated views of the TreeIndex.
-///
-/// # Examples
-/// ```
-/// use scc::TreeIndex;
-///
-/// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
-/// ```
-pub struct Statistics {
-    capacity: usize,
-    num_entries: usize,
-    depth: usize,
-}
-
-impl Statistics {
-    pub fn capacity(&self) -> usize {
-        self.capacity
-    }
-    pub fn num_entries(&self) -> usize {
-        self.num_entries
-    }
-    pub fn depth(&self) -> usize {
-        self.depth
-    }
-}
-
-impl fmt::Display for Statistics {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "capacity: {}, entries: {}, depth: {}",
-            self.capacity, self.num_entries, self.depth,
-        )
     }
 }

@@ -32,6 +32,13 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         }
     }
 
+    pub fn export(&self, guard: &Guard) {
+        match &self.entry {
+            NodeType::Internal(internal_node) => internal_node.export(guard),
+            NodeType::Leaf(leaf_node) => leaf_node.export(guard),
+        }
+    }
+
     /// Searches for the given key.
     pub fn search<'a>(&'a self, key: &'a K, guard: &'a Guard) -> Option<&'a V> {
         match &self.entry {
@@ -169,7 +176,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 new_children.store(Shared::null(), Release);
             });
             let new_root = internal_node.children.1.load(Acquire, guard);
-            if let Ok(_) = root_ptr.compare_and_set(current_root, new_root, Release, guard) {
+            if root_ptr
+                .compare_and_set(current_root, new_root, Release, guard)
+                .is_ok()
+            {
                 unsafe {
                     current_root.deref().unlink(false);
                     guard.defer_destroy(current_root)
@@ -286,6 +296,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             leaf_node_anchor: Atomic::null(),
             floor,
         }
+    }
+
+    fn export(&self, _guard: &Guard) {
+        // [TODO]
     }
 
     fn full(&self, guard: &Guard) -> bool {

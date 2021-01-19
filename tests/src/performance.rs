@@ -408,7 +408,7 @@ mod treeindex_test {
         let num_threads_vector = vec![1, 4, 16];
 
         for num_threads in num_threads_vector {
-            let hashmap: Arc<TreeIndex<String, String>> = Arc::new(Default::default());
+            let treeindex: Arc<TreeIndex<String, String>> = Arc::new(Default::default());
             let worload_size = 65536;
 
             // 1. insert-local
@@ -422,13 +422,13 @@ mod treeindex_test {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                perform(num_threads, 0, hashmap.clone(), insert.clone());
+                perform(num_threads, 0, treeindex.clone(), insert.clone());
             println!(
                 "insert-local: {}, {:?}, {}",
                 num_threads, duration, total_num_operations
             );
-            let statistics = hashmap.statistics();
-            println!("after insert-local: {}", statistics);
+            let (len, depth) = (treeindex.len(), treeindex.depth());
+            println!("after insert-local: num_elements {}, depth {}", len, depth);
             //assert_eq!(statistics.num_entries(), worload_size * num_threads);
 
             // 2. read-local
@@ -442,7 +442,7 @@ mod treeindex_test {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                perform(num_threads, 0, hashmap.clone(), read.clone());
+                perform(num_threads, 0, treeindex.clone(), read.clone());
             println!(
                 "read-local: {}, {:?}, {}",
                 num_threads, duration, total_num_operations
@@ -459,13 +459,13 @@ mod treeindex_test {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                perform(num_threads, 0, hashmap.clone(), remove.clone());
+                perform(num_threads, 0, treeindex.clone(), remove.clone());
             println!(
                 "remove-local: {}, {:?}, {}",
                 num_threads, duration, total_num_operations
             );
-            let statistics = hashmap.statistics();
-            println!("after remove-local: {}", statistics);
+            let (len, depth) = (treeindex.len(), treeindex.depth());
+            println!("after remove-local: num_elements {}, depth {}", len, depth);
             //assert_eq!(statistics.num_entries(), 0);
 
             if num_threads < 2 {
@@ -483,14 +483,16 @@ mod treeindex_test {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                perform(num_threads, 0, hashmap.clone(), insert.clone());
+                perform(num_threads, 0, treeindex.clone(), insert.clone());
             println!(
                 "insert-local-remote: {}, {:?}, {}",
                 num_threads, duration, total_num_operations
             );
-            let statistics = hashmap.statistics();
-            println!("after insert-local-remote: {}", statistics);
-            //assert_eq!(statistics.num_entries(), worload_size * num_threads);
+            let (len, depth) = (treeindex.len(), treeindex.depth());
+            println!(
+                "after insert-local-remote: num_elements {}, depth {}",
+                len, depth
+            );
 
             // 5. mixed
             let mixed = Workload {
@@ -502,19 +504,14 @@ mod treeindex_test {
                 remove_local: 1,
                 remove_remote: 1,
             };
-            let (duration, total_num_operations) = perform(
-                num_threads,
-                statistics.num_entries(),
-                hashmap.clone(),
-                mixed.clone(),
-            );
+            let (duration, total_num_operations) =
+                perform(num_threads, len, treeindex.clone(), mixed.clone());
             println!(
                 "mixed: {}, {:?}, {}",
                 num_threads, duration, total_num_operations
             );
-            let statistics = hashmap.statistics();
-            println!("after mixed: {}", statistics);
-            //assert_eq!(statistics.num_entries(), worload_size * num_threads);
+            let (len, depth) = (treeindex.len(), treeindex.depth());
+            println!("after mixed: num_elements {}, depth {}", len, depth);
 
             // 6. remove-local-remote
             let remove = Workload {
@@ -527,14 +524,16 @@ mod treeindex_test {
                 remove_remote: 1,
             };
             let (duration, total_num_operations) =
-                perform(num_threads, 0, hashmap.clone(), remove.clone());
+                perform(num_threads, 0, treeindex.clone(), remove.clone());
             println!(
                 "remove-local-remote: {}, {:?}, {}",
                 num_threads, duration, total_num_operations
             );
-            let statistics = hashmap.statistics();
-            println!("after remove-local-remote: {}", statistics);
-            //assert_eq!(statistics.num_entries(), 0);
+            let (len, depth) = (treeindex.len(), treeindex.depth());
+            println!(
+                "after remove-local-remote: num_elements {}, depth {}",
+                len, depth
+            );
         }
     }
 }

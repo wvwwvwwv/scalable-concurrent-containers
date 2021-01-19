@@ -32,6 +32,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         }
     }
 
+    pub fn export(&self, _guard: &Guard) {
+        // [TODO]
+    }
+
     pub fn full(&self, guard: &Guard) -> bool {
         self.leaves.0.full() && !self.leaves.1.load(Relaxed, guard).is_null()
     }
@@ -754,17 +758,20 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNodeScanner<'
                 leaf_node_scanner.leaf_scanner.replace(leaf_scanner);
                 return Some(leaf_node_scanner);
             }
-            if leaf_node_scanner.current_leaf_index >= leaf_node_scanner.leaf_pointer_array.len() {
-                // return the first valid leaf node scanner
-                let mut jump_scanner = leaf_node_scanner.jump(None, guard);
-                while let Some(mut scanner) = jump_scanner.take() {
-                    if scanner.next().is_some() {
-                        return Some(scanner);
-                    }
-                    jump_scanner = scanner.jump(None, guard);
-                }
+            if leaf_node_scanner.current_leaf_index == leaf_node_scanner.leaf_pointer_array.len() {
+                break;
             }
         }
+
+        // return the first valid leaf node scanner
+        let mut jump_scanner = leaf_node_scanner.jump(None, guard);
+        while let Some(mut scanner) = jump_scanner.take() {
+            if scanner.next().is_some() {
+                return Some(scanner);
+            }
+            jump_scanner = scanner.jump(None, guard);
+        }
+
         None
     }
 
@@ -864,7 +871,7 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator
                     }
                 }
                 self.leaf_scanner.take();
-                if self.current_leaf_index >= self.leaf_pointer_array.len() {
+                if self.current_leaf_index == self.leaf_pointer_array.len() {
                     break;
                 }
             }
