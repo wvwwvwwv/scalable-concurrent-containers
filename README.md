@@ -1,6 +1,6 @@
 # SCC: Scalable Concurrent Containers
 
-SCC offers scalable concurrent containers written in the Rust language. The data structures in SCC assume to be used by a database management software running on a server, ane therefore they may not efficiently work with a small set of data.
+SCC offers scalable concurrent containers written in the Rust language. The data structures in SCC are meant to be used by database management software running on a server, ane therefore they may not efficiently work with a small set of data.
 
 - [scc::HashMap](#hashmap)
 - [scc::TreeIndex](#treeindex)
@@ -65,7 +65,7 @@ scc::TreeIndex is a B+-tree variant optimized for read operations. Locks are onl
 ## Changelog
 
 #### 0.3.17
-Stabilize TreeIndex::from, add TreeIndex::depth
+Stabilize TreeIndex::from, add TreeIndex::depth, the last minor version of 0.3.*
 #### 0.3.16
 Implement TreeIndex::clear and (WIP)TreeIndex::from / license changed from MIT -> Apache 2.0 to comply with the company policies (SAP)
 #### 0.3.15
