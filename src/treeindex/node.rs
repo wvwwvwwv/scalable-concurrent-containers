@@ -32,13 +32,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         }
     }
 
-    pub fn export(&self, guard: &Guard) {
-        match &self.entry {
-            NodeType::Internal(internal_node) => internal_node.export(guard),
-            NodeType::Leaf(leaf_node) => leaf_node.export(guard),
-        }
-    }
-
     /// Searches for the given key.
     pub fn search<'a>(&'a self, key: &'a K, guard: &'a Guard) -> Option<&'a V> {
         match &self.entry {
@@ -263,10 +256,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
 }
 
 impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> Node<K, V> {
-    pub fn print(&self, guard: &Guard) -> usize {
+    pub fn export<T: std::io::Write>(
+        &self,
+        output: &mut T,
+        guard: &Guard,
+    ) -> Result<usize, std::io::Error> {
         match &self.entry {
-            NodeType::Internal(internal_node) => internal_node.print(guard),
-            NodeType::Leaf(leaf_node) => leaf_node.print(guard),
+            NodeType::Internal(internal_node) => internal_node.export(output, guard),
+            NodeType::Leaf(leaf_node) => leaf_node.export(output, guard),
         }
     }
 }
@@ -296,10 +293,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             leaf_node_anchor: Atomic::null(),
             floor,
         }
-    }
-
-    fn export(&self, _guard: &Guard) {
-        // [TODO]
     }
 
     fn full(&self, guard: &Guard) -> bool {
@@ -1089,25 +1082,34 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for InternalNode
 }
 
 impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> InternalNode<K, V> {
-    fn print(&self, guard: &Guard) -> usize {
+    fn export<T: std::io::Write>(
+        &self,
+        output: &mut T,
+        guard: &Guard,
+    ) -> Result<usize, std::io::Error> {
         let mut scanned = 0;
         for (index, entry) in LeafScanner::new(&self.children.0).enumerate() {
-            println!(
+            output.write_fmt(format_args!(
                 "floor: {}, index: {}, node_key: {}",
                 self.floor, index, entry.0
-            );
+            ))?;
             let child_ref = unsafe { entry.1.load(Relaxed, &guard).deref() };
-            scanned += child_ref.print(guard);
+            match child_ref.export(&mut std::io::stdout(), guard) {
+                Ok(result) => scanned += result,
+                Err(err) => return Err(err),
+            };
         }
-        println!("floor {}, unbounded node", self.floor);
+        output.write_fmt(format_args!("floor {}, unbounded node", self.floor))?;
         let unbounded_ptr = self.children.1.load(Relaxed, &guard);
         if unbounded_ptr.is_null() {
-            println!(" null");
-            return scanned;
+            output.write_fmt(format_args!(" null"))?;
+            return Ok(scanned);
         }
         let unbounded_ref = unsafe { unbounded_ptr.deref() };
-        scanned += unbounded_ref.print(guard);
-        scanned
+        match unbounded_ref.export(&mut std::io::stdout(), guard) {
+            Ok(result) => Ok(scanned + result),
+            Err(err) => Err(err),
+        }
     }
 }
 
@@ -1281,7 +1283,7 @@ mod test {
                 println!("{}", key);
             }
         }
-        let num_entries = node.print(&crossbeam_epoch::pin());
+        let num_entries = node.export(&mut std::io::stdout(), &crossbeam_epoch::pin()).unwrap();
         println!("{}", num_entries);
         assert_eq!(num_entries, inserted.lock().unwrap().len());
 

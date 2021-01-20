@@ -32,10 +32,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         }
     }
 
-    pub fn export(&self, _guard: &Guard) {
-        // [TODO]
-    }
-
     pub fn full(&self, guard: &Guard) -> bool {
         self.leaves.0.full() && !self.leaves.1.load(Relaxed, guard).is_null()
     }
@@ -655,28 +651,32 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
 }
 
 impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> LeafNode<K, V> {
-    pub fn print(&self, guard: &Guard) -> usize {
+    pub fn export<T: std::io::Write>(
+        &self,
+        output: &mut T,
+        guard: &Guard,
+    ) -> Result<usize, std::io::Error> {
         let mut scanned = 0;
         for (index, entry) in LeafScanner::new(&self.leaves.0).enumerate() {
-            println!("index: {}, leaf_max_key: {}", index, entry.0);
+            output.write_fmt(format_args!("index: {}, leaf_max_key: {}", index, entry.0))?;
             let leaf_ref = unsafe { entry.1.load(Relaxed, &guard).deref() };
             for entry in LeafScanner::new(leaf_ref) {
                 scanned += 1;
-                println!(" entry: {} {}", entry.0, entry.1);
+                output.write_fmt(format_args!(" entry: {} {}", entry.0, entry.1))?;
             }
         }
-        println!("unbounded node");
+        output.write_fmt(format_args!("unbounded node"))?;
         let unbounded_ptr = self.leaves.1.load(Relaxed, &guard);
         if unbounded_ptr.is_null() {
-            println!(" null");
-            return scanned;
+            output.write_fmt(format_args!(" null"))?;
+            return Ok(scanned);
         }
         let unbounded_ref = unsafe { unbounded_ptr.deref() };
         for entry in LeafScanner::new(unbounded_ref) {
             scanned += 1;
-            println!(" entry: {} {}", entry.0, entry.1);
+            output.write_fmt(format_args!(" entry: {} {}", entry.0, entry.1))?;
         }
-        scanned
+        Ok(scanned)
     }
 }
 

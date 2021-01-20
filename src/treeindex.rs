@@ -318,33 +318,12 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
     pub fn from(&self, key: &K) -> Option<Scanner<K, V>> {
         Scanner::from(self, key)
     }
-
-    /// (work-in-progress) Export the structure of the TreeIndex and its contents.
-    ///
-    /// # Examples
-    /// ```
-    /// use scc::TreeIndex;
-    ///
-    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
-    ///
-    /// let result = treeindex.insert(1, 10);
-    /// assert!(result.is_ok());
-    ///
-    /// treeindex.export();
-    /// ```
-    pub fn export(&self) {
-        let guard = crossbeam_epoch::pin();
-        let root_node = self.root.load(Acquire, &guard);
-        if !root_node.is_null() {
-            unsafe { root_node.deref().export(&guard) };
-        }
-    }
 }
 
 impl<K: Clone + fmt::Display + Ord + Send + Sync, V: Clone + fmt::Display + Send + Sync>
     TreeIndex<K, V>
 {
-    /// Print the TreeIndex contents to the standard output.
+    /// Export the TreeIndex contents to the specified channel.
     ///
     /// # Examples
     /// ```
@@ -355,13 +334,15 @@ impl<K: Clone + fmt::Display + Ord + Send + Sync, V: Clone + fmt::Display + Send
     /// let result = treeindex.insert(1, 10);
     /// assert!(result.is_ok());
     ///
-    /// treeindex.print();
+    /// treeindex.export(&mut std::io::stdout());
     /// ```
-    pub fn print(&self) {
+    pub fn export<T: std::io::Write>(&self, output: &mut T) -> Result<usize, std::io::Error> {
         let guard = crossbeam_epoch::pin();
         let root_node = self.root.load(Acquire, &guard);
         if !root_node.is_null() {
-            unsafe { root_node.deref().print(&guard) };
+            unsafe { root_node.deref().export(output, &guard) }
+        } else {
+            Ok(0)
         }
     }
 }
