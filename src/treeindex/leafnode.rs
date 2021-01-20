@@ -683,10 +683,16 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
             if let Some((child_ptr, child_id)) = child {
                 output.write_fmt(format_args!("{} -> {}\n", id, child_id))?;
                 output.write_fmt(format_args!("{} [shape=record label=\"", child_id))?;
+                let mut first = true;
                 for entry in LeafScanner::new(unsafe { child_ptr.deref() }) {
-                    output.write_fmt(format_args!("{}|{}|", entry.0, entry.1))?;
+                    if first {
+                        output.write_fmt(format_args!("{}|{}", entry.0, entry.1))?;
+                        first = false;
+                    } else {
+                        output.write_fmt(format_args!("|{}|{}", entry.0, entry.1))?;
+                    }
                 }
-                output.write_fmt(format_args!("-\"]\n"))?;
+                output.write_fmt(format_args!("\"]\n"))?;
             }
         }
 
