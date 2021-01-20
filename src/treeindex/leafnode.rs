@@ -653,30 +653,44 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
 impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> LeafNode<K, V> {
     pub fn export<T: std::io::Write>(
         &self,
+        id: usize,
+        id_generator: &mut usize,
         output: &mut T,
         guard: &Guard,
-    ) -> Result<usize, std::io::Error> {
-        let mut scanned = 0;
+    ) -> std::io::Result<()> {
+        // print the label
+        output.write_fmt(format_args!("{} [shape=record label=\"", id))?;
+        let mut children_ptr_array: [Option<(Shared<Leaf<K, V>>, usize)>; ARRAY_SIZE + 1] =
+            [None; ARRAY_SIZE + 1];
         for (index, entry) in LeafScanner::new(&self.leaves.0).enumerate() {
-            output.write_fmt(format_args!("index: {}, leaf_max_key: {}", index, entry.0))?;
-            let leaf_ref = unsafe { entry.1.load(Relaxed, &guard).deref() };
-            for entry in LeafScanner::new(leaf_ref) {
-                scanned += 1;
-                output.write_fmt(format_args!(" entry: {} {}", entry.0, entry.1))?;
+            *id_generator += 1;
+            let child_id = *id_generator;
+            output.write_fmt(format_args!("{}|{}|", child_id, entry.0))?;
+            children_ptr_array[index].replace((entry.1.load(Relaxed, &guard), child_id));
+        }
+        let unbounded_leaf_ptr = self.leaves.1.load(Relaxed, &guard);
+        if !unbounded_leaf_ptr.is_null() {
+            *id_generator += 1;
+            let child_id = *id_generator;
+            output.write_fmt(format_args!("{}\"]\n", child_id))?;
+            children_ptr_array[ARRAY_SIZE].replace((unbounded_leaf_ptr, child_id));
+        } else {
+            output.write_fmt(format_args!("-\"]\n"))?;
+        }
+
+        // print the edges and children
+        for child in children_ptr_array.iter() {
+            if let Some((child_ptr, child_id)) = child {
+                output.write_fmt(format_args!("{} -> {}\n", id, child_id))?;
+                output.write_fmt(format_args!("{} [shape=record label=\"", child_id))?;
+                for entry in LeafScanner::new(unsafe { child_ptr.deref() }) {
+                    output.write_fmt(format_args!("{}|{}|", entry.0, entry.1))?;
+                }
+                output.write_fmt(format_args!("-\"]\n"))?;
             }
         }
-        output.write_fmt(format_args!("unbounded node"))?;
-        let unbounded_ptr = self.leaves.1.load(Relaxed, &guard);
-        if unbounded_ptr.is_null() {
-            output.write_fmt(format_args!(" null"))?;
-            return Ok(scanned);
-        }
-        let unbounded_ref = unsafe { unbounded_ptr.deref() };
-        for entry in LeafScanner::new(unbounded_ref) {
-            scanned += 1;
-            output.write_fmt(format_args!(" entry: {} {}", entry.0, entry.1))?;
-        }
-        Ok(scanned)
+
+        std::io::Result::Ok(())
     }
 }
 

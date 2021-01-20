@@ -323,7 +323,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
 impl<K: Clone + fmt::Display + Ord + Send + Sync, V: Clone + fmt::Display + Send + Sync>
     TreeIndex<K, V>
 {
-    /// Export the TreeIndex contents to the specified channel.
+    /// Exports the TreeIndex contents to the specified channel.
     ///
     /// # Examples
     /// ```
@@ -336,14 +336,15 @@ impl<K: Clone + fmt::Display + Ord + Send + Sync, V: Clone + fmt::Display + Send
     ///
     /// treeindex.export(&mut std::io::stdout());
     /// ```
-    pub fn export<T: std::io::Write>(&self, output: &mut T) -> Result<usize, std::io::Error> {
+    pub fn export<T: std::io::Write>(&self, output: &mut T) -> std::io::Result<()> {
+        output.write_fmt(format_args!("digraph {{\n"))?;
+        let mut id: usize = 0;
         let guard = crossbeam_epoch::pin();
         let root_node = self.root.load(Acquire, &guard);
         if !root_node.is_null() {
-            unsafe { root_node.deref().export(output, &guard) }
-        } else {
-            Ok(0)
+            unsafe { root_node.deref().export(0, &mut id, output, &guard) }?
         }
+        output.write_fmt(format_args!("}}"))
     }
 }
 

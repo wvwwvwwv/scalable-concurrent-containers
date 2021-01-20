@@ -1,6 +1,6 @@
 extern crate scopeguard;
 
-use super::leaf::LeafScanner;
+use super::leaf::{LeafScanner, ARRAY_SIZE};
 use super::leafnode::{LeafNode, LeafNodeAnchor, LeafNodeScanner};
 use super::Leaf;
 use super::{InsertError, RemoveError};
@@ -258,12 +258,16 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
 impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> Node<K, V> {
     pub fn export<T: std::io::Write>(
         &self,
+        id: usize,
+        id_generator: &mut usize,
         output: &mut T,
         guard: &Guard,
-    ) -> Result<usize, std::io::Error> {
+    ) -> std::io::Result<()> {
         match &self.entry {
-            NodeType::Internal(internal_node) => internal_node.export(output, guard),
-            NodeType::Leaf(leaf_node) => leaf_node.export(output, guard),
+            NodeType::Internal(internal_node) => {
+                internal_node.export(id, id_generator, output, guard)
+            }
+            NodeType::Leaf(leaf_node) => leaf_node.export(id, id_generator, output, guard),
         }
     }
 }
@@ -1084,32 +1088,44 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for InternalNode
 impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> InternalNode<K, V> {
     fn export<T: std::io::Write>(
         &self,
+        id: usize,
+        id_generator: &mut usize,
         output: &mut T,
         guard: &Guard,
-    ) -> Result<usize, std::io::Error> {
-        let mut scanned = 0;
+    ) -> std::io::Result<()> {
+        // print the label
+        output.write_fmt(format_args!("{} [shape=record label=\"", id))?;
+        let mut children_ptr_array: [Option<(Shared<Node<K, V>>, usize)>; ARRAY_SIZE + 1] =
+            [None; ARRAY_SIZE + 1];
         for (index, entry) in LeafScanner::new(&self.children.0).enumerate() {
-            output.write_fmt(format_args!(
-                "floor: {}, index: {}, node_key: {}",
-                self.floor, index, entry.0
-            ))?;
-            let child_ref = unsafe { entry.1.load(Relaxed, &guard).deref() };
-            match child_ref.export(&mut std::io::stdout(), guard) {
-                Ok(result) => scanned += result,
-                Err(err) => return Err(err),
-            };
+            *id_generator += 1;
+            let child_id = *id_generator;
+            output.write_fmt(format_args!("{}|{}|", child_id, entry.0))?;
+            children_ptr_array[index].replace((entry.1.load(Relaxed, &guard), child_id));
         }
-        output.write_fmt(format_args!("floor {}, unbounded node", self.floor))?;
-        let unbounded_ptr = self.children.1.load(Relaxed, &guard);
-        if unbounded_ptr.is_null() {
-            output.write_fmt(format_args!(" null"))?;
-            return Ok(scanned);
+        let unbounded_child_ptr = self.children.1.load(Relaxed, &guard);
+        if !unbounded_child_ptr.is_null() {
+            *id_generator += 1;
+            let child_id = *id_generator;
+            output.write_fmt(format_args!("{}\"]\n", child_id))?;
+            children_ptr_array[ARRAY_SIZE].replace((unbounded_child_ptr, child_id));
+        } else {
+            output.write_fmt(format_args!("-\"]\n"))?;
         }
-        let unbounded_ref = unsafe { unbounded_ptr.deref() };
-        match unbounded_ref.export(&mut std::io::stdout(), guard) {
-            Ok(result) => Ok(scanned + result),
-            Err(err) => Err(err),
+
+        // print the edges and children
+        for child in children_ptr_array.iter() {
+            if let Some((child_ptr, child_id)) = child {
+                output.write_fmt(format_args!("{} -> {}\n", id, child_id))?;
+                unsafe {
+                    child_ptr
+                        .deref()
+                        .export(*child_id, id_generator, output, guard)
+                }?;
+            }
         }
+
+        std::io::Result::Ok(())
     }
 }
 
@@ -1140,83 +1156,12 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for NewNodes<K, 
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::treeindex::leaf::ARRAY_SIZE;
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
 
     #[test]
     fn node() {
-        for depth in 0..4 {
-            // sequential
-            let node = Node::new(depth);
-            for key in 0..(ARRAY_SIZE * ARRAY_SIZE * ARRAY_SIZE * ARRAY_SIZE) {
-                let guard = crossbeam_epoch::pin();
-                match node.insert(key, 10, &guard) {
-                    Ok(_) => match node.insert(key, 11, &guard) {
-                        Ok(_) => assert!(false),
-                        Err(result) => match result {
-                            InsertError::Duplicated(entry) => assert_eq!(entry, (key, 11)),
-                            InsertError::Full(_) => assert!(false),
-                            InsertError::Retry(_) => assert!(false),
-                        },
-                    },
-                    Err(result) => match result {
-                        InsertError::Duplicated(_) => assert!(false),
-                        InsertError::Full(_) => {
-                            for key_to_check in 0..key {
-                                assert_eq!(node.search(&key_to_check, &guard).unwrap(), &10);
-                            }
-                            break;
-                        }
-                        InsertError::Retry(_) => assert!(false),
-                    },
-                }
-            }
-            // non-sequential
-            let node = Node::new(depth);
-            let mut inserted = Vec::new();
-            let mut done = false;
-            for i in 0..ARRAY_SIZE {
-                for j in 0..ARRAY_SIZE * ARRAY_SIZE {
-                    let key = (i + 1) * ARRAY_SIZE * ARRAY_SIZE - j + ARRAY_SIZE * ARRAY_SIZE / 2;
-                    let guard = crossbeam_epoch::pin();
-                    match node.insert(key, 10, &guard) {
-                        Ok(_) => {
-                            inserted.push(key);
-                            match node.insert(key, 11, &guard) {
-                                Ok(_) => assert!(false),
-                                Err(result) => match result {
-                                    InsertError::Duplicated(entry) => assert_eq!(entry, (key, 11)),
-                                    InsertError::Full(_) => assert!(false),
-                                    InsertError::Retry(_) => assert!(false),
-                                },
-                            };
-                        }
-                        Err(result) => match result {
-                            InsertError::Duplicated(_) => assert!(false),
-                            InsertError::Full(_) => {
-                                for key_to_check in inserted.iter() {
-                                    assert_eq!(node.search(key_to_check, &guard).unwrap(), &10);
-                                }
-                                done = true;
-                            }
-                            InsertError::Retry(_) => assert!(false),
-                        },
-                    }
-                    if done {
-                        break;
-                    }
-                }
-                if done {
-                    break;
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn node_multithreaded() {
         let num_threads = 16;
         let range = 16384;
         let barrier = Arc::new(Barrier::new(num_threads));
@@ -1283,9 +1228,6 @@ mod test {
                 println!("{}", key);
             }
         }
-        let num_entries = node.export(&mut std::io::stdout(), &crossbeam_epoch::pin()).unwrap();
-        println!("{}", num_entries);
-        assert_eq!(num_entries, inserted.lock().unwrap().len());
 
         let guard = crossbeam_epoch::pin();
         let mut prev = 0;
