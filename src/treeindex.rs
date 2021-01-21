@@ -11,8 +11,7 @@ use leaf::Leaf;
 use leafnode::LeafNodeScanner;
 use node::Node;
 use std::fmt;
-use std::sync::atomic::Ordering::Acquire;
-use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
 /// A scalable concurrent tree map implementation.
 ///
