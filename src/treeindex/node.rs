@@ -32,6 +32,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         }
     }
 
+    /// Takes the memory address of self.entry as an identifier.
+    pub fn id(&self) -> usize {
+        match &self.entry {
+            NodeType::Internal(internal_node) => internal_node.id(),
+            NodeType::Leaf(leaf_node) => leaf_node.id(),
+        }
+    }
+
     /// Searches for the given key.
     pub fn search<'a>(&'a self, key: &'a K, guard: &'a Guard) -> Option<&'a V> {
         match &self.entry {
@@ -256,18 +264,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
 }
 
 impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> Node<K, V> {
-    pub fn export<T: std::io::Write>(
-        &self,
-        id: usize,
-        id_generator: &mut usize,
-        output: &mut T,
-        guard: &Guard,
-    ) -> std::io::Result<()> {
+    pub fn export<T: std::io::Write>(&self, output: &mut T, guard: &Guard) -> std::io::Result<()> {
         match &self.entry {
-            NodeType::Internal(internal_node) => {
-                internal_node.export(id, id_generator, output, guard)
-            }
-            NodeType::Leaf(leaf_node) => leaf_node.export(id, id_generator, output, guard),
+            NodeType::Internal(internal_node) => internal_node.export(output, guard),
+            NodeType::Leaf(leaf_node) => leaf_node.export(output, guard),
         }
     }
 }
@@ -297,6 +297,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             leaf_node_anchor: Atomic::null(),
             floor,
         }
+    }
+
+    /// Takes the memory address of the instance as an identifier.
+    fn id(&self) -> usize {
+        self as *const _ as usize
     }
 
     fn full(&self, guard: &Guard) -> bool {
@@ -1086,43 +1091,78 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for InternalNode
 }
 
 impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> InternalNode<K, V> {
-    fn export<T: std::io::Write>(
-        &self,
-        id: usize,
-        id_generator: &mut usize,
-        output: &mut T,
-        guard: &Guard,
-    ) -> std::io::Result<()> {
+    fn export<T: std::io::Write>(&self, output: &mut T, guard: &Guard) -> std::io::Result<()> {
         // print the label
-        output.write_fmt(format_args!("{} [shape=record label=\"", id))?;
-        let mut children_ptr_array: [Option<(Shared<Node<K, V>>, usize)>; ARRAY_SIZE + 1] =
-            [None; ARRAY_SIZE + 1];
+        output.write_fmt(format_args!(
+            "{} [shape=record label=\"Floor {}",
+            self.id(),
+            self.floor,
+        ))?;
+        let mut children_ref_array: [Option<&Node<K, V>>; ARRAY_SIZE + 1] = [None; ARRAY_SIZE + 1];
         for (index, entry) in LeafScanner::new(&self.children.0).enumerate() {
-            *id_generator += 1;
-            let child_id = *id_generator;
-            output.write_fmt(format_args!("{}|{}|", child_id, entry.0))?;
-            children_ptr_array[index].replace((entry.1.load(Relaxed, &guard), child_id));
+            let child_share_ptr = entry.1.load(Relaxed, &guard);
+            let child_ref = unsafe { child_share_ptr.deref() };
+            output.write_fmt(format_args!("|{}|{}", child_ref.id(), entry.0))?;
+            children_ref_array[index].replace(child_ref);
         }
         let unbounded_child_ptr = self.children.1.load(Relaxed, &guard);
         if !unbounded_child_ptr.is_null() {
-            *id_generator += 1;
-            let child_id = *id_generator;
-            output.write_fmt(format_args!("{}\"]\n", child_id))?;
-            children_ptr_array[ARRAY_SIZE].replace((unbounded_child_ptr, child_id));
-        } else {
-            output.write_fmt(format_args!("-\"]\n"))?;
+            let child_ref = unsafe { unbounded_child_ptr.deref() };
+            output.write_fmt(format_args!("|{}", child_ref.id()))?;
+            children_ref_array[ARRAY_SIZE].replace(child_ref);
         }
+        output.write_fmt(format_args!("\"]\n"))?;
 
         // print the edges and children
-        for child in children_ptr_array.iter() {
-            if let Some((child_ptr, child_id)) = child {
-                output.write_fmt(format_args!("{} -> {}\n", id, child_id))?;
-                unsafe {
-                    child_ptr
-                        .deref()
-                        .export(*child_id, id_generator, output, guard)
-                }?;
+        for child_ref in children_ref_array.iter() {
+            if let Some(child_ref) = child_ref {
+                output.write_fmt(format_args!("{} -> {}\n", self.id(), child_ref.id()))?;
+                child_ref.export(output, guard)?;
             }
+        }
+
+        // print the leaf node anchor
+        let mut leaf_node_anchor = self.leaf_node_anchor.load(Relaxed, guard);
+        let mut own_anchor = true;
+        while !leaf_node_anchor.is_null() {
+            let leaf_node_anchor_ref = unsafe { leaf_node_anchor.deref() };
+            if own_anchor {
+                own_anchor = false;
+                output.write_fmt(format_args!(
+                    "{} -> {} [style=dashed]\n",
+                    self.id(),
+                    leaf_node_anchor_ref.id()
+                ))?;
+            }
+
+            let min_leaf_node = leaf_node_anchor_ref.min_leaf_node(guard);
+            if !min_leaf_node.is_null() {
+                output.write_fmt(format_args!(
+                    "{} -> {} [style=dashed]\n",
+                    leaf_node_anchor_ref.id(),
+                    unsafe { min_leaf_node.deref().id() }
+                ))?;
+            }
+
+            // proceed to the next anchor
+            let next_leaf_node_anchor = leaf_node_anchor_ref.next_valid_node_anchor(guard);
+            if !next_leaf_node_anchor.is_null() {
+                output.write_fmt(format_args!(
+                    "{} -> {} [style=dashed]\n",
+                    leaf_node_anchor_ref.id(),
+                    unsafe { next_leaf_node_anchor.deref().id() }
+                ))?;
+            }
+
+            // print the label
+            output.write_fmt(format_args!(
+                "{} [shape=record label=\"Anchor|{}|{}\"]\n",
+                leaf_node_anchor_ref.id(),
+                !min_leaf_node.is_null(),
+                !next_leaf_node_anchor.is_null(),
+            ))?;
+
+            leaf_node_anchor = next_leaf_node_anchor;
         }
 
         std::io::Result::Ok(())

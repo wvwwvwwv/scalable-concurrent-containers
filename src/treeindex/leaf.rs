@@ -42,6 +42,11 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         }
     }
 
+    /// Takes the memory address of the instance as an identifier.
+    pub fn id(&self) -> usize {
+        self as *const _ as usize
+    }
+
     /// Returns the cardinality.
     pub fn cardinality(&self) -> usize {
         let metadata = self.metadata.load(Relaxed);

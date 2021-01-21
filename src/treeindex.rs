@@ -19,11 +19,19 @@ use std::sync::atomic::Ordering::Relaxed;
 /// scc::TreeIndex is a B+ tree variant that is optimized for read operations.
 /// Read operations, such as scan, read, are neither blocked nor interrupted by all the other types of operations.
 /// Write operations, such as insert, remove, do not block if they do not entail structural changes to the tree.
-pub struct TreeIndex<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
+pub struct TreeIndex<K, V>
+where
+    K: Clone + Ord + Send + Sync,
+    V: Clone + Send + Sync,
+{
     root: Atomic<Node<K, V>>,
 }
 
-impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Default for TreeIndex<K, V> {
+impl<K, V> Default for TreeIndex<K, V>
+where
+    K: Clone + Ord + Send + Sync,
+    V: Clone + Send + Sync,
+{
     /// Creates a TreeIndex instance with the default parameters.
     ///
     /// # Examples
@@ -40,7 +48,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Default for TreeIndex
     }
 }
 
-impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
+impl<K, V> TreeIndex<K, V>
+where
+    K: Clone + Ord + Send + Sync,
+    V: Clone + Send + Sync,
+{
     /// Creates an empty TreeIndex instance.
     ///
     /// # Examples
@@ -320,8 +332,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> TreeIndex<K, V> {
     }
 }
 
-impl<K: Clone + fmt::Display + Ord + Send + Sync, V: Clone + fmt::Display + Send + Sync>
-    TreeIndex<K, V>
+impl<K, V> TreeIndex<K, V>
+where
+    K: Clone + fmt::Display + Ord + Send + Sync,
+    V: Clone + fmt::Display + Send + Sync,
 {
     /// Exports the TreeIndex contents to the specified channel.
     ///
@@ -338,24 +352,31 @@ impl<K: Clone + fmt::Display + Ord + Send + Sync, V: Clone + fmt::Display + Send
     /// ```
     pub fn export<T: std::io::Write>(&self, output: &mut T) -> std::io::Result<()> {
         output.write_fmt(format_args!("digraph {{\n"))?;
-        let mut id: usize = 0;
         let guard = crossbeam_epoch::pin();
         let root_node = self.root.load(Acquire, &guard);
         if !root_node.is_null() {
-            unsafe { root_node.deref().export(0, &mut id, output, &guard) }?
+            unsafe { root_node.deref().export(output, &guard) }?
         }
         output.write_fmt(format_args!("}}"))
     }
 }
 
-impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for TreeIndex<K, V> {
+impl<K, V> Drop for TreeIndex<K, V>
+where
+    K: Clone + Ord + Send + Sync,
+    V: Clone + Send + Sync,
+{
     fn drop(&mut self) {
         self.clear();
     }
 }
 
 /// Scanner implements Iterator for TreeIndex.
-pub struct Scanner<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
+pub struct Scanner<'a, K, V>
+where
+    K: Clone + Ord + Send + Sync,
+    V: Clone + Send + Sync,
+{
     tree_index: &'a TreeIndex<K, V>,
     leaf_node_scanner: Option<LeafNodeScanner<'a, K, V>>,
     guard: Guard,
@@ -403,7 +424,11 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Scanner<'a, K, V>
     }
 }
 
-impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator for Scanner<'a, K, V> {
+impl<'a, K, V> Iterator for Scanner<'a, K, V>
+where
+    K: Clone + Ord + Send + Sync,
+    V: Clone + Send + Sync,
+{
     type Item = (&'a K, &'a V);
     fn next(&mut self) -> Option<Self::Item> {
         if self.leaf_node_scanner.is_some() {

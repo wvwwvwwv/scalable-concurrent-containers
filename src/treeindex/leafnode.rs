@@ -32,6 +32,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         }
     }
 
+    /// Takes the memory address of the instance as an identifier.
+    pub fn id(&self) -> usize {
+        self as *const _ as usize
+    }
+
     pub fn full(&self, guard: &Guard) -> bool {
         self.leaves.0.full() && !self.leaves.1.load(Relaxed, guard).is_null()
     }
@@ -651,42 +656,32 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
 }
 
 impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> LeafNode<K, V> {
-    pub fn export<T: std::io::Write>(
-        &self,
-        id: usize,
-        id_generator: &mut usize,
-        output: &mut T,
-        guard: &Guard,
-    ) -> std::io::Result<()> {
+    pub fn export<T: std::io::Write>(&self, output: &mut T, guard: &Guard) -> std::io::Result<()> {
         // print the label
-        output.write_fmt(format_args!("{} [shape=record label=\"", id))?;
-        let mut children_ptr_array: [Option<(Shared<Leaf<K, V>>, usize)>; ARRAY_SIZE + 1] =
-            [None; ARRAY_SIZE + 1];
+        output.write_fmt(format_args!("{} [shape=record label=\"Floor 0", self.id()))?;
+        let mut leaf_ref_array: [Option<&Leaf<K, V>>; ARRAY_SIZE + 1] = [None; ARRAY_SIZE + 1];
         for (index, entry) in LeafScanner::new(&self.leaves.0).enumerate() {
-            *id_generator += 1;
-            let child_id = *id_generator;
-            output.write_fmt(format_args!("{}|{}|", child_id, entry.0))?;
-            children_ptr_array[index].replace((entry.1.load(Relaxed, &guard), child_id));
+            let leaf_ref = unsafe { entry.1.load(Relaxed, &guard).deref() };
+            output.write_fmt(format_args!("|{}|{}", leaf_ref.id(), entry.0))?;
+            leaf_ref_array[index].replace(leaf_ref);
         }
         let unbounded_leaf_ptr = self.leaves.1.load(Relaxed, &guard);
         if !unbounded_leaf_ptr.is_null() {
-            *id_generator += 1;
-            let child_id = *id_generator;
-            output.write_fmt(format_args!("{}\"]\n", child_id))?;
-            children_ptr_array[ARRAY_SIZE].replace((unbounded_leaf_ptr, child_id));
-        } else {
-            output.write_fmt(format_args!("-\"]\n"))?;
+            let leaf_ref = unsafe { unbounded_leaf_ptr.deref() };
+            output.write_fmt(format_args!("|{}", leaf_ref.id()))?;
+            leaf_ref_array[ARRAY_SIZE].replace(leaf_ref);
         }
+        output.write_fmt(format_args!("\"]\n"))?;
 
         // print the edges and children
-        for child in children_ptr_array.iter() {
-            if let Some((child_ptr, child_id)) = child {
-                output.write_fmt(format_args!("{} -> {}\n", id, child_id))?;
-                output.write_fmt(format_args!("{} [shape=record label=\"", child_id))?;
+        for leaf_ref in leaf_ref_array.iter() {
+            if let Some(leaf_ref) = leaf_ref {
+                output.write_fmt(format_args!("{} -> {}\n", self.id(), leaf_ref.id()))?;
+                output.write_fmt(format_args!("{} [shape=record label=\"", leaf_ref.id()))?;
                 let mut first = true;
-                for entry in LeafScanner::new(unsafe { child_ptr.deref() }) {
+                for entry in LeafScanner::new(leaf_ref) {
                     if first {
-                        output.write_fmt(format_args!("{}|{}", entry.0, entry.1))?;
+                        output.write_fmt(format_args!("Leaf|{}|{}", entry.0, entry.1))?;
                         first = false;
                     } else {
                         output.write_fmt(format_args!("|{}|{}", entry.0, entry.1))?;
@@ -694,6 +689,24 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
                 }
                 output.write_fmt(format_args!("\"]\n"))?;
             }
+        }
+
+        // print the anchor and side link
+        let leaf_node_anchor = self.next_node_anchor.load(Relaxed, guard);
+        if !leaf_node_anchor.is_null() {
+            output.write_fmt(format_args!(
+                "{} -> {} [style=dashed]\n",
+                self.id(),
+                unsafe { leaf_node_anchor.deref() }.id()
+            ))?;
+        }
+        let side_link = self.side_link.load(Relaxed, guard);
+        if !side_link.is_null() {
+            output.write_fmt(format_args!(
+                "{} -> {} [style=dashed]\n",
+                self.id(),
+                unsafe { side_link.deref() }.id()
+            ))?;
         }
 
         std::io::Result::Ok(())
@@ -933,6 +946,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNodeAnchor<K, V> 
         }
     }
 
+    /// Takes the memory address of the instance as an identifier.
+    pub fn id(&self) -> usize {
+        self as *const _ as usize
+    }
+
     pub fn set(&self, ptr: Atomic<LeafNode<K, V>>, guard: &Guard) {
         self.min_leaf_node.store(ptr.load(Relaxed, guard), Release);
     }
@@ -940,6 +958,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNodeAnchor<K, V> 
     pub fn deprecate(&self, ptr: Shared<LeafNodeAnchor<K, V>>, guard: &Guard) {
         debug_assert!(self.next_valid_node_anchor.load(Relaxed, guard).is_null());
         self.next_valid_node_anchor.swap(ptr, Release, guard);
+    }
+
+    pub fn min_leaf_node<'a>(&self, guard: &'a Guard) -> Shared<'a, LeafNode<K, V>> {
+        self.min_leaf_node.load(Relaxed, guard)
+    }
+
+    pub fn next_valid_node_anchor<'a>(&self, guard: &'a Guard) -> Shared<'a, LeafNodeAnchor<K, V>> {
+        self.next_valid_node_anchor.load(Relaxed, guard)
     }
 }
 
