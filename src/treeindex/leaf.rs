@@ -647,6 +647,7 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Drop for Inserter<'a, K, V> {
 pub struct LeafScanner<'a, K: Clone + Ord + Sync, V: Clone + Sync> {
     leaf: &'a Leaf<K, V>,
     metadata: u64,
+    removed_entries_to_scan: u64,
     entry_index: usize,
     entry_ptr: *const (K, V),
 }
@@ -656,6 +657,26 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> LeafScanner<'a, K, V> {
         LeafScanner {
             leaf,
             metadata: leaf.metadata.load(Acquire),
+            removed_entries_to_scan: 0,
+            entry_index: ARRAY_SIZE,
+            entry_ptr: std::ptr::null(),
+        }
+    }
+
+    pub fn new_including_removed(leaf: &'a Leaf<K, V>) -> LeafScanner<'a, K, V> {
+        let metadata = leaf.metadata.load(Acquire);
+        let mut removed_entries_to_scan = 0;
+        for i in 0..ARRAY_SIZE {
+            let rank = ((metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
+                >> (i * INDEX_RANK_ENTRY_SIZE)) as usize;
+            if rank > 0 && metadata & (OCCUPANCY_BIT << i) == 0 {
+                removed_entries_to_scan |= OCCUPANCY_BIT << i;
+            }
+        }
+        LeafScanner {
+            leaf,
+            metadata: metadata,
+            removed_entries_to_scan,
             entry_index: ARRAY_SIZE,
             entry_ptr: std::ptr::null(),
         }
@@ -672,6 +693,7 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> LeafScanner<'a, K, V> {
             Some(LeafScanner {
                 leaf,
                 metadata,
+                removed_entries_to_scan: 0,
                 entry_index: index,
                 entry_ptr: ptr,
             })
@@ -688,12 +710,19 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> LeafScanner<'a, K, V> {
         unsafe { Some((&(*self.entry_ptr).0, &(*self.entry_ptr).1)) }
     }
 
+    pub fn removed(&self) -> bool {
+        self.removed_entries_to_scan & (OCCUPANCY_BIT << self.entry_index) != 0
+    }
+
     fn proceed(&mut self) {
         self.entry_ptr = std::ptr::null();
         if self.entry_index == usize::MAX {
             return;
         }
-        let (index, ptr) = self.leaf.next(self.metadata, self.entry_index);
+        let (index, ptr) = self.leaf.next(
+            self.metadata | self.removed_entries_to_scan,
+            self.entry_index,
+        );
         self.entry_index = index;
         self.entry_ptr = ptr;
     }
@@ -773,6 +802,47 @@ mod test {
             iterated += 1;
         }
         assert_eq!(iterated, leaf.cardinality());
+        drop(scanner);
+
+        let mut scanner = LeafScanner::new_including_removed(&leaf);
+        let mut prev_key = 0;
+        let mut iterated = 0;
+        let mut found_13_13 = false;
+        let mut found_40_40 = false;
+        let mut found_60_60 = false;
+        let mut found_60_61 = false;
+        while let Some(entry) = scanner.next() {
+            assert_eq!(scanner.get(), Some(entry));
+            if *entry.0 == 60 {
+                assert!(prev_key <= *entry.0);
+                assert!(scanner.removed());
+                if *entry.1 == 60 {
+                    found_60_60 = true;
+                } else if *entry.1 == 61 {
+                    found_60_61 = true;
+                }
+            } else if *entry.0 == 13 && *entry.1 == 13 {
+                assert!(prev_key <= *entry.0);
+                assert!(scanner.removed());
+                found_13_13 = true;
+                
+            } else if *entry.0 == 40 && *entry.1 == 40 {
+                assert!(prev_key <= *entry.0);
+                assert!(scanner.removed());
+                found_40_40 = true;
+            } else {
+                assert!(prev_key < *entry.0);
+                assert_eq!(*entry.0 + 1, *entry.1);
+                assert!(!scanner.removed());
+                prev_key = *entry.0;
+            }
+            iterated += 1;
+        }
+        assert!(found_40_40);
+        assert!(found_13_13);
+        assert!(found_60_60);
+        assert!(found_60_61);
+        assert_eq!(iterated, leaf.cardinality() + 4);
         drop(scanner);
 
         let mut scanner = LeafScanner::from(&leaf, &50, true).unwrap();

@@ -1094,30 +1094,81 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> I
     fn export<T: std::io::Write>(&self, output: &mut T, guard: &Guard) -> std::io::Result<()> {
         // print the label
         output.write_fmt(format_args!(
-            "{} [shape=record label=\"Floor {}",
+            "{} [shape=record label=\"Floor {}\"]\nsubgraph cluster_{} {{\n{{rank=same {}",
             self.id(),
             self.floor,
+            self.id(),
+            self.id(),
         ))?;
-        let mut children_ref_array: [Option<&Node<K, V>>; ARRAY_SIZE + 1] = [None; ARRAY_SIZE + 1];
-        for (index, entry) in LeafScanner::new(&self.children.0).enumerate() {
-            let child_share_ptr = entry.1.load(Relaxed, &guard);
-            let child_ref = unsafe { child_share_ptr.deref() };
-            output.write_fmt(format_args!("|{}|{}", child_ref.id(), entry.0))?;
-            children_ref_array[index].replace(child_ref);
+
+        let mut children_ref_array: [Option<(Option<&Node<K, V>>, Option<&K>, usize)>;
+            ARRAY_SIZE + 1] = [None; ARRAY_SIZE + 1];
+        let mut scanner = LeafScanner::new_including_removed(&self.children.0);
+        let mut index = 0;
+        while let Some(entry) = scanner.next() {
+            if !scanner.removed() {
+                let child_share_ptr = entry.1.load(Relaxed, &guard);
+                let child_ref = unsafe { child_share_ptr.deref() };
+                children_ref_array[index].replace((Some(child_ref), Some(entry.0), index));
+            } else {
+                children_ref_array[index].replace((None, Some(entry.0), index));
+            }
+            output.write_fmt(format_args!(" x{}x{}", self.id(), index))?;
+            index += 1;
         }
         let unbounded_child_ptr = self.children.1.load(Relaxed, &guard);
         if !unbounded_child_ptr.is_null() {
             let child_ref = unsafe { unbounded_child_ptr.deref() };
-            output.write_fmt(format_args!("|{}", child_ref.id()))?;
-            children_ref_array[ARRAY_SIZE].replace(child_ref);
+            children_ref_array[ARRAY_SIZE].replace((Some(child_ref), None, index));
+            output.write_fmt(format_args!(" x{}x{}", self.id(), index))?;
         }
-        output.write_fmt(format_args!("\"]\n"))?;
+        output.write_fmt(format_args!("}}\n}}\n"))?;
 
         // print the edges and children
-        for child_ref in children_ref_array.iter() {
-            if let Some(child_ref) = child_ref {
-                output.write_fmt(format_args!("{} -> {}\n", self.id(), child_ref.id()))?;
-                child_ref.export(output, guard)?;
+        for child_info in children_ref_array.iter() {
+            if let Some((child_ref, key_ref, index)) = child_info {
+                match (child_ref, key_ref) {
+                    (Some(child_ref), Some(key_ref)) => {
+                        output.write_fmt(format_args!(
+                            "x{}x{} [shape=record label=\"{}:{}\"]\nx{}x{} -> {}\n",
+                            self.id(),
+                            index,
+                            index,
+                            key_ref,
+                            self.id(),
+                            index,
+                            child_ref.id()
+                        ))?;
+                        child_ref.export(output, guard)?;
+                    }
+                    (Some(child_ref), None) => {
+                        output.write_fmt(format_args!(
+                            "x{}x{} [shape=record label=\"-\"]\nx{}x{} -> {}\n",
+                            self.id(),
+                            index,
+                            self.id(),
+                            index,
+                            child_ref.id()
+                        ))?;
+                        child_ref.export(output, guard)?;
+                    }
+                    (None, Some(key_ref)) => {
+                        output.write_fmt(format_args!(
+                            "x{}x{} [shape=record label=\"{}:{}\"]\n",
+                            self.id(),
+                            index,
+                            index,
+                            key_ref,
+                        ))?;
+                    }
+                    (None, None) => {
+                        output.write_fmt(format_args!(
+                            "x{}x{} [shape=record label=\"-\"]\n",
+                            self.id(),
+                            index,
+                        ))?;
+                    }
+                }
             }
         }
 
@@ -1129,7 +1180,7 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> I
             if own_anchor {
                 own_anchor = false;
                 output.write_fmt(format_args!(
-                    "{} -> {} [style=dashed]\n",
+                    "{} -> {}\n",
                     self.id(),
                     leaf_node_anchor_ref.id()
                 ))?;
@@ -1138,7 +1189,7 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> I
             let min_leaf_node = leaf_node_anchor_ref.min_leaf_node(guard);
             if !min_leaf_node.is_null() {
                 output.write_fmt(format_args!(
-                    "{} -> {} [style=dashed]\n",
+                    "{} -> {}\n",
                     leaf_node_anchor_ref.id(),
                     unsafe { min_leaf_node.deref().id() }
                 ))?;
@@ -1148,7 +1199,7 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> I
             let next_leaf_node_anchor = leaf_node_anchor_ref.next_valid_node_anchor(guard);
             if !next_leaf_node_anchor.is_null() {
                 output.write_fmt(format_args!(
-                    "{} -> {} [style=dashed]\n",
+                    "{} -> {}\n",
                     leaf_node_anchor_ref.id(),
                     unsafe { next_leaf_node_anchor.deref().id() }
                 ))?;

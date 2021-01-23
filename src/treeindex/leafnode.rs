@@ -658,36 +658,106 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
 impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> LeafNode<K, V> {
     pub fn export<T: std::io::Write>(&self, output: &mut T, guard: &Guard) -> std::io::Result<()> {
         // print the label
-        output.write_fmt(format_args!("{} [shape=record label=\"Floor 0", self.id()))?;
-        let mut leaf_ref_array: [Option<&Leaf<K, V>>; ARRAY_SIZE + 1] = [None; ARRAY_SIZE + 1];
-        for (index, entry) in LeafScanner::new(&self.leaves.0).enumerate() {
-            let leaf_ref = unsafe { entry.1.load(Relaxed, &guard).deref() };
-            output.write_fmt(format_args!("|{}|{}", leaf_ref.id(), entry.0))?;
-            leaf_ref_array[index].replace(leaf_ref);
+        output.write_fmt(format_args!(
+            "{} [shape=record label=\"Leaf Node\"]\nsubgraph cluster_{} {{\n{{rank=same {}",
+            self.id(),
+            self.id(),
+            self.id(),
+        ))?;
+
+        let mut leaf_ref_array: [Option<(Option<&Leaf<K, V>>, Option<&K>, usize)>; ARRAY_SIZE + 1] =
+            [None; ARRAY_SIZE + 1];
+        let mut scanner = LeafScanner::new_including_removed(&self.leaves.0);
+        let mut index = 0;
+        while let Some(entry) = scanner.next() {
+            if !scanner.removed() {
+                let leaf_share_ptr = entry.1.load(Relaxed, &guard);
+                let leaf_ref = unsafe { leaf_share_ptr.deref() };
+                leaf_ref_array[index].replace((Some(leaf_ref), Some(entry.0), index));
+            } else {
+                leaf_ref_array[index].replace((None, Some(entry.0), index));
+            }
+            output.write_fmt(format_args!(" x{}x{}", self.id(), index))?;
+            index += 1;
         }
         let unbounded_leaf_ptr = self.leaves.1.load(Relaxed, &guard);
         if !unbounded_leaf_ptr.is_null() {
             let leaf_ref = unsafe { unbounded_leaf_ptr.deref() };
-            output.write_fmt(format_args!("|{}", leaf_ref.id()))?;
-            leaf_ref_array[ARRAY_SIZE].replace(leaf_ref);
+            leaf_ref_array[ARRAY_SIZE].replace((Some(leaf_ref), None, index));
+            output.write_fmt(format_args!(" x{}x{}", self.id(), index))?;
         }
-        output.write_fmt(format_args!("\"]\n"))?;
+        output.write_fmt(format_args!("}}\n}}\n"))?;
 
         // print the edges and children
-        for leaf_ref in leaf_ref_array.iter() {
-            if let Some(leaf_ref) = leaf_ref {
-                output.write_fmt(format_args!("{} -> {}\n", self.id(), leaf_ref.id()))?;
-                output.write_fmt(format_args!("{} [shape=record label=\"", leaf_ref.id()))?;
-                let mut first = true;
-                for entry in LeafScanner::new(leaf_ref) {
-                    if first {
-                        output.write_fmt(format_args!("Leaf|{}|{}", entry.0, entry.1))?;
-                        first = false;
-                    } else {
-                        output.write_fmt(format_args!("|{}|{}", entry.0, entry.1))?;
+        for leaf_info in leaf_ref_array.iter() {
+            if let Some((leaf_ref, key_ref, index)) = leaf_info {
+                match (leaf_ref, key_ref) {
+                    (Some(leaf_ref), _) => {
+                        if let Some(key_ref) = key_ref {
+                            output.write_fmt(format_args!(
+                                "x{}x{} [shape=record label=\"{}:{}\"]\nx{}x{} -> {}\n",
+                                self.id(),
+                                index,
+                                index,
+                                key_ref,
+                                self.id(),
+                                index,
+                                leaf_ref.id()
+                            ))?;
+                        } else {
+                            output.write_fmt(format_args!(
+                                "x{}x{} [shape=record label=\"-\"]\nx{}x{} -> {}\n",
+                                self.id(),
+                                index,
+                                self.id(),
+                                index,
+                                leaf_ref.id()
+                            ))?;
+                        }
+                        output.write_fmt(format_args!(
+                            "{} [shape=record label=\"{{",
+                            leaf_ref.id()
+                        ))?;
+                        let mut leaf_scanner = LeafScanner::new_including_removed(leaf_ref);
+                        let mut rank = 0;
+                        let mut first = true;
+                        while let Some(entry) = leaf_scanner.next() {
+                            if !leaf_scanner.removed() {
+                                if first {
+                                    output.write_fmt(format_args!("rank: {}", rank))?;
+                                } else {
+                                    output.write_fmt(format_args!("|rank: {}", rank))?;
+                                }
+                                rank += 1;
+                            } else {
+                                if first {
+                                    output.write_fmt(format_args!("removed"))?;
+                                } else {
+                                    output.write_fmt(format_args!("|removed"))?;
+                                }
+                            }
+                            output.write_fmt(format_args!("|{}|{}", entry.0, entry.1))?;
+                            first = false;
+                        }
+                        output.write_fmt(format_args!("}}\"]\n"))?;
+                    }
+                    (None, Some(key_ref)) => {
+                        output.write_fmt(format_args!(
+                            "x{}x{} [shape=record label=\"{}:{}\"]\n",
+                            self.id(),
+                            index,
+                            index,
+                            key_ref,
+                        ))?;
+                    }
+                    (None, None) => {
+                        output.write_fmt(format_args!(
+                            "x{}x{} [shape=record label=\"-\"]\n",
+                            self.id(),
+                            index,
+                        ))?;
                     }
                 }
-                output.write_fmt(format_args!("\"]\n"))?;
             }
         }
 
@@ -695,7 +765,7 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
         let leaf_node_anchor = self.next_node_anchor.load(Relaxed, guard);
         if !leaf_node_anchor.is_null() {
             output.write_fmt(format_args!(
-                "{} -> {} [style=dashed]\n",
+                "{} -> {}\n",
                 self.id(),
                 unsafe { leaf_node_anchor.deref() }.id()
             ))?;
@@ -703,7 +773,7 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
         let side_link = self.side_link.load(Relaxed, guard);
         if !side_link.is_null() {
             output.write_fmt(format_args!(
-                "{} -> {} [style=dashed]\n",
+                "{} -> {}\n",
                 self.id(),
                 unsafe { side_link.deref() }.id()
             ))?;
