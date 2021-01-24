@@ -56,6 +56,7 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 ## scc::TreeIndex <a name="treeindex"></a>
 
 [Work-in-progress](##milestones)
+- Known issues: TreeIndex::iter and TreeIndex::remove
 - Not fully validated
 - Not fully optimized
 
