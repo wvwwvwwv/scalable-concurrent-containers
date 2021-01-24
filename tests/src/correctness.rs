@@ -568,8 +568,6 @@ mod treeindex_test {
             let v = tree2.read(&iter.0, |_, v| v.clone());
             assert_eq!(v.unwrap(), iter.1);
         }
-
-        tree1.export(&mut std::io::stdout()).unwrap();
     }
 
     #[test]

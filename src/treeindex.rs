@@ -336,7 +336,7 @@ where
     K: Clone + fmt::Display + Ord + Send + Sync,
     V: Clone + fmt::Display + Send + Sync,
 {
-    /// Exports the TreeIndex contents to the specified channel.
+    /// Prints the TreeIndex contents to the given output in the DOT language.
     ///
     /// # Examples
     /// ```
@@ -347,14 +347,14 @@ where
     /// let result = treeindex.insert(1, 10);
     /// assert!(result.is_ok());
     ///
-    /// treeindex.export(&mut std::io::stdout());
+    /// treeindex.print(&mut std::io::stdout());
     /// ```
-    pub fn export<T: std::io::Write>(&self, output: &mut T) -> std::io::Result<()> {
+    pub fn print<T: std::io::Write>(&self, output: &mut T) -> std::io::Result<()> {
         output.write_fmt(format_args!("digraph {{\n"))?;
         let guard = crossbeam_epoch::pin();
         let root_node = self.root.load(Acquire, &guard);
         if !root_node.is_null() {
-            unsafe { root_node.deref().export(output, &guard) }?
+            unsafe { root_node.deref().print(output, &guard) }?
         }
         output.write_fmt(format_args!("}}"))
     }
