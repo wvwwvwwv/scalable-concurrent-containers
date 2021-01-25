@@ -145,7 +145,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                     // data race resolution: validate metadata - see 'InternalNode::search'
                     continue;
                 }
-                let (removed, full, obsolete) = unsafe { child_leaf.deref().remove(key) };
+                let (removed, full, obsolete) = unsafe { child_leaf.deref().remove(key, true) };
                 if !full {
                     return Ok(removed);
                 } else if !obsolete {
@@ -167,7 +167,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 if unbounded_leaf.is_null() {
                     return Ok(false);
                 }
-                let (removed, full, obsolete) = unsafe { unbounded_leaf.deref().remove(key) };
+                let (removed, full, obsolete) = unsafe { unbounded_leaf.deref().remove(key, true) };
                 if !full {
                     return Ok(removed);
                 } else if !obsolete {
@@ -620,7 +620,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             || self.leaves.0.obsolete(),
             |key| {
                 // bounded leaf
-                let obsolete = self.leaves.0.remove(key).2;
+                let obsolete = self.leaves.0.remove(key, true).2;
                 // once the key is removed, it is safe to deallocate the leaf as the validation loop ensures the absence of readers
                 leaf_ptr.store(Shared::null(), Release);
                 unsafe { guard.defer_destroy(leaf_shared) };
@@ -680,9 +680,10 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
 
         // print the label
         output.write_fmt(format_args!(
-            "{} [shape=plaintext\nlabel=<\n<table border='1' cellborder='1'>\n<tr><td colspan='{}'>Level: 0, Cardinality: {}</td></tr>\n<tr>",
+            "{} [shape=plaintext\nlabel=<\n<table border='1' cellborder='1'>\n<tr><td colspan='{}'>ID: {}, Level: 0, Cardinality: {}</td></tr>\n<tr>",
             self.id(),
             index + 1,
+            self.id(),
             index + 1,
         ))?;
         for leaf_info in leaf_ref_array.iter() {
@@ -713,7 +714,8 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
                     leaf_ref.id()
                 ))?;
                 output.write_fmt(format_args!(
-                        "{} [shape=plaintext\nlabel=<\n<table border='1' cellborder='1'>\n<tr><td>Rank</td><td>Key</td><td>Value</td></tr>\n",
+                        "{} [shape=plaintext\nlabel=<\n<table border='1' cellborder='1'>\n<tr><td colspan='3'>ID: {}</td></tr>¬<tr><td>Rank</td><td>Key</td><td>Value</td></tr>\n",
+                        leaf_ref.id(),
                         leaf_ref.id(),
                     ))?;
                 let mut leaf_scanner = LeafScanner::new_including_removed(leaf_ref);

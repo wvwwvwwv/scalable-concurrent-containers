@@ -467,9 +467,10 @@ mod treeindex_test {
             let (len, depth) = (treeindex.len(), treeindex.depth());
             println!("after remove-local: num_elements {}, depth {}", len, depth);
             //assert_eq!(statistics.num_entries(), 0);
+            //treeindex.print(&mut std::io::stdout()).unwrap();
 
-            if num_threads < 2 {
-                continue;
+            if num_threads != 2 {
+                return;
             }
 
             // 4. insert-local-remote

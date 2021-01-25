@@ -972,7 +972,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 }
 
                 // remove the node
-                let coalesce = self.children.0.remove(child_key).2;
+                let coalesce = self.children.0.remove(child_key, true).2;
                 // once the key is removed, it is safe to deallocate the leaf as the validation loop ensures the absence of readers
                 child.store(Shared::null(), Release);
                 unsafe {
@@ -1115,9 +1115,10 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> I
 
         // print the label
         output.write_fmt(format_args!(
-                "{} [shape=plaintext\nlabel=<\n<table border='1' cellborder='1'>\n<tr><td colspan='{}'>Level: {}, Cardinality: {}</td></tr>\n<tr>",
+                "{} [shape=plaintext\nlabel=<\n<table border='1' cellborder='1'>\n<tr><td colspan='{}'>ID: {}, Level: {}, Cardinality: {}</td></tr>\n<tr>",
                 self.id(),
                 index + 1,
+                self.id(),
                 self.floor,
                 index + 1,
             ))?;

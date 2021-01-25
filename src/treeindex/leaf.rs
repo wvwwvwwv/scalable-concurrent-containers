@@ -12,8 +12,10 @@ pub const ARRAY_SIZE: usize = 12;
 /// State interpretation
 ///  - !OCCUPIED && RANK = 0: initial state
 ///  - OCCUPIED && RANK = 0: locked
-///  - OCCUPIED && RANK > 0: inserted
-///  - !OCCUPIED && RANK > 0: removed
+///  - OCCUPIED && ARRAY_SIZE >= RANK > 0: inserted
+///  - OCCUPIED && RANK = INVALID_RANK: prohibited
+///  - !OCCUPIED && ARRAY_SIZE >= RANK > 0: removed
+///  - !OCCUPIED && RANK = INVALID_RANK: invalidated
 const INDEX_RANK_ENTRY_SIZE: usize = 4;
 const REMOVED_BIT: u64 = 1u64 << 60;
 const REMOVED: u64 = ((1u64 << INDEX_RANK_ENTRY_SIZE) - 1) << 60;
@@ -21,6 +23,7 @@ const OCCUPANCY_BIT: u64 = 1u64 << 48;
 const OCCUPANCY_MASK: u64 = ((1u64 << ARRAY_SIZE) - 1) << 48;
 const INDEX_RANK_MAP_MASK: u64 = OCCUPANCY_BIT - 1;
 const INDEX_RANK_ENTRY_MASK: u64 = (1u64 << INDEX_RANK_ENTRY_SIZE) - 1;
+const INVALID_RANK: u64 = (1u64 << INDEX_RANK_ENTRY_SIZE) - 1;
 
 /// Each entry in an EntryArray is never dropped until the Leaf is dropped once constructed.
 pub type EntryArray<K, V> = [MaybeUninit<(K, V)>; ARRAY_SIZE];
@@ -106,7 +109,7 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
                 let rank = ((updated_rank_map
                     & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
                     >> (i * INDEX_RANK_ENTRY_SIZE)) as usize;
-                if rank == 0 || rank < max_min_rank {
+                if rank == 0 || rank == INVALID_RANK as usize || rank < max_min_rank {
                     continue;
                 }
                 if rank > min_max_rank {
@@ -182,10 +185,12 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
 
     /// Removes the key.
     ///
+    /// If the mark_obsolete flag is set and the leaf has no valid entry, it tries to mark itself obsolete.
+    ///
     /// The first value of the result tuple indicates that the key has been removed,
     /// The second value of the result tuple indicates that the leaf is full.
     /// The last value of the result tuple indicates that the leaf has become obsolete.
-    pub fn remove(&self, key: &K) -> (bool, bool, bool) {
+    pub fn remove(&self, key: &K, mark_obsolete: bool) -> (bool, bool, bool) {
         let mut metadata = self.metadata.load(Acquire);
         let mut max_min_rank = 0;
         let mut min_max_rank = ARRAY_SIZE + 1;
@@ -206,7 +211,31 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
                         }
                     }
                     Ordering::Equal => loop {
-                        let new_metadata = (metadata & (!(OCCUPANCY_BIT << i))) + REMOVED_BIT;
+                        let mut new_metadata = (metadata & (!(OCCUPANCY_BIT << i))) + REMOVED_BIT;
+                        let new_cardinality = (new_metadata & OCCUPANCY_MASK).count_ones() as usize;
+                        let new_removed = ((new_metadata & REMOVED) / REMOVED_BIT) as usize;
+                        let (full, obsolete) = if mark_obsolete
+                            && new_cardinality == 0
+                            && new_removed >= ARRAY_SIZE / 2
+                        {
+                            // deprecate itself by marking all the available slots invalid
+                            for i in 0..ARRAY_SIZE {
+                                if (new_metadata
+                                    & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
+                                    == 0
+                                {
+                                    new_metadata |= INVALID_RANK << (i * INDEX_RANK_ENTRY_SIZE);
+                                }
+                            }
+                            new_metadata &= !REMOVED;
+                            new_metadata += REMOVED_BIT * ARRAY_SIZE as u64;
+                            (true, true)
+                        } else {
+                            (
+                                new_cardinality + new_removed == ARRAY_SIZE,
+                                new_removed == ARRAY_SIZE,
+                            )
+                        };
                         match self.metadata.compare_exchange(
                             metadata,
                             new_metadata,
@@ -214,14 +243,7 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
                             Relaxed,
                         ) {
                             Ok(_) => {
-                                let cardinality =
-                                    (new_metadata & OCCUPANCY_MASK).count_ones() as usize;
-                                let removed = ((new_metadata & REMOVED) / REMOVED_BIT) as usize;
-                                return (
-                                    true,
-                                    cardinality + removed == ARRAY_SIZE,
-                                    removed == ARRAY_SIZE,
-                                );
+                                return (true, full, obsolete);
                             }
                             Err(result) => {
                                 metadata = result;
@@ -530,7 +552,9 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Drop for Leaf<K, V> {
     fn drop(&mut self) {
         let metadata = self.metadata.swap(0, Acquire);
         for i in 0..ARRAY_SIZE {
-            if metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)) != 0 {
+            let rank = (metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
+                >> (i * INDEX_RANK_ENTRY_SIZE);
+            if rank != 0 && rank != INVALID_RANK {
                 self.take(i);
             }
         }
@@ -553,6 +577,11 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Inserter<'a, K, V> {
             let mut position = ARRAY_SIZE;
             for i in 0..ARRAY_SIZE {
                 let rank = current & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE));
+                if rank == INVALID_RANK {
+                    // the entire leaf has been invalidated
+                    debug_assert_eq!((current & OCCUPANCY_MASK).count_ones(), 0);
+                    return None;
+                }
                 if rank == 0 {
                     full = false;
                     if current & (OCCUPANCY_BIT << i) == 0 {
@@ -669,7 +698,7 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> LeafScanner<'a, K, V> {
         for i in 0..ARRAY_SIZE {
             let rank = ((metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
                 >> (i * INDEX_RANK_ENTRY_SIZE)) as usize;
-            if rank > 0 && metadata & (OCCUPANCY_BIT << i) == 0 {
+            if rank != INVALID_RANK as usize && rank > 0 && metadata & (OCCUPANCY_BIT << i) == 0 {
                 removed_entries_to_scan |= OCCUPANCY_BIT << i;
             }
         }
@@ -756,12 +785,6 @@ mod test {
     #[test]
     fn basic() {
         let leaf = Leaf::new();
-        for i in 0..ARRAY_SIZE {
-            assert!(leaf
-                .insert((ARRAY_SIZE - i - 1) * 2 + 1, 10, false)
-                .is_none());
-        }
-        let leaf = Leaf::new();
         assert_eq!(leaf.cardinality(), 0);
         assert!(leaf.insert(50, 51, false).is_none());
         assert_eq!(leaf.cardinality(), 1);
@@ -772,7 +795,7 @@ mod test {
         assert_eq!(leaf.cardinality(), 3);
         assert!(leaf.insert(60, 61, true).is_none());
         assert_eq!(leaf.cardinality(), 3);
-        assert_eq!(leaf.remove(&60), (true, false, false));
+        assert_eq!(leaf.remove(&60, false), (true, false, false));
         assert_eq!(leaf.cardinality(), 2);
         assert!(!leaf.full());
         assert!(leaf.insert(40, 40, false).is_none());
@@ -825,7 +848,6 @@ mod test {
                 assert!(prev_key <= *entry.0);
                 assert!(scanner.removed());
                 found_13_13 = true;
-                
             } else if *entry.0 == 40 && *entry.1 == 40 {
                 assert!(prev_key <= *entry.0);
                 assert!(scanner.removed());
@@ -913,11 +935,11 @@ mod test {
         assert_eq!(*leaf.search(&13).unwrap(), 14);
         assert_eq!(leaf.insert(13, 14, false), Some(((13, 14), true)));
         assert_eq!(leaf.cardinality(), 7);
-        assert_eq!(leaf.remove(&10), (true, false, false));
+        assert_eq!(leaf.remove(&10, false), (true, false, false));
         assert_eq!(leaf.cardinality(), 6);
-        assert_eq!(leaf.remove(&11), (true, false, false));
+        assert_eq!(leaf.remove(&11, false), (true, false, false));
         assert_eq!(leaf.cardinality(), 5);
-        assert_eq!(leaf.remove(&12), (true, false, false));
+        assert_eq!(leaf.remove(&12, false), (true, false, false));
         assert_eq!(leaf.cardinality(), 4);
         assert!(!leaf.full());
         assert!(leaf.insert(20, 21, true).is_none());
@@ -926,8 +948,8 @@ mod test {
         assert!(leaf.insert(14, 15, false).is_none());
         assert_eq!(leaf.cardinality(), 6);
         assert!(leaf.search(&11).is_none());
-        assert_eq!(leaf.remove(&10), (false, false, false));
-        assert_eq!(leaf.remove(&11), (false, false, false));
+        assert_eq!(leaf.remove(&10, false), (false, false, false));
+        assert_eq!(leaf.remove(&11, false), (false, false, false));
         assert_eq!(*leaf.search(&20).unwrap(), 21);
         assert!(leaf.insert(10, 11, false).is_none());
         assert!(leaf.insert(15, 16, false).is_none());
@@ -978,6 +1000,38 @@ mod test {
             leaves_boxed.1.as_ref().unwrap().cardinality()
         );
         drop(scanner_high);
+    }
+
+    #[test]
+    fn complex() {
+        let leaf = Leaf::new();
+        for i in 0..ARRAY_SIZE / 2 {
+            assert!(leaf.insert(i, i, false).is_none());
+        }
+        for i in 0..ARRAY_SIZE / 2 {
+            if i < ARRAY_SIZE / 2 - 1 {
+                assert_eq!(leaf.remove(&i, true), (true, false, false));
+            } else {
+                assert_eq!(leaf.remove(&i, true), (true, true, true));
+            }
+        }
+        assert!(leaf.full());
+        assert!(leaf.obsolete());
+        assert_eq!(leaf.cardinality(), 0);
+        assert_eq!(
+            leaf.insert(ARRAY_SIZE, ARRAY_SIZE, false),
+            Some(((ARRAY_SIZE, ARRAY_SIZE), false))
+        );
+
+        let mut scanner = LeafScanner::new_including_removed(&leaf);
+        let mut expected = 0;
+        while let Some(entry) = scanner.next() {
+            assert_eq!(entry.0, &expected);
+            assert_eq!(entry.1, &expected);
+            assert!(scanner.removed());
+            expected += 1;
+        }
+        assert_eq!(expected, ARRAY_SIZE / 2);
 
         let leaf = Leaf::new();
         assert_eq!(leaf.cardinality(), 0);
@@ -986,7 +1040,10 @@ mod test {
             assert_eq!(leaf.cardinality(), key + 1);
         }
         for key in 0..ARRAY_SIZE {
-            assert_eq!(leaf.remove(&key), (true, true, key == ARRAY_SIZE - 1));
+            assert_eq!(
+                leaf.remove(&key, false),
+                (true, true, key == ARRAY_SIZE - 1)
+            );
             assert_eq!(leaf.cardinality(), ARRAY_SIZE - key - 1);
         }
     }
@@ -1012,7 +1069,7 @@ mod test {
                     if result.is_none() {
                         assert_eq!(*leaf_copied.search(&tid).unwrap(), 1);
                         if tid % 2 != 0 {
-                            assert!(leaf_copied.remove(&tid).0);
+                            assert!(leaf_copied.remove(&tid, false).0);
                         }
                     }
                     let mut scanner = LeafScanner::new(&leaf_copied);
