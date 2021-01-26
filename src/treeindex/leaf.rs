@@ -418,8 +418,8 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
     pub fn max_less(&self, key: &K) -> Option<(&K, &V)> {
         let metadata = self.metadata.load(Acquire);
         let mut max_min_rank = 0;
-        let mut max_min_index = ARRAY_SIZE;
         let mut min_max_rank = ARRAY_SIZE + 1;
+        let mut max_min_index = ARRAY_SIZE;
         for i in 0..ARRAY_SIZE {
             let rank = ((metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
                 >> (i * INDEX_RANK_ENTRY_SIZE)) as usize;
@@ -438,9 +438,7 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
                         }
                     }
                     Ordering::Equal => {
-                        if min_max_rank > rank {
-                            min_max_rank = rank;
-                        }
+                        min_max_rank = rank;
                     }
                 }
             }
