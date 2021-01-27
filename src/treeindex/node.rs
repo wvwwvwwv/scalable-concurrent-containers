@@ -20,12 +20,12 @@ pub struct Node<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
 }
 
 impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
-    pub fn new(floor: usize) -> Node<K, V> {
+    pub fn new(floor: usize, allocate_unbounded_node: bool) -> Node<K, V> {
         Node {
             entry: if floor > 0 {
-                NodeType::Internal(InternalNode::new(floor))
+                NodeType::Internal(InternalNode::new(floor, allocate_unbounded_node))
             } else {
-                NodeType::Leaf(LeafNode::new())
+                NodeType::Leaf(LeafNode::new(allocate_unbounded_node))
             },
         }
     }
@@ -81,15 +81,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             root_ptr.load(Relaxed, guard).as_raw()
         );
         let new_root: Node<K, V> = if let NodeType::Internal(internal_node) = &self.entry {
-            Node::new(internal_node.floor + 1)
+            Node::new(internal_node.floor + 1, false)
         } else {
-            Node::new(1)
+            Node::new(1, false)
         };
         if let NodeType::Internal(internal_node) = &new_root.entry {
-            internal_node
-                .children
-                .1
-                .store(Owned::new(Node::new(internal_node.floor - 1)), Relaxed);
             if internal_node
                 .split_node(
                     entry,
@@ -274,10 +270,15 @@ struct InternalNode<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
 }
 
 impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
-    fn new(floor: usize) -> InternalNode<K, V> {
+    fn new(floor: usize, allocate_unbounded_node: bool) -> InternalNode<K, V> {
         debug_assert!(floor > 0);
+        let unbounded_node: Atomic<Node<K, V>> = if allocate_unbounded_node {
+            Atomic::from(Owned::new(Node::new(floor - 1, allocate_unbounded_node)))
+        } else {
+            Atomic::null()
+        };
         InternalNode {
-            children: (Leaf::new(), Atomic::null()),
+            children: (Leaf::new(), unbounded_node),
             new_children: Atomic::null(),
             leaf_node_anchor: Atomic::null(),
             floor,
@@ -395,7 +396,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                         InsertError::Retry(_) => return Err(err),
                     },
                 }
-            } else if unbounded_child == self.unbounded_node(guard) {
+            } else if unbounded_child == self.children.1.load(Relaxed, guard) {
                 if !(self.children.0).validate(result.1) {
                     // data race resolution: validate metadata - see 'InternalNode::search'
                     continue;
@@ -420,23 +421,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 };
             }
         }
-    }
-
-    /// Returns or allocates a new unbounded node
-    fn unbounded_node<'a>(&self, guard: &'a Guard) -> Shared<'a, Node<K, V>> {
-        let shared_ptr = self.children.1.load(Relaxed, guard);
-        if shared_ptr.is_null() {
-            match self.children.1.compare_and_set(
-                Shared::null(),
-                Owned::new(Node::new(self.floor - 1)),
-                Relaxed,
-                guard,
-            ) {
-                Ok(result) => return result,
-                Err(result) => return result.current,
-            }
-        }
-        shared_ptr
     }
 
     /// Splits a full node.
@@ -503,8 +487,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
 
                 // copy nodes except for the known full node to the newly allocated internal node entries
                 let internal_nodes = (
-                    Box::new(Node::new(full_internal_node.floor)),
-                    Box::new(Node::new(full_internal_node.floor)),
+                    Box::new(Node::new(full_internal_node.floor, false)),
+                    Box::new(Node::new(full_internal_node.floor, false)),
                 );
                 let low_key_node_anchor =
                     full_internal_node
@@ -573,8 +557,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                     // if the origin is a bounded node, assign the unbounded node to the high key node's unbounded.
                     entry_array[num_entries].replace((None, full_internal_node.children.1.clone()));
                     num_entries += 1;
-                    debug_assert!(new_children_ref.low_key_node.is_none());
-                    debug_assert!(new_children_ref.high_key_node.is_none());
                 } else {
                     // if the origin is an unbounded node, assign the high key node to the high key node's unbounded,
                     if let Some(node) = new_children_ref.low_key_node.take() {
@@ -669,7 +651,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             }
             NodeType::Leaf(leaf_node) => {
                 // copy leaves except for the known full leaf to the newly allocated leaf node entries
-                let leaf_nodes = (Box::new(Node::new(0)), Box::new(Node::new(0)));
+                let leaf_nodes = (Box::new(Node::new(0, false)), Box::new(Node::new(0, false)));
                 let low_key_leaf_node =
                     if let NodeType::Leaf(low_key_leaf_node) = &leaf_nodes.0.entry {
                         Some(low_key_leaf_node)
@@ -892,7 +874,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             return Err(RemoveError::Retry(removed));
         }
 
-        // TEST: #19
+        // #19
         if self.floor > 1 {
             return Ok(removed);
         }
@@ -997,7 +979,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         {
             if self.floor == 1 {
                 let prev_node_anchor = prev_internal_node.leaf_node_anchor.load(Relaxed, guard);
-                // get the next anchor, coalescing it
                 if !prev_node_anchor.is_null() {
                     let prev_node_anchor_ref = unsafe { prev_node_anchor.deref() };
                     prev_node_anchor_ref
@@ -1268,7 +1249,7 @@ mod test {
         let num_threads = 16;
         let range = 16384;
         let barrier = Arc::new(Barrier::new(num_threads));
-        let node = Arc::new(Node::new(4));
+        let node = Arc::new(Node::new(4, true));
         assert!(node.insert(0, 0, &crossbeam_epoch::pin()).is_ok());
         let inserted = Arc::new(Mutex::new(Vec::new()));
         inserted.lock().unwrap().push(0);

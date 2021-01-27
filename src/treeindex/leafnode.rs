@@ -23,9 +23,14 @@ pub struct LeafNode<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
 }
 
 impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
-    pub fn new() -> LeafNode<K, V> {
+    pub fn new(allocate_unbounded_leaf: bool) -> LeafNode<K, V> {
+        let unbounded_leaf: Atomic<Leaf<K, V>> = if allocate_unbounded_leaf {
+            Atomic::from(Owned::new(Leaf::new()))
+        } else {
+            Atomic::null()
+        };
         LeafNode {
-            leaves: (Leaf::new(), Atomic::null()),
+            leaves: (Leaf::new(), unbounded_leaf),
             new_leaves: Atomic::null(),
             next_node_anchor: Atomic::null(),
             side_link: Atomic::null(),
@@ -115,7 +120,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                         )
                     },
                 );
-            } else if unbounded_leaf == self.unbounded_leaf(guard) {
+            } else if unbounded_leaf == self.leaves.1.load(Relaxed, guard) {
                 if !(self.leaves.0).validate(result.1) {
                     // data race resolution: validate metadata - see 'InternalNode::search'
                     continue;
@@ -211,72 +216,86 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         let low_key_leaves = &low_key_leaf_node.leaves;
         let high_key_leaves = &high_key_leaf_node.leaves;
 
-        // if the origin is an unbounded leaf, assign the high key leaf to the high key node's unbounded,
-        // otherwise, assign the unbounded leaf to the high key node's unbounded.
-        let array_size = self.leaves.0.cardinality();
-        let low_key_leaf_array_size = array_size / 2;
-        let high_key_leaf_array_size = array_size - low_key_leaf_array_size;
-        let mut current_low_key_leaf_array_size = 0;
-        let mut current_high_key_leaf_array_size = 0;
+        // build a list of valid leaves
+        let mut entry_array: [Option<(Option<&K>, Atomic<Leaf<K, V>>)>; ARRAY_SIZE + 2] = [
+            None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+        ];
+        let mut num_entries = 0;
+        let low_key_leaf_max_key_ref = new_leaves_ref
+            .low_key_leaf
+            .as_ref()
+            .unwrap()
+            .max()
+            .unwrap()
+            .0
+            .clone();
         for entry in LeafScanner::new(&self.leaves.0) {
-            let mut entries: [Option<(K, Atomic<Leaf<K, V>>)>; 2] = [None, None];
             if new_leaves_ref
                 .origin_leaf_key
                 .as_ref()
                 .map_or_else(|| false, |key| entry.0.cmp(key) == Ordering::Equal)
             {
                 if let Some(leaf) = new_leaves_ref.low_key_leaf.take() {
-                    entries[0].replace((leaf.max().unwrap().0.clone(), Atomic::from(leaf)));
+                    entry_array[num_entries]
+                        .replace((Some(&low_key_leaf_max_key_ref), Atomic::from(leaf)));
+                    num_entries += 1;
                 }
                 if let Some(leaf) = new_leaves_ref.high_key_leaf.take() {
-                    entries[1].replace((
-                        new_leaves_ref.origin_leaf_key.as_ref().unwrap().clone(),
-                        Atomic::from(leaf),
-                    ));
+                    entry_array[num_entries].replace((Some(entry.0), Atomic::from(leaf)));
+                    num_entries += 1;
                 }
             } else {
-                entries[0].replace((entry.0.clone(), entry.1.clone()));
-            }
-            for entry in entries.iter_mut() {
-                if let Some(entry) = entry.take() {
-                    if current_low_key_leaf_array_size < low_key_leaf_array_size {
-                        low_key_leaves.0.insert(entry.0, entry.1, false);
-                        current_low_key_leaf_array_size += 1;
-                    } else if current_low_key_leaf_array_size == low_key_leaf_array_size {
-                        middle_key.replace(entry.0);
-                        low_key_leaves
-                            .1
-                            .store(entry.1.load(Relaxed, guard), Relaxed);
-                        current_low_key_leaf_array_size += 1;
-                    } else if current_high_key_leaf_array_size < high_key_leaf_array_size {
-                        high_key_leaves.0.insert(entry.0, entry.1, false);
-                        current_high_key_leaf_array_size += 1;
-                    } else {
-                        high_key_leaves.0.insert(entry.0, entry.1, false);
-                    }
-                }
+                entry_array[num_entries].replace((Some(entry.0), entry.1.clone()));
+                num_entries += 1;
             }
         }
         if new_leaves_ref.origin_leaf_key.is_some() {
-            let unbounded_leaf = self.leaves.1.load(Acquire, guard);
-            debug_assert!(!unbounded_leaf.is_null());
-            high_key_leaves.1.store(unbounded_leaf, Relaxed);
+            // if the origin is a bounded node, assign the unbounded node to the high key node's unbounded.
+            entry_array[num_entries].replace((None, self.leaves.1.clone()));
+            num_entries += 1;
         } else {
+            // if the origin is an unbounded node, assign the high key node to the high key node's unbounded,
             if let Some(leaf) = new_leaves_ref.low_key_leaf.take() {
-                let max_key = leaf.max().unwrap().0.clone();
-                if middle_key.is_none() {
-                    // the children of the leaf node are all removed, therefore take the max key as middle_key
-                    low_key_leaves.1.store(Owned::from(leaf), Relaxed);
-                    middle_key.replace(max_key);
-                } else {
-                    high_key_leaves.0.insert(max_key, Atomic::from(leaf), false);
-                }
+                entry_array[num_entries]
+                    .replace((Some(&low_key_leaf_max_key_ref), Atomic::from(leaf)));
+                num_entries += 1;
             }
             if let Some(leaf) = new_leaves_ref.high_key_leaf.take() {
-                high_key_leaves.1.store(Owned::from(leaf), Relaxed);
+                entry_array[num_entries].replace((None, Atomic::from(leaf)));
+                num_entries += 1;
             }
         }
+        debug_assert!(new_leaves_ref.low_key_leaf.is_none());
+        debug_assert!(new_leaves_ref.high_key_leaf.is_none());
+        debug_assert!(num_entries >= 2);
 
+        let low_key_leaf_array_size = num_entries / 2;
+        for (index, entry) in entry_array.iter().enumerate() {
+            if let Some(entry) = entry {
+                if (index + 1) < low_key_leaf_array_size {
+                    low_key_leaves
+                        .0
+                        .insert(entry.0.unwrap().clone(), entry.1.clone(), false);
+                } else if (index + 1) == low_key_leaf_array_size {
+                    middle_key.replace(entry.0.unwrap().clone());
+                    low_key_leaves
+                        .1
+                        .store(entry.1.load(Relaxed, guard), Relaxed);
+                } else {
+                    if let Some(key) = entry.0 {
+                        high_key_leaves
+                            .0
+                            .insert(key.clone(), entry.1.clone(), false);
+                    } else {
+                        high_key_leaves
+                            .1
+                            .store(entry.1.load(Relaxed, guard), Relaxed);
+                    }
+                }
+            } else {
+                break;
+            }
+        }
         middle_key
     }
 
@@ -371,44 +390,29 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         }
 
         // inserts the unbounded leaf of the previous leaf node into the leaf array
-        if self
-            .leaves
-            .0
-            .insert(
-                prev_leaf_node_key.clone(),
-                prev_leaf_node.leaves.1.clone(),
-                false,
-            )
-            .is_none()
-        {
-            if let Some(prev_prev_leaf_node) = prev_prev_leaf_node {
-                // update the side link of the prev-prev leaf node
-                let next_leaf_node = prev_leaf_node.side_link.load(Relaxed, guard);
-                debug_assert_eq!(next_leaf_node.as_raw(), self as *const _);
-                // copy the link to the low smaller key leaf node
-                prev_prev_leaf_node.update_link(Shared::null(), next_leaf_node);
-            }
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Returns or allocates a new unbounded leaf
-    fn unbounded_leaf<'a>(&self, guard: &'a Guard) -> Shared<'a, Leaf<K, V>> {
-        let shared_ptr = self.leaves.1.load(Relaxed, guard);
-        if shared_ptr.is_null() {
-            match self.leaves.1.compare_and_set(
-                Shared::null(),
-                Owned::new(Leaf::new()),
-                Relaxed,
-                guard,
-            ) {
-                Ok(result) => return result,
-                Err(result) => return result.current,
+        let target_leaf = unsafe { prev_leaf_node.leaves.1.load(Relaxed, guard).deref() };
+        if !target_leaf.obsolete() {
+            if self
+                .leaves
+                .0
+                .insert(
+                    prev_leaf_node_key.clone(),
+                    prev_leaf_node.leaves.1.clone(),
+                    false,
+                )
+                .is_some()
+            {
+                return false;
             }
         }
-        shared_ptr
+        if let Some(prev_prev_leaf_node) = prev_prev_leaf_node {
+            // update the side link of the prev-prev leaf node
+            let next_leaf_node = prev_leaf_node.side_link.load(Relaxed, guard);
+            debug_assert_eq!(next_leaf_node.as_raw(), self as *const _);
+            // copy the link to the low smaller key leaf node
+            prev_prev_leaf_node.update_link(Shared::null(), next_leaf_node);
+        }
+        true
     }
 
     /// Splits a full leaf.

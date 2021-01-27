@@ -50,12 +50,6 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         self as *const _ as usize
     }
 
-    /// Returns the cardinality.
-    pub fn cardinality(&self) -> usize {
-        let metadata = self.metadata.load(Relaxed);
-        (metadata & OCCUPANCY_MASK).count_ones() as usize
-    }
-
     /// Returns true if the leaf is full.
     pub fn full(&self) -> bool {
         let metadata = self.metadata.load(Relaxed);
@@ -783,51 +777,38 @@ mod test {
     #[test]
     fn basic() {
         let leaf = Leaf::new();
-        assert_eq!(leaf.cardinality(), 0);
         assert!(leaf.insert(50, 51, false).is_none());
-        assert_eq!(leaf.cardinality(), 1);
         assert_eq!(leaf.max(), Some((&50, &51)));
         assert!(leaf.insert(60, 60, false).is_none());
-        assert_eq!(leaf.cardinality(), 2);
         assert!(leaf.insert(70, 71, false).is_none());
-        assert_eq!(leaf.cardinality(), 3);
         assert!(leaf.insert(60, 61, true).is_none());
-        assert_eq!(leaf.cardinality(), 3);
         assert_eq!(leaf.remove(&60, false), (true, false, false));
-        assert_eq!(leaf.cardinality(), 2);
         assert!(!leaf.full());
         assert!(leaf.insert(40, 40, false).is_none());
         assert!(leaf.insert(30, 31, false).is_none());
-        assert_eq!(leaf.cardinality(), 4);
         assert!(!leaf.full());
         assert!(leaf.insert(40, 41, true).is_none());
         assert_eq!(leaf.insert(30, 33, false), Some(((30, 33), true)));
-        assert_eq!(leaf.cardinality(), 4);
         assert!(leaf.insert(10, 11, false).is_none());
         assert!(leaf.insert(11, 12, false).is_none());
         assert!(leaf.insert(13, 13, false).is_none());
         assert!(leaf.insert(54, 55, false).is_none());
         assert!(leaf.insert(13, 14, true).is_none());
-        assert_eq!(leaf.cardinality(), 8);
         assert_eq!(leaf.max(), Some((&70, &71)));
         assert!(leaf.full());
 
         let mut scanner = LeafScanner::new(&leaf);
         let mut prev_key = 0;
-        let mut iterated = 0;
         while let Some(entry) = scanner.next() {
             assert_eq!(scanner.get(), Some(entry));
             assert!(prev_key < *entry.0);
             assert_eq!(*entry.0 + 1, *entry.1);
             prev_key = *entry.0;
-            iterated += 1;
         }
-        assert_eq!(iterated, leaf.cardinality());
         drop(scanner);
 
         let mut scanner = LeafScanner::new_including_removed(&leaf);
         let mut prev_key = 0;
-        let mut iterated = 0;
         let mut found_13_13 = false;
         let mut found_40_40 = false;
         let mut found_60_60 = false;
@@ -856,13 +837,11 @@ mod test {
                 assert!(!scanner.removed());
                 prev_key = *entry.0;
             }
-            iterated += 1;
         }
         assert!(found_40_40);
         assert!(found_13_13);
         assert!(found_60_60);
         assert!(found_60_61);
-        assert_eq!(iterated, leaf.cardinality() + 4);
         drop(scanner);
 
         let mut scanner = LeafScanner::from(&leaf, &50, true).unwrap();
@@ -894,11 +873,8 @@ mod test {
         drop(scanner);
 
         let leaf = Leaf::new();
-        assert_eq!(leaf.cardinality(), 0);
         assert!(leaf.insert(20, 21, false).is_none());
-        assert_eq!(leaf.cardinality(), 1);
         assert!(leaf.insert(10, 11, false).is_none());
-        assert_eq!(leaf.cardinality(), 2);
         assert_eq!(*leaf.search(&10).unwrap(), 11);
         assert!(leaf.insert(11, 12, false).is_none());
         assert!(leaf.max_less(&10).is_none());
@@ -906,45 +882,32 @@ mod test {
         assert_eq!(leaf.max_less(&12), Some((&11, &12)));
         assert_eq!(leaf.max_less(&100), Some((&20, &21)));
         assert_eq!(leaf.max(), Some((&20, &21)));
-        assert_eq!(leaf.cardinality(), 3);
         assert_eq!(leaf.insert(11, 12, false), Some(((11, 12), true)));
-        assert_eq!(leaf.cardinality(), 3);
         assert_eq!(*leaf.search(&11).unwrap(), 12);
         assert!(leaf.insert(12, 13, false).is_none());
-        assert_eq!(leaf.cardinality(), 4);
         assert_eq!(*leaf.search(&12).unwrap(), 13);
         assert_eq!(leaf.min_greater_equal(&21).0, None);
         assert_eq!(leaf.min_greater_equal(&20).0, Some((&20, &21)));
         assert_eq!(leaf.min_greater_equal(&19).0, Some((&20, &21)));
         assert_eq!(leaf.min_greater_equal(&0).0, Some((&10, &11)));
         assert!(leaf.insert(2, 3, false).is_none());
-        assert_eq!(leaf.cardinality(), 5);
         assert_eq!(*leaf.search(&2).unwrap(), 3);
         assert_eq!(leaf.insert(2, 3, false), Some(((2, 3), true)));
         assert_eq!(leaf.min_greater_equal(&8).0, Some((&10, &11)));
         assert_eq!(leaf.max_less(&11), Some((&10, &11)));
-        assert_eq!(leaf.cardinality(), 5);
         assert_eq!(*leaf.search(&2).unwrap(), 3);
         assert!(leaf.insert(1, 2, false).is_none());
-        assert_eq!(leaf.cardinality(), 6);
         assert_eq!(*leaf.search(&1).unwrap(), 2);
         assert!(leaf.insert(13, 14, false).is_none());
-        assert_eq!(leaf.cardinality(), 7);
         assert_eq!(*leaf.search(&13).unwrap(), 14);
         assert_eq!(leaf.insert(13, 14, false), Some(((13, 14), true)));
-        assert_eq!(leaf.cardinality(), 7);
         assert_eq!(leaf.remove(&10, false), (true, false, false));
-        assert_eq!(leaf.cardinality(), 6);
         assert_eq!(leaf.remove(&11, false), (true, false, false));
-        assert_eq!(leaf.cardinality(), 5);
         assert_eq!(leaf.remove(&12, false), (true, false, false));
-        assert_eq!(leaf.cardinality(), 4);
         assert!(!leaf.full());
         assert!(leaf.insert(20, 21, true).is_none());
-        assert_eq!(leaf.cardinality(), 4);
         assert!(leaf.insert(12, 13, false).is_none());
         assert!(leaf.insert(14, 15, false).is_none());
-        assert_eq!(leaf.cardinality(), 6);
         assert!(leaf.search(&11).is_none());
         assert_eq!(leaf.remove(&10, false), (false, false, false));
         assert_eq!(leaf.remove(&11, false), (false, false, false));
@@ -953,19 +916,15 @@ mod test {
         assert!(leaf.insert(15, 16, false).is_none());
         assert_eq!(leaf.max(), Some((&20, &21)));
         assert!(leaf.full());
-        assert_eq!(leaf.cardinality(), 8);
 
         let mut scanner = LeafScanner::new(&leaf);
         let mut prev_key = 0;
-        let mut iterated = 0;
         while let Some(entry) = scanner.next() {
             assert_eq!(scanner.get(), Some(entry));
             assert!(prev_key < *entry.0);
             assert_eq!(*entry.0 + 1, *entry.1);
             prev_key = *entry.0;
-            iterated += 1;
         }
-        assert_eq!(iterated, leaf.cardinality());
         drop(scanner);
 
         let mut leaves_boxed = (None, None);
@@ -981,7 +940,6 @@ mod test {
             iterated_low += 1;
         }
         assert_eq!(iterated_low, 6);
-        assert_eq!(iterated_low, leaves_boxed.0.as_ref().unwrap().cardinality());
         drop(scanner_low);
         let mut iterated_high = 0;
         let mut scanner_high = LeafScanner::new(leaves_boxed.1.as_ref().unwrap());
@@ -993,10 +951,6 @@ mod test {
             iterated_high += 1;
         }
         assert_eq!(iterated_high, 2);
-        assert_eq!(
-            iterated_high,
-            leaves_boxed.1.as_ref().unwrap().cardinality()
-        );
         drop(scanner_high);
     }
 
@@ -1015,7 +969,6 @@ mod test {
         }
         assert!(leaf.full());
         assert!(leaf.obsolete());
-        assert_eq!(leaf.cardinality(), 0);
         assert_eq!(
             leaf.insert(ARRAY_SIZE, ARRAY_SIZE, false),
             Some(((ARRAY_SIZE, ARRAY_SIZE), false))
@@ -1032,17 +985,14 @@ mod test {
         assert_eq!(expected, ARRAY_SIZE / 2);
 
         let leaf = Leaf::new();
-        assert_eq!(leaf.cardinality(), 0);
         for key in 0..ARRAY_SIZE {
             assert!(leaf.insert(key, key, false).is_none());
-            assert_eq!(leaf.cardinality(), key + 1);
         }
         for key in 0..ARRAY_SIZE {
             assert_eq!(
                 leaf.remove(&key, false),
                 (true, true, key == ARRAY_SIZE - 1)
             );
-            assert_eq!(leaf.cardinality(), ARRAY_SIZE - key - 1);
         }
     }
 

@@ -91,7 +91,7 @@ where
             let guard = crossbeam_epoch::pin();
             let mut root_node = self.root.load(Acquire, &guard);
             if root_node.is_null() {
-                let new_root = Owned::new(Node::new(0));
+                let new_root = Owned::new(Node::new(0, true));
                 match self
                     .root
                     .compare_and_set(root_node, new_root, Relaxed, &guard)

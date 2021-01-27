@@ -1,10 +1,10 @@
 [package]
 name = "scc-tests"
-version = "0.3.18"
+version = "0.3.19"
 authors = ["wvwwvwwv <wvwwvwwv@me.com>"]
 edition = "2018"
 
 [dependencies]
 proptest = "^0.10.1"
-rand = "^0.8.2"
+rand = "^0.8.3"
 scc = { path = ".."}
