@@ -431,8 +431,11 @@ where
     type Item = (&'a K, &'a V);
     fn next(&mut self) -> Option<Self::Item> {
         if self.leaf_node_scanner.is_some() {
+            let mut min_allowed_key = None;
             while let Some(mut scanner) = self.leaf_node_scanner.take() {
-                let min_allowed_key = scanner.get().map(|(key, _)| key);
+                if min_allowed_key.is_none() {
+                    scanner.get().map(|(key, _)| min_allowed_key.replace(key));
+                }
                 if let Some(result) = scanner.next() {
                     self.leaf_node_scanner.replace(scanner);
                     return Some(result);

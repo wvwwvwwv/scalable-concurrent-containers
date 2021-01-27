@@ -1,5 +1,3 @@
-extern crate scopeguard;
-
 use super::leaf::{LeafScanner, ARRAY_SIZE};
 use super::leafnode::{LeafNode, LeafNodeAnchor, LeafNodeScanner};
 use super::Leaf;
@@ -156,19 +154,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
     ) {
         while let NodeType::Internal(internal_node) = unsafe { &current_root.deref().entry } {
             // if locked and the pointer has remained the same, invalidate the leaf, and return invalid
-            let mut new_nodes_dummy = NewNodes::new();
-            if let Err(error) = internal_node.new_children.compare_and_set(
-                Shared::null(),
-                unsafe { Owned::from_raw(&mut new_nodes_dummy as *mut NewNodes<K, V>) },
-                Acquire,
-                guard,
-            ) {
-                error.new.into_shared(guard);
+            let lock = InternalNodeLocker::lock(internal_node, guard);
+            if lock.is_none() {
                 return;
             }
-            let _lock_guard = scopeguard::guard(&internal_node.new_children, |new_children| {
-                new_children.store(Shared::null(), Release);
-            });
+
             let new_root = internal_node.children.1.load(Acquire, guard);
             if root_ptr
                 .compare_and_set(current_root, new_root, Release, guard)
@@ -551,151 +541,114 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                         (None, None)
                     };
 
-                // if the origin is an unbounded node, assign the high key node to the high key node's unbounded,
-                // otherwise, assign the unbounded node to the high key node's unbounded.
-                let array_size = full_internal_node.children.0.cardinality();
-                let low_key_node_array_size = array_size / 2;
-                let high_key_node_array_size = array_size - low_key_node_array_size;
-                let mut current_low_key_node_array_size = 0;
-                let mut current_high_key_node_array_size = 0;
-                let mut entry_to_link_to_anchor = Shared::null();
+                // build a list of valid nodes
+                let mut entry_array: [Option<(Option<&K>, Atomic<Node<K, V>>)>; ARRAY_SIZE + 2] = [
+                    None, None, None, None, None, None, None, None, None, None, None, None, None,
+                    None,
+                ];
+                let mut num_entries = 0;
                 for entry in LeafScanner::new(&full_internal_node.children.0) {
-                    let mut entries: [Option<(K, Atomic<Node<K, V>>)>; 2] = [None, None];
                     if new_children_ref
                         .origin_node_key
                         .as_ref()
                         .map_or_else(|| false, |key| entry.0.cmp(key) == Ordering::Equal)
                     {
-                        // link state adjustment not required as the linked list is correctly constructed by the remediate_leaf_node_link function
                         if let Some(node) = new_children_ref.low_key_node.take() {
-                            entries[0].replace((
-                                new_children_ref.middle_key.as_ref().unwrap().clone(),
+                            entry_array[num_entries].replace((
+                                Some(new_children_ref.middle_key.as_ref().unwrap()),
                                 Atomic::from(node),
                             ));
+                            num_entries += 1;
                         }
                         if let Some(node) = new_children_ref.high_key_node.take() {
-                            entries[1].replace((entry.0.clone(), Atomic::from(node)));
+                            entry_array[num_entries].replace((Some(entry.0), Atomic::from(node)));
+                            num_entries += 1;
                         }
                     } else {
-                        entries[0].replace((entry.0.clone(), entry.1.clone()));
-                    }
-                    for entry in entries.iter_mut() {
-                        if let Some(entry) = entry.take() {
-                            if current_low_key_node_array_size < low_key_node_array_size {
-                                low_key_nodes
-                                    .as_ref()
-                                    .unwrap()
-                                    .0
-                                    .insert(entry.0, entry.1, false);
-                                current_low_key_node_array_size += 1;
-                            } else if current_low_key_node_array_size == low_key_node_array_size {
-                                new_split_nodes_ref.middle_key.replace(entry.0);
-                                let child_node_ptr = entry.1.load(Relaxed, guard);
-                                low_key_nodes
-                                    .as_ref()
-                                    .unwrap()
-                                    .1
-                                    .store(child_node_ptr, Relaxed);
-                                if high_key_node_anchor.is_some() {
-                                    // the entry needs to be linked to the high key node anchor once the anchor is updated
-                                    entry_to_link_to_anchor = child_node_ptr;
-                                }
-                                current_low_key_node_array_size += 1;
-                            } else if current_high_key_node_array_size < high_key_node_array_size {
-                                if current_high_key_node_array_size == 0 {
-                                    // update the anchor
-                                    //  - the first entry is of the high key node is anchored
-                                    if let Some(anchor) = high_key_node_anchor.as_ref() {
-                                        let high_key_node_leaf_anchor = anchor.load(Relaxed, guard);
-                                        let entry_ref =
-                                            unsafe { entry.1.load(Relaxed, guard).deref() };
-                                        if let NodeType::Leaf(leaf_node) = &entry_ref.entry {
-                                            unsafe {
-                                                high_key_node_leaf_anchor.deref().set(
-                                                    Atomic::from(leaf_node as *const _),
-                                                    guard,
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                                high_key_nodes
-                                    .as_ref()
-                                    .unwrap()
-                                    .0
-                                    .insert(entry.0, entry.1, false);
-                                current_high_key_node_array_size += 1;
-                            } else {
-                                high_key_nodes
-                                    .as_ref()
-                                    .unwrap()
-                                    .0
-                                    .insert(entry.0, entry.1, false);
-                            }
-                        }
+                        entry_array[num_entries].replace((Some(entry.0), entry.1.clone()));
+                        num_entries += 1;
                     }
                 }
-
                 if new_children_ref.origin_node_key.is_some() {
-                    let unbounded_node = full_internal_node.children.1.load(Acquire, guard);
-                    debug_assert!(!unbounded_node.is_null());
-                    high_key_nodes
-                        .as_ref()
-                        .unwrap()
-                        .1
-                        .store(unbounded_node, Relaxed);
+                    // if the origin is a bounded node, assign the unbounded node to the high key node's unbounded.
+                    entry_array[num_entries].replace((None, full_internal_node.children.1.clone()));
+                    num_entries += 1;
+                    debug_assert!(new_children_ref.low_key_node.is_none());
+                    debug_assert!(new_children_ref.high_key_node.is_none());
                 } else {
-                    if array_size == 0 {
-                        // nothing's been set including middle_key and anchor pointers
-                        new_split_nodes_ref
-                            .middle_key
-                            .replace(new_children_ref.middle_key.as_ref().unwrap().clone());
-                        if let Some(node) = new_children_ref.low_key_node.take() {
-                            let node_ptr = Atomic::from(node);
-                            let node_shared_ptr = node_ptr.load(Relaxed, guard);
+                    // if the origin is an unbounded node, assign the high key node to the high key node's unbounded,
+                    if let Some(node) = new_children_ref.low_key_node.take() {
+                        entry_array[num_entries].replace((
+                            Some(new_children_ref.middle_key.as_ref().unwrap()),
+                            Atomic::from(node),
+                        ));
+                        num_entries += 1;
+                    }
+                    if let Some(node) = new_children_ref.high_key_node.take() {
+                        entry_array[num_entries].replace((None, Atomic::from(node)));
+                        num_entries += 1;
+                    }
+                }
+                debug_assert!(new_children_ref.low_key_node.is_none());
+                debug_assert!(new_children_ref.high_key_node.is_none());
+                debug_assert!(num_entries >= 2);
+
+                let low_key_node_array_size = num_entries / 2;
+                let mut entry_to_link_to_anchor = Shared::null();
+
+                for (index, entry) in entry_array.iter().enumerate() {
+                    if let Some(entry) = entry {
+                        if (index + 1) < low_key_node_array_size {
+                            low_key_nodes.as_ref().unwrap().0.insert(
+                                entry.0.unwrap().clone(),
+                                entry.1.clone(),
+                                false,
+                            );
+                        } else if (index + 1) == low_key_node_array_size {
+                            new_split_nodes_ref
+                                .middle_key
+                                .replace(entry.0.unwrap().clone());
+                            let child_node_ptr = entry.1.load(Relaxed, guard);
                             low_key_nodes
                                 .as_ref()
                                 .unwrap()
                                 .1
-                                .store(node_shared_ptr, Relaxed);
+                                .store(child_node_ptr, Relaxed);
                             if high_key_node_anchor.is_some() {
-                                entry_to_link_to_anchor = node_shared_ptr;
+                                // the entry needs to be linked to the high key node anchor once the anchor is updated
+                                entry_to_link_to_anchor = child_node_ptr;
                             }
-                        }
-                        if let Some(node) = new_children_ref.high_key_node.take() {
-                            let node_ptr = Atomic::from(node);
-                            let node_shared_ptr = node_ptr.load(Relaxed, guard);
-                            high_key_nodes
-                                .as_ref()
-                                .unwrap()
-                                .1
-                                .store(node_shared_ptr, Relaxed);
-                            if let Some(anchor) = high_key_node_anchor.as_ref() {
-                                let high_key_node_leaf_anchor = anchor.load(Relaxed, guard);
-                                let entry_ref = unsafe { node_shared_ptr.deref() };
-                                if let NodeType::Leaf(leaf_node) = &entry_ref.entry {
-                                    unsafe {
-                                        high_key_node_leaf_anchor
-                                            .deref()
-                                            .set(Atomic::from(leaf_node as *const _), guard);
+                        } else {
+                            if index == low_key_node_array_size {
+                                // update the anchor
+                                if let Some(anchor) = high_key_node_anchor.as_ref() {
+                                    let high_key_node_leaf_anchor = anchor.load(Relaxed, guard);
+                                    let entry_ref = unsafe { entry.1.load(Relaxed, guard).deref() };
+                                    if let NodeType::Leaf(leaf_node) = &entry_ref.entry {
+                                        unsafe {
+                                            high_key_node_leaf_anchor
+                                                .deref()
+                                                .set(Atomic::from(leaf_node as *const _), guard);
+                                        }
                                     }
                                 }
                             }
+                            if let Some(key) = entry.0 {
+                                high_key_nodes.as_ref().unwrap().0.insert(
+                                    key.clone(),
+                                    entry.1.clone(),
+                                    false,
+                                );
+                            } else {
+                                high_key_nodes
+                                    .as_ref()
+                                    .unwrap()
+                                    .1
+                                    .store(entry.1.load(Relaxed, guard), Relaxed);
+                            }
                         }
-                    }
-                    if let Some(node) = new_children_ref.low_key_node.take() {
-                        high_key_nodes.as_ref().unwrap().0.insert(
-                            new_children_ref.middle_key.as_ref().unwrap().clone(),
-                            Atomic::from(node),
-                            false,
-                        );
-                    }
-                    if let Some(node) = new_children_ref.high_key_node.take() {
-                        high_key_nodes
-                            .as_ref()
-                            .unwrap()
-                            .1
-                            .store(Owned::from(node), Relaxed);
+                    } else {
+                        break;
                     }
                 }
 
@@ -934,19 +887,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         guard: &Guard,
     ) -> Result<bool, RemoveError> {
         // if locked and the pointer has remained the same, invalidate the node
-        let mut new_nodes_dummy = NewNodes::new();
-        if let Err(error) = self.new_children.compare_and_set(
-            Shared::null(),
-            unsafe { Owned::from_raw(&mut new_nodes_dummy as *mut NewNodes<K, V>) },
-            Acquire,
-            guard,
-        ) {
-            error.new.into_shared(guard);
+        let lock = InternalNodeLocker::lock(self, guard);
+        if lock.is_none() {
             return Err(RemoveError::Retry(removed));
         }
-        let _lock_guard = scopeguard::guard(&self.new_children, |new_children| {
-            new_children.store(Shared::null(), Release);
-        });
 
         // TEST: #19
         if self.floor > 1 {
@@ -1030,20 +974,15 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         prev_internal_node: &InternalNode<K, V>,
         guard: &Guard,
     ) -> bool {
-        // in order to avoid conflicts with a thread splitting the node, lock itself
-        let mut new_nodes_dummy = NewNodes::new();
-        if let Err(error) = self.new_children.compare_and_set(
-            Shared::null(),
-            unsafe { Owned::from_raw(&mut new_nodes_dummy as *mut NewNodes<K, V>) },
-            Acquire,
-            guard,
-        ) {
-            error.new.into_shared(guard);
+        // in order to avoid conflicts with a thread splitting the node, lock itself and prev_internal_node
+        let self_lock = InternalNodeLocker::lock(self, guard);
+        if self_lock.is_none() {
             return false;
         }
-        let _lock_guard = scopeguard::guard(&self.new_children, |new_children| {
-            new_children.store(Shared::null(), Release);
-        });
+        let prev_lock = InternalNodeLocker::lock(prev_internal_node, guard);
+        if prev_lock.is_none() {
+            return false;
+        }
 
         // insert the unbounded child of the previous internal node into the node array
         if self
@@ -1220,6 +1159,51 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> I
         }
 
         std::io::Result::Ok(())
+    }
+}
+
+/// Internal node locker.
+struct InternalNodeLocker<'a, K, V>
+where
+    K: Clone + Ord + Send + Sync,
+    V: Clone + Send + Sync,
+{
+    lock: &'a Atomic<NewNodes<K, V>>,
+}
+
+impl<'a, K, V> InternalNodeLocker<'a, K, V>
+where
+    K: Clone + Ord + Send + Sync,
+    V: Clone + Send + Sync,
+{
+    fn lock(
+        internal_node: &'a InternalNode<K, V>,
+        guard: &Guard,
+    ) -> Option<InternalNodeLocker<'a, K, V>> {
+        let mut new_nodes_dummy = NewNodes::new();
+        if let Err(error) = internal_node.new_children.compare_and_set(
+            Shared::null(),
+            unsafe { Owned::from_raw(&mut new_nodes_dummy as *mut NewNodes<K, V>) },
+            Acquire,
+            guard,
+        ) {
+            error.new.into_shared(guard);
+            None
+        } else {
+            Some(InternalNodeLocker {
+                lock: &internal_node.new_children,
+            })
+        }
+    }
+}
+
+impl<'a, K, V> Drop for InternalNodeLocker<'a, K, V>
+where
+    K: Clone + Ord + Send + Sync,
+    V: Clone + Send + Sync,
+{
+    fn drop(&mut self) {
+        self.lock.store(Shared::null(), Release);
     }
 }
 

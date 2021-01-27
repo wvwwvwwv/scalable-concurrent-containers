@@ -360,21 +360,15 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         prev_prev_leaf_node: Option<&LeafNode<K, V>>,
         guard: &Guard,
     ) -> bool {
-        // in order to avoid conflicts with a thread splitting the node, lock itself
-        let mut new_leaves_dummy = NewLeaves::new();
-        if let Err(error) = self.new_leaves.compare_and_set(
-            Shared::null(),
-            unsafe { Owned::from_raw(&mut new_leaves_dummy as *mut NewLeaves<K, V>) },
-            Acquire,
-            guard,
-        ) {
-            // need to convert the new value into a shared pointer in order not to deallocate it
-            error.new.into_shared(guard);
+        // in order to avoid conflicts with a thread splitting the node, lock itself and prev_leaf_node
+        let self_lock = LeafNodeLocker::lock(self, guard);
+        if self_lock.is_none() {
             return false;
         }
-        let _lock_guard = scopeguard::guard(&self.new_leaves, |new_leaves| {
-            new_leaves.store(Shared::null(), Release);
-        });
+        let prev_lock = LeafNodeLocker::lock(prev_leaf_node, guard);
+        if prev_lock.is_none() {
+            return false;
+        }
 
         // inserts the unbounded leaf of the previous leaf node into the leaf array
         if self
@@ -581,20 +575,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         guard: &Guard,
     ) -> Result<bool, RemoveError> {
         // if locked and the pointer has remained the same, invalidate the leaf
-        let mut new_leaves_dummy = NewLeaves::new();
-        if let Err(error) = self.new_leaves.compare_and_set(
-            Shared::null(),
-            unsafe { Owned::from_raw(&mut new_leaves_dummy as *mut NewLeaves<K, V>) },
-            Acquire,
-            guard,
-        ) {
-            // need to convert the new value into a shared pointer in order not to deallocate it
-            error.new.into_shared(guard);
+        let lock = LeafNodeLocker::lock(self, guard);
+        if lock.is_none() {
             return Err(RemoveError::Retry(removed));
         }
-        let _lock_guard = scopeguard::guard(&self.new_leaves, |new_leaves| {
-            new_leaves.store(Shared::null(), Release);
-        });
 
         let result = (self.leaves.0).min_greater_equal(&key);
         let leaf_ptr = if let Some((_, child)) = result.0 {
@@ -774,6 +758,48 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for LeafNode<K, 
                 drop(unsafe { unbounded_leaf.into_owned() });
             }
         }
+    }
+}
+
+/// Leaf node locker.
+struct LeafNodeLocker<'a, K, V>
+where
+    K: Clone + Ord + Send + Sync,
+    V: Clone + Send + Sync,
+{
+    lock: &'a Atomic<NewLeaves<K, V>>,
+}
+
+impl<'a, K, V> LeafNodeLocker<'a, K, V>
+where
+    K: Clone + Ord + Send + Sync,
+    V: Clone + Send + Sync,
+{
+    fn lock(leaf_node: &'a LeafNode<K, V>, guard: &Guard) -> Option<LeafNodeLocker<'a, K, V>> {
+        let mut new_nodes_dummy = NewLeaves::new();
+        if let Err(error) = leaf_node.new_leaves.compare_and_set(
+            Shared::null(),
+            unsafe { Owned::from_raw(&mut new_nodes_dummy as *mut NewLeaves<K, V>) },
+            Acquire,
+            guard,
+        ) {
+            error.new.into_shared(guard);
+            None
+        } else {
+            Some(LeafNodeLocker {
+                lock: &leaf_node.new_leaves,
+            })
+        }
+    }
+}
+
+impl<'a, K, V> Drop for LeafNodeLocker<'a, K, V>
+where
+    K: Clone + Ord + Send + Sync,
+    V: Clone + Send + Sync,
+{
+    fn drop(&mut self) {
+        self.lock.store(Shared::null(), Release);
     }
 }
 
