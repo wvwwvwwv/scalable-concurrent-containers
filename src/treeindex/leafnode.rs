@@ -42,8 +42,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         self as *const _ as usize
     }
 
-    pub fn full(&self, guard: &Guard) -> bool {
-        self.leaves.0.full() && !self.leaves.1.load(Relaxed, guard).is_null()
+    /// Checks if the internal node is obsolete.
+    pub fn obsolete(&self, check_unbounded: bool, guard: &Guard) -> bool {
+        self.leaves.0.obsolete()
+            && (!check_unbounded || self.leaves.1.load(Relaxed, guard).is_null())
     }
 
     pub fn unlink(&self) {
@@ -351,7 +353,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 .next_valid_node_anchor
                 .load(Acquire, guard);
             if !next_next_node_anchor.is_null() {
-                // it is safe to remove the current next_node_anchor
                 match self.next_node_anchor.compare_and_set(
                     next_node_anchor,
                     next_next_node_anchor,
@@ -359,7 +360,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                     guard,
                 ) {
                     Ok(result) => {
-                        unsafe { guard.defer_destroy(next_node_anchor) };
+                        // TODO: unsafe { guard.defer_destroy(next_node_anchor) };
                         next_node_anchor = result;
                     }
                     Err(result) => next_node_anchor = result.current,
@@ -388,10 +389,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         if prev_lock.is_none() {
             return false;
         }
+        debug_assert!(prev_leaf_node.obsolete(false, guard));
 
         // inserts the unbounded leaf of the previous leaf node into the leaf array
-        let target_leaf = unsafe { prev_leaf_node.leaves.1.load(Relaxed, guard).deref() };
-        if !target_leaf.obsolete() {
+        let target_leaf_ref = unsafe { prev_leaf_node.leaves.1.load(Relaxed, guard).deref() };
+        if !target_leaf_ref.obsolete() {
             if self
                 .leaves
                 .0

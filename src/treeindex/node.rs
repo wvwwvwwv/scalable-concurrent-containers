@@ -38,6 +38,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         }
     }
 
+    /// Checks if the node is obsolete.
+    pub fn obsolete(&self, check_unbounded: bool, guard: &Guard) -> bool {
+        match &self.entry {
+            NodeType::Internal(internal_node) => internal_node.obsolete(check_unbounded, guard),
+            NodeType::Leaf(leaf_node) => leaf_node.obsolete(check_unbounded, guard),
+        }
+    }
+
     /// Searches for the given key.
     pub fn search<'a>(&'a self, key: &'a K, guard: &'a Guard) -> Option<&'a V> {
         match &self.entry {
@@ -177,14 +185,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         }
     }
 
-    /// Checks if the node is full.
-    fn full(&self, guard: &Guard) -> bool {
-        match &self.entry {
-            NodeType::Internal(internal_node) => internal_node.full(guard),
-            NodeType::Leaf(leaf_node) => leaf_node.full(guard),
-        }
-    }
-
     /// Returns the floor.
     pub fn floor(&self) -> usize {
         match &self.entry {
@@ -290,8 +290,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         self as *const _ as usize
     }
 
-    fn full(&self, guard: &Guard) -> bool {
-        self.children.0.full() && !self.children.1.load(Relaxed, guard).is_null()
+    /// Checks if the internal node is obsolete.
+    fn obsolete(&self, check_unbounded: bool, guard: &Guard) -> bool {
+        self.children.0.obsolete()
+            && (!check_unbounded || self.children.1.load(Relaxed, guard).is_null())
     }
 
     fn search<'a>(&self, key: &'a K, guard: &'a Guard) -> Option<&'a V> {
@@ -365,11 +367,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
     }
 
     fn insert(&self, key: K, value: V, guard: &Guard) -> Result<(), InsertError<K, V>> {
-        // possible data race: the node is being split, for instance,
-        //  - node state: ((15, ptr), (25, ptr)), 15 is being split
-        //  - insert 10: min_greater_equal returns (15, ptr)
-        //  - split 15: insert 11, and replace 15 with a new pointer, therefore ((11, ptr), (15, new_ptr), (25, ptr))
-        //  - insert 10: load new_ptr, and try insert, that is incorrect as it is supposed to be inserted into (11, ptr)
+        // Possible data race: the node is being split, for instance,
+        //  - Node state: ((15, ptr), (25, ptr)), 15 is being split
+        //  - Insert 10: min_greater_equal returns (15, ptr)
+        //  - Split 15: insert 11, and replace 15 with a new pointer, therefore ((11, ptr), (15, new_ptr), (25, ptr))
+        //  - Insert 10: load new_ptr, and try insert, that is incorrect as it is supposed to be inserted into (11, ptr)
         loop {
             let unbounded_child = self.children.1.load(Relaxed, guard);
             let result = (self.children.0).min_greater_equal(&key);
@@ -466,7 +468,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             };
             return Err(InsertError::Retry(entry));
         }
-        debug_assert!(unsafe { full_node_shared.deref().full(guard) });
 
         // copy entries to the newly allocated leaves
         let new_split_nodes_ref = unsafe { new_split_nodes.deref_mut() };
@@ -602,7 +603,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                             }
                         } else {
                             if index == low_key_node_array_size {
-                                // update the anchor
+                                // updates the anchor
                                 if let Some(anchor) = high_key_node_anchor.as_ref() {
                                     let high_key_node_leaf_anchor = anchor.load(Relaxed, guard);
                                     let entry_ref = unsafe { entry.1.load(Relaxed, guard).deref() };
@@ -874,28 +875,26 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             return Err(RemoveError::Retry(removed));
         }
 
-        // #19
-        if self.floor > 1 {
-            return Ok(removed);
-        }
-
         // merge the node and the next node only if the pointers match, otherwise retry
         let result = self.children.0.search(child_key);
         if let Some(child) = result {
             if child_shared == child.load(Relaxed, guard) {
-                let next_node =
+                let child_ref = unsafe { child_shared.deref() };
+                let next_node_ref = unsafe {
                     if let Some((_, next_child)) = self.children.0.min_greater(child_key) {
-                        next_child.load(Acquire, guard)
+                        next_child.load(Acquire, guard).deref()
                     } else {
-                        self.children.1.load(Acquire, guard)
-                    };
+                        self.children.1.load(Acquire, guard).deref()
+                    }
+                };
+                debug_assert!(child_ref.obsolete(false, guard));
 
                 // there are two special cases where a linked list adjustment is required.
                 //  - self.floor == 1: self may point to a valid anchor that needs to be updated,
                 //      and child_shared.side_link has to be updated.
                 //  - self.floor == 2: child_shared is about to be dropped,
                 //      therefore the anchor must be detached and deprecated.
-                let prev_node = if self.floor == 1 {
+                let prev_node_ref = if self.floor == 1 {
                     if let Some((_, prev_child)) = self.children.0.max_less(child_key) {
                         unsafe { Some(prev_child.load(Acquire, guard).deref()) }
                     } else {
@@ -904,12 +903,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 } else {
                     None
                 };
-                let update_anchor = self.floor == 1 && prev_node.is_none();
-                if !unsafe {
-                    next_node
-                        .deref()
-                        .try_merge(child_key, child_shared.deref(), prev_node, guard)
-                } {
+                let update_anchor = self.floor == 1 && prev_node_ref.is_none();
+                if !next_node_ref.try_merge(child_key, child_ref, prev_node_ref, guard) {
                     // failed to coalesce
                     return Ok(removed);
                 }
@@ -918,8 +913,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 if update_anchor {
                     let anchor = self.leaf_node_anchor.load(Relaxed, guard);
                     if !anchor.is_null() {
-                        if let NodeType::Leaf(next_leaf_node) = unsafe { &next_node.deref().entry }
-                        {
+                        if let NodeType::Leaf(next_leaf_node) = &next_node_ref.entry {
                             unsafe {
                                 anchor
                                     .deref()
@@ -956,7 +950,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         prev_internal_node: &InternalNode<K, V>,
         guard: &Guard,
     ) -> bool {
-        // in order to avoid conflicts with a thread splitting the node, lock itself and prev_internal_node
+        // In order to avoid conflicts with a thread splitting the node, lock itself and prev_internal_node.
         let self_lock = InternalNodeLocker::lock(self, guard);
         if self_lock.is_none() {
             return false;
@@ -965,24 +959,48 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         if prev_lock.is_none() {
             return false;
         }
+        debug_assert!(prev_internal_node.obsolete(false, guard));
 
-        // insert the unbounded child of the previous internal node into the node array
+        // Inserts the unbounded child of the previous internal node into the node array.
+        let new_node_ptr = prev_internal_node.children.1.clone();
         if self
             .children
             .0
-            .insert(
-                prev_internal_node_key.clone(),
-                prev_internal_node.children.1.clone(),
-                false,
-            )
+            .insert(prev_internal_node_key.clone(), new_node_ptr.clone(), false)
             .is_none()
         {
             if self.floor == 1 {
+                // Makes the newly inserted node to point to the next node.
+                let anchor = self.leaf_node_anchor.load(Relaxed, guard);
+                let next_node_ref = unsafe {
+                    if let Some((_, next_child)) =
+                        self.children.0.min_greater(prev_internal_node_key)
+                    {
+                        next_child.load(Acquire, guard).deref()
+                    } else {
+                        self.children.1.load(Acquire, guard).deref()
+                    }
+                };
+                if let (NodeType::Leaf(new_leaf_node), NodeType::Leaf(next_leaf_node)) = (
+                    unsafe { &new_node_ptr.load(Relaxed, guard).deref().entry },
+                    &next_node_ref.entry,
+                ) {
+                    new_leaf_node.update_link(
+                        Shared::null(),
+                        Atomic::from(next_leaf_node as *const _).load(Relaxed, guard),
+                    );
+
+                    // Updates the anchor.
+                    unsafe {
+                        anchor
+                            .deref()
+                            .set(Atomic::from(new_leaf_node as *const _), guard);
+                    }
+                }
+                // Makes a link from the prev node anchor to the current node anchor.
                 let prev_node_anchor = prev_internal_node.leaf_node_anchor.load(Relaxed, guard);
                 if !prev_node_anchor.is_null() {
-                    let prev_node_anchor_ref = unsafe { prev_node_anchor.deref() };
-                    prev_node_anchor_ref
-                        .deprecate(self.leaf_node_anchor.load(Relaxed, guard), guard);
+                    unsafe { prev_node_anchor.deref() }.deprecate(anchor, guard);
                 }
             }
             true

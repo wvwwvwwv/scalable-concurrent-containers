@@ -409,7 +409,7 @@ mod treeindex_test {
 
         for num_threads in num_threads_vector {
             let treeindex: Arc<TreeIndex<String, String>> = Arc::new(Default::default());
-            let worload_size = 1024;
+            let worload_size = 65536;
 
             // 1. insert-local
             let insert = Workload {
@@ -468,10 +468,10 @@ mod treeindex_test {
             println!("after remove-local: num_elements {}, depth {}", len, depth);
             assert_eq!(len, 0);
             // TEST: #19
-            treeindex.print(&mut std::io::stdout()).unwrap();
-            if num_threads == 1 {
-                return;
-            }
+            //treeindex.print(&mut std::io::stdout()).unwrap();
+            //if num_threads == 1 {
+            //    return;
+            //}
 
             // 4. insert-local-remote
             let insert = Workload {

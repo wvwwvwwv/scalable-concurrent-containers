@@ -157,7 +157,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 let current_array = self.array.load(Acquire, &guard);
                 let current_array_ref = self.array(&current_array);
                 if current_array_ref.old_array(&guard).is_null() {
-                    // trigger resize if the estimated load factor is greater than 7/8
+                    // Triggers resize if the estimated load factor is greater than 7/8.
                     let sample_size = current_array_ref.num_sample_size();
                     let threshold = sample_size * (cell::ARRAY_SIZE / 8) * 7;
                     let mut num_entries = 0;
@@ -296,7 +296,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         let (hash, partial_hash) = self.hash(key);
         let guard = crossbeam_epoch::pin();
 
-        // an acquire fence is required to correctly load the contents of the array
+        // An acquire fence is required to correctly load the contents of the array.
         let current_array = self.array.load(Acquire, &guard);
         let current_array_ref = self.array(&current_array);
         let old_array = current_array_ref.old_array(&guard);
@@ -622,12 +622,12 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
 
     /// Returns a hash value of the given key.
     fn hash(&self, key: &K) -> (u64, u16) {
-        // generate a hash value
+        // Generates a hash value.
         let mut h = self.build_hasher.build_hasher();
         key.hash(&mut h);
         let mut hash = h.finish();
 
-        // bitmix: https://mostlymangling.blogspot.com/2019/01/better-stronger-mixer-and-test-procedure.html
+        // Bitmix: https://mostlymangling.blogspot.com/2019/01/better-stronger-mixer-and-test-procedure.html
         hash = hash ^ (hash.rotate_right(25) ^ hash.rotate_right(50));
         hash = hash.overflowing_mul(0xA24BAED4963EE407u64).0;
         hash = hash ^ (hash.rotate_right(24) ^ hash.rotate_right(49));
@@ -640,20 +640,20 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     fn acquire<'a>(&'a self, key: &K, hash: u64, partial_hash: u16) -> Accessor<'a, K, V, H> {
         let guard = crossbeam_epoch::pin();
 
-        // it is guaranteed that the thread reads a consistent snapshot of the current and
+        // It is guaranteed that the thread reads a consistent snapshot of the current and
         // old array pair by a release fence in the resize function, hence the following
         // procedure is correct.
-        //  - the thread reads self.array, and it kills the target cell in the old array
+        //  - The thread reads self.array, and it kills the target cell in the old array
         //    if there is one attached to it, and inserts the key into array.
-        // there are two cases.
-        //  1. the thread reads an old version of self.array.
-        //    if there is another thread having read the latest version of self.array,
+        // There are two cases.
+        //  1. The thread reads an old version of self.array.
+        //    If there is another thread having read the latest version of self.array,
         //    trying to insert the same key, it will try to kill the cell in the old version
         //    of self.array, thus competing with each other.
-        //  2. the thread reads the latest version of self.array.
-        //    if the array is deprecated while inserting the key, it falls into case 1.
+        //  2. The thread reads the latest version of self.array.
+        //    Tf the array is deprecated while inserting the key, it falls into case 1.
         loop {
-            // an acquire fence is required to correctly load the contents of the array
+            // An acquire fence is required to correctly load the contents of the array.
             let current_array = self.array.load(Acquire, &guard);
             let current_array_ref = self.array(&current_array);
             let old_array = current_array_ref.old_array(&guard);
@@ -673,7 +673,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                         entry_ptr,
                     };
                 } else if !cell_locker.killed() {
-                    // kill the cell
+                    // Kills the cell.
                     current_array_ref.kill_cell(
                         &mut cell_locker,
                         self.array(&old_array),
@@ -694,7 +694,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                     entry_ptr,
                 };
             }
-            // reaching here indicates that self.array is updated
+            // Reaching here indicates that self.array is updated.
         }
     }
 
@@ -715,7 +715,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             if current_array_ref.old_array(&guard).is_null()
                 && current_array_ref.capacity() > self.minimum_capacity
             {
-                // trigger resize if the estimated load factor is smaller than 1/16
+                // Triggers resize if the estimated load factor is smaller than 1/16.
                 let sample_size = current_array_ref.num_sample_size();
                 let mut num_entries = 0;
                 for i in 0..sample_size {
@@ -777,7 +777,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     fn first<'a>(&'a self) -> (Option<CellLocker<'a, K, V>>, *const Array<K, V>, usize) {
         let guard = crossbeam_epoch::pin();
 
-        // an acquire fence is required to correctly load the contents of the array
+        // An acquire fence is required to correctly load the contents of the array.
         let mut current_array = self.array.load(Acquire, &guard);
         loop {
             let old_array = self.array(&current_array).old_array(&guard);
@@ -798,13 +798,13 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                     }
                 }
             }
-            // no valid cells found
+            // No valid cells found.
             let current_array_new = self.array.load(Acquire, &guard);
             if current_array == current_array_new {
                 break;
             }
 
-            // resized in the meantime
+            // Resized in the meantime.
             current_array = current_array_new;
         }
         (None, std::ptr::null(), 0)
@@ -818,17 +818,17 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     ) -> Option<Cursor<'a, K, V, H>> {
         let guard = crossbeam_epoch::pin();
 
-        // an acquire fence is required to correctly load the contents of the array
+        // An acquire fence is required to correctly load the contents of the array.
         let current_array = self.array.load(Acquire, &guard);
-        // bypass the lifetime checker by not calling Shared::deref()
+        // Bypasses the lifetime checker by not calling Shared::deref().
         let current_array_ref = unsafe { &(*current_array.as_raw()) };
         let old_array = current_array_ref.old_array(&guard);
 
-        // either one of the two arrays must match with array_ptr
+        // Either one of the two arrays must match with array_ptr.
         debug_assert!(array_ptr == current_array.as_raw() || array_ptr == old_array.as_raw());
 
         if old_array.as_raw() == array_ptr {
-            // bypass the lifetime checker by not calling Shared::deref()
+            // Bypasses the lifetime checker by not calling Shared::deref().
             let old_array_ref = unsafe { &(*old_array.as_raw()) };
             let num_cells = old_array_ref.num_cells();
             for cell_index in (current_index + 1)..num_cells {
@@ -866,7 +866,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         }
 
         if !new_array.is_null() {
-            // bypass the lifetime checker by not calling Shared::deref()
+            // Bypasses the lifetime checker by not calling Shared::deref().
             let new_array_ref = unsafe { &(*new_array.as_raw()) };
             let num_cells = new_array_ref.num_cells();
             for cell_index in 0..num_cells {
@@ -909,9 +909,9 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         None
     }
 
-    /// Resizes the array
+    /// Resizes the array.
     fn resize(&self) {
-        // initial rough size estimation using a small number of cells
+        // Initial rough size estimation using a small number of cells.
         let guard = crossbeam_epoch::pin();
         let current_array = self.array.load(Acquire, &guard);
         let current_array_ref = self.array(&current_array);
@@ -923,7 +923,6 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             }
         }
 
-        // resize
         if !self.resize_mutex.swap(true, Acquire) {
             let memory_ordering = Relaxed;
             let mut mutex_guard = scopeguard::guard(memory_ordering, |memory_ordering| {
@@ -933,9 +932,9 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 return;
             }
 
-            // the resizing policies are as follows.
-            //  - load factor reaches 7/8: grow up to 64x
-            //  - load factor reaches 1/16: shrink to fit
+            // The resizing policies are as follows.
+            //  - The load factor reaches 7/8, then the array grows up to 64x.
+            //  - The load factor reaches 1/16, then the array shrinks to fit.
             let capacity = current_array_ref.capacity();
             let num_cells = current_array_ref.num_cells();
             let num_cells_to_sample = (num_cells / 16).max(4).min(4096);
@@ -943,13 +942,13 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
                 let max_capacity = 1usize << (std::mem::size_of::<usize>() * 8 - 1);
                 if capacity == max_capacity {
-                    // do not resize if the capacity cannot be increased
+                    // Do not resize if the capacity cannot be increased.
                     capacity
                 } else if estimated_num_entries <= (capacity / 8) * 9 {
-                    // double if the estimated size marginally exceeds the capacity
+                    // Doubles if the estimated size marginally exceeds the capacity.
                     capacity * 2
                 } else {
-                    // grow up to 64x
+                    // Grows up to 64x
                     let new_capacity_candidate = estimated_num_entries
                         .next_power_of_two()
                         .min(max_capacity / 2)
@@ -962,7 +961,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                     }
                 }
             } else if estimated_num_entries <= capacity / 8 {
-                // shrink to fit
+                // Shrinks to fit.
                 estimated_num_entries
                     .next_power_of_two()
                     .max(self.minimum_capacity)
@@ -970,7 +969,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 capacity
             };
 
-            // Array::new may not be able to allocate the requested number of cells
+            // Array::new may not be able to allocate the requested number of cells.
             if new_capacity != capacity {
                 self.array.store(
                     Owned::new(Array::<K, V>::new(
@@ -979,13 +978,13 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                     )),
                     Release,
                 );
-                // the release fence assures that future calls to the function see the latest state
+                // The release fence assures that future calls to the function see the latest state.
                 *mutex_guard = Release;
             }
         }
     }
 
-    /// Estimate the number of entries using the given number of cells.
+    /// Estimates the number of entries using the given number of cells.
     fn estimate(&self, current_array_ref: &Array<K, V>, num_cells_to_sample: usize) -> usize {
         let mut num_entries = 0;
         for i in 0..num_cells_to_sample {

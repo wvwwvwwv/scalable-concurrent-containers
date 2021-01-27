@@ -401,7 +401,7 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Scanner<'a, K, V>
             return None;
         }
         scanner.leaf_node_scanner = unsafe {
-            // prolong the lifetime as the rust type system cannot infer the actual lifetime correctly
+            // Prolongs the lifetime as the rust type system cannot infer the actual lifetime correctly.
             std::mem::transmute::<_, Option<LeafNodeScanner<'a, K, V>>>(
                 (*root_node.as_raw()).from(key, &scanner.guard),
             )
@@ -440,11 +440,11 @@ where
                     self.leaf_node_scanner.replace(scanner);
                     return Some(result);
                 }
-                // proceed to the next leaf node
+                // Proceeds to the next leaf node.
                 let next = unsafe {
-                    // giving the min_allowed_key argument is necessary, because
-                    //  - remove: merge two leaf nodes, therefore the unbounded leaf of the lower key node is relocated
-                    //  - scanner: the unbounded leaf of the lower key node can be scanned twice after a jump
+                    // Giving the min_allowed_key argument is necessary, because,
+                    //  - Remove: merges two leaf nodes, therefore the unbounded leaf of the lower key node is relocated.
+                    //  - Scanner: the unbounded leaf of the lower key node can be scanned twice after a jump.
                     std::mem::transmute::<_, Option<LeafNodeScanner<'a, K, V>>>(
                         scanner.jump(min_allowed_key, &self.guard),
                     )
@@ -460,7 +460,7 @@ where
                 return None;
             }
             self.leaf_node_scanner = unsafe {
-                // prolong the lifetime as the rust type system cannot infer the actual lifetime correctly
+                // Prolongs the lifetime as the rust type system cannot infer the actual lifetime correctly.
                 std::mem::transmute::<_, Option<LeafNodeScanner<'a, K, V>>>(
                     (*root_node.as_raw()).min(&self.guard),
                 )
