@@ -1371,10 +1371,9 @@ mod test {
         let mut prev = 0;
         let mut scanner = node.min(&guard).unwrap();
         let mut iterated = 0;
-        assert_eq!(*scanner.get().unwrap().0, 0);
         while let Some(entry) = scanner.next() {
             println!("{} {}", entry.0, entry.1);
-            assert!(prev < *entry.0);
+            assert!(prev == 0 || prev < *entry.0);
             assert_eq!(entry.0, entry.1);
             iterated += 1;
             prev = *entry.0;
