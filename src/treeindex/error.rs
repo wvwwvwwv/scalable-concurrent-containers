@@ -1,5 +1,9 @@
 /// InsertError types.
-pub enum InsertError<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
+pub enum InsertError<K, V>
+where
+    K: Clone + Ord + Send + Sync,
+    V: Clone + Send + Sync,
+{
     /// Duplicated: the same key is found.
     Duplicated((K, V)),
     /// Full: the tree, node, or leaf could not accommodate the entry.
@@ -16,4 +20,10 @@ pub enum RemoveError {
     Coalesce(bool),
     /// Retry: the target node, or leaf is being modified.
     Retry(bool),
+}
+
+/// SearchError types.
+pub enum SearchError {
+    /// Retry: the target node, or leaf is being modified.
+    Retry,
 }

@@ -1,6 +1,6 @@
 use super::leaf::{LeafScanner, ARRAY_SIZE};
 use super::Leaf;
-use super::{InsertError, RemoveError};
+use super::{InsertError, RemoveError, SearchError};
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::cmp::Ordering;
 use std::fmt::Display;
@@ -55,31 +55,32 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         self.leaves.1.store(Shared::null(), Relaxed);
     }
 
-    pub fn search<'a>(&self, key: &'a K, guard: &'a Guard) -> Option<&'a V> {
+    pub fn search<'a>(&self, key: &'a K, guard: &'a Guard) -> Result<Option<&'a V>, SearchError> {
         loop {
             let unbounded_leaf = (self.leaves.1).load(Relaxed, guard);
             let result = (self.leaves.0).min_greater_equal(&key);
             if let Some((_, child)) = result.0 {
                 let child_leaf = child.load(Acquire, guard);
                 if !(self.leaves.0).validate(result.1) {
-                    // data race resolution: validate metadata
+                    // Data race resolution: validate metadata.
                     //  - writer: start to insert an intermediate low key leaf
                     //  - reader: read the metadata not including the intermediate low key leaf
                     //  - writer: insert the intermediate low key leaf and replace the high key leaf pointer
                     //  - reader: read the new high key leaf pointer
-                    // consequently, the reader may miss keys in the low key leaf.
+                    // Consequently, the reader may miss keys in the low key leaf.
                     continue;
                 }
-                return unsafe { child_leaf.deref().search(key) };
+                return Ok(unsafe { child_leaf.deref().search(key) });
             } else if unbounded_leaf == self.leaves.1.load(Acquire, guard) {
                 if !(self.leaves.0).validate(result.1) {
-                    // data race resolution: validate metadata - see above
+                    // Data race resolution: validate metadata - see above
                     continue;
                 }
                 if unbounded_leaf.is_null() {
-                    return None;
+                    // unbounded_leaf being null indicates that the leaf node is bound to be freed.
+                    return Err(SearchError::Retry);
                 }
-                return unsafe { unbounded_leaf.deref().search(key) };
+                return Ok(unsafe { unbounded_leaf.deref().search(key) });
             }
         }
     }
@@ -103,7 +104,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             if let Some((child_key, child)) = result.0 {
                 let child_leaf = child.load(Acquire, guard);
                 if !(self.leaves.0).validate(result.1) {
-                    // data race resolution: validate metadata - see 'InternalNode::search'
+                    // Data race resolution: validate metadata - see 'InternalNode::search'.
                     continue;
                 }
                 return unsafe { child_leaf.deref().insert(key, value, false) }.map_or_else(
@@ -124,10 +125,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 );
             } else if unbounded_leaf == self.leaves.1.load(Relaxed, guard) {
                 if !(self.leaves.0).validate(result.1) {
-                    // data race resolution: validate metadata - see 'InternalNode::search'
+                    // Data race resolution: validate metadata - see 'InternalNode::search'.
                     continue;
                 }
-                // try to insert into the unbounded leaf, and try to split the unbounded if it is full
+                // Tries to insert into the unbounded leaf, and tries to split the unbounded if it is full.
                 return unsafe { unbounded_leaf.deref().insert(key, value, false) }.map_or_else(
                     || Ok(()),
                     |result| {
@@ -149,30 +150,31 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             if let Some((child_key, child)) = result.0 {
                 let child_leaf = child.load(Acquire, guard);
                 if !(self.leaves.0).validate(result.1) {
-                    // data race resolution: validate metadata - see 'InternalNode::search'
+                    // Data race resolution: validate metadata - see 'InternalNode::search'.
                     continue;
                 }
                 let (removed, full, obsolete) = unsafe { child_leaf.deref().remove(key, true) };
                 if !full {
                     return Ok(removed);
                 } else if !obsolete {
-                    // data race resolution
+                    // Data race resolution.
                     //  - insert: start to insert into a full leaf
                     //  - remove: start removing an entry from the leaf after pointer validation
                     //  - insert: find the leaf full, thus splitting and update
                     //  - remove: find the leaf full, and the leaf node is not locked, returning 'Ok(true)'
-                    // consequently, the key remains.
-                    // in order to resolve this, check the pointer again.
+                    // Consequently, the key remains.
+                    // In order to resolve this, check the pointer again.
                     return self.check_full_leaf(removed, key, child_leaf, guard);
                 }
                 return self.remove_obsolete_leaf(removed, key, Some(child_key), child_leaf, guard);
             } else if unbounded_leaf == self.leaves.1.load(Acquire, guard) {
                 if !(self.leaves.0).validate(result.1) {
-                    // data race resolution: validate metadata - see 'InternalNode::search'
+                    // Data race resolution: validate metadata - see 'InternalNode::search'.
                     continue;
                 }
                 if unbounded_leaf.is_null() {
-                    return Ok(false);
+                    // unbounded_leaf being null indicates that the leaf node is bound to be freed.
+                    return Err(RemoveError::Retry(false));
                 }
                 let (removed, full, obsolete) = unsafe { unbounded_leaf.deref().remove(key, true) };
                 if !full {

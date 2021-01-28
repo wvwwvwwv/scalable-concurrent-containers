@@ -6,7 +6,7 @@ pub mod leafnode;
 pub mod node;
 
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
-use error::{InsertError, RemoveError};
+use error::{InsertError, RemoveError, SearchError};
 use leaf::Leaf;
 use leafnode::LeafNodeScanner;
 use node::Node;
@@ -189,10 +189,19 @@ where
         if root_node.is_null() {
             return None;
         }
-        if let Some(value) = unsafe { root_node.deref().search(key, &guard) } {
-            Some(f(key, value))
-        } else {
-            None
+        loop {
+            match unsafe { root_node.deref().search(key, &guard) } {
+                Ok(result) => {
+                    if let Some(value) = result {
+                        return Some(f(key, value));
+                    } else {
+                        return None;
+                    }
+                }
+                Err(err) => match err {
+                    SearchError::Retry => continue,
+                },
+            }
         }
     }
 
