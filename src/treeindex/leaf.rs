@@ -92,7 +92,7 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         let mut duplicate_entry = usize::MAX;
         let mut entry = (key, value);
         while let Some(mut inserter) = Inserter::new(self) {
-            // calculate the rank and check uniqueness
+            // Calculates the rank and check uniqueness.
             let mut max_min_rank = 0;
             let mut min_max_rank = ARRAY_SIZE + 1;
             let mut updated_rank_map = inserter.metadata & INDEX_RANK_MAP_MASK;
@@ -107,7 +107,7 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
                     continue;
                 }
                 if rank > min_max_rank {
-                    // update the rank
+                    // Updates the rank.
                     let rank_bits: u64 = ((rank + 1) << (i * INDEX_RANK_ENTRY_SIZE))
                         .try_into()
                         .unwrap();
@@ -126,7 +126,7 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
                         if min_max_rank > rank {
                             min_max_rank = rank;
                         }
-                        // update the rank
+                        // Updates the rank.
                         let rank_bits: u64 = ((rank + 1) << (i * INDEX_RANK_ENTRY_SIZE))
                             .try_into()
                             .unwrap();
@@ -137,12 +137,12 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
                     Ordering::Equal => {
                         if inserter.metadata & (OCCUPANCY_BIT << i) != 0 {
                             if !upsert {
-                                // uniqueness check failed
+                                // Uniqueness check failed.
                                 return Some((entry, true));
                             }
                             duplicate_entry = i;
                         }
-                        // regard the entry as a lower ranked one
+                        // Regards the entry as a lower ranked one.
                         if max_min_rank < rank {
                             max_min_rank = rank;
                         }
@@ -152,7 +152,7 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
             let final_rank = max_min_rank + 1;
             debug_assert!(min_max_rank == ARRAY_SIZE + 1 || final_rank == min_max_rank);
 
-            // update its own rank
+            // Updates its own rank.
             let rank_bits: u64 = (final_rank << (inserter.index * INDEX_RANK_ENTRY_SIZE))
                 .try_into()
                 .unwrap();
@@ -160,12 +160,10 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
                 & (!(INDEX_RANK_ENTRY_MASK << (inserter.index * INDEX_RANK_ENTRY_SIZE))))
                 | rank_bits;
 
-            // insert the key value
+            // Inserts the key value.
             self.write(inserter.index, entry.0, entry.1);
 
-            // try commit
             if inserter.commit(updated_rank_map, duplicate_entry) {
-                // inserted
                 return None;
             }
             entry = self.take(inserter.index);
@@ -212,7 +210,7 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
                             && new_cardinality == 0
                             && new_removed >= ARRAY_SIZE / 2
                         {
-                            // deprecate itself by marking all the available slots invalid
+                            // Deprecates itself by marking all the available slots invalid.
                             for i in 0..ARRAY_SIZE {
                                 if (new_metadata
                                     & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
@@ -242,7 +240,7 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
                             Err(result) => {
                                 metadata = result;
                                 if metadata & (OCCUPANCY_BIT << i) == 0 {
-                                    // removed by another thread
+                                    // Removed by another thread.
                                     let cardinality =
                                         (metadata & OCCUPANCY_MASK).count_ones() as usize;
                                     let removed = ((metadata & REMOVED) / REMOVED_BIT) as usize;
@@ -445,7 +443,7 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
 
     /// Compares the given metadata value with the current one.
     pub fn validate(&self, metadata: u64) -> bool {
-        // the acquire fence ensures that a reader having read the latest state must read the updated metadata
+        // The acquire fence ensures that a reader having read the latest state must read the updated metadata.
         fence(Acquire);
         self.metadata.load(Relaxed) == metadata
     }
@@ -561,7 +559,7 @@ struct Inserter<'a, K: Clone + Ord + Sync, V: Clone + Sync> {
 }
 
 impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Inserter<'a, K, V> {
-    /// Returns Some if OCCUPIED && RANK == 0
+    /// Returns Some if OCCUPIED && RANK == 0.
     fn new(leaf: &'a Leaf<K, V>) -> Option<Inserter<'a, K, V>> {
         let mut current = leaf.metadata.load(Relaxed);
         loop {
@@ -570,14 +568,14 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Inserter<'a, K, V> {
             for i in 0..ARRAY_SIZE {
                 let rank = current & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE));
                 if rank == INVALID_RANK {
-                    // the entire leaf has been invalidated
+                    // The entire leaf has been invalidated.
                     debug_assert_eq!((current & OCCUPANCY_MASK).count_ones(), 0);
                     return None;
                 }
                 if rank == 0 {
                     full = false;
                     if current & (OCCUPANCY_BIT << i) == 0 {
-                        // initial state
+                        // Initial state.
                         position = i;
                         break;
                     }
@@ -585,15 +583,14 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Inserter<'a, K, V> {
             }
 
             if full {
-                // full
                 return None;
             } else if position == ARRAY_SIZE {
-                // in-doubt
+                // Another thread is inserting data into the last remaining slot.
                 current = leaf.metadata.load(Relaxed);
                 continue;
             }
 
-            // found an empty position
+            // Found an empty position.
             match leaf.metadata.compare_exchange(
                 current,
                 current | (OCCUPANCY_BIT << position),
@@ -630,14 +627,14 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Inserter<'a, K, V> {
                     current = result;
                     continue;
                 }
-                // rollback metadata changes if not committed
+                // Rolls back metadata changes if not committed.
                 return false;
             }
             break;
         }
         self.committed = true;
 
-        // every store after commit must be visible along with the metadata update
+        // Every store after commit must be visible along with the metadata update.
         fence(Release);
         true
     }
@@ -646,7 +643,7 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Inserter<'a, K, V> {
 impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Drop for Inserter<'a, K, V> {
     fn drop(&mut self) {
         if !self.committed {
-            // rollback metadata changes if not committed
+            // Rolls back metadata changes if not committed.
             let mut current = self.metadata;
             loop {
                 if let Err(result) = self.leaf.metadata.compare_exchange(
