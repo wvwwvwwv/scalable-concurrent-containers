@@ -41,7 +41,7 @@ impl<K: Eq, V> Array<K, V> {
                 1,
             ));
             if ptr.is_null() {
-                // memory allocation failure: panic
+                // Memory allocation failure: panic.
                 panic!(
                     "memory allocation failure: {} bytes",
                     (array.cell_array_capacity + 1) * size_of_cell
@@ -60,7 +60,7 @@ impl<K: Eq, V> Array<K, V> {
                 1,
             ));
             if ptr.is_null() {
-                // memory allocation failure: panic
+                // Memory allocation failure: panic.
                 panic!(
                     "memory allocation failure: {} bytes",
                     (array.cell_array_capacity + 1) * size_of_entry

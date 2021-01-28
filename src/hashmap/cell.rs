@@ -51,7 +51,7 @@ impl<K: Eq, V> Cell<K, V> {
     }
 
     fn wait<T, F: FnOnce() -> Option<T>>(&self, f: F) -> Option<T> {
-        // insert the condvar into the wait queue
+        // Inserts the condvar into the wait queue.
         let mut condvar = WaitQueueEntry::new(self.wait_queue.load(Relaxed));
         let condvar_ptr: *mut WaitQueueEntry = &mut condvar;
 
@@ -76,7 +76,7 @@ impl<K: Eq, V> Cell<K, V> {
             }
         }
 
-        // try-lock again once the condvar is inserted into the wait queue
+        // Try-locks again once the condvar is inserted into the wait queue.
         let locked = f();
         if locked.is_some() {
             self.wakeup();
@@ -114,7 +114,7 @@ impl<K: Eq, V> Cell<K, V> {
     ) -> Option<(u8, *const EntryArrayLink<K, V>, *const (K, V))> {
         let occupancy_metadata = metadata & OCCUPANCY_MASK;
 
-        // start with the preferred index
+        // Starts with the preferred index.
         let preferred_index = (partial_hash % (ARRAY_SIZE as u16)).try_into().unwrap();
         if (occupancy_metadata & (OCCUPANCY_BIT << preferred_index)) != 0
             && self.partial_hash_array[preferred_index as usize] == partial_hash
@@ -125,7 +125,7 @@ impl<K: Eq, V> Cell<K, V> {
             }
         }
 
-        // iterate the array
+        // Iterates the array.
         let start_index: u8 = occupancy_metadata.trailing_zeros().try_into().unwrap();
         for i in start_index..ARRAY_SIZE.try_into().unwrap() {
             let occupancy_bit = OCCUPANCY_BIT << i;
@@ -143,7 +143,7 @@ impl<K: Eq, V> Cell<K, V> {
             }
         }
 
-        // traverse the link
+        // Traverses the link.
         let mut link_ref = &self.link;
         while let Some(link) = link_ref.as_ref() {
             if let Some(result) = link.search_entry(key, partial_hash) {
@@ -156,7 +156,7 @@ impl<K: Eq, V> Cell<K, V> {
     }
 }
 
-/// CellLocker
+/// CellLocker.
 pub struct CellLocker<'a, K: Eq, V> {
     cell: &'a Cell<K, V>,
     entry_array: &'a EntryArray<K, V>,
@@ -164,7 +164,7 @@ pub struct CellLocker<'a, K: Eq, V> {
 }
 
 impl<'a, K: Eq, V> CellLocker<'a, K, V> {
-    /// Create a new CellLocker instance with the cell exclusively locked.
+    /// Creates a new CellLocker instance with the cell exclusively locked.
     pub fn lock(cell: &'a Cell<K, V>, entry_array: &'a EntryArray<K, V>) -> CellLocker<'a, K, V> {
         loop {
             if let Some(result) = Self::try_lock(cell, entry_array) {
@@ -176,7 +176,7 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
         }
     }
 
-    /// Create a new CellLocker instance if the cell is exclusively locked.
+    /// Creates a new CellLocker instance if the cell is exclusively locked.
     fn try_lock(
         cell: &'a Cell<K, V>,
         entry_array: &'a EntryArray<K, V>,
@@ -227,9 +227,9 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
         entry_ptr: *const (K, V),
     ) -> Option<(u8, *const EntryArrayLink<K, V>, *const (K, V))> {
         if !entry_array_link_ptr.is_null() {
-            // traverse the link
+            // Traverses the link.
             let next = unsafe { (*entry_array_link_ptr).next_entry(entry_ptr) };
-            // erase the linked entry
+            // Erases the linked entry.
             if erase_current {
                 self.remove(drop_entry, u8::MAX, entry_array_link_ptr, entry_ptr);
             }
@@ -238,12 +238,12 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
             }
         }
 
-        // erase the entry
+        // Erases the entry.
         if erase_current && sub_index != u8::MAX {
             self.remove(drop_entry, sub_index, std::ptr::null(), std::ptr::null());
         }
 
-        // advance in the cell
+        // Advances in the cell.
         let occupancy_metadata = self.metadata & OCCUPANCY_MASK;
         let start_index = if sub_index == u8::MAX {
             occupancy_metadata.trailing_zeros().try_into().unwrap()
@@ -438,7 +438,7 @@ impl<'a, K: Eq, V> Drop for CellLocker<'a, K, V> {
     }
 }
 
-/// CellReader
+/// CellReader.
 pub struct CellReader<'a, K: Eq, V> {
     cell: &'a Cell<K, V>,
     metadata: u32,
@@ -446,7 +446,7 @@ pub struct CellReader<'a, K: Eq, V> {
 }
 
 impl<'a, K: Eq, V> CellReader<'a, K, V> {
-    /// Create a new CellReader instance with the cell shared locked.
+    /// Creates a new CellReader instance with the cell shared locked.
     pub fn read(
         cell: &'a Cell<K, V>,
         entry_array: &'a EntryArray<K, V>,
@@ -454,7 +454,7 @@ impl<'a, K: Eq, V> CellReader<'a, K, V> {
         partial_hash: u16,
     ) -> CellReader<'a, K, V> {
         loop {
-            // early exit: not locked and empty
+            // Early exit: not locked and empty.
             let current = cell.metadata.load(Relaxed);
             if cell.linked_entries == 0 && current & (XLOCK | OCCUPANCY_MASK) == 0 {
                 return CellReader {
@@ -481,7 +481,7 @@ impl<'a, K: Eq, V> CellReader<'a, K, V> {
         }
     }
 
-    /// Create a new CellReader instance if the cell is shared locked.
+    /// Creates a new CellReader instance if the cell is shared locked.
     fn try_read(
         cell: &'a Cell<K, V>,
         entry_array: &'a EntryArray<K, V>,
@@ -492,7 +492,7 @@ impl<'a, K: Eq, V> CellReader<'a, K, V> {
         let mut current = metadata;
         loop {
             if current & LOCK_MASK >= SLOCK_MAX {
-                // it is bound to fail
+                // It is bound to fail.
                 current &= !LOCK_MASK;
             }
             match cell
@@ -534,7 +534,7 @@ impl<'a, K: Eq, V> Drop for CellReader<'a, K, V> {
             return;
         }
 
-        // no modification is allowed with a CellReader held: no memory fences required
+        // No modification is allowed with a CellReader held: no memory fences required.
         let mut current = self.metadata;
         loop {
             match self.cell.metadata.compare_exchange(

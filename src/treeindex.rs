@@ -399,7 +399,7 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Scanner<'a, K, V>
         }
     }
 
-    fn from(tree_index: &'a TreeIndex<K, V>, key: &K) -> Option<Scanner<'a, K, V>> {
+    fn from(tree_index: &'a TreeIndex<K, V>, min_allowed_key: &K) -> Option<Scanner<'a, K, V>> {
         let mut scanner = Scanner::<'a, K, V> {
             tree_index,
             leaf_node_scanner: None,
@@ -412,13 +412,21 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Scanner<'a, K, V>
         scanner.leaf_node_scanner = unsafe {
             // Prolongs the lifetime as the rust type system cannot infer the actual lifetime correctly.
             std::mem::transmute::<_, Option<LeafNodeScanner<'a, K, V>>>(
-                (*root_node.as_raw()).from(key, &scanner.guard),
+                (*root_node.as_raw()).from(min_allowed_key, &scanner.guard),
             )
         };
 
         if scanner.leaf_node_scanner.is_none() {
             None
         } else {
+            while let Some((key_ref, _)) = scanner.get() {
+                if key_ref.cmp(min_allowed_key) != std::cmp::Ordering::Less {
+                    break;
+                }
+                if scanner.next().is_none() {
+                    return None;
+                }
+            }
             Some(scanner)
         }
     }
@@ -439,6 +447,18 @@ where
 {
     type Item = (&'a K, &'a V);
     fn next(&mut self) -> Option<Self::Item> {
+        if self.leaf_node_scanner.is_none() {
+            let root_node = self.tree_index.root.load(Acquire, &self.guard);
+            if root_node.is_null() {
+                return None;
+            }
+            self.leaf_node_scanner = unsafe {
+                // Prolongs the lifetime as the rust type system cannot infer the actual lifetime correctly.
+                std::mem::transmute::<_, Option<LeafNodeScanner<'a, K, V>>>(
+                    (*root_node.as_raw()).min(&self.guard),
+                )
+            };
+        }
         if self.leaf_node_scanner.is_some() {
             let mut min_allowed_key = None;
             while let Some(mut scanner) = self.leaf_node_scanner.take() {
@@ -462,21 +482,7 @@ where
                     self.leaf_node_scanner.replace(next);
                 }
             }
-            None
-        } else {
-            let root_node = self.tree_index.root.load(Acquire, &self.guard);
-            if root_node.is_null() {
-                return None;
-            }
-            self.leaf_node_scanner = unsafe {
-                // Prolongs the lifetime as the rust type system cannot infer the actual lifetime correctly.
-                std::mem::transmute::<_, Option<LeafNodeScanner<'a, K, V>>>(
-                    (*root_node.as_raw()).min(&self.guard),
-                )
-            };
-            self.leaf_node_scanner
-                .as_ref()
-                .map_or_else(|| None, |scanner| scanner.get())
         }
+        None
     }
 }

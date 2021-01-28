@@ -40,7 +40,7 @@ impl<K: Eq, V> EntryArrayLink<K, V> {
             }
         }
 
-        // the call depth is guaranteed to be less than two
+        // The call depth is guaranteed to be less than two.
         self.link
             .as_ref()
             .map_or_else(|| None, |link| (*link).first_entry())
@@ -64,7 +64,7 @@ impl<K: Eq, V> EntryArrayLink<K, V> {
             }
         }
 
-        // the call depth is guaranteed to be less than two
+        // The call depth is guaranteed to be less than two.
         self.link
             .as_ref()
             .map_or_else(|| None, |link| (*link).first_entry())

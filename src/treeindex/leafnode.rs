@@ -86,11 +86,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
     }
 
     pub fn min<'a>(&'a self, guard: &'a Guard) -> Option<LeafNodeScanner<'a, K, V>> {
-        let mut scanner = LeafNodeScanner::new(None, self, guard);
-        if scanner.next().is_some() {
-            return Some(scanner);
-        }
-        None
+        Some(LeafNodeScanner::new(None, self, guard))
     }
 
     pub fn from<'a>(&'a self, key: &K, guard: &'a Guard) -> Option<LeafNodeScanner<'a, K, V>> {
@@ -127,6 +123,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 if !(self.leaves.0).validate(result.1) {
                     // Data race resolution: validate metadata - see 'InternalNode::search'.
                     continue;
+                }
+                if unbounded_leaf.is_null() {
+                    // unbounded_leaf being null indicates that the leaf node is bound to be freed.
+                    return Err(InsertError::Retry((key, value)));
                 }
                 // Tries to insert into the unbounded leaf, and tries to split the unbounded if it is full.
                 return unsafe { unbounded_leaf.deref().insert(key, value, false) }.map_or_else(
@@ -200,7 +200,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         anchor_ptr: Shared<LeafNodeAnchor<K, V>>,
         link_ptr: Shared<LeafNode<K, V>>,
     ) {
-        // update order: store(side_link)|release|store(anchor)
+        // Update order: store(side_link)|release|store(anchor).
         self.side_link.store(link_ptr, Relaxed);
         self.next_node_anchor.store(anchor_ptr, Release);
     }
@@ -220,7 +220,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         let low_key_leaves = &low_key_leaf_node.leaves;
         let high_key_leaves = &high_key_leaf_node.leaves;
 
-        // build a list of valid leaves
+        // Builds a list of valid leaves
         let mut entry_array: [Option<(Option<&K>, Atomic<Leaf<K, V>>)>; ARRAY_SIZE + 2] = [
             None, None, None, None, None, None, None, None, None, None, None, None, None, None,
         ];
@@ -254,11 +254,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             }
         }
         if new_leaves_ref.origin_leaf_key.is_some() {
-            // if the origin is a bounded node, assign the unbounded node to the high key node's unbounded.
+            // If the origin is a bounded node, assign the unbounded node to the high key node's unbounded.
             entry_array[num_entries].replace((None, self.leaves.1.clone()));
             num_entries += 1;
         } else {
-            // if the origin is an unbounded node, assign the high key node to the high key node's unbounded,
+            // If the origin is an unbounded node, assign the high key node to the high key node's unbounded.
             if let Some(leaf) = new_leaves_ref.low_key_leaf.take() {
                 entry_array[num_entries]
                     .replace((Some(&low_key_leaf_max_key_ref), Atomic::from(leaf)));
@@ -312,8 +312,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         high_key_leaf_node: &LeafNode<K, V>,
         guard: &Guard,
     ) {
-        // firstly, replace the high key node's side link with the new side link
-        // secondly, link the low key node with the high key node
+        // Firstly, replaces the high key node's side link with the new side link.
+        // Secondly, links the low key node with the high key node.
         low_key_leaf_node.update_link(
             Shared::null(),
             Atomic::from(high_key_leaf_node as *const _).load(Relaxed, guard),
@@ -323,15 +323,15 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             self.side_link.load(Relaxed, guard),
         );
 
-        // lastly, link the immediate less key node with the low key node
-        //  - the changes in this step need to be rolled back on operation failure
+        // Lastly, links the immediate less key node with the low key node.
+        //  - The changes in this step need to be rolled back on operation failure.
         if let Some(node) = immediate_smaller_key_leaf_node {
             node.update_link(
                 Shared::null(),
                 Atomic::from(low_key_leaf_node as *const _).load(Relaxed, guard),
             );
         } else {
-            // the low key node is the minimum node
+            // The low key node is the minimum node.
             let anchor = min_node_anchor.load(Relaxed, guard);
             if !anchor.is_null() {
                 unsafe {
@@ -344,36 +344,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         }
     }
 
-    pub fn coalesce_next_node_anchor<'a>(
-        &self,
-        guard: &'a Guard,
-    ) -> Shared<'a, LeafNodeAnchor<K, V>> {
-        let mut next_node_anchor = self.next_node_anchor.load(Acquire, guard);
-        while !next_node_anchor.is_null() {
-            let next_node_anchor_ref = unsafe { next_node_anchor.deref() };
-            let next_next_node_anchor = next_node_anchor_ref
-                .next_valid_node_anchor
-                .load(Acquire, guard);
-            if !next_next_node_anchor.is_null() {
-                match self.next_node_anchor.compare_and_set(
-                    next_node_anchor,
-                    next_next_node_anchor,
-                    Release,
-                    guard,
-                ) {
-                    Ok(result) => {
-                        // TODO: unsafe { guard.defer_destroy(next_node_anchor) };
-                        next_node_anchor = result;
-                    }
-                    Err(result) => next_node_anchor = result.current,
-                };
-            } else {
-                break;
-            }
-        }
-        next_node_anchor
-    }
-
     /// Tries to merge two adjacent leaf nodes.
     pub fn try_merge(
         &self,
@@ -382,7 +352,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         prev_prev_leaf_node: Option<&LeafNode<K, V>>,
         guard: &Guard,
     ) -> bool {
-        // in order to avoid conflicts with a thread splitting the node, lock itself and prev_leaf_node
+        // In order to avoid conflicts with a thread splitting the node, lock itself and prev_leaf_node.
         let self_lock = LeafNodeLocker::lock(self, guard);
         if self_lock.is_none() {
             return false;
@@ -393,7 +363,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         }
         debug_assert!(prev_leaf_node.obsolete(false, guard));
 
-        // inserts the unbounded leaf of the previous leaf node into the leaf array
+        // Inserts the unbounded leaf of the previous leaf node into the leaf array.
         let target_leaf_ref = unsafe { prev_leaf_node.leaves.1.load(Relaxed, guard).deref() };
         if !target_leaf_ref.obsolete() {
             if self
@@ -410,12 +380,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             }
         }
         if let Some(prev_prev_leaf_node) = prev_prev_leaf_node {
-            // update the side link of the prev-prev leaf node
+            // Updates the side link of the prev-prev leaf node.
             let next_leaf_node = prev_leaf_node.side_link.load(Relaxed, guard);
             debug_assert_eq!(next_leaf_node.as_raw(), self as *const _);
-            // copy the link to the low smaller key leaf node
+            // Copies the link to the low smaller key leaf node.
             prev_prev_leaf_node.update_link(Shared::null(), next_leaf_node);
         }
+        prev_leaf_node.leaves.1.store(Shared::null(), Relaxed);
+        debug_assert!(prev_leaf_node.obsolete(true, guard));
         true
     }
 
@@ -444,7 +416,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             Err(_) => return Err(InsertError::Retry(entry)),
         }
 
-        // check the full leaf pointer and the leaf node state after locking the leaf node
+        // Checks the full leaf pointer and the leaf node state after locking the leaf node.
         if full_leaf_shared != full_leaf_ptr.load(Relaxed, guard) {
             let obsolete_leaf = self.new_leaves.swap(Shared::null(), Relaxed, guard);
             drop(unsafe { obsolete_leaf.into_owned() });
@@ -452,7 +424,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         }
         debug_assert!(unsafe { full_leaf_shared.deref().full() });
 
-        // copy entries to the newly allocated leaves
+        // Copies entries to the newly allocated leaves.
         let new_leaves_ref = unsafe { new_leaves_ptr.deref_mut() };
         unsafe {
             full_leaf_shared.deref().distribute(
@@ -461,7 +433,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             )
         };
 
-        // insert the given entry
+        // Inserts the given entry.
         if new_leaves_ref.low_key_leaf.is_none() {
             new_leaves_ref.low_key_leaf.replace(Box::new(Leaf::new()));
             new_leaves_ref.low_key_leaf.as_ref().unwrap().insert(
@@ -478,14 +450,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 .0
                 .is_some()
         {
-            // insert the entry into the low-key leaf if the high-key leaf is empty, or the key fits the low-key leaf
+            // Inserts the entry into the low-key leaf if the high-key leaf is empty, or the key fits the low-key leaf.
             new_leaves_ref.low_key_leaf.as_ref().unwrap().insert(
                 entry.0.clone(),
                 entry.1.clone(),
                 false,
             );
         } else {
-            // insert the entry into the high-key leaf
+            // Inserts the entry into the high-key leaf.
             new_leaves_ref.high_key_leaf.as_ref().unwrap().insert(
                 entry.0.clone(),
                 entry.1.clone(),
@@ -493,10 +465,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             );
         }
 
-        // insert the newly added leaves into the main array
+        // Inserts the newly added leaves into the main array.
         let unused_leaf;
         if new_leaves_ref.high_key_leaf.is_none() {
-            // replace the full leaf with the low-key leaf
+            // Replaces the full leaf with the low-key leaf.
             unused_leaf = full_leaf_ptr.swap(
                 Owned::from(new_leaves_ref.low_key_leaf.take().unwrap()),
                 Release,
@@ -515,14 +487,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 Atomic::from(new_leaves_ref.low_key_leaf.take().unwrap()),
                 false,
             ) {
-                // insertion failed: expect that the parent splits the leaf node
+                // Insertion failed: expect that the parent splits the leaf node.
                 new_leaves_ref
                     .low_key_leaf
                     .replace(unsafe { (leaf.0).1.into_owned().into_box() });
                 return Err(InsertError::Full(entry));
             }
 
-            // replace the full leaf with the high-key leaf
+            // Replaces the full leaf with the high-key leaf.
             unused_leaf = full_leaf_ptr.swap(
                 Owned::from(new_leaves_ref.high_key_leaf.take().unwrap()),
                 Release,
@@ -530,7 +502,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             );
         }
 
-        // deallocate the deprecated leaves
+        // Drops the deprecated leaves.
         let unused_leaves = self.new_leaves.swap(Shared::null(), Release, guard);
         unsafe {
             let new_split_leaves = unused_leaves.into_owned();
@@ -553,10 +525,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         leaf_shared: Shared<Leaf<K, V>>,
         guard: &Guard,
     ) -> Result<bool, RemoveError> {
-        // there is a chance that the target key value pair has been copied to new_leaves.
-        //  - remove: release(leaf)|load(mutex)|acquire|load(leaf_ptr)
-        //  - insert: load(leaf)|store(mutex)|acquire|release|store(leaf_ptr)|release|store(mutex)
-        // the remove thread either reads the locked mutex state or the updated leaf pointer value.
+        // There is a chance that the target key value pair has been copied to new_leaves.
+        //  - Remove: release(leaf)|load(mutex)|acquire|load(leaf_ptr)
+        //  - Insert: load(leaf)|store(mutex)|acquire|release|store(leaf_ptr)|release|store(mutex)
+        // The remove thread either reads the locked mutex state or the updated leaf pointer value.
         if !self.new_leaves.load(Acquire, guard).is_null() {
             return Err(RemoveError::Retry(removed));
         }
@@ -582,7 +554,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         leaf_shared: Shared<Leaf<K, V>>,
         guard: &Guard,
     ) -> Result<bool, RemoveError> {
-        // if locked and the pointer has remained the same, invalidate the leaf
+        // If locked and the pointer has remained the same, invalidate the leaf.
         let lock = LeafNodeLocker::lock(self, guard);
         if lock.is_none() {
             return Err(RemoveError::Retry(removed));
@@ -598,13 +570,12 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             return Err(RemoveError::Retry(removed));
         }
 
-        // the last remaining leaf is the unbounded one, return RemoveError::Coalesce
+        // The last remaining leaf is the unbounded one, return RemoveError::Coalesce.
         let coalesce = child_key.map_or_else(
             || self.leaves.0.obsolete(),
             |key| {
-                // bounded leaf
                 let obsolete = self.leaves.0.remove(key, true).2;
-                // once the key is removed, it is safe to deallocate the leaf as the validation loop ensures the absence of readers
+                // Once the key is removed, it is safe to drop the leaf as the validation loop ensures the absence of readers.
                 leaf_ptr.store(Shared::null(), Release);
                 unsafe { guard.defer_destroy(leaf_shared) };
                 obsolete
@@ -619,28 +590,23 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
     }
 
     fn next<'a>(&self, guard: &'a Guard) -> Option<&'a LeafNode<K, V>> {
-        // read order: load(anchor)|acquire|load(side_link)
-        let next_node_anchor = self.coalesce_next_node_anchor(guard);
-        if !next_node_anchor.is_null() {
-            let next_node_anchor_ref = unsafe { next_node_anchor.deref() };
-            let next_leaf_node_ptr = next_node_anchor_ref.min_leaf_node.load(Acquire, guard);
-            if !next_leaf_node_ptr.is_null() {
-                return Some(unsafe { next_leaf_node_ptr.deref() });
-            }
-        }
-        // then, read the side link
-        let side_link_ptr = self.side_link.load(Relaxed, guard);
-        if !side_link_ptr.is_null() {
-            Some(unsafe { side_link_ptr.deref() })
+        // Read order: load(anchor)|acquire|load(side_link).
+        let next_node_anchor = self.next_node_anchor.load(Acquire, guard);
+        let next_leaf_node = if !next_node_anchor.is_null() {
+            unsafe { next_node_anchor.deref().next_leaf_node(guard) }
         } else {
-            None
+            self.side_link.load(Relaxed, guard)
+        };
+        if !next_leaf_node.is_null() {
+            return Some(unsafe { next_leaf_node.deref() });
         }
+        None
     }
 }
 
 impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> LeafNode<K, V> {
     pub fn print<T: std::io::Write>(&self, output: &mut T, guard: &Guard) -> std::io::Result<()> {
-        // collect information
+        // Collects information.
         let mut leaf_ref_array: [Option<(Option<&Leaf<K, V>>, Option<&K>, usize)>; ARRAY_SIZE + 1] =
             [None; ARRAY_SIZE + 1];
         let mut scanner = LeafScanner::new_including_removed(&self.leaves.0);
@@ -661,7 +627,7 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
             leaf_ref_array[index].replace((Some(leaf_ref), None, index));
         }
 
-        // print the label
+        // Prints the label.
         output.write_fmt(format_args!(
             "{} [shape=plaintext\nlabel=<\n<table border='1' cellborder='1'>\n<tr><td colspan='{}'>ID: {}, Level: 0, Cardinality: {}</td></tr>\n<tr>",
             self.id(),
@@ -687,7 +653,7 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
         }
         output.write_fmt(format_args!("</tr>\n</table>\n>]\n"))?;
 
-        // print the edges and children
+        // Prints the edges and children.
         for leaf_info in leaf_ref_array.iter() {
             if let Some((Some(leaf_ref), _, index)) = leaf_info {
                 output.write_fmt(format_args!(
@@ -719,7 +685,7 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
             }
         }
 
-        // print the anchor and side link
+        // Prints the anchor and side link.
         let leaf_node_anchor = self.next_node_anchor.load(Relaxed, guard);
         if !leaf_node_anchor.is_null() {
             output.write_fmt(format_args!(
@@ -744,17 +710,17 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
 impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for LeafNode<K, V> {
     fn drop(&mut self) {
         let guard = crossbeam_epoch::pin();
-        // destroy entries related to the unused child
+        // Drops entries related to the unused child.
         let unused_leaves = self.new_leaves.load(Acquire, &guard);
         if !unused_leaves.is_null() {
-            // destroy only the origin node, assuming that the rest are copied
+            // Drops only the origin node, assuming that the rest are copied.
             let unused_leaves = unsafe { unused_leaves.into_owned() };
             let obsolete_leaf = unused_leaves.origin_leaf_ptr.load(Relaxed, &guard);
             if !obsolete_leaf.is_null() {
                 drop(unsafe { obsolete_leaf.into_owned() });
             }
         } else {
-            // destroy all
+            // Drops all.
             for entry in LeafScanner::new(&self.leaves.0) {
                 let child = entry.1.load(Acquire, &guard);
                 if !child.is_null() {
@@ -770,7 +736,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for LeafNode<K, 
 }
 
 /// Leaf node locker.
-struct LeafNodeLocker<'a, K, V>
+pub struct LeafNodeLocker<'a, K, V>
 where
     K: Clone + Ord + Send + Sync,
     V: Clone + Send + Sync,
@@ -783,7 +749,7 @@ where
     K: Clone + Ord + Send + Sync,
     V: Clone + Send + Sync,
 {
-    fn lock(leaf_node: &'a LeafNode<K, V>, guard: &Guard) -> Option<LeafNodeLocker<'a, K, V>> {
+    pub fn lock(leaf_node: &'a LeafNode<K, V>, guard: &Guard) -> Option<LeafNodeLocker<'a, K, V>> {
         let mut new_nodes_dummy = NewLeaves::new();
         if let Err(error) = leaf_node.new_leaves.compare_and_set(
             Shared::null(),
@@ -866,7 +832,7 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNodeScanner<'
             }
         }
 
-        // return the first valid leaf node scanner
+        // Returns the first valid leaf node scanner.
         let mut jump_scanner = leaf_node_scanner.jump(None, guard);
         while let Some(mut scanner) = jump_scanner.take() {
             if scanner.next().is_some() {
@@ -879,9 +845,9 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNodeScanner<'
     }
 
     fn start(&mut self) {
-        // start scanning
+        // Starts scanning.
         loop {
-            // data race resolution: validate metadata - see 'InternalNode::search'
+            // Data race resolution: validate metadata - see 'InternalNode::search'.
             let mut index = 0;
             let mut scanner = LeafScanner::new(&self.leaf_node.leaves.0);
             while let Some(entry) = scanner.next() {
@@ -937,11 +903,10 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator
             |scanner| scanner.get().map_or_else(|| None, |(key, _)| Some(key)),
         );
         if let Some(leaf_scanner) = self.leaf_scanner.as_mut() {
-            // leaf iteration
+            // Leaf iteration.
             if let Some(entry) = leaf_scanner.next() {
                 return Some(entry);
             }
-            // end of iteration
             if self.current_leaf_index == usize::MAX {
                 return None;
             }
@@ -952,20 +917,20 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator
         }
 
         if self.current_leaf_index < self.leaf_pointer_array.len() {
-            // proceed to the next leaf
+            // Proceeds to the next leaf.
             while let Some(leaf_ptr) = self.leaf_pointer_array[self.current_leaf_index].take() {
                 self.leaf_scanner
                     .replace(LeafScanner::new(unsafe { leaf_ptr.deref() }));
                 self.current_leaf_index += 1;
                 if let Some(leaf_scanner) = self.leaf_scanner.as_mut() {
-                    // leaf iteration
+                    // Leaf iteration.
                     for entry in leaf_scanner {
-                        // data race resolution: compare keys
-                        //  - writer: insert an intermediate low key leaf
-                        //  - reader: read the low key leaf pointer
-                        //  - reader: read the old full leaf pointer
-                        //  - writer: replace the old full leaf pointer with a new one
-                        // consequently, the scanner reads outdated smaller values.
+                        // Data race resolution: compare keys.
+                        //  - Writer: insert an intermediate low key leaf
+                        //  - Reader: read the low key leaf pointer
+                        //  - Reader: read the old full leaf pointer
+                        //  - Writer: replace the old full leaf pointer with a new one
+                        // Consequently, the scanner reads outdated smaller values.
                         if min_allowed_key
                             .map_or_else(|| true, |key| key.cmp(entry.0) == Ordering::Less)
                         {
@@ -980,15 +945,13 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Iterator
             }
         }
         self.current_leaf_index = usize::MAX;
-
-        // end of iteration
         None
     }
 }
 
 /// Intermediate split leaf.
 ///
-/// It owns all the instances, thus deallocating all when drop.
+/// It owns all the instances, thus dropping them all when it is being dropped.
 pub struct NewLeaves<K, V>
 where
     K: Clone + Ord + Send + Sync,
@@ -1055,6 +1018,24 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNodeAnchor<K, V> 
         self.min_leaf_node.load(Relaxed, guard)
     }
 
+    pub fn next_leaf_node<'a>(&self, guard: &'a Guard) -> Shared<'a, LeafNode<K, V>> {
+        let mut next_node_anchor = self.next_valid_node_anchor.load(Acquire, &guard);
+        while !next_node_anchor.is_null() {
+            let next_node_anchor_ref = unsafe { next_node_anchor.deref() };
+            let next_min_leaf_node = next_node_anchor_ref.min_leaf_node.load(Acquire, guard);
+            let next_next_node_anchor = next_node_anchor_ref
+                .next_valid_node_anchor
+                .load(Relaxed, &guard);
+            if !next_next_node_anchor.is_null() {
+                // TODO #20: when to garbage collect anchors?
+                next_node_anchor = next_next_node_anchor;
+            } else {
+                return next_min_leaf_node;
+            }
+        }
+        self.min_leaf_node(guard)
+    }
+
     pub fn next_valid_node_anchor<'a>(&self, guard: &'a Guard) -> Shared<'a, LeafNodeAnchor<K, V>> {
         self.next_valid_node_anchor.load(Relaxed, guard)
     }
@@ -1070,7 +1051,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for LeafNodeAnch
                 .next_valid_node_anchor
                 .load(Acquire, &guard);
             if !next_next_node_anchor.is_null() {
-                // it is safe to remove the current next_node_anchor immediately
+                // It is safe to drop next_node_anchor immediately as it is only reachable from self.
                 drop(unsafe { next_node_anchor.into_owned() });
                 next_node_anchor = next_next_node_anchor;
             } else {
