@@ -74,6 +74,12 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         removed == ARRAY_SIZE
     }
 
+    /// Attaches the given leaf to its backward link.
+    pub fn push_front(&self, leaf: &Leaf<K, V>) {}
+
+    /// Unlinks itself from the linked list.
+    pub fn unlink(&self) {}
+
     /// Returns a reference to the max key.
     pub fn max(&self) -> Option<(&K, &V)> {
         let metadata = self.metadata.load(Acquire);
@@ -557,6 +563,14 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Drop for Leaf<K, V> {
                 self.take(i);
             }
         }
+        debug_assert!(self
+            .forward_link
+            .load(Relaxed, &crossbeam_epoch::pin())
+            .is_null());
+        debug_assert!(self
+            .backward_link
+            .load(Relaxed, &crossbeam_epoch::pin())
+            .is_null());
     }
 }
 
@@ -741,7 +755,11 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> LeafScanner<'a, K, V> {
         self.removed_entries_to_scan & (OCCUPANCY_BIT << self.entry_index) != 0
     }
 
-    pub fn jump(&self, min_allowed_key: Option<&K>, guard: &Guard) -> Option<LeafScanner<K, V>> {
+    pub fn jump(&self, guard: &'a Guard) -> Option<LeafScanner<'a, K, V>> {
+        let next = self.leaf.forward_link.load(Acquire, guard);
+        if !next.is_null() {
+            return Some(LeafScanner::new(unsafe { next.deref() }));
+        }
         None
     }
 

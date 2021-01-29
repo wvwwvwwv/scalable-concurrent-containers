@@ -489,6 +489,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 unused_leaf
             );
             debug_assert!(unused_leaf.deref().full());
+            unused_leaf.deref().unlink();
             guard.defer_destroy(unused_leaf);
         };
 
@@ -555,7 +556,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 let obsolete = self.leaves.0.remove(key, true).2;
                 // Once the key is removed, it is safe to drop the leaf as the validation loop ensures the absence of readers.
                 leaf_ptr.store(Shared::null(), Release);
-                unsafe { guard.defer_destroy(leaf_shared) };
+                unsafe {
+                    leaf_shared.deref().unlink();
+                    guard.defer_destroy(leaf_shared)
+                };
                 obsolete
             },
         );
@@ -663,19 +667,28 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for LeafNode<K, 
             let unused_leaves = unsafe { unused_leaves.into_owned() };
             let obsolete_leaf = unused_leaves.origin_leaf_ptr.load(Relaxed, &guard);
             if !obsolete_leaf.is_null() {
-                drop(unsafe { obsolete_leaf.into_owned() });
+                unsafe {
+                    let leaf = obsolete_leaf.into_owned();
+                    leaf.unlink();
+                }
             }
         } else {
             // Drops all.
             for entry in LeafScanner::new(&self.leaves.0) {
                 let child = entry.1.load(Acquire, &guard);
                 if !child.is_null() {
-                    drop(unsafe { child.into_owned() });
+                    unsafe {
+                        let leaf = child.into_owned();
+                        leaf.unlink();
+                    }
                 }
             }
             let unbounded_leaf = self.leaves.1.load(Acquire, &guard);
             if !unbounded_leaf.is_null() {
-                drop(unsafe { unbounded_leaf.into_owned() });
+                unsafe {
+                    let leaf = unbounded_leaf.into_owned();
+                    leaf.unlink();
+                }
             }
         }
     }

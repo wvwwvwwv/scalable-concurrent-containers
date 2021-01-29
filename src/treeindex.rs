@@ -452,28 +452,30 @@ where
                 )
             };
         }
-        if self.leaf_scanner.is_some() {
-            let mut min_allowed_key = None;
-            while let Some(mut scanner) = self.leaf_scanner.take() {
-                if min_allowed_key.is_none() {
-                    scanner.get().map(|(key, _)| min_allowed_key.replace(key));
-                }
-                if let Some(result) = scanner.next() {
-                    self.leaf_scanner.replace(scanner);
-                    return Some(result);
-                }
-                // Proceeds to the next leaf node.
-                if let Some(next) = unsafe {
-                    // Giving the min_allowed_key argument is necessary, because,
-                    //  - Remove: merges two leaf nodes, therefore the unbounded leaf of the lower key node is relocated.
-                    //  - Scanner: the unbounded leaf of the lower key node can be scanned twice after a jump.
-                    std::mem::transmute::<_, Option<LeafScanner<'a, K, V>>>(
-                        scanner.jump(min_allowed_key, &self.guard),
-                    )
+        if let Some(mut scanner) = self.leaf_scanner.take() {
+            let min_allowed_key = scanner.get().map(|(key, _)| key);
+            if let Some(result) = scanner.next() {
+                self.leaf_scanner.replace(scanner);
+                return Some(result);
+            }
+            // Proceeds to the next leaf node.
+            while let Some(mut new_scanner) = unsafe {
+                // Giving the min_allowed_key argument is necessary, because,
+                //  - Remove: merges two leaf nodes, therefore the unbounded leaf of the lower key node is relocated.
+                //  - Scanner: the unbounded leaf of the lower key node can be scanned twice after a jump.
+                std::mem::transmute::<_, Option<LeafScanner<'a, K, V>>>(scanner.jump(&self.guard))
                     .take()
-                } {
-                    self.leaf_scanner.replace(next);
+            } {
+                if let Some(entry) = new_scanner.next() {
+                    if min_allowed_key
+                        .as_ref()
+                        .map_or_else(|| true, |&key| entry.0.cmp(key) != std::cmp::Ordering::Less)
+                    {
+                        self.leaf_scanner.replace(new_scanner);
+                        return Some(entry);
+                    }
                 }
+                scanner = new_scanner;
             }
         }
         None
