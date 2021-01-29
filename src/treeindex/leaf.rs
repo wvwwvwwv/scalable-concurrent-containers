@@ -83,10 +83,10 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
     }
 
     /// Attaches the given leaf to its backward link.
-    pub fn push_front(&self, _leaf: &Leaf<K, V>) {}
+    pub fn push_front(&self, _leaf: &Leaf<K, V>, _guard: &Guard) {}
 
     /// Unlinks itself from the linked list.
-    pub fn unlink(&self) {}
+    pub fn unlink(&self, _guard: &Guard) {}
 
     /// Returns a reference to the max key.
     pub fn max(&self) -> Option<(&K, &V)> {

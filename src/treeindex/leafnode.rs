@@ -447,8 +447,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         let unused_leaf;
         let low_key_leaf = new_leaves_ref.low_key_leaf.take().unwrap();
         if let Some(high_key_leaf) = new_leaves_ref.high_key_leaf.take() {
-            high_key_leaf.push_front(&*low_key_leaf);
-            full_leaf_ref.push_front(&*high_key_leaf);
+            high_key_leaf.push_front(&*low_key_leaf, guard);
+            full_leaf_ref.push_front(&*high_key_leaf, guard);
             let max_key = low_key_leaf.max().unwrap().0;
             if let Some(leaf) =
                 self.leaves
@@ -467,7 +467,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             unused_leaf = full_leaf_ptr.swap(Owned::from(high_key_leaf), Release, &guard);
         } else {
             // Replaces the full leaf with the low-key leaf.
-            full_leaf_ref.push_front(&*low_key_leaf);
+            full_leaf_ref.push_front(&*low_key_leaf, guard);
             unused_leaf = full_leaf_ptr.swap(Owned::from(low_key_leaf), Release, &guard);
         }
 
@@ -480,7 +480,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 unused_leaf
             );
             debug_assert!(unused_leaf.deref().full());
-            unused_leaf.deref().unlink();
+            unused_leaf.deref().unlink(guard);
             guard.defer_destroy(unused_leaf);
         };
 
@@ -548,7 +548,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 // Once the key is removed, it is safe to drop the leaf as the validation loop ensures the absence of readers.
                 leaf_ptr.store(Shared::null(), Release);
                 unsafe {
-                    leaf_shared.deref().unlink();
+                    leaf_shared.deref().unlink(guard);
                     guard.defer_destroy(leaf_shared)
                 };
                 obsolete
@@ -672,7 +672,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for LeafNode<K, 
             if !obsolete_leaf.is_null() {
                 unsafe {
                     let leaf = obsolete_leaf.into_owned();
-                    leaf.unlink();
+                    leaf.unlink(&guard);
                 }
             }
         } else {
@@ -682,7 +682,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for LeafNode<K, 
                 if !child.is_null() {
                     unsafe {
                         let leaf = child.into_owned();
-                        leaf.unlink();
+                        leaf.unlink(&guard);
                     }
                 }
             }
@@ -690,7 +690,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for LeafNode<K, 
             if !unbounded_leaf.is_null() {
                 unsafe {
                     let leaf = unbounded_leaf.into_owned();
-                    leaf.unlink();
+                    leaf.unlink(&guard);
                 }
             }
         }
@@ -774,11 +774,15 @@ where
     V: Clone + Send + Sync,
 {
     fn drop(&mut self) {
-        if let Some(low_key_leaf) = self.low_key_leaf.take() {
-            low_key_leaf.unlink();
-        }
-        if let Some(high_key_leaf) = self.high_key_leaf.take() {
-            high_key_leaf.unlink();
+        // Those valid leaf instances are reachable by Scanners,
+        // therefore, they cannot be immediately dropped.
+        let guard = crossbeam_epoch::pin();
+        for leaf in [self.low_key_leaf.take(), self.high_key_leaf.take()].iter_mut() {
+            if let Some(leaf) = leaf {
+                leaf.unlink(&guard);
+                let ptr = Atomic::from(leaf).load(Relaxed, &guard);
+                unsafe { guard.defer_destroy(ptr) };
+            }
         }
     }
 }
