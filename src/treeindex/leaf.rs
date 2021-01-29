@@ -1,4 +1,4 @@
-use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
+use crossbeam_epoch::{Atomic, Guard, Shared};
 use std::cmp::Ordering;
 use std::convert::TryInto;
 use std::mem::MaybeUninit;
@@ -74,8 +74,16 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         removed == ARRAY_SIZE
     }
 
+    pub fn forward_link<'a>(&self, guard: &'a Guard) -> Shared<'a, Leaf<K, V>> {
+        self.forward_link.load(Acquire, guard)
+    }
+
+    pub fn backward_link<'a>(&self, guard: &'a Guard) -> Shared<'a, Leaf<K, V>> {
+        self.backward_link.load(Acquire, guard)
+    }
+
     /// Attaches the given leaf to its backward link.
-    pub fn push_front(&self, leaf: &Leaf<K, V>) {}
+    pub fn push_front(&self, _leaf: &Leaf<K, V>) {}
 
     /// Unlinks itself from the linked list.
     pub fn unlink(&self) {}
@@ -99,7 +107,7 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         None
     }
 
-    /// Inserts a key value pair.ARRAY_SIZE
+    /// Inserts a key value pair.
     ///
     /// It returns the passed key value pair on failure.
     /// The second returned value being true indicates that the same key exists.
@@ -417,41 +425,6 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         }
         if min_max_rank <= ARRAY_SIZE {
             return Some(self.read(min_max_index));
-        }
-        None
-    }
-
-    /// Returns the maximum entry among those that are Ordering::Less than the given key.
-    pub fn max_less(&self, key: &K) -> Option<(&K, &V)> {
-        let metadata = self.metadata.load(Acquire);
-        let mut max_min_rank = 0;
-        let mut min_max_rank = ARRAY_SIZE + 1;
-        let mut max_min_index = ARRAY_SIZE;
-        for i in 0..ARRAY_SIZE {
-            let rank = ((metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
-                >> (i * INDEX_RANK_ENTRY_SIZE)) as usize;
-            if rank > max_min_rank && rank < min_max_rank && (metadata & (OCCUPANCY_BIT << i)) != 0
-            {
-                match self.compare(i, key) {
-                    Ordering::Less => {
-                        if max_min_rank < rank {
-                            max_min_rank = rank;
-                            max_min_index = i;
-                        }
-                    }
-                    Ordering::Greater => {
-                        if min_max_rank > rank {
-                            min_max_rank = rank;
-                        }
-                    }
-                    Ordering::Equal => {
-                        min_max_rank = rank;
-                    }
-                }
-            }
-        }
-        if max_min_rank > 0 {
-            return Some(self.read(max_min_index));
         }
         None
     }
@@ -905,10 +878,6 @@ mod test {
         assert!(leaf.insert(10, 11, false).is_none());
         assert_eq!(*leaf.search(&10).unwrap(), 11);
         assert!(leaf.insert(11, 12, false).is_none());
-        assert!(leaf.max_less(&10).is_none());
-        assert_eq!(leaf.max_less(&11), Some((&10, &11)));
-        assert_eq!(leaf.max_less(&12), Some((&11, &12)));
-        assert_eq!(leaf.max_less(&100), Some((&20, &21)));
         assert_eq!(leaf.max(), Some((&20, &21)));
         assert_eq!(leaf.insert(11, 12, false), Some(((11, 12), true)));
         assert_eq!(*leaf.search(&11).unwrap(), 12);
@@ -922,7 +891,6 @@ mod test {
         assert_eq!(*leaf.search(&2).unwrap(), 3);
         assert_eq!(leaf.insert(2, 3, false), Some(((2, 3), true)));
         assert_eq!(leaf.min_greater_equal(&8).0, Some((&10, &11)));
-        assert_eq!(leaf.max_less(&11), Some((&10, &11)));
         assert_eq!(*leaf.search(&2).unwrap(), 3);
         assert!(leaf.insert(1, 2, false).is_none());
         assert_eq!(*leaf.search(&1).unwrap(), 2);

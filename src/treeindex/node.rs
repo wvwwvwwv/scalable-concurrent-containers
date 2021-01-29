@@ -334,8 +334,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
     }
 
     fn min<'a>(&'a self, guard: &'a Guard) -> Option<LeafScanner<'a, K, V>> {
-        let mut scanner = LeafScanner::new(&self.children.0);
-        while let Some(child) = scanner.next() {
+        for child in LeafScanner::new(&self.children.0) {
             let child_node = child.1.load(Acquire, guard);
             if let Some(leaf_scanner) = unsafe { child_node.deref().min(guard) } {
                 return Some(leaf_scanner);
@@ -641,17 +640,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                     )
                     .map(|middle_key| new_split_nodes_ref.middle_key.replace(middle_key));
 
-                // Reconstructs the linked list.
-                let immediate_smaller_key_node = self
-                    .children
-                    .0
-                    .max_less(new_split_nodes_ref.middle_key.as_ref().unwrap());
-                let immediate_smaller_key_leaf_node =
-                    if let Some((_, node_ptr)) = immediate_smaller_key_node {
-                        Self::cast_to_leaf_node(&node_ptr, guard)
-                    } else {
-                        None
-                    };
                 // Turns the new leaves into leaf nodes.
                 new_split_nodes_ref.low_key_node.replace(leaf_nodes.0);
                 new_split_nodes_ref.high_key_node.replace(leaf_nodes.1);
@@ -758,22 +746,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         }
     }
 
-    fn cast_to_leaf_node<'a>(
-        node_ptr: &Atomic<Node<K, V>>,
-        guard: &'a Guard,
-    ) -> Option<&'a LeafNode<K, V>> {
-        let node_shr_ptr = node_ptr.load(Acquire, guard);
-        if !node_shr_ptr.is_null() {
-            if let NodeType::Leaf(leaf_node) = unsafe { &node_shr_ptr.deref().entry } {
-                Some(leaf_node)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
-
     /// Coalesces the node with the adjacent node.
     fn coalesce_node(
         &self,
@@ -850,7 +822,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         if self
             .children
             .0
-            .insert(prev_internal_node_key.clone(), new_node_ptr.clone(), false)
+            .insert(prev_internal_node_key.clone(), new_node_ptr, false)
             .is_none()
         {
             prev_internal_node.children.1.store(Shared::null(), Relaxed);

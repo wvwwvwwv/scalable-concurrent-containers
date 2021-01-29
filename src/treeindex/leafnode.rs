@@ -400,16 +400,16 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             drop(unsafe { obsolete_leaf.into_owned() });
             return Err(InsertError::Retry(entry));
         }
-        debug_assert!(unsafe { full_leaf_shared.deref().full() });
+
+        let full_leaf_ref = unsafe { full_leaf_shared.deref() };
+        debug_assert!(full_leaf_ref.full());
 
         // Copies entries to the newly allocated leaves.
         let new_leaves_ref = unsafe { new_leaves_ptr.deref_mut() };
-        unsafe {
-            full_leaf_shared.deref().distribute(
-                &mut new_leaves_ref.low_key_leaf,
-                &mut new_leaves_ref.high_key_leaf,
-            )
-        };
+        full_leaf_ref.distribute(
+            &mut new_leaves_ref.low_key_leaf,
+            &mut new_leaves_ref.high_key_leaf,
+        );
 
         // Inserts the given entry.
         if new_leaves_ref.low_key_leaf.is_none() {
@@ -445,39 +445,30 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
 
         // Inserts the newly added leaves into the main array.
         let unused_leaf;
-        if new_leaves_ref.high_key_leaf.is_none() {
-            // Replaces the full leaf with the low-key leaf.
-            unused_leaf = full_leaf_ptr.swap(
-                Owned::from(new_leaves_ref.low_key_leaf.take().unwrap()),
-                Release,
-                &guard,
-            );
-        } else {
-            let max_key = new_leaves_ref
-                .low_key_leaf
-                .as_ref()
-                .unwrap()
-                .max()
-                .unwrap()
-                .0;
-            if let Some(leaf) = self.leaves.0.insert(
-                max_key.clone(),
-                Atomic::from(new_leaves_ref.low_key_leaf.take().unwrap()),
-                false,
-            ) {
+        let low_key_leaf = new_leaves_ref.low_key_leaf.take().unwrap();
+        if let Some(high_key_leaf) = new_leaves_ref.high_key_leaf.take() {
+            high_key_leaf.push_front(&*low_key_leaf);
+            full_leaf_ref.push_front(&*high_key_leaf);
+            let max_key = low_key_leaf.max().unwrap().0;
+            if let Some(leaf) =
+                self.leaves
+                    .0
+                    .insert(max_key.clone(), Atomic::from(low_key_leaf), false)
+            {
                 // Insertion failed: expect that the parent splits the leaf node.
                 new_leaves_ref
                     .low_key_leaf
                     .replace(unsafe { (leaf.0).1.into_owned().into_box() });
+                new_leaves_ref.high_key_leaf.replace(high_key_leaf);
                 return Err(InsertError::Full(entry));
             }
 
             // Replaces the full leaf with the high-key leaf.
-            unused_leaf = full_leaf_ptr.swap(
-                Owned::from(new_leaves_ref.high_key_leaf.take().unwrap()),
-                Release,
-                &guard,
-            );
+            unused_leaf = full_leaf_ptr.swap(Owned::from(high_key_leaf), Release, &guard);
+        } else {
+            // Replaces the full leaf with the low-key leaf.
+            full_leaf_ref.push_front(&*low_key_leaf);
+            unused_leaf = full_leaf_ptr.swap(Owned::from(low_key_leaf), Release, &guard);
         }
 
         // Drops the deprecated leaves.
@@ -650,6 +641,18 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
                     rank += 1;
                 }
                 output.write_fmt(format_args!("</table>\n>]\n"))?;
+                let prev_leaf = leaf_ref.backward_link(guard);
+                if !prev_leaf.is_null() {
+                    output.write_fmt(format_args!("{} -> {}\n", leaf_ref.id(), unsafe {
+                        prev_leaf.deref().id()
+                    }))?;
+                }
+                let next_leaf = leaf_ref.forward_link(guard);
+                if !next_leaf.is_null() {
+                    output.write_fmt(format_args!("{} -> {}\n", leaf_ref.id(), unsafe {
+                        next_leaf.deref().id()
+                    }))?;
+                }
             }
         }
 
@@ -761,6 +764,21 @@ where
             origin_leaf_ptr: Atomic::null(),
             low_key_leaf: None,
             high_key_leaf: None,
+        }
+    }
+}
+
+impl<K, V> Drop for NewLeaves<K, V>
+where
+    K: Clone + Ord + Send + Sync,
+    V: Clone + Send + Sync,
+{
+    fn drop(&mut self) {
+        if let Some(low_key_leaf) = self.low_key_leaf.take() {
+            low_key_leaf.unlink();
+        }
+        if let Some(high_key_leaf) = self.high_key_leaf.take() {
+            high_key_leaf.unlink();
         }
     }
 }
