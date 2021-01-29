@@ -7,8 +7,7 @@ pub mod node;
 
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use error::{InsertError, RemoveError, SearchError};
-use leaf::Leaf;
-use leafnode::LeafNodeScanner;
+use leaf::{Leaf, LeafScanner};
 use node::Node;
 use std::fmt;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
@@ -386,7 +385,7 @@ where
     V: Clone + Send + Sync,
 {
     tree_index: &'a TreeIndex<K, V>,
-    leaf_node_scanner: Option<LeafNodeScanner<'a, K, V>>,
+    leaf_scanner: Option<LeafScanner<'a, K, V>>,
     guard: Guard,
 }
 
@@ -394,7 +393,7 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Scanner<'a, K, V>
     fn new(tree_index: &'a TreeIndex<K, V>) -> Scanner<'a, K, V> {
         Scanner::<'a, K, V> {
             tree_index,
-            leaf_node_scanner: None,
+            leaf_scanner: None,
             guard: crossbeam_epoch::pin(),
         }
     }
@@ -402,39 +401,33 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Scanner<'a, K, V>
     fn from(tree_index: &'a TreeIndex<K, V>, min_allowed_key: &K) -> Option<Scanner<'a, K, V>> {
         let mut scanner = Scanner::<'a, K, V> {
             tree_index,
-            leaf_node_scanner: None,
+            leaf_scanner: None,
             guard: crossbeam_epoch::pin(),
         };
         let root_node = scanner.tree_index.root.load(Acquire, &scanner.guard);
         if root_node.is_null() {
             return None;
         }
-        scanner.leaf_node_scanner = unsafe {
+        scanner.leaf_scanner = unsafe {
             // Prolongs the lifetime as the rust type system cannot infer the actual lifetime correctly.
-            std::mem::transmute::<_, Option<LeafNodeScanner<'a, K, V>>>(
+            std::mem::transmute::<_, Option<LeafScanner<'a, K, V>>>(
                 (*root_node.as_raw()).from(min_allowed_key, &scanner.guard),
             )
         };
 
-        if scanner.leaf_node_scanner.is_none() {
-            None
-        } else {
-            while let Some((key_ref, _)) = scanner.get() {
-                if key_ref.cmp(min_allowed_key) != std::cmp::Ordering::Less {
-                    break;
-                }
-                if scanner.next().is_none() {
-                    return None;
-                }
+        while let Some((key_ref, _)) = scanner.get() {
+            if key_ref.cmp(min_allowed_key) != std::cmp::Ordering::Less {
+                return Some(scanner);
             }
-            Some(scanner)
+            scanner.next();
         }
+        None
     }
 
     /// Returns a reference to the entry that the scanner is currently pointing to.
     pub fn get(&self) -> Option<(&'a K, &'a V)> {
-        if let Some(leaf_node_scanner) = self.leaf_node_scanner.as_ref() {
-            return leaf_node_scanner.get();
+        if let Some(leaf_scanner) = self.leaf_scanner.as_ref() {
+            return leaf_scanner.get();
         }
         None
     }
@@ -447,39 +440,39 @@ where
 {
     type Item = (&'a K, &'a V);
     fn next(&mut self) -> Option<Self::Item> {
-        if self.leaf_node_scanner.is_none() {
+        if self.leaf_scanner.is_none() {
             let root_node = self.tree_index.root.load(Acquire, &self.guard);
             if root_node.is_null() {
                 return None;
             }
-            self.leaf_node_scanner = unsafe {
+            self.leaf_scanner = unsafe {
                 // Prolongs the lifetime as the rust type system cannot infer the actual lifetime correctly.
-                std::mem::transmute::<_, Option<LeafNodeScanner<'a, K, V>>>(
+                std::mem::transmute::<_, Option<LeafScanner<'a, K, V>>>(
                     (*root_node.as_raw()).min(&self.guard),
                 )
             };
         }
-        if self.leaf_node_scanner.is_some() {
+        if self.leaf_scanner.is_some() {
             let mut min_allowed_key = None;
-            while let Some(mut scanner) = self.leaf_node_scanner.take() {
+            while let Some(mut scanner) = self.leaf_scanner.take() {
                 if min_allowed_key.is_none() {
                     scanner.get().map(|(key, _)| min_allowed_key.replace(key));
                 }
                 if let Some(result) = scanner.next() {
-                    self.leaf_node_scanner.replace(scanner);
+                    self.leaf_scanner.replace(scanner);
                     return Some(result);
                 }
                 // Proceeds to the next leaf node.
-                let next = unsafe {
+                if let Some(next) = unsafe {
                     // Giving the min_allowed_key argument is necessary, because,
                     //  - Remove: merges two leaf nodes, therefore the unbounded leaf of the lower key node is relocated.
                     //  - Scanner: the unbounded leaf of the lower key node can be scanned twice after a jump.
-                    std::mem::transmute::<_, Option<LeafNodeScanner<'a, K, V>>>(
+                    std::mem::transmute::<_, Option<LeafScanner<'a, K, V>>>(
                         scanner.jump(min_allowed_key, &self.guard),
                     )
-                };
-                if let Some(next) = next {
-                    self.leaf_node_scanner.replace(next);
+                    .take()
+                } {
+                    self.leaf_scanner.replace(next);
                 }
             }
         }

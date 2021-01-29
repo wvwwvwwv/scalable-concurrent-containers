@@ -1,3 +1,4 @@
+use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::cmp::Ordering;
 use std::convert::TryInto;
 use std::mem::MaybeUninit;
@@ -32,8 +33,14 @@ pub type EntryArray<K, V> = [MaybeUninit<(K, V)>; ARRAY_SIZE];
 ///
 /// A constructed key-value pair entry is never dropped until the entire Leaf instance is dropped.
 pub struct Leaf<K: Clone + Ord + Sync, V: Clone + Sync> {
+    /// The array of key-value pairs.
     entry_array: EntryArray<K, V>,
+    /// The metadata that manages the contents.
     metadata: AtomicU64,
+    /// A pointer that points to the next adjacent leaf.
+    forward_link: Atomic<Leaf<K, V>>,
+    /// IN ORDER TO UPDATE THE LINKED LIST STATE, LOCK NEXT -> CURRENT
+    backward_link: Atomic<Leaf<K, V>>,
 }
 
 impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
@@ -42,6 +49,8 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
         Leaf {
             entry_array: unsafe { MaybeUninit::uninit().assume_init() },
             metadata: AtomicU64::new(0),
+            forward_link: Atomic::null(),
+            backward_link: Atomic::null(),
         }
     }
 
@@ -730,6 +739,10 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> LeafScanner<'a, K, V> {
 
     pub fn removed(&self) -> bool {
         self.removed_entries_to_scan & (OCCUPANCY_BIT << self.entry_index) != 0
+    }
+
+    pub fn jump(&self, min_allowed_key: Option<&K>, guard: &Guard) -> Option<LeafScanner<K, V>> {
+        None
     }
 
     fn proceed(&mut self) {
