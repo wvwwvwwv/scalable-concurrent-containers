@@ -444,10 +444,9 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         }
 
         // Inserts the newly added leaves into the main array.
-        let unused_leaf;
         let low_key_leaf = new_leaves_ref.low_key_leaf.take().unwrap();
         full_leaf_ref.push_front(&*low_key_leaf, guard);
-        if let Some(high_key_leaf) = new_leaves_ref.high_key_leaf.take() {
+        let unused_leaf = if let Some(high_key_leaf) = new_leaves_ref.high_key_leaf.take() {
             full_leaf_ref.push_front(&*high_key_leaf, guard);
             let max_key = low_key_leaf.max().unwrap().0;
             if let Some(leaf) =
@@ -464,11 +463,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             }
 
             // Replaces the full leaf with the high-key leaf.
-            unused_leaf = full_leaf_ptr.swap(Owned::from(high_key_leaf), Release, &guard);
+            full_leaf_ptr.swap(Owned::from(high_key_leaf), Release, &guard)
         } else {
             // Replaces the full leaf with the low-key leaf.
-            unused_leaf = full_leaf_ptr.swap(Owned::from(low_key_leaf), Release, &guard);
-        }
+            full_leaf_ptr.swap(Owned::from(low_key_leaf), Release, &guard)
+        };
 
         // Drops the deprecated leaves.
         let unused_leaves = self.new_leaves.swap(Shared::null(), Release, guard);
@@ -669,9 +668,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for LeafNode<K, 
             let unused_leaves = unsafe { unused_leaves.into_owned() };
             let obsolete_leaf = unused_leaves.origin_leaf_ptr.load(Relaxed, &guard);
             if !obsolete_leaf.is_null() {
+                // There is a chance that the obsolete leaf is being accessed by Scanners.
                 unsafe {
-                    let leaf = obsolete_leaf.into_owned();
-                    leaf.unlink(&guard);
+                    obsolete_leaf.deref().unlink(&guard);
+                    guard.defer_destroy(obsolete_leaf);
                 }
             }
         } else {

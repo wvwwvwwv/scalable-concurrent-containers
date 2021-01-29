@@ -844,7 +844,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
 impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for InternalNode<K, V> {
     fn drop(&mut self) {
         let guard = crossbeam_epoch::pin();
-        // Destroys entries related to the unused child.debug_assert!
+        // Destroys entries related to the unused child.
         let unused_nodes = self.new_children.load(Acquire, &guard);
         if !unused_nodes.is_null() {
             // Destroys only the origin node, assuming that the rest are copied.
