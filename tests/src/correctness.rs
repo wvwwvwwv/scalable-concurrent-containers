@@ -560,11 +560,11 @@ mod treeindex_test {
                 checker2.insert((i, str_val.clone()));
             }
         }
-        for iter in checker1 {
+        for iter in checker1.iter() {
             let v = tree1.read(&iter.0, |_, v| v.clone());
             assert_eq!(v.unwrap(), iter.1);
         }
-        for iter in checker2 {
+        for iter in checker2.iter() {
             let v = tree2.read(&iter.0, |_, v| v.clone());
             assert_eq!(v.unwrap(), iter.1);
         }

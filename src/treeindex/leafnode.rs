@@ -446,8 +446,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         // Inserts the newly added leaves into the main array.
         let unused_leaf;
         let low_key_leaf = new_leaves_ref.low_key_leaf.take().unwrap();
+        full_leaf_ref.push_front(&*low_key_leaf, guard);
         if let Some(high_key_leaf) = new_leaves_ref.high_key_leaf.take() {
-            high_key_leaf.push_front(&*low_key_leaf, guard);
             full_leaf_ref.push_front(&*high_key_leaf, guard);
             let max_key = low_key_leaf.max().unwrap().0;
             if let Some(leaf) =
@@ -467,7 +467,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             unused_leaf = full_leaf_ptr.swap(Owned::from(high_key_leaf), Release, &guard);
         } else {
             // Replaces the full leaf with the low-key leaf.
-            full_leaf_ref.push_front(&*low_key_leaf, guard);
             unused_leaf = full_leaf_ptr.swap(Owned::from(low_key_leaf), Release, &guard);
         }
 

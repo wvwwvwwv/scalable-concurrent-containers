@@ -32,18 +32,28 @@ pub type EntryArray<K, V> = [MaybeUninit<(K, V)>; ARRAY_SIZE];
 /// Leaf is an ordered array of key-value pairs.
 ///
 /// A constructed key-value pair entry is never dropped until the entire Leaf instance is dropped.
-pub struct Leaf<K: Clone + Ord + Sync, V: Clone + Sync> {
+pub struct Leaf<K, V>
+where
+    K: Clone + Ord + Sync,
+    V: Clone + Sync,
+{
     /// The array of key-value pairs.
     entry_array: EntryArray<K, V>,
     /// The metadata that manages the contents.
     metadata: AtomicU64,
     /// A pointer that points to the next adjacent leaf.
     forward_link: Atomic<Leaf<K, V>>,
-    /// IN ORDER TO UPDATE THE LINKED LIST STATE, LOCK NEXT -> CURRENT
+    /// A pointer that points to the previous adjacent leaf.
+    ///
+    /// backward_link pointing the leaf itself means the leaf is locked.
     backward_link: Atomic<Leaf<K, V>>,
 }
 
-impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
+impl<K, V> Leaf<K, V>
+where
+    K: Clone + Ord + Sync,
+    V: Clone + Sync,
+{
     /// Creates a new Leaf.
     pub fn new() -> Leaf<K, V> {
         Leaf {
@@ -83,10 +93,48 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
     }
 
     /// Attaches the given leaf to its backward link.
-    pub fn push_front(&self, _leaf: &Leaf<K, V>, _guard: &Guard) {}
+    pub fn push_front(&self, leaf: &Leaf<K, V>, guard: &Guard) {
+        // Firstly, locks the previous adjacent leaf and itself.
+        let mut lockers = LeafListLocker::lock_prev_self(self, guard);
+
+        // Makes the new leaf point to itself and the prev leaf.
+        let mut locker = LeafListLocker::lock(leaf, guard);
+        leaf.forward_link
+            .store(Shared::from(self as *const _), Relaxed);
+        locker.update_backward_link(lockers.1.backward_link);
+
+        // Makes the prev and next leaves point to the new leaf.
+        //  - From here, the new leaf is reachable by Scanners.
+        if !lockers.1.backward_link.is_null() {
+            unsafe { lockers.1.backward_link.deref() }
+                .forward_link
+                .store(Shared::from(leaf as *const _), Release);
+        }
+        lockers
+            .1
+            .update_backward_link(Shared::from(leaf as *const _));
+    }
 
     /// Unlinks itself from the linked list.
-    pub fn unlink(&self, _guard: &Guard) {}
+    pub fn unlink(&self, guard: &Guard) {
+        // Firstly, locks the previous adjacent leaf and itself.
+        let lockers = LeafListLocker::lock_prev_self(self, guard);
+
+        // Lastly, locks the next adjacent leaf and modifies the linked list.
+        let next_leaf = self.forward_link.load(Relaxed, guard);
+        if !next_leaf.is_null() {
+            // Makes the next leaf point to the prev leaf.
+            let mut next_leaf_locker = LeafListLocker::lock(unsafe { next_leaf.deref() }, guard);
+            next_leaf_locker.update_backward_link(lockers.1.backward_link);
+        }
+
+        if !lockers.1.backward_link.is_null() {
+            // Makes the prev leaf point to the next leaf.
+            unsafe { lockers.1.backward_link.deref() }
+                .forward_link
+                .store(next_leaf, Release);
+        }
+    }
 
     /// Returns a reference to the max key.
     pub fn max(&self) -> Option<(&K, &V)> {
@@ -526,7 +574,11 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Leaf<K, V> {
     }
 }
 
-impl<K: Clone + Ord + Sync, V: Clone + Sync> Drop for Leaf<K, V> {
+impl<K, V> Drop for Leaf<K, V>
+where
+    K: Clone + Ord + Sync,
+    V: Clone + Sync,
+{
     fn drop(&mut self) {
         let metadata = self.metadata.swap(0, Acquire);
         for i in 0..ARRAY_SIZE {
@@ -536,25 +588,25 @@ impl<K: Clone + Ord + Sync, V: Clone + Sync> Drop for Leaf<K, V> {
                 self.take(i);
             }
         }
-        debug_assert!(self
-            .forward_link
-            .load(Relaxed, &crossbeam_epoch::pin())
-            .is_null());
-        debug_assert!(self
-            .backward_link
-            .load(Relaxed, &crossbeam_epoch::pin())
-            .is_null());
     }
 }
 
-struct Inserter<'a, K: Clone + Ord + Sync, V: Clone + Sync> {
+struct Inserter<'a, K, V>
+where
+    K: Clone + Ord + Sync,
+    V: Clone + Sync,
+{
     leaf: &'a Leaf<K, V>,
     committed: bool,
     metadata: u64,
     index: usize,
 }
 
-impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Inserter<'a, K, V> {
+impl<'a, K, V> Inserter<'a, K, V>
+where
+    K: Clone + Ord + Sync,
+    V: Clone + Sync,
+{
     /// Returns Some if OCCUPIED && RANK == 0.
     fn new(leaf: &'a Leaf<K, V>) -> Option<Inserter<'a, K, V>> {
         let mut current = leaf.metadata.load(Relaxed);
@@ -636,7 +688,11 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Inserter<'a, K, V> {
     }
 }
 
-impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Drop for Inserter<'a, K, V> {
+impl<'a, K, V> Drop for Inserter<'a, K, V>
+where
+    K: Clone + Ord + Sync,
+    V: Clone + Sync,
+{
     fn drop(&mut self) {
         if !self.committed {
             // Rolls back metadata changes if not committed.
@@ -657,8 +713,119 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Drop for Inserter<'a, K, V> {
     }
 }
 
+/// Leaf list locker.
+struct LeafListLocker<'a, K, V>
+where
+    K: Clone + Ord + Sync,
+    V: Clone + Sync,
+{
+    leaf: &'a Leaf<K, V>,
+    backward_link: Shared<'a, Leaf<K, V>>,
+}
+
+impl<'a, K, V> LeafListLocker<'a, K, V>
+where
+    K: Clone + Ord + Sync,
+    V: Clone + Sync,
+{
+    fn lock(leaf: &'a Leaf<K, V>, guard: &'a Guard) -> LeafListLocker<'a, K, V> {
+        let mut current = leaf.backward_link.load(Relaxed, guard);
+        let locked_state = Shared::from(leaf as *const _);
+        loop {
+            if current == locked_state {
+                current = leaf.backward_link.load(Relaxed, guard);
+                continue;
+            }
+            if let Err(err) =
+                leaf.backward_link
+                    .compare_and_set(current, locked_state, Acquire, guard)
+            {
+                current = err.current;
+                continue;
+            }
+            break;
+        }
+        LeafListLocker {
+            leaf,
+            backward_link: current,
+        }
+    }
+
+    fn lock_prev_self(
+        leaf: &'a Leaf<K, V>,
+        guard: &'a Guard,
+    ) -> (Option<LeafListLocker<'a, K, V>>, LeafListLocker<'a, K, V>) {
+        loop {
+            // Locks the prev leaf.
+            let locked_state = Shared::from(leaf as *const _);
+            let mut prev_leaf_ptr = leaf.backward_link.load(Relaxed, guard);
+            let mut prev_leaf_locker = None;
+            loop {
+                if prev_leaf_ptr == locked_state {
+                    // Currently, locked.
+                    prev_leaf_ptr = leaf.backward_link.load(Relaxed, guard);
+                    continue;
+                } else if prev_leaf_ptr.is_null() {
+                    // There is no chance that backward_link gets updated if it is null.
+                    break;
+                }
+                prev_leaf_locker.replace(LeafListLocker::lock(
+                    unsafe { prev_leaf_ptr.deref() },
+                    guard,
+                ));
+                break;
+            }
+            // Lock the leaf.
+            let mut current = leaf.backward_link.load(Relaxed, guard);
+            loop {
+                if current == locked_state {
+                    // Currently, locked.
+                    current = leaf.backward_link.load(Relaxed, guard);
+                    continue;
+                }
+                if current != prev_leaf_ptr {
+                    // Pointer changed with the known prev leaf is locked.
+                    break;
+                }
+                if let Err(err) =
+                    leaf.backward_link
+                        .compare_and_set(current, locked_state, Acquire, guard)
+                {
+                    current = err.current;
+                    continue;
+                }
+                return (
+                    prev_leaf_locker,
+                    LeafListLocker {
+                        leaf,
+                        backward_link: current,
+                    },
+                );
+            }
+        }
+    }
+
+    fn update_backward_link(&mut self, new_ptr: Shared<'a, Leaf<K, V>>) {
+        self.backward_link = new_ptr;
+    }
+}
+
+impl<'a, K, V> Drop for LeafListLocker<'a, K, V>
+where
+    K: Clone + Ord + Sync,
+    V: Clone + Sync,
+{
+    fn drop(&mut self) {
+        self.leaf.backward_link.store(self.backward_link, Release);
+    }
+}
+
 /// Leaf scanner.
-pub struct LeafScanner<'a, K: Clone + Ord + Sync, V: Clone + Sync> {
+pub struct LeafScanner<'a, K, V>
+where
+    K: Clone + Ord + Sync,
+    V: Clone + Sync,
+{
     leaf: &'a Leaf<K, V>,
     metadata: u64,
     removed_entries_to_scan: u64,
@@ -666,7 +833,11 @@ pub struct LeafScanner<'a, K: Clone + Ord + Sync, V: Clone + Sync> {
     entry_ptr: *const (K, V),
 }
 
-impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> LeafScanner<'a, K, V> {
+impl<'a, K, V> LeafScanner<'a, K, V>
+where
+    K: Clone + Ord + Sync,
+    V: Clone + Sync,
+{
     pub fn new(leaf: &'a Leaf<K, V>) -> LeafScanner<'a, K, V> {
         LeafScanner {
             leaf,
@@ -750,7 +921,11 @@ impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> LeafScanner<'a, K, V> {
     }
 }
 
-impl<'a, K: Clone + Ord + Sync, V: Clone + Sync> Iterator for LeafScanner<'a, K, V> {
+impl<'a, K, V> Iterator for LeafScanner<'a, K, V>
+where
+    K: Clone + Ord + Sync,
+    V: Clone + Sync,
+{
     type Item = (&'a K, &'a V);
     fn next(&mut self) -> Option<Self::Item> {
         self.proceed();

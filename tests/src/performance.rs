@@ -467,7 +467,7 @@ mod treeindex_test {
             let (len, depth) = (treeindex.len(), treeindex.depth());
             println!("after remove-local: num_elements {}, depth {}", len, depth);
             assert_eq!(len, 0);
-            // TEST: #19
+            // TEST: #20
             //treeindex.print(&mut std::io::stdout()).unwrap();
             //if num_threads == 1 {
             //    return;
