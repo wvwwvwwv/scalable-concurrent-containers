@@ -184,11 +184,11 @@ where
     /// ```
     pub fn read<U, F: FnOnce(&K, &V) -> U>(&self, key: &K, f: F) -> Option<U> {
         let guard = crossbeam_epoch::pin();
-        let root_node = self.root.load(Acquire, &guard);
-        if root_node.is_null() {
-            return None;
-        }
         loop {
+            let root_node = self.root.load(Acquire, &guard);
+            if root_node.is_null() {
+                return None;
+            }
             match unsafe { root_node.deref().search(key, &guard) } {
                 Ok(result) => {
                     if let Some(value) = result {
@@ -384,27 +384,27 @@ where
     K: Clone + Ord + Send + Sync,
     V: Clone + Send + Sync,
 {
-    tree_index: &'a TreeIndex<K, V>,
+    tree: &'a TreeIndex<K, V>,
     leaf_scanner: Option<LeafScanner<'a, K, V>>,
     guard: Guard,
 }
 
 impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Scanner<'a, K, V> {
-    fn new(tree_index: &'a TreeIndex<K, V>) -> Scanner<'a, K, V> {
+    fn new(tree: &'a TreeIndex<K, V>) -> Scanner<'a, K, V> {
         Scanner::<'a, K, V> {
-            tree_index,
+            tree,
             leaf_scanner: None,
             guard: crossbeam_epoch::pin(),
         }
     }
 
-    fn from(tree_index: &'a TreeIndex<K, V>, min_allowed_key: &K) -> Option<Scanner<'a, K, V>> {
+    fn from(tree: &'a TreeIndex<K, V>, min_allowed_key: &K) -> Option<Scanner<'a, K, V>> {
         let mut scanner = Scanner::<'a, K, V> {
-            tree_index,
+            tree,
             leaf_scanner: None,
             guard: crossbeam_epoch::pin(),
         };
-        let root_node = scanner.tree_index.root.load(Acquire, &scanner.guard);
+        let root_node = scanner.tree.root.load(Acquire, &scanner.guard);
         if root_node.is_null() {
             return None;
         }
@@ -441,7 +441,7 @@ where
     type Item = (&'a K, &'a V);
     fn next(&mut self) -> Option<Self::Item> {
         if self.leaf_scanner.is_none() {
-            let root_node = self.tree_index.root.load(Acquire, &self.guard);
+            let root_node = self.tree.root.load(Acquire, &self.guard);
             if root_node.is_null() {
                 return None;
             }
@@ -460,7 +460,7 @@ where
             }
             // Proceeds to the next leaf node.
             while let Some(mut new_scanner) = unsafe {
-                // Giving the min_allowed_key argument is necessary, because,
+                // Checking min_allowed_key is necessary, because,
                 //  - Remove: merges two leaf nodes, therefore the unbounded leaf of the lower key node is relocated.
                 //  - Scanner: the unbounded leaf of the lower key node can be scanned twice after a jump.
                 std::mem::transmute::<_, Option<LeafScanner<'a, K, V>>>(scanner.jump(&self.guard))

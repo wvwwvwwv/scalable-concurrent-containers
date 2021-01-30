@@ -42,11 +42,23 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             && (!check_unbounded || self.leaves.1.load(Relaxed, guard).is_null())
     }
 
-    pub fn unlink(&self) {
+    pub fn unlink(&self, guard: &Guard) {
         for entry in LeafScanner::new(&self.leaves.0) {
             entry.1.store(Shared::null(), Relaxed);
         }
         self.leaves.1.store(Shared::null(), Relaxed);
+
+        let unused_leaves = self.new_leaves.load(Acquire, &guard);
+        if !unused_leaves.is_null() {
+            let obsolete_leaf =
+                unsafe { unused_leaves.deref().origin_leaf_ptr.load(Relaxed, &guard) };
+            if !obsolete_leaf.is_null() {
+                unsafe {
+                    obsolete_leaf.deref().unlink(&guard);
+                    guard.defer_destroy(obsolete_leaf);
+                }
+            }
+        }
     }
 
     pub fn search<'a>(&self, key: &'a K, guard: &'a Guard) -> Result<Option<&'a V>, SearchError> {
@@ -63,6 +75,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                     //  - reader: read the new high key leaf pointer
                     // Consequently, the reader may miss keys in the low key leaf.
                     continue;
+                }
+                if child_leaf.is_null() {
+                    // child_leaf being null indicates that the leaf node is bound to be freed.
+                    return Err(SearchError::Retry);
                 }
                 return Ok(unsafe { child_leaf.deref().search(key) });
             } else if unbounded_leaf == self.leaves.1.load(Acquire, guard) {
@@ -89,6 +105,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 if !(self.leaves.0).validate(metadata) {
                     // Data race resolution: validate metadata - see 'LeafNode::search'.
                     continue;
+                }
+                if child_leaf.is_null() {
+                    // child_leaf being null indicates that the leaf node is bound to be freed.
+                    return None;
                 }
                 return Some(LeafScanner::new(unsafe { child_leaf.deref() }));
             } else if unbounded_leaf == self.leaves.1.load(Acquire, guard) {
@@ -118,10 +138,19 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                     retry = true;
                     break;
                 }
+                if child_leaf.is_null() {
+                    // child_leaf being null indicates that the leaf node is bound to be freed.
+                    return None;
+                }
                 if let Some(leaf_scanner) =
                     LeafScanner::from(unsafe { child_leaf.deref() }, key, false)
                 {
                     return Some(leaf_scanner);
+                }
+                if !(self.leaves.0).validate(metadata) {
+                    // Data race resolution: validate metadata - see 'InternalNode::search'.
+                    retry = true;
+                    break;
                 }
             }
             if retry {
@@ -150,6 +179,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 if !(self.leaves.0).validate(result.1) {
                     // Data race resolution: validate metadata - see 'InternalNode::search'.
                     continue;
+                }
+                if child_leaf.is_null() {
+                    // child_leaf being null indicates that the leaf node is bound to be freed.
+                    return Err(InsertError::Retry((key, value)));
                 }
                 return unsafe { child_leaf.deref().insert(key, value, false) }.map_or_else(
                     || Ok(()),
@@ -200,6 +233,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 if !(self.leaves.0).validate(result.1) {
                     // Data race resolution: validate metadata - see 'InternalNode::search'.
                     continue;
+                }
+                if child_leaf.is_null() {
+                    // child_leaf being null indicates that the leaf node is bound to be freed.
+                    return Err(RemoveError::Retry(false));
                 }
                 let (removed, full, obsolete) = unsafe { child_leaf.deref().remove(key, true) };
                 if !full {
@@ -680,36 +717,20 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
 impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for LeafNode<K, V> {
     fn drop(&mut self) {
         let guard = crossbeam_epoch::pin();
-        // Drops entries related to the unused child.
-        let unused_leaves = self.new_leaves.load(Acquire, &guard);
-        if !unused_leaves.is_null() {
-            // Drops only the origin node, assuming that the rest are copied.
-            let unused_leaves = unsafe { unused_leaves.into_owned() };
-            let obsolete_leaf = unused_leaves.origin_leaf_ptr.load(Relaxed, &guard);
-            if !obsolete_leaf.is_null() {
-                // There is a chance that the obsolete leaf is being accessed by Scanners.
+        for entry in LeafScanner::new(&self.leaves.0) {
+            let child = entry.1.load(Acquire, &guard);
+            if !child.is_null() {
                 unsafe {
-                    obsolete_leaf.deref().unlink(&guard);
-                    guard.defer_destroy(obsolete_leaf);
-                }
-            }
-        } else {
-            // Drops all.
-            for entry in LeafScanner::new(&self.leaves.0) {
-                let child = entry.1.load(Acquire, &guard);
-                if !child.is_null() {
-                    unsafe {
-                        let leaf = child.into_owned();
-                        leaf.unlink(&guard);
-                    }
-                }
-            }
-            let unbounded_leaf = self.leaves.1.load(Acquire, &guard);
-            if !unbounded_leaf.is_null() {
-                unsafe {
-                    let leaf = unbounded_leaf.into_owned();
+                    let leaf = child.into_owned();
                     leaf.unlink(&guard);
                 }
+            }
+        }
+        let unbounded_leaf = self.leaves.1.load(Acquire, &guard);
+        if !unbounded_leaf.is_null() {
+            unsafe {
+                let leaf = unbounded_leaf.into_owned();
+                leaf.unlink(&guard);
             }
         }
     }

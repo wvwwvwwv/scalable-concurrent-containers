@@ -94,21 +94,22 @@ where
 
     /// Attaches the given leaf to its backward link.
     pub fn push_front(&self, leaf: &Leaf<K, V>, guard: &Guard) {
-        // Firstly, locks the previous adjacent leaf and itself.
+        // Locks the previous adjacent leaf and itself.
         let mut lockers = LeafListLocker::lock_prev_self(self, guard);
 
         // Makes the new leaf point to itself and the prev leaf.
-        let mut locker = LeafListLocker::lock(leaf, guard);
+        //  - The update order is, store(leaf.back)|release|store(prev.forward)
         leaf.forward_link
             .store(Shared::from(self as *const _), Relaxed);
-        locker.update_backward_link(lockers.1.backward_link);
+        leaf.backward_link.store(lockers.1.backward_link, Release);
 
         // Makes the prev and next leaves point to the new leaf.
         //  - From here, the new leaf is reachable by Scanners.
-        if !lockers.1.backward_link.is_null() {
-            unsafe { lockers.1.backward_link.deref() }
+        if let Some(prev_leaf_locker) = lockers.0.as_ref() {
+            prev_leaf_locker
+                .leaf
                 .forward_link
-                .store(Shared::from(leaf as *const _), Release);
+                .store(Shared::from(leaf as *const _), Relaxed);
         }
         lockers
             .1
@@ -117,22 +118,23 @@ where
 
     /// Unlinks itself from the linked list.
     pub fn unlink(&self, guard: &Guard) {
-        // Firstly, locks the previous adjacent leaf and itself.
+        // Locks the previous adjacent leaf and itself.
         let lockers = LeafListLocker::lock_prev_self(self, guard);
 
-        // Lastly, locks the next adjacent leaf and modifies the linked list.
+        // Locks the next adjacent leaf and modifies the linked list.
         let next_leaf = self.forward_link.load(Relaxed, guard);
         if !next_leaf.is_null() {
             // Makes the next leaf point to the prev leaf.
             let mut next_leaf_locker = LeafListLocker::lock(unsafe { next_leaf.deref() }, guard);
+            debug_assert_eq!(
+                next_leaf_locker.backward_link,
+                Shared::from(self as *const _)
+            );
             next_leaf_locker.update_backward_link(lockers.1.backward_link);
         }
 
-        if !lockers.1.backward_link.is_null() {
-            // Makes the prev leaf point to the next leaf.
-            unsafe { lockers.1.backward_link.deref() }
-                .forward_link
-                .store(next_leaf, Release);
+        if let Some(prev_leaf_locker) = lockers.0.as_ref() {
+            prev_leaf_locker.leaf.forward_link.store(next_leaf, Relaxed);
         }
     }
 
@@ -794,6 +796,23 @@ where
                     current = err.current;
                     continue;
                 }
+                debug_assert!(prev_leaf_locker.as_ref().map_or_else(
+                    || true,
+                    |locker| locker.leaf as *const _ != leaf as *const _
+                ));
+                debug_assert_eq!(
+                    prev_leaf_locker.as_ref().map_or_else(
+                        || locked_state,
+                        |locker| locker.leaf.forward_link.load(Relaxed, guard)
+                    ),
+                    locked_state
+                );
+                debug_assert_eq!(
+                    prev_leaf_locker
+                        .as_ref()
+                        .map_or_else(|| current, |locker| Shared::from(locker.leaf as *const _)),
+                    current
+                );
                 return (
                     prev_leaf_locker,
                     LeafListLocker {
@@ -900,7 +919,7 @@ where
     }
 
     pub fn jump(&self, guard: &'a Guard) -> Option<LeafScanner<'a, K, V>> {
-        let next = self.leaf.forward_link.load(Acquire, guard);
+        let next = self.leaf.forward_link.load(Relaxed, guard);
         if !next.is_null() {
             return Some(LeafScanner::new(unsafe { next.deref() }));
         }

@@ -433,19 +433,15 @@ mod treeindex_test {
             handle.join().unwrap();
         }
         let mut found = 0;
-        let mut missing = 0;
         for key in 0..num_threads * range {
             if tree
                 .read(&key, |key, value| assert_eq!(key, value))
                 .is_some()
             {
                 found += 1;
-            } else {
-                missing += 1;
-                println!("{}", key);
             }
         }
-        println!("{} {}", found, missing);
+        assert_eq!(found, num_threads * range);
         for key in 0..num_threads * range {
             assert!(tree
                 .read(&key, |key, value| assert_eq!(key, value))
@@ -586,17 +582,14 @@ mod treeindex_test {
                 // test insert
                 for _ in 0..2 {
                     barrier_copied.wait();
-                    let mut scanned = 0;
                     let mut checker = BTreeSet::new();
                     let max = inserted_copied.load(Acquire);
                     let mut prev = 0;
                     for iter in tree_copied.iter() {
-                        scanned += 1;
                         checker.insert(*iter.0);
                         assert!(prev == 0 || prev < *iter.0);
                         prev = *iter.0;
                     }
-                    println!("scanned: {}, max: {}", scanned, max);
                     for key in 0..max {
                         assert!(checker.contains(&key));
                     }
@@ -612,7 +605,6 @@ mod treeindex_test {
                         assert!(prev + 1 == current || prev == 0);
                         prev = current;
                     }
-                    println!("scanned: {}, max: {}", prev + 1, max);
                 }
             });
             // insert
