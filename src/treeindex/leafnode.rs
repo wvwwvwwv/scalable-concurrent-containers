@@ -108,16 +108,27 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
     pub fn from<'a>(&'a self, key: &K, guard: &'a Guard) -> Option<LeafScanner<'a, K, V>> {
         loop {
             let unbounded_leaf = (self.leaves.1).load(Relaxed, guard);
-            let result = (self.leaves.0).min_greater_equal(&key);
-            if let Some((_, child)) = result.0 {
+            let mut scanner = LeafScanner::new(&self.leaves.0);
+            let metadata = scanner.metadata();
+            let mut retry = false;
+            while let Some((_, child)) = scanner.next() {
                 let child_leaf = child.load(Acquire, guard);
-                if !(self.leaves.0).validate(result.1) {
+                if !(self.leaves.0).validate(metadata) {
                     // Data race resolution: validate metadata - see 'LeafNode::search'.
-                    continue;
+                    retry = true;
+                    break;
                 }
-                return LeafScanner::from(unsafe { child_leaf.deref() }, key, false);
-            } else if unbounded_leaf == self.leaves.1.load(Acquire, guard) {
-                if !(self.leaves.0).validate(result.1) {
+                if let Some(leaf_scanner) =
+                    LeafScanner::from(unsafe { child_leaf.deref() }, key, false)
+                {
+                    return Some(leaf_scanner);
+                }
+            }
+            if retry {
+                continue;
+            }
+            if unbounded_leaf == self.leaves.1.load(Acquire, guard) {
+                if !(self.leaves.0).validate(metadata) {
                     // Data race resolution: validate metadata - see above
                     continue;
                 }
@@ -363,8 +374,15 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             {
                 return false;
             }
+            prev_leaf_node.leaves.1.store(Shared::null(), Relaxed);
+        } else {
+            // Makes the leaf unreachable.
+            let obsolete_leaf_ptr = prev_leaf_node.leaves.1.swap(Shared::null(), Relaxed, guard);
+            unsafe {
+                obsolete_leaf_ptr.deref().unlink(guard);
+                guard.defer_destroy(obsolete_leaf_ptr)
+            };
         }
-        prev_leaf_node.leaves.1.store(Shared::null(), Relaxed);
         debug_assert!(prev_leaf_node.obsolete(true, guard));
         true
     }
@@ -546,6 +564,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 // Once the key is removed, it is safe to drop the leaf as the validation loop ensures the absence of readers.
                 leaf_ptr.store(Shared::null(), Release);
                 unsafe {
+                    debug_assert!(leaf_shared.deref().full());
                     leaf_shared.deref().unlink(guard);
                     guard.defer_destroy(leaf_shared)
                 };

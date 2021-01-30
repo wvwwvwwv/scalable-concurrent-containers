@@ -466,10 +466,10 @@ where
                 std::mem::transmute::<_, Option<LeafScanner<'a, K, V>>>(scanner.jump(&self.guard))
                     .take()
             } {
-                if let Some(entry) = new_scanner.next() {
+                while let Some(entry) = new_scanner.next() {
                     if min_allowed_key
                         .as_ref()
-                        .map_or_else(|| true, |&key| entry.0.cmp(key) != std::cmp::Ordering::Less)
+                        .map_or_else(|| true, |&key| key.cmp(entry.0) == std::cmp::Ordering::Less)
                     {
                         self.leaf_scanner.replace(new_scanner);
                         return Some(entry);
