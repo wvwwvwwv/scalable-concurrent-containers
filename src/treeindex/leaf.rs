@@ -364,14 +364,11 @@ where
         None
     }
 
-    /// Returns the index and a pointer to the key-value pair associated with the key.
-    ///
-    /// When the 'exact' argument is false the key does not exists,
-    /// the minimum key of those that are greater than the key is returned.
-    pub fn from(&self, metadata: u64, key: &K, exact: bool) -> (usize, *const (K, V)) {
+    /// Returns the index and a pointer to the key-value pair that is smaller than the given key.
+    pub fn max_less(&self, metadata: u64, key: &K) -> (usize, *const (K, V)) {
         let mut max_min_rank = 0;
+        let mut max_min_index = ARRAY_SIZE;
         let mut min_max_rank = ARRAY_SIZE + 1;
-        let mut min_max_index = ARRAY_SIZE;
         for i in 0..ARRAY_SIZE {
             let rank = ((metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
                 >> (i * INDEX_RANK_ENTRY_SIZE)) as usize;
@@ -381,23 +378,23 @@ where
                     Ordering::Less => {
                         if max_min_rank < rank {
                             max_min_rank = rank;
+                            max_min_index = i;
                         }
                     }
                     Ordering::Greater => {
                         if min_max_rank > rank {
                             min_max_rank = rank;
-                            min_max_index = i;
                         }
                     }
                     Ordering::Equal => {
-                        return (i, unsafe { &*self.entry_array[i].as_ptr() });
+                        min_max_rank = rank;
                     }
                 }
             }
         }
-        if !exact && min_max_index < ARRAY_SIZE {
-            return (min_max_index, unsafe {
-                &*self.entry_array[min_max_index].as_ptr()
+        if max_min_index < ARRAY_SIZE {
+            return (max_min_index, unsafe {
+                &*self.entry_array[max_min_index].as_ptr()
             });
         }
         (usize::MAX, std::ptr::null())
@@ -859,6 +856,22 @@ where
         }
     }
 
+    pub fn max_less(leaf: &'a Leaf<K, V>, key: &K) -> LeafScanner<'a, K, V> {
+        let metadata = leaf.metadata.load(Acquire);
+        let (index, ptr) = leaf.max_less(metadata, key);
+        if !ptr.is_null() {
+            LeafScanner {
+                leaf,
+                metadata,
+                removed_entries_to_scan: 0,
+                entry_index: index,
+                entry_ptr: ptr,
+            }
+        } else {
+            LeafScanner::new(leaf)
+        }
+    }
+
     pub fn new_including_removed(leaf: &'a Leaf<K, V>) -> LeafScanner<'a, K, V> {
         let metadata = leaf.metadata.load(Acquire);
         let mut removed_entries_to_scan = 0;
@@ -880,22 +893,6 @@ where
 
     pub fn metadata(&self) -> u64 {
         self.metadata
-    }
-
-    pub fn from(leaf: &'a Leaf<K, V>, key: &K, exact: bool) -> Option<LeafScanner<'a, K, V>> {
-        let metadata = leaf.metadata.load(Acquire);
-        let (index, ptr) = leaf.from(metadata, key, exact);
-        if !ptr.is_null() {
-            Some(LeafScanner {
-                leaf,
-                metadata,
-                removed_entries_to_scan: 0,
-                entry_index: index,
-                entry_ptr: ptr,
-            })
-        } else {
-            None
-        }
     }
 
     /// Returns a reference to the entry that the scanner is currently pointing to
@@ -1030,22 +1027,7 @@ mod test {
         assert!(found_60_61);
         drop(scanner);
 
-        let mut scanner = LeafScanner::from(&leaf, &50, true).unwrap();
-        assert_eq!(scanner.get(), Some((&50, &51)));
-        let mut prev_key = 50;
-        let mut iterated = 0;
-        while let Some(entry) = scanner.next() {
-            assert_eq!(scanner.get(), Some(entry));
-            assert!(prev_key < *entry.0);
-            assert_eq!(*entry.0 + 1, *entry.1);
-            prev_key = *entry.0;
-            iterated += 1;
-        }
-        assert_eq!(iterated, 2);
-        drop(scanner);
-
-        let mut scanner = LeafScanner::from(&leaf, &49, false).unwrap();
-        assert_eq!(scanner.get(), Some((&50, &51)));
+        let mut scanner = LeafScanner::max_less(&leaf, &51);
         let mut prev_key = 50;
         let mut iterated = 0;
         while let Some(entry) = scanner.next() {

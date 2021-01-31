@@ -59,23 +59,22 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
     }
 
     /// Returns the minimum key-value pair.
-    pub fn min<'a>(&'a self, guard: &'a Guard) -> Option<LeafScanner<'a, K, V>> {
+    pub fn min<'a>(&'a self, guard: &'a Guard) -> Result<LeafScanner<'a, K, V>, SearchError> {
         match &self.entry {
             NodeType::Internal(internal_node) => internal_node.min(guard),
             NodeType::Leaf(leaf_node) => leaf_node.min(guard),
         }
     }
 
-    /// Returns a LeafNodeScanner pointing to a key-value pair that is adequately similar to the given key.
-    ///
-    /// It may return a scanner pointing to a key that is less than the given key,
-    /// however, it does not return a scanner pointing to a key that is,
-    ///  - 1. Greater than the given key when the given key exists.
-    ///  - 2. Greater than any other keys that are greater than the given key.
-    pub fn from<'a>(&'a self, key: &K, guard: &'a Guard) -> Option<LeafScanner<'a, K, V>> {
+    /// Returns a LeafNodeScanner pointing to a key-value pair that is large enough, but smaller than the given key.
+    pub fn max_less<'a>(
+        &'a self,
+        key: &K,
+        guard: &'a Guard,
+    ) -> Result<LeafScanner<'a, K, V>, SearchError> {
         match &self.entry {
-            NodeType::Internal(internal_node) => internal_node.from(key, guard),
-            NodeType::Leaf(leaf_node) => leaf_node.from(key, guard),
+            NodeType::Internal(internal_node) => internal_node.max_less(key, guard),
+            NodeType::Leaf(leaf_node) => leaf_node.max_less(key, guard),
         }
     }
 
@@ -331,28 +330,42 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         }
     }
 
-    fn min<'a>(&'a self, guard: &'a Guard) -> Option<LeafScanner<'a, K, V>> {
-        for child in LeafScanner::new(&self.children.0) {
-            let child_node = child.1.load(Acquire, guard);
-            if child_node.is_null() {
-                // child_node being null indicates that the node is bound to be freed.
-                return None;
+    fn min<'a>(&'a self, guard: &'a Guard) -> Result<LeafScanner<'a, K, V>, SearchError> {
+        loop {
+            let mut scanner = LeafScanner::new(&self.children.0);
+            let metadata = scanner.metadata();
+            if let Some(child) = scanner.next() {
+                let child_node = child.1.load(Acquire, guard);
+                if !(self.children.0).validate(metadata) {
+                    // Data race resolution: validate metadata - see 'InternalNode::search'.
+                    continue;
+                }
+                if child_node.is_null() {
+                    // child_node being null indicates that the node is bound to be freed.
+                    return Err(SearchError::Retry);
+                }
+                return unsafe { child_node.deref().min(guard) };
             }
-            if let Some(leaf_scanner) = unsafe { child_node.deref().min(guard) } {
-                return Some(leaf_scanner);
+            let unbounded_node = (self.children.1).load(Acquire, guard);
+            if !unbounded_node.is_null() {
+                if !(self.children.0).validate(metadata) {
+                    // Data race resolution: validate metadata - see 'InternalNode::search'.
+                    continue;
+                }
+                return unsafe { unbounded_node.deref().min(guard) };
             }
+            // unbounded_node being null indicates that the node is bound to be freed.
+            return Err(SearchError::Retry);
         }
-        let unbounded_node = (self.children.1).load(Acquire, guard);
-        if !unbounded_node.is_null() {
-            return unsafe { unbounded_node.deref().min(guard) };
-        }
-        None
     }
 
-    fn from<'a>(&'a self, key: &K, guard: &'a Guard) -> Option<LeafScanner<'a, K, V>> {
+    fn max_less<'a>(
+        &'a self,
+        key: &K,
+        guard: &'a Guard,
+    ) -> Result<LeafScanner<'a, K, V>, SearchError> {
         loop {
-            let unbounded_node = (self.children.1).load(Acquire, guard);
-            let mut scanner = LeafScanner::new(&self.children.0);
+            let mut scanner = LeafScanner::max_less(&self.children.0, key);
             let metadata = scanner.metadata();
             let mut retry = false;
             while let Some(child) = scanner.next() {
@@ -367,29 +380,23 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 }
                 if child_node.is_null() {
                     // child_node being null indicates that the node is bound to be freed.
-                    return None;
+                    return Err(SearchError::Retry);
                 }
-                if let Some(leaf_scanner) = unsafe { child_node.deref().from(key, guard) } {
-                    return Some(leaf_scanner);
-                }
-                if !(self.children.0).validate(metadata) {
-                    // Data race resolution: validate metadata - see 'InternalNode::search'.
-                    retry = true;
-                    break;
-                }
+                return unsafe { child_node.deref().max_less(key, guard) };
             }
             if retry {
                 continue;
             }
-            if unbounded_node == self.children.1.load(Acquire, guard) {
-                if !(self.children.0).validate(metadata) {
-                    // Data race resolution: validate metadata - see above.
-                    continue;
-                }
+            let unbounded_node = (self.children.1).load(Acquire, guard);
+            if !(self.children.0).validate(metadata) {
+                // Data race resolution: validate metadata - see above.
+                continue;
             }
             if !unbounded_node.is_null() {
-                return unsafe { unbounded_node.deref().from(key, guard) };
+                return unsafe { unbounded_node.deref().max_less(key, guard) };
             }
+            // unbounded_node being null indicates that the node is bound to be freed.
+            return Err(SearchError::Retry);
         }
     }
 
@@ -708,19 +715,17 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
     }
 
     fn rollback(&self, guard: &Guard) {
+        let new_children = self.new_children.load(Relaxed, guard);
         unsafe {
-            let new_children = self
-                .new_children
-                .swap(Shared::null(), Relaxed, guard)
-                .into_owned();
-            let origin_node = new_children.origin_node_ptr.load(Relaxed, guard);
+            let origin_node = new_children.deref().origin_node_ptr.load(Relaxed, guard);
             origin_node.deref().rollback(guard);
-            let low_key_node = new_children.low_key_node.load(Relaxed, guard);
+            self.new_children.store(Shared::null(), Release);
+            let low_key_node = new_children.deref().low_key_node.load(Relaxed, guard);
             if !low_key_node.is_null() {
                 low_key_node.deref().unlink(guard);
                 low_key_node.into_owned();
             }
-            let high_key_node = new_children.high_key_node.load(Relaxed, guard);
+            let high_key_node = new_children.deref().high_key_node.load(Relaxed, guard);
             if !high_key_node.is_null() {
                 high_key_node.deref().unlink(guard);
                 high_key_node.into_owned();
@@ -1113,15 +1118,16 @@ mod test {
 
         let guard = crossbeam_epoch::pin();
         let mut prev = 0;
-        let mut scanner = node.min(&guard).unwrap();
-        let mut iterated = 0;
-        while let Some(entry) = scanner.next() {
-            println!("{} {}", entry.0, entry.1);
-            assert!(prev == 0 || prev < *entry.0);
-            assert_eq!(entry.0, entry.1);
-            iterated += 1;
-            prev = *entry.0;
+        if let Ok(mut scanner) = node.min(&guard) {
+            let mut iterated = 0;
+            while let Some(entry) = scanner.next() {
+                println!("{} {}", entry.0, entry.1);
+                assert!(prev == 0 || prev < *entry.0);
+                assert_eq!(entry.0, entry.1);
+                iterated += 1;
+                prev = *entry.0;
+            }
+            println!("iterated: {}", iterated);
         }
-        println!("iterated: {}", iterated);
     }
 }

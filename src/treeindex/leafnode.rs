@@ -95,9 +95,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         }
     }
 
-    pub fn min<'a>(&'a self, guard: &'a Guard) -> Option<LeafScanner<'a, K, V>> {
+    pub fn min<'a>(&'a self, guard: &'a Guard) -> Result<LeafScanner<'a, K, V>, SearchError> {
         loop {
-            let unbounded_leaf = (self.leaves.1).load(Relaxed, guard);
             let mut scanner = LeafScanner::new(&self.leaves.0);
             let metadata = scanner.metadata();
             if let Some((_, child)) = scanner.next() {
@@ -108,65 +107,56 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 }
                 if child_leaf.is_null() {
                     // child_leaf being null indicates that the leaf node is bound to be freed.
-                    return None;
+                    return Err(SearchError::Retry);
                 }
-                return Some(LeafScanner::new(unsafe { child_leaf.deref() }));
-            } else if unbounded_leaf == self.leaves.1.load(Acquire, guard) {
+                return Ok(LeafScanner::new(unsafe { child_leaf.deref() }));
+            }
+            let unbounded_leaf = (self.leaves.1).load(Relaxed, guard);
+            if !unbounded_leaf.is_null() {
                 if !(self.leaves.0).validate(metadata) {
                     // Data race resolution: validate metadata - see above
                     continue;
                 }
-                if unbounded_leaf.is_null() {
-                    // unbounded_leaf being null indicates that the leaf node is bound to be freed.
-                    return None;
-                }
-                return Some(LeafScanner::new(unsafe { unbounded_leaf.deref() }));
+                return Ok(LeafScanner::new(unsafe { unbounded_leaf.deref() }));
             }
+            // unbounded_leaf being null indicates that the leaf node is bound to be freed.
+            return Err(SearchError::Retry);
         }
     }
 
-    pub fn from<'a>(&'a self, key: &K, guard: &'a Guard) -> Option<LeafScanner<'a, K, V>> {
+    pub fn max_less<'a>(
+        &'a self,
+        key: &K,
+        guard: &'a Guard,
+    ) -> Result<LeafScanner<'a, K, V>, SearchError> {
         loop {
-            let unbounded_leaf = (self.leaves.1).load(Relaxed, guard);
-            let mut scanner = LeafScanner::new(&self.leaves.0);
+            let mut scanner = LeafScanner::max_less(&self.leaves.0, key);
             let metadata = scanner.metadata();
-            let mut retry = false;
-            while let Some((_, child)) = scanner.next() {
+            if let Some((_, child)) = scanner.next() {
                 let child_leaf = child.load(Acquire, guard);
                 if !(self.leaves.0).validate(metadata) {
                     // Data race resolution: validate metadata - see 'LeafNode::search'.
-                    retry = true;
-                    break;
+                    continue;
                 }
                 if child_leaf.is_null() {
                     // child_leaf being null indicates that the leaf node is bound to be freed.
-                    return None;
+                    return Err(SearchError::Retry);
                 }
-                if let Some(leaf_scanner) =
-                    LeafScanner::from(unsafe { child_leaf.deref() }, key, false)
-                {
-                    return Some(leaf_scanner);
-                }
-                if !(self.leaves.0).validate(metadata) {
-                    // Data race resolution: validate metadata - see 'InternalNode::search'.
-                    retry = true;
-                    break;
-                }
+                return Ok(LeafScanner::max_less(unsafe { child_leaf.deref() }, key));
             }
-            if retry {
-                continue;
-            }
-            if unbounded_leaf == self.leaves.1.load(Acquire, guard) {
+            let unbounded_leaf = (self.leaves.1).load(Relaxed, guard);
+            if !unbounded_leaf.is_null() {
                 if !(self.leaves.0).validate(metadata) {
                     // Data race resolution: validate metadata - see above
                     continue;
                 }
-                if unbounded_leaf.is_null() {
-                    // unbounded_leaf being null indicates that the leaf node is bound to be freed.
-                    return None;
-                }
-                return LeafScanner::from(unsafe { unbounded_leaf.deref() }, key, false);
+                return Ok(LeafScanner::max_less(
+                    unsafe { unbounded_leaf.deref() },
+                    key,
+                ));
             }
+            // unbounded_leaf being null indicates that the leaf node is bound to be freed.
+            return Err(SearchError::Retry);
         }
     }
 
