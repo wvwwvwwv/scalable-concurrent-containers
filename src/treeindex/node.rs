@@ -122,18 +122,20 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 };
 
                 // Inserts the newly allocated internal nodes into the main array.
-                if let Some(new_low_key_node) = new_nodes.low_key_node.take() {
+                let low_key_node_shared = new_nodes.low_key_node.load(Relaxed, guard);
+                if !low_key_node_shared.is_null() {
                     internal_node.children.0.insert(
                         new_nodes.middle_key.take().unwrap(),
-                        Atomic::from(new_low_key_node),
+                        new_nodes.low_key_node.clone(),
                         false,
                     );
                 }
-                if let Some(new_high_key_node) = new_nodes.high_key_node.take() {
+                let high_key_node_shared = new_nodes.high_key_node.load(Relaxed, guard);
+                if !high_key_node_shared.is_null() {
                     internal_node
                         .children
                         .1
-                        .store(Owned::from(new_high_key_node), Relaxed);
+                        .store(high_key_node_shared, Relaxed);
                 }
 
                 debug_assert_eq!(
@@ -484,9 +486,9 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             Owned::new(NewNodes {
                 origin_node_key: full_node_key,
                 origin_node_ptr: full_node_ptr.clone(),
-                low_key_node: None,
+                low_key_node: Atomic::null(),
                 middle_key: None,
-                high_key_node: None,
+                high_key_node: Atomic::null(),
             }),
             Acquire,
             guard,
@@ -558,15 +560,20 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                         .as_ref()
                         .map_or_else(|| false, |key| entry.0.cmp(key) == Ordering::Equal)
                     {
-                        if let Some(node) = new_children_ref.low_key_node.take() {
+                        let low_key_node_shared =
+                            new_children_ref.low_key_node.load(Relaxed, guard);
+                        if !low_key_node_shared.is_null() {
                             entry_array[num_entries].replace((
                                 Some(new_children_ref.middle_key.as_ref().unwrap()),
-                                Atomic::from(node),
+                                new_children_ref.low_key_node.clone(),
                             ));
                             num_entries += 1;
                         }
-                        if let Some(node) = new_children_ref.high_key_node.take() {
-                            entry_array[num_entries].replace((Some(entry.0), Atomic::from(node)));
+                        let high_key_node_shared =
+                            new_children_ref.high_key_node.load(Relaxed, guard);
+                        if !high_key_node_shared.is_null() {
+                            entry_array[num_entries]
+                                .replace((Some(entry.0), new_children_ref.high_key_node.clone()));
                             num_entries += 1;
                         }
                     } else {
@@ -580,20 +587,21 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                     num_entries += 1;
                 } else {
                     // If the origin is an unbounded node, assign the high key node to the high key node's unbounded.
-                    if let Some(node) = new_children_ref.low_key_node.take() {
+                    let low_key_node_shared = new_children_ref.low_key_node.load(Relaxed, guard);
+                    if !low_key_node_shared.is_null() {
                         entry_array[num_entries].replace((
                             Some(new_children_ref.middle_key.as_ref().unwrap()),
-                            Atomic::from(node),
+                            new_children_ref.low_key_node.clone(),
                         ));
                         num_entries += 1;
                     }
-                    if let Some(node) = new_children_ref.high_key_node.take() {
-                        entry_array[num_entries].replace((None, Atomic::from(node)));
+                    let high_key_node_shared = new_children_ref.high_key_node.load(Relaxed, guard);
+                    if !high_key_node_shared.is_null() {
+                        entry_array[num_entries]
+                            .replace((None, new_children_ref.high_key_node.clone()));
                         num_entries += 1;
                     }
                 }
-                debug_assert!(new_children_ref.low_key_node.is_none());
-                debug_assert!(new_children_ref.high_key_node.is_none());
                 debug_assert!(num_entries >= 2);
 
                 let low_key_node_array_size = num_entries / 2;
@@ -636,8 +644,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 }
 
                 // Turns the new nodes into internal nodes.
-                new_split_nodes_ref.low_key_node.replace(internal_nodes.0);
-                new_split_nodes_ref.high_key_node.replace(internal_nodes.1);
+                new_split_nodes_ref.low_key_node = Atomic::from(internal_nodes.0);
+                new_split_nodes_ref.high_key_node = Atomic::from(internal_nodes.1);
             }
             NodeType::Leaf(leaf_node) => {
                 // Copies leaves except for the known full leaf to the newly allocated leaf node entries.
@@ -663,8 +671,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                     .map(|middle_key| new_split_nodes_ref.middle_key.replace(middle_key));
 
                 // Turns the new leaves into leaf nodes.
-                new_split_nodes_ref.low_key_node.replace(leaf_nodes.0);
-                new_split_nodes_ref.high_key_node.replace(leaf_nodes.1);
+                new_split_nodes_ref.low_key_node = Atomic::from(leaf_nodes.0);
+                new_split_nodes_ref.high_key_node = Atomic::from(leaf_nodes.1);
             }
         };
 
@@ -674,24 +682,23 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         }
 
         // Inserts the newly allocated internal nodes into the main array.
-        let unused_node;
-        let low_key_node_ptr = Atomic::from(new_split_nodes_ref.low_key_node.take().unwrap());
-        if let Some(node) = self.children.0.insert(
-            new_split_nodes_ref.middle_key.take().unwrap(),
-            low_key_node_ptr,
-            false,
-        ) {
+        if let Some(((middle_key, _), _)) = self
+            .children
+            .0
+            .insert(
+                new_split_nodes_ref.middle_key.take().unwrap(),
+                new_split_nodes_ref.low_key_node.clone(),
+                false,
+            )
+        {
             // Insertion failed: expect that the parent splits this node.
-            new_split_nodes_ref
-                .low_key_node
-                .replace(unsafe { (node.0).1.into_owned().into_box() });
-            new_split_nodes_ref.middle_key.replace((node.0).0);
+            new_split_nodes_ref.middle_key.replace(middle_key);
             return Err(InsertError::Full(entry));
         }
 
         // Replaces the full node with the high-key node.
-        unused_node = full_node_ptr.swap(
-            Owned::from(new_split_nodes_ref.high_key_node.take().unwrap()),
+        let unused_node = full_node_ptr.swap(
+            new_split_nodes_ref.high_key_node.load(Relaxed, guard),
             Release,
             &guard,
         );
@@ -712,15 +719,24 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
     }
 
     fn rollback(&self, guard: &Guard) {
-        let intermediate_split = unsafe {
-            self.new_children
+        unsafe {
+            let new_children = self
+                .new_children
                 .swap(Shared::null(), Relaxed, guard)
-                .into_owned()
+                .into_owned();
+            let origin_node = new_children.origin_node_ptr.load(Relaxed, guard);
+            origin_node.deref().rollback(guard);
+            let low_key_node = new_children.low_key_node.load(Relaxed, guard);
+            if !low_key_node.is_null() {
+                low_key_node.deref().unlink(guard);
+                low_key_node.into_owned();
+            }
+            let high_key_node = new_children.high_key_node.load(Relaxed, guard);
+            if !high_key_node.is_null() {
+                high_key_node.deref().unlink(guard);
+                high_key_node.into_owned();
+            }
         };
-        let child = intermediate_split
-            .origin_node_ptr
-            .swap(Shared::null(), Relaxed, guard);
-        unsafe { child.deref().rollback(guard) };
     }
 
     fn remove<'a>(&'a self, key: &K, guard: &'a Guard) -> Result<bool, RemoveError> {
@@ -1020,9 +1036,9 @@ where
     /// None: unbounded node
     origin_node_key: Option<K>,
     origin_node_ptr: Atomic<Node<K, V>>,
-    low_key_node: Option<Box<Node<K, V>>>,
+    low_key_node: Atomic<Node<K, V>>,
     middle_key: Option<K>,
-    high_key_node: Option<Box<Node<K, V>>>,
+    high_key_node: Atomic<Node<K, V>>,
 }
 
 impl<K, V> NewNodes<K, V>
@@ -1034,25 +1050,9 @@ where
         NewNodes {
             origin_node_key: None,
             origin_node_ptr: Atomic::null(),
-            low_key_node: None,
+            low_key_node: Atomic::null(),
             middle_key: None,
-            high_key_node: None,
-        }
-    }
-}
-
-impl<K, V> Drop for NewNodes<K, V>
-where
-    K: Clone + Ord + Send + Sync,
-    V: Clone + Send + Sync,
-{
-    fn drop(&mut self) {
-        let guard = crossbeam_epoch::pin();
-        if let Some(node) = self.low_key_node.take() {
-            node.unlink(&guard)
-        }
-        if let Some(node) = self.high_key_node.take() {
-            node.unlink(&guard)
+            high_key_node: Atomic::null(),
         }
     }
 }

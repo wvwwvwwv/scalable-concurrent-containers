@@ -274,9 +274,20 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
 
     pub fn rollback(&self, guard: &Guard) {
         unsafe {
-            self.new_leaves
+            let new_leaves = self
+                .new_leaves
                 .swap(Shared::null(), Release, guard)
-                .into_owned()
+                .into_owned();
+            let low_key_leaf = new_leaves.low_key_leaf.load(Relaxed, guard);
+            if !low_key_leaf.is_null() {
+                low_key_leaf.deref().unlink(guard);
+                guard.defer_destroy(low_key_leaf);
+            }
+            let high_key_leaf = new_leaves.high_key_leaf.load(Relaxed, guard);
+            if !high_key_leaf.is_null() {
+                high_key_leaf.deref().unlink(guard);
+                guard.defer_destroy(high_key_leaf);
+            }
         };
     }
 
@@ -300,27 +311,20 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             None, None, None, None, None, None, None, None, None, None, None, None, None, None,
         ];
         let mut num_entries = 0;
-        let low_key_leaf_max_key_ref = new_leaves_ref
-            .low_key_leaf
-            .as_ref()
-            .unwrap()
-            .max()
-            .unwrap()
-            .0
-            .clone();
+        let low_key_leaf_ref = unsafe { new_leaves_ref.low_key_leaf.load(Relaxed, guard).deref() };
+        let middle_key_ref = low_key_leaf_ref.max().unwrap().0;
         for entry in LeafScanner::new(&self.leaves.0) {
             if new_leaves_ref
                 .origin_leaf_key
                 .as_ref()
                 .map_or_else(|| false, |key| entry.0.cmp(key) == Ordering::Equal)
             {
-                if let Some(leaf) = new_leaves_ref.low_key_leaf.take() {
+                entry_array[num_entries]
+                    .replace((Some(middle_key_ref), new_leaves_ref.low_key_leaf.clone()));
+                num_entries += 1;
+                if !new_leaves_ref.high_key_leaf.load(Relaxed, guard).is_null() {
                     entry_array[num_entries]
-                        .replace((Some(&low_key_leaf_max_key_ref), Atomic::from(leaf)));
-                    num_entries += 1;
-                }
-                if let Some(leaf) = new_leaves_ref.high_key_leaf.take() {
-                    entry_array[num_entries].replace((Some(entry.0), Atomic::from(leaf)));
+                        .replace((Some(entry.0), new_leaves_ref.high_key_leaf.clone()));
                     num_entries += 1;
                 }
             } else {
@@ -334,18 +338,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             num_entries += 1;
         } else {
             // If the origin is an unbounded node, assign the high key node to the high key node's unbounded.
-            if let Some(leaf) = new_leaves_ref.low_key_leaf.take() {
-                entry_array[num_entries]
-                    .replace((Some(&low_key_leaf_max_key_ref), Atomic::from(leaf)));
-                num_entries += 1;
-            }
-            if let Some(leaf) = new_leaves_ref.high_key_leaf.take() {
-                entry_array[num_entries].replace((None, Atomic::from(leaf)));
+            entry_array[num_entries]
+                .replace((Some(middle_key_ref), new_leaves_ref.low_key_leaf.clone()));
+            num_entries += 1;
+            if !new_leaves_ref.high_key_leaf.load(Relaxed, guard).is_null() {
+                entry_array[num_entries].replace((None, new_leaves_ref.high_key_leaf.clone()));
                 num_entries += 1;
             }
         }
-        debug_assert!(new_leaves_ref.low_key_leaf.is_none());
-        debug_assert!(new_leaves_ref.high_key_leaf.is_none());
         debug_assert!(num_entries >= 2);
 
         let low_key_leaf_array_size = num_entries / 2;
@@ -375,6 +375,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 break;
             }
         }
+
+        debug_assert!(middle_key.is_some());
         middle_key
     }
 
@@ -439,8 +441,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             Owned::new(NewLeaves {
                 origin_leaf_key: full_leaf_key,
                 origin_leaf_ptr: full_leaf_ptr.clone(),
-                low_key_leaf: None,
-                high_key_leaf: None,
+                low_key_leaf: Atomic::null(),
+                high_key_leaf: Atomic::null(),
             }),
             Acquire,
             guard,
@@ -461,22 +463,17 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
 
         // Copies entries to the newly allocated leaves.
         let new_leaves_ref = unsafe { new_leaves_ptr.deref_mut() };
-        full_leaf_ref.distribute(
-            &mut new_leaves_ref.low_key_leaf,
-            &mut new_leaves_ref.high_key_leaf,
-        );
+        let mut low_key_leaf_boxed = None;
+        let mut high_key_leaf_boxed = None;
+        full_leaf_ref.distribute(&mut low_key_leaf_boxed, &mut high_key_leaf_boxed);
 
         // Inserts the given entry.
-        if new_leaves_ref.low_key_leaf.is_none() {
-            new_leaves_ref.low_key_leaf.replace(Box::new(Leaf::new()));
-            new_leaves_ref.low_key_leaf.as_ref().unwrap().insert(
-                entry.0.clone(),
-                entry.1.clone(),
-                false,
-            );
-        } else if new_leaves_ref.high_key_leaf.is_none()
-            || new_leaves_ref
-                .low_key_leaf
+        if low_key_leaf_boxed.is_none() {
+            let new_leaf = Box::new(Leaf::new());
+            new_leaf.insert(entry.0.clone(), entry.1.clone(), false);
+            new_leaves_ref.low_key_leaf = Atomic::from(new_leaf);
+        } else if high_key_leaf_boxed.is_none()
+            || low_key_leaf_boxed
                 .as_ref()
                 .unwrap()
                 .min_greater_equal(&entry.0)
@@ -484,44 +481,48 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 .is_some()
         {
             // Inserts the entry into the low-key leaf if the high-key leaf is empty, or the key fits the low-key leaf.
-            new_leaves_ref.low_key_leaf.as_ref().unwrap().insert(
-                entry.0.clone(),
-                entry.1.clone(),
-                false,
-            );
+            low_key_leaf_boxed
+                .as_ref()
+                .unwrap()
+                .insert(entry.0.clone(), entry.1.clone(), false);
+            new_leaves_ref.low_key_leaf = Atomic::from(low_key_leaf_boxed.unwrap());
+            if let Some(high_key_leaf) = high_key_leaf_boxed {
+                new_leaves_ref.high_key_leaf = Atomic::from(high_key_leaf);
+            }
         } else {
             // Inserts the entry into the high-key leaf.
-            new_leaves_ref.high_key_leaf.as_ref().unwrap().insert(
-                entry.0.clone(),
-                entry.1.clone(),
-                false,
-            );
+            high_key_leaf_boxed
+                .as_ref()
+                .unwrap()
+                .insert(entry.0.clone(), entry.1.clone(), false);
+            new_leaves_ref.low_key_leaf = Atomic::from(low_key_leaf_boxed.unwrap());
+            new_leaves_ref.high_key_leaf = Atomic::from(high_key_leaf_boxed.unwrap());
         }
 
         // Inserts the newly added leaves into the main array.
-        let low_key_leaf = new_leaves_ref.low_key_leaf.take().unwrap();
-        full_leaf_ref.push_front(&*low_key_leaf, guard);
-        let unused_leaf = if let Some(high_key_leaf) = new_leaves_ref.high_key_leaf.take() {
-            full_leaf_ref.push_front(&*high_key_leaf, guard);
-            let max_key = low_key_leaf.max().unwrap().0;
-            if let Some(leaf) =
-                self.leaves
-                    .0
-                    .insert(max_key.clone(), Atomic::from(low_key_leaf), false)
+        let low_key_leaf_shared = new_leaves_ref.low_key_leaf.load(Relaxed, guard);
+        let low_key_leaf_ref = unsafe { low_key_leaf_shared.deref() };
+        let high_key_leaf_shared = new_leaves_ref.high_key_leaf.load(Relaxed, guard);
+        full_leaf_ref.push_front(low_key_leaf_ref, guard);
+        let unused_leaf = if !high_key_leaf_shared.is_null() {
+            let high_key_leaf_ref = unsafe { high_key_leaf_shared.deref() };
+            full_leaf_ref.push_front(high_key_leaf_ref, guard);
+            let max_key = low_key_leaf_ref.max().unwrap().0;
+            if self
+                .leaves
+                .0
+                .insert(max_key.clone(), new_leaves_ref.low_key_leaf.clone(), false)
+                .is_some()
             {
                 // Insertion failed: expect that the parent splits the leaf node.
-                new_leaves_ref
-                    .low_key_leaf
-                    .replace(unsafe { (leaf.0).1.into_owned().into_box() });
-                new_leaves_ref.high_key_leaf.replace(high_key_leaf);
                 return Err(InsertError::Full(entry));
             }
 
             // Replaces the full leaf with the high-key leaf.
-            full_leaf_ptr.swap(Owned::from(high_key_leaf), Release, &guard)
+            full_leaf_ptr.swap(high_key_leaf_shared, Release, &guard)
         } else {
             // Replaces the full leaf with the low-key leaf.
-            full_leaf_ptr.swap(Owned::from(low_key_leaf), Release, &guard)
+            full_leaf_ptr.swap(low_key_leaf_shared, Release, &guard)
         };
 
         // Drops the deprecated leaves.
@@ -788,8 +789,8 @@ where
 {
     origin_leaf_key: Option<K>,
     origin_leaf_ptr: Atomic<Leaf<K, V>>,
-    low_key_leaf: Option<Box<Leaf<K, V>>>,
-    high_key_leaf: Option<Box<Leaf<K, V>>>,
+    low_key_leaf: Atomic<Leaf<K, V>>,
+    high_key_leaf: Atomic<Leaf<K, V>>,
 }
 
 impl<K, V> NewLeaves<K, V>
@@ -801,27 +802,8 @@ where
         NewLeaves {
             origin_leaf_key: None,
             origin_leaf_ptr: Atomic::null(),
-            low_key_leaf: None,
-            high_key_leaf: None,
-        }
-    }
-}
-
-impl<K, V> Drop for NewLeaves<K, V>
-where
-    K: Clone + Ord + Send + Sync,
-    V: Clone + Send + Sync,
-{
-    fn drop(&mut self) {
-        // Those valid leaf instances are reachable by Scanners,
-        // therefore, they cannot be immediately dropped.
-        let guard = crossbeam_epoch::pin();
-        for leaf in [self.low_key_leaf.take(), self.high_key_leaf.take()].iter_mut() {
-            if let Some(leaf) = leaf {
-                leaf.unlink(&guard);
-                let ptr = Atomic::from(leaf).load(Relaxed, &guard);
-                unsafe { guard.defer_destroy(ptr) };
-            }
+            low_key_leaf: Atomic::null(),
+            high_key_leaf: Atomic::null(),
         }
     }
 }
