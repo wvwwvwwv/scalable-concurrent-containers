@@ -161,8 +161,7 @@ where
     ///
     /// It returns the passed key value pair on failure.
     /// The second returned value being true indicates that the same key exists.
-    pub fn insert(&self, key: K, value: V, upsert: bool) -> Option<((K, V), bool)> {
-        let mut duplicate_entry = usize::MAX;
+    pub fn insert(&self, key: K, value: V) -> Option<((K, V), bool)> {
         let mut entry = (key, value);
         while let Some(mut inserter) = Inserter::new(self) {
             // Calculates the rank and check uniqueness.
@@ -209,11 +208,8 @@ where
                     }
                     Ordering::Equal => {
                         if inserter.metadata & (OCCUPANCY_BIT << i) != 0 {
-                            if !upsert {
-                                // Uniqueness check failed.
-                                return Some((entry, true));
-                            }
-                            duplicate_entry = i;
+                            // Uniqueness check failed.
+                            return Some((entry, true));
                         }
                         // Regards the entry as a lower ranked one.
                         if max_min_rank < rank {
@@ -236,7 +232,7 @@ where
             // Inserts the key value.
             self.write(inserter.index, entry.0, entry.1);
 
-            if inserter.commit(updated_rank_map, duplicate_entry) {
+            if inserter.commit(updated_rank_map) {
                 return None;
             }
             entry = self.take(inserter.index);
@@ -540,7 +536,7 @@ where
                 low_key_leaf
                     .as_ref()
                     .unwrap()
-                    .insert(entry.0.clone(), entry.1.clone(), false);
+                    .insert(entry.0.clone(), entry.1.clone());
                 iterated += 1;
             } else {
                 if high_key_leaf.is_none() {
@@ -549,7 +545,7 @@ where
                 high_key_leaf
                     .as_ref()
                     .unwrap()
-                    .insert(entry.0.clone(), entry.1.clone(), false);
+                    .insert(entry.0.clone(), entry.1.clone());
             }
         }
     }
@@ -660,14 +656,10 @@ where
         }
     }
 
-    fn commit(&mut self, updated_rank_map: u64, entry_to_remove: usize) -> bool {
+    fn commit(&mut self, updated_rank_map: u64) -> bool {
         let mut current = self.metadata;
         loop {
-            let mut next = (current & (!INDEX_RANK_MAP_MASK)) | updated_rank_map;
-            if entry_to_remove != usize::MAX {
-                next &= !(OCCUPANCY_BIT << entry_to_remove);
-                next += REMOVED_BIT;
-            }
+            let next = (current & (!INDEX_RANK_MAP_MASK)) | updated_rank_map;
             if let Err(result) = self
                 .leaf
                 .metadata
@@ -972,23 +964,26 @@ mod test {
     #[test]
     fn basic() {
         let leaf = Leaf::new();
-        assert!(leaf.insert(50, 51, false).is_none());
+        assert!(leaf.insert(50, 51).is_none());
         assert_eq!(leaf.max(), Some((&50, &51)));
-        assert!(leaf.insert(60, 60, false).is_none());
-        assert!(leaf.insert(70, 71, false).is_none());
-        assert!(leaf.insert(60, 61, true).is_none());
+        assert!(leaf.insert(60, 61).is_none());
+        assert!(leaf.insert(70, 71).is_none());
+        assert!(leaf.remove(&60, false).0);
+        assert!(leaf.insert(60, 61).is_none());
         assert_eq!(leaf.remove(&60, false), (true, false, false));
         assert!(!leaf.full());
-        assert!(leaf.insert(40, 40, false).is_none());
-        assert!(leaf.insert(30, 31, false).is_none());
+        assert!(leaf.insert(40, 40).is_none());
+        assert!(leaf.insert(30, 31).is_none());
         assert!(!leaf.full());
-        assert!(leaf.insert(40, 41, true).is_none());
-        assert_eq!(leaf.insert(30, 33, false), Some(((30, 33), true)));
-        assert!(leaf.insert(10, 11, false).is_none());
-        assert!(leaf.insert(11, 12, false).is_none());
-        assert!(leaf.insert(13, 13, false).is_none());
-        assert!(leaf.insert(54, 55, false).is_none());
-        assert!(leaf.insert(13, 14, true).is_none());
+        assert!(leaf.remove(&40, false).0);
+        assert!(leaf.insert(40, 41).is_none());
+        assert_eq!(leaf.insert(30, 33), Some(((30, 33), true)));
+        assert!(leaf.insert(10, 11).is_none());
+        assert!(leaf.insert(11, 12).is_none());
+        assert!(leaf.insert(13, 13).is_none());
+        assert!(leaf.insert(54, 55).is_none());
+        assert!(leaf.remove(&13, false).0);
+        assert!(leaf.insert(13, 14).is_none());
         assert_eq!(leaf.max(), Some((&70, &71)));
         assert!(leaf.full());
 
@@ -1006,16 +1001,13 @@ mod test {
         let mut prev_key = 0;
         let mut found_13_13 = false;
         let mut found_40_40 = false;
-        let mut found_60_60 = false;
         let mut found_60_61 = false;
         while let Some(entry) = scanner.next() {
             assert_eq!(scanner.get(), Some(entry));
             if *entry.0 == 60 {
                 assert!(prev_key <= *entry.0);
                 assert!(scanner.removed());
-                if *entry.1 == 60 {
-                    found_60_60 = true;
-                } else if *entry.1 == 61 {
+                if *entry.1 == 61 {
                     found_60_61 = true;
                 }
             } else if *entry.0 == 13 && *entry.1 == 13 {
@@ -1035,7 +1027,6 @@ mod test {
         }
         assert!(found_40_40);
         assert!(found_13_13);
-        assert!(found_60_60);
         assert!(found_60_61);
         drop(scanner);
 
@@ -1068,42 +1059,43 @@ mod test {
         drop(scanner);
 
         let leaf = Leaf::new();
-        assert!(leaf.insert(20, 21, false).is_none());
-        assert!(leaf.insert(10, 11, false).is_none());
+        assert!(leaf.insert(20, 21).is_none());
+        assert!(leaf.insert(10, 11).is_none());
         assert_eq!(*leaf.search(&10).unwrap(), 11);
-        assert!(leaf.insert(11, 12, false).is_none());
+        assert!(leaf.insert(11, 12).is_none());
         assert_eq!(leaf.max(), Some((&20, &21)));
-        assert_eq!(leaf.insert(11, 12, false), Some(((11, 12), true)));
+        assert_eq!(leaf.insert(11, 12), Some(((11, 12), true)));
         assert_eq!(*leaf.search(&11).unwrap(), 12);
-        assert!(leaf.insert(12, 13, false).is_none());
+        assert!(leaf.insert(12, 13).is_none());
         assert_eq!(*leaf.search(&12).unwrap(), 13);
         assert_eq!(leaf.min_greater_equal(&21).0, None);
         assert_eq!(leaf.min_greater_equal(&20).0, Some((&20, &21)));
         assert_eq!(leaf.min_greater_equal(&19).0, Some((&20, &21)));
         assert_eq!(leaf.min_greater_equal(&0).0, Some((&10, &11)));
-        assert!(leaf.insert(2, 3, false).is_none());
+        assert!(leaf.insert(2, 3).is_none());
         assert_eq!(*leaf.search(&2).unwrap(), 3);
-        assert_eq!(leaf.insert(2, 3, false), Some(((2, 3), true)));
+        assert_eq!(leaf.insert(2, 3), Some(((2, 3), true)));
         assert_eq!(leaf.min_greater_equal(&8).0, Some((&10, &11)));
         assert_eq!(*leaf.search(&2).unwrap(), 3);
-        assert!(leaf.insert(1, 2, false).is_none());
+        assert!(leaf.insert(1, 2).is_none());
         assert_eq!(*leaf.search(&1).unwrap(), 2);
-        assert!(leaf.insert(13, 14, false).is_none());
+        assert!(leaf.insert(13, 14).is_none());
         assert_eq!(*leaf.search(&13).unwrap(), 14);
-        assert_eq!(leaf.insert(13, 14, false), Some(((13, 14), true)));
+        assert_eq!(leaf.insert(13, 14), Some(((13, 14), true)));
         assert_eq!(leaf.remove(&10, false), (true, false, false));
         assert_eq!(leaf.remove(&11, false), (true, false, false));
         assert_eq!(leaf.remove(&12, false), (true, false, false));
         assert!(!leaf.full());
-        assert!(leaf.insert(20, 21, true).is_none());
-        assert!(leaf.insert(12, 13, false).is_none());
-        assert!(leaf.insert(14, 15, false).is_none());
+        assert!(leaf.remove(&20, false).0);
+        assert!(leaf.insert(20, 21).is_none());
+        assert!(leaf.insert(12, 13).is_none());
+        assert!(leaf.insert(14, 15).is_none());
         assert!(leaf.search(&11).is_none());
         assert_eq!(leaf.remove(&10, false), (false, false, false));
         assert_eq!(leaf.remove(&11, false), (false, false, false));
         assert_eq!(*leaf.search(&20).unwrap(), 21);
-        assert!(leaf.insert(10, 11, false).is_none());
-        assert!(leaf.insert(15, 16, false).is_none());
+        assert!(leaf.insert(10, 11).is_none());
+        assert!(leaf.insert(15, 16).is_none());
         assert_eq!(leaf.max(), Some((&20, &21)));
         assert!(leaf.full());
 
@@ -1148,7 +1140,7 @@ mod test {
     fn complex() {
         let leaf = Leaf::new();
         for i in 0..ARRAY_SIZE / 2 {
-            assert!(leaf.insert(i, i, false).is_none());
+            assert!(leaf.insert(i, i).is_none());
         }
         for i in 0..ARRAY_SIZE / 2 {
             if i < ARRAY_SIZE / 2 - 1 {
@@ -1160,7 +1152,7 @@ mod test {
         assert!(leaf.full());
         assert!(leaf.obsolete());
         assert_eq!(
-            leaf.insert(ARRAY_SIZE, ARRAY_SIZE, false),
+            leaf.insert(ARRAY_SIZE, ARRAY_SIZE),
             Some(((ARRAY_SIZE, ARRAY_SIZE), false))
         );
 
@@ -1176,7 +1168,7 @@ mod test {
 
         let leaf = Leaf::new();
         for key in 0..ARRAY_SIZE {
-            assert!(leaf.insert(key, key, false).is_none());
+            assert!(leaf.insert(key, key).is_none());
         }
         for key in 0..ARRAY_SIZE {
             assert_eq!(
@@ -1192,7 +1184,7 @@ mod test {
         for _ in 0..256 {
             let barrier = Arc::new(Barrier::new(num_threads));
             let leaf = Arc::new(Leaf::new());
-            leaf.insert(num_threads * 2, 1, false);
+            leaf.insert(num_threads * 2, 1);
             let mut thread_handles = Vec::with_capacity(num_threads);
             for tid in 0..num_threads {
                 let barrier_copied = barrier.clone();
@@ -1200,10 +1192,10 @@ mod test {
                 thread_handles.push(thread::spawn(move || {
                     barrier_copied.wait();
                     assert_eq!(
-                        leaf_copied.insert(num_threads * 2, num_threads, false),
+                        leaf_copied.insert(num_threads * 2, num_threads),
                         Some(((num_threads * 2, num_threads), true))
                     );
-                    let result = leaf_copied.insert(tid, 1, false);
+                    let result = leaf_copied.insert(tid, 1);
                     if result.is_none() {
                         assert_eq!(*leaf_copied.search(&tid).unwrap(), 1);
                         if tid % 2 != 0 {

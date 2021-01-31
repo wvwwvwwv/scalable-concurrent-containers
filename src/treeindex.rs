@@ -105,8 +105,9 @@ where
                 Err(error) => match error {
                     InsertError::Duplicated(entry) => return Err(entry),
                     InsertError::Full(entry) => {
-                        root_node_ref.split_root(entry, &self.root, &guard);
-                        return Ok(());
+                        root_node_ref.split_root(&self.root, &guard);
+                        key = entry.0;
+                        value = entry.1;
                     }
                     InsertError::Retry(entry) => {
                         key = entry.0;

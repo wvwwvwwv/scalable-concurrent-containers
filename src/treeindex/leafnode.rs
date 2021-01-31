@@ -184,20 +184,17 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                     // child_leaf being null indicates that the leaf node is bound to be freed.
                     return Err(InsertError::Retry((key, value)));
                 }
-                return unsafe { child_leaf.deref().insert(key, value, false) }.map_or_else(
+                return unsafe { child_leaf.deref().insert(key, value) }.map_or_else(
                     || Ok(()),
                     |result| {
                         if result.1 {
                             return Err(InsertError::Duplicated(result.0));
                         }
                         debug_assert!(unsafe { child_leaf.deref().full() });
-                        self.split_leaf(
-                            result.0,
-                            Some(child_key.clone()),
-                            child_leaf,
-                            &child,
-                            guard,
-                        )
+                        if !self.split_leaf(Some(child_key.clone()), child_leaf, &child, guard) {
+                            return Err(InsertError::Full(result.0));
+                        }
+                        return Err(InsertError::Retry(result.0));
                     },
                 );
             } else if unbounded_leaf == self.leaves.1.load(Relaxed, guard) {
@@ -210,14 +207,17 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                     return Err(InsertError::Retry((key, value)));
                 }
                 // Tries to insert into the unbounded leaf, and tries to split the unbounded if it is full.
-                return unsafe { unbounded_leaf.deref().insert(key, value, false) }.map_or_else(
+                return unsafe { unbounded_leaf.deref().insert(key, value) }.map_or_else(
                     || Ok(()),
                     |result| {
                         if result.1 {
                             return Err(InsertError::Duplicated(result.0));
                         }
                         debug_assert!(unsafe { unbounded_leaf.deref().full() });
-                        self.split_leaf(result.0, None, unbounded_leaf, &self.leaves.1, guard)
+                        if !self.split_leaf(None, unbounded_leaf, &self.leaves.1, guard) {
+                            return Err(InsertError::Full(result.0));
+                        }
+                        return Err(InsertError::Retry(result.0));
                     },
                 );
             }
@@ -354,7 +354,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 if (index + 1) < low_key_leaf_array_size {
                     low_key_leaves
                         .0
-                        .insert(entry.0.unwrap().clone(), entry.1.clone(), false);
+                        .insert(entry.0.unwrap().clone(), entry.1.clone());
                 } else if (index + 1) == low_key_leaf_array_size {
                     middle_key.replace(entry.0.unwrap().clone());
                     low_key_leaves
@@ -362,9 +362,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                         .store(entry.1.load(Relaxed, guard), Relaxed);
                 } else {
                     if let Some(key) = entry.0 {
-                        high_key_leaves
-                            .0
-                            .insert(key.clone(), entry.1.clone(), false);
+                        high_key_leaves.0.insert(key.clone(), entry.1.clone());
                     } else {
                         high_key_leaves
                             .1
@@ -404,11 +402,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             if self
                 .leaves
                 .0
-                .insert(
-                    prev_leaf_node_key.clone(),
-                    prev_leaf_node.leaves.1.clone(),
-                    false,
-                )
+                .insert(prev_leaf_node_key.clone(), prev_leaf_node.leaves.1.clone())
                 .is_some()
             {
                 return false;
@@ -427,14 +421,15 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
     }
 
     /// Splits a full leaf.
+    ///
+    /// Returns true if the leaf is successfully split or a conflict is detected, false otherwise.
     fn split_leaf(
         &self,
-        entry: (K, V),
         full_leaf_key: Option<K>,
         full_leaf_shared: Shared<Leaf<K, V>>,
         full_leaf_ptr: &Atomic<Leaf<K, V>>,
         guard: &Guard,
-    ) -> Result<(), InsertError<K, V>> {
+    ) -> bool {
         let mut new_leaves_ptr;
         match self.new_leaves.compare_and_set(
             Shared::null(),
@@ -448,14 +443,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             guard,
         ) {
             Ok(result) => new_leaves_ptr = result,
-            Err(_) => return Err(InsertError::Retry(entry)),
+            Err(_) => return true,
         }
 
         // Checks the full leaf pointer and the leaf node state after locking the leaf node.
         if full_leaf_shared != full_leaf_ptr.load(Relaxed, guard) {
             let obsolete_leaf = self.new_leaves.swap(Shared::null(), Relaxed, guard);
             drop(unsafe { obsolete_leaf.into_owned() });
-            return Err(InsertError::Retry(entry));
+            return true;
         }
 
         let full_leaf_ref = unsafe { full_leaf_shared.deref() };
@@ -467,34 +462,15 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         let mut high_key_leaf_boxed = None;
         full_leaf_ref.distribute(&mut low_key_leaf_boxed, &mut high_key_leaf_boxed);
 
-        // Inserts the given entry.
         if low_key_leaf_boxed.is_none() {
+            // No valid keys in the full leaf.
             let new_leaf = Box::new(Leaf::new());
-            new_leaf.insert(entry.0.clone(), entry.1.clone(), false);
             new_leaves_ref.low_key_leaf = Atomic::from(new_leaf);
-        } else if high_key_leaf_boxed.is_none()
-            || low_key_leaf_boxed
-                .as_ref()
-                .unwrap()
-                .min_greater_equal(&entry.0)
-                .0
-                .is_some()
-        {
-            // Inserts the entry into the low-key leaf if the high-key leaf is empty, or the key fits the low-key leaf.
-            low_key_leaf_boxed
-                .as_ref()
-                .unwrap()
-                .insert(entry.0.clone(), entry.1.clone(), false);
+        } else if high_key_leaf_boxed.is_none() {
+            // The number of valid entries is small enough to fit into a single leaf.
             new_leaves_ref.low_key_leaf = Atomic::from(low_key_leaf_boxed.unwrap());
-            if let Some(high_key_leaf) = high_key_leaf_boxed {
-                new_leaves_ref.high_key_leaf = Atomic::from(high_key_leaf);
-            }
         } else {
-            // Inserts the entry into the high-key leaf.
-            high_key_leaf_boxed
-                .as_ref()
-                .unwrap()
-                .insert(entry.0.clone(), entry.1.clone(), false);
+            // Evenly distributed.
             new_leaves_ref.low_key_leaf = Atomic::from(low_key_leaf_boxed.unwrap());
             new_leaves_ref.high_key_leaf = Atomic::from(high_key_leaf_boxed.unwrap());
         }
@@ -511,11 +487,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             if self
                 .leaves
                 .0
-                .insert(max_key.clone(), new_leaves_ref.low_key_leaf.clone(), false)
+                .insert(max_key.clone(), new_leaves_ref.low_key_leaf.clone())
                 .is_some()
             {
                 // Insertion failed: expect that the parent splits the leaf node.
-                return Err(InsertError::Full(entry));
+                return false;
             }
 
             // Replaces the full leaf with the high-key leaf.
@@ -537,9 +513,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             unused_leaf.deref().unlink(guard);
             guard.defer_destroy(unused_leaf);
         };
-
-        // OK
-        Ok(())
+        true
     }
 
     fn check_full_leaf(

@@ -90,7 +90,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
     }
 
     /// Splits the current root node.
-    pub fn split_root(&self, entry: (K, V), root_ptr: &Atomic<Node<K, V>>, guard: &Guard) {
+    pub fn split_root(&self, root_ptr: &Atomic<Node<K, V>>, guard: &Guard) {
         // The fact that the TreeIndex calls this function means that the root is in a split procedure,
         // and the procedure has not been intervened by other threads, thus concluding that the root has stayed the same.
         debug_assert_eq!(
@@ -103,16 +103,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             Node::new(1, false)
         };
         if let NodeType::Internal(internal_node) = &new_root.entry {
-            if internal_node
-                .split_node(
-                    entry,
-                    None,
-                    root_ptr.load(Relaxed, guard),
-                    root_ptr,
-                    true,
-                    guard,
-                )
-                .is_ok()
+            if internal_node.split_node(None, root_ptr.load(Relaxed, guard), root_ptr, true, guard)
             {
                 let mut new_nodes = unsafe {
                     internal_node
@@ -127,7 +118,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     internal_node.children.0.insert(
                         new_nodes.middle_key.take().unwrap(),
                         new_nodes.low_key_node.clone(),
-                        false,
                     );
                 }
                 let high_key_node_shared = new_nodes.high_key_node.load(Relaxed, guard);
@@ -427,14 +417,16 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                     Err(err) => match err {
                         InsertError::Duplicated(_) => return Err(err),
                         InsertError::Full(entry) => {
-                            return self.split_node(
-                                entry,
+                            if !self.split_node(
                                 Some(child_key.clone()),
                                 child_node,
                                 &child,
                                 false,
                                 guard,
-                            );
+                            ) {
+                                return Err(InsertError::Full(entry));
+                            }
+                            return Err(InsertError::Retry(entry));
                         }
                         InsertError::Retry(_) => return Err(err),
                     },
@@ -454,14 +446,16 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                     Err(err) => match err {
                         InsertError::Duplicated(_) => return Err(err),
                         InsertError::Full(entry) => {
-                            return self.split_node(
-                                entry,
+                            if !self.split_node(
                                 None,
                                 unbounded_node,
                                 &(self.children.1),
                                 false,
                                 guard,
-                            );
+                            ) {
+                                return Err(InsertError::Full(entry));
+                            }
+                            return Err(InsertError::Retry(entry));
                         }
                         InsertError::Retry(_) => return Err(err),
                     },
@@ -471,15 +465,16 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
     }
 
     /// Splits a full node.
+    ///
+    /// Returns true if the node is successfully split or a conflict is detected, false otherwise.
     fn split_node(
         &self,
-        entry: (K, V),
         full_node_key: Option<K>,
         full_node_shared: Shared<Node<K, V>>,
         full_node_ptr: &Atomic<Node<K, V>>,
         root_node_split: bool,
         guard: &Guard,
-    ) -> Result<(), InsertError<K, V>> {
+    ) -> bool {
         let mut new_split_nodes;
         match self.new_children.compare_and_set(
             Shared::null(),
@@ -498,7 +493,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 unsafe {
                     full_node_shared.deref().rollback(guard);
                 };
-                return Err(InsertError::Retry(entry));
+                return true;
             }
         }
 
@@ -511,7 +506,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             unsafe {
                 full_node_shared.deref().rollback(guard);
             };
-            return Err(InsertError::Retry(entry));
+            return true;
         }
 
         // Copies entries to the newly allocated leaves.
@@ -608,11 +603,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 for (index, entry) in entry_array.iter().enumerate() {
                     if let Some(entry) = entry {
                         if (index + 1) < low_key_node_array_size {
-                            low_key_nodes.as_ref().unwrap().0.insert(
-                                entry.0.unwrap().clone(),
-                                entry.1.clone(),
-                                false,
-                            );
+                            low_key_nodes
+                                .as_ref()
+                                .unwrap()
+                                .0
+                                .insert(entry.0.unwrap().clone(), entry.1.clone());
                         } else if (index + 1) == low_key_node_array_size {
                             new_split_nodes_ref
                                 .middle_key
@@ -625,11 +620,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                                 .store(child_node_ptr, Relaxed);
                         } else {
                             if let Some(key) = entry.0 {
-                                high_key_nodes.as_ref().unwrap().0.insert(
-                                    key.clone(),
-                                    entry.1.clone(),
-                                    false,
-                                );
+                                high_key_nodes
+                                    .as_ref()
+                                    .unwrap()
+                                    .0
+                                    .insert(key.clone(), entry.1.clone());
                             } else {
                                 high_key_nodes
                                     .as_ref()
@@ -678,22 +673,17 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
 
         // The full node is the current root: split_root processes the rest.
         if root_node_split {
-            return Ok(());
+            return true;
         }
 
         // Inserts the newly allocated internal nodes into the main array.
-        if let Some(((middle_key, _), _)) = self
-            .children
-            .0
-            .insert(
-                new_split_nodes_ref.middle_key.take().unwrap(),
-                new_split_nodes_ref.low_key_node.clone(),
-                false,
-            )
-        {
+        if let Some(((middle_key, _), _)) = self.children.0.insert(
+            new_split_nodes_ref.middle_key.take().unwrap(),
+            new_split_nodes_ref.low_key_node.clone(),
+        ) {
             // Insertion failed: expect that the parent splits this node.
             new_split_nodes_ref.middle_key.replace(middle_key);
-            return Err(InsertError::Full(entry));
+            return false;
         }
 
         // Replaces the full node with the high-key node.
@@ -714,8 +704,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             unused_node.deref().unlink(guard);
             guard.defer_destroy(unused_node);
         };
-
-        Ok(())
+        true
     }
 
     fn rollback(&self, guard: &Guard) {
@@ -865,7 +854,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         if self
             .children
             .0
-            .insert(prev_internal_node_key.clone(), new_node_ptr, false)
+            .insert(prev_internal_node_key.clone(), new_node_ptr)
             .is_none()
         {
             prev_internal_node.children.1.store(Shared::null(), Relaxed);
