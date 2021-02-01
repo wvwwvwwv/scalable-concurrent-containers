@@ -409,7 +409,7 @@ mod treeindex_test {
 
         for num_threads in num_threads_vector {
             let treeindex: Arc<TreeIndex<String, String>> = Arc::new(Default::default());
-            let worload_size = 4096;
+            let worload_size = 65536;
 
             // 1. insert-local
             let insert = Workload {

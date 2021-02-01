@@ -508,6 +508,7 @@ mod treeindex_test {
                         }
                         assert!(tree_copied.remove(&key));
                         assert!(!tree_copied.remove(&key));
+                        assert!(tree_copied.read(&(first_key + 1), |_, _| ()).is_none());
                     }
                     for key in (first_key + 1)..(first_key + range) {
                         assert!(tree_copied

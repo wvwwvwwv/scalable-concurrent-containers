@@ -5,7 +5,7 @@ pub mod leaf;
 pub mod leafnode;
 pub mod node;
 
-use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
+use crossbeam_epoch::{Atomic, Guard, Owned};
 use error::{InsertError, RemoveError, SearchError};
 use leaf::{Leaf, LeafScanner};
 use node::Node;
@@ -225,10 +225,7 @@ where
     /// ```
     pub fn clear(&self) {
         let guard = crossbeam_epoch::pin();
-        let old_root_node = self.root.swap(Shared::null(), Acquire, &guard);
-        if !old_root_node.is_null() {
-            unsafe { guard.defer_destroy(old_root_node) };
-        }
+        Node::remove_root(&self.root, &guard);
     }
 
     /// Returns the size of the TreeIndex.

@@ -4,7 +4,7 @@ use super::{InsertError, RemoveError, SearchError};
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::cmp::Ordering;
 use std::fmt::Display;
-use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
 /// Leaf node.
 ///
@@ -48,22 +48,19 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         }
         self.leaves.1.store(Shared::null(), Relaxed);
 
-        let unused_leaves = self.new_leaves.load(Acquire, &guard);
+        let unused_leaves = self.new_leaves.load(Relaxed, &guard);
         if !unused_leaves.is_null() {
             let obsolete_leaf =
                 unsafe { unused_leaves.deref().origin_leaf_ptr.load(Relaxed, &guard) };
-            if !obsolete_leaf.is_null() {
-                unsafe {
-                    obsolete_leaf.deref().unlink(&guard);
-                    guard.defer_destroy(obsolete_leaf);
-                }
+            unsafe {
+                obsolete_leaf.deref().unlink(&guard);
+                guard.defer_destroy(obsolete_leaf);
             }
         }
     }
 
     pub fn search<'a>(&self, key: &'a K, guard: &'a Guard) -> Result<Option<&'a V>, SearchError> {
         loop {
-            let unbounded_leaf = (self.leaves.1).load(Relaxed, guard);
             let result = (self.leaves.0).min_greater_equal(&key);
             if let Some((_, child)) = result.0 {
                 let child_leaf = child.load(Acquire, guard);
@@ -81,17 +78,17 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                     return Err(SearchError::Retry);
                 }
                 return Ok(unsafe { child_leaf.deref().search(key) });
-            } else if unbounded_leaf == self.leaves.1.load(Acquire, guard) {
+            }
+            let unbounded_leaf = (self.leaves.1).load(Relaxed, guard);
+            if !unbounded_leaf.is_null() {
                 if !(self.leaves.0).validate(result.1) {
                     // Data race resolution: validate metadata - see above
                     continue;
                 }
-                if unbounded_leaf.is_null() {
-                    // unbounded_leaf being null indicates that the leaf node is bound to be freed.
-                    return Err(SearchError::Retry);
-                }
                 return Ok(unsafe { unbounded_leaf.deref().search(key) });
             }
+            // unbounded_leaf being null indicates that the leaf node is bound to be freed.
+            return Err(SearchError::Retry);
         }
     }
 
@@ -162,7 +159,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
 
     pub fn insert(&self, key: K, value: V, guard: &Guard) -> Result<(), InsertError<K, V>> {
         loop {
-            let unbounded_leaf = self.leaves.1.load(Relaxed, guard);
             let result = (self.leaves.0).min_greater_equal(&key);
             if let Some((child_key, child)) = result.0 {
                 let child_leaf = child.load(Acquire, guard);
@@ -187,14 +183,12 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                         return Err(InsertError::Retry(result.0));
                     },
                 );
-            } else if unbounded_leaf == self.leaves.1.load(Relaxed, guard) {
+            }
+            let unbounded_leaf = self.leaves.1.load(Relaxed, guard);
+            if !unbounded_leaf.is_null() {
                 if !(self.leaves.0).validate(result.1) {
                     // Data race resolution: validate metadata - see 'InternalNode::search'.
                     continue;
-                }
-                if unbounded_leaf.is_null() {
-                    // unbounded_leaf being null indicates that the leaf node is bound to be freed.
-                    return Err(InsertError::Retry((key, value)));
                 }
                 // Tries to insert into the unbounded leaf, and tries to split the unbounded if it is full.
                 return unsafe { unbounded_leaf.deref().insert(key, value) }.map_or_else(
@@ -211,12 +205,13 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                     },
                 );
             }
+            // unbounded_leaf being null indicates that the leaf node is bound to be freed.
+            return Err(InsertError::Retry((key, value)));
         }
     }
 
     pub fn remove<'a>(&'a self, key: &K, guard: &'a Guard) -> Result<bool, RemoveError> {
         loop {
-            let unbounded_leaf = (self.leaves.1).load(Relaxed, guard);
             let result = (self.leaves.0).min_greater_equal(&key);
             if let Some((child_key, child)) = result.0 {
                 let child_leaf = child.load(Acquire, guard);
@@ -242,14 +237,12 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                     return self.check_full_leaf(removed, key, child_leaf, guard);
                 }
                 return self.remove_obsolete_leaf(removed, key, Some(child_key), child_leaf, guard);
-            } else if unbounded_leaf == self.leaves.1.load(Acquire, guard) {
+            }
+            let unbounded_leaf = (self.leaves.1).load(Relaxed, guard);
+            if !unbounded_leaf.is_null() {
                 if !(self.leaves.0).validate(result.1) {
                     // Data race resolution: validate metadata - see 'InternalNode::search'.
                     continue;
-                }
-                if unbounded_leaf.is_null() {
-                    // unbounded_leaf being null indicates that the leaf node is bound to be freed.
-                    return Err(RemoveError::Retry(false));
                 }
                 let (removed, full, obsolete) = unsafe { unbounded_leaf.deref().remove(key, true) };
                 if !full {
@@ -259,25 +252,29 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 }
                 return self.remove_obsolete_leaf(removed, key, None, unbounded_leaf, guard);
             }
+            // unbounded_leaf being null indicates that the leaf node is bound to be freed.
+            return Err(RemoveError::Retry(false));
         }
     }
 
     pub fn rollback(&self, guard: &Guard) {
+        let new_leaves = self.new_leaves.load(Relaxed, guard);
         unsafe {
-            let new_leaves = self
-                .new_leaves
-                .swap(Shared::null(), Release, guard)
-                .into_owned();
-            let low_key_leaf = new_leaves.low_key_leaf.load(Relaxed, guard);
+            let low_key_leaf = new_leaves.deref().low_key_leaf.load(Relaxed, guard);
             if !low_key_leaf.is_null() {
                 low_key_leaf.deref().unlink(guard);
                 guard.defer_destroy(low_key_leaf);
             }
-            let high_key_leaf = new_leaves.high_key_leaf.load(Relaxed, guard);
+            let high_key_leaf = new_leaves.deref().high_key_leaf.load(Relaxed, guard);
             if !high_key_leaf.is_null() {
                 high_key_leaf.deref().unlink(guard);
                 guard.defer_destroy(high_key_leaf);
             }
+            drop(
+                self.new_leaves
+                    .swap(Shared::null(), Release, guard)
+                    .into_owned(),
+            );
         };
     }
 
@@ -491,17 +488,20 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             full_leaf_ptr.swap(low_key_leaf_shared, Release, &guard)
         };
 
-        // Drops the deprecated leaves.
-        let unused_leaves = self.new_leaves.swap(Shared::null(), Release, guard);
+        // Drops the deprecated leaf.
         unsafe {
+            // Unlinks the full leaf before unlocking the leaf node.
+            debug_assert!(unused_leaf.deref().full());
+            unused_leaf.deref().unlink(guard);
+            guard.defer_destroy(unused_leaf);
+
+            // Unlocks the leaf node.
+            let unused_leaves = self.new_leaves.swap(Shared::null(), Release, guard);
             let new_split_leaves = unused_leaves.into_owned();
             debug_assert_eq!(
                 new_split_leaves.origin_leaf_ptr.load(Relaxed, guard),
                 unused_leaf
             );
-            debug_assert!(unused_leaf.deref().full());
-            unused_leaf.deref().unlink(guard);
-            guard.defer_destroy(unused_leaf);
         };
         true
     }
@@ -513,11 +513,17 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         leaf_shared: Shared<Leaf<K, V>>,
         guard: &Guard,
     ) -> Result<bool, RemoveError> {
-        // There is a chance that the target key value pair has been copied to new_leaves.
-        //  - Remove: release(leaf)|load(mutex)|acquire|load(leaf_ptr)
+        // There is a chance that the target key value pair has been copied to new_leaves,
+        // and the following scenario cannot be prevented by memory fences.
+        //  - Remove: release(leaf)|load(mutex_old)|acquire|load(leaf_ptr_old)
         //  - Insert: load(leaf)|store(mutex)|acquire|release|store(leaf_ptr)|release|store(mutex)
-        // The remove thread either reads the locked mutex state or the updated leaf pointer value.
-        if !self.new_leaves.load(Acquire, guard).is_null() {
+        // Therefore, it performs CAS to check the freshness of the pointer value.
+        //  - Remove: release(leaf)|cas(mutex)|acquire|release|load(leaf_ptr)
+        //  - Insert: load(leaf)|store(mutex)|acquire|release|store(leaf_ptr)|release|store(mutex)
+        if let Err(_) =
+            self.new_leaves
+                .compare_and_set(Shared::null(), Shared::null(), AcqRel, guard)
+        {
             return Err(RemoveError::Retry(removed));
         }
         let result = (self.leaves.0).min_greater_equal(&key);

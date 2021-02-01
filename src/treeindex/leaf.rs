@@ -109,7 +109,7 @@ where
             prev_leaf_locker
                 .leaf
                 .forward_link
-                .store(Shared::from(leaf as *const _), Relaxed);
+                .store(Shared::from(leaf as *const _), Release);
         }
         lockers
             .1
@@ -122,7 +122,7 @@ where
         let lockers = LeafListLocker::lock_prev_self(self, guard);
 
         // Locks the next adjacent leaf and modifies the linked list.
-        let next_leaf = self.forward_link.load(Relaxed, guard);
+        let next_leaf = self.forward_link.load(Acquire, guard);
         if !next_leaf.is_null() {
             // Makes the next leaf point to the prev leaf.
             let mut next_leaf_locker = LeafListLocker::lock(unsafe { next_leaf.deref() }, guard);
@@ -134,7 +134,7 @@ where
         }
 
         if let Some(prev_leaf_locker) = lockers.0.as_ref() {
-            prev_leaf_locker.leaf.forward_link.store(next_leaf, Relaxed);
+            prev_leaf_locker.leaf.forward_link.store(next_leaf, Release);
         }
     }
 
