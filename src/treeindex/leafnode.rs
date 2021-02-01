@@ -260,15 +260,16 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
     pub fn rollback(&self, guard: &Guard) {
         let new_leaves = self.new_leaves.load(Relaxed, guard);
         unsafe {
-            let low_key_leaf = new_leaves.deref().low_key_leaf.load(Relaxed, guard);
-            if !low_key_leaf.is_null() {
-                low_key_leaf.deref().unlink(guard);
-                guard.defer_destroy(low_key_leaf);
-            }
+            // The leaf with higher keys must be unlinked first.
             let high_key_leaf = new_leaves.deref().high_key_leaf.load(Relaxed, guard);
             if !high_key_leaf.is_null() {
                 high_key_leaf.deref().unlink(guard);
                 guard.defer_destroy(high_key_leaf);
+            }
+            let low_key_leaf = new_leaves.deref().low_key_leaf.load(Relaxed, guard);
+            if !low_key_leaf.is_null() {
+                low_key_leaf.deref().unlink(guard);
+                guard.defer_destroy(low_key_leaf);
             }
             drop(
                 self.new_leaves

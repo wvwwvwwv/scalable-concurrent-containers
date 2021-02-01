@@ -519,17 +519,25 @@ mod treeindex_test {
             }));
         }
         barrier.wait();
-        for _ in 0..512 {
+        for i in 0..512 {
+            let mut found_0 = false;
             let mut found_markers = 0;
             let mut prev = 0;
             for iter in tree.iter() {
                 let current = *iter.0;
                 if current % range == 0 {
                     found_markers += 1;
+                    if current == 0 {
+                        found_0 = true;
+                    }
                 }
                 assert!(prev == 0 || prev < current);
                 prev = current
             }
+            if i % 16 == 0 {
+                println!("{} {}", i, found_markers);
+            }
+            assert!(found_0);
             assert_eq!(found_markers, num_threads);
         }
 
