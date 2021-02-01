@@ -92,49 +92,53 @@ where
         self.backward_link.load(Acquire, guard)
     }
 
-    /// Attaches the given leaf to its backward link.
-    pub fn push_front(&self, leaf: &Leaf<K, V>, guard: &Guard) {
-        // Locks the previous adjacent leaf and itself.
-        let mut lockers = LeafListLocker::lock_prev_self(self, guard);
+    /// Attaches the given leaf to its forward link.
+    pub fn push_back(&self, leaf: &Leaf<K, V>, guard: &Guard) {
+        // Locks the next leaf and self.
+        let mut lockers = LeafListLocker::lock_next_self(self, guard);
 
-        // Makes the new leaf point to itself and the prev leaf.
-        //  - The update order is, store(leaf.back)|release|store(prev.forward)
-        leaf.forward_link
+        // Makes the new leaf point to self and the next leaf.
+        //  - The update order is, store(leaf.back)|release|store(leaf.forward)
+        leaf.backward_link
             .store(Shared::from(self as *const _), Relaxed);
-        leaf.backward_link.store(lockers.1.backward_link, Release);
+        leaf.forward_link
+            .store(self.forward_link.load(Relaxed, guard), Release);
 
-        // Makes the prev and next leaves point to the new leaf.
-        //  - From here, the new leaf is reachable by Scanners.
-        if let Some(prev_leaf_locker) = lockers.0.as_ref() {
-            prev_leaf_locker
-                .leaf
-                .forward_link
-                .store(Shared::from(leaf as *const _), Release);
+        // Makes the next leaf point to the new leaf.
+        //  - From here, the new leaf is reachable by LeafListLockers.
+        if let Some(next_leaf_locker) = lockers.0.as_mut() {
+            next_leaf_locker.update_backward_link(Shared::from(leaf as *const _));
         }
-        lockers
-            .1
-            .update_backward_link(Shared::from(leaf as *const _));
+
+        // Makes self point to the new leaf.
+        //  - From here, the new leaf is reachable by Scanners.
+        self.forward_link
+            .store(Shared::from(leaf as *const _), Release);
     }
 
     /// Unlinks itself from the linked list.
     pub fn unlink(&self, guard: &Guard) {
-        // Locks the previous adjacent leaf and itself.
-        let lockers = LeafListLocker::lock_prev_self(self, guard);
+        // Locks the next leaf and self.
+        let mut lockers = LeafListLocker::lock_next_self(self, guard);
 
-        // Locks the next adjacent leaf and modifies the linked list.
-        let next_leaf = self.forward_link.load(Acquire, guard);
-        if !next_leaf.is_null() {
-            // Makes the next leaf point to the prev leaf.
-            let mut next_leaf_locker = LeafListLocker::lock(unsafe { next_leaf.deref() }, guard);
+        // Locks the previous leaf and modifies the linked list.
+        let prev_leaf = lockers.1.backward_link;
+        if !prev_leaf.is_null() {
+            // Makes the prev leaf point to the next leaf.
+            let prev_leaf_locker = LeafListLocker::lock(unsafe { prev_leaf.deref() }, guard);
             debug_assert_eq!(
-                next_leaf_locker.backward_link,
+                prev_leaf_locker.leaf.forward_link.load(Relaxed, guard),
                 Shared::from(self as *const _)
             );
-            next_leaf_locker.update_backward_link(lockers.1.backward_link);
-        }
-
-        if let Some(prev_leaf_locker) = lockers.0.as_ref() {
-            prev_leaf_locker.leaf.forward_link.store(next_leaf, Release);
+            prev_leaf_locker
+                .leaf
+                .forward_link
+                .store(self.forward_link.load(Relaxed, guard), Release);
+            if let Some(next_leaf_locker) = lockers.0.as_mut() {
+                next_leaf_locker.update_backward_link(prev_leaf);
+            }
+        } else if let Some(next_leaf_locker) = lockers.0.as_mut() {
+            next_leaf_locker.update_backward_link(prev_leaf);
         }
     }
 
@@ -742,71 +746,62 @@ where
         }
     }
 
-    fn lock_prev_self(
+    fn lock_next_self(
         leaf: &'a Leaf<K, V>,
         guard: &'a Guard,
     ) -> (Option<LeafListLocker<'a, K, V>>, LeafListLocker<'a, K, V>) {
         loop {
-            // Locks the prev leaf.
-            let locked_state = Shared::from(leaf as *const _);
-            let mut prev_leaf_ptr = leaf.backward_link.load(Relaxed, guard);
-            let mut prev_leaf_locker = None;
-            loop {
-                if prev_leaf_ptr == locked_state {
-                    // Currently, locked.
-                    prev_leaf_ptr = leaf.backward_link.load(Relaxed, guard);
-                    continue;
-                } else if prev_leaf_ptr.is_null() {
-                    // There is no chance that backward_link gets updated if it is null.
-                    break;
-                }
-                prev_leaf_locker.replace(LeafListLocker::lock(
-                    unsafe { prev_leaf_ptr.deref() },
+            // Locks the next leaf.
+            let next_leaf_ptr = leaf.forward_link.load(Relaxed, guard);
+            let mut next_leaf_locker = None;
+            if !next_leaf_ptr.is_null() {
+                next_leaf_locker.replace(LeafListLocker::lock(
+                    unsafe { next_leaf_ptr.deref() },
                     guard,
                 ));
-                break;
             }
+
+            if next_leaf_locker.as_ref().map_or_else(
+                || false,
+                |locker| locker.backward_link.as_raw() != leaf as *const _,
+            ) {
+                // The link has changed in the meantime.
+                continue;
+            }
+
             // Lock the leaf.
-            let mut current = leaf.backward_link.load(Relaxed, guard);
+            //  - Reading backward_link needs to be an Acquire fence to correctly read forward_link.
+            let locked_state = Shared::from(leaf as *const _);
+            let mut current_state = leaf.backward_link.load(Acquire, guard);
             loop {
-                if current == locked_state {
+                if current_state == locked_state {
                     // Currently, locked.
-                    current = leaf.backward_link.load(Relaxed, guard);
+                    current_state = leaf.backward_link.load(Acquire, guard);
                     continue;
                 }
-                if current != prev_leaf_ptr {
-                    // Pointer changed with the known prev leaf is locked.
+                if next_leaf_ptr != leaf.forward_link.load(Relaxed, guard) {
+                    // Pointer changed with the known next leaf is locked.
                     break;
                 }
                 if let Err(err) =
                     leaf.backward_link
-                        .compare_and_set(current, locked_state, Acquire, guard)
+                        .compare_and_set(current_state, locked_state, Acquire, guard)
                 {
-                    current = err.current;
+                    current_state = err.current;
                     continue;
                 }
-                debug_assert!(prev_leaf_locker.as_ref().map_or_else(
-                    || true,
-                    |locker| locker.leaf as *const _ != leaf as *const _
-                ));
                 debug_assert_eq!(
-                    prev_leaf_locker.as_ref().map_or_else(
-                        || locked_state,
-                        |locker| locker.leaf.forward_link.load(Relaxed, guard)
-                    ),
-                    locked_state
-                );
-                debug_assert_eq!(
-                    prev_leaf_locker
+                    next_leaf_locker
                         .as_ref()
-                        .map_or_else(|| current, |locker| Shared::from(locker.leaf as *const _)),
-                    current
+                        .map_or_else(|| leaf as *const _, |locker| locker.backward_link.as_raw()),
+                    leaf as *const _
                 );
+
                 return (
-                    prev_leaf_locker,
+                    next_leaf_locker,
                     LeafListLocker {
                         leaf,
-                        backward_link: current,
+                        backward_link: current_state,
                     },
                 );
             }

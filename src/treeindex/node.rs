@@ -730,7 +730,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             new_split_nodes_ref.middle_key.take().unwrap(),
             new_split_nodes_ref.low_key_node.clone(),
         ) {
-            // Insertion failed: expect that the parent splits this node.
+            // Insertion failed: expects that the parent splits this node.
             new_split_nodes_ref.middle_key.replace(middle_key);
             return false;
         }
@@ -743,6 +743,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         );
 
         // Drops the deprecated nodes.
+        // - Still, the deprecated full leaf can be reachable by Scanners.
         unsafe {
             // Unlinks the full node before unlocking the leaf node.
             unused_node.deref().unlink(guard);
@@ -838,7 +839,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         child_shared: Shared<Node<K, V>>,
         guard: &Guard,
     ) -> Result<bool, RemoveError> {
-        // If locked and the pointer has remained the same, invalidate the node.
+        // If locked and the pointer has stayed the same, invalidates the node.
         let lock = InternalNodeLocker::lock(self, guard);
         if lock.is_none() {
             return Err(RemoveError::Retry(removed));
@@ -1162,6 +1163,9 @@ mod test {
         }
 
         let guard = crossbeam_epoch::pin();
+        if full.load(Relaxed) {
+            node.rollback(&guard);
+        }
         let mut prev = 0;
         if let Ok(mut scanner) = node.min(&guard) {
             let mut iterated = 0;

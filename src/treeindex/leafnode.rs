@@ -53,7 +53,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             let obsolete_leaf =
                 unsafe { unused_leaves.deref().origin_leaf_ptr.load(Relaxed, &guard) };
             unsafe {
-                obsolete_leaf.deref().unlink(&guard);
                 guard.defer_destroy(obsolete_leaf);
             }
         }
@@ -260,17 +259,23 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
     pub fn rollback(&self, guard: &Guard) {
         let new_leaves = self.new_leaves.load(Relaxed, guard);
         unsafe {
+            // Inserts the origin leaf into the linked list.
+            let origin_leaf_shared = new_leaves.deref().origin_leaf_ptr.load(Relaxed, guard);
+            let low_key_leaf_shared = new_leaves.deref().low_key_leaf.load(Relaxed, guard);
+            let high_key_leaf_shared = new_leaves.deref().high_key_leaf.load(Relaxed, guard);
+            high_key_leaf_shared
+                .deref()
+                .push_back(origin_leaf_shared.deref(), guard);
+
             // The leaf with higher keys must be unlinked first.
-            let high_key_leaf = new_leaves.deref().high_key_leaf.load(Relaxed, guard);
-            if !high_key_leaf.is_null() {
-                high_key_leaf.deref().unlink(guard);
-                guard.defer_destroy(high_key_leaf);
-            }
-            let low_key_leaf = new_leaves.deref().low_key_leaf.load(Relaxed, guard);
-            if !low_key_leaf.is_null() {
-                low_key_leaf.deref().unlink(guard);
-                guard.defer_destroy(low_key_leaf);
-            }
+            high_key_leaf_shared.deref().unlink(guard);
+            guard.defer_destroy(high_key_leaf_shared);
+
+            // Unlinks the leaf with lower keys.
+            low_key_leaf_shared.deref().unlink(guard);
+            guard.defer_destroy(low_key_leaf_shared);
+
+            // Unlocks the leaf node.
             drop(
                 self.new_leaves
                     .swap(Shared::null(), Release, guard)
@@ -452,25 +457,28 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
 
         if low_key_leaf_boxed.is_none() {
             // No valid keys in the full leaf.
-            let new_leaf = Box::new(Leaf::new());
-            new_leaves_ref.low_key_leaf = Atomic::from(new_leaf);
-        } else if high_key_leaf_boxed.is_none() {
+            new_leaves_ref.low_key_leaf = Atomic::from(Owned::new(Leaf::new()));
+        } else {
             // The number of valid entries is small enough to fit into a single leaf.
             new_leaves_ref.low_key_leaf = Atomic::from(low_key_leaf_boxed.unwrap());
-        } else {
-            // Evenly distributed.
-            new_leaves_ref.low_key_leaf = Atomic::from(low_key_leaf_boxed.unwrap());
-            new_leaves_ref.high_key_leaf = Atomic::from(high_key_leaf_boxed.unwrap());
+            if let Some(high_key_leaf) = high_key_leaf_boxed.take() {
+                new_leaves_ref.high_key_leaf = Atomic::from(high_key_leaf);
+            }
         }
 
         // Inserts the newly added leaves into the main array.
+        //  - Inserts the new leaves into the linked list, and removes the full leaf from it.
         let low_key_leaf_shared = new_leaves_ref.low_key_leaf.load(Relaxed, guard);
         let low_key_leaf_ref = unsafe { low_key_leaf_shared.deref() };
         let high_key_leaf_shared = new_leaves_ref.high_key_leaf.load(Relaxed, guard);
-        full_leaf_ref.push_front(low_key_leaf_ref, guard);
         let unused_leaf = if !high_key_leaf_shared.is_null() {
             let high_key_leaf_ref = unsafe { high_key_leaf_shared.deref() };
-            full_leaf_ref.push_front(high_key_leaf_ref, guard);
+            // From here, Scanners can reach the new leaves.
+            full_leaf_ref.push_back(low_key_leaf_ref, guard);
+            low_key_leaf_ref.push_back(high_key_leaf_ref, guard);
+            // From here, Scanners cannot reach the full leaf.
+            full_leaf_ref.unlink(guard);
+            // Takes the max key value stored in the low key leaf as the leaf key.
             let max_key = low_key_leaf_ref.max().unwrap().0;
             if self
                 .leaves
@@ -478,13 +486,17 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 .insert(max_key.clone(), new_leaves_ref.low_key_leaf.clone())
                 .is_some()
             {
-                // Insertion failed: expect that the parent splits the leaf node.
+                // Insertion failed: expects that the parent splits the leaf node.
                 return false;
             }
 
             // Replaces the full leaf with the high-key leaf.
             full_leaf_ptr.swap(high_key_leaf_shared, Release, &guard)
         } else {
+            // From here, Scanners can reach the new leaves.
+            full_leaf_ref.push_back(low_key_leaf_ref, guard);
+            // From here, Scanners cannot reach the full leaf.
+            full_leaf_ref.unlink(guard);
             // Replaces the full leaf with the low-key leaf.
             full_leaf_ptr.swap(low_key_leaf_shared, Release, &guard)
         };
@@ -493,7 +505,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         unsafe {
             // Unlinks the full leaf before unlocking the leaf node.
             debug_assert!(unused_leaf.deref().full());
-            unused_leaf.deref().unlink(guard);
             guard.defer_destroy(unused_leaf);
 
             // Unlocks the leaf node.
@@ -549,7 +560,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         leaf_shared: Shared<Leaf<K, V>>,
         guard: &Guard,
     ) -> Result<bool, RemoveError> {
-        // If locked and the pointer has remained the same, invalidate the leaf.
+        // If locked and the pointer has stayed the same, removes the leaf.
         let lock = LeafNodeLocker::lock(self, guard);
         if lock.is_none() {
             return Err(RemoveError::Retry(removed));
@@ -573,7 +584,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 // Once the key is removed, it is safe to drop the leaf as the validation loop ensures the absence of readers.
                 leaf_ptr.store(Shared::null(), Release);
                 unsafe {
-                    debug_assert!(leaf_shared.deref().full());
+                    debug_assert!(leaf_shared.deref().search(key).is_none());
+                    debug_assert!(leaf_shared.deref().obsolete());
                     leaf_shared.deref().unlink(guard);
                     guard.defer_destroy(leaf_shared)
                 };

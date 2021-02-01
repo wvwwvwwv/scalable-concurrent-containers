@@ -534,7 +534,7 @@ mod treeindex_test {
                 assert!(prev == 0 || prev < current);
                 prev = current
             }
-            if i % 16 == 0 {
+            if i % 64 == 0 {
                 println!("{} {}", i, found_markers);
             }
             assert!(found_0);
