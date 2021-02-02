@@ -265,6 +265,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         }
     }
 
+    /// Detaches the unbounded child of the node.
+    fn detach(&self, guard: &Guard) {
+        match &self.entry {
+            NodeType::Internal(internal_node) => internal_node.detach(guard),
+            NodeType::Leaf(leaf_node) => leaf_node.detach(guard),
+        }
+    }
+
     /// Clears all the children for drop the deprecated split nodes.
     fn unlink(&self, guard: &Guard) {
         match &self.entry {
@@ -334,8 +342,17 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
 
     /// Checks if the internal node is obsolete.
     fn obsolete(&self, check_unbounded: bool, guard: &Guard) -> bool {
-        self.children.0.obsolete()
-            && (!check_unbounded || self.children.1.load(Relaxed, guard).is_null())
+        if self.children.0.obsolete() {
+            if check_unbounded {
+                let unbounded_shared = self.children.1.load(Relaxed, guard);
+                if !unbounded_shared.is_null() {
+                    return unsafe { unbounded_shared.deref().obsolete(true, guard) };
+                }
+                return true;
+            }
+            return true;
+        }
+        false
     }
 
     fn search<'a>(&self, key: &'a K, guard: &'a Guard) -> Result<Option<&'a V>, SearchError> {
@@ -903,18 +920,47 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         debug_assert!(prev_internal_node.obsolete(false, guard));
 
         // Inserts the unbounded child of the previous internal node into the node array.
-        let new_node_ptr = prev_internal_node.children.1.clone();
-        if self
-            .children
-            .0
-            .insert(prev_internal_node_key.clone(), new_node_ptr)
-            .is_none()
-        {
+        let target_node_ref = unsafe { prev_internal_node.children.1.load(Relaxed, guard).deref() };
+        if !target_node_ref.obsolete(true, guard) {
+            if self
+                .children
+                .0
+                .insert(
+                    prev_internal_node_key.clone(),
+                    prev_internal_node.children.1.clone(),
+                )
+                .is_some()
+            {
+                return false;
+            }
             prev_internal_node.children.1.store(Shared::null(), Relaxed);
-            debug_assert!(prev_internal_node.obsolete(true, guard));
-            true
         } else {
-            false
+            debug_assert!(prev_internal_node.obsolete(false, guard));
+            // Makes the leaf unreachable.
+            let obsolete_internal_ptr =
+                prev_internal_node
+                    .children
+                    .1
+                    .swap(Shared::null(), Relaxed, guard);
+            unsafe {
+                obsolete_internal_ptr.deref().detach(guard);
+                guard.defer_destroy(obsolete_internal_ptr)
+            };
+        }
+        true
+    }
+
+    fn detach(&self, guard: &Guard) {
+        debug_assert!(self.obsolete(true, guard));
+        loop {
+            if let Some(_self_locker) = InternalNodeLocker::lock(self, guard) {
+                let unbounded_shared = self.children.1.swap(Shared::null(), Relaxed, guard);
+                unsafe {
+                    unbounded_shared.deref().detach(guard);
+                    guard.defer_destroy(unbounded_shared);
+                }
+                break;
+            }
         }
     }
 

@@ -11,10 +11,10 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 /// The layout of a leaf node: |ptr(entry array)/max(child keys)|...|ptr(entry array)|
 pub struct LeafNode<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
     /// Child leaves.
-    ///
-    /// A null pointer stored in the variable acts as a mutex for scan, merge, and split operations.
     leaves: (Leaf<K, Atomic<Leaf<K, V>>>, Atomic<Leaf<K, V>>),
     /// New leaves in an intermediate state during merge and split.
+    ///
+    /// A valid pointer stored in the variable acts as a mutex for merge and split operations.
     new_leaves: Atomic<NewLeaves<K, V>>,
 }
 
@@ -38,8 +38,31 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
 
     /// Checks if the internal node is obsolete.
     pub fn obsolete(&self, check_unbounded: bool, guard: &Guard) -> bool {
-        self.leaves.0.obsolete()
-            && (!check_unbounded || self.leaves.1.load(Relaxed, guard).is_null())
+        if self.leaves.0.obsolete() {
+            if check_unbounded {
+                let unbounded_shared = self.leaves.1.load(Relaxed, guard);
+                if !unbounded_shared.is_null() {
+                    return unsafe { unbounded_shared.deref().obsolete() };
+                }
+                return true;
+            }
+            return true;
+        }
+        false
+    }
+
+    pub fn detach(&self, guard: &Guard) {
+        debug_assert!(self.obsolete(true, guard));
+        loop {
+            if let Some(_self_lock) = LeafNodeLocker::lock(self, guard) {
+                let unbounded_shared = self.leaves.1.swap(Shared::null(), Relaxed, guard);
+                unsafe {
+                    unbounded_shared.deref().unlink(guard);
+                    guard.defer_destroy(unbounded_shared);
+                }
+                break;
+            }
+        }
     }
 
     pub fn unlink(&self, guard: &Guard) {
