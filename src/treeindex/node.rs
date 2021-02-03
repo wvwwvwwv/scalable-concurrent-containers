@@ -171,6 +171,19 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             if new_root.is_null() {
                 return;
             }
+            if unsafe { new_root.deref().obsolete(true, guard) } {
+                // The soon-to-be root turns out to be obsolete.
+                if root_ptr
+                    .compare_and_set(current_root, Shared::null(), Release, &guard)
+                    .is_ok()
+                {
+                    unsafe {
+                        new_root.deref().detach(guard);
+                        guard.defer_destroy(new_root);
+                    }
+                    return;
+                }
+            }
 
             match unsafe { &new_root.deref().entry } {
                 NodeType::Internal(new_root_internal) => {
@@ -376,15 +389,15 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 }
                 return unsafe { child_node.deref().search(key, guard) };
             }
-            let unbounded_node = (self.children.1).load(Acquire, guard);
-            if !unbounded_node.is_null() {
+            let unbounded_shared = (self.children.1).load(Acquire, guard);
+            if !unbounded_shared.is_null() {
                 if !(self.children.0).validate(result.1) {
                     // Data race resolution: validate metadata - see above.
                     continue;
                 }
-                return unsafe { unbounded_node.deref().search(key, guard) };
+                return unsafe { unbounded_shared.deref().search(key, guard) };
             }
-            // unbounded_node being null indicates that the node is bound to be freed.
+            // unbounded_shared being null indicates that the node is bound to be freed.
             return Err(SearchError::Retry);
         }
     }
@@ -405,15 +418,15 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 }
                 return unsafe { child_node.deref().min(guard) };
             }
-            let unbounded_node = (self.children.1).load(Acquire, guard);
-            if !unbounded_node.is_null() {
+            let unbounded_shared = (self.children.1).load(Acquire, guard);
+            if !unbounded_shared.is_null() {
                 if !(self.children.0).validate(metadata) {
                     // Data race resolution: validate metadata - see 'InternalNode::search'.
                     continue;
                 }
-                return unsafe { unbounded_node.deref().min(guard) };
+                return unsafe { unbounded_shared.deref().min(guard) };
             }
-            // unbounded_node being null indicates that the node is bound to be freed.
+            // unbounded_shared being null indicates that the node is bound to be freed.
             return Err(SearchError::Retry);
         }
     }
@@ -446,15 +459,15 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             if retry {
                 continue;
             }
-            let unbounded_node = (self.children.1).load(Acquire, guard);
+            let unbounded_shared = (self.children.1).load(Acquire, guard);
             if !(self.children.0).validate(metadata) {
                 // Data race resolution: validate metadata - see above.
                 continue;
             }
-            if !unbounded_node.is_null() {
-                return unsafe { unbounded_node.deref().max_less(key, guard) };
+            if !unbounded_shared.is_null() {
+                return unsafe { unbounded_shared.deref().max_less(key, guard) };
             }
-            // unbounded_node being null indicates that the node is bound to be freed.
+            // unbounded_shared being null indicates that the node is bound to be freed.
             return Err(SearchError::Retry);
         }
     }
@@ -498,21 +511,21 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 }
             }
 
-            let unbounded_node = self.children.1.load(Relaxed, guard);
-            if !unbounded_node.is_null() {
+            let unbounded_shared = self.children.1.load(Relaxed, guard);
+            if !unbounded_shared.is_null() {
                 if !(self.children.0).validate(result.1) {
                     // Data race resolution: validate metadata - see 'InternalNode::search'.
                     continue;
                 }
                 // Tries to insert into the unbounded child, and tries to split the unbounded if it is full.
-                match unsafe { unbounded_node.deref().insert(key, value, guard) } {
+                match unsafe { unbounded_shared.deref().insert(key, value, guard) } {
                     Ok(_) => return Ok(()),
                     Err(err) => match err {
                         InsertError::Duplicated(_) => return Err(err),
                         InsertError::Full(entry) => {
                             if !self.split_node(
                                 None,
-                                unbounded_node,
+                                unbounded_shared,
                                 &(self.children.1),
                                 false,
                                 guard,
@@ -525,7 +538,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                     },
                 };
             }
-            // unbounded_node being null indicates that the node is bound to be freed.
+            // unbounded_shared being null indicates that the node is bound to be freed.
             return Err(InsertError::Retry((key, value)));
         }
     }
@@ -823,13 +836,13 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                     },
                 };
             }
-            let unbounded_node = (self.children.1).load(Acquire, guard);
-            if !unbounded_node.is_null() {
+            let unbounded_shared = (self.children.1).load(Acquire, guard);
+            if !unbounded_shared.is_null() {
                 if !(self.children.0).validate(result.1) {
                     // Data race resolution: validate metadata - see 'InternalNode::search'.
                     continue;
                 }
-                return match unsafe { unbounded_node.deref().remove(key, guard) } {
+                return match unsafe { unbounded_shared.deref().remove(key, guard) } {
                     Ok(removed) => Ok(removed),
                     Err(remove_error) => match remove_error {
                         RemoveError::Coalesce(removed) => {
@@ -864,8 +877,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
 
         // Merges the node and next only if the pointers match, otherwise retry.
         let result = self.children.0.search(child_key);
-        if let Some(child) = result {
-            if child_shared == child.load(Relaxed, guard) {
+        if let Some(child_ptr) = result {
+            if child_shared == child_ptr.load(Relaxed, guard) {
                 let child_ref = unsafe { child_shared.deref() };
                 let next_node_ref = unsafe {
                     if let Some((_, next_child)) = self.children.0.min_greater(child_key) {
@@ -884,7 +897,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 // Removes the node.
                 let coalesce = self.children.0.remove(child_key, true).2;
                 // Once the key is removed, it is safe to deallocate the node as the validation loop ensures the absence of readers.
-                child.store(Shared::null(), Release);
+                child_ptr.store(Shared::null(), Release);
                 unsafe {
                     // Needs to nullify the unbounded node/leaf pointer as the instance is referenced by the adjacent node.
                     debug_assert!(child_shared.deref().obsolete(true, guard));
@@ -917,7 +930,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         if prev_lock.is_none() {
             return false;
         }
-        debug_assert!(prev_internal_node.obsolete(false, guard));
 
         // Inserts the unbounded child of the previous internal node into the node array.
         let target_node_ref = unsafe { prev_internal_node.children.1.load(Relaxed, guard).deref() };
@@ -936,7 +948,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             prev_internal_node.children.1.store(Shared::null(), Relaxed);
         } else {
             debug_assert!(prev_internal_node.obsolete(false, guard));
-            // Makes the leaf unreachable.
+            // Makes the node unreachable.
             let obsolete_internal_ptr =
                 prev_internal_node
                     .children

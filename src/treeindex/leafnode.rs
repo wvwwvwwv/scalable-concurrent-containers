@@ -101,15 +101,15 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 }
                 return Ok(unsafe { child_leaf.deref().search(key) });
             }
-            let unbounded_leaf = (self.leaves.1).load(Relaxed, guard);
-            if !unbounded_leaf.is_null() {
+            let unbounded_shared = (self.leaves.1).load(Relaxed, guard);
+            if !unbounded_shared.is_null() {
                 if !(self.leaves.0).validate(result.1) {
                     // Data race resolution: validate metadata - see above
                     continue;
                 }
-                return Ok(unsafe { unbounded_leaf.deref().search(key) });
+                return Ok(unsafe { unbounded_shared.deref().search(key) });
             }
-            // unbounded_leaf being null indicates that the leaf node is bound to be freed.
+            // unbounded_shared being null indicates that the leaf node is bound to be freed.
             return Err(SearchError::Retry);
         }
     }
@@ -130,15 +130,15 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 }
                 return Ok(LeafScanner::new(unsafe { child_leaf.deref() }));
             }
-            let unbounded_leaf = (self.leaves.1).load(Relaxed, guard);
-            if !unbounded_leaf.is_null() {
+            let unbounded_shared = (self.leaves.1).load(Relaxed, guard);
+            if !unbounded_shared.is_null() {
                 if !(self.leaves.0).validate(metadata) {
                     // Data race resolution: validate metadata - see above
                     continue;
                 }
-                return Ok(LeafScanner::new(unsafe { unbounded_leaf.deref() }));
+                return Ok(LeafScanner::new(unsafe { unbounded_shared.deref() }));
             }
-            // unbounded_leaf being null indicates that the leaf node is bound to be freed.
+            // unbounded_shared being null indicates that the leaf node is bound to be freed.
             return Err(SearchError::Retry);
         }
     }
@@ -163,18 +163,18 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 }
                 return Ok(LeafScanner::max_less(unsafe { child_leaf.deref() }, key));
             }
-            let unbounded_leaf = (self.leaves.1).load(Relaxed, guard);
-            if !unbounded_leaf.is_null() {
+            let unbounded_shared = (self.leaves.1).load(Relaxed, guard);
+            if !unbounded_shared.is_null() {
                 if !(self.leaves.0).validate(metadata) {
                     // Data race resolution: validate metadata - see above
                     continue;
                 }
                 return Ok(LeafScanner::max_less(
-                    unsafe { unbounded_leaf.deref() },
+                    unsafe { unbounded_shared.deref() },
                     key,
                 ));
             }
-            // unbounded_leaf being null indicates that the leaf node is bound to be freed.
+            // unbounded_shared being null indicates that the leaf node is bound to be freed.
             return Err(SearchError::Retry);
         }
     }
@@ -206,28 +206,28 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                     },
                 );
             }
-            let unbounded_leaf = self.leaves.1.load(Relaxed, guard);
-            if !unbounded_leaf.is_null() {
+            let unbounded_shared = self.leaves.1.load(Relaxed, guard);
+            if !unbounded_shared.is_null() {
                 if !(self.leaves.0).validate(result.1) {
                     // Data race resolution: validate metadata - see 'InternalNode::search'.
                     continue;
                 }
                 // Tries to insert into the unbounded leaf, and tries to split the unbounded if it is full.
-                return unsafe { unbounded_leaf.deref().insert(key, value) }.map_or_else(
+                return unsafe { unbounded_shared.deref().insert(key, value) }.map_or_else(
                     || Ok(()),
                     |result| {
                         if result.1 {
                             return Err(InsertError::Duplicated(result.0));
                         }
-                        debug_assert!(unsafe { unbounded_leaf.deref().full() });
-                        if !self.split_leaf(None, unbounded_leaf, &self.leaves.1, guard) {
+                        debug_assert!(unsafe { unbounded_shared.deref().full() });
+                        if !self.split_leaf(None, unbounded_shared, &self.leaves.1, guard) {
                             return Err(InsertError::Full(result.0));
                         }
                         return Err(InsertError::Retry(result.0));
                     },
                 );
             }
-            // unbounded_leaf being null indicates that the leaf node is bound to be freed.
+            // unbounded_shared being null indicates that the leaf node is bound to be freed.
             return Err(InsertError::Retry((key, value)));
         }
     }
@@ -260,21 +260,22 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 }
                 return self.remove_obsolete_leaf(removed, key, Some(child_key), child_leaf, guard);
             }
-            let unbounded_leaf = (self.leaves.1).load(Relaxed, guard);
-            if !unbounded_leaf.is_null() {
+            let unbounded_shared = (self.leaves.1).load(Relaxed, guard);
+            if !unbounded_shared.is_null() {
                 if !(self.leaves.0).validate(result.1) {
                     // Data race resolution: validate metadata - see 'InternalNode::search'.
                     continue;
                 }
-                let (removed, full, obsolete) = unsafe { unbounded_leaf.deref().remove(key, true) };
+                let (removed, full, obsolete) =
+                    unsafe { unbounded_shared.deref().remove(key, true) };
                 if !full {
                     return Ok(removed);
                 } else if !obsolete {
-                    return self.check_full_leaf(removed, key, unbounded_leaf, guard);
+                    return self.check_full_leaf(removed, key, unbounded_shared, guard);
                 }
-                return self.remove_obsolete_leaf(removed, key, None, unbounded_leaf, guard);
+                return self.remove_obsolete_leaf(removed, key, None, unbounded_shared, guard);
             }
-            // unbounded_leaf being null indicates that the leaf node is bound to be freed.
+            // unbounded_shared being null indicates that the leaf node is bound to be freed.
             return Err(RemoveError::Retry(false));
         }
     }
@@ -641,9 +642,9 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
             }
             index += 1;
         }
-        let unbounded_leaf_ptr = self.leaves.1.load(Relaxed, &guard);
-        if !unbounded_leaf_ptr.is_null() {
-            let leaf_ref = unsafe { unbounded_leaf_ptr.deref() };
+        let unbounded_shared = self.leaves.1.load(Relaxed, &guard);
+        if !unbounded_shared.is_null() {
+            let leaf_ref = unsafe { unbounded_shared.deref() };
             leaf_ref_array[index].replace((Some(leaf_ref), None, index));
         }
 
@@ -733,10 +734,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for LeafNode<K, 
                 }
             }
         }
-        let unbounded_leaf = self.leaves.1.load(Acquire, &guard);
-        if !unbounded_leaf.is_null() {
+        let unbounded_shared = self.leaves.1.load(Acquire, &guard);
+        if !unbounded_shared.is_null() {
             unsafe {
-                let leaf = unbounded_leaf.into_owned();
+                let leaf = unbounded_shared.into_owned();
                 leaf.unlink(&guard);
             }
         }

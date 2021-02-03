@@ -255,7 +255,7 @@ where
     /// The first value of the result tuple indicates that the key has been removed,
     /// The second value of the result tuple indicates that the leaf is full.
     /// The last value of the result tuple indicates that the leaf has become obsolete.
-    pub fn remove(&self, key: &K, mark_obsolete: bool) -> (bool, bool, bool) {
+    pub fn remove(&self, key: &K, try_mark_obsolete: bool) -> (bool, bool, bool) {
         let mut metadata = self.metadata.load(Acquire);
         let mut max_min_rank = 0;
         let mut min_max_rank = ARRAY_SIZE + 1;
@@ -279,9 +279,9 @@ where
                         let mut new_metadata = (metadata & (!(OCCUPANCY_BIT << i))) + REMOVED_BIT;
                         let new_cardinality = (new_metadata & OCCUPANCY_MASK).count_ones() as usize;
                         let new_removed = ((new_metadata & REMOVED) / REMOVED_BIT) as usize;
-                        let (full, obsolete) = if mark_obsolete
+                        let (full, obsolete) = if try_mark_obsolete
                             && new_cardinality == 0
-                            && new_removed >= ARRAY_SIZE / 2
+                            && new_removed >= ARRAY_SIZE / 4
                         {
                             // Deprecates itself by marking all the available slots invalid.
                             for i in 0..ARRAY_SIZE {
