@@ -250,12 +250,10 @@ where
 
     /// Removes the key.
     ///
-    /// If the mark_obsolete flag is set and the leaf has no valid entry, it tries to mark itself obsolete.
-    ///
-    /// The first value of the result tuple indicates that the key has been removed,
-    /// The second value of the result tuple indicates that the leaf is full.
-    /// The last value of the result tuple indicates that the leaf has become obsolete.
-    pub fn remove(&self, key: &K, try_mark_obsolete: bool) -> (bool, bool, bool) {
+    /// If the shrink flag is set, the key is removed, and the leaf is sparse, shrinks the capacity.
+    /// It returns (removed, cardinality, vacant slots).
+    pub fn remove(&self, key: &K, shrink: bool) -> (bool, usize, usize) {
+        let mut removed = false;
         let mut metadata = self.metadata.load(Acquire);
         let mut max_min_rank = 0;
         let mut min_max_rank = ARRAY_SIZE + 1;
@@ -275,67 +273,56 @@ where
                             min_max_rank = rank;
                         }
                     }
-                    Ordering::Equal => loop {
-                        let mut new_metadata = (metadata & (!(OCCUPANCY_BIT << i))) + REMOVED_BIT;
-                        let new_cardinality = (new_metadata & OCCUPANCY_MASK).count_ones() as usize;
-                        let new_removed = ((new_metadata & REMOVED) / REMOVED_BIT) as usize;
-                        let (full, obsolete) = if try_mark_obsolete
-                            && new_cardinality == 0
-                            && new_removed >= ARRAY_SIZE / 4
-                        {
-                            // Deprecates itself by marking all the available slots invalid.
-                            for i in 0..ARRAY_SIZE {
-                                if (new_metadata
-                                    & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
-                                    == 0
-                                {
-                                    new_metadata |= INVALID_RANK << (i * INDEX_RANK_ENTRY_SIZE);
+                    Ordering::Equal => {
+                        loop {
+                            let mut new_metadata =
+                                (metadata & (!(OCCUPANCY_BIT << i))) + REMOVED_BIT;
+                            let num_removed = ((new_metadata & REMOVED) / REMOVED_BIT) as usize;
+                            if shrink && num_removed >= ARRAY_SIZE / 4 {
+                                // Deprecates itself by marking all the vacant slots invalid.
+                                for j in 0..ARRAY_SIZE {
+                                    if (new_metadata
+                                        & (INDEX_RANK_ENTRY_MASK << (j * INDEX_RANK_ENTRY_SIZE)))
+                                        == 0
+                                    {
+                                        if (new_metadata & (OCCUPANCY_BIT << j)) != 0 {
+                                            // Competes with the thread inserting an entry.
+                                            new_metadata &= !(OCCUPANCY_BIT << j);
+                                        }
+                                        new_metadata |= INVALID_RANK << (j * INDEX_RANK_ENTRY_SIZE);
+                                        new_metadata += REMOVED_BIT;
+                                    }
                                 }
                             }
-                            new_metadata &= !REMOVED;
-                            new_metadata += REMOVED_BIT * ARRAY_SIZE as u64;
-                            (true, true)
-                        } else {
-                            (
-                                new_cardinality + new_removed == ARRAY_SIZE,
-                                new_removed == ARRAY_SIZE,
-                            )
-                        };
-                        match self.metadata.compare_exchange(
-                            metadata,
-                            new_metadata,
-                            Release,
-                            Relaxed,
-                        ) {
-                            Ok(_) => {
-                                return (true, full, obsolete);
-                            }
-                            Err(result) => {
-                                metadata = result;
-                                if metadata & (OCCUPANCY_BIT << i) == 0 {
-                                    // Removed by another thread.
-                                    let cardinality =
-                                        (metadata & OCCUPANCY_MASK).count_ones() as usize;
-                                    let removed = ((metadata & REMOVED) / REMOVED_BIT) as usize;
-                                    return (
-                                        false,
-                                        cardinality + removed == ARRAY_SIZE,
-                                        removed == ARRAY_SIZE,
-                                    );
+                            match self.metadata.compare_exchange(
+                                metadata,
+                                new_metadata,
+                                Release,
+                                Relaxed,
+                            ) {
+                                Ok(_) => {
+                                    removed = true;
+                                    metadata = new_metadata;
+                                    break;
+                                }
+                                Err(result) => {
+                                    metadata = result;
+                                    if metadata & (OCCUPANCY_BIT << i) == 0 {
+                                        // Removed by another thread.
+                                        break;
+                                    }
                                 }
                             }
                         }
-                    },
+                        break;
+                    }
                 }
             }
         }
+
         let cardinality = (metadata & OCCUPANCY_MASK).count_ones() as usize;
-        let removed = ((metadata & REMOVED) / REMOVED_BIT) as usize;
-        (
-            false,
-            cardinality + removed == ARRAY_SIZE,
-            removed == ARRAY_SIZE,
-        )
+        let num_removed = ((metadata & REMOVED) / REMOVED_BIT) as usize;
+        (removed, cardinality, ARRAY_SIZE - cardinality - num_removed)
     }
 
     /// Returns a value associated with the key.
@@ -962,7 +949,7 @@ mod test {
         assert!(leaf.insert(70, 71).is_none());
         assert!(leaf.remove(&60, false).0);
         assert!(leaf.insert(60, 61).is_none());
-        assert_eq!(leaf.remove(&60, false), (true, false, false));
+        assert_eq!(leaf.remove(&60, false), (true, 2, 8));
         assert!(!leaf.full());
         assert!(leaf.insert(40, 40).is_none());
         assert!(leaf.insert(30, 31).is_none());
@@ -1059,17 +1046,17 @@ mod test {
         assert!(leaf.insert(13, 14).is_none());
         assert_eq!(*leaf.search(&13).unwrap(), 14);
         assert_eq!(leaf.insert(13, 14), Some(((13, 14), true)));
-        assert_eq!(leaf.remove(&10, false), (true, false, false));
-        assert_eq!(leaf.remove(&11, false), (true, false, false));
-        assert_eq!(leaf.remove(&12, false), (true, false, false));
+        assert_eq!(leaf.remove(&10, false), (true, 6, 5));
+        assert_eq!(leaf.remove(&11, false), (true, 5, 5));
+        assert_eq!(leaf.remove(&12, false), (true, 4, 5));
         assert!(!leaf.full());
         assert!(leaf.remove(&20, false).0);
         assert!(leaf.insert(20, 21).is_none());
         assert!(leaf.insert(12, 13).is_none());
         assert!(leaf.insert(14, 15).is_none());
         assert!(leaf.search(&11).is_none());
-        assert_eq!(leaf.remove(&10, false), (false, false, false));
-        assert_eq!(leaf.remove(&11, false), (false, false, false));
+        assert_eq!(leaf.remove(&10, false), (false, 6, 2));
+        assert_eq!(leaf.remove(&11, false), (false, 6, 2));
         assert_eq!(*leaf.search(&20).unwrap(), 21);
         assert!(leaf.insert(10, 11).is_none());
         assert!(leaf.insert(15, 16).is_none());
@@ -1120,10 +1107,10 @@ mod test {
             assert!(leaf.insert(i, i).is_none());
         }
         for i in 0..ARRAY_SIZE / 2 {
-            if i < ARRAY_SIZE / 2 - 1 {
-                assert_eq!(leaf.remove(&i, true), (true, false, false));
+            if i < ARRAY_SIZE / 4 - 1 {
+                assert_eq!(leaf.remove(&i, true), (true, ARRAY_SIZE / 2 - i - 1, 6));
             } else {
-                assert_eq!(leaf.remove(&i, true), (true, true, true));
+                assert_eq!(leaf.remove(&i, true), (true, ARRAY_SIZE / 2 - i - 1, 0));
             }
         }
         assert!(leaf.full());
@@ -1148,10 +1135,7 @@ mod test {
             assert!(leaf.insert(key, key).is_none());
         }
         for key in 0..ARRAY_SIZE {
-            assert_eq!(
-                leaf.remove(&key, false),
-                (true, true, key == ARRAY_SIZE - 1)
-            );
+            assert_eq!(leaf.remove(&key, false), (true, ARRAY_SIZE - key - 1, 0));
         }
     }
 

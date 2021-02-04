@@ -162,8 +162,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         guard: &Guard,
     ) {
         while let NodeType::Internal(internal_node) = unsafe { &current_root.deref().entry } {
-            // If locked and the pointer has remained the same, invalidate the node, and return invalid.
-            let root_lock = InternalNodeLocker::lock(internal_node, guard);
+            // If locked and the pointer has remained the same, invalidates the node, and return invalid.
+            let root_lock = InternalNodeLocker::try_lock(internal_node, guard);
             if root_lock.is_none() {
                 return;
             }
@@ -187,7 +187,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
 
             match unsafe { &new_root.deref().entry } {
                 NodeType::Internal(new_root_internal) => {
-                    let new_root_lock = InternalNodeLocker::lock(new_root_internal, guard);
+                    let new_root_lock = InternalNodeLocker::try_lock(new_root_internal, guard);
                     if new_root_lock.is_some() {
                         if root_ptr
                             .compare_and_set(current_root, new_root, Release, guard)
@@ -206,7 +206,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     }
                 }
                 NodeType::Leaf(new_root_leaf) => {
-                    let new_root_lock = LeafNodeLocker::lock(new_root_leaf, guard);
+                    let new_root_lock = LeafNodeLocker::try_lock(new_root_leaf, guard);
                     if new_root_lock.is_some() {
                         if root_ptr
                             .compare_and_set(current_root, new_root, Release, guard)
@@ -234,12 +234,12 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 let mut leaf_node_locker = None;
                 match unsafe { &current_root_node.deref().entry } {
                     NodeType::Internal(internal_node) => {
-                        if let Some(locker) = InternalNodeLocker::lock(internal_node, guard) {
+                        if let Some(locker) = InternalNodeLocker::try_lock(internal_node, guard) {
                             internal_node_locker.replace(locker);
                         }
                     }
                     NodeType::Leaf(leaf_node) => {
-                        if let Some(locker) = LeafNodeLocker::lock(leaf_node, guard) {
+                        if let Some(locker) = LeafNodeLocker::try_lock(leaf_node, guard) {
                             leaf_node_locker.replace(locker);
                         }
                     }
@@ -870,7 +870,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         guard: &Guard,
     ) -> Result<bool, RemoveError> {
         // If locked and the pointer has stayed the same, invalidates the node.
-        let lock = InternalNodeLocker::lock(self, guard);
+        let lock = InternalNodeLocker::try_lock(self, guard);
         if lock.is_none() {
             return Err(RemoveError::Retry(removed));
         }
@@ -895,7 +895,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 }
 
                 // Removes the node.
-                let coalesce = self.children.0.remove(child_key, true).2;
+                let (_, cardinality, vacant_slots) = self.children.0.remove(child_key, true);
                 // Once the key is removed, it is safe to deallocate the node as the validation loop ensures the absence of readers.
                 child_ptr.store(Shared::null(), Release);
                 unsafe {
@@ -904,7 +904,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                     guard.defer_destroy(child_shared);
                 };
 
-                if coalesce {
+                if cardinality == 0 && vacant_slots == 0 {
                     return Err(RemoveError::Coalesce(removed));
                 } else {
                     return Ok(removed);
@@ -921,15 +921,9 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         prev_internal_node: &InternalNode<K, V>,
         guard: &Guard,
     ) -> bool {
-        // In order to avoid conflicts with a thread splitting the node, lock itself and prev_internal_node.
-        let self_lock = InternalNodeLocker::lock(self, guard);
-        if self_lock.is_none() {
-            return false;
-        }
-        let prev_lock = InternalNodeLocker::lock(prev_internal_node, guard);
-        if prev_lock.is_none() {
-            return false;
-        }
+        // In order to avoid conflicts with a thread splitting the node, locks both internal nodes.
+        let _prev_lock = InternalNodeLocker::lock(prev_internal_node, guard);
+        let _self_lock = InternalNodeLocker::lock(self, guard);
 
         // Inserts the unbounded child of the previous internal node into the node array.
         let target_node_ref = unsafe { prev_internal_node.children.1.load(Relaxed, guard).deref() };
@@ -964,15 +958,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
 
     fn detach(&self, guard: &Guard) {
         debug_assert!(self.obsolete(true, guard));
-        loop {
-            if let Some(_self_locker) = InternalNodeLocker::lock(self, guard) {
-                let unbounded_shared = self.children.1.swap(Shared::null(), Relaxed, guard);
-                unsafe {
-                    unbounded_shared.deref().detach(guard);
-                    guard.defer_destroy(unbounded_shared);
-                }
-                break;
-            }
+        let _locker = InternalNodeLocker::lock(self, guard);
+        let unbounded_shared = self.children.1.swap(Shared::null(), Relaxed, guard);
+        unsafe {
+            unbounded_shared.deref().detach(guard);
+            guard.defer_destroy(unbounded_shared);
         }
     }
 
@@ -1092,7 +1082,7 @@ where
     K: Clone + Ord + Send + Sync,
     V: Clone + Send + Sync,
 {
-    fn lock(
+    fn try_lock(
         internal_node: &'a InternalNode<K, V>,
         guard: &Guard,
     ) -> Option<InternalNodeLocker<'a, K, V>> {
@@ -1109,6 +1099,14 @@ where
             Some(InternalNodeLocker {
                 lock: &internal_node.new_children,
             })
+        }
+    }
+
+    fn lock(internal_node: &'a InternalNode<K, V>, guard: &Guard) -> InternalNodeLocker<'a, K, V> {
+        loop {
+            if let Some(internal_node_locker) = InternalNodeLocker::try_lock(internal_node, guard) {
+                return internal_node_locker;
+            }
         }
     }
 }

@@ -53,15 +53,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
 
     pub fn detach(&self, guard: &Guard) {
         debug_assert!(self.obsolete(true, guard));
-        loop {
-            if let Some(_self_lock) = LeafNodeLocker::lock(self, guard) {
-                let unbounded_shared = self.leaves.1.swap(Shared::null(), Relaxed, guard);
-                unsafe {
-                    unbounded_shared.deref().unlink(guard);
-                    guard.defer_destroy(unbounded_shared);
-                }
-                break;
-            }
+        let _locker = LeafNodeLocker::lock(self, guard);
+        let unbounded_shared = self.leaves.1.swap(Shared::null(), Relaxed, guard);
+        unsafe {
+            unbounded_shared.deref().unlink(guard);
+            guard.defer_destroy(unbounded_shared);
         }
     }
 
@@ -104,7 +100,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             let unbounded_shared = (self.leaves.1).load(Relaxed, guard);
             if !unbounded_shared.is_null() {
                 if !(self.leaves.0).validate(result.1) {
-                    // Data race resolution: validate metadata - see above
+                    // Data race resolution: validate metadata - see above.
                     continue;
                 }
                 return Ok(unsafe { unbounded_shared.deref().search(key) });
@@ -245,10 +241,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                     // child_leaf being null indicates that the leaf node is bound to be freed.
                     return Err(RemoveError::Retry(false));
                 }
-                let (removed, full, obsolete) = unsafe { child_leaf.deref().remove(key, true) };
-                if !full {
+                let (removed, cardinality, vacant_slots) =
+                    unsafe { child_leaf.deref().remove(key, true) };
+                if vacant_slots > 0 {
                     return Ok(removed);
-                } else if !obsolete {
+                } else if cardinality > 0 {
                     // Data race resolution.
                     //  - insert: start to insert into a full leaf
                     //  - remove: start removing an entry from the leaf after pointer validation
@@ -266,11 +263,12 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                     // Data race resolution: validate metadata - see 'InternalNode::search'.
                     continue;
                 }
-                let (removed, full, obsolete) =
+                let (removed, cardinality, vacant_slots) =
                     unsafe { unbounded_shared.deref().remove(key, true) };
-                if !full {
+                if vacant_slots > 0 {
                     return Ok(removed);
-                } else if !obsolete {
+                } else if cardinality > 0 {
+                    // Data race resolution: validate metadata - see above.
                     return self.check_full_leaf(removed, key, unbounded_shared, guard);
                 }
                 return self.remove_obsolete_leaf(removed, key, None, unbounded_shared, guard);
@@ -402,16 +400,9 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         prev_leaf_node: &LeafNode<K, V>,
         guard: &Guard,
     ) -> bool {
-        // In order to avoid conflicts with a thread splitting the node, lock itself and prev_leaf_node.
-        let self_lock = LeafNodeLocker::lock(self, guard);
-        if self_lock.is_none() {
-            return false;
-        }
-        let prev_lock = LeafNodeLocker::lock(prev_leaf_node, guard);
-        if prev_lock.is_none() {
-            return false;
-        }
-        debug_assert!(prev_leaf_node.obsolete(false, guard));
+        // In order to avoid conflicts with a thread splitting the node, locks both leaf nodes.
+        let _prev_lock = LeafNodeLocker::lock(prev_leaf_node, guard);
+        let _self_lock = LeafNodeLocker::lock(self, guard);
 
         // Inserts the unbounded leaf of the previous leaf node into the leaf array.
         let target_leaf_ref = unsafe { prev_leaf_node.leaves.1.load(Relaxed, guard).deref() };
@@ -580,17 +571,17 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         &self,
         removed: bool,
         key: &K,
-        child_key: Option<&K>,
+        leaf_key: Option<&K>,
         leaf_shared: Shared<Leaf<K, V>>,
         guard: &Guard,
     ) -> Result<bool, RemoveError> {
         // If locked and the pointer has stayed the same, removes the leaf.
-        let lock = LeafNodeLocker::lock(self, guard);
+        let lock = LeafNodeLocker::try_lock(self, guard);
         if lock.is_none() {
             return Err(RemoveError::Retry(removed));
         }
 
-        let result = (self.leaves.0).min_greater_equal(&key);
+        let result = (self.leaves.0).min_greater_equal(key);
         let leaf_ptr = if let Some((_, child)) = result.0 {
             &child
         } else {
@@ -601,10 +592,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         }
 
         // The last remaining leaf is the unbounded one, return RemoveError::Coalesce.
-        let coalesce = child_key.map_or_else(
+        let coalesce = leaf_key.map_or_else(
             || self.leaves.0.obsolete(),
             |key| {
-                let obsolete = self.leaves.0.remove(key, true).2;
+                let (_, cardinality, vacant_slots) = self.leaves.0.remove(key, true);
                 // Once the key is removed, it is safe to drop the leaf as the validation loop ensures the absence of readers.
                 leaf_ptr.store(Shared::null(), Release);
                 unsafe {
@@ -613,7 +604,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                     leaf_shared.deref().unlink(guard);
                     guard.defer_destroy(leaf_shared)
                 };
-                obsolete
+                cardinality == 0 && vacant_slots == 0
             },
         );
 
@@ -758,7 +749,10 @@ where
     K: Clone + Ord + Send + Sync,
     V: Clone + Send + Sync,
 {
-    pub fn lock(leaf_node: &'a LeafNode<K, V>, guard: &Guard) -> Option<LeafNodeLocker<'a, K, V>> {
+    pub fn try_lock(
+        leaf_node: &'a LeafNode<K, V>,
+        guard: &Guard,
+    ) -> Option<LeafNodeLocker<'a, K, V>> {
         let mut new_nodes_dummy = NewLeaves::new();
         if let Err(error) = leaf_node.new_leaves.compare_and_set(
             Shared::null(),
@@ -772,6 +766,14 @@ where
             Some(LeafNodeLocker {
                 lock: &leaf_node.new_leaves,
             })
+        }
+    }
+
+    pub fn lock(leaf_node: &'a LeafNode<K, V>, guard: &Guard) -> LeafNodeLocker<'a, K, V> {
+        loop {
+            if let Some(leaf_node_locker) = LeafNodeLocker::try_lock(leaf_node, guard) {
+                return leaf_node_locker;
+            }
         }
     }
 }
