@@ -7,4 +7,4 @@ edition = "2018"
 [dependencies]
 proptest = "^0.10.1"
 rand = "^0.8.3"
-scc = { path = ".."}
+scc = { path = ".." }
