@@ -242,7 +242,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                     return Err(RemoveError::Retry(false));
                 }
                 let (removed, cardinality, vacant_slots) =
-                    unsafe { child_leaf.deref().remove(key, true) };
+                    unsafe { child_leaf.deref().remove(key, 1) };
                 if vacant_slots > 0 {
                     return Ok(removed);
                 } else if cardinality > 0 {
@@ -264,7 +264,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                     continue;
                 }
                 let (removed, cardinality, vacant_slots) =
-                    unsafe { unbounded_shared.deref().remove(key, true) };
+                    unsafe { unbounded_shared.deref().remove(key, ARRAY_SIZE / 3) };
                 if vacant_slots > 0 {
                     return Ok(removed);
                 } else if cardinality > 0 {
@@ -595,7 +595,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         let coalesce = leaf_key.map_or_else(
             || self.leaves.0.obsolete(),
             |key| {
-                let (_, cardinality, vacant_slots) = self.leaves.0.remove(key, true);
+                let (_, cardinality, vacant_slots) = self.leaves.0.remove(key, ARRAY_SIZE / 3);
                 // Once the key is removed, it is safe to drop the leaf as the validation loop ensures the absence of readers.
                 leaf_ptr.store(Shared::null(), Release);
                 unsafe {

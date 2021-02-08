@@ -895,7 +895,13 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 }
 
                 // Removes the node.
-                let (_, cardinality, vacant_slots) = self.children.0.remove(child_key, true);
+                let shrink_threshold = if self.floor >= ARRAY_SIZE / 3 {
+                    1
+                } else {
+                    ARRAY_SIZE / 3 - self.floor
+                };
+                let (_, cardinality, vacant_slots) =
+                    self.children.0.remove(child_key, shrink_threshold);
                 // Once the key is removed, it is safe to deallocate the node as the validation loop ensures the absence of readers.
                 child_ptr.store(Shared::null(), Release);
                 unsafe {

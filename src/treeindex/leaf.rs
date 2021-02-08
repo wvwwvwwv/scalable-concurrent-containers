@@ -250,9 +250,9 @@ where
 
     /// Removes the key.
     ///
-    /// If the shrink flag is set, the key is removed, and the leaf is sparse, shrinks the capacity.
+    /// If the number of removed entries exceeds the given threshold, it shrinks the leaf.
     /// It returns (removed, cardinality, vacant slots).
-    pub fn remove(&self, key: &K, shrink: bool) -> (bool, usize, usize) {
+    pub fn remove(&self, key: &K, threshold: usize) -> (bool, usize, usize) {
         let mut removed = false;
         let mut metadata = self.metadata.load(Acquire);
         let mut max_min_rank = 0;
@@ -278,7 +278,7 @@ where
                             let mut new_metadata =
                                 (metadata & (!(OCCUPANCY_BIT << i))) + REMOVED_BIT;
                             let num_removed = ((new_metadata & REMOVED) / REMOVED_BIT) as usize;
-                            if shrink && num_removed >= ARRAY_SIZE / 4 {
+                            if num_removed >= threshold {
                                 // Deprecates itself by marking all the vacant slots invalid.
                                 for j in 0..ARRAY_SIZE {
                                     if (new_metadata
@@ -947,21 +947,21 @@ mod test {
         assert_eq!(leaf.max(), Some((&50, &51)));
         assert!(leaf.insert(60, 61).is_none());
         assert!(leaf.insert(70, 71).is_none());
-        assert!(leaf.remove(&60, false).0);
+        assert!(leaf.remove(&60, ARRAY_SIZE).0);
         assert!(leaf.insert(60, 61).is_none());
-        assert_eq!(leaf.remove(&60, false), (true, 2, 8));
+        assert_eq!(leaf.remove(&60, ARRAY_SIZE), (true, 2, 8));
         assert!(!leaf.full());
         assert!(leaf.insert(40, 40).is_none());
         assert!(leaf.insert(30, 31).is_none());
         assert!(!leaf.full());
-        assert!(leaf.remove(&40, false).0);
+        assert!(leaf.remove(&40, ARRAY_SIZE).0);
         assert!(leaf.insert(40, 41).is_none());
         assert_eq!(leaf.insert(30, 33), Some(((30, 33), true)));
         assert!(leaf.insert(10, 11).is_none());
         assert!(leaf.insert(11, 12).is_none());
         assert!(leaf.insert(13, 13).is_none());
         assert!(leaf.insert(54, 55).is_none());
-        assert!(leaf.remove(&13, false).0);
+        assert!(leaf.remove(&13, ARRAY_SIZE).0);
         assert!(leaf.insert(13, 14).is_none());
         assert_eq!(leaf.max(), Some((&70, &71)));
         assert!(leaf.full());
@@ -1046,17 +1046,17 @@ mod test {
         assert!(leaf.insert(13, 14).is_none());
         assert_eq!(*leaf.search(&13).unwrap(), 14);
         assert_eq!(leaf.insert(13, 14), Some(((13, 14), true)));
-        assert_eq!(leaf.remove(&10, false), (true, 6, 5));
-        assert_eq!(leaf.remove(&11, false), (true, 5, 5));
-        assert_eq!(leaf.remove(&12, false), (true, 4, 5));
+        assert_eq!(leaf.remove(&10, ARRAY_SIZE), (true, 6, 5));
+        assert_eq!(leaf.remove(&11, ARRAY_SIZE), (true, 5, 5));
+        assert_eq!(leaf.remove(&12, ARRAY_SIZE), (true, 4, 5));
         assert!(!leaf.full());
-        assert!(leaf.remove(&20, false).0);
+        assert!(leaf.remove(&20, ARRAY_SIZE).0);
         assert!(leaf.insert(20, 21).is_none());
         assert!(leaf.insert(12, 13).is_none());
         assert!(leaf.insert(14, 15).is_none());
         assert!(leaf.search(&11).is_none());
-        assert_eq!(leaf.remove(&10, false), (false, 6, 2));
-        assert_eq!(leaf.remove(&11, false), (false, 6, 2));
+        assert_eq!(leaf.remove(&10, ARRAY_SIZE), (false, 6, 2));
+        assert_eq!(leaf.remove(&11, ARRAY_SIZE), (false, 6, 2));
         assert_eq!(*leaf.search(&20).unwrap(), 21);
         assert!(leaf.insert(10, 11).is_none());
         assert!(leaf.insert(15, 16).is_none());
@@ -1108,9 +1108,15 @@ mod test {
         }
         for i in 0..ARRAY_SIZE / 2 {
             if i < ARRAY_SIZE / 4 - 1 {
-                assert_eq!(leaf.remove(&i, true), (true, ARRAY_SIZE / 2 - i - 1, 6));
+                assert_eq!(
+                    leaf.remove(&i, ARRAY_SIZE / 4),
+                    (true, ARRAY_SIZE / 2 - i - 1, 6)
+                );
             } else {
-                assert_eq!(leaf.remove(&i, true), (true, ARRAY_SIZE / 2 - i - 1, 0));
+                assert_eq!(
+                    leaf.remove(&i, ARRAY_SIZE / 4),
+                    (true, ARRAY_SIZE / 2 - i - 1, 0)
+                );
             }
         }
         assert!(leaf.full());
@@ -1135,7 +1141,10 @@ mod test {
             assert!(leaf.insert(key, key).is_none());
         }
         for key in 0..ARRAY_SIZE {
-            assert_eq!(leaf.remove(&key, false), (true, ARRAY_SIZE - key - 1, 0));
+            assert_eq!(
+                leaf.remove(&key, ARRAY_SIZE),
+                (true, ARRAY_SIZE - key - 1, 0)
+            );
         }
     }
 
@@ -1160,7 +1169,7 @@ mod test {
                     if result.is_none() {
                         assert_eq!(*leaf_copied.search(&tid).unwrap(), 1);
                         if tid % 2 != 0 {
-                            assert!(leaf_copied.remove(&tid, false).0);
+                            assert!(leaf_copied.remove(&tid, ARRAY_SIZE).0);
                         }
                     }
                     let mut scanner = LeafScanner::new(&leaf_copied);

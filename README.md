@@ -56,7 +56,6 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 ## scc::TreeIndex <a name="treeindex"></a>
 
 [Work-in-progress](##milestones)
-- A known issue with TreeIndex::remove: #21
 - Not fully validated
 - Not fully optimized
 
@@ -64,6 +63,8 @@ scc::TreeIndex is a B+-tree variant optimized for read operations. Locks are onl
 
 ## Changelog
 
+#### 0.4.0
+Stabilize TreeIndex
 #### 0.3.22
 Stabilize TreeIndex::remove: #21 partially fixed
 #### 0.3.21
@@ -72,40 +73,6 @@ Stabilize TreeIndex::remove: #22 fixed
 Stabilize TreeIndex::remove: #20 fixed
 #### 0.3.19
 Stabilize TreeIndex::remove: #19 fixed
-#### 0.3.18
-Change TreeIndex::export to TreeIndex::print
-#### 0.3.17
-Stabilize TreeIndex::from and TreeIndex::export
-#### 0.3.16
-Implement TreeIndex::clear and (WIP)TreeIndex::from / license changed from MIT -> Apache 2.0 to comply with the company policies (SAP)
-#### 0.3.15
-Fix a data race between TreeIndex::remove and Scanner
-#### 0.3.14
-Implement TreeIndex::Node memory reclamation
-#### 0.3.13
-Fix a read-after-free problem
-#### 0.3.12
-Implement TreeIndex::Leaf memory reclamation
-#### 0.3.11
-Refine scc::TreeIndex APIs
-#### 0.3.10
-API change: scc::HashMap::Scanner -> scc::HashMap::Cursor
-#### 0.3.9
-Fix a data race between scc::TreeIndex::iter and scc::TreeIndex::insert
-#### 0.3.8
-Implement scc::TreeIndex::remove (work-in-progress), and fix a data race issue
-#### 0.3.7
-Implement scc::TreeIndex::iter
-#### 0.3.6
-Make scc::TreeIndex::insert work correctly on aarch64
-#### 0.3.5
-Fix a data race issue with scc::TreeIndex::insert
-#### 0.3.4
-Implement scc::TreeIndex::insert and scc::TreeIndex::read
-#### 0.3.2
-Make scc::HashMap pass Valgrind by deallocating arrays immediately on drop
-#### 0.3.1
-APIs stabilized
 
 ## Milestones <a name="milestones"></a>
 
