@@ -293,21 +293,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             NodeType::Leaf(leaf_node) => leaf_node.unlink(guard),
         }
     }
-
-    /// Tries to merge two adjacent nodes.
-    ///
-    /// The prev_prev_node argument being a valid reference to a Node means that the linked list has to be updated.
-    fn try_merge(&self, prev_node_key: &K, prev_node: &Node<K, V>, guard: &Guard) -> bool {
-        match (&self.entry, &prev_node.entry) {
-            (NodeType::Internal(internal_node), NodeType::Internal(prev_internal_node)) => {
-                internal_node.try_merge(prev_node_key, prev_internal_node, guard)
-            }
-            (NodeType::Leaf(leaf_node), NodeType::Leaf(prev_leaf_node)) => {
-                leaf_node.try_merge(prev_node_key, prev_leaf_node, guard)
-            }
-            (_, _) => false,
-        }
-    }
 }
 
 impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> Node<K, V> {
@@ -816,7 +801,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
     fn remove<'a>(&'a self, key: &K, guard: &'a Guard) -> Result<bool, RemoveError> {
         loop {
             let result = (self.children.0).min_greater_equal(&key);
-            if let Some((child_key, child)) = result.0 {
+            if let Some((_, child)) = result.0 {
                 let child_node = child.load(Acquire, guard);
                 if !(self.children.0).validate(result.1) {
                     // Data race resolution: validate metadata - see 'InternalNode::search'.
@@ -829,9 +814,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 return match unsafe { child_node.deref().remove(key, guard) } {
                     Ok(removed) => Ok(removed),
                     Err(remove_error) => match remove_error {
-                        RemoveError::Coalesce(removed) => {
-                            self.coalesce_node(removed, child_key, child_node, guard)
-                        }
+                        RemoveError::Cleanup(removed) => self.cleanup(removed, guard),
                         RemoveError::Retry(_) => Err(remove_error),
                     },
                 };
@@ -845,13 +828,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 return match unsafe { unbounded_shared.deref().remove(key, guard) } {
                     Ok(removed) => Ok(removed),
                     Err(remove_error) => match remove_error {
-                        RemoveError::Coalesce(removed) => {
-                            if self.children.0.obsolete() {
-                                Err(remove_error)
-                            } else {
-                                Ok(removed)
-                            }
-                        }
+                        RemoveError::Cleanup(removed) => self.cleanup(removed, guard),
                         RemoveError::Retry(_) => Err(remove_error),
                     },
                 };
@@ -861,105 +838,41 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         }
     }
 
-    /// Coalesces the node with the adjacent node.
-    fn coalesce_node(
-        &self,
-        removed: bool,
-        child_key: &K,
-        child_shared: Shared<Node<K, V>>,
-        guard: &Guard,
-    ) -> Result<bool, RemoveError> {
+    /// Tries to cleanup the node.
+    fn cleanup(&self, removed: bool, guard: &Guard) -> Result<bool, RemoveError> {
         // If locked and the pointer has stayed the same, invalidates the node.
         let lock = InternalNodeLocker::try_lock(self, guard);
         if lock.is_none() {
             return Err(RemoveError::Retry(removed));
         }
 
-        // Merges the node and next only if the pointers match, otherwise retry.
-        let result = self.children.0.search(child_key);
-        if let Some(child_ptr) = result {
-            if child_shared == child_ptr.load(Relaxed, guard) {
-                let child_ref = unsafe { child_shared.deref() };
-                let next_node_ref = unsafe {
-                    if let Some((_, next_child)) = self.children.0.min_greater(child_key) {
-                        next_child.load(Acquire, guard).deref()
-                    } else {
-                        self.children.1.load(Acquire, guard).deref()
-                    }
-                };
-                debug_assert!(child_ref.obsolete(false, guard));
-
-                if !next_node_ref.try_merge(child_key, child_ref, guard) {
-                    // Failed to coalesce.
-                    return Ok(removed);
-                }
-
-                // Removes the node.
-                let shrink_threshold = if self.floor >= ARRAY_SIZE / 3 {
-                    1
-                } else {
-                    ARRAY_SIZE / 3 - self.floor
-                };
-                let (_, cardinality, vacant_slots) =
-                    self.children.0.remove(child_key, shrink_threshold);
-                // Once the key is removed, it is safe to deallocate the node as the validation loop ensures the absence of readers.
-                child_ptr.store(Shared::null(), Release);
-                unsafe {
-                    // Needs to nullify the unbounded node/leaf pointer as the instance is referenced by the adjacent node.
-                    debug_assert!(child_shared.deref().obsolete(true, guard));
-                    guard.defer_destroy(child_shared);
-                };
-
-                if cardinality == 0 && vacant_slots == 0 {
-                    return Err(RemoveError::Coalesce(removed));
-                } else {
-                    return Ok(removed);
-                }
-            }
-        }
-        Err(RemoveError::Retry(removed))
-    }
-
-    /// Tries to merge two adjacent internal nodes.
-    fn try_merge(
-        &self,
-        prev_internal_node_key: &K,
-        prev_internal_node: &InternalNode<K, V>,
-        guard: &Guard,
-    ) -> bool {
-        // In order to avoid conflicts with a thread splitting the node, locks both internal nodes.
-        let _prev_lock = InternalNodeLocker::lock(prev_internal_node, guard);
-        let _self_lock = InternalNodeLocker::lock(self, guard);
-
-        // Inserts the unbounded child of the previous internal node into the node array.
-        let target_node_ref = unsafe { prev_internal_node.children.1.load(Relaxed, guard).deref() };
-        if !target_node_ref.obsolete(true, guard) {
-            if self
-                .children
-                .0
-                .insert(
-                    prev_internal_node_key.clone(),
-                    prev_internal_node.children.1.clone(),
-                )
-                .is_some()
-            {
-                return false;
-            }
-            prev_internal_node.children.1.store(Shared::null(), Relaxed);
+        let mut obsolete = true;
+        let shrink_threshold = if self.floor >= ARRAY_SIZE / 3 {
+            1
         } else {
-            debug_assert!(prev_internal_node.obsolete(false, guard));
-            // Makes the node unreachable.
-            let obsolete_internal_ptr =
-                prev_internal_node
-                    .children
-                    .1
-                    .swap(Shared::null(), Relaxed, guard);
-            unsafe {
-                obsolete_internal_ptr.deref().detach(guard);
-                guard.defer_destroy(obsolete_internal_ptr)
-            };
+            ARRAY_SIZE / 3 - self.floor
+        };
+        for entry in LeafScanner::new(&self.children.0) {
+            let node_shared = entry.1.load(Relaxed, guard);
+            let node_ref = unsafe { node_shared.deref() };
+            if node_ref.obsolete(true, guard) {
+                self.children.0.remove(entry.0, shrink_threshold);
+                // Once the key is removed, it is safe to deallocate the node as the validation loop ensures the absence of readers.
+                entry.1.store(Shared::null(), Release);
+                node_ref.detach(guard);
+                unsafe {
+                    guard.defer_destroy(node_shared);
+                };
+            } else if obsolete {
+                obsolete = false;
+            }
         }
-        true
+
+        if obsolete {
+            Err(RemoveError::Cleanup(removed))
+        } else {
+            Ok(removed)
+        }
     }
 
     fn detach(&self, guard: &Guard) {

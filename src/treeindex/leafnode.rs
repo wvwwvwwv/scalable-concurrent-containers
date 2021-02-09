@@ -231,7 +231,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
     pub fn remove<'a>(&'a self, key: &K, guard: &'a Guard) -> Result<bool, RemoveError> {
         loop {
             let result = (self.leaves.0).min_greater_equal(&key);
-            if let Some((child_key, child)) = result.0 {
+            if let Some((_, child)) = result.0 {
                 let child_leaf = child.load(Acquire, guard);
                 if !(self.leaves.0).validate(result.1) {
                     // Data race resolution: validate metadata - see 'InternalNode::search'.
@@ -242,7 +242,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                     return Err(RemoveError::Retry(false));
                 }
                 let (removed, cardinality, vacant_slots) =
-                    unsafe { child_leaf.deref().remove(key, 1) };
+                    unsafe { child_leaf.deref().remove(key, ARRAY_SIZE / 3) };
                 if vacant_slots > 0 {
                     return Ok(removed);
                 } else if cardinality > 0 {
@@ -255,7 +255,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                     // In order to resolve this, check the pointer again.
                     return self.check_full_leaf(removed, key, child_leaf, guard);
                 }
-                return self.remove_obsolete_leaf(removed, key, Some(child_key), child_leaf, guard);
+                return self.cleanup(removed, guard);
             }
             let unbounded_shared = (self.leaves.1).load(Relaxed, guard);
             if !unbounded_shared.is_null() {
@@ -271,7 +271,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                     // Data race resolution: validate metadata - see above.
                     return self.check_full_leaf(removed, key, unbounded_shared, guard);
                 }
-                return self.remove_obsolete_leaf(removed, key, None, unbounded_shared, guard);
+                return self.cleanup(removed, guard);
             }
             // unbounded_shared being null indicates that the leaf node is bound to be freed.
             return Err(RemoveError::Retry(false));
@@ -391,41 +391,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
 
         debug_assert!(middle_key.is_some());
         middle_key
-    }
-
-    /// Tries to merge two adjacent leaf nodes.
-    pub fn try_merge(
-        &self,
-        prev_leaf_node_key: &K,
-        prev_leaf_node: &LeafNode<K, V>,
-        guard: &Guard,
-    ) -> bool {
-        // In order to avoid conflicts with a thread splitting the node, locks both leaf nodes.
-        let _prev_lock = LeafNodeLocker::lock(prev_leaf_node, guard);
-        let _self_lock = LeafNodeLocker::lock(self, guard);
-
-        // Inserts the unbounded leaf of the previous leaf node into the leaf array.
-        let target_leaf_ref = unsafe { prev_leaf_node.leaves.1.load(Relaxed, guard).deref() };
-        if !target_leaf_ref.obsolete() {
-            if self
-                .leaves
-                .0
-                .insert(prev_leaf_node_key.clone(), prev_leaf_node.leaves.1.clone())
-                .is_some()
-            {
-                return false;
-            }
-            prev_leaf_node.leaves.1.store(Shared::null(), Relaxed);
-        } else {
-            // Makes the leaf unreachable.
-            let obsolete_leaf_ptr = prev_leaf_node.leaves.1.swap(Shared::null(), Relaxed, guard);
-            unsafe {
-                obsolete_leaf_ptr.deref().unlink(guard);
-                guard.defer_destroy(obsolete_leaf_ptr)
-            };
-        }
-        debug_assert!(prev_leaf_node.obsolete(true, guard));
-        true
     }
 
     /// Splits a full leaf.
@@ -566,50 +531,32 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         }
     }
 
-    /// Removes the obsolete leaf.
-    fn remove_obsolete_leaf(
-        &self,
-        removed: bool,
-        key: &K,
-        leaf_key: Option<&K>,
-        leaf_shared: Shared<Leaf<K, V>>,
-        guard: &Guard,
-    ) -> Result<bool, RemoveError> {
-        // If locked and the pointer has stayed the same, removes the leaf.
+    /// Tries to cleanup obsolete leaves.
+    fn cleanup(&self, removed: bool, guard: &Guard) -> Result<bool, RemoveError> {
         let lock = LeafNodeLocker::try_lock(self, guard);
         if lock.is_none() {
             return Err(RemoveError::Retry(removed));
         }
 
-        let result = (self.leaves.0).min_greater_equal(key);
-        let leaf_ptr = if let Some((_, child)) = result.0 {
-            &child
-        } else {
-            &self.leaves.1
-        };
-        if leaf_ptr.load(Relaxed, guard) != leaf_shared {
-            return Err(RemoveError::Retry(removed));
+        let mut obsolete = true;
+        for entry in LeafScanner::new(&self.leaves.0) {
+            let leaf_shared = entry.1.load(Relaxed, guard);
+            let leaf_ref = unsafe { leaf_shared.deref() };
+            if leaf_ref.obsolete() {
+                self.leaves.0.remove(entry.0, ARRAY_SIZE / 3);
+                // Once the key is removed, it is safe to drop the leaf as the validation loop ensures the absence of readers.
+                entry.1.store(Shared::null(), Release);
+                unsafe {
+                    leaf_ref.unlink(guard);
+                    guard.defer_destroy(leaf_shared);
+                }
+            } else if obsolete {
+                obsolete = false;
+            }
         }
 
-        // The last remaining leaf is the unbounded one, return RemoveError::Coalesce.
-        let coalesce = leaf_key.map_or_else(
-            || self.leaves.0.obsolete(),
-            |key| {
-                let (_, cardinality, vacant_slots) = self.leaves.0.remove(key, ARRAY_SIZE / 3);
-                // Once the key is removed, it is safe to drop the leaf as the validation loop ensures the absence of readers.
-                leaf_ptr.store(Shared::null(), Release);
-                unsafe {
-                    debug_assert!(leaf_shared.deref().search(key).is_none());
-                    debug_assert!(leaf_shared.deref().obsolete());
-                    leaf_shared.deref().unlink(guard);
-                    guard.defer_destroy(leaf_shared)
-                };
-                cardinality == 0 && vacant_slots == 0
-            },
-        );
-
-        if coalesce {
-            Err(RemoveError::Coalesce(removed))
+        if obsolete {
+            Err(RemoveError::Cleanup(removed))
         } else {
             Ok(removed)
         }

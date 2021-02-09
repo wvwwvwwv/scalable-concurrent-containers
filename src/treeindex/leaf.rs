@@ -428,41 +428,6 @@ where
         (None, metadata)
     }
 
-    /// Returns the minimum entry among those that are Ordering::Greater than the given key.
-    pub fn min_greater(&self, key: &K) -> Option<(&K, &V)> {
-        let metadata = self.metadata.load(Acquire);
-        let mut max_min_rank = 0;
-        let mut min_max_rank = ARRAY_SIZE + 1;
-        let mut min_max_index = ARRAY_SIZE;
-        for i in 0..ARRAY_SIZE {
-            let rank = ((metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
-                >> (i * INDEX_RANK_ENTRY_SIZE)) as usize;
-            if rank > max_min_rank && rank < min_max_rank && (metadata & (OCCUPANCY_BIT << i)) != 0
-            {
-                match self.compare(i, key) {
-                    Ordering::Less => {
-                        if max_min_rank < rank {
-                            max_min_rank = rank;
-                        }
-                    }
-                    Ordering::Greater => {
-                        if min_max_rank > rank {
-                            min_max_rank = rank;
-                            min_max_index = i;
-                        }
-                    }
-                    Ordering::Equal => {
-                        max_min_rank = rank;
-                    }
-                }
-            }
-        }
-        if min_max_rank <= ARRAY_SIZE {
-            return Some(self.read(min_max_index));
-        }
-        None
-    }
-
     /// Compares the given metadata value with the current one.
     pub fn validate(&self, metadata: u64) -> bool {
         // The acquire fence ensures that a reader having read the latest state must read the updated metadata.
