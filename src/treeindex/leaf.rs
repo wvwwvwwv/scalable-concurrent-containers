@@ -831,7 +831,7 @@ where
         }
         LeafScanner {
             leaf,
-            metadata: metadata,
+            metadata,
             removed_entries_to_scan,
             entry_index: ARRAY_SIZE,
             entry_ptr: std::ptr::null(),

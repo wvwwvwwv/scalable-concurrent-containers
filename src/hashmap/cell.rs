@@ -7,33 +7,39 @@ use std::sync::atomic::{AtomicPtr, AtomicU32};
 use std::sync::{Condvar, Mutex};
 
 pub const ARRAY_SIZE: usize = 16;
+pub const MAX_RESIZING_FACTOR: usize = 6;
+const THRESHOLD: u32 = 1u32 << 26;
+
 const KILLED_FLAG: u32 = 1u32 << 31;
 const WAITING_FLAG: u32 = 1u32 << 30;
-const LOCK_MASK: u32 = ((1u32 << 14) - 1) << ARRAY_SIZE;
 const XLOCK: u32 = 1u32 << 29;
-const SLOCK_MAX: u32 = LOCK_MASK & (!XLOCK);
-const SLOCK: u32 = 1u32 << ARRAY_SIZE;
-const OCCUPANCY_MASK: u32 = (1u32 << ARRAY_SIZE) - 1;
-const OCCUPANCY_BIT: u32 = 1;
+const SLOCK_MAX: u32 = XLOCK - 1;
+const SLOCK: u32 = 1u32;
+const LOCK_MASK: u32 = XLOCK | SLOCK_MAX;
 
-pub type EntryArray<K, V> = [MaybeUninit<(K, V)>; ARRAY_SIZE];
-
-pub struct Cell<K: Eq, V> {
-    partial_hash_array: [u16; ARRAY_SIZE],
-    metadata: AtomicU32,
-    wait_queue: AtomicPtr<WaitQueueEntry>,
+pub struct EntryArray<K: Eq, V> {
+    entries: [MaybeUninit<(K, V)>; ARRAY_SIZE],
     link: LinkType<K, V>,
-    linked_entries: usize,
+}
+
+/// Cell is a 32-byte data structure that manages the metadata of key-value pairs.
+pub struct Cell<K: Eq, V> {
+    metadata: AtomicU32,
+    num_entries: u32,
+    wait_queue: AtomicPtr<WaitQueueEntry>,
+    /// Zero implies that the corresponding position is vacant.
+    partial_hash_array: [u8; ARRAY_SIZE],
+    entry_array: Option<Box<EntryArray<K, V>>>,
 }
 
 impl<K: Eq, V> Default for Cell<K, V> {
     fn default() -> Self {
         Cell {
             metadata: AtomicU32::new(0),
+            num_entries: 0,
             wait_queue: AtomicPtr::new(ptr::null_mut()),
             partial_hash_array: [0; ARRAY_SIZE],
-            link: None,
-            linked_entries: 0,
+            entry_array: None,
         }
     }
 }
@@ -43,11 +49,8 @@ impl<K: Eq, V> Cell<K, V> {
         self.metadata.load(Relaxed) & KILLED_FLAG == KILLED_FLAG
     }
 
-    pub fn size(&self) -> (usize, usize) {
-        (
-            (self.metadata.load(Relaxed) & OCCUPANCY_MASK).count_ones() as usize,
-            self.linked_entries,
-        )
+    pub fn size(&self) -> usize {
+        self.num_entries as usize
     }
 
     fn wait<T, F: FnOnce() -> Option<T>>(&self, f: F) -> Option<T> {
@@ -55,7 +58,7 @@ impl<K: Eq, V> Cell<K, V> {
         let mut condvar = WaitQueueEntry::new(self.wait_queue.load(Relaxed));
         let condvar_ptr: *mut WaitQueueEntry = &mut condvar;
 
-        // insert itself into the wait queue
+        // Inserts itself into the wait queue
         while let Err(result) =
             self.wait_queue
                 .compare_exchange(condvar.next, condvar_ptr, Release, Relaxed)
@@ -76,7 +79,7 @@ impl<K: Eq, V> Cell<K, V> {
             }
         }
 
-        // Try-locks again once the condvar is inserted into the wait queue.
+        // Tries to lock again once the condvar is inserted into the wait queue.
         let locked = f();
         if locked.is_some() {
             self.wakeup();
@@ -107,80 +110,89 @@ impl<K: Eq, V> Cell<K, V> {
 
     fn search(
         &self,
-        metadata: u32,
         key: &K,
-        partial_hash: u16,
-        entry_array: &EntryArray<K, V>,
+        partial_hash: u8,
     ) -> Option<(u8, *const EntryArrayLink<K, V>, *const (K, V))> {
-        let occupancy_metadata = metadata & OCCUPANCY_MASK;
+        if let Some(entry_array) = self.entry_array.as_ref() {
+            // Starts with the preferred index.
+            let preferred_index = partial_hash % (ARRAY_SIZE as u8);
+            if self.partial_hash_array[preferred_index as usize] == (partial_hash | 1) {
+                let entry_ptr = entry_array.entries[preferred_index as usize].as_ptr();
+                if unsafe { &(*entry_ptr) }.0 == *key {
+                    return Some((preferred_index, ptr::null(), entry_ptr));
+                }
+            }
 
-        // Starts with the preferred index.
-        let preferred_index = (partial_hash % (ARRAY_SIZE as u16)).try_into().unwrap();
-        if (occupancy_metadata & (OCCUPANCY_BIT << preferred_index)) != 0
-            && self.partial_hash_array[preferred_index as usize] == partial_hash
-        {
-            let entry_ptr = entry_array[preferred_index as usize].as_ptr();
-            if unsafe { &(*entry_ptr) }.0 == *key {
-                return Some((preferred_index, ptr::null(), entry_ptr));
+            // Iterates the array.
+            for i in 0..ARRAY_SIZE.try_into().unwrap() {
+                if i != preferred_index && self.partial_hash_array[i as usize] == (partial_hash | 1)
+                {
+                    let entry_ptr = entry_array.entries[i as usize].as_ptr();
+                    if unsafe { &(*entry_ptr) }.0 == *key {
+                        return Some((i, ptr::null(), entry_ptr));
+                    }
+                }
+            }
+
+            // Traverses the link.
+            let mut link_ref = &entry_array.link;
+            while let Some(link) = link_ref.as_ref() {
+                if let Some(result) = link.search_entry(key, partial_hash) {
+                    return Some((u8::MAX, result.0, result.1));
+                }
+                link_ref = &link.link_ref();
             }
         }
+        None
+    }
+}
 
-        // Iterates the array.
-        let start_index: u8 = occupancy_metadata.trailing_zeros().try_into().unwrap();
-        for i in start_index..ARRAY_SIZE.try_into().unwrap() {
-            let occupancy_bit = OCCUPANCY_BIT << i;
-            if occupancy_bit > occupancy_metadata {
-                break;
-            }
-            if i != preferred_index
-                && (occupancy_metadata & occupancy_bit) != 0
-                && self.partial_hash_array[i as usize] == partial_hash
-            {
-                let entry_ptr = entry_array[i as usize].as_ptr();
-                if unsafe { &(*entry_ptr) }.0 == *key {
-                    return Some((i, ptr::null(), entry_ptr));
+impl<K: Eq, V> Drop for Cell<K, V> {
+    fn drop(&mut self) {
+        // If it has been killed, nothing to cleanup.
+        if let Some(mut entry_array) = self.entry_array.take() {
+            let metadata = self.metadata.load(Acquire);
+            if metadata & KILLED_FLAG == 0 {
+                // Iterates the array.
+                for i in 0..ARRAY_SIZE {
+                    if self.partial_hash_array[i as usize] != 0 {
+                        unsafe {
+                            std::ptr::drop_in_place(entry_array.entries[i].as_mut_ptr());
+                        }
+                    }
+                }
+
+                // Traverses the link.
+                let mut link_option = entry_array.link.take();
+                while let Some(link) = link_option {
+                    link_option = link.cleanup();
                 }
             }
         }
-
-        // Traverses the link.
-        let mut link_ref = &self.link;
-        while let Some(link) = link_ref.as_ref() {
-            if let Some(result) = link.search_entry(key, partial_hash) {
-                return Some((u8::MAX, result.0, result.1));
-            }
-            link_ref = &link.link_ref();
-        }
-
-        None
     }
 }
 
 /// CellLocker.
 pub struct CellLocker<'a, K: Eq, V> {
     cell: &'a Cell<K, V>,
-    entry_array: &'a EntryArray<K, V>,
     metadata: u32,
 }
 
 impl<'a, K: Eq, V> CellLocker<'a, K, V> {
     /// Creates a new CellLocker instance with the cell exclusively locked.
-    pub fn lock(cell: &'a Cell<K, V>, entry_array: &'a EntryArray<K, V>) -> CellLocker<'a, K, V> {
+    pub fn lock(cell: &'a Cell<K, V>) -> CellLocker<'a, K, V> {
         loop {
-            if let Some(result) = Self::try_lock(cell, entry_array) {
+            if let Some(result) = Self::try_lock(cell) {
                 return result;
             }
-            if let Some(result) = cell.wait(|| Self::try_lock(cell, entry_array)) {
+            if let Some(result) = cell.wait(|| Self::try_lock(cell)) {
                 return result;
             }
         }
     }
 
     /// Creates a new CellLocker instance if the cell is exclusively locked.
-    fn try_lock(
-        cell: &'a Cell<K, V>,
-        entry_array: &'a EntryArray<K, V>,
-    ) -> Option<CellLocker<'a, K, V>> {
+    fn try_lock(cell: &'a Cell<K, V>) -> Option<CellLocker<'a, K, V>> {
         let mut current = cell.metadata.load(Relaxed);
         loop {
             match cell.metadata.compare_exchange(
@@ -192,7 +204,6 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
                 Ok(result) => {
                     return Some(CellLocker {
                         cell,
-                        entry_array,
                         metadata: result | XLOCK,
                     });
                 }
@@ -206,15 +217,11 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
         }
     }
 
-    pub fn occupied(&self, sub_index: u8) -> bool {
-        (self.metadata & (OCCUPANCY_BIT << sub_index)) != 0
+    pub fn size(&self) -> usize {
+        self.cell.size()
     }
 
-    pub fn full(&self) -> bool {
-        (self.metadata & OCCUPANCY_MASK) == OCCUPANCY_MASK
-    }
-
-    pub fn partial_hash(&self, sub_index: u8) -> u16 {
+    pub fn partial_hash(&self, sub_index: u8) -> u8 {
         self.cell.partial_hash_array[sub_index as usize]
     }
 
@@ -244,20 +251,17 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
         }
 
         // Advances in the cell.
-        let occupancy_metadata = self.metadata & OCCUPANCY_MASK;
-        let start_index = if sub_index == u8::MAX {
-            occupancy_metadata.trailing_zeros().try_into().unwrap()
-        } else {
-            sub_index + 1
-        };
-        for i in start_index..ARRAY_SIZE.try_into().unwrap() {
-            let occupancy_bit = OCCUPANCY_BIT << i;
-            if occupancy_bit > occupancy_metadata {
-                break;
-            }
-            if (occupancy_metadata & occupancy_bit) != 0 {
-                let entry_ptr = self.entry_array[i as usize].as_ptr();
-                return Some((i, ptr::null(), entry_ptr));
+        if let Some(entry_array) = self.cell.entry_array.as_ref() {
+            let start_index = if sub_index == u8::MAX {
+                0
+            } else {
+                sub_index + 1
+            };
+            for i in start_index..ARRAY_SIZE.try_into().unwrap() {
+                if self.cell.partial_hash_array[i as usize] != 0 {
+                    let entry_ptr = entry_array.entries[i as usize].as_ptr();
+                    return Some((i, ptr::null(), entry_ptr));
+                }
             }
         }
         None
@@ -266,52 +270,76 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
     pub fn search(
         &self,
         key: &K,
-        partial_hash: u16,
+        partial_hash: u8,
     ) -> Option<(u8, *const EntryArrayLink<K, V>, *const (K, V))> {
-        self.cell
-            .search(self.metadata, key, partial_hash, self.entry_array)
+        self.cell.search(key, partial_hash)
     }
 
     pub fn insert(
         &mut self,
         key: K,
-        partial_hash: u16,
+        partial_hash: u8,
         value: V,
-    ) -> (u8, *const EntryArrayLink<K, V>, *const (K, V)) {
-        for i in [
-            (partial_hash % (ARRAY_SIZE as u16)) as usize,
-            self.metadata.trailing_ones() as usize,
-        ]
-        .iter()
-        {
-            if *i >= ARRAY_SIZE {
-                continue;
-            }
-            if !self.occupied((*i).try_into().unwrap()) {
+        check_num_entries: bool,
+    ) -> Result<(u8, *const EntryArrayLink<K, V>, *const (K, V)), V> {
+        let cell_mut_ref = self.cell_mut_ref();
+        if cell_mut_ref.entry_array.is_none() {
+            // Allocates a new entry array.
+            debug_assert_eq!(cell_mut_ref.num_entries, 0);
+            cell_mut_ref.entry_array.replace(Box::new(EntryArray {
+                entries: unsafe { MaybeUninit::uninit().assume_init() },
+                link: None,
+            }));
+        }
+        let entry_array_mut_ref = cell_mut_ref.entry_array.as_mut().unwrap();
+
+        let preferred_index = (partial_hash % (ARRAY_SIZE as u8)) as usize;
+        if cell_mut_ref.partial_hash_array[preferred_index] == 0 {
+            unsafe {
+                entry_array_mut_ref.entries[preferred_index]
+                    .as_mut_ptr()
+                    .write((key, value))
+            };
+            cell_mut_ref.num_entries += 1;
+            cell_mut_ref.partial_hash_array[preferred_index] = partial_hash | 1;
+            return Ok((
+                preferred_index.try_into().unwrap(),
+                ptr::null(),
+                entry_array_mut_ref.entries[preferred_index].as_ptr(),
+            ));
+        }
+
+        // Iterates the array.
+        for i in 0..ARRAY_SIZE {
+            if i != preferred_index && cell_mut_ref.partial_hash_array[i] == 0 {
                 unsafe {
-                    self.entry_array_mut_ref()[*i]
+                    entry_array_mut_ref.entries[i]
                         .as_mut_ptr()
                         .write((key, value))
                 };
-                self.metadata |= OCCUPANCY_BIT << i;
-                self.cell_mut_ref().partial_hash_array[*i] = partial_hash;
-                return (
-                    (*i).try_into().unwrap(),
+                cell_mut_ref.num_entries += 1;
+                cell_mut_ref.partial_hash_array[i] = partial_hash | 1;
+                return Ok((
+                    i.try_into().unwrap(),
                     ptr::null(),
-                    self.entry_array[*i].as_ptr(),
-                );
+                    entry_array_mut_ref.entries[i].as_ptr(),
+                ));
             }
         }
 
-        let cell = self.cell_mut_ref();
+        // If the cell contains more entries than the threshold, returns None.
+        if check_num_entries && cell_mut_ref.num_entries >= THRESHOLD {
+            return Err(value);
+        }
+
         let mut key = key;
         let mut value = value;
-        let mut link_ref = &mut cell.link;
+        let mut link_ref = &mut entry_array_mut_ref.link;
         while let Some(link) = link_ref.as_mut() {
             match link.insert_entry(key, partial_hash, value) {
                 Ok(result) => {
-                    cell.linked_entries += 1;
-                    return (u8::MAX, result.0, result.1);
+                    cell_mut_ref.num_entries += 1;
+                    return Ok((u8::MAX, result.0, result.1));
                 }
                 Err(result) => {
                     key = result.0;
@@ -321,12 +349,14 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
             link_ref = link.link_mut_ref();
         }
 
-        let mut new_entry_array_link = Box::new(EntryArrayLink::new(cell.link.take()));
+        let mut new_entry_array_link =
+            Box::new(EntryArrayLink::new(entry_array_mut_ref.link.take()));
         let result = new_entry_array_link.insert_entry(key, partial_hash, value);
-        cell.link = Some(new_entry_array_link);
-        cell.linked_entries += 1;
+        entry_array_mut_ref.link.replace(new_entry_array_link);
         let result = result.ok().unwrap();
-        (u8::MAX, result.0, result.1)
+        cell_mut_ref.num_entries += 1;
+
+        Ok((u8::MAX, result.0, result.1))
     }
 
     pub fn remove(
@@ -336,61 +366,78 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
         entry_array_link_ptr: *const EntryArrayLink<K, V>,
         key_value_pair_ptr: *const (K, V),
     ) {
+        let cell_mut_ref = self.cell_mut_ref();
+        debug_assert!(cell_mut_ref.entry_array.is_some());
+        cell_mut_ref.num_entries -= 1;
         if sub_index != u8::MAX {
-            self.metadata &= !(OCCUPANCY_BIT << sub_index);
+            cell_mut_ref.partial_hash_array[sub_index as usize] = 0;
             if drop_entry {
                 unsafe {
+                    let entry_array_mut_ref = cell_mut_ref.entry_array.as_mut().unwrap();
                     std::ptr::drop_in_place(
-                        self.entry_array_mut_ref()[sub_index as usize].as_mut_ptr(),
+                        entry_array_mut_ref.entries[sub_index as usize].as_mut_ptr(),
                     );
                 };
             }
-        }
-        if !entry_array_link_ptr.is_null() {
-            let entry_array_link_mut_ptr = entry_array_link_ptr as *mut EntryArrayLink<K, V>;
-            let cell = self.cell_mut_ref();
-            if unsafe { (*entry_array_link_mut_ptr).remove_entry(drop_entry, key_value_pair_ptr) } {
-                if let Ok(mut head) = cell.link.as_mut().map_or_else(
-                    || Err(()),
-                    |head| head.remove_self(entry_array_link_mut_ptr),
-                ) {
-                    cell.link = head.take();
-                } else {
-                    let mut link_ref = &mut cell.link;
-                    while let Some(link) = link_ref.as_mut() {
-                        if link.remove_next(entry_array_link_mut_ptr) {
-                            break;
+            if cell_mut_ref.num_entries == 0 {
+                // Drops the entry array when all the entries are removed.
+                cell_mut_ref.entry_array.take();
+            }
+        } else {
+            let entry_array_mut_ref = cell_mut_ref.entry_array.as_mut().unwrap();
+            if !entry_array_link_ptr.is_null() {
+                let entry_array_link_mut_ptr = entry_array_link_ptr as *mut EntryArrayLink<K, V>;
+                if unsafe {
+                    (*entry_array_link_mut_ptr).remove_entry(drop_entry, key_value_pair_ptr)
+                } {
+                    if let Ok(mut head) = entry_array_mut_ref.link.as_mut().map_or_else(
+                        || Err(()),
+                        |head| head.remove_self(entry_array_link_mut_ptr),
+                    ) {
+                        entry_array_mut_ref.link = head.take();
+                    } else {
+                        let mut link_ref = &mut entry_array_mut_ref.link;
+                        while let Some(link) = link_ref.as_mut() {
+                            if link.remove_next(entry_array_link_mut_ptr) {
+                                break;
+                            }
+                            link_ref = link.link_mut_ref();
                         }
-                        link_ref = link.link_mut_ref();
                     }
                 }
             }
-            cell.linked_entries -= 1;
         }
     }
 
     pub fn first(&self) -> Option<(u8, *const EntryArrayLink<K, V>, *const (K, V))> {
-        self.cell.link.as_ref().map_or_else(
-            || {
-                let start_index: u8 = self.metadata.trailing_zeros().try_into().unwrap();
-                for i in start_index..ARRAY_SIZE.try_into().unwrap() {
-                    if self.occupied(i) {
-                        return Some((i, ptr::null(), self.entry_array[i as usize].as_ptr()));
+        if let Some(entry_array_ref) = self.cell.entry_array.as_ref() {
+            entry_array_ref.link.as_ref().map_or_else(
+                || {
+                    for i in 0..ARRAY_SIZE.try_into().unwrap() {
+                        if self.cell.partial_hash_array[i as usize] != 0 {
+                            return Some((
+                                i,
+                                ptr::null(),
+                                entry_array_ref.entries[i as usize].as_ptr(),
+                            ));
+                        }
                     }
-                }
-                None
-            },
-            |entry| {
-                if let Some(result) = entry.first_entry() {
-                    return Some((u8::MAX, result.0, result.1));
-                }
-                None
-            },
-        )
+                    None
+                },
+                |entry| {
+                    if let Some(result) = entry.first_entry() {
+                        return Some((u8::MAX, result.0, result.1));
+                    }
+                    None
+                },
+            )
+        } else {
+            None
+        }
     }
 
     pub fn empty(&self) -> bool {
-        (self.metadata & OCCUPANCY_MASK) == 0 && self.cell.linked_entries == 0
+        self.cell.num_entries == 0
     }
 
     pub fn kill(&mut self) {
@@ -406,12 +453,6 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
         let cell_ptr = self.cell as *const Cell<K, V>;
         let cell_mut_ptr = cell_ptr as *mut Cell<K, V>;
         unsafe { &mut (*cell_mut_ptr) }
-    }
-
-    fn entry_array_mut_ref(&mut self) -> &mut EntryArray<K, V> {
-        let entry_array_ptr = self.entry_array as *const EntryArray<K, V>;
-        let entry_array_mut_ptr = entry_array_ptr as *mut EntryArray<K, V>;
-        unsafe { &mut (*entry_array_mut_ptr) }
     }
 }
 
@@ -447,16 +488,11 @@ pub struct CellReader<'a, K: Eq, V> {
 
 impl<'a, K: Eq, V> CellReader<'a, K, V> {
     /// Creates a new CellReader instance with the cell shared locked.
-    pub fn read(
-        cell: &'a Cell<K, V>,
-        entry_array: &'a EntryArray<K, V>,
-        key: &K,
-        partial_hash: u16,
-    ) -> CellReader<'a, K, V> {
+    pub fn read(cell: &'a Cell<K, V>, key: &K, partial_hash: u8) -> CellReader<'a, K, V> {
         loop {
             // Early exit: not locked and empty.
-            let current = cell.metadata.load(Relaxed);
-            if cell.linked_entries == 0 && current & (XLOCK | OCCUPANCY_MASK) == 0 {
+            let current = cell.metadata.load(Acquire);
+            if cell.num_entries == 0 {
                 return CellReader {
                     cell,
                     metadata: 0,
@@ -464,18 +500,12 @@ impl<'a, K: Eq, V> CellReader<'a, K, V> {
                 };
             }
 
-            if let Some(result) = Self::try_read(cell, entry_array, current, key, partial_hash) {
+            if let Some(result) = Self::try_read(cell, current, key, partial_hash) {
                 return result;
             }
-            if let Some(result) = cell.wait(|| {
-                Self::try_read(
-                    cell,
-                    entry_array,
-                    cell.metadata.load(Relaxed),
-                    key,
-                    partial_hash,
-                )
-            }) {
+            if let Some(result) =
+                cell.wait(|| Self::try_read(cell, cell.metadata.load(Relaxed), key, partial_hash))
+            {
                 return result;
             }
         }
@@ -484,10 +514,9 @@ impl<'a, K: Eq, V> CellReader<'a, K, V> {
     /// Creates a new CellReader instance if the cell is shared locked.
     fn try_read(
         cell: &'a Cell<K, V>,
-        entry_array: &'a EntryArray<K, V>,
         metadata: u32,
         key: &K,
-        partial_hash: u16,
+        partial_hash: u8,
     ) -> Option<CellReader<'a, K, V>> {
         let mut current = metadata;
         loop {
@@ -504,7 +533,7 @@ impl<'a, K: Eq, V> CellReader<'a, K, V> {
                         cell,
                         metadata: result + SLOCK,
                         entry_ptr: cell
-                            .search(metadata, key, partial_hash, entry_array)
+                            .search(key, partial_hash)
                             .as_ref()
                             .map_or_else(ptr::null, |result| result.2),
                     })
@@ -591,47 +620,25 @@ mod test {
     use std::thread;
 
     #[test]
-    fn static_assertions() {
-        assert_eq!(std::mem::size_of::<Cell<u64, bool>>(), 64);
-        assert!(XLOCK > SLOCK_MAX);
-        assert_eq!(WAITING_FLAG & LOCK_MASK, 0);
-        assert!((XLOCK & LOCK_MASK) > SLOCK_MAX);
-        assert_eq!(((XLOCK << 1) & LOCK_MASK), 0);
-        assert_eq!(XLOCK & LOCK_MASK, XLOCK);
-        assert_eq!(SLOCK & (!LOCK_MASK), 0);
-        assert_eq!(SLOCK & LOCK_MASK, SLOCK);
-        assert_eq!((SLOCK >> 1) & LOCK_MASK, 0);
-        assert_eq!(SLOCK & SLOCK_MAX, SLOCK);
-        assert_eq!(KILLED_FLAG & LOCK_MASK, 0);
-        assert_eq!(LOCK_MASK & OCCUPANCY_MASK, 0);
-        assert_eq!(
-            KILLED_FLAG | WAITING_FLAG | LOCK_MASK | OCCUPANCY_MASK,
-            !(0 as u32)
-        );
-    }
-
-    #[test]
     fn cell_locker() {
         let num_threads = (ARRAY_SIZE + 1) as usize;
         let barrier = Arc::new(Barrier::new(num_threads));
         let cell: Arc<Cell<usize, usize>> = Arc::new(Default::default());
-        let entry_array: Arc<EntryArray<usize, usize>> =
-            Arc::new(unsafe { MaybeUninit::uninit().assume_init() });
-        let mut xlocker = CellLocker::lock(&*cell, &*entry_array);
-        xlocker.insert(usize::MAX, 0, usize::MAX);
+        let mut xlocker = CellLocker::lock(&*cell);
+        let result = xlocker.insert(usize::MAX, 0, usize::MAX, true);
+        assert!(result.is_ok());
         drop(xlocker);
         let mut data: [u64; 128] = [0; 128];
         let mut thread_handles = Vec::with_capacity(num_threads);
         for tid in 0..num_threads {
             let barrier_copied = barrier.clone();
             let cell_copied = cell.clone();
-            let entry_array_copied = entry_array.clone();
             let data_ptr = AtomicPtr::new(&mut data);
             thread_handles.push(thread::spawn(move || {
                 barrier_copied.wait();
                 for i in 0..4096 {
                     if i % 2 == 0 {
-                        let mut xlocker = CellLocker::lock(&*cell_copied, &*entry_array_copied);
+                        let mut xlocker = CellLocker::lock(&*cell_copied);
                         let mut sum: u64 = 0;
                         for j in 0..128 {
                             unsafe {
@@ -641,12 +648,12 @@ mod test {
                         }
                         assert_eq!(sum % 256, 0);
                         if i == 1024 {
-                            xlocker.insert(tid, tid.try_into().unwrap(), tid);
+                            let result = xlocker.insert(tid, tid.try_into().unwrap(), tid, true);
+                            assert!(result.is_ok());
                         }
                         drop(xlocker);
                     } else {
-                        let slocker =
-                            CellReader::read(&*cell_copied, &*entry_array_copied, &usize::MAX, 0);
+                        let slocker = CellReader::read(&*cell_copied, &usize::MAX, 0);
                         if let Some((key, value)) = slocker.get() {
                             assert_eq!(*key, usize::MAX);
                             assert_eq!(*value, usize::MAX);
@@ -664,15 +671,15 @@ mod test {
         for handle in thread_handles {
             handle.join().unwrap();
         }
-        assert_eq!((*cell).size().0 + (*cell).size().1, num_threads + 1);
-        let mut xlocker = CellLocker::lock(&*cell, &*entry_array);
+        assert_eq!((*cell).size(), num_threads + 1);
+        let mut xlocker = CellLocker::lock(&*cell);
         let result = xlocker.search(&usize::MAX, 0);
         if let Some((sub_index, entry_array_link_ptr, entry_ptr)) = result {
             xlocker.remove(true, sub_index, entry_array_link_ptr, entry_ptr);
         }
         drop(xlocker);
         for tid in 0..(num_threads / 2) {
-            let mut xlocker = CellLocker::lock(&*cell, &*entry_array);
+            let mut xlocker = CellLocker::lock(&*cell);
             let result = xlocker.first();
             assert!(result.is_some());
             let result = xlocker.search(&tid, tid.try_into().unwrap());
@@ -682,15 +689,13 @@ mod test {
                 xlocker.remove(true, sub_index, entry_array_link_ptr, entry_ptr);
             }
         }
-        let mut xlocker = CellLocker::lock(&*cell, &*entry_array);
+        let mut xlocker = CellLocker::lock(&*cell);
         let mut current = xlocker.first();
         while let Some((sub_index, entry_array_link_ptr, entry_ptr)) = current {
             current = xlocker.next(true, true, sub_index, entry_array_link_ptr, entry_ptr);
         }
         drop(xlocker);
-        assert_eq!((*cell).size().0, 0);
-        assert_eq!((*cell).size().1, 0);
-        assert_eq!((*cell).metadata.load(Relaxed) & OCCUPANCY_MASK, 0);
+        assert_eq!((*cell).size(), 0);
         assert_eq!((*cell).metadata.load(Relaxed) & LOCK_MASK, 0);
     }
 }

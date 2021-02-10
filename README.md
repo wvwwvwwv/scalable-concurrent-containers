@@ -7,7 +7,7 @@ SCC offers scalable concurrent containers written in the Rust language. The data
 
 ## scc::HashMap <a name="hashmap"></a>
 
-scc::HashMap is a scalable in-memory unique key-value store that is targeted at highly concurrent heavy workloads. It does not distribute data to multiple shards as most concurrent hash maps do, instead only does it have a single array of entries and corresponding metadata cell array. The metadata management strategy is similar to that of Swisstable; a metadata cell which is separated from the key-value array, is a 64-byte data structure for managing consecutive sixteen entries in the key-value array. The metadata cell also has a linked list of entry arrays for hash collision resolution. scc::HashMap automatically enlarges and shrinks the capacity of its internal array, and resizing happens without blocking other operations and threads. In order to keep the predictable latency of each operation, it does not rehash every entry in the container at once when resizing, instead it distributes the resizing workload to future access to the data structure.
+scc::HashMap is a scalable in-memory unique key-value store that is targeted at highly concurrent heavy workloads. It does not distribute data to multiple shards as most concurrent hash maps do, instead only does it have a single array of entries and corresponding metadata cell array. The metadata management strategy is similar to that of Swisstable; a metadata cell which is separated from the key-value array, is a 32-byte data structure for managing consecutive sixteen entries in the key-value array. The metadata cell also has a linked list of entry arrays for hash collision resolution. scc::HashMap automatically enlarges and shrinks the capacity of its internal array, and resizing happens without blocking other operations and threads. In order to keep the predictable latency of each operation, it does not rehash every entry in the container at once when resizing, instead it distributes the resizing workload to future access to the data structure.
 
 * The experimental hardware-transactional-memory functions (e.g. https://stdrs.dev/nightly/x86_64-pc-windows-gnu/core/core_arch/x86/rtm/index.html) allow read operations to be entirely memory-write-free, thereby boosting performance without compromising semantics and memory consumption. scc::HashMap will start using TSX/HTM intrinsics as soon as the functions become stabilized.
 
@@ -63,6 +63,8 @@ scc::TreeIndex is a B+-tree variant optimized for read operations. Locks are onl
 
 ## Changelog
 
+#### 0.4.1
+Optpimize memory usage of HashMap
 #### 0.4.0
 Stabilize TreeIndex
 #### 0.3.22
@@ -71,8 +73,6 @@ Stabilize TreeIndex::remove: #21 partially fixed
 Stabilize TreeIndex::remove: #22 fixed
 #### 0.3.20
 Stabilize TreeIndex::remove: #20 fixed
-#### 0.3.19
-Stabilize TreeIndex::remove: #19 fixed
 
 ## Milestones <a name="milestones"></a>
 

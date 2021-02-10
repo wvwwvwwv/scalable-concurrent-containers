@@ -6,7 +6,7 @@ pub mod cell;
 pub mod link;
 
 use array::Array;
-use cell::{CellLocker, CellReader};
+use cell::{CellLocker, CellReader, ARRAY_SIZE, MAX_RESIZING_FACTOR};
 use crossbeam_epoch::{Atomic, Owned, Shared};
 use std::collections::hash_map::RandomState;
 use std::convert::TryInto;
@@ -15,13 +15,13 @@ use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-const DEFAULT_CAPACITY: usize = cell::ARRAY_SIZE * cell::ARRAY_SIZE;
+const DEFAULT_CAPACITY: usize = ARRAY_SIZE * ARRAY_SIZE;
 
 /// A scalable concurrent hash map implementation.
 ///
 /// scc::HashMap is a concurrent hash map data structure that is targeted at a highly concurrent workload.
 /// The epoch-based reclamation technique provided by the crossbeam_epoch crate enables the data structure to eliminate coarse locking,
-/// and therefore, all the data pertains in a single entry array of key-value pairs and corresponding metadata array.
+/// and therefore, all the data pertains in a single array of data.
 /// The metadata array is composed of metadata cells, and each of them manages a fixed number of key-value pair entries using a customized mutex.
 /// The metadata cells are able to locate the correct entry by having an array of partial hash values of the key-value pairs.
 /// A metadata cell resolves hash collisions by allocating a linked list of key-value pair arrays.
@@ -36,7 +36,7 @@ const DEFAULT_CAPACITY: usize = cell::ARRAY_SIZE * cell::ARRAY_SIZE;
 /// * No busy waiting: the customized mutex never spins.
 ///
 /// ## The key statistics for scc::HashMap
-/// * The expected size of metadata for a single key-value pair: 4-byte.
+/// * The expected size of metadata for a single key-value pair: 2.5-byte.
 /// * The expected number of atomic operations required for a single key operation: 2.
 /// * The expected number of atomic variables accessed during a single key operation: 1.
 /// * The range of hash values a single metadata cell manages: 65536.
@@ -125,6 +125,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// # Examples
     /// ```
     /// use scc::HashMap;
+    /// use scc::HashMapError;
     ///
     /// let hashmap: HashMap<u64, u32, _> = Default::default();
     ///
@@ -134,22 +135,31 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// }
     ///
     /// let result = hashmap.insert(1, 1);
-    /// if let Err((result, value)) = result {
-    ///     assert_eq!(result.get(), (&1, &mut 0));
-    ///     assert_eq!(value, 1);
+    /// if let Err(error) = result {
+    ///     match error {
+    ///         HashMapError::DuplicateKey(accessor, value) => {
+    ///             assert_eq!(accessor.get(), (&1, &mut 0));
+    ///             assert_eq!(value, 1);
+    ///         },
+    ///         HashMapError::Overflow(_) => {
+    ///             assert!(false);
+    ///         }
+    ///     }
+    /// } else {
+    ///     assert!(false);
     /// }
     /// ```
-    pub fn insert(&self, key: K, value: V) -> Result<Accessor<K, V, H>, (Accessor<K, V, H>, V)> {
+    pub fn insert(&self, key: K, value: V) -> Result<Accessor<K, V, H>, HashMapError<K, V, H>> {
         let (hash, partial_hash) = self.hash(&key);
         let mut resize_triggered = false;
         loop {
             let mut accessor = self.acquire(&key, hash, partial_hash);
             if !accessor.entry_ptr.is_null() {
-                return Err((accessor, value));
+                return Err(HashMapError::DuplicateKey(accessor, value));
             }
             if !resize_triggered
-                && accessor.cell_index < cell::ARRAY_SIZE
-                && accessor.cell_locker.full()
+                && accessor.cell_index < ARRAY_SIZE
+                && accessor.cell_locker.size() >= ARRAY_SIZE
             {
                 drop(accessor);
                 resize_triggered = true;
@@ -159,11 +169,10 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 if current_array_ref.old_array(&guard).is_null() {
                     // Triggers resize if the estimated load factor is greater than 7/8.
                     let sample_size = current_array_ref.num_sample_size();
-                    let threshold = sample_size * (cell::ARRAY_SIZE / 8) * 7;
+                    let threshold = sample_size * (ARRAY_SIZE / 8) * 7;
                     let mut num_entries = 0;
                     for i in 0..sample_size {
-                        num_entries +=
-                            current_array_ref.cell(i).size().0 + current_array_ref.cell(i).size().1;
+                        num_entries += current_array_ref.cell(i).size();
                         if num_entries > threshold {
                             self.resize();
                             break;
@@ -173,12 +182,18 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 continue;
             }
 
-            let (sub_index, entry_array_link_ptr, entry_ptr) =
-                accessor.cell_locker.insert(key, partial_hash, value);
-            accessor.sub_index = sub_index;
-            accessor.entry_array_link_ptr = entry_array_link_ptr;
-            accessor.entry_ptr = entry_ptr;
-            return Ok(accessor);
+            match accessor.cell_locker.insert(key, partial_hash, value, true) {
+                Ok((sub_index, entry_array_link_ptr, entry_ptr)) => {
+                    accessor.sub_index = sub_index;
+                    accessor.entry_array_link_ptr = entry_array_link_ptr;
+                    accessor.entry_ptr = entry_ptr;
+                    return Ok(accessor);
+                }
+                Err(value) => {
+                    // Container overflow.
+                    return Err(HashMapError::Overflow(value));
+                }
+            }
         }
     }
 
@@ -199,16 +214,22 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     ///     assert_eq!(result.get(), (&1, &mut 0));
     /// }
     ///
-    /// let result = hashmap.upsert(1, 1);
-    /// assert_eq!(result.get(), (&1, &mut 1));
+    /// if let Ok(result) = hashmap.upsert(1, 1) {
+    ///     assert_eq!(result.get(), (&1, &mut 1));
+    /// } else {
+    ///     assert!(false);
+    /// };
     /// ```
-    pub fn upsert(&self, key: K, value: V) -> Accessor<K, V, H> {
+    pub fn upsert(&self, key: K, value: V) -> Result<Accessor<K, V, H>, HashMapError<K, V, H>> {
         match self.insert(key, value) {
-            Ok(result) => result,
-            Err((result, value)) => {
-                *self.entry(result.entry_ptr).1 = value;
-                result
-            }
+            Ok(result) => Ok(result),
+            Err(error) => match error {
+                HashMapError::DuplicateKey(accessor, value) => {
+                    *self.entry(accessor.entry_ptr).1 = value;
+                    Ok(accessor)
+                }
+                HashMapError::Overflow(_) => Err(error),
+            },
         }
     }
 
@@ -313,12 +334,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             }
             let array_ref = self.array(array);
             let cell_index = array_ref.calculate_cell_index(hash);
-            let reader = CellReader::read(
-                array_ref.cell(cell_index),
-                array_ref.entry_array(cell_index),
-                &key,
-                partial_hash,
-            );
+            let reader = CellReader::read(array_ref.cell(cell_index), &key, partial_hash);
             if let Some((key, value)) = reader.get() {
                 return Some(f(key, value));
             }
@@ -460,7 +476,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         let current_array_ref = self.array(&current_array);
         let capacity = current_array_ref.capacity();
         let num_samples = std::cmp::min(f(capacity), capacity).next_power_of_two();
-        let num_cells_to_sample = (num_samples / cell::ARRAY_SIZE).max(1);
+        let num_cells_to_sample = (num_samples / ARRAY_SIZE).max(1);
         if !current_array_ref.old_array(&guard).is_null() {
             for _ in 0..num_cells_to_sample {
                 if current_array_ref.partial_rehash(&guard, |key| self.hash(key)) {
@@ -531,10 +547,8 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             deprecated_capacity: 0,
             num_entries: 0,
             num_killed_entries: 0,
-            num_linked_entries: 0,
             num_cells: 0,
             num_empty_cells: 0,
-            num_cells_having_link: 0,
             num_max_consecutive_empty_cells: 0,
             max_link_length: 0,
         };
@@ -555,8 +569,8 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             }
             statistics.num_cells += num_cells;
             for i in 0..num_cells {
-                let (size, linked_entries) = array_ref.cell(i).size();
-                statistics.num_entries += size + linked_entries;
+                let size = array_ref.cell(i).size();
+                statistics.num_entries += size;
                 if size == 0 {
                     statistics.num_empty_cells += 1;
                     consecutive_empty_cells += 1;
@@ -565,13 +579,6 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                         statistics.num_max_consecutive_empty_cells = consecutive_empty_cells;
                     }
                     consecutive_empty_cells = 0;
-                }
-                if linked_entries > 0 {
-                    statistics.num_linked_entries += linked_entries;
-                    statistics.num_cells_having_link += 1;
-                    if statistics.max_link_length < linked_entries {
-                        statistics.max_link_length = linked_entries;
-                    }
                 }
                 if array_ref.cell(i).killed() {
                     statistics.num_killed_entries += 1;
@@ -621,7 +628,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     }
 
     /// Returns a hash value of the given key.
-    fn hash(&self, key: &K) -> (u64, u16) {
+    fn hash(&self, key: &K) -> (u64, u8) {
         // Generates a hash value.
         let mut h = self.build_hasher.build_hasher();
         key.hash(&mut h);
@@ -633,11 +640,11 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         hash = hash ^ (hash.rotate_right(24) ^ hash.rotate_right(49));
         hash = hash.overflowing_mul(0x9FB21C651E98DF25u64).0;
         hash = hash ^ (hash >> 28);
-        (hash, (hash & ((1 << 16) - 1)).try_into().unwrap())
+        (hash, (hash & ((1 << 8) - 1)).try_into().unwrap())
     }
 
     /// Acquires a cell.
-    fn acquire<'a>(&'a self, key: &K, hash: u64, partial_hash: u16) -> Accessor<'a, K, V, H> {
+    fn acquire<'a>(&'a self, key: &K, hash: u64, partial_hash: u8) -> Accessor<'a, K, V, H> {
         let guard = crossbeam_epoch::pin();
 
         // It is guaranteed that the thread reads a consistent snapshot of the current and
@@ -707,7 +714,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             accessor.entry_array_link_ptr,
             accessor.entry_ptr,
         );
-        if accessor.cell_locker.empty() && accessor.cell_index < cell::ARRAY_SIZE {
+        if accessor.cell_locker.empty() && accessor.cell_index < ARRAY_SIZE {
             drop(accessor);
             let guard = crossbeam_epoch::pin();
             let current_array = self.array.load(Acquire, &guard);
@@ -719,9 +726,8 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 let sample_size = current_array_ref.num_sample_size();
                 let mut num_entries = 0;
                 for i in 0..sample_size {
-                    num_entries +=
-                        current_array_ref.cell(i).size().0 + current_array_ref.cell(i).size().1;
-                    if num_entries >= sample_size * cell::ARRAY_SIZE / 16 {
+                    num_entries += current_array_ref.cell(i).size();
+                    if num_entries >= sample_size * ARRAY_SIZE / 16 {
                         return value;
                     }
                 }
@@ -736,7 +742,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
         &self,
         key: &K,
         hash: u64,
-        partial_hash: u16,
+        partial_hash: u8,
         array_ptr: *const Array<K, V>,
     ) -> (
         CellLocker<'a, K, V>,
@@ -747,10 +753,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     ) {
         let array_ref = unsafe { &(*array_ptr) };
         let cell_index = array_ref.calculate_cell_index(hash);
-        let cell_locker = CellLocker::lock(
-            array_ref.cell(cell_index),
-            array_ref.entry_array(cell_index),
-        );
+        let cell_locker = CellLocker::lock(array_ref.cell(cell_index));
         if !cell_locker.killed() && !cell_locker.empty() {
             if let Some((sub_index, entry_array_link_ptr, entry_ptr)) =
                 cell_locker.search(key, partial_hash)
@@ -774,7 +777,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     }
 
     /// Returns the first valid cell.
-    fn first<'a>(&'a self) -> (Option<CellLocker<'a, K, V>>, *const Array<K, V>, usize) {
+    fn first(&self) -> (Option<CellLocker<K, V>>, *const Array<K, V>, usize) {
         let guard = crossbeam_epoch::pin();
 
         // An acquire fence is required to correctly load the contents of the array.
@@ -788,10 +791,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 let array_ref = unsafe { &(**array_ptr) };
                 let num_cells = array_ref.num_cells();
                 for cell_index in 0..num_cells {
-                    let cell_locker = CellLocker::lock(
-                        array_ref.cell(cell_index),
-                        array_ref.entry_array(cell_index),
-                    );
+                    let cell_locker = CellLocker::lock(array_ref.cell(cell_index));
                     if !cell_locker.empty() {
                         // once a valid cell is locked, the array is guaranteed to retain
                         return (Some(cell_locker), *array_ptr, cell_index);
@@ -811,11 +811,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     }
 
     /// Returns the next valid cell.
-    fn next<'a>(
-        &'a self,
-        array_ptr: *const Array<K, V>,
-        current_index: usize,
-    ) -> Option<Cursor<'a, K, V, H>> {
+    fn next(&self, array_ptr: *const Array<K, V>, current_index: usize) -> Option<Cursor<K, V, H>> {
         let guard = crossbeam_epoch::pin();
 
         // An acquire fence is required to correctly load the contents of the array.
@@ -832,10 +828,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             let old_array_ref = unsafe { &(*old_array.as_raw()) };
             let num_cells = old_array_ref.num_cells();
             for cell_index in (current_index + 1)..num_cells {
-                let cell_locker = CellLocker::lock(
-                    old_array_ref.cell(cell_index),
-                    old_array_ref.entry_array(cell_index),
-                );
+                let cell_locker = CellLocker::lock(old_array_ref.cell(cell_index));
                 if !cell_locker.killed() && !cell_locker.empty() {
                     if let Some(cursor) = self.pick(cell_locker, old_array.as_raw(), cell_index) {
                         return Some(cursor);
@@ -852,10 +845,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             current_index + 1
         };
         for cell_index in (start_index)..num_cells {
-            let cell_locker = CellLocker::lock(
-                current_array_ref.cell(cell_index),
-                current_array_ref.entry_array(cell_index),
-            );
+            let cell_locker = CellLocker::lock(current_array_ref.cell(cell_index));
             if !cell_locker.killed() && !cell_locker.empty() {
                 if let Some(cursor) = self.pick(cell_locker, current_array.as_raw(), cell_index) {
                     return Some(cursor);
@@ -870,10 +860,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             let new_array_ref = unsafe { &(*new_array.as_raw()) };
             let num_cells = new_array_ref.num_cells();
             for cell_index in 0..num_cells {
-                let cell_locker = CellLocker::lock(
-                    new_array_ref.cell(cell_index),
-                    new_array_ref.entry_array(cell_index),
-                );
+                let cell_locker = CellLocker::lock(new_array_ref.cell(cell_index));
                 if !cell_locker.killed() && !cell_locker.empty() {
                     if let Some(cursor) = self.pick(cell_locker, new_array.as_raw(), cell_index) {
                         return Some(cursor);
@@ -953,9 +940,8 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                         .next_power_of_two()
                         .min(max_capacity / 2)
                         * 2;
-                    if new_capacity_candidate / capacity > (1 << array::MAX_ENLARGE_FACTOR as usize)
-                    {
-                        capacity * (1 << array::MAX_ENLARGE_FACTOR as usize)
+                    if new_capacity_candidate / capacity > (1 << MAX_RESIZING_FACTOR) {
+                        capacity * (1 << MAX_RESIZING_FACTOR)
                     } else {
                         new_capacity_candidate
                     }
@@ -988,8 +974,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     fn estimate(&self, current_array_ref: &Array<K, V>, num_cells_to_sample: usize) -> usize {
         let mut num_entries = 0;
         for i in 0..num_cells_to_sample {
-            let (size, linked_entries) = current_array_ref.cell(i).size();
-            num_entries += size + linked_entries;
+            num_entries += current_array_ref.cell(i).size();
         }
         num_entries * (current_array_ref.num_cells() / num_cells_to_sample)
     }
@@ -1024,21 +1009,33 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Drop for HashMap<K, V, H> {
     }
 }
 
+/// Error codes returned by HashMap.
+pub enum HashMapError<'h, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> {
+    /// The key exists in the HashMap.
+    ///
+    /// It returns the Accessor pointing to the existing key-value pair.
+    DuplicateKey(Accessor<'h, K, V, H>, V),
+    /// The HashMap is overflowing.
+    ///
+    /// This error code implies that the hash function is inefficient.
+    Overflow(V),
+}
+
 /// Accessor owns a key-value pair in the HashMap.
 ///
 /// It is !Send, thus disallowing other threads to have references to it.
 /// It acquires an exclusive lock on the cell managing the key.
 /// A thread having multiple Accessor of Cursor instances poses a possibility of deadlock.
-pub struct Accessor<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> {
-    hash_map: &'a HashMap<K, V, H>,
-    cell_locker: CellLocker<'a, K, V>,
+pub struct Accessor<'h, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> {
+    hash_map: &'h HashMap<K, V, H>,
+    cell_locker: CellLocker<'h, K, V>,
     cell_index: usize,
     sub_index: u8,
     entry_array_link_ptr: *const link::EntryArrayLink<K, V>,
     entry_ptr: *const (K, V),
 }
 
-impl<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Accessor<'a, K, V, H> {
+impl<'h, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Accessor<'h, K, V, H> {
     /// Returns a reference to the key-value pair.
     ///
     /// # Examples
@@ -1059,7 +1056,7 @@ impl<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Accessor<'a, K, V, H> {
     /// let result = hashmap.get(&1);
     /// assert_eq!(result.unwrap().get(), (&1, &mut 2));
     /// ```
-    pub fn get(&'a self) -> (&'a K, &'a mut V) {
+    pub fn get(&'h self) -> (&'h K, &'h mut V) {
         self.hash_map.entry(self.entry_ptr)
     }
 
@@ -1177,10 +1174,8 @@ pub struct Statistics {
     deprecated_capacity: usize,
     num_entries: usize,
     num_killed_entries: usize,
-    num_linked_entries: usize,
     num_cells: usize,
     num_empty_cells: usize,
-    num_cells_having_link: usize,
     num_max_consecutive_empty_cells: usize,
     max_link_length: usize,
 }
@@ -1198,17 +1193,11 @@ impl Statistics {
     pub fn num_killed_entries(&self) -> usize {
         self.num_killed_entries
     }
-    pub fn num_linked_entries(&self) -> usize {
-        self.num_linked_entries
-    }
     pub fn num_cells(&self) -> usize {
         self.num_cells
     }
     pub fn num_empty_cells(&self) -> usize {
         self.num_empty_cells
-    }
-    pub fn num_cells_having_link(&self) -> usize {
-        self.num_cells_having_link
     }
     pub fn num_max_consecutive_empty_cells(&self) -> usize {
         self.num_max_consecutive_empty_cells
@@ -1222,15 +1211,13 @@ impl fmt::Display for Statistics {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "effective_capacity: {}, deprecated_capacity: {}, entries: {}, killed_entries: {}, linked_entries: {}, cells: {}, empty_cells: {}, cells_having_link: {}, max_consecutive_empty_cells: {}, max_link_length: {}",
+            "effective_capacity: {}, deprecated_capacity: {}, entries: {}, killed_entries: {}, cells: {}, empty_cells: {}, max_consecutive_empty_cells: {}, max_link_length: {}",
             self.effective_capacity,
             self.deprecated_capacity,
             self.num_entries,
             self.num_killed_entries,
-            self.num_linked_entries,
             self.num_cells,
             self.num_empty_cells,
-            self.num_cells_having_link,
             self.num_max_consecutive_empty_cells,
             self.max_link_length
         )

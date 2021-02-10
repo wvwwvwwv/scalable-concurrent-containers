@@ -3,7 +3,7 @@ mod hashmap_test {
     use proptest::prelude::*;
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
-    use scc::HashMap;
+    use scc::{HashMap, HashMapError};
     use std::alloc::{GlobalAlloc, Layout, System};
     use std::collections::hash_map::RandomState;
     use std::collections::BTreeSet;
@@ -89,17 +89,18 @@ mod hashmap_test {
 
             let result2 = hashmap.insert(key, 0);
             assert!(result2.is_err());
-            if let Err((result, _)) = result2 {
+            if let Err(HashMapError::DuplicateKey(result, _)) = result2 {
                 assert_eq!(result.get(), (&key, &mut 0));
             }
 
             let result3 = hashmap.upsert(key, 1);
-            assert_eq!(result3.get(), (&key, &mut 1));
-            drop(result3);
+            if let Ok(accessor) = result3 {
+                assert_eq!(accessor.get(), (&key, &mut 1));
+            }
 
             let result4 = hashmap.insert(key, 10);
             assert!(result4.is_err());
-            if let Err((result, _)) = result4 {
+            if let Err(HashMapError::DuplicateKey(result, _)) = result4 {
                 assert_eq!(result.get(), (&key, &mut 1));
                 *result.get().1 = 2;
             }
@@ -279,8 +280,9 @@ mod hashmap_test {
                 let result = hashmap.insert(Data::new(d, &checker), Data::new(d, &checker));
                 assert!(result.is_ok());
                 drop(result);
-                let result = hashmap.upsert(Data::new(d, &checker), Data::new(d + 1, &checker));
-                (*result.get().1) = Data::new(d + 2, &checker);
+                if let Ok(result) = hashmap.upsert(Data::new(d, &checker), Data::new(d + 1, &checker)) {
+                    (*result.get().1) = Data::new(d + 2, &checker);
+        }
             }
             let statistics = hashmap.statistics();
             println!("{}", statistics);
@@ -289,8 +291,9 @@ mod hashmap_test {
                 let result = hashmap.insert(Data::new(d, &checker), Data::new(d, &checker));
                 assert!(result.is_ok());
                 drop(result);
-                let result = hashmap.upsert(Data::new(d, &checker), Data::new(d + 1, &checker));
-                (*result.get().1) = Data::new(d + 2, &checker);
+                if let Ok(result) = hashmap.upsert(Data::new(d, &checker), Data::new(d + 1, &checker)) {
+                    (*result.get().1) = Data::new(d + 2, &checker);
+        }
             }
             let statistics = hashmap.statistics();
             println!("before retain: {}", statistics);
@@ -323,8 +326,9 @@ mod hashmap_test {
                 let result = hashmap.insert(Data::new(d, &checker), Data::new(d, &checker));
                 assert!(result.is_ok());
                 drop(result);
-                let result = hashmap.upsert(Data::new(d, &checker), Data::new(d + 1, &checker));
-                (*result.get().1) = Data::new(d + 2, &checker);
+                if let Ok(result) = hashmap.upsert(Data::new(d, &checker), Data::new(d + 1, &checker)) {
+                    (*result.get().1) = Data::new(d + 2, &checker);
+        }
             }
             let result = hashmap.clear();
             assert_eq!(result, range as usize);
@@ -337,8 +341,9 @@ mod hashmap_test {
                 let result = hashmap.insert(Data::new(d, &checker), Data::new(d, &checker));
                 assert!(result.is_ok());
                 drop(result);
-                let result = hashmap.upsert(Data::new(d, &checker), Data::new(d + 1, &checker));
-                (*result.get().1) = Data::new(d + 2, &checker);
+                if let Ok(result) = hashmap.upsert(Data::new(d, &checker), Data::new(d + 1, &checker)) {
+                    (*result.get().1) = Data::new(d + 2, &checker);
+        }
             }
             assert_eq!(checker.load(Relaxed) as u64, range * 2);
             drop(hashmap);

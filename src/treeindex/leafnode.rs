@@ -198,7 +198,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                         if !self.split_leaf(Some(child_key.clone()), child_leaf, &child, guard) {
                             return Err(InsertError::Full(result.0));
                         }
-                        return Err(InsertError::Retry(result.0));
+                        Err(InsertError::Retry(result.0))
                     },
                 );
             }
@@ -219,7 +219,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                         if !self.split_leaf(None, unbounded_shared, &self.leaves.1, guard) {
                             return Err(InsertError::Full(result.0));
                         }
-                        return Err(InsertError::Retry(result.0));
+                        Err(InsertError::Retry(result.0))
                     },
                 );
             }
@@ -375,14 +375,12 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                     low_key_leaves
                         .1
                         .store(entry.1.load(Relaxed, guard), Relaxed);
+                } else if let Some(key) = entry.0 {
+                    high_key_leaves.0.insert(key.clone(), entry.1.clone());
                 } else {
-                    if let Some(key) = entry.0 {
-                        high_key_leaves.0.insert(key.clone(), entry.1.clone());
-                    } else {
-                        high_key_leaves
-                            .1
-                            .store(entry.1.load(Relaxed, guard), Relaxed);
-                    }
+                    high_key_leaves
+                        .1
+                        .store(entry.1.load(Relaxed, guard), Relaxed);
                 }
             } else {
                 break;
@@ -512,9 +510,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         // Therefore, it performs CAS to check the freshness of the pointer value.
         //  - Remove: release(leaf)|cas(mutex)|acquire|release|load(leaf_ptr)
         //  - Insert: load(leaf)|store(mutex)|acquire|release|store(leaf_ptr)|release|store(mutex)
-        if let Err(_) =
-            self.new_leaves
-                .compare_and_set(Shared::null(), Shared::null(), AcqRel, guard)
+        if self
+            .new_leaves
+            .compare_and_set(Shared::null(), Shared::null(), AcqRel, guard)
+            .is_err()
         {
             return Err(RemoveError::Retry(removed));
         }

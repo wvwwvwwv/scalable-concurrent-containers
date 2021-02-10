@@ -1,14 +1,12 @@
 use std::mem::MaybeUninit;
 
-pub const ARRAY_SIZE: usize = 4;
+pub const ARRAY_SIZE: usize = 8;
 
 pub type LinkType<K, V> = Option<Box<EntryArrayLink<K, V>>>;
 
 pub struct EntryArrayLink<K: Eq, V> {
-    /// The array of partial hash values
-    ///
-    /// Zero represents a state where the corresponding entry is vacant.
-    partial_hash_array: [u16; ARRAY_SIZE],
+    /// Zero implies that the corresponding position is vacant.
+    partial_hash_array: [u8; ARRAY_SIZE],
     entry_array: [MaybeUninit<(K, V)>; ARRAY_SIZE],
     link: LinkType<K, V>,
 }
@@ -20,6 +18,17 @@ impl<K: Eq, V> EntryArrayLink<K, V> {
             entry_array: unsafe { MaybeUninit::uninit().assume_init() },
             link,
         }
+    }
+
+    pub fn cleanup(mut self) -> LinkType<K, V> {
+        for i in 0..ARRAY_SIZE {
+            if self.partial_hash_array[i] != 0 {
+                unsafe {
+                    std::ptr::drop_in_place(self.entry_array[i].as_mut_ptr());
+                }
+            }
+        }
+        self.link.take()
     }
 
     pub fn link_ref(&self) -> &LinkType<K, V> {
@@ -73,7 +82,7 @@ impl<K: Eq, V> EntryArrayLink<K, V> {
     pub fn search_entry(
         &self,
         key: &K,
-        partial_hash: u16,
+        partial_hash: u8,
     ) -> Option<(*const EntryArrayLink<K, V>, *const (K, V))> {
         for (i, v) in self.partial_hash_array.iter().enumerate() {
             if *v != (partial_hash | 1) {
@@ -92,7 +101,7 @@ impl<K: Eq, V> EntryArrayLink<K, V> {
     pub fn insert_entry(
         &mut self,
         key: K,
-        partial_hash: u16,
+        partial_hash: u8,
         value: V,
     ) -> Result<(*const EntryArrayLink<K, V>, *const (K, V)), (K, V)> {
         for i in 0..ARRAY_SIZE {

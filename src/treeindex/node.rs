@@ -188,20 +188,19 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             match unsafe { &new_root.deref().entry } {
                 NodeType::Internal(new_root_internal) => {
                     let new_root_lock = InternalNodeLocker::try_lock(new_root_internal, guard);
-                    if new_root_lock.is_some() {
-                        if root_ptr
+                    if new_root_lock.is_some()
+                        && root_ptr
                             .compare_and_set(current_root, new_root, Release, guard)
                             .is_ok()
-                        {
-                            internal_node.children.1.store(Shared::null(), Relaxed);
-                            unsafe {
-                                debug_assert!(current_root.deref().obsolete(true, guard));
-                                guard.defer_destroy(current_root)
-                            };
-                            if new_root_internal.obsolete(false, guard) {
-                                current_root = Shared::from(new_root.as_raw());
-                                continue;
-                            }
+                    {
+                        internal_node.children.1.store(Shared::null(), Relaxed);
+                        unsafe {
+                            debug_assert!(current_root.deref().obsolete(true, guard));
+                            guard.defer_destroy(current_root)
+                        };
+                        if new_root_internal.obsolete(false, guard) {
+                            current_root = Shared::from(new_root.as_raw());
+                            continue;
                         }
                     }
                 }
