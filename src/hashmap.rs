@@ -15,7 +15,7 @@ use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-const DEFAULT_CAPACITY: usize = ARRAY_SIZE * ARRAY_SIZE;
+const DEFAULT_CAPACITY: usize = 256;
 
 /// A scalable concurrent hash map implementation.
 ///
@@ -36,12 +36,12 @@ const DEFAULT_CAPACITY: usize = ARRAY_SIZE * ARRAY_SIZE;
 /// * No busy waiting: the customized mutex never spins.
 ///
 /// ## The key statistics for scc::HashMap
-/// * The expected size of metadata for a single key-value pair: 3-byte.
+/// * The expected size of metadata for a single key-value pair: 2-byte.
 /// * The expected number of atomic operations required for a single key operation: 2.
 /// * The expected number of atomic variables accessed during a single key operation: 1.
 /// * The range of hash values a single metadata cell manages: 65536.
-/// * The number of entries managed by a single metadata cell without a linked list: 16.
-/// * The number of entries a single linked list entry manages: 4.
+/// * The number of entries managed by a single metadata cell without a linked list: 32.
+/// * The number of entries a single linked list entry manages: 8.
 /// * The expected maximum linked list length when resize is triggered: log(capacity) / 4.
 pub struct HashMap<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> {
     array: Atomic<Array<K, V>>,

@@ -22,6 +22,7 @@ impl<K: Eq, V> Array<K, V> {
         let cell_array_capacity = 1usize << lb_capacity;
         let cell_array = unsafe {
             let size_of_cell = std::mem::size_of::<Cell<K, V>>();
+            // System.alloc_zeroed calls std::calloc, thereby allowing lazy initialization.
             let ptr = System.alloc_zeroed(Layout::from_size_align_unchecked(
                 cell_array_capacity * size_of_cell,
                 1,

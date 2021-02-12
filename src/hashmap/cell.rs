@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicPtr, AtomicU32};
 use std::sync::{Condvar, Mutex};
 
-pub const ARRAY_SIZE: usize = 16;
+pub const ARRAY_SIZE: usize = 32;
 pub const MAX_RESIZING_FACTOR: usize = 6;
 const THRESHOLD: u32 = 1u32 << 16;
 
@@ -22,7 +22,7 @@ pub struct EntryArray<K: Eq, V> {
     link: LinkType<K, V>,
 }
 
-/// Cell is a 40-byte data structure that manages the metadata of key-value pairs.
+/// Cell is a 56-byte data structure that manages the metadata of key-value pairs.
 pub struct Cell<K: Eq, V> {
     metadata: AtomicU32,
     num_entries: u32,
