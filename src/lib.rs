@@ -13,7 +13,6 @@ mod treeindex;
 pub use hashmap::Accessor;
 pub use hashmap::Cursor;
 pub use hashmap::HashMap;
-pub use hashmap::HashMapError;
 
 // scc::TreeIndex
 pub use treeindex::Scanner;

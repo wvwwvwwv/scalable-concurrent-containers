@@ -153,8 +153,7 @@ impl<K: Eq, V> Array<K, V> {
             if let Some(target_cell_locker) =
                 target_cells[new_cell_index - target_cell_index].as_mut()
             {
-                let result = target_cell_locker.insert(key, partial_hash, value, false);
-                debug_assert!(result.is_ok());
+                target_cell_locker.insert(key, partial_hash, value);
             }
 
             current = cell_locker.next(true, false, sub_index, entry_array_link_ptr, entry_ptr);

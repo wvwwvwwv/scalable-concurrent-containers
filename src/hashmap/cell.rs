@@ -8,7 +8,6 @@ use std::sync::{Condvar, Mutex};
 
 pub const ARRAY_SIZE: usize = 32;
 pub const MAX_RESIZING_FACTOR: usize = 6;
-const THRESHOLD: u32 = 1u32 << 16;
 
 const KILLED_FLAG: u32 = 1u32 << 31;
 const WAITING_FLAG: u32 = 1u32 << 30;
@@ -22,10 +21,10 @@ pub struct EntryArray<K: Eq, V> {
     link: LinkType<K, V>,
 }
 
-/// Cell is a 56-byte data structure that manages the metadata of key-value pairs.
+/// Cell is a 64-byte data structure that manages the metadata of key-value pairs.
 pub struct Cell<K: Eq, V> {
     metadata: AtomicU32,
-    num_entries: u32,
+    num_entries: usize,
     wait_queue: AtomicPtr<WaitQueueEntry>,
     /// Zero implies that the corresponding position is vacant.
     partial_hash_array: [u8; ARRAY_SIZE],
@@ -50,7 +49,7 @@ impl<K: Eq, V> Cell<K, V> {
     }
 
     pub fn size(&self) -> usize {
-        self.num_entries as usize
+        self.num_entries
     }
 
     fn wait<T, F: FnOnce() -> Option<T>>(&self, f: F) -> Option<T> {
@@ -280,8 +279,7 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
         key: K,
         partial_hash: u8,
         value: V,
-        check_num_entries: bool,
-    ) -> Result<(u8, *const EntryArrayLink<K, V>, *const (K, V)), V> {
+    ) -> (u8, *const EntryArrayLink<K, V>, *const (K, V)) {
         let cell_mut_ref = self.cell_mut_ref();
         if cell_mut_ref.entry_array.is_none() {
             // Allocates a new entry array.
@@ -302,11 +300,11 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
             };
             cell_mut_ref.num_entries += 1;
             cell_mut_ref.partial_hash_array[preferred_index] = partial_hash | 1;
-            return Ok((
+            return (
                 preferred_index.try_into().unwrap(),
                 ptr::null(),
                 entry_array_mut_ref.entries[preferred_index].as_ptr(),
-            ));
+            );
         }
 
         // Iterates the array.
@@ -319,17 +317,12 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
                 };
                 cell_mut_ref.num_entries += 1;
                 cell_mut_ref.partial_hash_array[i] = partial_hash | 1;
-                return Ok((
+                return (
                     i.try_into().unwrap(),
                     ptr::null(),
                     entry_array_mut_ref.entries[i].as_ptr(),
-                ));
+                );
             }
-        }
-
-        // If the cell contains more entries than the threshold, returns None.
-        if check_num_entries && cell_mut_ref.num_entries >= THRESHOLD {
-            return Err(value);
         }
 
         let mut key = key;
@@ -339,7 +332,7 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
             match link.insert_entry(key, partial_hash, value) {
                 Ok(result) => {
                     cell_mut_ref.num_entries += 1;
-                    return Ok((u8::MAX, result.0, result.1));
+                    return (u8::MAX, result.0, result.1);
                 }
                 Err(result) => {
                     key = result.0;
@@ -356,7 +349,7 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
         let result = result.ok().unwrap();
         cell_mut_ref.num_entries += 1;
 
-        Ok((u8::MAX, result.0, result.1))
+        (u8::MAX, result.0, result.1)
     }
 
     pub fn remove(
@@ -625,8 +618,7 @@ mod test {
         let barrier = Arc::new(Barrier::new(num_threads));
         let cell: Arc<Cell<usize, usize>> = Arc::new(Default::default());
         let mut xlocker = CellLocker::lock(&*cell);
-        let result = xlocker.insert(usize::MAX, 0, usize::MAX, true);
-        assert!(result.is_ok());
+        xlocker.insert(usize::MAX, 0, usize::MAX);
         drop(xlocker);
         let mut data: [u64; 128] = [0; 128];
         let mut thread_handles = Vec::with_capacity(num_threads);
@@ -648,8 +640,7 @@ mod test {
                         }
                         assert_eq!(sum % 256, 0);
                         if i == 1024 {
-                            let result = xlocker.insert(tid, tid.try_into().unwrap(), tid, true);
-                            assert!(result.is_ok());
+                            xlocker.insert(tid, tid.try_into().unwrap(), tid);
                         }
                         drop(xlocker);
                     } else {

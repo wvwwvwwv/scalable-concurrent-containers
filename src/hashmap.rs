@@ -125,7 +125,6 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     /// # Examples
     /// ```
     /// use scc::HashMap;
-    /// use scc::HashMapError;
     ///
     /// let hashmap: HashMap<u64, u32, _> = Default::default();
     ///
@@ -136,26 +135,19 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     ///
     /// let result = hashmap.insert(1, 1);
     /// if let Err(error) = result {
-    ///     match error {
-    ///         HashMapError::DuplicateKey(accessor, value) => {
-    ///             assert_eq!(accessor.get(), (&1, &mut 0));
-    ///             assert_eq!(value, 1);
-    ///         },
-    ///         HashMapError::Overflow(_) => {
-    ///             assert!(false);
-    ///         }
-    ///     }
+    ///     assert_eq!(error.0.get(), (&1, &mut 0));
+    ///     assert_eq!(error.1, 1);
     /// } else {
     ///     assert!(false);
     /// }
     /// ```
-    pub fn insert(&self, key: K, value: V) -> Result<Accessor<K, V, H>, HashMapError<K, V, H>> {
+    pub fn insert(&self, key: K, value: V) -> Result<Accessor<K, V, H>, (Accessor<K, V, H>, V)> {
         let (hash, partial_hash) = self.hash(&key);
         let mut resize_triggered = false;
         loop {
             let mut accessor = self.acquire(&key, hash, partial_hash);
             if !accessor.entry_ptr.is_null() {
-                return Err(HashMapError::DuplicateKey(accessor, value));
+                return Err((accessor, value));
             }
             if !resize_triggered
                 && accessor.cell_index < ARRAY_SIZE
@@ -182,18 +174,12 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
                 continue;
             }
 
-            match accessor.cell_locker.insert(key, partial_hash, value, true) {
-                Ok((sub_index, entry_array_link_ptr, entry_ptr)) => {
-                    accessor.sub_index = sub_index;
-                    accessor.entry_array_link_ptr = entry_array_link_ptr;
-                    accessor.entry_ptr = entry_ptr;
-                    return Ok(accessor);
-                }
-                Err(value) => {
-                    // Container overflow.
-                    return Err(HashMapError::Overflow(value));
-                }
-            }
+            let (sub_index, entry_array_link_ptr, entry_ptr) =
+                accessor.cell_locker.insert(key, partial_hash, value);
+            accessor.sub_index = sub_index;
+            accessor.entry_array_link_ptr = entry_array_link_ptr;
+            accessor.entry_ptr = entry_ptr;
+            return Ok(accessor);
         }
     }
 
@@ -223,13 +209,10 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     pub fn upsert(&self, key: K, value: V) -> Result<Accessor<K, V, H>, HashMapError<K, V, H>> {
         match self.insert(key, value) {
             Ok(result) => Ok(result),
-            Err(error) => match error {
-                HashMapError::DuplicateKey(accessor, value) => {
-                    *self.entry(accessor.entry_ptr).1 = value;
-                    Ok(accessor)
-                }
-                HashMapError::Overflow(_) => Err(error),
-            },
+            Err((accessor, value)) => {
+                *self.entry(accessor.entry_ptr).1 = value;
+                Ok(accessor)
+            }
         }
     }
 
