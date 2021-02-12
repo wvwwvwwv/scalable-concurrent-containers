@@ -24,7 +24,7 @@ impl<K: Eq, V> Array<K, V> {
             let size_of_cell = std::mem::size_of::<Cell<K, V>>();
             let ptr = alloc_zeroed(Layout::from_size_align_unchecked(
                 cell_array_capacity * size_of_cell,
-                8,
+                1,
             ));
             if ptr.is_null() {
                 // Memory allocation failure: panic.
@@ -236,7 +236,7 @@ impl<K: Eq, V> Drop for Array<K, V> {
             let cell_array = self.cell_array.take().unwrap();
             dealloc(
                 Box::into_raw(cell_array) as *mut u8,
-                Layout::from_size_align_unchecked((self.capacity() + 1) * size_of_cell, 8),
+                Layout::from_size_align_unchecked((self.capacity() + 1) * size_of_cell, 1),
             )
         }
     }

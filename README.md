@@ -3,6 +3,7 @@
 SCC offers scalable concurrent containers written in the Rust language. The data structures in SCC are meant to be used by database management software running on a server, ane therefore they may not efficiently work with a small set of data.
 
 - [scc::HashMap](#hashmap)
+- [scc::HashIndex](#hashindex)
 - [scc::TreeIndex](#treeindex)
 
 ## scc::HashMap <a name="hashmap"></a>
@@ -52,6 +53,12 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 | Insert | 272.420310927s | 314.424537182s | 432.493505328s | 772.267595819s |
 | Mixed  | 326.767954659s | 350.603202721s | 375.987412301s | 433.899012681s |
 | Remove | 164.857461617s | 184.528933216s | 199.187884668s | 250.735616868s |
+
+## scc::HashIndex <a name="hashindex"></a>
+
+[Work-in-progress]
+
+scc::HashIndex is an index version of scc::HashMap. It allows readers to access key-value pairs without performing a single write operation on the data structure.
 
 ## scc::TreeIndex <a name="treeindex"></a>
 
