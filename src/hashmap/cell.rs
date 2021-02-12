@@ -22,7 +22,7 @@ pub struct EntryArray<K: Eq, V> {
     link: LinkType<K, V>,
 }
 
-/// Cell is a 32-byte data structure that manages the metadata of key-value pairs.
+/// Cell is a 40-byte data structure that manages the metadata of key-value pairs.
 pub struct Cell<K: Eq, V> {
     metadata: AtomicU32,
     num_entries: u32,

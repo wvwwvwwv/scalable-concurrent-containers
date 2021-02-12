@@ -36,7 +36,7 @@ const DEFAULT_CAPACITY: usize = ARRAY_SIZE * ARRAY_SIZE;
 /// * No busy waiting: the customized mutex never spins.
 ///
 /// ## The key statistics for scc::HashMap
-/// * The expected size of metadata for a single key-value pair: 2.5-byte.
+/// * The expected size of metadata for a single key-value pair: 3-byte.
 /// * The expected number of atomic operations required for a single key operation: 2.
 /// * The expected number of atomic variables accessed during a single key operation: 1.
 /// * The range of hash values a single metadata cell manages: 65536.
