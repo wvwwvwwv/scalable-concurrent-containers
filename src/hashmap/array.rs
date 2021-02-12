@@ -1,6 +1,6 @@
 use super::cell::{Cell, CellLocker, ARRAY_SIZE, MAX_RESIZING_FACTOR};
 use crossbeam_epoch::{Atomic, Guard, Shared};
-use std::alloc::{alloc_zeroed, dealloc, Layout};
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::convert::TryInto;
 use std::mem::MaybeUninit;
 use std::sync::atomic::AtomicUsize;
@@ -22,7 +22,7 @@ impl<K: Eq, V> Array<K, V> {
         let cell_array_capacity = 1usize << lb_capacity;
         let cell_array = unsafe {
             let size_of_cell = std::mem::size_of::<Cell<K, V>>();
-            let ptr = alloc_zeroed(Layout::from_size_align_unchecked(
+            let ptr = System.alloc_zeroed(Layout::from_size_align_unchecked(
                 cell_array_capacity * size_of_cell,
                 1,
             ));
@@ -234,7 +234,7 @@ impl<K: Eq, V> Drop for Array<K, V> {
                 }
             }
             let cell_array = self.cell_array.take().unwrap();
-            dealloc(
+            System.dealloc(
                 Box::into_raw(cell_array) as *mut u8,
                 Layout::from_size_align_unchecked((self.capacity() + 1) * size_of_cell, 1),
             )

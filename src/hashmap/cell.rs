@@ -8,7 +8,7 @@ use std::sync::{Condvar, Mutex};
 
 pub const ARRAY_SIZE: usize = 16;
 pub const MAX_RESIZING_FACTOR: usize = 6;
-const THRESHOLD: u32 = 1u32 << 26;
+const THRESHOLD: u32 = 1u32 << 16;
 
 const KILLED_FLAG: u32 = 1u32 << 31;
 const WAITING_FLAG: u32 = 1u32 << 30;
@@ -18,17 +18,17 @@ const SLOCK: u32 = 1u32;
 const LOCK_MASK: u32 = XLOCK | SLOCK_MAX;
 
 pub struct EntryArray<K: Eq, V> {
-    /// Zero implies that the corresponding position is vacant.
-    partial_hash_array: [u8; ARRAY_SIZE],
     entries: [MaybeUninit<(K, V)>; ARRAY_SIZE],
     link: LinkType<K, V>,
 }
 
-/// Cell is a 24-byte data structure that manages the metadata of key-value pairs.
+/// Cell is a 40-byte data structure that manages the metadata of key-value pairs.
 pub struct Cell<K: Eq, V> {
     metadata: AtomicU32,
     num_entries: u32,
     wait_queue: AtomicPtr<WaitQueueEntry>,
+    /// Zero implies that the corresponding position is vacant.
+    partial_hash_array: [u8; ARRAY_SIZE],
     entry_array: Option<Box<EntryArray<K, V>>>,
 }
 
@@ -38,6 +38,7 @@ impl<K: Eq, V> Default for Cell<K, V> {
             metadata: AtomicU32::new(0),
             num_entries: 0,
             wait_queue: AtomicPtr::new(ptr::null_mut()),
+            partial_hash_array: [0; ARRAY_SIZE],
             entry_array: None,
         }
     }
@@ -115,7 +116,7 @@ impl<K: Eq, V> Cell<K, V> {
         if let Some(entry_array) = self.entry_array.as_ref() {
             // Starts with the preferred index.
             let preferred_index = partial_hash % (ARRAY_SIZE as u8);
-            if entry_array.partial_hash_array[preferred_index as usize] == (partial_hash | 1) {
+            if self.partial_hash_array[preferred_index as usize] == (partial_hash | 1) {
                 let entry_ptr = entry_array.entries[preferred_index as usize].as_ptr();
                 if unsafe { &(*entry_ptr) }.0 == *key {
                     return Some((preferred_index, ptr::null(), entry_ptr));
@@ -124,8 +125,7 @@ impl<K: Eq, V> Cell<K, V> {
 
             // Iterates the array.
             for i in 0..ARRAY_SIZE.try_into().unwrap() {
-                if i != preferred_index
-                    && entry_array.partial_hash_array[i as usize] == (partial_hash | 1)
+                if i != preferred_index && self.partial_hash_array[i as usize] == (partial_hash | 1)
                 {
                     let entry_ptr = entry_array.entries[i as usize].as_ptr();
                     if unsafe { &(*entry_ptr) }.0 == *key {
@@ -155,7 +155,7 @@ impl<K: Eq, V> Drop for Cell<K, V> {
             if metadata & KILLED_FLAG == 0 {
                 // Iterates the array.
                 for i in 0..ARRAY_SIZE {
-                    if entry_array.partial_hash_array[i as usize] != 0 {
+                    if self.partial_hash_array[i as usize] != 0 {
                         unsafe {
                             std::ptr::drop_in_place(entry_array.entries[i].as_mut_ptr());
                         }
@@ -222,10 +222,7 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
     }
 
     pub fn partial_hash(&self, sub_index: u8) -> u8 {
-        self.cell.entry_array.as_ref().map_or_else(
-            || 0,
-            |entry_array| entry_array.partial_hash_array[sub_index as usize] & (!1u8),
-        )
+        self.cell.partial_hash_array[sub_index as usize] & (!1u8)
     }
 
     pub fn next(
@@ -261,7 +258,7 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
                 sub_index + 1
             };
             for i in start_index..ARRAY_SIZE.try_into().unwrap() {
-                if entry_array.partial_hash_array[i as usize] != 0 {
+                if self.cell.partial_hash_array[i as usize] != 0 {
                     let entry_ptr = entry_array.entries[i as usize].as_ptr();
                     return Some((i, ptr::null(), entry_ptr));
                 }
@@ -290,7 +287,6 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
             // Allocates a new entry array.
             debug_assert_eq!(cell_mut_ref.num_entries, 0);
             cell_mut_ref.entry_array.replace(Box::new(EntryArray {
-                partial_hash_array: [0; ARRAY_SIZE],
                 entries: unsafe { MaybeUninit::uninit().assume_init() },
                 link: None,
             }));
@@ -298,14 +294,14 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
         let entry_array_mut_ref = cell_mut_ref.entry_array.as_mut().unwrap();
 
         let preferred_index = (partial_hash % (ARRAY_SIZE as u8)) as usize;
-        if entry_array_mut_ref.partial_hash_array[preferred_index] == 0 {
+        if cell_mut_ref.partial_hash_array[preferred_index] == 0 {
             unsafe {
                 entry_array_mut_ref.entries[preferred_index]
                     .as_mut_ptr()
                     .write((key, value))
             };
             cell_mut_ref.num_entries += 1;
-            entry_array_mut_ref.partial_hash_array[preferred_index] = partial_hash | 1;
+            cell_mut_ref.partial_hash_array[preferred_index] = partial_hash | 1;
             return Ok((
                 preferred_index.try_into().unwrap(),
                 ptr::null(),
@@ -315,14 +311,14 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
 
         // Iterates the array.
         for i in 0..ARRAY_SIZE {
-            if i != preferred_index && entry_array_mut_ref.partial_hash_array[i] == 0 {
+            if i != preferred_index && cell_mut_ref.partial_hash_array[i] == 0 {
                 unsafe {
                     entry_array_mut_ref.entries[i]
                         .as_mut_ptr()
                         .write((key, value))
                 };
                 cell_mut_ref.num_entries += 1;
-                entry_array_mut_ref.partial_hash_array[i] = partial_hash | 1;
+                cell_mut_ref.partial_hash_array[i] = partial_hash | 1;
                 return Ok((
                     i.try_into().unwrap(),
                     ptr::null(),
@@ -374,10 +370,10 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
         debug_assert!(cell_mut_ref.entry_array.is_some());
         cell_mut_ref.num_entries -= 1;
         if sub_index != u8::MAX {
-            let entry_array_mut_ref = cell_mut_ref.entry_array.as_mut().unwrap();
-            entry_array_mut_ref.partial_hash_array[sub_index as usize] = 0;
+            cell_mut_ref.partial_hash_array[sub_index as usize] = 0;
             if drop_entry {
                 unsafe {
+                    let entry_array_mut_ref = cell_mut_ref.entry_array.as_mut().unwrap();
                     std::ptr::drop_in_place(
                         entry_array_mut_ref.entries[sub_index as usize].as_mut_ptr(),
                     );
@@ -418,7 +414,7 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
             entry_array_ref.link.as_ref().map_or_else(
                 || {
                     for i in 0..ARRAY_SIZE.try_into().unwrap() {
-                        if entry_array_ref.partial_hash_array[i as usize] != 0 {
+                        if self.cell.partial_hash_array[i as usize] != 0 {
                             return Some((
                                 i,
                                 ptr::null(),
