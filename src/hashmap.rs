@@ -120,7 +120,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     ///
     /// # Panics
     ///
-    /// Panics if memory allocation fails.
+    /// Panics if memory allocation fails, or the size of the target cell reaches u32::MAX.
     ///
     /// # Examples
     /// ```

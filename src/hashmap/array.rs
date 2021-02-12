@@ -8,6 +8,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 pub struct Array<K: Eq, V> {
     cell_array: Option<Box<Cell<K, V>>>,
+    cell_array_ptr_offset: usize,
     cell_array_capacity: usize,
     all_cells_killed: bool,
     lb_capacity: u8,
@@ -20,11 +21,11 @@ impl<K: Eq, V> Array<K, V> {
     pub fn new(capacity: usize, current_array: Atomic<Array<K, V>>) -> Array<K, V> {
         let lb_capacity = Self::calculate_lb_metadata_array_size(capacity);
         let cell_array_capacity = 1usize << lb_capacity;
-        let cell_array = unsafe {
+        let (cell_array, cell_array_ptr_offset) = unsafe {
             let size_of_cell = std::mem::size_of::<Cell<K, V>>();
             // System.alloc_zeroed calls std::calloc, thereby allowing lazy initialization.
             let ptr = System.alloc_zeroed(Layout::from_size_align_unchecked(
-                cell_array_capacity * size_of_cell,
+                (cell_array_capacity + 1) * size_of_cell,
                 1,
             ));
             if ptr.is_null() {
@@ -34,10 +35,16 @@ impl<K: Eq, V> Array<K, V> {
                     cell_array_capacity * size_of_cell
                 )
             }
-            Some(Box::from_raw(ptr as *mut Cell<K, V>))
+            let mut offset = ptr.align_offset(size_of_cell.next_power_of_two());
+            if offset == usize::MAX {
+                offset = 0;
+            }
+            let cell_array_ptr = ptr.add(offset) as *mut Cell<K, V>;
+            (Some(Box::from_raw(cell_array_ptr)), offset)
         };
         Array {
             cell_array,
+            cell_array_ptr_offset,
             cell_array_capacity,
             all_cells_killed: false,
             lb_capacity,
@@ -235,8 +242,8 @@ impl<K: Eq, V> Drop for Array<K, V> {
             }
             let cell_array = self.cell_array.take().unwrap();
             System.dealloc(
-                Box::into_raw(cell_array) as *mut u8,
-                Layout::from_size_align_unchecked((self.capacity() + 1) * size_of_cell, 1),
+                (Box::into_raw(cell_array) as *mut u8).sub(self.cell_array_ptr_offset),
+                Layout::from_size_align_unchecked((self.cell_array_capacity + 1) * size_of_cell, 1),
             )
         }
     }
