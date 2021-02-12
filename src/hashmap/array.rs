@@ -1,6 +1,6 @@
 use super::cell::{Cell, CellLocker, ARRAY_SIZE, MAX_RESIZING_FACTOR};
 use crossbeam_epoch::{Atomic, Guard, Shared};
-use std::alloc::{GlobalAlloc, Layout, System};
+use std::alloc::{alloc_zeroed, dealloc, Layout};
 use std::convert::TryInto;
 use std::mem::MaybeUninit;
 use std::sync::atomic::AtomicUsize;
@@ -23,19 +23,13 @@ impl<K: Eq, V> Array<K, V> {
         let cell_array_capacity = 1usize << lb_capacity;
         let (cell_array, cell_array_ptr_offset) = unsafe {
             let size_of_cell = std::mem::size_of::<Cell<K, V>>();
-            // System.alloc_zeroed calls std::calloc, thereby allowing lazy initialization.
-            let ptr = System.alloc_zeroed(Layout::from_size_align_unchecked(
-                (cell_array_capacity + 1) * size_of_cell,
-                1,
-            ));
+            let allocation_size = (cell_array_capacity + 1) * size_of_cell;
+            let ptr = alloc_zeroed(Layout::from_size_align_unchecked(allocation_size, 1));
             if ptr.is_null() {
                 // Memory allocation failure: panic.
-                panic!(
-                    "memory allocation failure: {} bytes",
-                    cell_array_capacity * size_of_cell
-                )
+                panic!("memory allocation failure: {} bytes", allocation_size)
             }
-            let mut offset = ptr.align_offset(size_of_cell.next_power_of_two());
+            let mut offset = ptr.align_offset(64);
             if offset == usize::MAX {
                 offset = 0;
             }
@@ -214,9 +208,8 @@ impl<K: Eq, V> Array<K, V> {
                 if immediate_drop {
                     // There is a possibility that the old array contains valid cells.
                     let mut old_array = old_array.into_owned();
-                    let old_array_size = old_array.num_cells();
                     let current = self.rehashed.load(Relaxed);
-                    for old_cell_index in current..old_array_size {
+                    for old_cell_index in current..old_array.num_cells() {
                         let old_cell_ptr = old_array.cell(old_cell_index) as *const _;
                         std::ptr::drop_in_place(old_cell_ptr as *mut Cell<K, V>);
                     }
@@ -241,7 +234,7 @@ impl<K: Eq, V> Drop for Array<K, V> {
                 }
             }
             let cell_array = self.cell_array.take().unwrap();
-            System.dealloc(
+            dealloc(
                 (Box::into_raw(cell_array) as *mut u8).sub(self.cell_array_ptr_offset),
                 Layout::from_size_align_unchecked((self.cell_array_capacity + 1) * size_of_cell, 1),
             )

@@ -148,14 +148,12 @@ impl<K: Eq, V> Drop for Cell<K, V> {
     fn drop(&mut self) {
         // If it has been killed, nothing to cleanup.
         if let Some(mut entry_array) = self.entry_array.take() {
-            let metadata = self.metadata.load(Acquire);
-            if metadata & KILLED_FLAG == 0 {
-                // Iterates the array.
-                for i in 0..ARRAY_SIZE {
-                    if self.partial_hash_array[i as usize] != 0 {
-                        unsafe {
-                            std::ptr::drop_in_place(entry_array[i].as_mut_ptr());
-                        }
+            debug_assert!((self.metadata.load(Relaxed) & KILLED_FLAG) == 0);
+            // Iterates the array.
+            for i in 0..ARRAY_SIZE {
+                if self.partial_hash_array[i as usize] != 0 {
+                    unsafe {
+                        std::ptr::drop_in_place(entry_array[i].as_mut_ptr());
                     }
                 }
             }
@@ -367,32 +365,28 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
                     std::ptr::drop_in_place(entry_array_mut_ref[sub_index as usize].as_mut_ptr());
                 };
             }
-            if cell_mut_ref.num_entries == 0 {
-                // Drops the entry array when all the entries are removed.
-                cell_mut_ref.entry_array.take();
-            }
-        } else {
-            if !entry_array_link_ptr.is_null() {
-                let entry_array_link_mut_ptr = entry_array_link_ptr as *mut EntryArrayLink<K, V>;
-                if unsafe {
-                    (*entry_array_link_mut_ptr).remove_entry(drop_entry, key_value_pair_ptr)
-                } {
-                    if let Ok(mut head) = cell_mut_ref.link.as_mut().map_or_else(
-                        || Err(()),
-                        |head| head.remove_self(entry_array_link_mut_ptr),
-                    ) {
-                        cell_mut_ref.link = head.take();
-                    } else {
-                        let mut link_ref = &mut cell_mut_ref.link;
-                        while let Some(link) = link_ref.as_mut() {
-                            if link.remove_next(entry_array_link_mut_ptr) {
-                                break;
-                            }
-                            link_ref = link.link_mut_ref();
+        } else if !entry_array_link_ptr.is_null() {
+            let entry_array_link_mut_ptr = entry_array_link_ptr as *mut EntryArrayLink<K, V>;
+            if unsafe { (*entry_array_link_mut_ptr).remove_entry(drop_entry, key_value_pair_ptr) } {
+                if let Ok(mut head) = cell_mut_ref.link.as_mut().map_or_else(
+                    || Err(()),
+                    |head| head.remove_self(entry_array_link_mut_ptr),
+                ) {
+                    cell_mut_ref.link = head.take();
+                } else {
+                    let mut link_ref = &mut cell_mut_ref.link;
+                    while let Some(link) = link_ref.as_mut() {
+                        if link.remove_next(entry_array_link_mut_ptr) {
+                            break;
                         }
+                        link_ref = link.link_mut_ref();
                     }
                 }
             }
+        }
+        if cell_mut_ref.num_entries == 0 {
+            // Drops the entry array when all the entries are removed.
+            cell_mut_ref.entry_array.take();
         }
     }
 
@@ -425,6 +419,8 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
 
     pub fn kill(&mut self) {
         debug_assert!(self.empty());
+        debug_assert!(self.cell.entry_array.is_none());
+        debug_assert!(self.cell.link.is_none());
         self.metadata |= KILLED_FLAG;
     }
 

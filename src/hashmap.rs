@@ -20,29 +20,26 @@ const DEFAULT_CAPACITY: usize = 256;
 /// A scalable concurrent hash map implementation.
 ///
 /// scc::HashMap is a concurrent hash map data structure that is targeted at a highly concurrent workload.
-/// The epoch-based reclamation technique provided by the crossbeam_epoch crate enables the data structure to eliminate coarse locking,
-/// and therefore, all the data pertains in a single array of data.
-/// The metadata array is composed of metadata cells, and each of them manages a fixed number of key-value pair entries using a customized mutex.
-/// The metadata cells are able to locate the correct entry by having an array of partial hash values of the key-value pairs.
-/// A metadata cell resolves hash collisions by allocating a linked list of key-value pair arrays.
+/// The epoch-based reclamation technique provided by the crossbeam_epoch crate enables the data structure to eliminate coarse locking.
+/// All the key-value pairs is managed by a single metadata cell array, and a metadata cell manages a fixed number of key-value pairs.
+/// The metadata cell resolves hash collisions by allocating a linked list of key-value pair arrays.
 ///
 /// ## The key features of scc::HashMap
-/// * Non-sharded: the data is stored in a single entry array.
+/// * Non-sharded: the data is managed by a singled metadata cell array.
 /// * Automatic resizing: it automatically grows or shrinks.
 /// * Non-blocking resizing: resizing does not block other threads.
 /// * Incremental resizing: each access to the data structure relocates a certain number of key-value pairs.
 /// * Optimized resizing: key-value pairs in a single metadata cell are guaranteed to be relocated to adjacent cells.
-/// * Minimized shared data: no atomic counter and coarse lock.
+/// * Minimized shared data: no atomic counters and coarse locks.
 /// * No busy waiting: the customized mutex never spins.
 ///
 /// ## The key statistics for scc::HashMap
 /// * The expected size of metadata for a single key-value pair: 2-byte.
-/// * The expected number of atomic operations required for a single key operation: 2.
+/// * The expected number of atomic operations required for an operation on a single key: 2.
 /// * The expected number of atomic variables accessed during a single key operation: 1.
-/// * The range of hash values a single metadata cell manages: 65536.
 /// * The number of entries managed by a single metadata cell without a linked list: 32.
 /// * The number of entries a single linked list entry manages: 8.
-/// * The expected maximum linked list length when resize is triggered: log(capacity) / 4.
+/// * The expected maximum linked list length when resize is triggered: log(capacity) / 8.
 pub struct HashMap<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> {
     array: Atomic<Array<K, V>>,
     minimum_capacity: usize,
@@ -116,7 +113,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     ///
     /// # Errors
     ///
-    /// Returns an error with a mutable reference to the exiting key-value pair.
+    /// Returns an error with a mutable reference to the existing key-value pair.
     ///
     /// # Panics
     ///
@@ -187,7 +184,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     ///
     /// # Panics
     ///
-    /// Panics if memory allocation fails.
+    /// Panics if memory allocation fails, or the size of the target cell reaches u32::MAX.
     ///
     /// # Examples
     /// ```
@@ -572,8 +569,8 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
 
     /// Returns a Cursor.
     ///
-    /// It is guaranteed to scan all the key-value pairs pertaining in the HashMap at the moment,
-    /// however the same key-value pair can be scanned more than once if the HashMap is being resized.
+    /// It is guaranteed to go through all the key-value pairs pertaining in the HashMap at the moment,
+    /// however the same key-value pair can be visited more than once if the HashMap is being resized.
     ///
     /// # Examples
     /// ```
@@ -1007,7 +1004,7 @@ pub enum HashMapError<'h, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> {
 ///
 /// It is !Send, thus disallowing other threads to have references to it.
 /// It acquires an exclusive lock on the cell managing the key.
-/// A thread having multiple Accessor of Cursor instances poses a possibility of deadlock.
+/// A thread having multiple Accessor or Cursor instances poses a possibility of deadlock.
 pub struct Accessor<'h, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> {
     hash_map: &'h HashMap<K, V, H>,
     cell_locker: CellLocker<'h, K, V>,
@@ -1071,8 +1068,8 @@ impl<'h, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Accessor<'h, K, V, H> {
 /// Cursor implements Iterator for HashMap.
 ///
 /// It is !Send, thus disallowing other threads to have references to it.
-/// It acquires an exclusive lock on a cell that is currently being scanned.
-/// A thread having multiple Accessor of Cursor instances poses a possibility of deadlock.
+/// It acquires an exclusive lock on the cell that is currently being visited.
+/// A thread having multiple Accessor or Cursor instances poses a possibility of deadlock.
 pub struct Cursor<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> {
     accessor: Option<Accessor<'a, K, V, H>>,
     array_ptr: *const Array<K, V>,
