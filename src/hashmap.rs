@@ -550,7 +550,6 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
             num_cells: 0,
             num_empty_cells: 0,
             num_max_consecutive_empty_cells: 0,
-            max_link_length: 0,
         };
         let guard = crossbeam_epoch::pin();
         let current_array = self.array.load(Acquire, &guard);
@@ -1177,7 +1176,6 @@ pub struct Statistics {
     num_cells: usize,
     num_empty_cells: usize,
     num_max_consecutive_empty_cells: usize,
-    max_link_length: usize,
 }
 
 impl Statistics {
@@ -1202,16 +1200,13 @@ impl Statistics {
     pub fn num_max_consecutive_empty_cells(&self) -> usize {
         self.num_max_consecutive_empty_cells
     }
-    pub fn max_link_length(&self) -> usize {
-        self.max_link_length
-    }
 }
 
 impl fmt::Display for Statistics {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "effective_capacity: {}, deprecated_capacity: {}, entries: {}, killed_entries: {}, cells: {}, empty_cells: {}, max_consecutive_empty_cells: {}, max_link_length: {}",
+            "effective_capacity: {}, deprecated_capacity: {}, entries: {}, killed_entries: {}, cells: {}, empty_cells: {}, max_consecutive_empty_cells: {}",
             self.effective_capacity,
             self.deprecated_capacity,
             self.num_entries,
@@ -1219,7 +1214,6 @@ impl fmt::Display for Statistics {
             self.num_cells,
             self.num_empty_cells,
             self.num_max_consecutive_empty_cells,
-            self.max_link_length
         )
     }
 }
