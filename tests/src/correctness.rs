@@ -94,9 +94,8 @@ mod hashmap_test {
             }
 
             let result3 = hashmap.upsert(key, 1);
-            if let Ok(accessor) = result3 {
-                assert_eq!(accessor.get(), (&key, &mut 1));
-            }
+            assert_eq!(result3.get(), (&key, &mut 1));
+        drop(result3);
 
             let result4 = hashmap.insert(key, 10);
             assert!(result4.is_err());
@@ -280,9 +279,8 @@ mod hashmap_test {
                 let result = hashmap.insert(Data::new(d, &checker), Data::new(d, &checker));
                 assert!(result.is_ok());
                 drop(result);
-                if let Ok(result) = hashmap.upsert(Data::new(d, &checker), Data::new(d + 1, &checker)) {
-                    (*result.get().1) = Data::new(d + 2, &checker);
-        }
+                let result = hashmap.upsert(Data::new(d, &checker), Data::new(d + 1, &checker));
+                (*result.get().1) = Data::new(d + 2, &checker);
             }
             let statistics = hashmap.statistics();
             println!("{}", statistics);
@@ -291,9 +289,8 @@ mod hashmap_test {
                 let result = hashmap.insert(Data::new(d, &checker), Data::new(d, &checker));
                 assert!(result.is_ok());
                 drop(result);
-                if let Ok(result) = hashmap.upsert(Data::new(d, &checker), Data::new(d + 1, &checker)) {
-                    (*result.get().1) = Data::new(d + 2, &checker);
-        }
+                let result = hashmap.upsert(Data::new(d, &checker), Data::new(d + 1, &checker));
+                (*result.get().1) = Data::new(d + 2, &checker);
             }
             let statistics = hashmap.statistics();
             println!("before retain: {}", statistics);
@@ -326,9 +323,8 @@ mod hashmap_test {
                 let result = hashmap.insert(Data::new(d, &checker), Data::new(d, &checker));
                 assert!(result.is_ok());
                 drop(result);
-                if let Ok(result) = hashmap.upsert(Data::new(d, &checker), Data::new(d + 1, &checker)) {
-                    (*result.get().1) = Data::new(d + 2, &checker);
-        }
+                let result = hashmap.upsert(Data::new(d, &checker), Data::new(d + 1, &checker));
+               (*result.get().1) = Data::new(d + 2, &checker);
             }
             let result = hashmap.clear();
             assert_eq!(result, range as usize);
@@ -341,9 +337,8 @@ mod hashmap_test {
                 let result = hashmap.insert(Data::new(d, &checker), Data::new(d, &checker));
                 assert!(result.is_ok());
                 drop(result);
-                if let Ok(result) = hashmap.upsert(Data::new(d, &checker), Data::new(d + 1, &checker)) {
-                    (*result.get().1) = Data::new(d + 2, &checker);
-        }
+                let result = hashmap.upsert(Data::new(d, &checker), Data::new(d + 1, &checker));
+                (*result.get().1) = Data::new(d + 2, &checker);
             }
             assert_eq!(checker.load(Relaxed) as u64, range * 2);
             drop(hashmap);

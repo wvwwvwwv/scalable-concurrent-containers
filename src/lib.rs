@@ -1,10 +1,13 @@
 //! Scalable concurrent containers.
 //!
-//! # scc::HashMap
-//! A concurrent hash map that dynamically grows and shrinks in a non-blocking manner without sharding.
+//! # [`scc::HashMap`]
+//! [`scc::HashMap`] is a concurrent hash map that dynamically grows and shrinks in a non-blocking manner without sharding.
 //!
-//! # scc::TreeIndex
-//! A concurrent tree index optimized for scan and read.
+//! # [`scc::TreeIndex`]
+//! [`scc::TreeIndex`] is a concurrent B+ tree index optimized for scan and read.
+//!
+//! [`scc::HashMap`]: hashmap::HashMap
+//! [`scc::TreeIndex`]: treeindex::TreeIndex
 
 mod hashmap;
 mod treeindex;

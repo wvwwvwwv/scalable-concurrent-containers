@@ -117,7 +117,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     ///
     /// # Panics
     ///
-    /// Panics if memory allocation fails, or the size of the target cell reaches u32::MAX.
+    /// Panics if memory allocation fails, or the number of entries in the target cell reaches u32::MAX.
     ///
     /// # Examples
     /// ```
@@ -184,7 +184,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     ///
     /// # Panics
     ///
-    /// Panics if memory allocation fails, or the size of the target cell reaches u32::MAX.
+    /// Panics if memory allocation fails, or the number of entries in the target cell reaches u32::MAX.
     ///
     /// # Examples
     /// ```
@@ -197,18 +197,15 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     ///     assert_eq!(result.get(), (&1, &mut 0));
     /// }
     ///
-    /// if let Ok(result) = hashmap.upsert(1, 1) {
-    ///     assert_eq!(result.get(), (&1, &mut 1));
-    /// } else {
-    ///     assert!(false);
-    /// };
+    /// let result = hashmap.upsert(1, 1);
+    /// assert_eq!(result.get(), (&1, &mut 1));
     /// ```
-    pub fn upsert(&self, key: K, value: V) -> Result<Accessor<K, V, H>, HashMapError<K, V, H>> {
+    pub fn upsert(&self, key: K, value: V) -> Accessor<K, V, H> {
         match self.insert(key, value) {
-            Ok(result) => Ok(result),
+            Ok(result) => result,
             Err((accessor, value)) => {
                 *self.entry(accessor.entry_ptr).1 = value;
-                Ok(accessor)
+                accessor
             }
         }
     }
@@ -986,18 +983,6 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Drop for HashMap<K, V, H> {
             drop(unsafe { array.into_owned() });
         }
     }
-}
-
-/// Error codes returned by HashMap.
-pub enum HashMapError<'h, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> {
-    /// The key exists in the HashMap.
-    ///
-    /// It returns the Accessor pointing to the existing key-value pair.
-    DuplicateKey(Accessor<'h, K, V, H>, V),
-    /// The HashMap is overflowing.
-    ///
-    /// This error code implies that the hash function is inefficient.
-    Overflow(V),
 }
 
 /// Accessor owns a key-value pair in the HashMap.
