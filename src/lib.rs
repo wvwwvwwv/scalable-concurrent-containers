@@ -10,6 +10,7 @@
 //! [`scc::TreeIndex`] is a concurrent B+ tree index optimized for scan and read.
 //!
 //! [`scc::HashMap`]: hashmap::HashMap
+//! [`scc::HashIndex`]: hashindex::HashIndex
 //! [`scc::TreeIndex`]: treeindex::TreeIndex
 
 // scc::HashMap
