@@ -71,6 +71,8 @@ scc::TreeIndex is a B+ tree optimized for read operations. Locks are only acquir
 
 ## Changelog
 
+#### 0.4.3
+Initial HashIndex draft
 #### 0.4.2
 Fix comments and documents
 #### 0.4.1

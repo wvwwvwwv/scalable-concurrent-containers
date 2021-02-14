@@ -1,6 +1,3 @@
-extern crate crossbeam_epoch;
-extern crate scopeguard;
-
 pub mod array;
 pub mod cell;
 pub mod link;
@@ -40,14 +37,23 @@ const DEFAULT_CAPACITY: usize = 256;
 /// * The number of entries managed by a single metadata cell without a linked list: 32.
 /// * The number of entries a single linked list entry manages: 8.
 /// * The expected maximum linked list length when resize is triggered: log(capacity) / 8.
-pub struct HashMap<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> {
+pub struct HashMap<K, V, H>
+where
+    K: Eq + Hash + Sync,
+    V: Sync,
+    H: BuildHasher,
+{
     array: Atomic<Array<K, V>>,
     minimum_capacity: usize,
     resize_mutex: AtomicBool,
     build_hasher: H,
 }
 
-impl<K: Eq + Hash + Sync, V: Sync> Default for HashMap<K, V, RandomState> {
+impl<K, V> Default for HashMap<K, V, RandomState>
+where
+    K: Eq + Hash + Sync,
+    V: Sync,
+{
     /// Creates a HashMap instance with the default parameters.
     ///
     /// The default hash builder is RandomState, and the default capacity is 256.
@@ -75,7 +81,12 @@ impl<K: Eq + Hash + Sync, V: Sync> Default for HashMap<K, V, RandomState> {
     }
 }
 
-impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
+impl<K, V, H> HashMap<K, V, H>
+where
+    K: Eq + Hash + Sync,
+    V: Sync,
+    H: BuildHasher,
+{
     /// Creates an empty HashMap instance with the given capacity and build hasher.
     ///
     /// The actual capacity is equal to or greater than the given capacity.
@@ -620,7 +631,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     }
 
     /// Acquires a cell.
-    fn acquire<'a>(&'a self, key: &K, hash: u64, partial_hash: u8) -> Accessor<'a, K, V, H> {
+    fn acquire<'h>(&'h self, key: &K, hash: u64, partial_hash: u8) -> Accessor<'h, K, V, H> {
         let guard = crossbeam_epoch::pin();
 
         // It is guaranteed that the thread reads a consistent snapshot of the current and
@@ -682,7 +693,7 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     }
 
     /// Erases a key-value pair owned by the accessor.
-    fn erase<'a>(&'a self, mut accessor: Accessor<'a, K, V, H>) -> V {
+    fn erase<'h>(&'h self, mut accessor: Accessor<'h, K, V, H>) -> V {
         let value = Array::<K, V>::extract_key_value(accessor.entry_ptr).1;
         accessor.cell_locker.remove(
             false,
@@ -714,14 +725,14 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> HashMap<K, V, H> {
     }
 
     /// Searches a cell for the key.
-    fn search<'a>(
+    fn search<'c>(
         &self,
         key: &K,
         hash: u64,
         partial_hash: u8,
         array_ptr: *const Array<K, V>,
     ) -> (
-        CellLocker<'a, K, V>,
+        CellLocker<'c, K, V>,
         usize,
         u8,
         *const link::EntryArrayLink<K, V>,
@@ -990,7 +1001,12 @@ impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Drop for HashMap<K, V, H> {
 /// It is !Send, thus disallowing other threads to have references to it.
 /// It acquires an exclusive lock on the cell managing the key.
 /// A thread having multiple Accessor or Cursor instances poses a possibility of deadlock.
-pub struct Accessor<'h, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> {
+pub struct Accessor<'h, K, V, H>
+where
+    K: Eq + Hash + Sync,
+    V: Sync,
+    H: BuildHasher,
+{
     hash_map: &'h HashMap<K, V, H>,
     cell_locker: CellLocker<'h, K, V>,
     cell_index: usize,
@@ -999,7 +1015,12 @@ pub struct Accessor<'h, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> {
     entry_ptr: *const (K, V),
 }
 
-impl<'h, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Accessor<'h, K, V, H> {
+impl<'h, K, V, H> Accessor<'h, K, V, H>
+where
+    K: Eq + Hash + Sync,
+    V: Sync,
+    H: BuildHasher,
+{
     /// Returns a reference to the key-value pair.
     ///
     /// # Examples
@@ -1055,15 +1076,25 @@ impl<'h, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Accessor<'h, K, V, H> {
 /// It is !Send, thus disallowing other threads to have references to it.
 /// It acquires an exclusive lock on the cell that is currently being visited.
 /// A thread having multiple Accessor or Cursor instances poses a possibility of deadlock.
-pub struct Cursor<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> {
-    accessor: Option<Accessor<'a, K, V, H>>,
+pub struct Cursor<'h, K, V, H>
+where
+    K: Eq + Hash + Sync,
+    V: Sync,
+    H: BuildHasher,
+{
+    accessor: Option<Accessor<'h, K, V, H>>,
     array_ptr: *const Array<K, V>,
     activated: bool,
     erase_on_next: bool,
 }
 
-impl<'a, K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Iterator for Cursor<'a, K, V, H> {
-    type Item = (&'a K, &'a mut V);
+impl<'h, K, V, H> Iterator for Cursor<'h, K, V, H>
+where
+    K: Eq + Hash + Sync,
+    V: Sync,
+    H: BuildHasher,
+{
+    type Item = (&'h K, &'h mut V);
     fn next(&mut self) -> Option<Self::Item> {
         if !self.activated {
             self.activated = true;
