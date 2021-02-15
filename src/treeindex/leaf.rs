@@ -242,7 +242,7 @@ where
             entry = self.take(inserter.index);
         }
 
-        // full
+        // Full.
         debug_assert!(self.full());
         let duplicate_key = self.search(&entry.0).is_some();
         Some((entry, duplicate_key))
