@@ -12,7 +12,7 @@ use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-const DEFAULT_CAPACITY: usize = 256;
+const DEFAULT_CAPACITY: usize = 64;
 
 /// A scalable concurrent hash map implementation.
 ///
@@ -69,7 +69,7 @@ where
     /// let hashmap: HashMap<u64, u32, _> = Default::default();
     ///
     /// let result = hashmap.capacity();
-    /// assert_eq!(result, 256);
+    /// assert_eq!(result, 64);
     /// ```
     fn default() -> Self {
         HashMap {
@@ -108,7 +108,7 @@ where
     ///
     /// let hashmap: HashMap<u64, u32, _> = Default::default();
     /// let result = hashmap.capacity();
-    /// assert_eq!(result, 256);
+    /// assert_eq!(result, 64);
     /// ```
     pub fn new(capacity: usize, build_hasher: H) -> HashMap<K, V, H> {
         let initial_capacity = capacity.max(DEFAULT_CAPACITY);
@@ -911,7 +911,7 @@ where
             //  - The load factor reaches 1/16, then the array shrinks to fit.
             let capacity = current_array_ref.capacity();
             let num_cells = current_array_ref.num_cells();
-            let num_cells_to_sample = (num_cells / 16).max(4).min(4096);
+            let num_cells_to_sample = (num_cells / 8).max(DEFAULT_CAPACITY / ARRAY_SIZE).min(4096);
             let estimated_num_entries = self.estimate(current_array_ref, num_cells_to_sample);
             let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
                 let max_capacity = 1usize << (std::mem::size_of::<usize>() * 8 - 1);
@@ -982,7 +982,12 @@ where
     }
 }
 
-impl<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> Drop for HashMap<K, V, H> {
+impl<K, V, H> Drop for HashMap<K, V, H>
+where
+    K: Eq + Hash + Sync,
+    V: Sync,
+    H: BuildHasher,
+{
     fn drop(&mut self) {
         self.clear();
         let guard = crossbeam_epoch::pin();

@@ -206,17 +206,16 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 }
                 NodeType::Leaf(new_root_leaf) => {
                     let new_root_lock = LeafNodeLocker::try_lock(new_root_leaf, guard);
-                    if new_root_lock.is_some() {
-                        if root_ptr
+                    if new_root_lock.is_some()
+                        && root_ptr
                             .compare_and_set(current_root, new_root, Release, guard)
                             .is_ok()
-                        {
-                            internal_node.children.1.store(Shared::null(), Relaxed);
-                            unsafe {
-                                debug_assert!(current_root.deref().obsolete(true, guard));
-                                guard.defer_destroy(current_root)
-                            };
-                        }
+                    {
+                        internal_node.children.1.store(Shared::null(), Relaxed);
+                        unsafe {
+                            debug_assert!(current_root.deref().obsolete(true, guard));
+                            guard.defer_destroy(current_root)
+                        };
                     }
                 }
             }
@@ -607,10 +606,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                     };
 
                 // Builds a list of valid nodes.
-                let mut entry_array: [Option<(Option<&K>, Atomic<Node<K, V>>)>; ARRAY_SIZE + 2] = [
-                    None, None, None, None, None, None, None, None, None, None, None, None, None,
-                    None,
-                ];
+                let mut entry_array: [Option<(Option<&K>, Atomic<Node<K, V>>)>; ARRAY_SIZE + 2] =
+                    [None, None, None, None, None, None, None, None, None, None];
                 let mut num_entries = 0;
                 for entry in LeafScanner::new(&full_internal_node.children.0) {
                     if new_children_ref
@@ -681,20 +678,18 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                                 .unwrap()
                                 .1
                                 .store(child_node_ptr, Relaxed);
+                        } else if let Some(key) = entry.0 {
+                            high_key_nodes
+                                .as_ref()
+                                .unwrap()
+                                .0
+                                .insert(key.clone(), entry.1.clone());
                         } else {
-                            if let Some(key) = entry.0 {
-                                high_key_nodes
-                                    .as_ref()
-                                    .unwrap()
-                                    .0
-                                    .insert(key.clone(), entry.1.clone());
-                            } else {
-                                high_key_nodes
-                                    .as_ref()
-                                    .unwrap()
-                                    .1
-                                    .store(entry.1.load(Relaxed, guard), Relaxed);
-                            }
+                            high_key_nodes
+                                .as_ref()
+                                .unwrap()
+                                .1
+                                .store(entry.1.load(Relaxed, guard), Relaxed);
                         }
                     } else {
                         break;
@@ -846,16 +841,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         }
 
         let mut obsolete = true;
-        let shrink_threshold = if self.floor >= ARRAY_SIZE / 3 {
-            1
-        } else {
-            ARRAY_SIZE / 3 - self.floor
-        };
         for entry in LeafScanner::new(&self.children.0) {
             let node_shared = entry.1.load(Relaxed, guard);
             let node_ref = unsafe { node_shared.deref() };
             if node_ref.obsolete(true, guard) {
-                self.children.0.remove(entry.0, shrink_threshold);
+                self.children.0.remove(entry.0);
                 // Once the key is removed, it is safe to deallocate the node as the validation loop ensures the absence of readers.
                 entry.1.store(Shared::null(), Release);
                 node_ref.detach(guard);

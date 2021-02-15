@@ -2,29 +2,19 @@ use crossbeam_epoch::{Atomic, Guard, Shared};
 use std::cmp::Ordering;
 use std::convert::TryInto;
 use std::mem::MaybeUninit;
-use std::sync::atomic::fence;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-pub const ARRAY_SIZE: usize = 12;
+pub const ARRAY_SIZE: usize = 8;
 
-/// Metadata layout: removed: 4-bit | occupancy: 12-bit | rank-index map: 48-bit
-///
-/// State interpretation
-///  - !OCCUPIED && RANK = 0: initial state
-///  - OCCUPIED && RANK = 0: locked
-///  - OCCUPIED && ARRAY_SIZE >= RANK > 0: inserted
-///  - OCCUPIED && RANK = INVALID_RANK: prohibited
-///  - !OCCUPIED && ARRAY_SIZE >= RANK > 0: removed
-///  - !OCCUPIED && RANK = INVALID_RANK: invalidated
-const INDEX_RANK_ENTRY_SIZE: usize = 4;
-const REMOVED_BIT: u64 = 1u64 << 60;
-const REMOVED: u64 = ((1u64 << INDEX_RANK_ENTRY_SIZE) - 1) << 60;
-const OCCUPANCY_BIT: u64 = 1u64 << 48;
-const OCCUPANCY_MASK: u64 = ((1u64 << ARRAY_SIZE) - 1) << 48;
-const INDEX_RANK_MAP_MASK: u64 = OCCUPANCY_BIT - 1;
-const INDEX_RANK_ENTRY_MASK: u64 = (1u64 << INDEX_RANK_ENTRY_SIZE) - 1;
-const INVALID_RANK: u64 = (1u64 << INDEX_RANK_ENTRY_SIZE) - 1;
+/// Entry state.
+///  - 0: vacant.
+///  - 1-ARRAY_SIZE: valid.
+///  - 14: locked.
+///  - 15: removed.
+const LOCKED: u32 = 14;
+const REMOVED: u32 = 15;
+const OBSOLETE: u32 = u32::MAX;
 
 /// Each entry in an EntryArray is never dropped until the Leaf is dropped once constructed.
 pub type EntryArray<K, V> = [MaybeUninit<(K, V)>; ARRAY_SIZE];
@@ -39,14 +29,14 @@ where
 {
     /// The array of key-value pairs.
     entry_array: EntryArray<K, V>,
-    /// The metadata that manages the contents.
-    metadata: AtomicU64,
     /// A pointer that points to the next adjacent leaf.
     forward_link: Atomic<Leaf<K, V>>,
     /// A pointer that points to the previous adjacent leaf.
     ///
-    /// backward_link pointing the leaf itself means the leaf is locked.
+    /// backward_link pointing to self means the leaf is locked.
     backward_link: Atomic<Leaf<K, V>>,
+    /// The metadata that manages the contents.
+    metadata: AtomicU32,
 }
 
 impl<K, V> Leaf<K, V>
@@ -58,9 +48,9 @@ where
     pub fn new() -> Leaf<K, V> {
         Leaf {
             entry_array: unsafe { MaybeUninit::uninit().assume_init() },
-            metadata: AtomicU64::new(0),
             forward_link: Atomic::null(),
             backward_link: Atomic::null(),
+            metadata: AtomicU32::new(0),
         }
     }
 
@@ -72,16 +62,17 @@ where
     /// Returns true if the leaf is full.
     pub fn full(&self) -> bool {
         let metadata = self.metadata.load(Relaxed);
-        let cardinality = (metadata & OCCUPANCY_MASK).count_ones() as usize;
-        let removed = ((metadata & REMOVED) / REMOVED_BIT) as usize;
-        cardinality + removed == ARRAY_SIZE
+        for i in 0..ARRAY_SIZE {
+            if Self::rank(i, metadata) == 0 {
+                return false;
+            }
+        }
+        true
     }
 
     /// Returns true if the leaf is obsolete.
     pub fn obsolete(&self) -> bool {
-        let metadata = self.metadata.load(Relaxed);
-        let removed = ((metadata & REMOVED) / REMOVED_BIT) as usize;
-        removed == ARRAY_SIZE
+        self.metadata.load(Relaxed) == OBSOLETE
     }
 
     pub fn forward_link<'a>(&self, guard: &'a Guard) -> Shared<'a, Leaf<K, V>> {
@@ -148,9 +139,8 @@ where
         let mut max_rank = 0;
         let mut max_index = ARRAY_SIZE;
         for i in 0..ARRAY_SIZE {
-            let rank = ((metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
-                >> (i * INDEX_RANK_ENTRY_SIZE)) as usize;
-            if rank > max_rank && (metadata & (OCCUPANCY_BIT << i)) != 0 {
+            let rank = Self::rank(i, metadata);
+            if rank > max_rank && rank <= ARRAY_SIZE.try_into().unwrap() {
                 max_rank = rank;
                 max_index = i;
             }
@@ -166,102 +156,90 @@ where
     /// It returns the passed key value pair on failure.
     /// The second returned value being true indicates that the same key exists.
     pub fn insert(&self, key: K, value: V) -> Option<((K, V), bool)> {
-        let mut entry = (key, value);
-        while let Some(mut inserter) = Inserter::new(self) {
-            // Calculates the rank and check uniqueness.
-            let mut max_min_rank = 0;
-            let mut min_max_rank = ARRAY_SIZE + 1;
-            let mut updated_rank_map = inserter.metadata & INDEX_RANK_MAP_MASK;
-            for i in 0..ARRAY_SIZE {
-                if i == inserter.index {
-                    continue;
-                }
-                let rank = ((updated_rank_map
-                    & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
-                    >> (i * INDEX_RANK_ENTRY_SIZE)) as usize;
-                if rank == 0 || rank == INVALID_RANK as usize || rank < max_min_rank {
-                    continue;
-                }
-                if rank > min_max_rank {
-                    // Updates the rank.
-                    let rank_bits: u64 = ((rank + 1) << (i * INDEX_RANK_ENTRY_SIZE))
-                        .try_into()
-                        .unwrap();
-                    updated_rank_map = (updated_rank_map
-                        & (!(INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE))))
-                        | rank_bits;
-                    continue;
-                }
-                match self.compare(i, &entry.0) {
-                    Ordering::Less => {
-                        if max_min_rank < rank {
-                            max_min_rank = rank;
-                        }
-                    }
-                    Ordering::Greater => {
-                        if min_max_rank > rank {
-                            min_max_rank = rank;
-                        }
-                        // Updates the rank.
-                        let rank_bits: u64 = ((rank + 1) << (i * INDEX_RANK_ENTRY_SIZE))
-                            .try_into()
-                            .unwrap();
-                        updated_rank_map = (updated_rank_map
-                            & (!(INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE))))
-                            | rank_bits;
-                    }
-                    Ordering::Equal => {
-                        if inserter.metadata & (OCCUPANCY_BIT << i) != 0 {
-                            // Uniqueness check failed.
-                            return Some((entry, true));
-                        }
-                        // Regards the entry as a lower ranked one.
-                        if max_min_rank < rank {
-                            max_min_rank = rank;
-                        }
-                    }
-                }
-            }
-            let final_rank = max_min_rank + 1;
-            debug_assert!(min_max_rank == ARRAY_SIZE + 1 || final_rank == min_max_rank);
-
-            // Updates its own rank.
-            let rank_bits: u64 = (final_rank << (inserter.index * INDEX_RANK_ENTRY_SIZE))
-                .try_into()
-                .unwrap();
-            updated_rank_map = (updated_rank_map
-                & (!(INDEX_RANK_ENTRY_MASK << (inserter.index * INDEX_RANK_ENTRY_SIZE))))
-                | rank_bits;
-
+        if let Some(mut inserter) = Inserter::new(self) {
             // Inserts the key value.
-            self.write(inserter.index, entry.0, entry.1);
+            self.write(inserter.index, key, value);
+            let entry_ref = self.read(inserter.index);
 
-            if inserter.commit(updated_rank_map) {
-                return None;
+            // Calculates the rank and updates the metadata.
+            loop {
+                let mut max_min_rank = 0;
+                let mut min_max_rank = (ARRAY_SIZE + 1).try_into().unwrap();
+                let mut updated_rank_map = inserter.metadata;
+                for i in 0..ARRAY_SIZE {
+                    if i == inserter.index {
+                        continue;
+                    }
+                    let rank = Self::rank(i, updated_rank_map);
+                    if rank == 0 || rank < max_min_rank || rank > ARRAY_SIZE.try_into().unwrap() {
+                        continue;
+                    }
+                    if rank > min_max_rank {
+                        // Updates the rank.
+                        let rank_bits = Self::rank_bits(i, rank + 1);
+                        updated_rank_map = (updated_rank_map & (!Self::rank_mask(i))) | rank_bits;
+                        continue;
+                    }
+                    match self.compare(i, &entry_ref.0) {
+                        Ordering::Less => {
+                            if max_min_rank < rank {
+                                max_min_rank = rank;
+                            }
+                        }
+                        Ordering::Greater => {
+                            if min_max_rank > rank {
+                                min_max_rank = rank;
+                            }
+                            // Updates the rank.
+                            let rank_bits = Self::rank_bits(i, rank + 1);
+                            updated_rank_map =
+                                (updated_rank_map & (!Self::rank_mask(i))) | rank_bits;
+                        }
+                        Ordering::Equal => {
+                            // Uniqueness check failed.
+                            return Some((self.take(inserter.index), true));
+                        }
+                    }
+                }
+                let final_rank = max_min_rank + 1;
+                debug_assert!(
+                    min_max_rank == (ARRAY_SIZE + 1).try_into().unwrap()
+                        || final_rank <= min_max_rank
+                );
+
+                // Updates its own rank.
+                let rank_bits = Self::rank_bits(inserter.index, final_rank);
+                updated_rank_map =
+                    (updated_rank_map & (!Self::rank_mask(inserter.index))) | rank_bits;
+                if inserter.commit(updated_rank_map) {
+                    return None;
+                }
             }
-            entry = self.take(inserter.index);
+        } else {
+            // Full.
+            debug_assert!(self.full());
+            let duplicate_key = self.search(&key).is_some();
+            Some(((key, value), duplicate_key))
         }
-
-        // Full.
-        debug_assert!(self.full());
-        let duplicate_key = self.search(&entry.0).is_some();
-        Some((entry, duplicate_key))
     }
 
     /// Removes the key.
     ///
-    /// If the number of removed entries exceeds the given threshold, it shrinks the leaf.
-    /// It returns (removed, cardinality, vacant slots).
-    pub fn remove(&self, key: &K, threshold: usize) -> (bool, usize, usize) {
+    /// The first boolean value returned from the function indicates that an entry has been removed.
+    /// The second boolean value indicates that the leaf is full.
+    /// The third boolean value indicates that the leaf has become obsolete.
+    pub fn remove(&self, key: &K) -> (bool, bool, bool) {
         let mut removed = false;
+        let mut full = true;
         let mut metadata = self.metadata.load(Acquire);
         let mut max_min_rank = 0;
-        let mut min_max_rank = ARRAY_SIZE + 1;
+        let mut min_max_rank = (ARRAY_SIZE + 1).try_into().unwrap();
         for i in 0..ARRAY_SIZE {
-            let rank = ((metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
-                >> (i * INDEX_RANK_ENTRY_SIZE)) as usize;
-            if rank > max_min_rank && rank < min_max_rank && (metadata & (OCCUPANCY_BIT << i)) != 0
-            {
+            let rank = Self::rank(i, metadata);
+            if full && rank == 0 {
+                full = false;
+            }
+            if rank > max_min_rank && rank < min_max_rank {
                 match self.compare(i, key) {
                     Ordering::Less => {
                         if max_min_rank < rank {
@@ -275,25 +253,8 @@ where
                     }
                     Ordering::Equal => {
                         loop {
-                            let mut new_metadata =
-                                (metadata & (!(OCCUPANCY_BIT << i))) + REMOVED_BIT;
-                            let num_removed = ((new_metadata & REMOVED) / REMOVED_BIT) as usize;
-                            if num_removed >= threshold {
-                                // Deprecates itself by marking all the vacant slots invalid.
-                                for j in 0..ARRAY_SIZE {
-                                    if (new_metadata
-                                        & (INDEX_RANK_ENTRY_MASK << (j * INDEX_RANK_ENTRY_SIZE)))
-                                        == 0
-                                    {
-                                        if (new_metadata & (OCCUPANCY_BIT << j)) != 0 {
-                                            // Competes with the thread inserting an entry.
-                                            new_metadata &= !(OCCUPANCY_BIT << j);
-                                        }
-                                        new_metadata |= INVALID_RANK << (j * INDEX_RANK_ENTRY_SIZE);
-                                        new_metadata += REMOVED_BIT;
-                                    }
-                                }
-                            }
+                            let new_metadata =
+                                (metadata & (!Self::rank_mask(i))) | Self::rank_bits(i, REMOVED);
                             match self.metadata.compare_exchange(
                                 metadata,
                                 new_metadata,
@@ -307,34 +268,43 @@ where
                                 }
                                 Err(result) => {
                                     metadata = result;
-                                    if metadata & (OCCUPANCY_BIT << i) == 0 {
+                                    if Self::rank(i, metadata) == REMOVED {
                                         // Removed by another thread.
                                         break;
                                     }
                                 }
                             }
                         }
-                        break;
+                        if !full {
+                            break;
+                        }
+                        if metadata == OBSOLETE {
+                            full = true;
+                            break;
+                        }
+
+                        // Needs to check whether the leaf is full.
+                        for j in (i + 1)..ARRAY_SIZE {
+                            if Self::rank(j, metadata) == 0 {
+                                full = false;
+                                break;
+                            }
+                        }
                     }
                 }
             }
         }
-
-        let cardinality = (metadata & OCCUPANCY_MASK).count_ones() as usize;
-        let num_removed = ((metadata & REMOVED) / REMOVED_BIT) as usize;
-        (removed, cardinality, ARRAY_SIZE - cardinality - num_removed)
+        (removed, full, metadata == OBSOLETE)
     }
 
     /// Returns a value associated with the key.
     pub fn search(&self, key: &K) -> Option<&V> {
         let metadata = self.metadata.load(Acquire);
         let mut max_min_rank = 0;
-        let mut min_max_rank = ARRAY_SIZE + 1;
+        let mut min_max_rank = (ARRAY_SIZE + 1).try_into().unwrap();
         for i in 0..ARRAY_SIZE {
-            let rank = ((metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
-                >> (i * INDEX_RANK_ENTRY_SIZE)) as usize;
-            if rank > max_min_rank && rank < min_max_rank && (metadata & (OCCUPANCY_BIT << i)) != 0
-            {
+            let rank = Self::rank(i, metadata);
+            if rank > max_min_rank && rank < min_max_rank {
                 match self.compare(i, key) {
                     Ordering::Less => {
                         if max_min_rank < rank {
@@ -356,15 +326,13 @@ where
     }
 
     /// Returns the index and a pointer to the key-value pair that is smaller than the given key.
-    pub fn max_less(&self, metadata: u64, key: &K) -> (usize, *const (K, V)) {
+    pub fn max_less(&self, metadata: u32, key: &K) -> (usize, *const (K, V)) {
         let mut max_min_rank = 0;
         let mut max_min_index = ARRAY_SIZE;
-        let mut min_max_rank = ARRAY_SIZE + 1;
+        let mut min_max_rank = (ARRAY_SIZE + 1).try_into().unwrap();
         for i in 0..ARRAY_SIZE {
-            let rank = ((metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
-                >> (i * INDEX_RANK_ENTRY_SIZE)) as usize;
-            if rank > max_min_rank && rank < min_max_rank && (metadata & (OCCUPANCY_BIT << i)) != 0
-            {
+            let rank = Self::rank(i, metadata);
+            if rank > max_min_rank && rank < min_max_rank {
                 match self.compare(i, key) {
                     Ordering::Less => {
                         if max_min_rank < rank {
@@ -394,16 +362,14 @@ where
     /// Returns the minimum entry among those that are not Ordering::Less than the given key.
     ///
     /// It additionally returns the current version of its metadata in order for the caller to validate the sanity of the result.
-    pub fn min_greater_equal(&self, key: &K) -> (Option<(&K, &V)>, u64) {
+    pub fn min_greater_equal(&self, key: &K) -> (Option<(&K, &V)>, u32) {
         let metadata = self.metadata.load(Acquire);
         let mut max_min_rank = 0;
-        let mut min_max_rank = ARRAY_SIZE + 1;
+        let mut min_max_rank = (ARRAY_SIZE + 1).try_into().unwrap();
         let mut min_max_index = ARRAY_SIZE;
         for i in 0..ARRAY_SIZE {
-            let rank = ((metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
-                >> (i * INDEX_RANK_ENTRY_SIZE)) as usize;
-            if rank > max_min_rank && rank < min_max_rank && (metadata & (OCCUPANCY_BIT << i)) != 0
-            {
+            let rank = Self::rank(i, metadata);
+            if rank > max_min_rank && rank < min_max_rank {
                 match self.compare(i, key) {
                     Ordering::Less => {
                         if max_min_rank < rank {
@@ -422,50 +388,49 @@ where
                 }
             }
         }
-        if min_max_rank <= ARRAY_SIZE {
+        if min_max_rank <= ARRAY_SIZE.try_into().unwrap() {
             return (Some(self.read(min_max_index)), metadata);
         }
         (None, metadata)
     }
 
     /// Compares the given metadata value with the current one.
-    pub fn validate(&self, metadata: u64) -> bool {
+    pub fn validate(&self, metadata: u32) -> bool {
         // The acquire fence ensures that a reader having read the latest state must read the updated metadata.
-        fence(Acquire);
+        std::sync::atomic::fence(Acquire);
         self.metadata.load(Relaxed) == metadata
     }
 
     fn write(&self, index: usize, key: K, value: V) {
         unsafe {
-            self.entry_array_mut_ref()[index]
-                .as_mut_ptr()
-                .write((key, value))
+            let entry_array_ptr = &self.entry_array as *const EntryArray<K, V>;
+            let entry_array_mut_ptr = entry_array_ptr as *mut EntryArray<K, V>;
+            let entry_array_mut_ref = &mut (*entry_array_mut_ptr);
+            entry_array_mut_ref[index].as_mut_ptr().write((key, value))
         };
     }
 
-    pub fn next(&self, metadata: u64, index: usize) -> (usize, *const (K, V)) {
+    pub fn next(&self, index: usize, metadata: u32) -> (usize, *const (K, V)) {
         if index != usize::MAX {
             let current_entry_rank = if index < ARRAY_SIZE {
-                ((metadata & (INDEX_RANK_ENTRY_MASK << (index * INDEX_RANK_ENTRY_SIZE)))
-                    >> (index * INDEX_RANK_ENTRY_SIZE)) as usize
+                Self::rank(index, metadata)
             } else {
                 0
             };
-            if current_entry_rank < ARRAY_SIZE {
-                let mut next_rank = ARRAY_SIZE + 1;
+            if current_entry_rank < ARRAY_SIZE.try_into().unwrap() {
+                let mut next_rank = (ARRAY_SIZE + 1).try_into().unwrap();
                 let mut next_index = ARRAY_SIZE;
                 for i in 0..ARRAY_SIZE {
-                    if metadata & (OCCUPANCY_BIT << i) == 0 {
+                    let rank = Self::rank(i, metadata);
+                    if rank == 0 || rank == REMOVED {
                         continue;
                     }
-                    let rank = ((metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
-                        >> (i * INDEX_RANK_ENTRY_SIZE)) as usize;
                     if current_entry_rank < rank && rank < next_rank {
                         next_rank = rank;
                         next_index = i;
                     }
                 }
-                if next_rank <= ARRAY_SIZE {
+                if next_rank <= ARRAY_SIZE.try_into().unwrap() {
                     return (next_index, unsafe {
                         &*self.entry_array[next_index].as_ptr()
                     });
@@ -503,25 +468,36 @@ where
         }
     }
 
+    fn rank(index: usize, metadata: u32) -> u32 {
+        (metadata & (REMOVED << (index * 4))) >> (index * 4)
+    }
+
+    fn rank_bits(index: usize, rank: u32) -> u32 {
+        rank << (index * 4)
+    }
+
+    fn rank_mask(index: usize) -> u32 {
+        REMOVED << (index * 4)
+    }
+
     fn compare(&self, index: usize, key: &K) -> std::cmp::Ordering {
         let entry_ref = unsafe { &*self.entry_array[index].as_ptr() };
         entry_ref.0.cmp(key)
     }
 
     fn take(&self, index: usize) -> (K, V) {
-        let entry_ptr = &mut self.entry_array_mut_ref()[index] as *mut MaybeUninit<(K, V)>;
-        unsafe { std::ptr::replace(entry_ptr, MaybeUninit::uninit()).assume_init() }
+        unsafe {
+            let entry_array_ptr = &self.entry_array as *const EntryArray<K, V>;
+            let entry_array_mut_ptr = entry_array_ptr as *mut EntryArray<K, V>;
+            let entry_array_mut_ref = &mut (*entry_array_mut_ptr);
+            let entry_ptr = &mut entry_array_mut_ref[index] as *mut MaybeUninit<(K, V)>;
+            std::ptr::replace(entry_ptr, MaybeUninit::uninit()).assume_init()
+        }
     }
 
     fn read(&self, index: usize) -> (&K, &V) {
         let entry_ref = unsafe { &*self.entry_array[index].as_ptr() };
         (&entry_ref.0, &entry_ref.1)
-    }
-
-    fn entry_array_mut_ref(&self) -> &mut EntryArray<K, V> {
-        let entry_array_ptr = &self.entry_array as *const EntryArray<K, V>;
-        let entry_array_mut_ptr = entry_array_ptr as *mut EntryArray<K, V>;
-        unsafe { &mut (*entry_array_mut_ptr) }
     }
 }
 
@@ -533,9 +509,7 @@ where
     fn drop(&mut self) {
         let metadata = self.metadata.swap(0, Acquire);
         for i in 0..ARRAY_SIZE {
-            let rank = (metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
-                >> (i * INDEX_RANK_ENTRY_SIZE);
-            if rank != 0 && rank != INVALID_RANK {
+            if Self::rank(i, metadata) != 0 {
                 self.take(i);
             }
         }
@@ -548,9 +522,9 @@ where
     V: Clone + Sync,
 {
     leaf: &'a Leaf<K, V>,
-    committed: bool,
-    metadata: u64,
+    metadata: u32,
     index: usize,
+    committed: bool,
 }
 
 impl<'a, K, V> Inserter<'a, K, V>
@@ -565,19 +539,13 @@ where
             let mut full = true;
             let mut position = ARRAY_SIZE;
             for i in 0..ARRAY_SIZE {
-                let rank = current & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE));
-                if rank == INVALID_RANK {
-                    // The entire leaf has been invalidated.
-                    debug_assert_eq!((current & OCCUPANCY_MASK).count_ones(), 0);
-                    return None;
-                }
+                let rank = Leaf::<K, V>::rank(i, current);
                 if rank == 0 {
                     full = false;
-                    if current & (OCCUPANCY_BIT << i) == 0 {
-                        // Initial state.
-                        position = i;
-                        break;
-                    }
+                    position = i;
+                    break;
+                } else if rank == LOCKED {
+                    full = false;
                 }
             }
 
@@ -590,18 +558,17 @@ where
             }
 
             // Found an empty position.
-            match leaf.metadata.compare_exchange(
-                current,
-                current | (OCCUPANCY_BIT << position),
-                Acquire,
-                Relaxed,
-            ) {
-                Ok(result) => {
+            let new_metadata = current | Leaf::<K, V>::rank_bits(position, LOCKED);
+            match leaf
+                .metadata
+                .compare_exchange(current, new_metadata, Acquire, Relaxed)
+            {
+                Ok(_) => {
                     return Some(Inserter {
                         leaf,
-                        committed: false,
-                        metadata: result | (OCCUPANCY_BIT << position),
+                        metadata: new_metadata,
                         index: position,
+                        committed: false,
                     });
                 }
                 Err(result) => current = result,
@@ -609,28 +576,35 @@ where
         }
     }
 
-    fn commit(&mut self, updated_rank_map: u64) -> bool {
-        let mut current = self.metadata;
-        loop {
-            let next = (current & (!INDEX_RANK_MAP_MASK)) | updated_rank_map;
-            if let Err(result) = self
-                .leaf
+    fn commit(&mut self, updated_rank_map: u32) -> bool {
+        let mut new_metadata = updated_rank_map;
+        while let Err(result) =
+            self.leaf
                 .metadata
-                .compare_exchange(current, next, Release, Relaxed)
-            {
-                if (result & INDEX_RANK_MAP_MASK) == (current & INDEX_RANK_MAP_MASK) {
-                    current = result;
+                .compare_exchange(self.metadata, new_metadata, Release, Relaxed)
+        {
+            for i in 0..ARRAY_SIZE {
+                if i == self.index {
                     continue;
                 }
-                // Rolls back metadata changes if not committed.
-                return false;
+                let current_rank = Leaf::<K, V>::rank(i, result);
+                let expected_rank = Leaf::<K, V>::rank(i, self.metadata);
+                if current_rank != expected_rank {
+                    if current_rank != LOCKED {
+                        // The rank map has been updated.
+                        self.metadata = result;
+                        return false;
+                    } else {
+                        // Never modifies the state.
+                        new_metadata = (new_metadata & (!Leaf::<K, V>::rank_mask(i)))
+                            | Leaf::<K, V>::rank_bits(i, LOCKED);
+                    }
+                }
             }
-            break;
+            self.metadata = result;
         }
-        self.committed = true;
 
-        // Every store after commit must be visible along with the metadata update.
-        fence(Release);
+        self.committed = true;
         true
     }
 }
@@ -647,7 +621,7 @@ where
             loop {
                 if let Err(result) = self.leaf.metadata.compare_exchange(
                     current,
-                    current & (!(OCCUPANCY_BIT << self.index)),
+                    current & (!Leaf::<K, V>::rank_bits(self.index, LOCKED)),
                     Release,
                     Relaxed,
                 ) {
@@ -782,8 +756,7 @@ where
     V: Clone + Sync,
 {
     leaf: &'a Leaf<K, V>,
-    metadata: u64,
-    removed_entries_to_scan: u64,
+    metadata: u32,
     entry_index: usize,
     entry_ptr: *const (K, V),
 }
@@ -797,7 +770,6 @@ where
         LeafScanner {
             leaf,
             metadata: leaf.metadata.load(Acquire),
-            removed_entries_to_scan: 0,
             entry_index: ARRAY_SIZE,
             entry_ptr: std::ptr::null(),
         }
@@ -810,7 +782,6 @@ where
             LeafScanner {
                 leaf,
                 metadata,
-                removed_entries_to_scan: 0,
                 entry_index: index,
                 entry_ptr: ptr,
             }
@@ -820,25 +791,42 @@ where
     }
 
     pub fn new_including_removed(leaf: &'a Leaf<K, V>) -> LeafScanner<'a, K, V> {
-        let metadata = leaf.metadata.load(Acquire);
-        let mut removed_entries_to_scan = 0;
+        let mut metadata = leaf.metadata.load(Acquire);
+        let mut unused_ranks = 0;
+        let mut current_unused_ranks_index = 0;
+        for rank in 1..=ARRAY_SIZE.try_into().unwrap() {
+            let mut found = false;
+            for i in 0..ARRAY_SIZE {
+                if Leaf::<K, V>::rank(i, metadata) == rank {
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                unused_ranks |= Leaf::<K, V>::rank_bits(current_unused_ranks_index, rank);
+                current_unused_ranks_index += 1;
+            }
+        }
+
         for i in 0..ARRAY_SIZE {
-            let rank = ((metadata & (INDEX_RANK_ENTRY_MASK << (i * INDEX_RANK_ENTRY_SIZE)))
-                >> (i * INDEX_RANK_ENTRY_SIZE)) as usize;
-            if rank != INVALID_RANK as usize && rank > 0 && metadata & (OCCUPANCY_BIT << i) == 0 {
-                removed_entries_to_scan |= OCCUPANCY_BIT << i;
+            let rank = Leaf::<K, V>::rank(i, metadata);
+            if rank == REMOVED {
+                let new_rank = Leaf::<K, V>::rank(current_unused_ranks_index - 1, unused_ranks);
+                current_unused_ranks_index -= 1;
+                debug_assert!(new_rank > 0 && new_rank <= ARRAY_SIZE.try_into().unwrap());
+                metadata = (metadata & (!Leaf::<K, V>::rank_bits(i, REMOVED)))
+                    | Leaf::<K, V>::rank_bits(i, new_rank);
             }
         }
         LeafScanner {
             leaf,
             metadata,
-            removed_entries_to_scan,
             entry_index: ARRAY_SIZE,
             entry_ptr: std::ptr::null(),
         }
     }
 
-    pub fn metadata(&self) -> u64 {
+    pub fn metadata(&self) -> u32 {
         self.metadata
     }
 
@@ -851,7 +839,7 @@ where
     }
 
     pub fn removed(&self) -> bool {
-        self.removed_entries_to_scan & (OCCUPANCY_BIT << self.entry_index) != 0
+        Leaf::<K, V>::rank(self.entry_index, self.leaf.metadata.load(Relaxed)) == REMOVED
     }
 
     pub fn jump(&self, guard: &'a Guard) -> Option<LeafScanner<'a, K, V>> {
@@ -867,10 +855,7 @@ where
         if self.entry_index == usize::MAX {
             return;
         }
-        let (index, ptr) = self.leaf.next(
-            self.metadata | self.removed_entries_to_scan,
-            self.entry_index,
-        );
+        let (index, ptr) = self.leaf.next(self.entry_index, self.metadata);
         self.entry_index = index;
         self.entry_ptr = ptr;
     }
@@ -895,39 +880,23 @@ mod test {
     use std::thread;
 
     #[test]
-    fn static_assertions() {
-        assert_eq!(REMOVED & OCCUPANCY_MASK, 0);
-        assert_eq!(INDEX_RANK_MAP_MASK & OCCUPANCY_MASK, 0);
-        assert_eq!(
-            INDEX_RANK_MAP_MASK & INDEX_RANK_ENTRY_MASK,
-            INDEX_RANK_ENTRY_MASK
-        );
-        assert_eq!(OCCUPANCY_MASK & OCCUPANCY_BIT, OCCUPANCY_BIT);
-    }
-
-    #[test]
     fn basic() {
         let leaf = Leaf::new();
         assert!(leaf.insert(50, 51).is_none());
         assert_eq!(leaf.max(), Some((&50, &51)));
         assert!(leaf.insert(60, 61).is_none());
         assert!(leaf.insert(70, 71).is_none());
-        assert!(leaf.remove(&60, ARRAY_SIZE).0);
+        assert!(leaf.remove(&60).0);
         assert!(leaf.insert(60, 61).is_none());
-        assert_eq!(leaf.remove(&60, ARRAY_SIZE), (true, 2, 8));
+        assert_eq!(leaf.remove(&60), (true, false, false));
         assert!(!leaf.full());
         assert!(leaf.insert(40, 40).is_none());
         assert!(leaf.insert(30, 31).is_none());
         assert!(!leaf.full());
-        assert!(leaf.remove(&40, ARRAY_SIZE).0);
+        assert_eq!(leaf.remove(&40), (true, false, false));
         assert!(leaf.insert(40, 41).is_none());
         assert_eq!(leaf.insert(30, 33), Some(((30, 33), true)));
         assert!(leaf.insert(10, 11).is_none());
-        assert!(leaf.insert(11, 12).is_none());
-        assert!(leaf.insert(13, 13).is_none());
-        assert!(leaf.insert(54, 55).is_none());
-        assert!(leaf.remove(&13, ARRAY_SIZE).0);
-        assert!(leaf.insert(13, 14).is_none());
         assert_eq!(leaf.max(), Some((&70, &71)));
         assert!(leaf.full());
 
@@ -943,7 +912,6 @@ mod test {
 
         let mut scanner = LeafScanner::new_including_removed(&leaf);
         let mut prev_key = 0;
-        let mut found_13_13 = false;
         let mut found_40_40 = false;
         let mut found_60_61 = false;
         while let Some(entry) = scanner.next() {
@@ -954,10 +922,6 @@ mod test {
                 if *entry.1 == 61 {
                     found_60_61 = true;
                 }
-            } else if *entry.0 == 13 && *entry.1 == 13 {
-                assert!(prev_key <= *entry.0);
-                assert!(scanner.removed());
-                found_13_13 = true;
             } else if *entry.0 == 40 && *entry.1 == 40 {
                 assert!(prev_key <= *entry.0);
                 assert!(scanner.removed());
@@ -970,12 +934,12 @@ mod test {
             }
         }
         assert!(found_40_40);
-        assert!(found_13_13);
         assert!(found_60_61);
         drop(scanner);
 
-        let mut scanner = LeafScanner::max_less(&leaf, &51);
-        let mut prev_key = 50;
+        let mut scanner = LeafScanner::max_less(&leaf, &50);
+        assert_eq!(scanner.get().unwrap(), (&40, &41));
+        let mut prev_key = 40;
         let mut iterated = 0;
         while let Some(entry) = scanner.next() {
             assert_eq!(scanner.get(), Some(entry));
@@ -1011,20 +975,16 @@ mod test {
         assert!(leaf.insert(13, 14).is_none());
         assert_eq!(*leaf.search(&13).unwrap(), 14);
         assert_eq!(leaf.insert(13, 14), Some(((13, 14), true)));
-        assert_eq!(leaf.remove(&10, ARRAY_SIZE), (true, 6, 5));
-        assert_eq!(leaf.remove(&11, ARRAY_SIZE), (true, 5, 5));
-        assert_eq!(leaf.remove(&12, ARRAY_SIZE), (true, 4, 5));
+        assert_eq!(leaf.remove(&10), (true, false, false));
+        assert_eq!(leaf.remove(&11), (true, false, false));
+        assert_eq!(leaf.remove(&12), (true, false, false));
         assert!(!leaf.full());
-        assert!(leaf.remove(&20, ARRAY_SIZE).0);
+        assert!(leaf.remove(&20).0);
         assert!(leaf.insert(20, 21).is_none());
-        assert!(leaf.insert(12, 13).is_none());
-        assert!(leaf.insert(14, 15).is_none());
         assert!(leaf.search(&11).is_none());
-        assert_eq!(leaf.remove(&10, ARRAY_SIZE), (false, 6, 2));
-        assert_eq!(leaf.remove(&11, ARRAY_SIZE), (false, 6, 2));
+        assert_eq!(leaf.remove(&10), (false, true, false));
+        assert_eq!(leaf.remove(&11), (false, true, false));
         assert_eq!(*leaf.search(&20).unwrap(), 21);
-        assert!(leaf.insert(10, 11).is_none());
-        assert!(leaf.insert(15, 16).is_none());
         assert_eq!(leaf.max(), Some((&20, &21)));
         assert!(leaf.full());
 
@@ -1050,42 +1010,23 @@ mod test {
             prev_key = *entry.0;
             iterated_low += 1;
         }
-        assert_eq!(iterated_low, 6);
+        assert_eq!(iterated_low, 4);
         drop(scanner_low);
-        let mut iterated_high = 0;
-        let mut scanner_high = LeafScanner::new(leaves_boxed.1.as_ref().unwrap());
-        while let Some(entry) = scanner_high.next() {
-            assert_eq!(scanner_high.get(), Some(entry));
-            assert!(prev_key < *entry.0);
-            assert_eq!(*entry.0 + 1, *entry.1);
-            prev_key = *entry.0;
-            iterated_high += 1;
-        }
-        assert_eq!(iterated_high, 2);
-        drop(scanner_high);
+        assert!(leaves_boxed.1.is_none());
     }
 
     #[test]
     fn complex() {
         let leaf = Leaf::new();
-        for i in 0..ARRAY_SIZE / 2 {
+        for i in 0..ARRAY_SIZE {
             assert!(leaf.insert(i, i).is_none());
         }
-        for i in 0..ARRAY_SIZE / 2 {
-            if i < ARRAY_SIZE / 4 - 1 {
-                assert_eq!(
-                    leaf.remove(&i, ARRAY_SIZE / 4),
-                    (true, ARRAY_SIZE / 2 - i - 1, 6)
-                );
-            } else {
-                assert_eq!(
-                    leaf.remove(&i, ARRAY_SIZE / 4),
-                    (true, ARRAY_SIZE / 2 - i - 1, 0)
-                );
-            }
+        for i in 0..ARRAY_SIZE - 1 {
+            assert_eq!(leaf.remove(&i), (true, true, false));
         }
         assert!(leaf.full());
-        assert!(leaf.obsolete());
+        assert!(!leaf.obsolete());
+        assert_eq!(leaf.remove(&(ARRAY_SIZE - 1)), (true, true, true));
         assert_eq!(
             leaf.insert(ARRAY_SIZE, ARRAY_SIZE),
             Some(((ARRAY_SIZE, ARRAY_SIZE), false))
@@ -1093,24 +1034,11 @@ mod test {
 
         let mut scanner = LeafScanner::new_including_removed(&leaf);
         let mut expected = 0;
-        while let Some(entry) = scanner.next() {
-            assert_eq!(entry.0, &expected);
-            assert_eq!(entry.1, &expected);
+        while let Some(_) = scanner.next() {
             assert!(scanner.removed());
             expected += 1;
         }
-        assert_eq!(expected, ARRAY_SIZE / 2);
-
-        let leaf = Leaf::new();
-        for key in 0..ARRAY_SIZE {
-            assert!(leaf.insert(key, key).is_none());
-        }
-        for key in 0..ARRAY_SIZE {
-            assert_eq!(
-                leaf.remove(&key, ARRAY_SIZE),
-                (true, ARRAY_SIZE - key - 1, 0)
-            );
-        }
+        assert_eq!(expected, ARRAY_SIZE);
     }
 
     #[test]
@@ -1134,7 +1062,7 @@ mod test {
                     if result.is_none() {
                         assert_eq!(*leaf_copied.search(&tid).unwrap(), 1);
                         if tid % 2 != 0 {
-                            assert!(leaf_copied.remove(&tid, ARRAY_SIZE).0);
+                            assert!(leaf_copied.remove(&tid).0);
                         }
                     }
                     let mut scanner = LeafScanner::new(&leaf_copied);

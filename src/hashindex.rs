@@ -1,10 +1,6 @@
-use crossbeam_epoch::{Atomic, Owned, Shared};
 use std::collections::hash_map::RandomState;
-use std::convert::TryInto;
-use std::fmt;
-use std::hash::{BuildHasher, Hash, Hasher};
+use std::hash::{BuildHasher, Hash};
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 const DEFAULT_CAPACITY: usize = 256;
 
@@ -17,9 +13,9 @@ where
     V: Clone + Sync,
     H: BuildHasher,
 {
-    array: Option<(K, V)>,
-    minimum_capacity: usize,
-    resize_mutex: AtomicBool,
+    _array: Option<(K, V)>,
+    _minimum_capacity: usize,
+    _resize_mutex: AtomicBool,
     build_hasher: H,
 }
 
@@ -41,9 +37,9 @@ where
     /// ```
     fn default() -> Self {
         HashIndex {
-            array: None,
-            minimum_capacity: DEFAULT_CAPACITY,
-            resize_mutex: AtomicBool::new(false),
+            _array: None,
+            _minimum_capacity: DEFAULT_CAPACITY,
+            _resize_mutex: AtomicBool::new(false),
             build_hasher: RandomState::new(),
         }
     }
@@ -72,9 +68,9 @@ where
     pub fn new(capacity: usize, build_hasher: H) -> HashIndex<K, V, H> {
         let initial_capacity = capacity.max(DEFAULT_CAPACITY);
         HashIndex {
-            array: None,
-            minimum_capacity: initial_capacity,
-            resize_mutex: AtomicBool::new(false),
+            _array: None,
+            _minimum_capacity: initial_capacity,
+            _resize_mutex: AtomicBool::new(false),
             build_hasher,
         }
     }
@@ -103,7 +99,7 @@ where
     /// ```
     /// use scc::HashIndex;
     /// ```
-    pub fn remove(&self, key: &K) -> bool {
+    pub fn remove(&self, _tkey: &K) -> bool {
         false
     }
 
@@ -117,7 +113,7 @@ where
     /// ```
     /// use scc::HashIndex;
     /// ```
-    pub fn read<U, F: FnOnce(&K, &V) -> U>(&self, key: &K, f: F) -> Option<U> {
+    pub fn read<U, F: FnOnce(&K, &V) -> U>(&self, _key: &K, _f: F) -> Option<U> {
         None
     }
 
@@ -129,7 +125,7 @@ where
     /// ```
     /// use scc::HashIndex;
     /// ```
-    pub fn retain<F: Fn(&K, &V) -> bool>(&self, f: F) -> (usize, usize) {
+    pub fn retain<F: Fn(&K, &V) -> bool>(&self, _f: F) -> (usize, usize) {
         (0, 0)
     }
 
@@ -152,7 +148,7 @@ where
     /// ```
     /// use scc::HashIndex;
     /// ```
-    pub fn len<F: FnOnce(usize) -> usize>(&self, f: F) -> usize {
+    pub fn len<F: FnOnce(usize) -> usize>(&self, _f: F) -> usize {
         0
     }
 
@@ -190,7 +186,7 @@ where
     /// use scc::HashIndex;
     /// ```
     pub fn iter(&self) -> Visitor<K, V, H> {
-        Visitor { hash_index: self }
+        Visitor { _hash_index: self }
     }
 }
 
@@ -210,7 +206,7 @@ where
     V: Clone + Sync,
     H: BuildHasher,
 {
-    hash_index: &'h HashIndex<K, V, H>,
+    _hash_index: &'h HashIndex<K, V, H>,
 }
 
 impl<'h, K, V, H> Iterator for Visitor<'h, K, V, H>

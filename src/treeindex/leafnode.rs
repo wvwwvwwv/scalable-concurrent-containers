@@ -241,11 +241,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                     // child_leaf being null indicates that the leaf node is bound to be freed.
                     return Err(RemoveError::Retry(false));
                 }
-                let (removed, cardinality, vacant_slots) =
-                    unsafe { child_leaf.deref().remove(key, ARRAY_SIZE / 3) };
-                if vacant_slots > 0 {
+                let (removed, full, obsolete) = unsafe { child_leaf.deref().remove(key) };
+                if !full && !obsolete {
                     return Ok(removed);
-                } else if cardinality > 0 {
+                } else if !obsolete {
                     // Data race resolution.
                     //  - insert: start to insert into a full leaf
                     //  - remove: start removing an entry from the leaf after pointer validation
@@ -263,11 +262,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                     // Data race resolution: validate metadata - see 'InternalNode::search'.
                     continue;
                 }
-                let (removed, cardinality, vacant_slots) =
-                    unsafe { unbounded_shared.deref().remove(key, ARRAY_SIZE / 3) };
-                if vacant_slots > 0 {
+                let (removed, full, obsolete) = unsafe { unbounded_shared.deref().remove(key) };
+                if !full && !obsolete {
                     return Ok(removed);
-                } else if cardinality > 0 {
+                } else if !obsolete {
                     // Data race resolution: validate metadata - see above.
                     return self.check_full_leaf(removed, key, unbounded_shared, guard);
                 }
@@ -322,9 +320,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         let high_key_leaves = &high_key_leaf_node.leaves;
 
         // Builds a list of valid leaves
-        let mut entry_array: [Option<(Option<&K>, Atomic<Leaf<K, V>>)>; ARRAY_SIZE + 2] = [
-            None, None, None, None, None, None, None, None, None, None, None, None, None, None,
-        ];
+        let mut entry_array: [Option<(Option<&K>, Atomic<Leaf<K, V>>)>; ARRAY_SIZE + 2] =
+            [None, None, None, None, None, None, None, None, None, None];
         let mut num_entries = 0;
         let low_key_leaf_ref = unsafe { new_leaves_ref.low_key_leaf.load(Relaxed, guard).deref() };
         let middle_key_ref = low_key_leaf_ref.max().unwrap().0;
@@ -433,15 +430,15 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         let mut high_key_leaf_boxed = None;
         full_leaf_ref.distribute(&mut low_key_leaf_boxed, &mut high_key_leaf_boxed);
 
-        if low_key_leaf_boxed.is_none() {
-            // No valid keys in the full leaf.
-            new_leaves_ref.low_key_leaf = Atomic::from(Owned::new(Leaf::new()));
-        } else {
+        if let Some(low_key_leaf_boxed) = low_key_leaf_boxed.take() {
             // The number of valid entries is small enough to fit into a single leaf.
-            new_leaves_ref.low_key_leaf = Atomic::from(low_key_leaf_boxed.unwrap());
+            new_leaves_ref.low_key_leaf = Atomic::from(low_key_leaf_boxed);
             if let Some(high_key_leaf) = high_key_leaf_boxed.take() {
                 new_leaves_ref.high_key_leaf = Atomic::from(high_key_leaf);
             }
+        } else {
+            // No valid keys in the full leaf.
+            new_leaves_ref.low_key_leaf = Atomic::from(Owned::new(Leaf::new()));
         }
 
         // Inserts the newly added leaves into the main array.
@@ -542,7 +539,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             let leaf_shared = entry.1.load(Relaxed, guard);
             let leaf_ref = unsafe { leaf_shared.deref() };
             if leaf_ref.obsolete() {
-                self.leaves.0.remove(entry.0, ARRAY_SIZE / 3);
+                self.leaves.0.remove(entry.0);
                 // Once the key is removed, it is safe to drop the leaf as the validation loop ensures the absence of readers.
                 entry.1.store(Shared::null(), Release);
                 unsafe {
@@ -628,16 +625,16 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
                 let mut leaf_scanner = LeafScanner::new_including_removed(leaf_ref);
                 let mut rank = 0;
                 while let Some(entry) = leaf_scanner.next() {
-                    let font_color = if !leaf_scanner.removed() {
-                        "black"
+                    let (entry_rank, font_color) = if !leaf_scanner.removed() {
+                        rank += 1;
+                        (rank, "black")
                     } else {
-                        "red"
+                        (0, "red")
                     };
                     output.write_fmt(format_args!(
                         "<tr><td><font color=\"{}\">{}</font></td><td>{}</td><td>{}</td></tr>\n",
-                        font_color, rank, entry.0, entry.1,
+                        font_color, entry_rank, entry.0, entry.1,
                     ))?;
-                    rank += 1;
                 }
                 output.write_fmt(format_args!("</table>\n>]\n"))?;
                 let prev_leaf = leaf_ref.backward_link(guard);

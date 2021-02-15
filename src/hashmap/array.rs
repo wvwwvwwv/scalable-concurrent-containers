@@ -200,7 +200,7 @@ impl<K: Eq, V> Array<K, V> {
     }
 
     pub fn drop_old_array(&self, immediate_drop: bool, guard: &Guard) {
-        let mut old_array = self.old_array.swap(Shared::null(), Relaxed, guard);
+        let old_array = self.old_array.swap(Shared::null(), Relaxed, guard);
         if !old_array.is_null() {
             unsafe {
                 if immediate_drop {
