@@ -534,6 +534,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             return Err(RemoveError::Retry(removed));
         }
 
+        // Removes obsolete leaves.
         let mut obsolete = true;
         for entry in LeafScanner::new(&self.leaves.0) {
             let leaf_shared = entry.1.load(Relaxed, guard);
@@ -550,6 +551,29 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 obsolete = false;
             }
         }
+/*
+        // Merges sparse leaves.
+        let mut prev_leaf: Option<(&K, &Atomic<Leaf<K, V>>)> = None;
+        for entry in LeafScanner::new(&self.leaves.0) {
+            if let Some(prev_leaf) = prev_leaf.take() {
+                // The current leaf consumes the previous leaf.
+                let leaf_shared = entry.1.load(Relaxed, guard);
+                let leaf_ref = unsafe { leaf_shared.deref() };
+                let prev_leaf_shared = prev_leaf.1.load(Relaxed, guard);
+                let prev_leaf_ref = unsafe { prev_leaf_shared.deref() };
+                if leaf_ref.consume(prev_leaf_ref) {
+                    self.leaves.0.remove(prev_leaf.0);
+		    // [TODO] NEED TO CHECK ONCE AGAIN
+                    prev_leaf.1.store(Shared::null(), Release);
+                    unsafe {
+                        prev_leaf_ref.unlink(guard);
+                        guard.defer_destroy(prev_leaf_shared);
+                    }
+                }
+            }
+            prev_leaf.replace(entry);
+        }
+*/
 
         if obsolete {
             Err(RemoveError::Cleanup(removed))
