@@ -147,7 +147,7 @@ where
             match root_node_ref.remove(key, &guard) {
                 Ok(removed) => return removed || has_been_removed,
                 Err(remove_error) => match remove_error {
-                    RemoveError::Cleanup(removed) => {
+                    RemoveError::Coalesce(removed) => {
                         if removed && !has_been_removed {
                             has_been_removed = true;
                         }

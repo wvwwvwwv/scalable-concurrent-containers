@@ -16,8 +16,8 @@ where
 ///
 /// The boolean value tagged to the error code indicates that the target entry has been removed.
 pub enum RemoveError {
-    /// Cleanup: the node is coarse or obsolete.
-    Cleanup(bool),
+    /// Coalesce: the node is coarse or obsolete.
+    Coalesce(bool),
     /// Retry: the target node, or leaf is being modified.
     Retry(bool),
 }

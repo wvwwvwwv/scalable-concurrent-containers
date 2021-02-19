@@ -84,10 +84,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 let child_leaf = child.load(Acquire, guard);
                 if !(self.leaves.0).validate(result.1) {
                     // Data race resolution: validate metadata.
-                    //  - writer: start to insert an intermediate low key leaf
-                    //  - reader: read the metadata not including the intermediate low key leaf
-                    //  - writer: insert the intermediate low key leaf and replace the high key leaf pointer
-                    //  - reader: read the new high key leaf pointer
+                    //  - Writer: start to insert an intermediate low key leaf
+                    //  - Reader: read the metadata not including the intermediate low key leaf
+                    //  - Writer: insert the intermediate low key leaf and replace the high key leaf pointer
+                    //  - Reader: read the new high key leaf pointer
                     // Consequently, the reader may miss keys in the low key leaf.
                     continue;
                 }
@@ -100,7 +100,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             let unbounded_shared = (self.leaves.1).load(Relaxed, guard);
             if !unbounded_shared.is_null() {
                 if !(self.leaves.0).validate(result.1) {
-                    // Data race resolution: validate metadata - see above.
+                    // Data race resolution - see above.
                     continue;
                 }
                 return Ok(unsafe { unbounded_shared.deref().search(key) });
@@ -117,7 +117,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             if let Some((_, child)) = scanner.next() {
                 let child_leaf = child.load(Acquire, guard);
                 if !(self.leaves.0).validate(metadata) {
-                    // Data race resolution: validate metadata - see 'LeafNode::search'.
+                    // Data race resolution - see 'LeafNode::search'.
                     continue;
                 }
                 if child_leaf.is_null() {
@@ -129,7 +129,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             let unbounded_shared = (self.leaves.1).load(Relaxed, guard);
             if !unbounded_shared.is_null() {
                 if !(self.leaves.0).validate(metadata) {
-                    // Data race resolution: validate metadata - see above
+                    // Data race resolution - see above
                     continue;
                 }
                 return Ok(LeafScanner::new(unsafe { unbounded_shared.deref() }));
@@ -150,7 +150,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             if let Some((_, child)) = scanner.next() {
                 let child_leaf = child.load(Acquire, guard);
                 if !(self.leaves.0).validate(metadata) {
-                    // Data race resolution: validate metadata - see 'LeafNode::search'.
+                    // Data race resolution - see 'LeafNode::search'.
                     continue;
                 }
                 if child_leaf.is_null() {
@@ -162,7 +162,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             let unbounded_shared = (self.leaves.1).load(Relaxed, guard);
             if !unbounded_shared.is_null() {
                 if !(self.leaves.0).validate(metadata) {
-                    // Data race resolution: validate metadata - see above
+                    // Data race resolution - see above
                     continue;
                 }
                 return Ok(LeafScanner::max_less(
@@ -181,7 +181,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             if let Some((child_key, child)) = result.0 {
                 let child_leaf = child.load(Acquire, guard);
                 if !(self.leaves.0).validate(result.1) {
-                    // Data race resolution: validate metadata - see 'InternalNode::search'.
+                    // Data race resolution - see 'InternalNode::search'.
                     continue;
                 }
                 if child_leaf.is_null() {
@@ -205,7 +205,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             let unbounded_shared = self.leaves.1.load(Relaxed, guard);
             if !unbounded_shared.is_null() {
                 if !(self.leaves.0).validate(result.1) {
-                    // Data race resolution: validate metadata - see 'InternalNode::search'.
+                    // Data race resolution - see 'InternalNode::search'.
                     continue;
                 }
                 // Tries to insert into the unbounded leaf, and tries to split the unbounded if it is full.
@@ -234,42 +234,46 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             if let Some((_, child)) = result.0 {
                 let child_leaf = child.load(Acquire, guard);
                 if !(self.leaves.0).validate(result.1) {
-                    // Data race resolution: validate metadata - see 'InternalNode::search'.
+                    // Data race resolution - see 'InternalNode::search'.
                     continue;
                 }
                 if child_leaf.is_null() {
                     // child_leaf being null indicates that the leaf node is bound to be freed.
                     return Err(RemoveError::Retry(false));
                 }
-                let (removed, full, obsolete) = unsafe { child_leaf.deref().remove(key) };
-                if !full && !obsolete {
+                let child_leaf_ref = unsafe { child_leaf.deref() };
+                let (removed, full, empty) = child_leaf_ref.remove(key);
+                if !full && !empty {
                     return Ok(removed);
-                } else if !obsolete {
+                } else if !empty {
                     // Data race resolution.
-                    //  - insert: start to insert into a full leaf
-                    //  - remove: start removing an entry from the leaf after pointer validation
-                    //  - insert: find the leaf full, thus splitting and update
-                    //  - remove: find the leaf full, and the leaf node is not locked, returning 'Ok(true)'
+                    //  - Insert: start to insert into a full leaf
+                    //  - Remove: start removing an entry from the leaf after pointer validation
+                    //  - Insert: find the leaf full, thus splitting and update
+                    //  - Remove: find the leaf full, and the leaf node is not locked, returning 'Ok(true)'
                     // Consequently, the key remains.
                     // In order to resolve this, check the pointer again.
                     return self.check_full_leaf(removed, key, child_leaf, guard);
                 }
-                return self.cleanup(removed, guard);
+                child_leaf_ref.retire();
+                return self.coalesce(removed, guard);
             }
             let unbounded_shared = (self.leaves.1).load(Relaxed, guard);
             if !unbounded_shared.is_null() {
                 if !(self.leaves.0).validate(result.1) {
-                    // Data race resolution: validate metadata - see 'InternalNode::search'.
+                    // Data race resolution - see 'InternalNode::search'.
                     continue;
                 }
-                let (removed, full, obsolete) = unsafe { unbounded_shared.deref().remove(key) };
-                if !full && !obsolete {
+                let unbounded_leaf_ref = unsafe { unbounded_shared.deref() };
+                let (removed, full, empty) = unbounded_leaf_ref.remove(key);
+                if !full && !empty {
                     return Ok(removed);
-                } else if !obsolete {
-                    // Data race resolution: validate metadata - see above.
+                } else if !empty {
+                    // Data race resolution - see above.
                     return self.check_full_leaf(removed, key, unbounded_shared, guard);
                 }
-                return self.cleanup(removed, guard);
+                unbounded_leaf_ref.retire();
+                return self.coalesce(removed, guard);
             }
             // unbounded_shared being null indicates that the leaf node is bound to be freed.
             return Err(RemoveError::Retry(false));
@@ -527,32 +531,15 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         }
     }
 
-    /// Tries to cleanup obsolete leaves.
-    fn cleanup(&self, removed: bool, guard: &Guard) -> Result<bool, RemoveError> {
+    /// Tries to coalesce empty or obsolete leaves.
+    fn coalesce(&self, removed: bool, guard: &Guard) -> Result<bool, RemoveError> {
         let lock = LeafNodeLocker::try_lock(self, guard);
         if lock.is_none() {
             return Err(RemoveError::Retry(removed));
         }
 
-        // Removes obsolete leaves.
-        let mut obsolete = true;
-        for entry in LeafScanner::new(&self.leaves.0) {
-            let leaf_shared = entry.1.load(Relaxed, guard);
-            let leaf_ref = unsafe { leaf_shared.deref() };
-            if leaf_ref.obsolete() {
-                self.leaves.0.remove(entry.0);
-                // Once the key is removed, it is safe to drop the leaf as the validation loop ensures the absence of readers.
-                entry.1.store(Shared::null(), Release);
-                unsafe {
-                    leaf_ref.unlink(guard);
-                    guard.defer_destroy(leaf_shared);
-                }
-            } else if obsolete {
-                obsolete = false;
-            }
-        }
-/*
         // Merges sparse leaves.
+        let mut empty = false;
         let mut prev_leaf: Option<(&K, &Atomic<Leaf<K, V>>)> = None;
         for entry in LeafScanner::new(&self.leaves.0) {
             if let Some(prev_leaf) = prev_leaf.take() {
@@ -562,8 +549,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 let prev_leaf_shared = prev_leaf.1.load(Relaxed, guard);
                 let prev_leaf_ref = unsafe { prev_leaf_shared.deref() };
                 if leaf_ref.consume(prev_leaf_ref) {
-                    self.leaves.0.remove(prev_leaf.0);
-		    // [TODO] NEED TO CHECK ONCE AGAIN
+                    // Data race resolution: mark all the vacant entries locked or consumed.
+                    //  - Consume: read the metadata and mark all the vacant entries locked.
+                    //  - Remove: remove an entry and update the metadata, find it full.
+                    //  - Consume: mark all the vacant entry consumed.
+                    empty = self.leaves.0.remove(prev_leaf.0).2;
                     prev_leaf.1.store(Shared::null(), Release);
                     unsafe {
                         prev_leaf_ref.unlink(guard);
@@ -573,10 +563,29 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             }
             prev_leaf.replace(entry);
         }
-*/
+        if let Some(prev_leaf) = prev_leaf.take() {
+            let unbounded_leaf_shared = self.leaves.1.load(Relaxed, guard);
+            let unbounded_leaf_ref = unsafe { unbounded_leaf_shared.deref() };
+            let prev_leaf_shared = prev_leaf.1.load(Relaxed, guard);
+            let prev_leaf_ref = unsafe { prev_leaf_shared.deref() };
+            if unbounded_leaf_ref.consume(prev_leaf_ref) {
+                // Data race resolution - see above.
+                empty = self.leaves.0.remove(prev_leaf.0).2;
+                prev_leaf.1.store(Shared::null(), Release);
+                unsafe {
+                    prev_leaf_ref.unlink(guard);
+                    guard.defer_destroy(prev_leaf_shared);
+                }
+            }
+        }
+        if empty {
+            if self.leaves.0.retire() {
+                return Err(RemoveError::Coalesce(removed));
+            }
+        }
 
-        if obsolete {
-            Err(RemoveError::Cleanup(removed))
+        if self.leaves.0.obsolete() {
+            Err(RemoveError::Coalesce(removed))
         } else {
             Ok(removed)
         }

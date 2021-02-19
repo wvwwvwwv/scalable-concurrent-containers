@@ -10,11 +10,22 @@ pub const ARRAY_SIZE: usize = 8;
 /// Entry state.
 ///  - 0: vacant.
 ///  - 1-ARRAY_SIZE: valid.
-///  - 14: locked.
-///  - 15: removed.
-const LOCKED: u32 = 14;
+///  - 13: locked.
+///  - 14: consumed, final state.
+///  - 15: removed, final state.
+const LOCKED: u32 = 13;
+const CONSUMED: u32 = 14;
 const REMOVED: u32 = 15;
-const OBSOLETE: u32 = u32::MAX;
+
+/// All the slots are removed or consumed.
+const OBSOLETE_MASK: u32 = (CONSUMED << 28)
+    | (CONSUMED << 24)
+    | (CONSUMED << 20)
+    | (CONSUMED << 16)
+    | (CONSUMED << 12)
+    | (CONSUMED << 8)
+    | (CONSUMED << 4)
+    | CONSUMED;
 
 /// Each entry in an EntryArray is never dropped until the Leaf is dropped once constructed.
 pub type EntryArray<K, V> = [MaybeUninit<(K, V)>; ARRAY_SIZE];
@@ -72,7 +83,7 @@ where
 
     /// Returns true if the leaf is obsolete.
     pub fn obsolete(&self) -> bool {
-        self.metadata.load(Relaxed) == OBSOLETE
+        (self.metadata.load(Relaxed) & OBSOLETE_MASK) == OBSOLETE_MASK
     }
 
     pub fn forward_link<'a>(&self, guard: &'a Guard) -> Shared<'a, Leaf<K, V>> {
@@ -227,18 +238,16 @@ where
     ///
     /// The first boolean value returned from the function indicates that an entry has been removed.
     /// The second boolean value indicates that the leaf is full.
-    /// The third boolean value indicates that the leaf has become obsolete.
+    /// The third boolean value indicates that the leaf is empty.
     pub fn remove(&self, key: &K) -> (bool, bool, bool) {
         let mut removed = false;
         let mut full = true;
+        let mut empty = true;
         let mut metadata = self.metadata.load(Acquire);
         let mut max_min_rank = 0;
         let mut min_max_rank = (ARRAY_SIZE + 1).try_into().unwrap();
         for i in 0..ARRAY_SIZE {
             let rank = Self::rank(i, metadata);
-            if full && rank == 0 {
-                full = false;
-            }
             if rank > max_min_rank && rank < min_max_rank {
                 match self.compare(i, key) {
                     Ordering::Less => {
@@ -275,25 +284,25 @@ where
                                 }
                             }
                         }
-
-                        if metadata == OBSOLETE {
-                            full = true;
-                            break;
-                        }
-
-                        // Needs to check whether the leaf is full.
-			full = true;
-                        for j in 0..ARRAY_SIZE {
-                            if Self::rank(j, metadata) == 0 {
-                                full = false;
-                                break;
-                            }
-                        }
                     }
                 }
             }
         }
-        (removed, full, metadata == OBSOLETE)
+
+        for i in 0..ARRAY_SIZE {
+            let rank = Self::rank(i, metadata);
+            if full && rank == 0 {
+                full = false;
+            }
+            if empty && rank != 0 && rank <= ARRAY_SIZE.try_into().unwrap() {
+                empty = false;
+            }
+            if !full && !empty {
+                break;
+            }
+        }
+
+        (removed, full, empty)
     }
 
     /// Returns a value associated with the key.
@@ -335,11 +344,24 @@ where
                         }
                     }
                     self_locker.commit();
+                    target_locker.consume();
                     return true;
                 }
             }
         }
         false
+    }
+
+    /// Retires by consuming all the vacant slots.
+    ///
+    /// Returns true if the leaf has become obsolete.
+    pub fn retire(&self) -> bool {
+        if let Some(self_locker) = InsertBlocker::new(self) {
+            let metadata = self_locker.consume();
+            (metadata & OBSOLETE_MASK) == OBSOLETE_MASK
+        } else {
+            false
+        }
     }
 
     /// Returns the index and a pointer to the key-value pair that is smaller than the given key.
@@ -526,7 +548,8 @@ where
     fn drop(&mut self) {
         let metadata = self.metadata.swap(0, Acquire);
         for i in 0..ARRAY_SIZE {
-            if Self::rank(i, metadata) != 0 {
+            let rank = Self::rank(i, metadata);
+            if rank != 0 && rank != CONSUMED {
                 self.take(i);
             }
         }
@@ -675,8 +698,8 @@ where
     /// Returns None if there is a locked slot.
     fn new(leaf: &'a Leaf<K, V>) -> Option<InsertBlocker<'a, K, V>> {
         let mut current = leaf.metadata.load(Relaxed);
-        let mut new_metadata = current;
         loop {
+            let mut new_metadata = current;
             let mut num_vacant_slots = 0;
             let mut num_valid_entries = 0;
             for i in 0..ARRAY_SIZE {
@@ -807,6 +830,57 @@ where
             break;
         }
         self.committed = true;
+    }
+
+    fn consume(mut self) -> u32 {
+        // Rolls back the changes and marks locked entries CONSUMED.
+        let mut current = self.leaf.metadata.load(Relaxed);
+        loop {
+            let mut new_metadata = self.metadata;
+            for i in 0..ARRAY_SIZE {
+                let rank = Leaf::<K, V>::rank(i, current);
+                let new_rank = Leaf::<K, V>::rank(i, new_metadata);
+                match (rank, new_rank) {
+                    (REMOVED, _) => {
+                        // Removed.
+                        debug_assert_ne!(new_rank, LOCKED);
+                        new_metadata = (new_metadata & (!Leaf::<K, V>::rank_mask(i)))
+                            | Leaf::<K, V>::rank_bits(i, REMOVED);
+                    }
+                    (_, LOCKED) => {
+                        // Marks consumed.
+                        debug_assert_eq!(rank, LOCKED);
+                        new_metadata = (new_metadata & (!Leaf::<K, V>::rank_mask(i)))
+                            | Leaf::<K, V>::rank_bits(i, CONSUMED);
+                    }
+                    (LOCKED, _) => {
+                        // Newly inserted, and therefore marks the entry as removed.
+                        new_metadata = (new_metadata & (!Leaf::<K, V>::rank_mask(i)))
+                            | Leaf::<K, V>::rank_bits(i, REMOVED);
+                    }
+                    (_, _) => {
+                        if rank != new_rank {
+                            // Reverts the rank update.
+                            new_metadata = (new_metadata & (!Leaf::<K, V>::rank_mask(i)))
+                                | Leaf::<K, V>::rank_bits(i, rank);
+                        }
+                    }
+                };
+            }
+            if let Err(result) =
+                self.leaf
+                    .metadata
+                    .compare_exchange(current, new_metadata, Release, Relaxed)
+            {
+                current = result;
+                continue;
+            }
+
+            current = new_metadata;
+            break;
+        }
+        self.committed = true;
+        current
     }
 }
 
@@ -1284,6 +1358,8 @@ mod test {
             }
         }
         assert!(leaf2.consume(&leaf1));
+        assert_eq!(leaf1.insert(1, 1), Some(((1, 1), false)));
+        assert_eq!(leaf1.insert(0, 0), Some(((0, 0), true)));
 
         let mut scanned1 = 0;
         for (index, entry) in LeafScanner::new(&leaf1).enumerate() {
@@ -1308,6 +1384,7 @@ mod test {
             assert!(leaf2.insert(i + 3, i + 3).is_none());
         }
         assert!(!leaf2.consume(&leaf1));
+        assert_eq!(leaf1.insert(1, 1), Some(((1, 1), true)));
 
         let mut scanned1 = 0;
         for (index, entry) in LeafScanner::new(&leaf1).enumerate() {
@@ -1343,6 +1420,25 @@ mod test {
             scanned1 += 1;
         }
         assert_eq!(scanned1, ARRAY_SIZE - 2);
+
+        // Retire.
+        let leaf1 = Leaf::new();
+        let leaf2 = Leaf::new();
+
+        for i in 0..ARRAY_SIZE - 2 {
+            assert!(leaf1.insert(i, i).is_none());
+            assert!(leaf2.insert(i + 4, i + 4).is_none());
+            assert_eq!(leaf2.remove(&(i + 4)), (true, false, true));
+        }
+        assert!(!leaf1.retire());
+        assert!(!leaf1.obsolete());
+        assert!(leaf2.retire());
+        assert!(leaf2.obsolete());
+        assert_eq!(
+            leaf1.insert(ARRAY_SIZE, ARRAY_SIZE),
+            Some(((ARRAY_SIZE, ARRAY_SIZE), false))
+        );
+        assert_eq!(leaf2.insert(5, 5), Some(((5, 5), false)));
     }
 
     #[test]

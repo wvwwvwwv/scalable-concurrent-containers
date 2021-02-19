@@ -375,7 +375,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             let unbounded_shared = (self.children.1).load(Acquire, guard);
             if !unbounded_shared.is_null() {
                 if !(self.children.0).validate(result.1) {
-                    // Data race resolution: validate metadata - see above.
+                    // Data race resolution - see above.
                     continue;
                 }
                 return unsafe { unbounded_shared.deref().search(key, guard) };
@@ -392,7 +392,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             if let Some(child) = scanner.next() {
                 let child_node = child.1.load(Acquire, guard);
                 if !(self.children.0).validate(metadata) {
-                    // Data race resolution: validate metadata - see 'InternalNode::search'.
+                    // Data race resolution - see 'InternalNode::search'.
                     continue;
                 }
                 if child_node.is_null() {
@@ -404,7 +404,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             let unbounded_shared = (self.children.1).load(Acquire, guard);
             if !unbounded_shared.is_null() {
                 if !(self.children.0).validate(metadata) {
-                    // Data race resolution: validate metadata - see 'InternalNode::search'.
+                    // Data race resolution - see 'InternalNode::search'.
                     continue;
                 }
                 return unsafe { unbounded_shared.deref().min(guard) };
@@ -429,7 +429,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 }
                 let child_node = child.1.load(Acquire, guard);
                 if !(self.children.0).validate(metadata) {
-                    // Data race resolution: validate metadata - see 'InternalNode::search'.
+                    // Data race resolution - see 'InternalNode::search'.
                     retry = true;
                     break;
                 }
@@ -444,7 +444,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             }
             let unbounded_shared = (self.children.1).load(Acquire, guard);
             if !(self.children.0).validate(metadata) {
-                // Data race resolution: validate metadata - see above.
+                // Data race resolution - see above.
                 continue;
             }
             if !unbounded_shared.is_null() {
@@ -466,7 +466,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             if let Some((child_key, child)) = result.0 {
                 let child_node = child.load(Acquire, guard);
                 if !(self.children.0).validate(result.1) {
-                    // Data race resolution: validate metadata - see 'InternalNode::search'.
+                    // Data race resolution - see 'InternalNode::search'.
                     continue;
                 }
                 if child_node.is_null() {
@@ -497,7 +497,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             let unbounded_shared = self.children.1.load(Relaxed, guard);
             if !unbounded_shared.is_null() {
                 if !(self.children.0).validate(result.1) {
-                    // Data race resolution: validate metadata - see 'InternalNode::search'.
+                    // Data race resolution - see 'InternalNode::search'.
                     continue;
                 }
                 // Tries to insert into the unbounded child, and tries to split the unbounded if it is full.
@@ -798,7 +798,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             if let Some((_, child)) = result.0 {
                 let child_node = child.load(Acquire, guard);
                 if !(self.children.0).validate(result.1) {
-                    // Data race resolution: validate metadata - see 'InternalNode::search'.
+                    // Data race resolution - see 'InternalNode::search'.
                     continue;
                 }
                 if child_node.is_null() {
@@ -808,7 +808,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 return match unsafe { child_node.deref().remove(key, guard) } {
                     Ok(removed) => Ok(removed),
                     Err(remove_error) => match remove_error {
-                        RemoveError::Cleanup(removed) => self.cleanup(removed, guard),
+                        RemoveError::Coalesce(removed) => self.coalesce(removed, guard),
                         RemoveError::Retry(_) => Err(remove_error),
                     },
                 };
@@ -816,13 +816,13 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             let unbounded_shared = (self.children.1).load(Acquire, guard);
             if !unbounded_shared.is_null() {
                 if !(self.children.0).validate(result.1) {
-                    // Data race resolution: validate metadata - see 'InternalNode::search'.
+                    // Data race resolution - see 'InternalNode::search'.
                     continue;
                 }
                 return match unsafe { unbounded_shared.deref().remove(key, guard) } {
                     Ok(removed) => Ok(removed),
                     Err(remove_error) => match remove_error {
-                        RemoveError::Cleanup(removed) => self.cleanup(removed, guard),
+                        RemoveError::Coalesce(removed) => self.coalesce(removed, guard),
                         RemoveError::Retry(_) => Err(remove_error),
                     },
                 };
@@ -832,33 +832,36 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         }
     }
 
-    /// Tries to cleanup the node.
-    fn cleanup(&self, removed: bool, guard: &Guard) -> Result<bool, RemoveError> {
+    /// Tries to coalesce nodes.
+    fn coalesce(&self, removed: bool, guard: &Guard) -> Result<bool, RemoveError> {
         // If locked and the pointer has stayed the same, invalidates the node.
         let lock = InternalNodeLocker::try_lock(self, guard);
         if lock.is_none() {
             return Err(RemoveError::Retry(removed));
         }
 
-        let mut obsolete = true;
+        let mut empty = false;
         for entry in LeafScanner::new(&self.children.0) {
             let node_shared = entry.1.load(Relaxed, guard);
             let node_ref = unsafe { node_shared.deref() };
             if node_ref.obsolete(true, guard) {
-                self.children.0.remove(entry.0);
+                empty = self.children.0.remove(entry.0).2;
                 // Once the key is removed, it is safe to deallocate the node as the validation loop ensures the absence of readers.
                 entry.1.store(Shared::null(), Release);
                 node_ref.detach(guard);
                 unsafe {
                     guard.defer_destroy(node_shared);
                 };
-            } else if obsolete {
-                obsolete = false;
+            }
+        }
+        if empty {
+            if self.children.0.retire() {
+                return Err(RemoveError::Coalesce(removed));
             }
         }
 
-        if obsolete {
-            Err(RemoveError::Cleanup(removed))
+        if self.children.0.obsolete() {
+            Err(RemoveError::Coalesce(removed))
         } else {
             Ok(removed)
         }
