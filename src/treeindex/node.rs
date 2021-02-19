@@ -834,7 +834,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
 
     /// Tries to coalesce nodes.
     fn coalesce(&self, removed: bool, guard: &Guard) -> Result<bool, RemoveError> {
-        // If locked and the pointer has stayed the same, invalidates the node.
         let lock = InternalNodeLocker::try_lock(self, guard);
         if lock.is_none() {
             return Err(RemoveError::Retry(removed));

@@ -11,21 +11,21 @@ pub const ARRAY_SIZE: usize = 8;
 ///  - 0: vacant.
 ///  - 1-ARRAY_SIZE: valid.
 ///  - 13: locked.
-///  - 14: consumed, final state.
+///  - 14: retired, final state.
 ///  - 15: removed, final state.
 const LOCKED: u32 = 13;
-const CONSUMED: u32 = 14;
+const RETIRED: u32 = 14;
 const REMOVED: u32 = 15;
 
-/// All the slots are removed or consumed.
-const OBSOLETE_MASK: u32 = (CONSUMED << 28)
-    | (CONSUMED << 24)
-    | (CONSUMED << 20)
-    | (CONSUMED << 16)
-    | (CONSUMED << 12)
-    | (CONSUMED << 8)
-    | (CONSUMED << 4)
-    | CONSUMED;
+/// All the slots are removed or retired.
+const OBSOLETE_MASK: u32 = (RETIRED << 28)
+    | (RETIRED << 24)
+    | (RETIRED << 20)
+    | (RETIRED << 16)
+    | (RETIRED << 12)
+    | (RETIRED << 8)
+    | (RETIRED << 4)
+    | RETIRED;
 
 /// Each entry in an EntryArray is never dropped until the Leaf is dropped once constructed.
 pub type EntryArray<K, V> = [MaybeUninit<(K, V)>; ARRAY_SIZE];
@@ -333,31 +333,12 @@ where
         None
     }
 
-    /// Consumes the target Leaf.
-    pub fn consume(&self, target: &Leaf<K, V>) -> bool {
-        if let Some(target_locker) = InsertBlocker::new(target) {
-            if let Some(mut self_locker) = InsertBlocker::new(self) {
-                if target_locker.num_valid_entries <= self_locker.num_vacant_slots {
-                    for entry in LeafScanner::new(target) {
-                        if !self_locker.interlocked_insert(entry.0, entry.1) {
-                            return false;
-                        }
-                    }
-                    self_locker.commit();
-                    target_locker.consume();
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    /// Retires by consuming all the vacant slots.
+    /// Retires all the vacant slots.
     ///
     /// Returns true if the leaf has become obsolete.
     pub fn retire(&self) -> bool {
         if let Some(self_locker) = InsertBlocker::new(self) {
-            let metadata = self_locker.consume();
+            let metadata = self_locker.retire();
             (metadata & OBSOLETE_MASK) == OBSOLETE_MASK
         } else {
             false
@@ -549,7 +530,7 @@ where
         let metadata = self.metadata.swap(0, Acquire);
         for i in 0..ARRAY_SIZE {
             let rank = Self::rank(i, metadata);
-            if rank != 0 && rank != CONSUMED {
+            if rank != 0 && rank != RETIRED {
                 self.take(i);
             }
         }
@@ -676,18 +657,14 @@ where
 }
 
 /// InsertBlocker locks all the vacant slots.
-///
-/// New entries can only be inserted into a locked Leaf by using the InsertBlocker instance.
 struct InsertBlocker<'a, K, V>
 where
     K: Clone + Ord + Sync,
     V: Clone + Sync,
 {
     leaf: &'a Leaf<K, V>,
-    num_vacant_slots: usize,
-    num_valid_entries: usize,
     metadata: u32,
-    committed: bool,
+    retired: bool,
 }
 
 impl<'a, K, V> InsertBlocker<'a, K, V>
@@ -700,17 +677,12 @@ where
         let mut current = leaf.metadata.load(Relaxed);
         loop {
             let mut new_metadata = current;
-            let mut num_vacant_slots = 0;
-            let mut num_valid_entries = 0;
             for i in 0..ARRAY_SIZE {
                 let rank = Leaf::<K, V>::rank(i, current);
                 if rank == 0 {
                     new_metadata |= Leaf::<K, V>::rank_bits(i, LOCKED);
-                    num_vacant_slots += 1;
                 } else if rank == LOCKED {
                     return None;
-                } else if rank <= ARRAY_SIZE.try_into().unwrap() {
-                    num_valid_entries += 1;
                 }
             }
             match leaf
@@ -720,10 +692,8 @@ where
                 Ok(_) => {
                     return Some(InsertBlocker {
                         leaf,
-                        num_vacant_slots,
-                        num_valid_entries,
                         metadata: new_metadata,
-                        committed: false,
+                        retired: false,
                     });
                 }
                 Err(result) => current = result,
@@ -731,67 +701,7 @@ where
         }
     }
 
-    /// Inserts a new entry with the leaf entirely locked.
-    fn interlocked_insert(&mut self, key: &K, value: &V) -> bool {
-        // Calculates the rank and updates the metadata.
-        for i in 0..ARRAY_SIZE {
-            if Leaf::<K, V>::rank(i, self.metadata) == LOCKED {
-                let metadata = self.metadata;
-                let mut max_min_rank = 0;
-                let mut min_max_rank = (ARRAY_SIZE + 1).try_into().unwrap();
-                for j in 0..ARRAY_SIZE {
-                    if i == j {
-                        continue;
-                    }
-                    let rank = Leaf::<K, V>::rank(j, metadata);
-                    if rank == 0 || rank < max_min_rank || rank > ARRAY_SIZE.try_into().unwrap() {
-                        continue;
-                    }
-                    if rank > min_max_rank {
-                        // Updates the rank.
-                        let rank_bits = Leaf::<K, V>::rank_bits(j, rank + 1);
-                        self.metadata = (self.metadata & (!Leaf::<K, V>::rank_mask(j))) | rank_bits;
-                        continue;
-                    }
-                    match self.leaf.compare(j, key) {
-                        Ordering::Less => {
-                            if max_min_rank < rank {
-                                max_min_rank = rank;
-                            }
-                        }
-                        Ordering::Greater => {
-                            if min_max_rank > rank {
-                                min_max_rank = rank;
-                            }
-                            // Updates the rank.
-                            let rank_bits = Leaf::<K, V>::rank_bits(j, rank + 1);
-                            self.metadata =
-                                (self.metadata & (!Leaf::<K, V>::rank_mask(j))) | rank_bits;
-                        }
-                        Ordering::Equal => {
-                            // Uniqueness check failed.
-                            self.metadata = metadata;
-                            return false;
-                        }
-                    }
-                }
-                let final_rank = max_min_rank + 1;
-                debug_assert!(
-                    min_max_rank == (ARRAY_SIZE + 1).try_into().unwrap()
-                        || final_rank <= min_max_rank
-                );
-
-                // Updates its own rank.
-                self.leaf.write(i, key.clone(), value.clone());
-                self.metadata = (self.metadata & (!Leaf::<K, V>::rank_mask(i)))
-                    | Leaf::<K, V>::rank_bits(i, final_rank);
-                return true;
-            }
-        }
-        false
-    }
-
-    fn commit(mut self) {
+    fn retire(mut self) -> u32 {
         let mut current = self.leaf.metadata.load(Relaxed);
         loop {
             let mut new_metadata = self.metadata;
@@ -799,68 +709,14 @@ where
                 let rank = Leaf::<K, V>::rank(i, current);
                 let new_rank = Leaf::<K, V>::rank(i, new_metadata);
                 match (rank, new_rank) {
-                    (REMOVED, _) => {
-                        // Removed.
-                        debug_assert_ne!(new_rank, LOCKED);
-                        new_metadata = (new_metadata & (!Leaf::<K, V>::rank_mask(i)))
-                            | Leaf::<K, V>::rank_bits(i, REMOVED);
-                    }
                     (_, LOCKED) => {
-                        // Needs to unlock the vacant slot.
-                        debug_assert_eq!(rank, LOCKED);
-                        new_metadata &= !Leaf::<K, V>::rank_mask(i);
-                    }
-                    (_, _) => {
-                        if rank != LOCKED && rank != new_rank {
-                            // The rank has been updated.
-                            new_metadata = (new_metadata & (!Leaf::<K, V>::rank_mask(i)))
-                                | Leaf::<K, V>::rank_bits(i, new_rank);
-                        }
-                    }
-                };
-            }
-            if let Err(result) =
-                self.leaf
-                    .metadata
-                    .compare_exchange(current, new_metadata, Release, Relaxed)
-            {
-                current = result;
-                continue;
-            }
-            break;
-        }
-        self.committed = true;
-    }
-
-    fn consume(mut self) -> u32 {
-        // Rolls back the changes and marks locked entries CONSUMED.
-        let mut current = self.leaf.metadata.load(Relaxed);
-        loop {
-            let mut new_metadata = self.metadata;
-            for i in 0..ARRAY_SIZE {
-                let rank = Leaf::<K, V>::rank(i, current);
-                let new_rank = Leaf::<K, V>::rank(i, new_metadata);
-                match (rank, new_rank) {
-                    (REMOVED, _) => {
-                        // Removed.
-                        debug_assert_ne!(new_rank, LOCKED);
-                        new_metadata = (new_metadata & (!Leaf::<K, V>::rank_mask(i)))
-                            | Leaf::<K, V>::rank_bits(i, REMOVED);
-                    }
-                    (_, LOCKED) => {
-                        // Marks consumed.
+                        // Marks retired.
                         debug_assert_eq!(rank, LOCKED);
                         new_metadata = (new_metadata & (!Leaf::<K, V>::rank_mask(i)))
-                            | Leaf::<K, V>::rank_bits(i, CONSUMED);
-                    }
-                    (LOCKED, _) => {
-                        // Newly inserted, and therefore marks the entry as removed.
-                        new_metadata = (new_metadata & (!Leaf::<K, V>::rank_mask(i)))
-                            | Leaf::<K, V>::rank_bits(i, REMOVED);
+                            | Leaf::<K, V>::rank_bits(i, RETIRED);
                     }
                     (_, _) => {
                         if rank != new_rank {
-                            // Reverts the rank update.
                             new_metadata = (new_metadata & (!Leaf::<K, V>::rank_mask(i)))
                                 | Leaf::<K, V>::rank_bits(i, rank);
                         }
@@ -879,7 +735,7 @@ where
             current = new_metadata;
             break;
         }
-        self.committed = true;
+        self.retired = true;
         current
     }
 }
@@ -890,8 +746,8 @@ where
     V: Clone + Sync,
 {
     fn drop(&mut self) {
-        // Rolls back changes if not commited.
-        if !self.committed {
+        if !self.retired {
+            // Gracefully unlocks all the vacant entries.
             let mut current = self.leaf.metadata.load(Relaxed);
             loop {
                 let mut new_metadata = self.metadata;
@@ -899,25 +755,13 @@ where
                     let rank = Leaf::<K, V>::rank(i, current);
                     let new_rank = Leaf::<K, V>::rank(i, new_metadata);
                     match (rank, new_rank) {
-                        (REMOVED, _) => {
-                            // Removed.
-                            debug_assert_ne!(new_rank, LOCKED);
-                            new_metadata = (new_metadata & (!Leaf::<K, V>::rank_mask(i)))
-                                | Leaf::<K, V>::rank_bits(i, REMOVED);
-                        }
                         (_, LOCKED) => {
                             // Needs to unlock the vacant slot.
                             debug_assert_eq!(rank, LOCKED);
                             new_metadata &= !Leaf::<K, V>::rank_mask(i);
                         }
-                        (LOCKED, _) => {
-                            // Newly inserted, and therefore marks the entry as removed.
-                            new_metadata = (new_metadata & (!Leaf::<K, V>::rank_mask(i)))
-                                | Leaf::<K, V>::rank_bits(i, REMOVED);
-                        }
                         (_, _) => {
                             if rank != new_rank {
-                                // Reverts the rank update.
                                 new_metadata = (new_metadata & (!Leaf::<K, V>::rank_mask(i)))
                                     | Leaf::<K, V>::rank_bits(i, rank);
                             }
@@ -1346,81 +1190,7 @@ mod test {
     }
 
     #[test]
-    fn consume() {
-        // Successful operation.
-        let leaf1 = Leaf::new();
-        let leaf2 = Leaf::new();
-        for i in 0..ARRAY_SIZE {
-            if i % 2 == 0 {
-                assert!(leaf1.insert(i, i).is_none());
-            } else {
-                assert!(leaf2.insert(i, i).is_none());
-            }
-        }
-        assert!(leaf2.consume(&leaf1));
-        assert_eq!(leaf1.insert(1, 1), Some(((1, 1), false)));
-        assert_eq!(leaf1.insert(0, 0), Some(((0, 0), true)));
-
-        let mut scanned1 = 0;
-        for (index, entry) in LeafScanner::new(&leaf1).enumerate() {
-            assert_eq!(index * 2, *entry.0);
-            scanned1 += 1;
-        }
-        assert_eq!(scanned1, ARRAY_SIZE / 2);
-
-        let mut scanned2 = 0;
-        for (index, entry) in LeafScanner::new(&leaf2).enumerate() {
-            assert_eq!(index, *entry.0);
-            scanned2 += 1;
-        }
-        assert_eq!(scanned2, ARRAY_SIZE);
-
-        // Duplicated keys found.
-        let leaf1 = Leaf::new();
-        let leaf2 = Leaf::new();
-
-        for i in 0..ARRAY_SIZE / 2 {
-            assert!(leaf1.insert(i, i).is_none());
-            assert!(leaf2.insert(i + 3, i + 3).is_none());
-        }
-        assert!(!leaf2.consume(&leaf1));
-        assert_eq!(leaf1.insert(1, 1), Some(((1, 1), true)));
-
-        let mut scanned1 = 0;
-        for (index, entry) in LeafScanner::new(&leaf1).enumerate() {
-            assert_eq!(index, *entry.0);
-            scanned1 += 1;
-        }
-        assert_eq!(scanned1, ARRAY_SIZE / 2);
-
-        let mut scanned2 = 0;
-        for (index, entry) in LeafScanner::new(&leaf2).enumerate() {
-            assert_eq!(index + 3, *entry.0);
-            scanned2 += 1;
-        }
-        assert_eq!(scanned2, ARRAY_SIZE / 2);
-
-        assert!(leaf1.insert(ARRAY_SIZE, ARRAY_SIZE).is_none());
-        assert!(leaf2.insert(ARRAY_SIZE + 3, ARRAY_SIZE + 3).is_none());
-        assert_eq!(leaf2.insert(0, 0), Some(((0, 0), false)));
-
-        // Overflow.
-        let leaf1 = Leaf::new();
-        let leaf2 = Leaf::new();
-
-        for i in 0..ARRAY_SIZE - 2 {
-            assert!(leaf1.insert(i, i).is_none());
-            assert!(leaf2.insert(i + 4, i + 4).is_none());
-        }
-        assert!(!leaf2.consume(&leaf1));
-
-        let mut scanned1 = 0;
-        for (index, entry) in LeafScanner::new(&leaf1).enumerate() {
-            assert_eq!(index, *entry.0);
-            scanned1 += 1;
-        }
-        assert_eq!(scanned1, ARRAY_SIZE - 2);
-
+    fn retire() {
         // Retire.
         let leaf1 = Leaf::new();
         let leaf2 = Leaf::new();

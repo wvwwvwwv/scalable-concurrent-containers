@@ -538,43 +538,17 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             return Err(RemoveError::Retry(removed));
         }
 
-        // Merges sparse leaves.
         let mut empty = false;
-        let mut prev_leaf: Option<(&K, &Atomic<Leaf<K, V>>)> = None;
         for entry in LeafScanner::new(&self.leaves.0) {
-            if let Some(prev_leaf) = prev_leaf.take() {
-                // The current leaf consumes the previous leaf.
-                let leaf_shared = entry.1.load(Relaxed, guard);
-                let leaf_ref = unsafe { leaf_shared.deref() };
-                let prev_leaf_shared = prev_leaf.1.load(Relaxed, guard);
-                let prev_leaf_ref = unsafe { prev_leaf_shared.deref() };
-                if leaf_ref.consume(prev_leaf_ref) {
-                    // Data race resolution: mark all the vacant entries locked or consumed.
-                    //  - Consume: read the metadata and mark all the vacant entries locked.
-                    //  - Remove: remove an entry and update the metadata, find it full.
-                    //  - Consume: mark all the vacant entry consumed.
-                    empty = self.leaves.0.remove(prev_leaf.0).2;
-                    prev_leaf.1.store(Shared::null(), Release);
-                    unsafe {
-                        prev_leaf_ref.unlink(guard);
-                        guard.defer_destroy(prev_leaf_shared);
-                    }
-                }
-            }
-            prev_leaf.replace(entry);
-        }
-        if let Some(prev_leaf) = prev_leaf.take() {
-            let unbounded_leaf_shared = self.leaves.1.load(Relaxed, guard);
-            let unbounded_leaf_ref = unsafe { unbounded_leaf_shared.deref() };
-            let prev_leaf_shared = prev_leaf.1.load(Relaxed, guard);
-            let prev_leaf_ref = unsafe { prev_leaf_shared.deref() };
-            if unbounded_leaf_ref.consume(prev_leaf_ref) {
-                // Data race resolution - see above.
-                empty = self.leaves.0.remove(prev_leaf.0).2;
-                prev_leaf.1.store(Shared::null(), Release);
+            let leaf_shared = entry.1.load(Relaxed, guard);
+            let leaf_ref = unsafe { leaf_shared.deref() };
+            if leaf_ref.obsolete() {
+                empty = self.leaves.0.remove(entry.0).2;
+                // Once the key is removed, it is safe to deallocate the node as the validation loop ensures the absence of readers.
+                entry.1.store(Shared::null(), Release);
                 unsafe {
-                    prev_leaf_ref.unlink(guard);
-                    guard.defer_destroy(prev_leaf_shared);
+                    leaf_ref.unlink(guard);
+                    guard.defer_destroy(leaf_shared);
                 }
             }
         }
