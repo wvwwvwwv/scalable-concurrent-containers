@@ -662,35 +662,41 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 let low_key_node_array_size = num_entries / 2;
                 for (index, entry) in entry_array.iter().enumerate() {
                     if let Some(entry) = entry {
-                        if (index + 1) < low_key_node_array_size {
-                            low_key_nodes
-                                .as_ref()
-                                .unwrap()
-                                .0
-                                .insert(entry.0.unwrap().clone(), entry.1.clone());
-                        } else if (index + 1) == low_key_node_array_size {
-                            new_split_nodes_ref
-                                .middle_key
-                                .replace(entry.0.unwrap().clone());
-                            let child_node_ptr = entry.1.load(Relaxed, guard);
-                            low_key_nodes
-                                .as_ref()
-                                .unwrap()
-                                .1
-                                .store(child_node_ptr, Relaxed);
-                        } else if let Some(key) = entry.0 {
-                            high_key_nodes
-                                .as_ref()
-                                .unwrap()
-                                .0
-                                .insert(key.clone(), entry.1.clone());
-                        } else {
-                            high_key_nodes
-                                .as_ref()
-                                .unwrap()
-                                .1
-                                .store(entry.1.load(Relaxed, guard), Relaxed);
-                        }
+                        match (index + 1).cmp(&low_key_node_array_size) {
+                            Ordering::Less => {
+                                low_key_nodes
+                                    .as_ref()
+                                    .unwrap()
+                                    .0
+                                    .insert(entry.0.unwrap().clone(), entry.1.clone());
+                            }
+                            Ordering::Equal => {
+                                new_split_nodes_ref
+                                    .middle_key
+                                    .replace(entry.0.unwrap().clone());
+                                let child_node_ptr = entry.1.load(Relaxed, guard);
+                                low_key_nodes
+                                    .as_ref()
+                                    .unwrap()
+                                    .1
+                                    .store(child_node_ptr, Relaxed);
+                            }
+                            Ordering::Greater => {
+                                if let Some(key) = entry.0 {
+                                    high_key_nodes
+                                        .as_ref()
+                                        .unwrap()
+                                        .0
+                                        .insert(key.clone(), entry.1.clone());
+                                } else {
+                                    high_key_nodes
+                                        .as_ref()
+                                        .unwrap()
+                                        .1
+                                        .store(entry.1.load(Relaxed, guard), Relaxed);
+                                }
+                            }
+                        };
                     } else {
                         break;
                     }
@@ -853,10 +859,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 };
             }
         }
-        if empty {
-            if self.children.0.retire() {
-                return Err(RemoveError::Coalesce(removed));
-            }
+        if empty && self.children.0.retire() {
+            return Err(RemoveError::Coalesce(removed));
         }
 
         if self.children.0.obsolete() {
@@ -897,14 +901,19 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
 
 impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for InternalNode<K, V> {
     fn drop(&mut self) {
-        let guard = crossbeam_epoch::pin();
+        // The internal node has become unreachable, and so have all the children, therefore pinning is unnecessary.
         for entry in LeafScanner::new(&self.children.0) {
-            let child = entry.1.load(Acquire, &guard);
+            let child = entry
+                .1
+                .load(Acquire, unsafe { crossbeam_epoch::unprotected() });
             if !child.is_null() {
                 drop(unsafe { child.into_owned() });
             }
         }
-        let unbounded_child = self.children.1.load(Acquire, &guard);
+        let unbounded_child = self
+            .children
+            .1
+            .load(Acquire, unsafe { crossbeam_epoch::unprotected() });
         if !unbounded_child.is_null() {
             drop(unsafe { unbounded_child.into_owned() });
         }

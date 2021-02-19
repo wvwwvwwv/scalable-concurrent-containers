@@ -989,12 +989,13 @@ where
     H: BuildHasher,
 {
     fn drop(&mut self) {
+        // The HashMap has become unreachable, therefore pinning is unnecessary.
         self.clear();
-        let guard = crossbeam_epoch::pin();
-        let current_array = self.array.load(Acquire, &guard);
+        let guard = unsafe { crossbeam_epoch::unprotected() };
+        let current_array = self.array.load(Acquire, guard);
         let current_array_ref = self.array(&current_array);
-        current_array_ref.drop_old_array(true, &guard);
-        let array = self.array.swap(Shared::null(), Relaxed, &guard);
+        current_array_ref.drop_old_array(true, guard);
+        let array = self.array.swap(Shared::null(), Relaxed, guard);
         if !array.is_null() {
             drop(unsafe { array.into_owned() });
         }

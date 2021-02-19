@@ -4,7 +4,7 @@ The crate offers highly scalable concurrent containers written in the Rust langu
 
 - [scc::HashMap](#hashmap) is a concurrent hash map.
 - [scc::HashIndex](#hashindex) (work-in-progress) is similar to scc::HashMap whereas it allows lock-free read.
-- [scc::TreeIndex](#treeindex) (work-in-progress) is a concurrent B+ tree allowing lock-free read and scan.
+- [scc::TreeIndex](#treeindex) is a concurrent B+ tree allowing lock-free read and scan.
 
 The read/write operations on a single key-value pair of scc::HashMap are linearizable while that of scc::HashIndex and scc::TreeIndex are similar to snapshot isolation.
 
@@ -63,11 +63,9 @@ scc::HashIndex is an index version of scc::HashMap. It allows readers to access 
 
 ## scc::TreeIndex <a name="treeindex"></a>
 
-[Work-in-progress](##milestones)
-- Not fully validated.
-- Not fully optimized.
+- Not fully optimized; benchmark results will come once adequately optimized.
 
-scc::TreeIndex is a B+ tree optimized for read operations. Locks are only acquired on structural changes, and read/scan operations are neither blocked nor interrupted by other threads. The semantics of the read operation on a single key is similar to snapshot isolation in terms of database management software, as readers may not see the snapshot of data that is newer than the read snapshot.
+scc::TreeIndex is a B+ tree optimized for read operations. Locks are only acquired on structural changes, and read/scan operations are neither blocked nor interrupted by other threads. The semantics of the read operation on a single key is similar to snapshot isolation in terms of database management software, as readers may not see the snapshot of data that is newer than the read snapshot. All the key-value pairs stored in a leaf are never dropped until the leaf becomes completely unreachable, thereby ensuring immutability of all the reachable key-value pairs. scc::TreeIndex harnesses this immutability of the leaf data structure to allow read operations to access key-value pairs without modifying the data structure.
 
 ## Changelog
 

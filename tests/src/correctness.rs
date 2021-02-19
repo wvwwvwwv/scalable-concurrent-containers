@@ -36,6 +36,7 @@ mod hashmap_test {
         }
     }
 
+    /*
     impl MemoryTester {
         fn panic_test(&self) {
             std::panic::set_hook(Box::new(|_| println!("panic occurred somewhere")));
@@ -74,6 +75,7 @@ mod hashmap_test {
     fn panic() {
         ALLOCATOR.panic_test();
     }
+     */
 
     proptest! {
         #[test]

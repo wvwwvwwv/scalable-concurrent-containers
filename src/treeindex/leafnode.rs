@@ -367,21 +367,27 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         let low_key_leaf_array_size = num_entries / 2;
         for (index, entry) in entry_array.iter().enumerate() {
             if let Some(entry) = entry {
-                if (index + 1) < low_key_leaf_array_size {
-                    low_key_leaves
-                        .0
-                        .insert(entry.0.unwrap().clone(), entry.1.clone());
-                } else if (index + 1) == low_key_leaf_array_size {
-                    middle_key.replace(entry.0.unwrap().clone());
-                    low_key_leaves
-                        .1
-                        .store(entry.1.load(Relaxed, guard), Relaxed);
-                } else if let Some(key) = entry.0 {
-                    high_key_leaves.0.insert(key.clone(), entry.1.clone());
-                } else {
-                    high_key_leaves
-                        .1
-                        .store(entry.1.load(Relaxed, guard), Relaxed);
+                match (index + 1).cmp(&low_key_leaf_array_size) {
+                    Ordering::Less => {
+                        low_key_leaves
+                            .0
+                            .insert(entry.0.unwrap().clone(), entry.1.clone());
+                    }
+                    Ordering::Equal => {
+                        middle_key.replace(entry.0.unwrap().clone());
+                        low_key_leaves
+                            .1
+                            .store(entry.1.load(Relaxed, guard), Relaxed);
+                    }
+                    Ordering::Greater => {
+                        if let Some(key) = entry.0 {
+                            high_key_leaves.0.insert(key.clone(), entry.1.clone());
+                        } else {
+                            high_key_leaves
+                                .1
+                                .store(entry.1.load(Relaxed, guard), Relaxed);
+                        }
+                    }
                 }
             } else {
                 break;
@@ -552,10 +558,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 }
             }
         }
-        if empty {
-            if self.leaves.0.retire() {
-                return Err(RemoveError::Coalesce(removed));
-            }
+        if empty && self.leaves.0.retire() {
+            return Err(RemoveError::Coalesce(removed));
         }
 
         if self.leaves.0.obsolete() {
@@ -665,21 +669,26 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
 
 impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for LeafNode<K, V> {
     fn drop(&mut self) {
-        let guard = crossbeam_epoch::pin();
+        // The leaf node has become unreachable, and so have all the children, therefore pinning is unnecessary.
         for entry in LeafScanner::new(&self.leaves.0) {
-            let child = entry.1.load(Acquire, &guard);
+            let child = entry
+                .1
+                .load(Acquire, unsafe { crossbeam_epoch::unprotected() });
             if !child.is_null() {
                 unsafe {
                     let leaf = child.into_owned();
-                    leaf.unlink(&guard);
+                    leaf.unlink(crossbeam_epoch::unprotected());
                 }
             }
         }
-        let unbounded_shared = self.leaves.1.load(Acquire, &guard);
+        let unbounded_shared = self
+            .leaves
+            .1
+            .load(Acquire, unsafe { crossbeam_epoch::unprotected() });
         if !unbounded_shared.is_null() {
             unsafe {
                 let leaf = unbounded_shared.into_owned();
-                leaf.unlink(&guard);
+                leaf.unlink(crossbeam_epoch::unprotected());
             }
         }
     }

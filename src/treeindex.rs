@@ -1,5 +1,3 @@
-extern crate crossbeam_epoch;
-
 pub mod error;
 pub mod leaf;
 pub mod leafnode;
@@ -17,6 +15,16 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 /// scc::TreeIndex is a B+ tree variant that is optimized for read operations.
 /// Read operations, such as scan, read, are neither blocked nor interrupted by all the other types of operations.
 /// Write operations, such as insert, remove, do not block if they do not entail structural changes to the tree.
+///
+/// ## The key features of scc::TreeIndex
+/// * Write-free read: read operations never modify the shared data.
+/// * Near lock-free write: write operations do not block unless a structural change is required.
+///
+/// # The key statistics for scc::TreeIndex
+/// * The maximum number of entries that a leaf can store: 8.
+/// * The maximum number of leaves or nodes that a node can store: 9.
+/// * The size of metadata per entry in a leaf: 3-byte.
+/// * The size of metadata per leaf or node in a node: size_of(K) + 4.
 pub struct TreeIndex<K, V>
 where
     K: Clone + Ord + Send + Sync,
@@ -372,7 +380,9 @@ where
     V: Clone + Send + Sync,
 {
     fn drop(&mut self) {
-        self.clear();
+        // The TreeIndex has become unreachable, therefore pinning is unnecessary.
+        let guard = unsafe { crossbeam_epoch::unprotected() };
+        Node::remove_root(&self.root, guard);
     }
 }
 
