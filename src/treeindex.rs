@@ -20,7 +20,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 /// * Write-free read: read operations never modify the shared data.
 /// * Near lock-free write: write operations do not block unless a structural change is required.
 ///
-/// # The key statistics for scc::TreeIndex
+/// ## The key statistics for scc::TreeIndex
 /// * The maximum number of entries that a leaf can store: 8.
 /// * The maximum number of leaves or nodes that a node can store: 9.
 /// * The size of metadata per entry in a leaf: 3-byte.

@@ -2,7 +2,7 @@ use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash};
 use std::sync::atomic::AtomicBool;
 
-const DEFAULT_CAPACITY: usize = 256;
+const DEFAULT_CAPACITY: usize = 64;
 
 /// A scalable concurrent hash index implementation.
 ///

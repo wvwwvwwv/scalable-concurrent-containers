@@ -69,6 +69,8 @@ scc::TreeIndex is a B+ tree optimized for read operations. Locks are only acquir
 
 ## Changelog
 
+#### 0.4.4
+Optimize TreeIndex
 #### 0.4.3
 Stabilize TreeIndex::remove: #25 fixed
 #### 0.4.2
@@ -77,12 +79,6 @@ Fix comments and documents
 Optpimize memory usage of HashMap
 #### 0.4.0
 Stabilize TreeIndex
-#### 0.3.22
-Stabilize TreeIndex::remove: #21 partially fixed
-#### 0.3.21
-Stabilize TreeIndex::remove: #22 fixed
-#### 0.3.20
-Stabilize TreeIndex::remove: #20 fixed
 
 ## Milestones <a name="milestones"></a>
 
