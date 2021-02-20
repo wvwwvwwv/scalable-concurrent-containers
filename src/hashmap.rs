@@ -301,7 +301,7 @@ where
     /// let result = hashmap.read(&1, |key, value| *value);
     /// assert_eq!(result.unwrap(), 0);
     /// ```
-    pub fn read<U, F: FnOnce(&K, &V) -> U>(&self, key: &K, f: F) -> Option<U> {
+    pub fn read<R, F: FnOnce(&K, &V) -> R>(&self, key: &K, f: F) -> Option<R> {
         let (hash, partial_hash) = self.hash(key);
         let guard = crossbeam_epoch::pin();
 

@@ -191,7 +191,7 @@ where
     /// let result = treeindex.read(&1, |key, value| *value);
     /// assert_eq!(result.unwrap(), 10);
     /// ```
-    pub fn read<U, F: FnOnce(&K, &V) -> U>(&self, key: &K, f: F) -> Option<U> {
+    pub fn read<R, F: FnOnce(&K, &V) -> R>(&self, key: &K, f: F) -> Option<R> {
         let guard = crossbeam_epoch::pin();
         loop {
             let root_node = self.root.load(Acquire, &guard);
@@ -338,6 +338,8 @@ where
     ///     assert_eq!(scanner.get().unwrap(), (&2, &11));
     ///     assert_eq!(scanner.next().unwrap(), (&3, &13));
     ///     assert!(scanner.next().is_none());
+    /// } else {
+    ///     assert!(false);
     /// }
     /// ```
     pub fn from(&self, key: &K) -> Option<Scanner<K, V>> {
@@ -387,27 +389,27 @@ where
 }
 
 /// Scanner implements Iterator for TreeIndex.
-pub struct Scanner<'a, K, V>
+pub struct Scanner<'t, K, V>
 where
     K: Clone + Ord + Send + Sync,
     V: Clone + Send + Sync,
 {
-    tree: &'a TreeIndex<K, V>,
-    leaf_scanner: Option<LeafScanner<'a, K, V>>,
+    tree: &'t TreeIndex<K, V>,
+    leaf_scanner: Option<LeafScanner<'t, K, V>>,
     guard: Guard,
 }
 
-impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Scanner<'a, K, V> {
-    fn new(tree: &'a TreeIndex<K, V>) -> Scanner<'a, K, V> {
-        Scanner::<'a, K, V> {
+impl<'t, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Scanner<'t, K, V> {
+    fn new(tree: &'t TreeIndex<K, V>) -> Scanner<'t, K, V> {
+        Scanner::<'t, K, V> {
             tree,
             leaf_scanner: None,
             guard: crossbeam_epoch::pin(),
         }
     }
 
-    fn from(tree: &'a TreeIndex<K, V>, min_allowed_key: &K) -> Option<Scanner<'a, K, V>> {
-        let mut scanner = Scanner::<'a, K, V> {
+    fn from(tree: &'t TreeIndex<K, V>, min_allowed_key: &K) -> Option<Scanner<'t, K, V>> {
+        let mut scanner = Scanner::<'t, K, V> {
             tree,
             leaf_scanner: None,
             guard: crossbeam_epoch::pin(),
@@ -422,7 +424,7 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Scanner<'a, K, V>
             {
                 scanner.leaf_scanner.replace(unsafe {
                     // Prolongs the lifetime as the rust type system cannot infer the actual lifetime correctly.
-                    std::mem::transmute::<_, LeafScanner<'a, K, V>>(leaf_scanner)
+                    std::mem::transmute::<_, LeafScanner<'t, K, V>>(leaf_scanner)
                 });
                 break;
             }
@@ -437,7 +439,7 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Scanner<'a, K, V>
     }
 
     /// Returns a reference to the entry that the scanner is currently pointing to.
-    pub fn get(&self) -> Option<(&'a K, &'a V)> {
+    pub fn get(&self) -> Option<(&'t K, &'t V)> {
         if let Some(leaf_scanner) = self.leaf_scanner.as_ref() {
             return leaf_scanner.get();
         }
@@ -445,12 +447,12 @@ impl<'a, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Scanner<'a, K, V>
     }
 }
 
-impl<'a, K, V> Iterator for Scanner<'a, K, V>
+impl<'t, K, V> Iterator for Scanner<'t, K, V>
 where
     K: Clone + Ord + Send + Sync,
     V: Clone + Send + Sync,
 {
-    type Item = (&'a K, &'a V);
+    type Item = (&'t K, &'t V);
     fn next(&mut self) -> Option<Self::Item> {
         if self.leaf_scanner.is_none() {
             loop {
@@ -461,7 +463,7 @@ where
                 if let Ok(leaf_scanner) = unsafe { &*root_node.as_raw() }.min(&self.guard) {
                     self.leaf_scanner.replace(unsafe {
                         // Prolongs the lifetime as the rust type system cannot infer the actual lifetime correctly.
-                        std::mem::transmute::<_, LeafScanner<'a, K, V>>(leaf_scanner)
+                        std::mem::transmute::<_, LeafScanner<'t, K, V>>(leaf_scanner)
                     });
                     break;
                 }
@@ -478,7 +480,7 @@ where
                 // Checking min_allowed_key is necessary, because,
                 //  - Remove: merges two leaf nodes, therefore the unbounded leaf of the lower key node is relocated.
                 //  - Scanner: the unbounded leaf of the lower key node can be scanned twice after a jump.
-                std::mem::transmute::<_, Option<LeafScanner<'a, K, V>>>(scanner.jump(&self.guard))
+                std::mem::transmute::<_, Option<LeafScanner<'t, K, V>>>(scanner.jump(&self.guard))
                     .take()
             } {
                 while let Some(entry) = new_scanner.next() {

@@ -113,7 +113,7 @@ where
     /// ```
     /// use scc::HashIndex;
     /// ```
-    pub fn read<U, F: FnOnce(&K, &V) -> U>(&self, _key: &K, _f: F) -> Option<U> {
+    pub fn read<R, F: FnOnce(&K, &V) -> R>(&self, _key: &K, _f: F) -> Option<R> {
         None
     }
 
