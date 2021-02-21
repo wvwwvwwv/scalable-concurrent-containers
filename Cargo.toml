@@ -1,6 +1,6 @@
 [package]
 name = "scc"
-description = "scalable concurrent data structures for database management systems"
+description = "Scalable concurrent data structures for database management systems"
 version = "0.4.4"
 authors = ["wvwwvwwv <wvwwvwwv@me.com>"]
 edition = "2018"

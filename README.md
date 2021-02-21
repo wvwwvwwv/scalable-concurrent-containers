@@ -70,7 +70,7 @@ scc::TreeIndex is a B+ tree optimized for read operations. Locks are only acquir
 ## Changelog
 
 #### 0.4.4
-Optimize TreeIndex
+Fix the TreeIndex::from interface
 #### 0.4.3
 Stabilize TreeIndex::remove: #25 fixed
 #### 0.4.2

@@ -76,7 +76,7 @@ where
         }
     }
 
-    /// Inserts a a key-value pair.
+    /// Inserts a key-value pair.
     ///
     /// # Examples
     /// ```
@@ -318,7 +318,6 @@ where
     /// In case the key does not exist, and there is a key that is greater than the given key,
     /// a Scanner pointing to the key is returned.
     ///
-    ///
     /// # Examples
     /// ```
     /// use scc::TreeIndex;
@@ -328,21 +327,24 @@ where
     /// let result = treeindex.insert(1, 10);
     /// assert!(result.is_ok());
     ///
+    /// for entry in treeindex.from(&2) {
+    ///     assert!(false);
+    /// }
+    ///
     /// let result = treeindex.insert(2, 11);
     /// assert!(result.is_ok());
     ///
     /// let result = treeindex.insert(3, 13);
     /// assert!(result.is_ok());
     ///
-    /// if let Some(mut scanner) = treeindex.from(&2) {
-    ///     assert_eq!(scanner.get().unwrap(), (&2, &11));
-    ///     assert_eq!(scanner.next().unwrap(), (&3, &13));
-    ///     assert!(scanner.next().is_none());
-    /// } else {
-    ///     assert!(false);
+    /// let mut num_scanned = 0;
+    /// for entry in treeindex.from(&2) {
+    ///     assert!(*entry.0 == 2 || *entry.0 == 3);
+    ///     num_scanned += 1;
     /// }
+    /// assert_eq!(num_scanned, 2);
     /// ```
-    pub fn from(&self, key: &K) -> Option<Scanner<K, V>> {
+    pub fn from(&self, key: &K) -> Scanner<K, V> {
         Scanner::from(self, key)
     }
 }
@@ -396,6 +398,7 @@ where
 {
     tree: &'t TreeIndex<K, V>,
     leaf_scanner: Option<LeafScanner<'t, K, V>>,
+    from_iterator: bool,
     guard: Guard,
 }
 
@@ -404,20 +407,24 @@ impl<'t, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Scanner<'t, K, V>
         Scanner::<'t, K, V> {
             tree,
             leaf_scanner: None,
+            from_iterator: false,
             guard: crossbeam_epoch::pin(),
         }
     }
 
-    fn from(tree: &'t TreeIndex<K, V>, min_allowed_key: &K) -> Option<Scanner<'t, K, V>> {
+    fn from(tree: &'t TreeIndex<K, V>, min_allowed_key: &K) -> Scanner<'t, K, V> {
         let mut scanner = Scanner::<'t, K, V> {
             tree,
             leaf_scanner: None,
+            from_iterator: false,
             guard: crossbeam_epoch::pin(),
         };
         loop {
             let root_node = tree.root.load(Acquire, &scanner.guard);
             if root_node.is_null() {
-                return None;
+                // Empty.
+                scanner.from_iterator = true;
+                return scanner;
             }
             if let Ok(leaf_scanner) =
                 unsafe { &*root_node.as_raw() }.max_less(min_allowed_key, &scanner.guard)
@@ -432,18 +439,15 @@ impl<'t, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Scanner<'t, K, V>
 
         while let Some((key_ref, _)) = scanner.next() {
             if key_ref.cmp(min_allowed_key) != std::cmp::Ordering::Less {
-                return Some(scanner);
+                scanner.from_iterator = true;
+                return scanner;
             }
         }
-        None
-    }
 
-    /// Returns a reference to the entry that the scanner is currently pointing to.
-    pub fn get(&self) -> Option<(&'t K, &'t V)> {
-        if let Some(leaf_scanner) = self.leaf_scanner.as_ref() {
-            return leaf_scanner.get();
-        }
-        None
+        // No keys satisfy the condition.
+        scanner.leaf_scanner.take();
+        scanner.from_iterator = true;
+        scanner
     }
 }
 
@@ -454,6 +458,16 @@ where
 {
     type Item = (&'t K, &'t V);
     fn next(&mut self) -> Option<Self::Item> {
+        if self.from_iterator {
+            // It does not proceed to the next entry as it is supposed to point to a valid entry.
+            self.from_iterator = false;
+            if let Some(leaf_scanner) = self.leaf_scanner.as_ref() {
+                return leaf_scanner.get();
+            }
+            return None;
+        }
+
+        // Starts scanning.
         if self.leaf_scanner.is_none() {
             loop {
                 let root_node = self.tree.root.load(Acquire, &self.guard);
@@ -469,6 +483,8 @@ where
                 }
             }
         }
+
+        // Proceeds to the next entry.
         if let Some(mut scanner) = self.leaf_scanner.take() {
             let min_allowed_key = scanner.get().map(|(key, _)| key);
             if let Some(result) = scanner.next() {

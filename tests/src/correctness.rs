@@ -487,26 +487,20 @@ mod treeindex_test {
                             .read(&key, |key, value| assert_eq!(key, value))
                             .is_some());
                     }
-                    let from_scanner = tree_copied.from(&first_key);
-                    if let Some(mut from_scanner) = from_scanner {
-                        assert_eq!(from_scanner.get().unwrap(), (&first_key, &first_key));
-                        assert_eq!(
-                            from_scanner.next().unwrap(),
-                            (&(first_key + 1), &(first_key + 1))
-                        );
-                    }
+                    let mut from_scanner = tree_copied.from(&first_key);
+                    let entry = from_scanner.next().unwrap();
+                    assert_eq!(entry, (&first_key, &first_key));
+                    let entry = from_scanner.next().unwrap();
+                    assert_eq!(entry, (&(first_key + 1), &(first_key + 1)));
+
                     let key_at_halfway = first_key + range / 2;
                     for key in (first_key + 1)..(first_key + range) {
                         if key == key_at_halfway {
-                            let mut from_scanner = tree_copied.from(&(first_key + 1)).unwrap();
-                            assert_eq!(
-                                from_scanner.get().unwrap(),
-                                (&key_at_halfway, &key_at_halfway)
-                            );
-                            assert_eq!(
-                                from_scanner.next().unwrap(),
-                                (&(key_at_halfway + 1), &(key_at_halfway + 1))
-                            );
+                            let mut from_scanner = tree_copied.from(&(first_key + 1));
+                            let entry = from_scanner.next().unwrap();
+                            assert_eq!(entry, (&key_at_halfway, &key_at_halfway));
+                            let entry = from_scanner.next().unwrap();
+                            assert_eq!(entry, (&(key_at_halfway + 1), &(key_at_halfway + 1)));
                         }
                         assert!(tree_copied.remove(&key));
                         assert!(!tree_copied.remove(&key));
