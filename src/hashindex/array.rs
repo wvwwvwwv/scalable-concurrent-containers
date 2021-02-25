@@ -7,10 +7,10 @@ use std::sync::atomic::Ordering::Relaxed;
 pub struct Array<K: Eq, V> {
     cell_array: Vec<Atomic<Cell<K, V>>>,
     cell_array_capacity: usize,
-    lb_capacity: u8,
-    rehashing: AtomicUsize,
-    rehashed: AtomicUsize,
-    old_array: Atomic<Array<K, V>>,
+    _lb_capacity: u8,
+    _rehashing: AtomicUsize,
+    _rehashed: AtomicUsize,
+    _old_array: Atomic<Array<K, V>>,
 }
 
 impl<K: Eq, V> Array<K, V> {
@@ -22,15 +22,15 @@ impl<K: Eq, V> Array<K, V> {
         Array {
             cell_array,
             cell_array_capacity,
-            lb_capacity,
-            rehashing: AtomicUsize::new(0),
-            rehashed: AtomicUsize::new(0),
-            old_array: current_array,
+            _lb_capacity: lb_capacity,
+            _rehashing: AtomicUsize::new(0),
+            _rehashed: AtomicUsize::new(0),
+            _old_array: current_array,
         }
     }
 
-    pub fn num_sample_size(&self) -> usize {
-        (self.lb_capacity as usize).next_power_of_two()
+    pub fn _num_sample_size(&self) -> usize {
+        (self._lb_capacity as usize).next_power_of_two()
     }
     pub fn num_cells(&self) -> usize {
         self.cell_array_capacity
@@ -40,12 +40,12 @@ impl<K: Eq, V> Array<K, V> {
         self.cell_array_capacity * ARRAY_SIZE
     }
 
-    pub fn old_array<'a>(&self, guard: &'a Guard) -> Shared<'a, Array<K, V>> {
-        self.old_array.load(Relaxed, &guard)
+    pub fn old_array<'g>(&self, guard: &'g Guard) -> Shared<'g, Array<K, V>> {
+        self._old_array.load(Relaxed, &guard)
     }
 
-    pub fn calculate_cell_index(&self, hash: u64) -> usize {
-        (hash >> (64 - self.lb_capacity)).try_into().unwrap()
+    pub fn _calculate_cell_index(&self, hash: u64) -> usize {
+        (hash >> (64 - self._lb_capacity)).try_into().unwrap()
     }
 
     pub fn calculate_lb_metadata_array_size(capacity: usize) -> u8 {
@@ -63,8 +63,8 @@ impl<K: Eq, V> Array<K, V> {
         lb_capacity.try_into().unwrap()
     }
 
-    pub fn drop_old_array(&self, immediate_drop: bool, guard: &Guard) {
-        let old_array = self.old_array.swap(Shared::null(), Relaxed, guard);
+    pub fn _drop_old_array(&self, immediate_drop: bool, guard: &Guard) {
+        let old_array = self._old_array.swap(Shared::null(), Relaxed, guard);
         if !old_array.is_null() {
             unsafe {
                 if immediate_drop {

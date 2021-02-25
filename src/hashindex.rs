@@ -2,10 +2,11 @@ pub mod array;
 pub mod cell;
 
 use array::Array;
-use cell::MAX_RESIZING_FACTOR;
+use cell::{ARRAY_SIZE, MAX_RESIZING_FACTOR};
 use crossbeam_epoch::{Atomic, Owned, Shared};
 use std::collections::hash_map::RandomState;
-use std::hash::{BuildHasher, Hash};
+use std::convert::TryInto;
+use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
@@ -95,6 +96,10 @@ where
     /// use scc::HashIndex;
     /// ```
     pub fn insert(&self, key: K, value: V) -> Result<(), (K, V)> {
+        let (hash, partial_hash) = self.hash(&key);
+        if hash == 0 && partial_hash == 0 {
+            self.resize();
+        }
         Err((key, value))
     }
 
@@ -196,6 +201,22 @@ where
         Visitor { _hash_index: self }
     }
 
+    /// Returns the hash value of the given key.
+    fn hash(&self, key: &K) -> (u64, u8) {
+        // Generates a hash value.
+        let mut h = self.build_hasher.build_hasher();
+        key.hash(&mut h);
+        let mut hash = h.finish();
+
+        // Bitmix: https://mostlymangling.blogspot.com/2019/01/better-stronger-mixer-and-test-procedure.html
+        hash = hash ^ (hash.rotate_right(25) ^ hash.rotate_right(50));
+        hash = hash.overflowing_mul(0xA24BAED4963EE407u64).0;
+        hash = hash ^ (hash.rotate_right(24) ^ hash.rotate_right(49));
+        hash = hash.overflowing_mul(0x9FB21C651E98DF25u64).0;
+        hash = hash ^ (hash >> 28);
+        (hash, (hash & ((1 << 8) - 1)).try_into().unwrap())
+    }
+
     /// Returns a reference to the given array.
     fn array_ref<'g>(&self, array_shared: Shared<'g, Array<K, V>>) -> &'g Array<K, V> {
         unsafe { array_shared.deref() }
@@ -225,9 +246,9 @@ where
             //  - The load factor reaches 7/8, then the array grows up to 64x.
             //  - The load factor reaches 1/16, then the array shrinks to fit.
             let capacity = current_array_ref.capacity();
-            // let num_cells = current_array_ref.num_cells();
-            // let num_cells_to_sample = (num_cells / 8).max(DEFAULT_CAPACITY / ARRAY_SIZE).min(4096);
-            let estimated_num_entries = 0; // [TODO] Size estimation.
+            let num_cells = current_array_ref.num_cells();
+            let num_cells_to_sample = (num_cells / 8).max(DEFAULT_CAPACITY / ARRAY_SIZE).min(4096);
+            let estimated_num_entries = num_cells / num_cells_to_sample; // [TODO] Size estimation.
             let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
                 let max_capacity = 1usize << (std::mem::size_of::<usize>() * 8 - 1);
                 if capacity == max_capacity {

@@ -244,7 +244,7 @@ where
     /// let result = hashmap.get(&1);
     /// assert_eq!(result.unwrap().get(), (&1, &mut 0));
     /// ```
-    pub fn get<'a>(&'a self, key: &K) -> Option<Accessor<'a, K, V, H>> {
+    pub fn get<'h>(&'h self, key: &K) -> Option<Accessor<'h, K, V, H>> {
         let (hash, partial_hash) = self.hash(key);
         let accessor = self.acquire(key, hash, partial_hash);
         if accessor.entry_ptr.is_null() {
@@ -614,7 +614,7 @@ where
         }
     }
 
-    /// Returns a hash value of the given key.
+    /// Returns the hash value of the given key.
     fn hash(&self, key: &K) -> (u64, u8) {
         // Generates a hash value.
         let mut h = self.build_hasher.build_hasher();
@@ -859,12 +859,12 @@ where
     }
 
     /// Picks a key-value pair entry using the given CellLocker.
-    fn pick<'a>(
-        &'a self,
-        cell_locker: CellLocker<'a, K, V>,
+    fn pick<'h>(
+        &'h self,
+        cell_locker: CellLocker<'h, K, V>,
         array_ptr: *const Array<K, V>,
         cell_index: usize,
-    ) -> Option<Cursor<'a, K, V, H>> {
+    ) -> Option<Cursor<'h, K, V, H>> {
         if let Some((sub_index, entry_array_link_ptr, entry_ptr)) = cell_locker.first() {
             return Some(Cursor {
                 accessor: Some(Accessor {
