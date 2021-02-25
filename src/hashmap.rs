@@ -165,7 +165,7 @@ where
                 resize_triggered = true;
                 let guard = crossbeam_epoch::pin();
                 let current_array = self.array.load(Acquire, &guard);
-                let current_array_ref = self.array(&current_array);
+                let current_array_ref = Self::array(current_array);
                 if current_array_ref.old_array(&guard).is_null() {
                     // Triggers resize if the estimated load factor is greater than 7/8.
                     let sample_size = current_array_ref.num_sample_size();
@@ -307,7 +307,7 @@ where
 
         // An acquire fence is required to correctly load the contents of the array.
         let current_array = self.array.load(Acquire, &guard);
-        let current_array_ref = self.array(&current_array);
+        let current_array_ref = Self::array(current_array);
         let old_array = current_array_ref.old_array(&guard);
         for array in [&old_array, &current_array].iter() {
             if array.is_null() {
@@ -320,7 +320,7 @@ where
                     continue;
                 }
             }
-            let array_ref = self.array(array);
+            let array_ref = Self::array(**array);
             let cell_index = array_ref.calculate_cell_index(hash);
             let reader = CellReader::read(array_ref.cell(cell_index), &key, partial_hash);
             if let Some((key, value)) = reader.get() {
@@ -397,7 +397,7 @@ where
 
         let guard = crossbeam_epoch::pin();
         let current_array = self.array.load(Acquire, &guard);
-        let current_array_ref = self.array(&current_array);
+        let current_array_ref = Self::array(current_array);
         if retained_entries <= current_array_ref.capacity() / 8 {
             self.resize();
         }
@@ -461,7 +461,7 @@ where
     pub fn len<F: FnOnce(usize) -> usize>(&self, f: F) -> usize {
         let guard = crossbeam_epoch::pin();
         let current_array = self.array.load(Acquire, &guard);
-        let current_array_ref = self.array(&current_array);
+        let current_array_ref = Self::array(current_array);
         let capacity = current_array_ref.capacity();
         let num_samples = std::cmp::min(f(capacity), capacity).next_power_of_two();
         let num_cells_to_sample = (num_samples / ARRAY_SIZE).max(1);
@@ -490,7 +490,7 @@ where
     pub fn capacity(&self) -> usize {
         let guard = crossbeam_epoch::pin();
         let current_array = self.array.load(Acquire, &guard);
-        let current_array_ref = self.array(&current_array);
+        let current_array_ref = Self::array(current_array);
         if !current_array_ref.old_array(&guard).is_null() {
             current_array_ref.partial_rehash(&guard, |key| self.hash(key));
         }
@@ -541,12 +541,12 @@ where
         };
         let guard = crossbeam_epoch::pin();
         let current_array = self.array.load(Acquire, &guard);
-        let old_array = self.array(&current_array).old_array(&guard);
+        let old_array = Self::array(current_array).old_array(&guard);
         for array in [old_array, current_array].iter() {
             if array.is_null() {
                 continue;
             }
-            let array_ref = self.array(array);
+            let array_ref = Self::array(*array);
             let num_cells = array_ref.num_cells();
             let mut consecutive_empty_cells = 0;
             if array.as_raw() == current_array.as_raw() {
@@ -649,7 +649,7 @@ where
         loop {
             // An acquire fence is required to correctly load the contents of the array.
             let current_array = self.array.load(Acquire, &guard);
-            let current_array_ref = self.array(&current_array);
+            let current_array_ref = Self::array(current_array);
             let old_array = current_array_ref.old_array(&guard);
             if !old_array.is_null() {
                 if current_array_ref.partial_rehash(&guard, |key| self.hash(key)) {
@@ -670,7 +670,7 @@ where
                     // Kills the cell.
                     current_array_ref.kill_cell(
                         &mut cell_locker,
-                        self.array(&old_array),
+                        Self::array(old_array),
                         cell_index,
                         &|key| self.hash(key),
                     );
@@ -705,7 +705,7 @@ where
             drop(accessor);
             let guard = crossbeam_epoch::pin();
             let current_array = self.array.load(Acquire, &guard);
-            let current_array_ref = self.array(&current_array);
+            let current_array_ref = Self::array(current_array);
             if current_array_ref.old_array(&guard).is_null()
                 && current_array_ref.capacity() > self.minimum_capacity
             {
@@ -770,7 +770,7 @@ where
         // An acquire fence is required to correctly load the contents of the array.
         let mut current_array = self.array.load(Acquire, &guard);
         loop {
-            let old_array = self.array(&current_array).old_array(&guard);
+            let old_array = Self::array(current_array).old_array(&guard);
             for array_ptr in [old_array.as_raw(), current_array.as_raw()].iter() {
                 if array_ptr.is_null() {
                     continue;
@@ -888,7 +888,7 @@ where
         // Initial rough size estimation using a small number of cells.
         let guard = crossbeam_epoch::pin();
         let current_array = self.array.load(Acquire, &guard);
-        let current_array_ref = self.array(&current_array);
+        let current_array_ref = Self::array(current_array);
         let old_array = current_array_ref.old_array(&guard);
         if !old_array.is_null() {
             let old_array_removed = current_array_ref.partial_rehash(&guard, |key| self.hash(key));
@@ -967,7 +967,7 @@ where
     }
 
     /// Returns a reference to the Array instance.
-    fn array<'a>(&self, array: &'a Shared<Array<K, V>>) -> &'a Array<K, V> {
+    fn array<'g>(array: Shared<'g, Array<K, V>>) -> &'g Array<K, V> {
         unsafe { array.deref() }
     }
 
@@ -993,7 +993,7 @@ where
         self.clear();
         let guard = unsafe { crossbeam_epoch::unprotected() };
         let current_array = self.array.load(Acquire, guard);
-        let current_array_ref = self.array(&current_array);
+        let current_array_ref = Self::array(current_array);
         current_array_ref.drop_old_array(true, guard);
         let array = self.array.swap(Shared::null(), Relaxed, guard);
         if !array.is_null() {

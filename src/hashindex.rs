@@ -1,21 +1,28 @@
+pub mod array;
+pub mod cell;
+
+use array::Array;
+use cell::MAX_RESIZING_FACTOR;
+use crossbeam_epoch::{Atomic, Owned, Shared};
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash};
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 const DEFAULT_CAPACITY: usize = 64;
 
 /// A scalable concurrent hash index implementation.
 ///
-/// scc::HashIndex is a concurrent hash index data structure that is aimed at read-most workloads.
+/// scc::HashIndex is a concurrent hash index data structure that is optimized for read operations.
 pub struct HashIndex<K, V, H>
 where
     K: Clone + Eq + Hash + Sync,
     V: Clone + Sync,
     H: BuildHasher,
 {
-    _array: Option<(K, V)>,
-    _minimum_capacity: usize,
-    _resize_mutex: AtomicBool,
+    array: Atomic<Array<K, V>>,
+    minimum_capacity: usize,
+    resize_mutex: AtomicBool,
     build_hasher: H,
 }
 
@@ -37,9 +44,9 @@ where
     /// ```
     fn default() -> Self {
         HashIndex {
-            _array: None,
-            _minimum_capacity: DEFAULT_CAPACITY,
-            _resize_mutex: AtomicBool::new(false),
+            array: Atomic::new(Array::<K, V>::new(DEFAULT_CAPACITY, Atomic::null())),
+            minimum_capacity: DEFAULT_CAPACITY,
+            resize_mutex: AtomicBool::new(false),
             build_hasher: RandomState::new(),
         }
     }
@@ -68,9 +75,9 @@ where
     pub fn new(capacity: usize, build_hasher: H) -> HashIndex<K, V, H> {
         let initial_capacity = capacity.max(DEFAULT_CAPACITY);
         HashIndex {
-            _array: None,
-            _minimum_capacity: initial_capacity,
-            _resize_mutex: AtomicBool::new(false),
+            array: Atomic::new(Array::<K, V>::new(initial_capacity, Atomic::null())),
+            minimum_capacity: initial_capacity,
+            resize_mutex: AtomicBool::new(false),
             build_hasher,
         }
     }
@@ -187,6 +194,82 @@ where
     /// ```
     pub fn iter(&self) -> Visitor<K, V, H> {
         Visitor { _hash_index: self }
+    }
+
+    /// Returns a reference to the given array.
+    fn array_ref<'g>(&self, array_shared: Shared<'g, Array<K, V>>) -> &'g Array<K, V> {
+        unsafe { array_shared.deref() }
+    }
+
+    /// Resizes the array.
+    fn resize(&self) {
+        // Initial rough size estimation using a small number of cells.
+        let guard = crossbeam_epoch::pin();
+        let current_array = self.array.load(Acquire, &guard);
+        let current_array_ref = self.array_ref(current_array);
+        let old_array = current_array_ref.old_array(&guard);
+        if !old_array.is_null() {
+            // [TODO] Rehash
+        }
+
+        if !self.resize_mutex.swap(true, Acquire) {
+            let memory_ordering = Relaxed;
+            let mut mutex_guard = scopeguard::guard(memory_ordering, |memory_ordering| {
+                self.resize_mutex.store(false, memory_ordering);
+            });
+            if current_array != self.array.load(Acquire, &guard) {
+                return;
+            }
+
+            // The resizing policies are as follows.
+            //  - The load factor reaches 7/8, then the array grows up to 64x.
+            //  - The load factor reaches 1/16, then the array shrinks to fit.
+            let capacity = current_array_ref.capacity();
+            // let num_cells = current_array_ref.num_cells();
+            // let num_cells_to_sample = (num_cells / 8).max(DEFAULT_CAPACITY / ARRAY_SIZE).min(4096);
+            let estimated_num_entries = 0; // [TODO] Size estimation.
+            let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
+                let max_capacity = 1usize << (std::mem::size_of::<usize>() * 8 - 1);
+                if capacity == max_capacity {
+                    // Do not resize if the capacity cannot be increased.
+                    capacity
+                } else if estimated_num_entries <= (capacity / 8) * 9 {
+                    // Doubles if the estimated size marginally exceeds the capacity.
+                    capacity * 2
+                } else {
+                    // Grows up to 64x
+                    let new_capacity_candidate = estimated_num_entries
+                        .next_power_of_two()
+                        .min(max_capacity / 2)
+                        * 2;
+                    if new_capacity_candidate / capacity > (1 << MAX_RESIZING_FACTOR) {
+                        capacity * (1 << MAX_RESIZING_FACTOR)
+                    } else {
+                        new_capacity_candidate
+                    }
+                }
+            } else if estimated_num_entries <= capacity / 8 {
+                // Shrinks to fit.
+                estimated_num_entries
+                    .next_power_of_two()
+                    .max(self.minimum_capacity)
+            } else {
+                capacity
+            };
+
+            // Array::new may not be able to allocate the requested number of cells.
+            if new_capacity != capacity {
+                self.array.store(
+                    Owned::new(Array::<K, V>::new(
+                        new_capacity,
+                        Atomic::from(current_array),
+                    )),
+                    Release,
+                );
+                // The release fence assures that future calls to the function see the latest state.
+                *mutex_guard = Release;
+            }
+        }
     }
 }
 

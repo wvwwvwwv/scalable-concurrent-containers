@@ -62,7 +62,7 @@ impl<K: Eq, V> Array<K, V> {
         self.cell_array_capacity * ARRAY_SIZE
     }
 
-    pub fn old_array<'a>(&self, guard: &'a Guard) -> Shared<'a, Array<K, V>> {
+    pub fn old_array<'g>(&self, guard: &'g Guard) -> Shared<'g, Array<K, V>> {
         self.old_array.load(Relaxed, &guard)
     }
 
