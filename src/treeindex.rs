@@ -8,7 +8,7 @@ use error::{InsertError, RemoveError, SearchError};
 use leaf::{Leaf, LeafScanner};
 use node::Node;
 use std::fmt;
-use std::sync::atomic::Ordering::{Acquire, Relaxed};
+use std::sync::atomic::Ordering::{AcqRel, Acquire};
 
 /// A scalable concurrent tree map implementation.
 ///
@@ -101,7 +101,7 @@ where
                 let new_root = Owned::new(Node::new(0, true));
                 match self
                     .root
-                    .compare_and_set(root_node, new_root, Relaxed, &guard)
+                    .compare_exchange(root_node, new_root, AcqRel, Acquire, &guard)
                 {
                     Ok(new_root) => root_node = new_root,
                     Err(_) => continue,

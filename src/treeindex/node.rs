@@ -174,7 +174,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             if unsafe { new_root.deref().obsolete(true, guard) } {
                 // The soon-to-be root turns out to be obsolete.
                 if root_ptr
-                    .compare_and_set(current_root, Shared::null(), Release, &guard)
+                    .compare_exchange(current_root, Shared::null(), Release, Relaxed, &guard)
                     .is_ok()
                 {
                     unsafe {
@@ -190,7 +190,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     let new_root_lock = InternalNodeLocker::try_lock(new_root_internal, guard);
                     if new_root_lock.is_some()
                         && root_ptr
-                            .compare_and_set(current_root, new_root, Release, guard)
+                            .compare_exchange(current_root, new_root, Release, Relaxed, guard)
                             .is_ok()
                     {
                         internal_node.children.1.store(Shared::null(), Relaxed);
@@ -208,7 +208,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     let new_root_lock = LeafNodeLocker::try_lock(new_root_leaf, guard);
                     if new_root_lock.is_some()
                         && root_ptr
-                            .compare_and_set(current_root, new_root, Release, guard)
+                            .compare_exchange(current_root, new_root, Release, Relaxed, guard)
                             .is_ok()
                     {
                         internal_node.children.1.store(Shared::null(), Relaxed);
@@ -246,7 +246,13 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     // The root node is locked by another thread.
                     continue;
                 }
-                match root_ptr.compare_and_set(current_root_node, Shared::null(), Release, &guard) {
+                match root_ptr.compare_exchange(
+                    current_root_node,
+                    Shared::null(),
+                    Release,
+                    Relaxed,
+                    &guard,
+                ) {
                     Ok(_) => {
                         unsafe { guard.defer_destroy(current_root_node) };
                     }
@@ -538,7 +544,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         guard: &Guard,
     ) -> bool {
         let mut new_split_nodes;
-        match self.new_children.compare_and_set(
+        match self.new_children.compare_exchange(
             Shared::null(),
             Owned::new(NewNodes {
                 origin_node_key: full_node_key,
@@ -548,6 +554,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 high_key_node: Atomic::null(),
             }),
             Acquire,
+            Relaxed,
             guard,
         ) {
             Ok(result) => new_split_nodes = result,
@@ -1006,10 +1013,11 @@ where
         guard: &Guard,
     ) -> Option<InternalNodeLocker<'a, K, V>> {
         let mut new_nodes_dummy = NewNodes::new();
-        if let Err(error) = internal_node.new_children.compare_and_set(
+        if let Err(error) = internal_node.new_children.compare_exchange(
             Shared::null(),
             unsafe { Owned::from_raw(&mut new_nodes_dummy as *mut NewNodes<K, V>) },
             Acquire,
+            Relaxed,
             guard,
         ) {
             error.new.into_shared(guard);

@@ -807,7 +807,7 @@ where
             }
             if let Err(err) =
                 leaf.backward_link
-                    .compare_and_set(current, locked_state, Acquire, guard)
+                    .compare_exchange(current, locked_state, Acquire, Relaxed, guard)
             {
                 current = err.current;
                 continue;
@@ -857,10 +857,13 @@ where
                     // Pointer changed with the known next leaf is locked.
                     break;
                 }
-                if let Err(err) =
-                    leaf.backward_link
-                        .compare_and_set(current_state, locked_state, Acquire, guard)
-                {
+                if let Err(err) = leaf.backward_link.compare_exchange(
+                    current_state,
+                    locked_state,
+                    Acquire,
+                    Relaxed,
+                    guard,
+                ) {
                     current_state = err.current;
                     continue;
                 }

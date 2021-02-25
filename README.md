@@ -69,6 +69,8 @@ scc::TreeIndex is a B+ tree optimized for read operations. Locks are only acquir
 
 ## Changelog
 
+#### 0.4.5
+Update crossbeam-epoch
 #### 0.4.4
 Fix the TreeIndex::from interface
 #### 0.4.3
@@ -77,8 +79,6 @@ Stabilize TreeIndex::remove: #25 fixed
 Fix comments and documents
 #### 0.4.1
 Optpimize memory usage of HashMap
-#### 0.4.0
-Stabilize TreeIndex
 
 ## Milestones <a name="milestones"></a>
 

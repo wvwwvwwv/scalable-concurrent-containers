@@ -409,7 +409,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         guard: &Guard,
     ) -> bool {
         let mut new_leaves_ptr;
-        match self.new_leaves.compare_and_set(
+        match self.new_leaves.compare_exchange(
             Shared::null(),
             Owned::new(NewLeaves {
                 origin_leaf_key: full_leaf_key,
@@ -418,6 +418,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 high_key_leaf: Atomic::null(),
             }),
             Acquire,
+            Relaxed,
             guard,
         ) {
             Ok(result) => new_leaves_ptr = result,
@@ -519,7 +520,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         //  - Insert: load(leaf)|store(mutex)|acquire|release|store(leaf_ptr)|release|store(mutex)
         if self
             .new_leaves
-            .compare_and_set(Shared::null(), Shared::null(), AcqRel, guard)
+            .compare_exchange(Shared::null(), Shared::null(), AcqRel, Relaxed, guard)
             .is_err()
         {
             return Err(RemoveError::Retry(removed));
@@ -713,10 +714,11 @@ where
         guard: &Guard,
     ) -> Option<LeafNodeLocker<'a, K, V>> {
         let mut new_nodes_dummy = NewLeaves::new();
-        if let Err(error) = leaf_node.new_leaves.compare_and_set(
+        if let Err(error) = leaf_node.new_leaves.compare_exchange(
             Shared::null(),
             unsafe { Owned::from_raw(&mut new_nodes_dummy as *mut NewLeaves<K, V>) },
             Acquire,
+            Relaxed,
             guard,
         ) {
             error.new.into_shared(guard);
