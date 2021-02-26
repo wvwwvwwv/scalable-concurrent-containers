@@ -4,8 +4,8 @@ use std::convert::TryInto;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 
-pub struct Array<K: Eq, V> {
-    cell_array: Vec<Atomic<Cell<K, V>>>,
+pub struct Array<K: Clone + Eq, V: Clone> {
+    cell_array: Vec<Cell<K, V>>,
     cell_array_capacity: usize,
     _lb_capacity: u8,
     _rehashing: AtomicUsize,
@@ -13,12 +13,12 @@ pub struct Array<K: Eq, V> {
     _old_array: Atomic<Array<K, V>>,
 }
 
-impl<K: Eq, V> Array<K, V> {
+impl<K: Clone + Eq, V: Clone> Array<K, V> {
     pub fn new(capacity: usize, current_array: Atomic<Array<K, V>>) -> Array<K, V> {
         let lb_capacity = Self::calculate_lb_metadata_array_size(capacity);
         let cell_array_capacity = 1usize << lb_capacity;
-        let mut cell_array: Vec<Atomic<Cell<K, V>>> = Vec::with_capacity(cell_array_capacity);
-        cell_array.resize(cell_array_capacity, Atomic::null());
+        let mut cell_array: Vec<Cell<K, V>> = Vec::with_capacity(cell_array_capacity);
+        cell_array.resize_with(cell_array_capacity, Default::default);
         Array {
             cell_array,
             cell_array_capacity,
@@ -73,18 +73,6 @@ impl<K: Eq, V> Array<K, V> {
                 } else {
                     guard.defer_destroy(old_array);
                 }
-            }
-        }
-    }
-}
-
-impl<K: Eq, V> Drop for Array<K, V> {
-    fn drop(&mut self) {
-        let guard = unsafe { crossbeam_epoch::unprotected() };
-        for cell in self.cell_array.iter() {
-            let cell_shared = cell.load(Relaxed, guard);
-            if !cell_shared.is_null() {
-                drop(unsafe { cell_shared.into_owned() });
             }
         }
     }
