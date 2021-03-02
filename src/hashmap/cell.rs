@@ -1,4 +1,5 @@
 use super::link::{EntryArrayLink, LinkType};
+use crossbeam_epoch::Guard;
 use std::convert::TryInto;
 use std::mem::MaybeUninit;
 use std::ptr;
@@ -168,14 +169,14 @@ impl<K: Eq, V> Drop for Cell<K, V> {
 }
 
 /// CellLocker.
-pub struct CellLocker<'a, K: Eq, V> {
-    cell: &'a Cell<K, V>,
+pub struct CellLocker<'c, K: Eq, V> {
+    cell: &'c Cell<K, V>,
     metadata: u32,
 }
 
-impl<'a, K: Eq, V> CellLocker<'a, K, V> {
+impl<'c, K: Eq, V> CellLocker<'c, K, V> {
     /// Creates a new CellLocker instance with the cell exclusively locked.
-    pub fn lock(cell: &'a Cell<K, V>) -> CellLocker<'a, K, V> {
+    pub fn lock(cell: &'c Cell<K, V>) -> CellLocker<'c, K, V> {
         loop {
             if let Some(result) = Self::try_lock(cell) {
                 return result;
@@ -187,7 +188,7 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
     }
 
     /// Creates a new CellLocker instance if the cell is exclusively locked.
-    fn try_lock(cell: &'a Cell<K, V>) -> Option<CellLocker<'a, K, V>> {
+    fn try_lock(cell: &'c Cell<K, V>) -> Option<CellLocker<'c, K, V>> {
         let mut current = cell.metadata.load(Relaxed);
         loop {
             match cell.metadata.compare_exchange(
@@ -435,19 +436,29 @@ impl<'a, K: Eq, V> CellLocker<'a, K, V> {
     }
 }
 
-impl<'a, K: Eq, V> Drop for CellLocker<'a, K, V> {
+impl<'c, K: Eq, V> Drop for CellLocker<'c, K, V> {
     fn drop(&mut self) {
-        // a Release fence is required to publish the changes
+        // a Release fence is required to publish the changes.
+        let mut guard: Option<Guard> = None;
         let mut current = self.cell.metadata.load(Relaxed);
         loop {
+            let wakeup = if (current & WAITING_FLAG) == WAITING_FLAG {
+                // In order to prevent the Cell from being dropped while waking up other threads, pins the thread.
+                if guard.is_none() {
+                    guard.replace(crossbeam_epoch::pin());
+                }
+                true
+            } else {
+                false
+            };
             match self.cell.metadata.compare_exchange(
                 current,
                 self.metadata & (!(WAITING_FLAG | XLOCK)),
                 Release,
                 Relaxed,
             ) {
-                Ok(result) => {
-                    if result & WAITING_FLAG == WAITING_FLAG {
+                Ok(_) => {
+                    if wakeup {
                         self.cell.wakeup();
                     }
                     break;
@@ -459,15 +470,15 @@ impl<'a, K: Eq, V> Drop for CellLocker<'a, K, V> {
 }
 
 /// CellReader.
-pub struct CellReader<'a, K: Eq, V> {
-    cell: &'a Cell<K, V>,
+pub struct CellReader<'c, K: Eq, V> {
+    cell: &'c Cell<K, V>,
     metadata: u32,
     entry_ptr: *const (K, V),
 }
 
-impl<'a, K: Eq, V> CellReader<'a, K, V> {
+impl<'c, K: Eq, V> CellReader<'c, K, V> {
     /// Creates a new CellReader instance with the cell shared locked.
-    pub fn read(cell: &'a Cell<K, V>, key: &K, partial_hash: u8) -> CellReader<'a, K, V> {
+    pub fn read(cell: &'c Cell<K, V>, key: &K, partial_hash: u8) -> CellReader<'c, K, V> {
         loop {
             // Early exit: not locked and empty.
             let current = cell.metadata.load(Acquire);
@@ -492,11 +503,11 @@ impl<'a, K: Eq, V> CellReader<'a, K, V> {
 
     /// Creates a new CellReader instance if the cell is shared locked.
     fn try_read(
-        cell: &'a Cell<K, V>,
+        cell: &'c Cell<K, V>,
         metadata: u32,
         key: &K,
         partial_hash: u8,
-    ) -> Option<CellReader<'a, K, V>> {
+    ) -> Option<CellReader<'c, K, V>> {
         let mut current = metadata;
         loop {
             if current & LOCK_MASK >= SLOCK_MAX {
@@ -536,23 +547,33 @@ impl<'a, K: Eq, V> CellReader<'a, K, V> {
     }
 }
 
-impl<'a, K: Eq, V> Drop for CellReader<'a, K, V> {
+impl<'c, K: Eq, V> Drop for CellReader<'c, K, V> {
     fn drop(&mut self) {
         if self.metadata == 0 {
             return;
         }
 
         // No modification is allowed with a CellReader held: no memory fences required.
-        let mut current = self.metadata;
+        let mut guard: Option<Guard> = None;
+        let mut current = self.cell.metadata.load(Relaxed);
         loop {
+            let wakeup = if (current & WAITING_FLAG) == WAITING_FLAG {
+                // In order to prevent the Cell from being dropped while waking up other threads, pins the thread.
+                if guard.is_none() {
+                    guard.replace(crossbeam_epoch::pin());
+                }
+                true
+            } else {
+                false
+            };
             match self.cell.metadata.compare_exchange(
                 current,
                 (current & (!WAITING_FLAG)) - SLOCK,
                 Relaxed,
                 Relaxed,
             ) {
-                Ok(result) => {
-                    if result & WAITING_FLAG == WAITING_FLAG {
+                Ok(_) => {
+                    if wakeup {
                         self.cell.wakeup();
                     }
                     break;
