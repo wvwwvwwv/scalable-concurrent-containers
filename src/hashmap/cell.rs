@@ -22,7 +22,7 @@ pub struct Cell<K: Eq, V> {
     metadata: AtomicU32,
     num_entries: u32,
     wait_queue: AtomicPtr<WaitQueueEntry>,
-    /// Zero implies that the corresponding position is vacant.
+    /// Zero implies that the corresponding position in the array is vacant.
     partial_hash_array: [u8; ARRAY_SIZE],
     entry_array: Option<Box<[MaybeUninit<(K, V)>; ARRAY_SIZE]>>,
     link: LinkType<K, V>,
@@ -175,8 +175,10 @@ pub struct CellLocker<'c, K: Eq, V> {
 }
 
 impl<'c, K: Eq, V> CellLocker<'c, K, V> {
-    /// Creates a new CellLocker instance with the cell exclusively locked.
-    pub fn lock(cell: &'c Cell<K, V>) -> CellLocker<'c, K, V> {
+    /// Creates a new CellLocker instance with the Cell exclusively locked.
+    ///
+    /// The thread must be pinned in order to prevent the Cell from being dropped.
+    pub fn lock(cell: &'c Cell<K, V>, _guard: &Guard) -> CellLocker<'c, K, V> {
         loop {
             if let Some(result) = Self::try_lock(cell) {
                 return result;
@@ -187,7 +189,7 @@ impl<'c, K: Eq, V> CellLocker<'c, K, V> {
         }
     }
 
-    /// Creates a new CellLocker instance if the cell is exclusively locked.
+    /// Creates a new CellLocker instance if the Cell is exclusively locked.
     fn try_lock(cell: &'c Cell<K, V>) -> Option<CellLocker<'c, K, V>> {
         let mut current = cell.metadata.load(Relaxed);
         loop {
@@ -444,6 +446,12 @@ impl<'c, K: Eq, V> Drop for CellLocker<'c, K, V> {
         loop {
             let wakeup = if (current & WAITING_FLAG) == WAITING_FLAG {
                 // In order to prevent the Cell from being dropped while waking up other threads, pins the thread.
+                //
+                // The additional guard is necessary for a situation where the Cell is killed right after unlocked.
+                // For instance, the lock-owner thread may result in read-after-free without pinning the thread when waking up.
+                //  - Lock-owner: pin | lock | unpin | unlock |                                       | wakeup
+                //  - Drop:       pin |      | wait  |        | lock | kill | unlock | unlink | unpin | drop
+                // Pinning the thread right before unlocking prolongs the lifetime of the Cell, resolving the problem.
                 if guard.is_none() {
                     guard.replace(crossbeam_epoch::pin());
                 }
@@ -477,10 +485,17 @@ pub struct CellReader<'c, K: Eq, V> {
 }
 
 impl<'c, K: Eq, V> CellReader<'c, K, V> {
-    /// Creates a new CellReader instance with the cell shared locked.
-    pub fn read(cell: &'c Cell<K, V>, key: &K, partial_hash: u8) -> CellReader<'c, K, V> {
+    /// Creates a new CellReader instance with the Cell shared locked.
+    ///
+    /// The thread has to be pinned to keep the Cell from being dropped.
+    pub fn read(
+        cell: &'c Cell<K, V>,
+        key: &K,
+        partial_hash: u8,
+        _guard: &Guard,
+    ) -> CellReader<'c, K, V> {
         loop {
-            // Early exit: not locked and empty.
+            // Early exit: neither locked nor empty.
             let current = cell.metadata.load(Acquire);
             if cell.num_entries == 0 {
                 return CellReader {
@@ -501,7 +516,7 @@ impl<'c, K: Eq, V> CellReader<'c, K, V> {
         }
     }
 
-    /// Creates a new CellReader instance if the cell is shared locked.
+    /// Creates a new CellReader instance if the Cell is shared locked.
     fn try_read(
         cell: &'c Cell<K, V>,
         metadata: u32,
@@ -621,10 +636,11 @@ mod test {
 
     #[test]
     fn cell_locker() {
+        let guard = crossbeam_epoch::pin();
         let num_threads = (ARRAY_SIZE + 1) as usize;
         let barrier = Arc::new(Barrier::new(num_threads));
         let cell: Arc<Cell<usize, usize>> = Arc::new(Default::default());
-        let mut xlocker = CellLocker::lock(&*cell);
+        let mut xlocker = CellLocker::lock(&*cell, &guard);
         xlocker.insert(usize::MAX, 0, usize::MAX);
         drop(xlocker);
         let mut data: [u64; 128] = [0; 128];
@@ -635,9 +651,10 @@ mod test {
             let data_ptr = AtomicPtr::new(&mut data);
             thread_handles.push(thread::spawn(move || {
                 barrier_copied.wait();
+                let guard = crossbeam_epoch::pin();
                 for i in 0..4096 {
                     if i % 2 == 0 {
-                        let mut xlocker = CellLocker::lock(&*cell_copied);
+                        let mut xlocker = CellLocker::lock(&*cell_copied, &guard);
                         let mut sum: u64 = 0;
                         for j in 0..128 {
                             unsafe {
@@ -651,7 +668,7 @@ mod test {
                         }
                         drop(xlocker);
                     } else {
-                        let slocker = CellReader::read(&*cell_copied, &usize::MAX, 0);
+                        let slocker = CellReader::read(&*cell_copied, &usize::MAX, 0, &guard);
                         if let Some((key, value)) = slocker.get() {
                             assert_eq!(*key, usize::MAX);
                             assert_eq!(*value, usize::MAX);
@@ -670,14 +687,14 @@ mod test {
             handle.join().unwrap();
         }
         assert_eq!((*cell).size(), num_threads + 1);
-        let mut xlocker = CellLocker::lock(&*cell);
+        let mut xlocker = CellLocker::lock(&*cell, &guard);
         let result = xlocker.search(&usize::MAX, 0);
         if let Some((sub_index, entry_array_link_ptr, entry_ptr)) = result {
             xlocker.remove(true, sub_index, entry_array_link_ptr, entry_ptr);
         }
         drop(xlocker);
         for tid in 0..(num_threads / 2) {
-            let mut xlocker = CellLocker::lock(&*cell);
+            let mut xlocker = CellLocker::lock(&*cell, &guard);
             let result = xlocker.first();
             assert!(result.is_some());
             let result = xlocker.search(&tid, tid.try_into().unwrap());
@@ -687,7 +704,7 @@ mod test {
                 xlocker.remove(true, sub_index, entry_array_link_ptr, entry_ptr);
             }
         }
-        let mut xlocker = CellLocker::lock(&*cell);
+        let mut xlocker = CellLocker::lock(&*cell, &guard);
         let mut current = xlocker.first();
         while let Some((sub_index, entry_array_link_ptr, entry_ptr)) = current {
             current = xlocker.next(true, true, sub_index, entry_array_link_ptr, entry_ptr);

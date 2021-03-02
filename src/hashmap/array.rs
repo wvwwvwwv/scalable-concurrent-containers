@@ -96,6 +96,7 @@ impl<K: Eq, V> Array<K, V> {
         old_array: &Array<K, V>,
         old_cell_index: usize,
         hasher: &F,
+        guard: &Guard,
     ) {
         if cell_locker.killed() {
             return;
@@ -145,7 +146,8 @@ impl<K: Eq, V> Array<K, V> {
                 .take((new_cell_index - target_cell_index) + 1)
                 .skip(num_target_cells)
             {
-                cell_locker_mut_ref.replace(CellLocker::lock(self.cell(target_cell_index + i)));
+                cell_locker_mut_ref
+                    .replace(CellLocker::lock(self.cell(target_cell_index + i), guard));
             }
             num_target_cells = num_target_cells.max(new_cell_index - target_cell_index + 1);
 
@@ -160,7 +162,7 @@ impl<K: Eq, V> Array<K, V> {
         cell_locker.kill();
     }
 
-    pub fn partial_rehash<F: Fn(&K) -> (u64, u8)>(&self, guard: &Guard, hasher: F) -> bool {
+    pub fn partial_rehash<F: Fn(&K) -> (u64, u8)>(&self, hasher: F, guard: &Guard) -> bool {
         let old_array = self.old_array.load(Relaxed, guard);
         if old_array.is_null() {
             return true;
@@ -187,8 +189,8 @@ impl<K: Eq, V> Array<K, V> {
             if old_cell_ref.killed() {
                 continue;
             }
-            let mut old_cell = CellLocker::lock(old_cell_ref);
-            self.kill_cell(&mut old_cell, old_array_ref, old_cell_index, &hasher);
+            let mut old_cell = CellLocker::lock(old_cell_ref, guard);
+            self.kill_cell(&mut old_cell, old_array_ref, old_cell_index, &hasher, guard);
         }
 
         let completed = self.rehashed.fetch_add(ARRAY_SIZE, Release) + ARRAY_SIZE;

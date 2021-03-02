@@ -4,7 +4,7 @@ pub mod link;
 
 use array::Array;
 use cell::{CellLocker, CellReader, ARRAY_SIZE, MAX_RESIZING_FACTOR};
-use crossbeam_epoch::{Atomic, Owned, Shared};
+use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::collections::hash_map::RandomState;
 use std::convert::TryInto;
 use std::fmt;
@@ -315,14 +315,14 @@ where
             }
             if array.as_raw() == old_array.as_raw() {
                 let old_array_removed =
-                    current_array_ref.partial_rehash(&guard, |key| self.hash(key));
+                    current_array_ref.partial_rehash(|key| self.hash(key), &guard);
                 if old_array_removed {
                     continue;
                 }
             }
             let array_ref = Self::array(**array);
             let cell_index = array_ref.calculate_cell_index(hash);
-            let reader = CellReader::read(array_ref.cell(cell_index), &key, partial_hash);
+            let reader = CellReader::read(array_ref.cell(cell_index), &key, partial_hash, &guard);
             if let Some((key, value)) = reader.get() {
                 return Some(f(key, value));
             }
@@ -467,7 +467,7 @@ where
         let num_cells_to_sample = (num_samples / ARRAY_SIZE).max(1);
         if !current_array_ref.old_array(&guard).is_null() {
             for _ in 0..num_cells_to_sample {
-                if current_array_ref.partial_rehash(&guard, |key| self.hash(key)) {
+                if current_array_ref.partial_rehash(|key| self.hash(key), &guard) {
                     break;
                 }
             }
@@ -492,7 +492,7 @@ where
         let current_array = self.array.load(Acquire, &guard);
         let current_array_ref = Self::array(current_array);
         if !current_array_ref.old_array(&guard).is_null() {
-            current_array_ref.partial_rehash(&guard, |key| self.hash(key));
+            current_array_ref.partial_rehash(|key| self.hash(key), &guard);
         }
         current_array_ref.capacity()
     }
@@ -652,11 +652,11 @@ where
             let current_array_ref = Self::array(current_array);
             let old_array = current_array_ref.old_array(&guard);
             if !old_array.is_null() {
-                if current_array_ref.partial_rehash(&guard, |key| self.hash(key)) {
+                if current_array_ref.partial_rehash(|key| self.hash(key), &guard) {
                     continue;
                 }
                 let (mut cell_locker, cell_index, sub_index, entry_array_link_ptr, entry_ptr) =
-                    self.search(&key, hash, partial_hash, old_array.as_raw());
+                    self.search(&key, hash, partial_hash, old_array.as_raw(), &guard);
                 if !entry_ptr.is_null() {
                     return Accessor {
                         hash_map: &self,
@@ -673,11 +673,12 @@ where
                         Self::array(old_array),
                         cell_index,
                         &|key| self.hash(key),
+                        &guard,
                     );
                 }
             }
             let (cell_locker, cell_index, sub_index, entry_array_link_ptr, entry_ptr) =
-                self.search(&key, hash, partial_hash, current_array.as_raw());
+                self.search(&key, hash, partial_hash, current_array.as_raw(), &guard);
             if !cell_locker.killed() {
                 return Accessor {
                     hash_map: &self,
@@ -731,6 +732,7 @@ where
         hash: u64,
         partial_hash: u8,
         array_ptr: *const Array<K, V>,
+        guard: &Guard,
     ) -> (
         CellLocker<'c, K, V>,
         usize,
@@ -740,7 +742,7 @@ where
     ) {
         let array_ref = unsafe { &(*array_ptr) };
         let cell_index = array_ref.calculate_cell_index(hash);
-        let cell_locker = CellLocker::lock(array_ref.cell(cell_index));
+        let cell_locker = CellLocker::lock(array_ref.cell(cell_index), guard);
         if !cell_locker.killed() && !cell_locker.empty() {
             if let Some((sub_index, entry_array_link_ptr, entry_ptr)) =
                 cell_locker.search(key, partial_hash)
@@ -778,7 +780,7 @@ where
                 let array_ref = unsafe { &(**array_ptr) };
                 let num_cells = array_ref.num_cells();
                 for cell_index in 0..num_cells {
-                    let cell_locker = CellLocker::lock(array_ref.cell(cell_index));
+                    let cell_locker = CellLocker::lock(array_ref.cell(cell_index), &guard);
                     if !cell_locker.empty() {
                         // once a valid cell is locked, the array is guaranteed to retain
                         return (Some(cell_locker), *array_ptr, cell_index);
@@ -815,7 +817,7 @@ where
             let old_array_ref = unsafe { &(*old_array.as_raw()) };
             let num_cells = old_array_ref.num_cells();
             for cell_index in (current_index + 1)..num_cells {
-                let cell_locker = CellLocker::lock(old_array_ref.cell(cell_index));
+                let cell_locker = CellLocker::lock(old_array_ref.cell(cell_index), &guard);
                 if !cell_locker.killed() && !cell_locker.empty() {
                     if let Some(cursor) = self.pick(cell_locker, old_array.as_raw(), cell_index) {
                         return Some(cursor);
@@ -832,7 +834,7 @@ where
             current_index + 1
         };
         for cell_index in (start_index)..num_cells {
-            let cell_locker = CellLocker::lock(current_array_ref.cell(cell_index));
+            let cell_locker = CellLocker::lock(current_array_ref.cell(cell_index), &guard);
             if !cell_locker.killed() && !cell_locker.empty() {
                 if let Some(cursor) = self.pick(cell_locker, current_array.as_raw(), cell_index) {
                     return Some(cursor);
@@ -847,7 +849,7 @@ where
             let new_array_ref = unsafe { &(*new_array.as_raw()) };
             let num_cells = new_array_ref.num_cells();
             for cell_index in 0..num_cells {
-                let cell_locker = CellLocker::lock(new_array_ref.cell(cell_index));
+                let cell_locker = CellLocker::lock(new_array_ref.cell(cell_index), &guard);
                 if !cell_locker.killed() && !cell_locker.empty() {
                     if let Some(cursor) = self.pick(cell_locker, new_array.as_raw(), cell_index) {
                         return Some(cursor);
@@ -891,7 +893,7 @@ where
         let current_array_ref = Self::array(current_array);
         let old_array = current_array_ref.old_array(&guard);
         if !old_array.is_null() {
-            let old_array_removed = current_array_ref.partial_rehash(&guard, |key| self.hash(key));
+            let old_array_removed = current_array_ref.partial_rehash(|key| self.hash(key), &guard);
             if !old_array_removed {
                 return;
             }
