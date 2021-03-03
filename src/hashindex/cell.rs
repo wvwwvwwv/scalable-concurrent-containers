@@ -10,8 +10,8 @@ pub const MAX_RESIZING_FACTOR: usize = 6;
 const LOCK_TAG: usize = 1;
 
 /// Flags are embedded inside a partial hash value.
-const OCCUPIED: u8 = 1;
-const REMOVED: u8 = 1u8 << 1;
+const OCCUPIED: u8 = 1u8 << 6;
+const REMOVED: u8 = 1u8 << 7;
 
 pub struct Cell<K: Clone + Eq, V: Clone> {
     wait_queue: Atomic<WaitQueueEntry>,
@@ -23,7 +23,7 @@ impl<K: Clone + Eq, V: Clone> Default for Cell<K, V> {
     fn default() -> Self {
         Cell::<K, V> {
             wait_queue: Atomic::null(),
-            data: Atomic::null(),
+            data: Atomic::new(DataArray::new(Atomic::null())),
         }
     }
 }
@@ -32,6 +32,24 @@ impl<K: Clone + Eq, V: Clone> Cell<K, V> {
     /// Returns true if the Cell has been killed.
     pub fn killed(&self, guard: &Guard) -> bool {
         self.data.load(Relaxed, guard).is_null()
+    }
+
+    /// Searches for an entry associated with the given key.
+    pub fn search<'g>(&self, key: &K, partial_hash: u8, guard: &'g Guard) -> Option<&'g (K, V)> {
+        let mut data_array = self.data.load(Relaxed, guard);
+        while !data_array.is_null() {
+            let data_array_ref = unsafe { data_array.deref() };
+            for (index, hash) in data_array_ref.partial_hash_array.iter().enumerate() {
+                if *hash == ((partial_hash & (!REMOVED)) | OCCUPIED) {
+                    let entry_ptr = data_array_ref.data[index].as_ptr();
+                    if unsafe { &(*entry_ptr) }.0 == *key {
+                        return Some(unsafe { &(*entry_ptr) });
+                    }
+                }
+            }
+            data_array = data_array_ref.link.load(Relaxed, guard);
+        }
+        None
     }
 
     fn wait<T, F: FnOnce() -> Option<T>>(&self, f: F, guard: &Guard) -> Option<T> {
@@ -81,7 +99,10 @@ impl<K: Clone + Eq, V: Clone> Cell<K, V> {
 }
 
 impl<K: Clone + Eq, V: Clone> Drop for Cell<K, V> {
-    fn drop(&mut self) {}
+    fn drop(&mut self) {
+        // The Cell must have been killed.
+        debug_assert!(self.killed(unsafe { crossbeam_epoch::unprotected() }));
+    }
 }
 
 pub struct CellLocker<'c, K: Clone + Eq, V: Clone> {
@@ -89,6 +110,7 @@ pub struct CellLocker<'c, K: Clone + Eq, V: Clone> {
 }
 
 impl<'c, K: Clone + Eq, V: Clone> CellLocker<'c, K, V> {
+    /// Locks the given Cell.
     pub fn lock(cell: &'c Cell<K, V>, guard: &Guard) -> CellLocker<'c, K, V> {
         loop {
             if let Some(result) = Self::try_lock(cell, guard) {
@@ -97,6 +119,69 @@ impl<'c, K: Clone + Eq, V: Clone> CellLocker<'c, K, V> {
             if let Some(result) = cell.wait(|| Self::try_lock(cell, guard), guard) {
                 return result;
             }
+        }
+    }
+
+    /// Inserts a new key-value pair into the Cell.
+    pub fn insert(&self, key: K, value: V, partial_hash: u8, guard: &Guard) -> Result<(), (K, V)> {
+        let mut data_array = self.cell_ref.data.load(Relaxed, guard);
+        if data_array.is_null() {
+            // The Cell has been killed.
+            return Err((key, value));
+        }
+        let preferred_array_index = partial_hash as usize % ARRAY_SIZE;
+        let mut data_array_ref = unsafe { data_array.deref_mut() };
+        if data_array_ref.partial_hash_array[preferred_array_index] == 0 {
+            // The slot at the preferred position is vacant.
+            data_array_ref.partial_hash_array[preferred_array_index] = partial_hash | OCCUPIED;
+            unsafe {
+                data_array_ref.data[preferred_array_index]
+                    .as_mut_ptr()
+                    .write((key, value))
+            };
+            return Ok(());
+        }
+
+        let mut free_data_array_ref: Option<&mut DataArray<K, V>> = None;
+        let mut free_data_array_index = ARRAY_SIZE;
+        while !data_array.is_null() {
+            data_array_ref = unsafe { data_array.deref_mut() };
+            for (index, hash) in data_array_ref.partial_hash_array.iter().enumerate() {
+                if *hash == ((partial_hash & (!REMOVED)) | OCCUPIED) {
+                    let entry_ptr = data_array_ref.data[index].as_ptr();
+                    if unsafe { &(*entry_ptr) }.0 == key {
+                        return Err((key, value));
+                    }
+                } else if *hash == 0 && free_data_array_ref.is_none() {
+                    free_data_array_index = index;
+                }
+            }
+            data_array = data_array_ref.link.load(Relaxed, guard);
+            if free_data_array_ref.is_none() && free_data_array_index != ARRAY_SIZE {
+                free_data_array_ref.replace(data_array_ref);
+            }
+        }
+
+        if let Some(array_ref) = free_data_array_ref.take() {
+            debug_assert_eq!(array_ref.partial_hash_array[free_data_array_index], 0u8);
+            array_ref.partial_hash_array[free_data_array_index] = partial_hash | OCCUPIED;
+            unsafe {
+                array_ref.data[free_data_array_index]
+                    .as_mut_ptr()
+                    .write((key, value))
+            };
+            Ok(())
+        } else {
+            // [TODO] allocate a new DataArray.
+            Err((key, value))
+        }
+    }
+
+    /// Kills the Cell.
+    pub fn kill(&self, guard: &Guard) {
+        let data_array_shared = self.cell_ref.data.swap(Shared::null(), Relaxed, guard);
+        if !data_array_shared.is_null() {
+            unsafe { guard.defer_destroy(data_array_shared) };
         }
     }
 
@@ -170,6 +255,23 @@ impl<K: Clone + Eq, V: Clone> DataArray<K, V> {
     }
 }
 
+impl<K: Clone + Eq, V: Clone> Drop for DataArray<K, V> {
+    fn drop(&mut self) {
+        for (index, hash) in self.partial_hash_array.iter().enumerate() {
+            if (hash & OCCUPIED) != 0 {
+                let entry_mut_ptr = self.data[index].as_mut_ptr();
+                unsafe { std::ptr::drop_in_place(entry_mut_ptr) };
+            }
+        }
+        // It has become unreachable, so has its child.
+        let guard = unsafe { crossbeam_epoch::unprotected() };
+        let link_shared = self.link.load(Relaxed, guard);
+        if !link_shared.is_null() {
+            drop(unsafe { link_shared.into_owned() });
+        }
+    }
+}
+
 struct WaitQueueEntry {
     mutex: Mutex<bool>,
     condvar: Condvar,
@@ -202,6 +304,7 @@ impl WaitQueueEntry {
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::convert::TryInto;
     use std::sync::{Arc, Barrier};
     use std::thread;
 
@@ -212,7 +315,7 @@ mod test {
         let cell: Arc<Cell<usize, usize>> = Arc::new(Default::default());
         let mut data: [u64; 128] = [0; 128];
         let mut thread_handles = Vec::with_capacity(num_threads);
-        for _ in 0..num_threads {
+        for thread_id in 0..num_threads {
             let barrier_copied = barrier.clone();
             let cell_copied = cell.clone();
             let data_ptr = std::sync::atomic::AtomicPtr::new(&mut data);
@@ -220,7 +323,7 @@ mod test {
                 barrier_copied.wait();
                 let guard = crossbeam_epoch::pin();
                 for i in 0..4096 {
-                    let mut xlocker = CellLocker::lock(&*cell_copied, &guard);
+                    let xlocker = CellLocker::lock(&*cell_copied, &guard);
                     let mut sum: u64 = 0;
                     for j in 0..128 {
                         unsafe {
@@ -229,7 +332,28 @@ mod test {
                         };
                     }
                     assert_eq!(sum % 256, 0);
-                    drop(xlocker);
+                    if thread_id < ARRAY_SIZE && i == 0 {
+                        assert!(xlocker
+                            .insert(
+                                thread_id,
+                                0,
+                                (thread_id % ARRAY_SIZE).try_into().unwrap(),
+                                &guard,
+                            )
+                            .is_ok());
+                    } else if thread_id < ARRAY_SIZE {
+                        drop(xlocker);
+                        assert_eq!(
+                            cell_copied
+                                .search(
+                                    &thread_id,
+                                    (thread_id % ARRAY_SIZE).try_into().unwrap(),
+                                    &guard
+                                )
+                                .unwrap(),
+                            &(thread_id, 0usize)
+                        );
+                    }
                 }
             }));
         }
@@ -241,5 +365,9 @@ mod test {
             sum += data[j];
         }
         assert_eq!(sum % 256, 0);
+
+        let guard = unsafe { crossbeam_epoch::unprotected() };
+        let xlocker = CellLocker::lock(&*cell, guard);
+        xlocker.kill(guard);
     }
 }
