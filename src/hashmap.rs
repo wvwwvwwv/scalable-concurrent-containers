@@ -17,9 +17,9 @@ const DEFAULT_CAPACITY: usize = 64;
 /// A scalable concurrent hash map implementation.
 ///
 /// scc::HashMap is a concurrent hash map data structure that is targeted at a highly concurrent workload.
-/// The epoch-based reclamation technique provided by the crossbeam_epoch crate enables the data structure to eliminate coarse locking.
-/// All the key-value pairs is managed by a single metadata cell array, and a metadata cell manages a fixed number of key-value pairs.
-/// The metadata cell resolves hash collisions by allocating a linked list of key-value pair arrays.
+/// The use of epoch-based reclamation technique enables the data structure to implement non-blocking resizing and bucket-level locking.
+/// It has a single array of metadata cells, and each metadata cell manages a fixed size entry array and a linked list for collision resolution.
+/// Each metadata cell owns a customized 8-byte read-write mutex to protect the data structure.
 ///
 /// ## The key features of scc::HashMap
 /// * Non-sharded: the data is managed by a singled metadata cell array.
@@ -27,7 +27,6 @@ const DEFAULT_CAPACITY: usize = 64;
 /// * Non-blocking resizing: resizing does not block other threads.
 /// * Incremental resizing: each access to the data structure relocates a certain number of key-value pairs.
 /// * Optimized resizing: key-value pairs in a single metadata cell are guaranteed to be relocated to adjacent cells.
-/// * Minimized shared data: no atomic counters and coarse locks.
 /// * No busy waiting: the customized mutex never spins.
 ///
 /// ## The key statistics for scc::HashMap
