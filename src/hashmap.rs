@@ -142,52 +142,74 @@ where
     /// }
     ///
     /// let result = hashmap.insert(1, 1);
-    /// if let Err(error) = result {
-    ///     assert_eq!(error.0.get(), (&1, &mut 0));
-    ///     assert_eq!(error.1, 1);
+    /// if let Err((accessor, key, value)) = result {
+    ///     assert_eq!(accessor.get(), (&1, &mut 0));
+    ///     assert_eq!(key, 1);
+    ///     assert_eq!(value, 1);
     /// } else {
     ///     assert!(false);
     /// }
     /// ```
-    pub fn insert(&self, key: K, value: V) -> Result<Accessor<K, V, H>, (Accessor<K, V, H>, V)> {
-        let (hash, partial_hash) = self.hash(&key);
-        let mut resize_triggered = false;
-        loop {
-            let mut accessor = self.acquire(&key, hash, partial_hash);
-            if !accessor.entry_ptr.is_null() {
-                return Err((accessor, value));
+    pub fn insert(&self, key: K, value: V) -> Result<Accessor<K, V, H>, (Accessor<K, V, H>, K, V)> {
+        match self.reserve(key) {
+            Ok((mut accessor, key, partial_hash)) => {
+                let (sub_index, entry_array_link_ptr, entry_ptr) =
+                    accessor.cell_locker.insert(key, partial_hash, value);
+                accessor.sub_index = sub_index;
+                accessor.entry_array_link_ptr = entry_array_link_ptr;
+                accessor.entry_ptr = entry_ptr;
+                Ok(accessor)
             }
-            if !resize_triggered
-                && accessor.cell_index < ARRAY_SIZE
-                && accessor.cell_locker.size() >= ARRAY_SIZE
-            {
-                drop(accessor);
-                resize_triggered = true;
-                let guard = crossbeam_epoch::pin();
-                let current_array = self.array.load(Acquire, &guard);
-                let current_array_ref = Self::array(current_array);
-                if current_array_ref.old_array(&guard).is_null() {
-                    // Triggers resize if the estimated load factor is greater than 7/8.
-                    let sample_size = current_array_ref.num_sample_size();
-                    let threshold = sample_size * (ARRAY_SIZE / 8) * 7;
-                    let mut num_entries = 0;
-                    for i in 0..sample_size {
-                        num_entries += current_array_ref.cell(i).size();
-                        if num_entries > threshold {
-                            self.resize();
-                            break;
-                        }
-                    }
-                }
-                continue;
-            }
+            Err((accessor, key)) => Err((accessor, key, value)),
+        }
+    }
 
-            let (sub_index, entry_array_link_ptr, entry_ptr) =
-                accessor.cell_locker.insert(key, partial_hash, value);
-            accessor.sub_index = sub_index;
-            accessor.entry_array_link_ptr = entry_array_link_ptr;
-            accessor.entry_ptr = entry_ptr;
-            return Ok(accessor);
+    /// Emplaces a key-value pair.
+    ///
+    /// # Panics
+    ///
+    /// Panics if memory allocation fails, or the number of entries in the target cell reaches u32::MAX.
+    ///
+    /// # Examples
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32, _> = Default::default();
+    ///
+    /// let mut current = 0;
+    /// let result = hashmap.emplace(1, || { current += 1; current });
+    /// if let Ok(result) = result {
+    ///     assert_eq!(result.get(), (&1, &mut 1));
+    /// } else {
+    ///     assert!(false);
+    /// }
+    ///
+    /// let result = hashmap.emplace(1, || { current += 1; current });
+    /// if let Err((result, key)) = result {
+    ///     assert_eq!(result.get(), (&1, &mut 1));
+    ///     assert_eq!(key, 1);
+    ///     assert_eq!(current, 1);
+    /// } else {
+    ///     assert!(false);
+    /// }
+    /// ```
+    pub fn emplace<F: FnOnce() -> V>(
+        &self,
+        key: K,
+        constructor: F,
+    ) -> Result<Accessor<K, V, H>, (Accessor<K, V, H>, K)> {
+        match self.reserve(key) {
+            Ok((mut accessor, key, partial_hash)) => {
+                let (sub_index, entry_array_link_ptr, entry_ptr) =
+                    accessor
+                        .cell_locker
+                        .insert(key, partial_hash, constructor());
+                accessor.sub_index = sub_index;
+                accessor.entry_array_link_ptr = entry_array_link_ptr;
+                accessor.entry_ptr = entry_ptr;
+                Ok(accessor)
+            }
+            Err((accessor, key)) => Err((accessor, key)),
         }
     }
 
@@ -206,6 +228,8 @@ where
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
     ///     assert_eq!(result.get(), (&1, &mut 0));
+    /// } else {
+    ///     assert!(false);
     /// }
     ///
     /// let result = hashmap.upsert(1, 1);
@@ -214,7 +238,7 @@ where
     pub fn upsert(&self, key: K, value: V) -> Accessor<K, V, H> {
         match self.insert(key, value) {
             Ok(result) => result,
-            Err((accessor, value)) => {
+            Err((accessor, _, value)) => {
                 *self.entry(accessor.entry_ptr).1 = value;
                 accessor
             }
@@ -628,6 +652,43 @@ where
         hash = hash.overflowing_mul(0x9FB21C651E98DF25u64).0;
         hash = hash ^ (hash >> 28);
         (hash, (hash & ((1 << 8) - 1)).try_into().unwrap())
+    }
+
+    /// Reserves a Cell for inserting a new key-value pair.
+    fn reserve(&self, key: K) -> Result<(Accessor<K, V, H>, K, u8), (Accessor<K, V, H>, K)> {
+        let (hash, partial_hash) = self.hash(&key);
+        let mut resize_triggered = false;
+        loop {
+            let mut accessor = self.acquire(&key, hash, partial_hash);
+            if !accessor.entry_ptr.is_null() {
+                return Err((accessor, key));
+            }
+            if !resize_triggered
+                && accessor.cell_index < ARRAY_SIZE
+                && accessor.cell_locker.size() >= ARRAY_SIZE
+            {
+                drop(accessor);
+                resize_triggered = true;
+                let guard = crossbeam_epoch::pin();
+                let current_array = self.array.load(Acquire, &guard);
+                let current_array_ref = Self::array(current_array);
+                if current_array_ref.old_array(&guard).is_null() {
+                    // Triggers resize if the estimated load factor is greater than 7/8.
+                    let sample_size = current_array_ref.num_sample_size();
+                    let threshold = sample_size * (ARRAY_SIZE / 8) * 7;
+                    let mut num_entries = 0;
+                    for i in 0..sample_size {
+                        num_entries += current_array_ref.cell(i).size();
+                        if num_entries > threshold {
+                            self.resize();
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
+            return Ok((accessor, key, partial_hash));
+        }
     }
 
     /// Acquires a cell.

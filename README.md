@@ -70,7 +70,7 @@ scc::TreeIndex is a B+ tree optimized for read operations. Locks are only acquir
 ## Changelog
 
 #### 0.4.6
-Fix a read-after-free problem with HashMap: #28
+HashMap: fix #28 and API change #30
 #### 0.4.5
 Update crossbeam-epoch
 #### 0.4.4

@@ -91,7 +91,7 @@ mod hashmap_test {
 
             let result2 = hashmap.insert(key, 0);
             assert!(result2.is_err());
-            if let Err((result, _)) = result2 {
+            if let Err((result, _, _)) = result2 {
                 assert_eq!(result.get(), (&key, &mut 0));
             }
 
@@ -101,7 +101,7 @@ mod hashmap_test {
 
             let result4 = hashmap.insert(key, 10);
             assert!(result4.is_err());
-            if let Err((result, _)) = result4 {
+            if let Err((result, _, _)) = result4 {
                 assert_eq!(result.get(), (&key, &mut 1));
                 *result.get().1 = 2;
             }
