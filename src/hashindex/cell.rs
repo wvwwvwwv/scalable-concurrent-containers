@@ -191,12 +191,12 @@ impl<'c, K: Clone + Eq, V: Clone> CellLocker<'c, K, V> {
             }
         }
 
-        // A release fense is required to make the contents fully visible to a reader having read the slot as occupied.
+        // A release fence is required to make the contents fully visible to a reader having read the slot as occupied.
         if let Some(array_ref) = free_data_array_ref.take() {
             debug_assert_eq!(array_ref.partial_hash_array[free_index], 0u8);
             unsafe { array_ref.data[free_index].as_mut_ptr().write((key, value)) };
             std::sync::atomic::fence(Release);
-            array_ref.partial_hash_array[free_index] = partial_hash | OCCUPIED;
+            array_ref.partial_hash_array[free_index] = (partial_hash & (!REMOVED)) | OCCUPIED;
         } else {
             let mut new_data_array = Owned::new(DataArray::new());
             unsafe {
@@ -206,13 +206,53 @@ impl<'c, K: Clone + Eq, V: Clone> CellLocker<'c, K, V> {
             };
 
             std::sync::atomic::fence(Release);
-            new_data_array.partial_hash_array[preferred_index] = partial_hash | OCCUPIED;
+            new_data_array.partial_hash_array[preferred_index] =
+                (partial_hash & (!REMOVED)) | OCCUPIED;
             // Relaxed is sufficient as it is unimportant to read the latest state of the partial hash value for readers.
             new_data_array.link.store(data_array_head, Relaxed);
             self.cell_ref.data.swap(new_data_array, Release, guard);
         }
         self.cell_ref.num_entries.fetch_add(1, Relaxed);
         Ok(())
+    }
+
+    /// Removes a new key-value pair associated with the given key.
+    pub fn remove(&self, key: &K, partial_hash: u8, guard: &Guard) -> bool {
+        if self.kill_on_drop {
+            // The Cell will be killed.
+            return false;
+        }
+
+        // Starts Searching the entry at the preferred index first.
+        let mut data_array = self.cell_ref.data.load(Relaxed, guard);
+        let preferred_index = partial_hash as usize % ARRAY_SIZE;
+        while !data_array.is_null() {
+            let data_array_ref = unsafe { data_array.deref_mut() };
+            let preferred_index_hash = data_array_ref.partial_hash_array[preferred_index];
+            if preferred_index_hash == ((partial_hash & (!REMOVED)) | OCCUPIED) {
+                let entry_ptr = data_array_ref.data[preferred_index].as_ptr();
+                if unsafe { &(*entry_ptr) }.0 == *key {
+                    self.cell_ref.num_entries.fetch_sub(1, Relaxed);
+                    data_array_ref.partial_hash_array[preferred_index] |= REMOVED;
+                    return true;
+                }
+            }
+            for (index, hash) in data_array_ref.partial_hash_array.iter().enumerate() {
+                if index == preferred_index {
+                    continue;
+                }
+                if *hash == ((partial_hash & (!REMOVED)) | OCCUPIED) {
+                    let entry_ptr = data_array_ref.data[index].as_ptr();
+                    if unsafe { &(*entry_ptr) }.0 == *key {
+                        self.cell_ref.num_entries.fetch_sub(1, Relaxed);
+                        data_array_ref.partial_hash_array[index] |= REMOVED;
+                        return true;
+                    }
+                }
+            }
+            data_array = data_array_ref.link.load(Relaxed, guard);
+        }
+        false
     }
 
     /// Kills the Cell.
@@ -423,6 +463,16 @@ mod test {
         assert_eq!(cell.num_entries(), num_threads);
 
         let guard = unsafe { crossbeam_epoch::unprotected() };
+        for thread_id in 0..ARRAY_SIZE {
+            let xlocker = CellLocker::lock(&*cell, guard).unwrap();
+            assert!(xlocker.remove(
+                &thread_id,
+                (thread_id % ARRAY_SIZE).try_into().unwrap(),
+                guard
+            ));
+        }
+        assert_eq!(cell.num_entries(), ARRAY_SIZE);
+
         let mut xlocker = CellLocker::lock(&*cell, guard).unwrap();
         xlocker.kill();
         drop(xlocker);
