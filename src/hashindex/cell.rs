@@ -1,5 +1,6 @@
-use crossbeam_epoch::{Atomic, Guard, Shared};
+use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::mem::MaybeUninit;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::{Condvar, Mutex};
 
@@ -8,22 +9,27 @@ pub const MAX_RESIZING_FACTOR: usize = 6;
 
 /// Tags are embedded inside the wait_queue variable.
 const LOCK_TAG: usize = 1;
+const KILL_TAG: usize = 1 << 1;
 
 /// Flags are embedded inside a partial hash value.
 const OCCUPIED: u8 = 1u8 << 6;
 const REMOVED: u8 = 1u8 << 7;
 
 pub struct Cell<K: Clone + Eq, V: Clone> {
+    /// wait_queue additionally stores the state of the Cell: locked or killed.
     wait_queue: Atomic<WaitQueueEntry>,
-    /// data being null indicates that the Cell is killed.
+    /// DataArray stores key-value pairs with their metadata.
     data: Atomic<DataArray<K, V>>,
+    /// The number of valid entries in the Cell.
+    num_entries: AtomicUsize,
 }
 
 impl<K: Clone + Eq, V: Clone> Default for Cell<K, V> {
     fn default() -> Self {
         Cell::<K, V> {
             wait_queue: Atomic::null(),
-            data: Atomic::new(DataArray::new(Atomic::null())),
+            data: Atomic::null(),
+            num_entries: AtomicUsize::new(0),
         }
     }
 }
@@ -31,7 +37,12 @@ impl<K: Clone + Eq, V: Clone> Default for Cell<K, V> {
 impl<K: Clone + Eq, V: Clone> Cell<K, V> {
     /// Returns true if the Cell has been killed.
     pub fn killed(&self, guard: &Guard) -> bool {
-        self.data.load(Relaxed, guard).is_null()
+        (self.wait_queue.load(Relaxed, guard).tag() & KILL_TAG) == KILL_TAG
+    }
+
+    /// Returns the number of entries in the Cell.
+    pub fn num_entries(&self) -> usize {
+        self.num_entries.load(Relaxed)
     }
 
     /// Searches for an entry associated with the given key.
@@ -55,13 +66,21 @@ impl<K: Clone + Eq, V: Clone> Cell<K, V> {
     fn wait<T, F: FnOnce() -> Option<T>>(&self, f: F, guard: &Guard) -> Option<T> {
         // Inserts the condvar into the wait queue.
         let mut current = self.wait_queue.load(Relaxed, guard);
+        if (current.tag() & KILL_TAG) == KILL_TAG {
+            return None;
+        }
         let mut condvar = WaitQueueEntry::new(Atomic::from(current));
+
+        // Keeps the tag as it is.
         let mut next = Shared::from(&condvar as *const _).with_tag(current.tag());
         while let Err(result) = self
             .wait_queue
             .compare_exchange(current, next, Release, Relaxed, guard)
         {
             current = result.current;
+            if (current.tag() & KILL_TAG) == KILL_TAG {
+                return None;
+            }
             next = Shared::from(&condvar as *const _).with_tag(current.tag());
             condvar.next = Atomic::from(result.current);
         }
@@ -71,11 +90,14 @@ impl<K: Clone + Eq, V: Clone> Cell<K, V> {
         if locked.is_some() {
             self.wakeup(guard);
         }
+
+        // Locking failed.
         condvar.wait();
         locked
     }
 
     fn wakeup(&self, guard: &Guard) {
+        // Keeps the tag as it is.
         let mut current = self.wait_queue.load(Acquire, guard);
         let mut next = Shared::null().with_tag(current.tag());
         while let Err(result) = self
@@ -107,94 +129,110 @@ impl<K: Clone + Eq, V: Clone> Drop for Cell<K, V> {
 
 pub struct CellLocker<'c, K: Clone + Eq, V: Clone> {
     cell_ref: &'c Cell<K, V>,
+    kill_on_drop: bool,
 }
 
 impl<'c, K: Clone + Eq, V: Clone> CellLocker<'c, K, V> {
     /// Locks the given Cell.
-    pub fn lock(cell: &'c Cell<K, V>, guard: &Guard) -> CellLocker<'c, K, V> {
+    pub fn lock(cell: &'c Cell<K, V>, guard: &Guard) -> Option<CellLocker<'c, K, V>> {
         loop {
             if let Some(result) = Self::try_lock(cell, guard) {
-                return result;
+                return Some(result);
             }
             if let Some(result) = cell.wait(|| Self::try_lock(cell, guard), guard) {
-                return result;
+                return Some(result);
+            }
+            if cell.killed(guard) {
+                return None;
             }
         }
     }
 
     /// Inserts a new key-value pair into the Cell.
     pub fn insert(&self, key: K, value: V, partial_hash: u8, guard: &Guard) -> Result<(), (K, V)> {
-        let mut data_array = self.cell_ref.data.load(Relaxed, guard);
-        if data_array.is_null() {
-            // The Cell has been killed.
+        if self.kill_on_drop {
+            // The Cell will be killed.
             return Err((key, value));
         }
-        let preferred_array_index = partial_hash as usize % ARRAY_SIZE;
-        let mut data_array_ref = unsafe { data_array.deref_mut() };
-        if data_array_ref.partial_hash_array[preferred_array_index] == 0 {
-            // The slot at the preferred position is vacant.
-            data_array_ref.partial_hash_array[preferred_array_index] = partial_hash | OCCUPIED;
-            unsafe {
-                data_array_ref.data[preferred_array_index]
-                    .as_mut_ptr()
-                    .write((key, value))
-            };
-            return Ok(());
-        }
 
+        // Starts taking the preferred index first.
+        let mut data_array = self.cell_ref.data.load(Relaxed, guard);
+        let data_array_head = data_array;
+        let preferred_index = partial_hash as usize % ARRAY_SIZE;
         let mut free_data_array_ref: Option<&mut DataArray<K, V>> = None;
-        let mut free_data_array_index = ARRAY_SIZE;
+        let mut free_index = ARRAY_SIZE;
         while !data_array.is_null() {
-            data_array_ref = unsafe { data_array.deref_mut() };
+            let data_array_ref = unsafe { data_array.deref_mut() };
+            let preferred_index_hash = data_array_ref.partial_hash_array[preferred_index];
+            if preferred_index_hash == ((partial_hash & (!REMOVED)) | OCCUPIED) {
+                let entry_ptr = data_array_ref.data[preferred_index].as_ptr();
+                if unsafe { &(*entry_ptr) }.0 == key {
+                    return Err((key, value));
+                }
+            } else if free_data_array_ref.is_none() && preferred_index_hash == 0 {
+                free_index = preferred_index;
+            }
             for (index, hash) in data_array_ref.partial_hash_array.iter().enumerate() {
+                if index == preferred_index {
+                    continue;
+                }
                 if *hash == ((partial_hash & (!REMOVED)) | OCCUPIED) {
                     let entry_ptr = data_array_ref.data[index].as_ptr();
                     if unsafe { &(*entry_ptr) }.0 == key {
                         return Err((key, value));
                     }
-                } else if *hash == 0 && free_data_array_ref.is_none() {
-                    free_data_array_index = index;
+                } else if free_data_array_ref.is_none() && *hash == 0 {
+                    free_index = index;
                 }
             }
             data_array = data_array_ref.link.load(Relaxed, guard);
-            if free_data_array_ref.is_none() && free_data_array_index != ARRAY_SIZE {
+            if free_data_array_ref.is_none() && free_index != ARRAY_SIZE {
                 free_data_array_ref.replace(data_array_ref);
             }
         }
 
+        // A release fense is required to make the contents fully visible to a reader having read the slot as occupied.
         if let Some(array_ref) = free_data_array_ref.take() {
-            debug_assert_eq!(array_ref.partial_hash_array[free_data_array_index], 0u8);
-            array_ref.partial_hash_array[free_data_array_index] = partial_hash | OCCUPIED;
+            debug_assert_eq!(array_ref.partial_hash_array[free_index], 0u8);
+            unsafe { array_ref.data[free_index].as_mut_ptr().write((key, value)) };
+            std::sync::atomic::fence(Release);
+            array_ref.partial_hash_array[free_index] = partial_hash | OCCUPIED;
+        } else {
+            let mut new_data_array = Owned::new(DataArray::new());
             unsafe {
-                array_ref.data[free_data_array_index]
+                new_data_array.data[preferred_index]
                     .as_mut_ptr()
                     .write((key, value))
             };
-            Ok(())
-        } else {
-            // [TODO] allocate a new DataArray.
-            Err((key, value))
+
+            std::sync::atomic::fence(Release);
+            new_data_array.partial_hash_array[preferred_index] = partial_hash | OCCUPIED;
+            // Relaxed is sufficient as it is unimportant to read the latest state of the partial hash value for readers.
+            new_data_array.link.store(data_array_head, Relaxed);
+            self.cell_ref.data.swap(new_data_array, Release, guard);
         }
+        self.cell_ref.num_entries.fetch_add(1, Relaxed);
+        Ok(())
     }
 
     /// Kills the Cell.
-    pub fn kill(&self, guard: &Guard) {
-        let data_array_shared = self.cell_ref.data.swap(Shared::null(), Relaxed, guard);
-        if !data_array_shared.is_null() {
-            unsafe { guard.defer_destroy(data_array_shared) };
-        }
+    pub fn kill(&mut self) {
+        self.kill_on_drop = true;
     }
 
     fn try_lock(cell: &'c Cell<K, V>, guard: &Guard) -> Option<CellLocker<'c, K, V>> {
         let current = cell.wait_queue.load(Relaxed, guard);
-        if (current.tag() & LOCK_TAG) == 0 {
+        if current.tag() == 0 {
             let next = current.with_tag(LOCK_TAG);
             if cell
                 .wait_queue
                 .compare_exchange(current, next, Acquire, Relaxed, guard)
                 .is_ok()
             {
-                return Some(CellLocker { cell_ref: cell });
+                return Some(CellLocker {
+                    cell_ref: cell,
+                    kill_on_drop: false,
+                });
             }
         }
         None
@@ -204,11 +242,25 @@ impl<'c, K: Clone + Eq, V: Clone> CellLocker<'c, K, V> {
 impl<'c, K: Clone + Eq, V: Clone> Drop for CellLocker<'c, K, V> {
     fn drop(&mut self) {
         let mut guard: Option<Guard> = None;
+        if self.kill_on_drop {
+            // Drops the data.
+            guard.replace(crossbeam_epoch::pin());
+            let data_array_shared =
+                self.cell_ref
+                    .data
+                    .swap(Shared::null(), Relaxed, guard.as_ref().unwrap());
+            if !data_array_shared.is_null() {
+                unsafe { guard.as_ref().unwrap().defer_destroy(data_array_shared) };
+            }
+            self.cell_ref.num_entries.store(0, Relaxed);
+        }
+
         let mut current = self
             .cell_ref
             .wait_queue
             .load(Relaxed, unsafe { crossbeam_epoch::unprotected() });
         loop {
+            debug_assert!(current.tag() == LOCK_TAG);
             let wakeup = if !current.is_null() {
                 // In order to prevent the Cell from being dropped while waking up other threads, pins the thread.
                 if guard.is_none() {
@@ -218,10 +270,14 @@ impl<'c, K: Clone + Eq, V: Clone> Drop for CellLocker<'c, K, V> {
             } else {
                 false
             };
-            debug_assert!(current.tag() == LOCK_TAG);
+            let next = if !self.kill_on_drop {
+                current.with_tag(current.tag() & (!LOCK_TAG))
+            } else {
+                current.with_tag((current.tag() & (!LOCK_TAG)) | KILL_TAG)
+            };
             match self.cell_ref.wait_queue.compare_exchange(
                 current,
-                current.with_tag(0),
+                next,
                 Release,
                 Relaxed,
                 unsafe { crossbeam_epoch::unprotected() },
@@ -246,11 +302,11 @@ struct DataArray<K: Clone + Eq, V: Clone> {
 }
 
 impl<K: Clone + Eq, V: Clone> DataArray<K, V> {
-    fn new(link: Atomic<DataArray<K, V>>) -> DataArray<K, V> {
+    fn new() -> DataArray<K, V> {
         DataArray {
             partial_hash_array: [0; ARRAY_SIZE],
             data: unsafe { MaybeUninit::uninit().assume_init() },
-            link,
+            link: Atomic::null(),
         }
     }
 }
@@ -310,7 +366,7 @@ mod test {
 
     #[test]
     fn cell_locker() {
-        let num_threads = (ARRAY_SIZE + 1) as usize;
+        let num_threads = (ARRAY_SIZE * 2) as usize;
         let barrier = Arc::new(Barrier::new(num_threads));
         let cell: Arc<Cell<usize, usize>> = Arc::new(Default::default());
         let mut data: [u64; 128] = [0; 128];
@@ -323,7 +379,7 @@ mod test {
                 barrier_copied.wait();
                 let guard = crossbeam_epoch::pin();
                 for i in 0..4096 {
-                    let xlocker = CellLocker::lock(&*cell_copied, &guard);
+                    let xlocker = CellLocker::lock(&*cell_copied, &guard).unwrap();
                     let mut sum: u64 = 0;
                     for j in 0..128 {
                         unsafe {
@@ -332,7 +388,7 @@ mod test {
                         };
                     }
                     assert_eq!(sum % 256, 0);
-                    if thread_id < ARRAY_SIZE && i == 0 {
+                    if i == 0 {
                         assert!(xlocker
                             .insert(
                                 thread_id,
@@ -341,19 +397,18 @@ mod test {
                                 &guard,
                             )
                             .is_ok());
-                    } else if thread_id < ARRAY_SIZE {
                         drop(xlocker);
-                        assert_eq!(
-                            cell_copied
-                                .search(
-                                    &thread_id,
-                                    (thread_id % ARRAY_SIZE).try_into().unwrap(),
-                                    &guard
-                                )
-                                .unwrap(),
-                            &(thread_id, 0usize)
-                        );
                     }
+                    assert_eq!(
+                        cell_copied
+                            .search(
+                                &thread_id,
+                                (thread_id % ARRAY_SIZE).try_into().unwrap(),
+                                &guard
+                            )
+                            .unwrap(),
+                        &(thread_id, 0usize)
+                    );
                 }
             }));
         }
@@ -365,9 +420,15 @@ mod test {
             sum += data[j];
         }
         assert_eq!(sum % 256, 0);
+        assert_eq!(cell.num_entries(), num_threads);
 
         let guard = unsafe { crossbeam_epoch::unprotected() };
-        let xlocker = CellLocker::lock(&*cell, guard);
-        xlocker.kill(guard);
+        let mut xlocker = CellLocker::lock(&*cell, guard).unwrap();
+        xlocker.kill();
+        drop(xlocker);
+
+        assert!(cell.killed(guard));
+        assert_eq!(cell.num_entries(), 0);
+        assert!(CellLocker::lock(&*cell, guard).is_none());
     }
 }

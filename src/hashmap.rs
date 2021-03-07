@@ -658,7 +658,7 @@ where
         let (hash, partial_hash) = self.hash(&key);
         let mut resize_triggered = false;
         loop {
-            let mut accessor = self.acquire(&key, hash, partial_hash);
+            let accessor = self.acquire(&key, hash, partial_hash);
             if !accessor.entry_ptr.is_null() {
                 return Err((accessor, key));
             }
