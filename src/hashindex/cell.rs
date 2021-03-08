@@ -45,6 +45,11 @@ impl<K: Clone + Eq, V: Clone> Cell<K, V> {
         self.num_entries.load(Relaxed)
     }
 
+    /// Iterates the contents of the Cell.
+    pub fn iter<'g>(&'g self, guard: &'g Guard) -> CellIterator<'g, K, V> {
+        CellIterator::new(self, guard)
+    }
+
     /// Searches for an entry associated with the given key.
     pub fn search<'g>(&self, key: &K, partial_hash: u8, guard: &'g Guard) -> Option<&'g (K, V)> {
         let mut data_array = self.data.load(Relaxed, guard);
@@ -124,6 +129,59 @@ impl<K: Clone + Eq, V: Clone> Drop for Cell<K, V> {
     fn drop(&mut self) {
         // The Cell must have been killed.
         debug_assert!(self.killed(unsafe { crossbeam_epoch::unprotected() }));
+    }
+}
+
+pub struct CellIterator<'g, K: Clone + Eq, V: Clone> {
+    cell_ref: Option<&'g Cell<K, V>>,
+    current_array: Shared<'g, DataArray<K, V>>,
+    current_index: usize,
+    guard_ref: &'g Guard,
+}
+
+impl<'g, K: Clone + Eq, V: Clone> CellIterator<'g, K, V> {
+    fn new(cell: &'g Cell<K, V>, guard: &'g Guard) -> CellIterator<'g, K, V> {
+        CellIterator {
+            cell_ref: Some(cell),
+            current_array: Shared::null(),
+            current_index: 0,
+            guard_ref: guard,
+        }
+    }
+}
+
+impl<'g, K: Clone + Eq, V: Clone> Iterator for CellIterator<'g, K, V> {
+    type Item = &'g (K, V);
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(&cell_ref) = self.cell_ref.as_ref() {
+            if self.current_array.is_null() {
+                // Starts scanning from the beginning.
+                self.current_array = cell_ref.data.load(Relaxed, self.guard_ref);
+                if !self.current_array.is_null() {
+                    let array_ref = unsafe { self.current_array.deref() };
+                    for (index, hash) in array_ref.partial_hash_array.iter().enumerate() {
+                        if (hash & OCCUPIED) != 0 && (hash & REMOVED) == 0 {
+                            self.current_index = index;
+                            let entry_ptr = array_ref.data[index].as_ptr();
+                            return Some(unsafe { &(*entry_ptr) });
+                        }
+                    }
+                }
+            } else {
+                // Search for the next valid entry.
+                let array_ref = unsafe { self.current_array.deref() };
+                for index in (self.current_index + 1)..ARRAY_SIZE {
+                    let hash = array_ref.partial_hash_array[index];
+                    if (hash & OCCUPIED) != 0 && (hash & REMOVED) == 0 {
+                        self.current_index = index;
+                        let entry_ptr = array_ref.data[index].as_ptr();
+                        return Some(unsafe { &(*entry_ptr) });
+                    }
+                }
+            }
+            // Proceeds to the next DataArray.
+        }
+        None
     }
 }
 

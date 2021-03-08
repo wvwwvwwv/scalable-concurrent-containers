@@ -248,7 +248,6 @@ where
             {
                 drop(cell_locker);
                 resize_triggered = true;
-                let guard = crossbeam_epoch::pin();
                 let current_array = self.array.load(Acquire, &guard);
                 let current_array_ref = self.array_ref(current_array);
                 if current_array_ref.old_array(&guard).is_null() {
@@ -259,7 +258,7 @@ where
                     for i in 0..sample_size {
                         num_entries += current_array_ref.cell_ref(i).num_entries();
                         if num_entries > threshold {
-                            self.resize();
+                            self.resize(guard);
                             break;
                         }
                     }
@@ -313,15 +312,28 @@ where
         }
     }
 
+    /// Estimates the number of entries using the given number of cells.
+    fn estimate(&self, current_array_ref: &Array<K, V>, num_cells_to_sample: usize) -> usize {
+        let mut num_entries = 0;
+        for i in 0..num_cells_to_sample {
+            num_entries += current_array_ref.cell_ref(i).num_entries();
+        }
+        num_entries * (current_array_ref.num_cells() / num_cells_to_sample)
+    }
+
     /// Resizes the array.
-    fn resize(&self) {
+    ///
+    /// The implementation is the same with that of HashMap.
+    fn resize(&self, guard: &Guard) {
         // Initial rough size estimation using a small number of cells.
-        let guard = crossbeam_epoch::pin();
         let current_array = self.array.load(Acquire, &guard);
         let current_array_ref = self.array_ref(current_array);
         let old_array = current_array_ref.old_array(&guard);
         if !old_array.is_null() {
-            // [TODO] Rehash
+            let old_array_removed = current_array_ref.partial_rehash(|key| self.hash(key), &guard);
+            if !old_array_removed {
+                return;
+            }
         }
 
         if !self.resize_mutex.swap(true, Acquire) {
@@ -339,7 +351,7 @@ where
             let capacity = current_array_ref.capacity();
             let num_cells = current_array_ref.num_cells();
             let num_cells_to_sample = (num_cells / 8).max(DEFAULT_CAPACITY / ARRAY_SIZE).min(4096);
-            let estimated_num_entries = num_cells / num_cells_to_sample; // [TODO] Size estimation.
+            let estimated_num_entries = self.estimate(current_array_ref, num_cells_to_sample);
             let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
                 let max_capacity = 1usize << (std::mem::size_of::<usize>() * 8 - 1);
                 if capacity == max_capacity {
