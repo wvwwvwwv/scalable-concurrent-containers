@@ -1,4 +1,4 @@
-use super::cell::{Cell, ARRAY_SIZE};
+use super::cell::{Cell, CellLocker, ARRAY_SIZE};
 use crossbeam_epoch::{Atomic, Guard, Shared};
 use std::convert::TryInto;
 use std::sync::atomic::AtomicUsize;
@@ -27,6 +27,10 @@ impl<K: Clone + Eq, V: Clone> Array<K, V> {
             rehashed: AtomicUsize::new(0),
             old_array: current_array,
         }
+    }
+
+    pub fn cell_ref(&self, index: usize) -> &Cell<K, V> {
+        &self.cell_array[index]
     }
 
     pub fn num_sample_size(&self) -> usize {
@@ -61,6 +65,23 @@ impl<K: Clone + Eq, V: Clone> Array<K, V> {
         debug_assert!(lb_capacity < (std::mem::size_of::<usize>() * 8));
         debug_assert!((1usize << lb_capacity) * ARRAY_SIZE >= adjusted_capacity);
         lb_capacity.try_into().unwrap()
+    }
+
+    pub fn kill_cell<F: Fn(&K) -> (u64, u8)>(
+        &self,
+        cell_locker: &mut CellLocker<K, V>,
+        old_array: &Array<K, V>,
+        old_cell_index: usize,
+        hasher: &F,
+        guard: &Guard,
+    ) {
+        if cell_locker.cell_ref().killed(guard) {
+            return;
+        }
+    }
+
+    pub fn partial_rehash<F: Fn(&K) -> (u64, u8)>(&self, hasher: F, guard: &Guard) -> bool {
+        false
     }
 
     pub fn drop_old_array(&self, immediate_drop: bool, guard: &Guard) {

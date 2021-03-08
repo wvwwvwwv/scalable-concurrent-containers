@@ -2,8 +2,8 @@ pub mod array;
 pub mod cell;
 
 use array::Array;
-use cell::{ARRAY_SIZE, MAX_RESIZING_FACTOR};
-use crossbeam_epoch::{Atomic, Owned, Shared};
+use cell::{CellLocker, ARRAY_SIZE, MAX_RESIZING_FACTOR};
+use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::collections::hash_map::RandomState;
 use std::convert::TryInto;
 use std::hash::{BuildHasher, Hash, Hasher};
@@ -94,13 +94,27 @@ where
     /// # Examples
     /// ```
     /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32, _> = Default::default();
+    ///
+    /// let result = hashindex.insert(1, 0);
+    /// assert!(result.is_ok());
+    ///
+    /// let result = hashindex.insert(1, 1);
+    /// if let Err((key, value)) = result {
+    ///     assert_eq!(key, 1);
+    ///     assert_eq!(value, 1);
+    /// } else {
+    ///     assert!(false);
+    /// }
     /// ```
     pub fn insert(&self, key: K, value: V) -> Result<(), (K, V)> {
-        let (hash, partial_hash) = self.hash(&key);
-        if hash == 0 && partial_hash == 0 {
-            self.resize();
+        let guard = crossbeam_epoch::pin();
+        let (cell_locker, key, partial_hash) = self.reserve(key, &guard);
+        match cell_locker.insert(key, value, partial_hash, &guard) {
+            Ok(()) => Ok(()),
+            Err((key, value)) => Err((key, value)),
         }
-        Err((key, value))
     }
 
     /// Removes a key-value pair.
@@ -220,6 +234,83 @@ where
     /// Returns a reference to the given array.
     fn array_ref<'g>(&self, array_shared: Shared<'g, Array<K, V>>) -> &'g Array<K, V> {
         unsafe { array_shared.deref() }
+    }
+
+    /// Reserves a Cell for inserting a new key-value pair.
+    fn reserve<'g>(&self, key: K, guard: &'g Guard) -> (CellLocker<'g, K, V>, K, u8) {
+        let (hash, partial_hash) = self.hash(&key);
+        let mut resize_triggered = false;
+        loop {
+            let (cell_locker, cell_index) = self.lock(&key, hash, partial_hash, guard);
+            if !resize_triggered
+                && cell_index < ARRAY_SIZE
+                && cell_locker.cell_ref().num_entries() >= ARRAY_SIZE
+            {
+                drop(cell_locker);
+                resize_triggered = true;
+                let guard = crossbeam_epoch::pin();
+                let current_array = self.array.load(Acquire, &guard);
+                let current_array_ref = self.array_ref(current_array);
+                if current_array_ref.old_array(&guard).is_null() {
+                    // Triggers resize if the estimated load factor is greater than 7/8.
+                    let sample_size = current_array_ref.num_sample_size();
+                    let threshold = sample_size * (ARRAY_SIZE / 8) * 7;
+                    let mut num_entries = 0;
+                    for i in 0..sample_size {
+                        num_entries += current_array_ref.cell_ref(i).num_entries();
+                        if num_entries > threshold {
+                            self.resize();
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
+            return (cell_locker, key, partial_hash);
+        }
+    }
+
+    /// Locks a cell.
+    fn lock<'g>(
+        &self,
+        key: &K,
+        hash: u64,
+        partial_hash: u8,
+        guard: &'g Guard,
+    ) -> (CellLocker<'g, K, V>, usize) {
+        // The description about the loop can be found in HashMap::acquire.
+        loop {
+            // An acquire fence is required to correctly load the contents of the array.
+            let current_array = self.array.load(Acquire, &guard);
+            let current_array_ref = self.array_ref(current_array);
+            let old_array = current_array_ref.old_array(&guard);
+            if !old_array.is_null() {
+                if current_array_ref.partial_rehash(|key| self.hash(key), &guard) {
+                    continue;
+                }
+                let old_array_ref = unsafe { old_array.deref() };
+                let cell_index = old_array_ref.calculate_cell_index(hash);
+                if let Some(mut cell_locker) =
+                    CellLocker::lock(old_array_ref.cell_ref(cell_index), guard)
+                {
+                    // Kills the cell.
+                    current_array_ref.kill_cell(
+                        &mut cell_locker,
+                        self.array_ref(old_array),
+                        cell_index,
+                        &|key| self.hash(key),
+                        &guard,
+                    );
+                }
+            }
+            let cell_index = current_array_ref.calculate_cell_index(hash);
+            if let Some(cell_locker) =
+                CellLocker::lock(current_array_ref.cell_ref(cell_index), guard)
+            {
+                return (cell_locker, cell_index);
+            }
+            // Reaching here indicates that self.array is updated.
+        }
     }
 
     /// Resizes the array.

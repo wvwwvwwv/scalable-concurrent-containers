@@ -127,14 +127,14 @@ impl<K: Clone + Eq, V: Clone> Drop for Cell<K, V> {
     }
 }
 
-pub struct CellLocker<'c, K: Clone + Eq, V: Clone> {
-    cell_ref: &'c Cell<K, V>,
+pub struct CellLocker<'g, K: Clone + Eq, V: Clone> {
+    cell_ref: &'g Cell<K, V>,
     kill_on_drop: bool,
 }
 
-impl<'c, K: Clone + Eq, V: Clone> CellLocker<'c, K, V> {
+impl<'g, K: Clone + Eq, V: Clone> CellLocker<'g, K, V> {
     /// Locks the given Cell.
-    pub fn lock(cell: &'c Cell<K, V>, guard: &Guard) -> Option<CellLocker<'c, K, V>> {
+    pub fn lock(cell: &'g Cell<K, V>, guard: &'g Guard) -> Option<CellLocker<'g, K, V>> {
         loop {
             if let Some(result) = Self::try_lock(cell, guard) {
                 return Some(result);
@@ -146,6 +146,11 @@ impl<'c, K: Clone + Eq, V: Clone> CellLocker<'c, K, V> {
                 return None;
             }
         }
+    }
+
+    /// Returns a reference to the Cell.
+    pub fn cell_ref(&self) -> &Cell<K, V> {
+        self.cell_ref
     }
 
     /// Inserts a new key-value pair into the Cell.
@@ -260,7 +265,7 @@ impl<'c, K: Clone + Eq, V: Clone> CellLocker<'c, K, V> {
         self.kill_on_drop = true;
     }
 
-    fn try_lock(cell: &'c Cell<K, V>, guard: &Guard) -> Option<CellLocker<'c, K, V>> {
+    fn try_lock(cell: &'g Cell<K, V>, guard: &'g Guard) -> Option<CellLocker<'g, K, V>> {
         let current = cell.wait_queue.load(Relaxed, guard);
         if current.tag() == 0 {
             let next = current.with_tag(LOCK_TAG);
@@ -279,7 +284,7 @@ impl<'c, K: Clone + Eq, V: Clone> CellLocker<'c, K, V> {
     }
 }
 
-impl<'c, K: Clone + Eq, V: Clone> Drop for CellLocker<'c, K, V> {
+impl<'g, K: Clone + Eq, V: Clone> Drop for CellLocker<'g, K, V> {
     fn drop(&mut self) {
         let mut guard: Option<Guard> = None;
         if self.kill_on_drop {
@@ -334,7 +339,7 @@ impl<'c, K: Clone + Eq, V: Clone> Drop for CellLocker<'c, K, V> {
     }
 }
 
-struct DataArray<K: Clone + Eq, V: Clone> {
+pub struct DataArray<K: Clone + Eq, V: Clone> {
     /// The lower two-bit of a partial hash value represents the state of the corresponding entry.
     partial_hash_array: [u8; ARRAY_SIZE],
     data: [MaybeUninit<(K, V)>; ARRAY_SIZE],
