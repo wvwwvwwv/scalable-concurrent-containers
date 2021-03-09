@@ -42,6 +42,8 @@ where
     ///
     /// ```
     /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32, _> = Default::default();
     /// ```
     fn default() -> Self {
         HashIndex {
@@ -72,6 +74,8 @@ where
     /// ```
     /// use scc::HashIndex;
     /// use std::collections::hash_map::RandomState;
+    ///
+    /// let hashindex: HashIndex<u64, u32, RandomState> = HashIndex::new(0, RandomState::new());
     /// ```
     pub fn new(capacity: usize, build_hasher: H) -> HashIndex<K, V, H> {
         let initial_capacity = capacity.max(DEFAULT_CAPACITY);
@@ -124,9 +128,20 @@ where
     /// # Examples
     /// ```
     /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32, _> = Default::default();
+    ///
+    /// let result = hashindex.insert(1, 0);
+    /// assert!(result.is_ok());
+    ///
+    /// let result = hashindex.remove(&1);
+    /// assert!(result);
     /// ```
-    pub fn remove(&self, _tkey: &K) -> bool {
-        false
+    pub fn remove(&self, key: &K) -> bool {
+        let (hash, partial_hash) = self.hash(key);
+        let guard = crossbeam_epoch::pin();
+        let (cell_locker, _) = self.lock(hash, &guard);
+        cell_locker.remove(key, partial_hash, &guard)
     }
 
     /// Reads a key-value pair.
@@ -138,8 +153,52 @@ where
     /// # Examples
     /// ```
     /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32, _> = Default::default();
+    ///
+    /// let result = hashindex.insert(1, 0);
+    /// assert!(result.is_ok());
+    ///
+    /// let result = hashindex.read(&1, |_, &value| value);
+    /// if let Some(result) = result {
+    ///     assert_eq!(result, 0);
+    /// } else {
+    ///     assert!(false);
+    /// }
     /// ```
-    pub fn read<R, F: FnOnce(&K, &V) -> R>(&self, _key: &K, _f: F) -> Option<R> {
+    pub fn read<R, F: FnOnce(&K, &V) -> R>(&self, key: &K, f: F) -> Option<R> {
+        let (hash, partial_hash) = self.hash(key);
+        let guard = crossbeam_epoch::pin();
+
+        // An acquire fence is required to correctly load the contents of the array.
+        let mut current_array_shared = self.array.load(Acquire, &guard);
+        loop {
+            let current_array_ref = self.array_ref(current_array_shared);
+            let old_array_shared = current_array_ref.old_array(&guard);
+            if !old_array_shared.is_null() {
+                if current_array_ref.partial_rehash(|key| self.hash(key), &guard) {
+                    continue;
+                }
+                let old_array_ref = self.array_ref(old_array_shared);
+                let cell_index = old_array_ref.calculate_cell_index(hash);
+                let cell_ref = old_array_ref.cell_ref(cell_index);
+                if let Some(entry) = cell_ref.search(key, partial_hash, &guard) {
+                    return Some(f(&entry.0, &entry.1));
+                }
+            }
+            let cell_index = current_array_ref.calculate_cell_index(hash);
+            let cell_ref = current_array_ref.cell_ref(cell_index);
+            if let Some(entry) = cell_ref.search(key, partial_hash, &guard) {
+                return Some(f(&entry.0, &entry.1));
+            }
+            // Reaching here indicates that self.array is updated.
+            let new_current_array_shared = self.array.load(Acquire, &guard);
+            if new_current_array_shared == current_array_shared {
+                break;
+            }
+            // The pointer value has changed.
+            current_array_shared = new_current_array_shared;
+        }
         None
     }
 
@@ -241,7 +300,7 @@ where
         let (hash, partial_hash) = self.hash(&key);
         let mut resize_triggered = false;
         loop {
-            let (cell_locker, cell_index) = self.lock(&key, hash, partial_hash, guard);
+            let (cell_locker, cell_index) = self.lock(hash, guard);
             if !resize_triggered
                 && cell_index < ARRAY_SIZE
                 && cell_locker.cell_ref().num_entries() >= ARRAY_SIZE
@@ -270,24 +329,18 @@ where
     }
 
     /// Locks a cell.
-    fn lock<'g>(
-        &self,
-        key: &K,
-        hash: u64,
-        partial_hash: u8,
-        guard: &'g Guard,
-    ) -> (CellLocker<'g, K, V>, usize) {
+    fn lock<'g>(&self, hash: u64, guard: &'g Guard) -> (CellLocker<'g, K, V>, usize) {
         // The description about the loop can be found in HashMap::acquire.
         loop {
             // An acquire fence is required to correctly load the contents of the array.
-            let current_array = self.array.load(Acquire, &guard);
-            let current_array_ref = self.array_ref(current_array);
-            let old_array = current_array_ref.old_array(&guard);
-            if !old_array.is_null() {
+            let current_array_shared = self.array.load(Acquire, &guard);
+            let current_array_ref = self.array_ref(current_array_shared);
+            let old_array_shared = current_array_ref.old_array(&guard);
+            if !old_array_shared.is_null() {
                 if current_array_ref.partial_rehash(|key| self.hash(key), &guard) {
                     continue;
                 }
-                let old_array_ref = unsafe { old_array.deref() };
+                let old_array_ref = self.array_ref(old_array_shared);
                 let cell_index = old_array_ref.calculate_cell_index(hash);
                 if let Some(mut cell_locker) =
                     CellLocker::lock(old_array_ref.cell_ref(cell_index), guard)
@@ -295,7 +348,7 @@ where
                     // Kills the cell.
                     current_array_ref.kill_cell(
                         &mut cell_locker,
-                        self.array_ref(old_array),
+                        old_array_ref,
                         cell_index,
                         &|key| self.hash(key),
                         &guard,
