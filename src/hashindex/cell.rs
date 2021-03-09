@@ -144,7 +144,7 @@ impl<'g, K: Clone + Eq, V: Clone> CellIterator<'g, K, V> {
         CellIterator {
             cell_ref: Some(cell),
             current_array: Shared::null(),
-            current_index: 0,
+            current_index: usize::MAX,
             guard_ref: guard,
         }
     }
@@ -157,20 +157,16 @@ impl<'g, K: Clone + Eq, V: Clone> Iterator for CellIterator<'g, K, V> {
             if self.current_array.is_null() {
                 // Starts scanning from the beginning.
                 self.current_array = cell_ref.data.load(Relaxed, self.guard_ref);
-                if !self.current_array.is_null() {
-                    let array_ref = unsafe { self.current_array.deref() };
-                    for (index, hash) in array_ref.partial_hash_array.iter().enumerate() {
-                        if (hash & OCCUPIED) != 0 && (hash & REMOVED) == 0 {
-                            self.current_index = index;
-                            let entry_ptr = array_ref.data[index].as_ptr();
-                            return Some(unsafe { &(*entry_ptr) });
-                        }
-                    }
-                }
-            } else {
+            }
+            while !self.current_array.is_null() {
                 // Search for the next valid entry.
                 let array_ref = unsafe { self.current_array.deref() };
-                for index in (self.current_index + 1)..ARRAY_SIZE {
+                let start_index = if self.current_index == usize::MAX {
+                    0
+                } else {
+                    self.current_index + 1
+                };
+                for index in start_index..ARRAY_SIZE {
                     let hash = array_ref.partial_hash_array[index];
                     if (hash & OCCUPIED) != 0 && (hash & REMOVED) == 0 {
                         self.current_index = index;
@@ -178,8 +174,13 @@ impl<'g, K: Clone + Eq, V: Clone> Iterator for CellIterator<'g, K, V> {
                         return Some(unsafe { &(*entry_ptr) });
                     }
                 }
+
+                // Proceeds to the next DataArray.
+                self.current_array = array_ref.link.load(Relaxed, self.guard_ref);
+                self.current_index = usize::MAX;
             }
-            // Proceeds to the next DataArray.
+            // Fuses itself.
+            self.cell_ref.take();
         }
         None
     }
@@ -526,6 +527,24 @@ mod test {
         assert_eq!(cell.num_entries(), num_threads);
 
         let guard = unsafe { crossbeam_epoch::unprotected() };
+        for thread_id in 0..ARRAY_SIZE {
+            assert_eq!(
+                cell.search(
+                    &thread_id,
+                    (thread_id % ARRAY_SIZE).try_into().unwrap(),
+                    guard
+                ),
+                Some(&(thread_id, 0))
+            );
+        }
+        let mut iterated = 0;
+        for entry in cell.iter(guard) {
+            assert!(entry.0 < num_threads);
+            assert_eq!(entry.1, 0);
+            iterated += 1;
+        }
+        assert_eq!(cell.num_entries(), iterated);
+
         for thread_id in 0..ARRAY_SIZE {
             let xlocker = CellLocker::lock(&*cell, guard).unwrap();
             assert!(xlocker.remove(
