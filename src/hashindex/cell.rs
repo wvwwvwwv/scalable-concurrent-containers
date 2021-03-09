@@ -4,7 +4,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::{Condvar, Mutex};
 
-pub const ARRAY_SIZE: usize = 16;
+pub const ARRAY_SIZE: usize = 32;
 pub const MAX_RESIZING_FACTOR: usize = 6;
 
 /// Tags are embedded inside the wait_queue variable.
@@ -12,8 +12,8 @@ const LOCK_TAG: usize = 1;
 const KILL_TAG: usize = 1 << 1;
 
 /// Flags are embedded inside a partial hash value.
-const OCCUPIED: u8 = 1u8 << 6;
-const REMOVED: u8 = 1u8 << 7;
+const OCCUPIED: u8 = 1u8;
+const REMOVED: u8 = 1u8 << 1;
 
 pub struct Cell<K: Clone + Eq, V: Clone> {
     /// wait_queue additionally stores the state of the Cell: locked or killed.
@@ -56,16 +56,16 @@ impl<K: Clone + Eq, V: Clone> Cell<K, V> {
         let preferred_index = partial_hash as usize % ARRAY_SIZE;
         while !data_array.is_null() {
             let data_array_ref = unsafe { data_array.deref() };
+            let preferred_index_hash = data_array_ref.partial_hash_array[preferred_index];
+            if preferred_index_hash == ((partial_hash & (!REMOVED)) | OCCUPIED) {
+                let entry_ptr = data_array_ref.data[preferred_index].as_ptr();
+                if unsafe { &(*entry_ptr) }.0 == *key {
+                    return Some(unsafe { &(*entry_ptr) });
+                }
+            }
             for (index, hash) in data_array_ref.partial_hash_array.iter().enumerate() {
                 if index == preferred_index {
                     continue;
-                }
-                let preferred_index_hash = data_array_ref.partial_hash_array[preferred_index];
-                if preferred_index_hash == ((partial_hash & (!REMOVED)) | OCCUPIED) {
-                    let entry_ptr = data_array_ref.data[preferred_index].as_ptr();
-                    if unsafe { &(*entry_ptr) }.0 == *key {
-                        return Some(unsafe { &(*entry_ptr) });
-                    }
                 }
                 if *hash == ((partial_hash & (!REMOVED)) | OCCUPIED) {
                     let entry_ptr = data_array_ref.data[index].as_ptr();
