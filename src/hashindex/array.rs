@@ -184,7 +184,7 @@ impl<K: Clone + Eq, V: Clone> Array<K, V> {
             unsafe {
                 if immediate_drop {
                     // There is no possibility that the old array contains valid cells.
-                    let old_array = old_array.into_owned()cacar;
+                    let old_array = old_array.into_owned();
                     for index in 0..old_array.num_cells() {
                         if let Some(mut cell_locker) =
                             CellLocker::lock(old_array.cell_ref(index), guard)
