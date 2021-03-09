@@ -430,7 +430,7 @@ impl<'t, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Scanner<'t, K, V>
                 unsafe { &*root_node.as_raw() }.max_less(min_allowed_key, &scanner.guard)
             {
                 scanner.leaf_scanner.replace(unsafe {
-                    // Prolongs the lifetime as the rust type system cannot infer the actual lifetime correctly.
+                    // Prolongs the lifetime as the Rust type system cannot infer the actual lifetime correctly.
                     std::mem::transmute::<_, LeafScanner<'t, K, V>>(leaf_scanner)
                 });
                 break;
@@ -476,7 +476,7 @@ where
                 }
                 if let Ok(leaf_scanner) = unsafe { &*root_node.as_raw() }.min(&self.guard) {
                     self.leaf_scanner.replace(unsafe {
-                        // Prolongs the lifetime as the rust type system cannot infer the actual lifetime correctly.
+                        // Prolongs the lifetime as the Rust type system cannot infer the actual lifetime correctly.
                         std::mem::transmute::<_, LeafScanner<'t, K, V>>(leaf_scanner)
                     });
                     break;

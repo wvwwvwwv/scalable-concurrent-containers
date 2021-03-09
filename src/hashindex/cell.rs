@@ -53,9 +53,20 @@ impl<K: Clone + Eq, V: Clone> Cell<K, V> {
     /// Searches for an entry associated with the given key.
     pub fn search<'g>(&self, key: &K, partial_hash: u8, guard: &'g Guard) -> Option<&'g (K, V)> {
         let mut data_array = self.data.load(Relaxed, guard);
+        let preferred_index = partial_hash as usize % ARRAY_SIZE;
         while !data_array.is_null() {
             let data_array_ref = unsafe { data_array.deref() };
             for (index, hash) in data_array_ref.partial_hash_array.iter().enumerate() {
+                if index == preferred_index {
+                    continue;
+                }
+                let preferred_index_hash = data_array_ref.partial_hash_array[preferred_index];
+                if preferred_index_hash == ((partial_hash & (!REMOVED)) | OCCUPIED) {
+                    let entry_ptr = data_array_ref.data[preferred_index].as_ptr();
+                    if unsafe { &(*entry_ptr) }.0 == *key {
+                        return Some(unsafe { &(*entry_ptr) });
+                    }
+                }
                 if *hash == ((partial_hash & (!REMOVED)) | OCCUPIED) {
                     let entry_ptr = data_array_ref.data[index].as_ptr();
                     if unsafe { &(*entry_ptr) }.0 == *key {
@@ -140,7 +151,7 @@ pub struct CellIterator<'g, K: Clone + Eq, V: Clone> {
 }
 
 impl<'g, K: Clone + Eq, V: Clone> CellIterator<'g, K, V> {
-    fn new(cell: &'g Cell<K, V>, guard: &'g Guard) -> CellIterator<'g, K, V> {
+    pub fn new(cell: &'g Cell<K, V>, guard: &'g Guard) -> CellIterator<'g, K, V> {
         CellIterator {
             cell_ref: Some(cell),
             current_array: Shared::null(),

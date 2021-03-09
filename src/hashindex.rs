@@ -2,7 +2,7 @@ pub mod array;
 pub mod cell;
 
 use array::Array;
-use cell::{CellLocker, ARRAY_SIZE, MAX_RESIZING_FACTOR};
+use cell::{CellIterator, CellLocker, ARRAY_SIZE, MAX_RESIZING_FACTOR};
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::collections::hash_map::RandomState;
 use std::convert::TryInto;
@@ -202,18 +202,6 @@ where
         None
     }
 
-    /// Retains the key-value pairs that satisfy the given predicate.
-    ///
-    /// It returns the number of entries remaining and removed.
-    ///
-    /// # Examples
-    /// ```
-    /// use scc::HashIndex;
-    /// ```
-    pub fn retain<F: Fn(&K, &V) -> bool>(&self, _f: F) -> (usize, usize) {
-        (0, 0)
-    }
-
     /// Clears all the key-value pairs.
     ///
     /// # Examples
@@ -221,7 +209,7 @@ where
     /// use scc::HashIndex;
     /// ```
     pub fn clear(&self) -> usize {
-        self.retain(|_, _| false).1
+        0
     }
 
     /// Returns an estimated size of the HashIndex.
@@ -232,9 +220,33 @@ where
     /// # Examples
     /// ```
     /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32, _> = Default::default();
+    ///
+    /// let result = hashindex.insert(1, 0);
+    /// assert!(result.is_ok());
+    ///
+    /// let result = hashindex.len(|capacity| capacity);
+    /// assert_eq!(result, 1);
+    ///
+    /// let result = hashindex.len(|capacity| capacity / 2);
+    /// assert!(result == 0 || result == 2);
     /// ```
-    pub fn len<F: FnOnce(usize) -> usize>(&self, _f: F) -> usize {
-        0
+    pub fn len<F: FnOnce(usize) -> usize>(&self, f: F) -> usize {
+        let guard = crossbeam_epoch::pin();
+        let current_array = self.array.load(Acquire, &guard);
+        let current_array_ref = self.array_ref(current_array);
+        let capacity = current_array_ref.capacity();
+        let num_samples = std::cmp::min(f(capacity), capacity).next_power_of_two();
+        let num_cells_to_sample = (num_samples / ARRAY_SIZE).max(1);
+        if !current_array_ref.old_array(&guard).is_null() {
+            for _ in 0..num_cells_to_sample {
+                if current_array_ref.partial_rehash(|key| self.hash(key), &guard) {
+                    break;
+                }
+            }
+        }
+        self.estimate(current_array_ref, num_cells_to_sample)
     }
 
     /// Returns the capacity of the HashIndex.
@@ -242,9 +254,21 @@ where
     /// # Examples
     /// ```
     /// use scc::HashIndex;
+    /// use std::collections::hash_map::RandomState;
+    ///
+    /// let hashindex: HashIndex<u64, u32, RandomState> = HashIndex::new(1000000, RandomState::new());
+    ///
+    /// let result = hashindex.capacity();
+    /// assert_eq!(result, 1048576);
     /// ```
     pub fn capacity(&self) -> usize {
-        0
+        let guard = crossbeam_epoch::pin();
+        let current_array = self.array.load(Acquire, &guard);
+        let current_array_ref = self.array_ref(current_array);
+        if !current_array_ref.old_array(&guard).is_null() {
+            current_array_ref.partial_rehash(|key| self.hash(key), &guard);
+        }
+        current_array_ref.capacity()
     }
 
     /// Returns a reference to its build hasher.
@@ -271,7 +295,13 @@ where
     /// use scc::HashIndex;
     /// ```
     pub fn iter(&self) -> Visitor<K, V, H> {
-        Visitor { _hash_index: self }
+        Visitor {
+            hash_index: self,
+            current_array: Shared::null(),
+            current_index: 0,
+            current_cell_iterator: None,
+            guard: None,
+        }
     }
 
     /// Returns the hash value of the given key.
@@ -456,7 +486,22 @@ where
     V: Clone + Sync,
     H: BuildHasher,
 {
-    fn drop(&mut self) {}
+    fn drop(&mut self) {
+        // The HashIndex has become unreachable, therefore pinning is unnecessary.
+        let guard = unsafe { crossbeam_epoch::unprotected() };
+        let current_array = self.array.load(Acquire, guard);
+        let current_array_ref = self.array_ref(current_array);
+        current_array_ref.drop_old_array(true, guard);
+        let array = self.array.swap(Shared::null(), Relaxed, guard);
+        if !array.is_null() {
+            let array = unsafe { array.into_owned() };
+            for index in 0..array.num_cells() {
+                if let Some(mut cell_locker) = CellLocker::lock(array.cell_ref(index), guard) {
+                    cell_locker.kill();
+                }
+            }
+        }
+    }
 }
 
 /// Visitor.
@@ -466,7 +511,23 @@ where
     V: Clone + Sync,
     H: BuildHasher,
 {
-    _hash_index: &'h HashIndex<K, V, H>,
+    hash_index: &'h HashIndex<K, V, H>,
+    current_array: Shared<'h, Array<K, V>>,
+    current_index: usize,
+    current_cell_iterator: Option<CellIterator<'h, K, V>>,
+    guard: Option<Guard>,
+}
+
+impl<'h, K, V, H> Visitor<'h, K, V, H>
+where
+    K: Clone + Eq + Hash + Sync,
+    V: Clone + Sync,
+    H: BuildHasher,
+{
+    fn guard_ref(&self) -> &'h Guard {
+        // The Rust type system cannot prove that self.guard outlives.
+        unsafe { std::mem::transmute::<_, &'h Guard>(self.guard.as_ref().unwrap()) }
+    }
 }
 
 impl<'h, K, V, H> Iterator for Visitor<'h, K, V, H>
@@ -477,6 +538,31 @@ where
 {
     type Item = (&'h K, &'h V);
     fn next(&mut self) -> Option<Self::Item> {
+        if self.guard.is_none() {
+            // Starts scanning.
+            self.guard.replace(crossbeam_epoch::pin());
+            self.current_array = self.hash_index.array.load(Acquire, self.guard_ref());
+            if !self.current_array.is_null() {
+                self.current_cell_iterator.replace(CellIterator::new(
+                    self.hash_index.array_ref(self.current_array).cell_ref(0),
+                    self.guard_ref(),
+                ));
+            }
+        }
+        loop {
+            if let Some(iterator) = self.current_cell_iterator.as_mut() {
+                // Proceeds to the next entry in the Cell.
+                if let Some(entry) = iterator.next() {
+                    return Some((&entry.0, &entry.1));
+                }
+            }
+            // Proceeds to the next Cell.
+            let array_ref = self.hash_index.array_ref(self.current_array);
+            if self.current_index == array_ref.num_cells() {
+                // [TODO]
+                break;
+            }
+        }
         None
     }
 }
