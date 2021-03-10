@@ -5,6 +5,6 @@ authors = ["wvwwvwwv <wvwwvwwv@me.com>"]
 edition = "2018"
 
 [dependencies]
-proptest = "^0.10.1"
+proptest = "^1.0.0"
 rand = "^0.8.3"
 scc = { path = ".." }

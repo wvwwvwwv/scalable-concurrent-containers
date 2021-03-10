@@ -706,7 +706,7 @@ where
         // There are two cases.
         //  1. The thread reads an old version of self.array.
         //    If there is another thread having read the latest version of self.array,
-        //    trying to insert the same key, it will try to kill the cell in the old version
+        //    trying to insert the same key, it will try to kill the Cell in the old version
         //    of self.array, thus competing with each other.
         //  2. The thread reads the latest version of self.array.
         //    Tf the array is deprecated while inserting the key, it falls into case 1.
@@ -731,7 +731,7 @@ where
                         entry_ptr,
                     };
                 } else if !cell_locker.killed() {
-                    // Kills the cell.
+                    // Kills the Cell.
                     current_array_ref.kill_cell(
                         &mut cell_locker,
                         Self::array(old_array),
@@ -1071,7 +1071,7 @@ where
 /// Accessor owns a key-value pair in the HashMap.
 ///
 /// It is !Send, thus disallowing other threads to have references to it.
-/// It acquires an exclusive lock on the cell managing the key.
+/// It acquires an exclusive lock on the Cell managing the key.
 /// A thread having multiple Accessor or Cursor instances poses a possibility of deadlock.
 pub struct Accessor<'h, K, V, H>
 where
@@ -1146,7 +1146,7 @@ where
 /// Cursor implements Iterator for HashMap.
 ///
 /// It is !Send, thus disallowing other threads to have references to it.
-/// It acquires an exclusive lock on the cell that is currently being visited.
+/// It acquires an exclusive lock on the Cell that is currently being visited.
 /// A thread having multiple Accessor or Cursor instances poses a possibility of deadlock.
 pub struct Cursor<'h, K, V, H>
 where

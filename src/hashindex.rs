@@ -140,8 +140,30 @@ where
     pub fn remove(&self, key: &K) -> bool {
         let (hash, partial_hash) = self.hash(key);
         let guard = crossbeam_epoch::pin();
-        let (cell_locker, _) = self.lock(hash, &guard);
-        cell_locker.remove(key, partial_hash, &guard)
+        let (cell_locker, cell_index) = self.lock(hash, &guard);
+        if cell_locker.remove(key, partial_hash, &guard) {
+            if cell_locker.cell_ref().num_entries() == 0 && cell_index < ARRAY_SIZE {
+                drop(cell_locker);
+                let current_array = self.array.load(Acquire, &guard);
+                let current_array_ref = self.array_ref(current_array);
+                if current_array_ref.old_array(&guard).is_null()
+                    && current_array_ref.capacity() > self.minimum_capacity
+                {
+                    // Triggers resize if the estimated load factor is smaller than 1/16.
+                    let sample_size = current_array_ref.num_sample_size();
+                    let mut num_entries = 0;
+                    for i in 0..sample_size {
+                        num_entries += current_array_ref.cell_ref(i).num_entries();
+                        if num_entries >= sample_size * ARRAY_SIZE / 16 {
+                            return true;
+                        }
+                    }
+                    self.resize(&guard);
+                }
+            }
+            return true;
+        }
+        false
     }
 
     /// Reads a key-value pair.
@@ -207,9 +229,44 @@ where
     /// # Examples
     /// ```
     /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32, _> = Default::default();
+    ///
+    /// let result = hashindex.insert(1, 0);
+    /// assert!(result.is_ok());
+    ///
+    /// let result = hashindex.len(|capacity| capacity);
+    /// assert_eq!(result, 1);
+    ///
+    /// hashindex.clear();
+    ///
+    /// let result = hashindex.len(|capacity| capacity);
+    /// assert_eq!(result, 0);
     /// ```
-    pub fn clear(&self) -> usize {
-        0
+    pub fn clear(&self) {
+        let guard = crossbeam_epoch::pin();
+        let mut current_array_shared = self.array.load(Acquire, &guard);
+        loop {
+            let current_array_ref = self.array_ref(current_array_shared);
+            let old_array_shared = current_array_ref.old_array(&guard);
+            if !old_array_shared.is_null() {
+                while !current_array_ref.partial_rehash(|key| self.hash(key), &guard) {
+                    continue;
+                }
+            }
+            for index in 0..current_array_ref.num_cells() {
+                if let Some(mut cell_locker) =
+                    CellLocker::lock(current_array_ref.cell_ref(index), &guard)
+                {
+                    cell_locker.purge(&guard);
+                }
+            }
+            let new_current_array_shared = self.array.load(Acquire, &guard);
+            if current_array_shared == new_current_array_shared {
+                break;
+            }
+            current_array_shared = new_current_array_shared;
+        }
     }
 
     /// Returns an estimated size of the HashIndex.
@@ -293,6 +350,19 @@ where
     /// # Examples
     /// ```
     /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32, _> = Default::default();
+    ///
+    /// let result = hashindex.insert(1, 0);
+    /// assert!(result.is_ok());
+    ///
+    /// let mut iter = hashindex.iter();
+    /// assert_eq!(iter.next(), Some((&1, &0)));
+    /// assert_eq!(iter.next(), None);
+    ///
+    /// for iter in hashindex.iter() {
+    ///     assert_eq!(iter, (&1, &0));
+    /// }
     /// ```
     pub fn iter(&self) -> Visitor<K, V, H> {
         Visitor {
@@ -375,7 +445,7 @@ where
                 if let Some(mut cell_locker) =
                     CellLocker::lock(old_array_ref.cell_ref(cell_index), guard)
                 {
-                    // Kills the cell.
+                    // Kills the Cell.
                     current_array_ref.kill_cell(
                         &mut cell_locker,
                         old_array_ref,
@@ -504,7 +574,10 @@ where
     }
 }
 
-/// Visitor.
+/// Visitor implements the Iterator trait.
+///
+/// It is guaranteed to visit a key-value pair that exists at the time the Visitor is created,
+/// and outlives the Visitor. However, the same key-value pair can be visited more than once.
 pub struct Visitor<'h, K, V, H>
 where
     K: Clone + Eq + Hash + Sync,
@@ -541,13 +614,18 @@ where
         if self.guard.is_none() {
             // Starts scanning.
             self.guard.replace(crossbeam_epoch::pin());
-            self.current_array = self.hash_index.array.load(Acquire, self.guard_ref());
-            if !self.current_array.is_null() {
-                self.current_cell_iterator.replace(CellIterator::new(
-                    self.hash_index.array_ref(self.current_array).cell_ref(0),
-                    self.guard_ref(),
-                ));
-            }
+            let current_array = self.hash_index.array.load(Acquire, self.guard_ref());
+            let current_array_ref = self.hash_index.array_ref(current_array);
+            let old_array = current_array_ref.old_array(self.guard_ref());
+            self.current_array = if !old_array.is_null() {
+                old_array
+            } else {
+                current_array
+            };
+            self.current_cell_iterator.replace(CellIterator::new(
+                self.hash_index.array_ref(self.current_array).cell_ref(0),
+                self.guard_ref(),
+            ));
         }
         loop {
             if let Some(iterator) = self.current_cell_iterator.as_mut() {
@@ -558,9 +636,42 @@ where
             }
             // Proceeds to the next Cell.
             let array_ref = self.hash_index.array_ref(self.current_array);
+            self.current_index += 1;
             if self.current_index == array_ref.num_cells() {
-                // [TODO]
-                break;
+                let current_array = self.hash_index.array.load(Acquire, self.guard_ref());
+                if self.current_array == current_array {
+                    // Finished scanning the entire array.
+                    break;
+                }
+                let current_array_ref = self.hash_index.array_ref(current_array);
+                let old_array = current_array_ref.old_array(self.guard_ref());
+                if self.current_array == old_array {
+                    // Starts scanning the current array.
+                    self.current_array = current_array;
+                    self.current_index = 0;
+                    self.current_cell_iterator.replace(CellIterator::new(
+                        self.hash_index.array_ref(self.current_array).cell_ref(0),
+                        self.guard_ref(),
+                    ));
+                    continue;
+                }
+                // Starts from the very beginning.
+                self.current_array = if !old_array.is_null() {
+                    old_array
+                } else {
+                    current_array
+                };
+                self.current_index = 0;
+                self.current_cell_iterator.replace(CellIterator::new(
+                    self.hash_index.array_ref(self.current_array).cell_ref(0),
+                    self.guard_ref(),
+                ));
+                continue;
+            } else {
+                self.current_cell_iterator.replace(CellIterator::new(
+                    array_ref.cell_ref(self.current_index),
+                    self.guard_ref(),
+                ));
             }
         }
         None

@@ -4,78 +4,13 @@ mod hashmap_test {
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
     use scc::HashMap;
-    use std::alloc::{GlobalAlloc, Layout, System};
     use std::collections::hash_map::RandomState;
     use std::collections::BTreeSet;
     use std::hash::{Hash, Hasher};
     use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
-    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
+    use std::sync::atomic::{AtomicU64, AtomicUsize};
     use std::sync::{Arc, Barrier};
     use std::thread;
-
-    struct MemoryTester {
-        allocated_size: AtomicUsize,
-        random_panic: AtomicBool,
-    }
-
-    unsafe impl GlobalAlloc for MemoryTester {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            debug_assert!(!self.random_panic.load(Relaxed) || rand::random::<u32>() % 4 != 0);
-            let ret = System.alloc(layout);
-            if !ret.is_null() {
-                debug_assert!(self.allocated_size.fetch_add(layout.size(), Relaxed) != usize::MAX);
-            } else {
-                panic!("memory allocation failed");
-            }
-            return ret;
-        }
-
-        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            System.dealloc(ptr, layout);
-            debug_assert!(self.allocated_size.fetch_sub(layout.size(), Relaxed) > 0);
-        }
-    }
-
-    /*
-    impl MemoryTester {
-        fn panic_test(&self) {
-            std::panic::set_hook(Box::new(|_| println!("panic occurred somewhere")));
-
-            // panicking.rs:527 not OoM-safe - this test is disabled
-            for _ in 0..1024 {
-                let last_successful_insert = Arc::new(AtomicUsize::new(0));
-                let last_successful_insert_cloned = last_successful_insert.clone();
-                let hashmap: Arc<HashMap<usize, u16, _>> = Arc::new(Default::default());
-                let hashmap_cloned = hashmap.clone();
-                self.random_panic.store(true, Release);
-                if let Err(_) = std::panic::catch_unwind(move || {
-                    for i in 1..1025 {
-                        if hashmap_cloned.insert(i, 1).is_ok() {
-                            last_successful_insert_cloned.fetch_add(1, Relaxed);
-                        }
-                    }
-                }) {
-                    println!("panicked");
-                }
-                self.random_panic.store(false, Release);
-            }
-
-            let _ = std::panic::take_hook();
-        }
-    }
-
-    #[global_allocator]
-    static ALLOCATOR: MemoryTester = MemoryTester {
-        allocated_size: AtomicUsize::new(0),
-        random_panic: AtomicBool::new(false),
-    };
-
-    #[test]
-    #[ignore]
-    fn panic() {
-        ALLOCATOR.panic_test();
-    }
-     */
 
     proptest! {
         #[test]
@@ -385,6 +320,111 @@ mod hashmap_test {
                     w.1
                 );
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod hashindex_test {
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+    use scc::HashIndex;
+    use std::collections::hash_map::RandomState;
+    use std::collections::BTreeSet;
+    use std::sync::atomic::Ordering::{Acquire, Release};
+    use std::sync::atomic::{AtomicU64};
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    #[test]
+    fn string_key() {
+        let hashindex1: HashIndex<String, u32, RandomState> = Default::default();
+        let hashindex2: HashIndex<u32, String, RandomState> = Default::default();
+        let mut checker1 = BTreeSet::new();
+        let mut checker2 = BTreeSet::new();
+        let mut runner = TestRunner::default();
+        let test_size = 4096;
+        for i in 0..test_size {
+            let prop_str = "[a-z]{1,16}".new_tree(&mut runner).unwrap();
+            let str_val = prop_str.current();
+            if hashindex1.insert(str_val.clone(), i).is_ok() {
+                checker1.insert((str_val.clone(), i));
+            }
+            if hashindex2.insert(i, str_val.clone()).is_ok() {
+                checker2.insert((i, str_val.clone()));
+            }
+        }
+        assert_eq!(hashindex1.len(|_| 65536), checker1.len());
+        assert_eq!(hashindex2.len(|_| 65536), checker2.len());
+        for iter in checker1 {
+            assert!(hashindex1.remove(&iter.0));
+        }
+        for iter in checker2 {
+            assert!(hashindex2.remove(&iter.0));
+        }
+        assert_eq!(hashindex1.len(|_| 65536), 0);
+        assert_eq!(hashindex2.len(|_| 65536), 0);
+    }
+
+    #[test]
+    fn cursor() {
+        let data_size = 4096;
+        for _ in 0..64 {
+            let hashindex: Arc<HashIndex<u64, u64, RandomState>> = Arc::new(Default::default());
+            let hashindex_copied = hashindex.clone();
+            let barrier = Arc::new(Barrier::new(2));
+            let barrier_copied = barrier.clone();
+            let inserted = Arc::new(AtomicU64::new(0));
+            let inserted_copied = inserted.clone();
+            let removed = Arc::new(AtomicU64::new(data_size));
+            let removed_copied = removed.clone();
+            let thread_handle = thread::spawn(move || {
+                // test insert
+                for _ in 0..2 {
+                    barrier_copied.wait();
+                    let mut scanned = 0;
+                    let mut checker = BTreeSet::new();
+                    let max = inserted_copied.load(Acquire);
+                    for iter in hashindex_copied.iter() {
+                        scanned += 1;
+                        checker.insert(*iter.0);
+                    }
+                    println!("scanned: {}, max: {}", scanned, max);
+                    for key in 0..max {
+                        assert!(checker.contains(&key));
+                    }
+                }
+                // test remove
+                for _ in 0..2 {
+                    barrier_copied.wait();
+                    let mut scanned = 0;
+                    let max = removed_copied.load(Acquire);
+                    for iter in hashindex_copied.iter() {
+                        scanned += 1;
+                        assert!(*iter.0 < max);
+                    }
+                    println!("scanned: {}, max: {}", scanned, max);
+                }
+            });
+            // insert
+            barrier.wait();
+            for i in 0..data_size {
+                if i == data_size / 2 {
+                    barrier.wait();
+                }
+                assert!(hashindex.insert(i, i).is_ok());
+                inserted.store(i, Release);
+            }
+            // remove
+            barrier.wait();
+            for i in (0..data_size).rev() {
+                if i == data_size / 2 {
+                    barrier.wait();
+                }
+                assert!(hashindex.remove(&i));
+                removed.store(i, Release);
+            }
+            thread_handle.join().unwrap();
         }
     }
 }

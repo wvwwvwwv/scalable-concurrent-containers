@@ -52,13 +52,15 @@ impl<K: Clone + Eq, V: Clone> Cell<K, V> {
 
     /// Searches for an entry associated with the given key.
     pub fn search<'g>(&self, key: &K, partial_hash: u8, guard: &'g Guard) -> Option<&'g (K, V)> {
-        let mut data_array = self.data.load(Relaxed, guard);
+        // In order to read the linked list correctly, an acquire fence is required.
+        let mut data_array = self.data.load(Acquire, guard);
         let preferred_index = partial_hash as usize % ARRAY_SIZE;
         while !data_array.is_null() {
             let data_array_ref = unsafe { data_array.deref() };
             let preferred_index_hash = data_array_ref.partial_hash_array[preferred_index];
             if preferred_index_hash == ((partial_hash & (!REMOVED)) | OCCUPIED) {
                 let entry_ptr = data_array_ref.data[preferred_index].as_ptr();
+                std::sync::atomic::fence(Acquire);
                 if unsafe { &(*entry_ptr) }.0 == *key {
                     return Some(unsafe { &(*entry_ptr) });
                 }
@@ -69,12 +71,13 @@ impl<K: Clone + Eq, V: Clone> Cell<K, V> {
                 }
                 if *hash == ((partial_hash & (!REMOVED)) | OCCUPIED) {
                     let entry_ptr = data_array_ref.data[index].as_ptr();
+                    std::sync::atomic::fence(Acquire);
                     if unsafe { &(*entry_ptr) }.0 == *key {
                         return Some(unsafe { &(*entry_ptr) });
                     }
                 }
             }
-            data_array = data_array_ref.link.load(Relaxed, guard);
+            data_array = data_array_ref.link.load(Acquire, guard);
         }
         None
     }
@@ -167,7 +170,7 @@ impl<'g, K: Clone + Eq, V: Clone> Iterator for CellIterator<'g, K, V> {
         if let Some(&cell_ref) = self.cell_ref.as_ref() {
             if self.current_array.is_null() {
                 // Starts scanning from the beginning.
-                self.current_array = cell_ref.data.load(Relaxed, self.guard_ref);
+                self.current_array = cell_ref.data.load(Acquire, self.guard_ref);
             }
             while !self.current_array.is_null() {
                 // Search for the next valid entry.
@@ -180,6 +183,7 @@ impl<'g, K: Clone + Eq, V: Clone> Iterator for CellIterator<'g, K, V> {
                 for index in start_index..ARRAY_SIZE {
                     let hash = array_ref.partial_hash_array[index];
                     if (hash & OCCUPIED) != 0 && (hash & REMOVED) == 0 {
+                        std::sync::atomic::fence(Acquire);
                         self.current_index = index;
                         let entry_ptr = array_ref.data[index].as_ptr();
                         return Some(unsafe { &(*entry_ptr) });
@@ -187,7 +191,7 @@ impl<'g, K: Clone + Eq, V: Clone> Iterator for CellIterator<'g, K, V> {
                 }
 
                 // Proceeds to the next DataArray.
-                self.current_array = array_ref.link.load(Relaxed, self.guard_ref);
+                self.current_array = array_ref.link.load(Acquire, self.guard_ref);
                 self.current_index = usize::MAX;
             }
             // Fuses itself.
@@ -273,6 +277,7 @@ impl<'g, K: Clone + Eq, V: Clone> CellLocker<'g, K, V> {
             std::sync::atomic::fence(Release);
             array_ref.partial_hash_array[free_index] = (partial_hash & (!REMOVED)) | OCCUPIED;
         } else {
+            // Inserts a new DataArray at the head.
             let mut new_data_array = Owned::new(DataArray::new());
             unsafe {
                 new_data_array.data[preferred_index]
@@ -335,6 +340,15 @@ impl<'g, K: Clone + Eq, V: Clone> CellLocker<'g, K, V> {
         self.kill_on_drop = true;
     }
 
+    /// Purges all the data.
+    pub fn purge(&mut self, guard: &Guard) {
+        let data_array_shared = self.cell_ref.data.swap(Shared::null(), Relaxed, guard);
+        if !data_array_shared.is_null() {
+            unsafe { guard.defer_destroy(data_array_shared) };
+        }
+        self.cell_ref.num_entries.store(0, Relaxed);
+    }
+
     fn try_lock(cell: &'g Cell<K, V>, guard: &'g Guard) -> Option<CellLocker<'g, K, V>> {
         let current = cell.wait_queue.load(Relaxed, guard);
         if current.tag() == 0 {
@@ -360,14 +374,7 @@ impl<'g, K: Clone + Eq, V: Clone> Drop for CellLocker<'g, K, V> {
         if self.kill_on_drop {
             // Drops the data.
             guard.replace(crossbeam_epoch::pin());
-            let data_array_shared =
-                self.cell_ref
-                    .data
-                    .swap(Shared::null(), Relaxed, guard.as_ref().unwrap());
-            if !data_array_shared.is_null() {
-                unsafe { guard.as_ref().unwrap().defer_destroy(data_array_shared) };
-            }
-            self.cell_ref.num_entries.store(0, Relaxed);
+            self.purge(guard.as_ref().unwrap());
         }
 
         let mut current = self
@@ -429,7 +436,7 @@ impl<K: Clone + Eq, V: Clone> DataArray<K, V> {
 impl<K: Clone + Eq, V: Clone> Drop for DataArray<K, V> {
     fn drop(&mut self) {
         for (index, hash) in self.partial_hash_array.iter().enumerate() {
-            if (hash & OCCUPIED) != 0 {
+            if (hash & OCCUPIED) == OCCUPIED {
                 let entry_mut_ptr = self.data[index].as_mut_ptr();
                 unsafe { std::ptr::drop_in_place(entry_mut_ptr) };
             }

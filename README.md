@@ -3,7 +3,7 @@
 The crate offers highly scalable concurrent containers written in the Rust language.
 
 - [scc::HashMap](#hashmap) is a concurrent hash map.
-- [scc::HashIndex](#hashindex) is similar to scc::HashMap whereas it allows lock-free read.
+- [scc::HashIndex](#hashindex) is a concurrent hash index allowing lock-free read and scan.
 - [scc::TreeIndex](#treeindex) is a concurrent B+ tree allowing lock-free read and scan.
 
 The read/write operations on a single key-value pair of scc::HashMap are linearizable while that of scc::HashIndex and scc::TreeIndex are similar to snapshot isolation.
@@ -56,7 +56,6 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 
 ## scc::HashIndex <a name="hashindex"></a>
 
-[Work-in-progress](##milestones)
 - Not fully implemented.
 - Not optimized.
 
