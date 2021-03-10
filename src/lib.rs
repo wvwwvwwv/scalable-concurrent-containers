@@ -22,6 +22,7 @@ pub use hashmap::HashMap;
 // scc::HashIndex
 mod hashindex;
 pub use hashindex::HashIndex;
+pub use hashindex::Visitor;
 
 // scc::TreeIndex
 mod treeindex;
