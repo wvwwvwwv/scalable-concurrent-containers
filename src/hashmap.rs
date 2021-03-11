@@ -22,10 +22,10 @@ const DEFAULT_CAPACITY: usize = 64;
 /// Each metadata cell owns a customized 8-byte read-write mutex to protect the data structure.
 ///
 /// ## The key features of scc::HashMap
-/// * Non-sharded: the data is managed by a singled metadata cell array.
+/// * Non-sharded: the data is managed by a single metadata cell array.
 /// * Automatic resizing: it automatically grows or shrinks.
 /// * Non-blocking resizing: resizing does not block other threads.
-/// * Incremental resizing: each access to the data structure relocates a certain number of key-value pairs.
+/// * Incremental resizing: each access to the data structure is mandated to rehash a certain number of key-value pairs.
 /// * Optimized resizing: key-value pairs in a single metadata cell are guaranteed to be relocated to adjacent cells.
 /// * No busy waiting: the customized mutex never spins.
 ///
