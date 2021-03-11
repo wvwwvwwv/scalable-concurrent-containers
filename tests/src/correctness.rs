@@ -331,8 +331,8 @@ mod hashindex_test {
     use scc::HashIndex;
     use std::collections::hash_map::RandomState;
     use std::collections::BTreeSet;
+    use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering::{Acquire, Release};
-    use std::sync::atomic::{AtomicU64};
     use std::sync::{Arc, Barrier};
     use std::thread;
 

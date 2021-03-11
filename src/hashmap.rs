@@ -9,8 +9,8 @@ use std::collections::hash_map::RandomState;
 use std::convert::TryInto;
 use std::fmt;
 use std::hash::{BuildHasher, Hash, Hasher};
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 const DEFAULT_CAPACITY: usize = 64;
 
@@ -43,7 +43,7 @@ where
     H: BuildHasher,
 {
     array: Atomic<Array<K, V>>,
-    minimum_capacity: usize,
+    minimum_capacity: AtomicUsize,
     resize_mutex: AtomicBool,
     build_hasher: H,
 }
@@ -73,7 +73,7 @@ where
     fn default() -> Self {
         HashMap {
             array: Atomic::new(Array::<K, V>::new(DEFAULT_CAPACITY, Atomic::null())),
-            minimum_capacity: DEFAULT_CAPACITY,
+            minimum_capacity: AtomicUsize::new(DEFAULT_CAPACITY),
             resize_mutex: AtomicBool::new(false),
             build_hasher: RandomState::new(),
         }
@@ -111,11 +111,53 @@ where
     /// ```
     pub fn new(capacity: usize, build_hasher: H) -> HashMap<K, V, H> {
         let initial_capacity = capacity.max(DEFAULT_CAPACITY);
+        let array = Owned::new(Array::<K, V>::new(initial_capacity, Atomic::null()));
+        let current_capacity = array.capacity();
         HashMap {
-            array: Atomic::new(Array::<K, V>::new(initial_capacity, Atomic::null())),
-            minimum_capacity: initial_capacity,
+            array: Atomic::from(array),
+            minimum_capacity: AtomicUsize::new(current_capacity),
             resize_mutex: AtomicBool::new(false),
             build_hasher,
+        }
+    }
+
+    /// Adjusts the minimum capacity of the HashMap, and returns the original capacity.
+    ///
+    /// The given capacity is implicitly adjusted to be a power of two and not less then 64.
+    ///
+    /// # Examples
+    /// ```
+    /// use scc::HashMap;
+    /// use std::collections::hash_map::RandomState;
+    ///
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(1000000, RandomState::new());
+    ///
+    /// let result = hashmap.capacity();
+    /// assert_eq!(result, 1048576);
+    ///
+    /// let result = hashmap.adjust(256);
+    /// assert_eq!(result, 1048576);
+    /// assert_eq!(hashmap.capacity(), 256);
+    /// ```
+    pub fn adjust(&self, capacity: usize) -> usize {
+        let new_capacity = capacity.max(DEFAULT_CAPACITY).next_power_of_two();
+        let mut current_capacity = self.minimum_capacity.load(Relaxed);
+        loop {
+            if current_capacity == new_capacity {
+                return current_capacity;
+            }
+            match self.minimum_capacity.compare_exchange(
+                current_capacity,
+                new_capacity,
+                Relaxed,
+                Relaxed,
+            ) {
+                Ok(current) => {
+                    self.resize();
+                    return current;
+                }
+                Err(current) => current_capacity = current,
+            }
         }
     }
 
@@ -709,7 +751,7 @@ where
         //    trying to insert the same key, it will try to kill the Cell in the old version
         //    of self.array, thus competing with each other.
         //  2. The thread reads the latest version of self.array.
-        //    Tf the array is deprecated while inserting the key, it falls into case 1.
+        //    If the array is deprecated while inserting the key, it falls into case 1.
         loop {
             // An acquire fence is required to correctly load the contents of the array.
             let current_array = self.array.load(Acquire, &guard);
@@ -757,7 +799,7 @@ where
         }
     }
 
-    /// Erases a key-value pair owned by the accessor.
+    /// Erases a key-value pair owned by the Accessor.
     fn erase<'h>(&'h self, mut accessor: Accessor<'h, K, V, H>) -> V {
         let value = Array::<K, V>::extract_key_value(accessor.entry_ptr).1;
         accessor.cell_locker.remove(
@@ -772,7 +814,7 @@ where
             let current_array = self.array.load(Acquire, &guard);
             let current_array_ref = Self::array(current_array);
             if current_array_ref.old_array(&guard).is_null()
-                && current_array_ref.capacity() > self.minimum_capacity
+                && current_array_ref.capacity() > self.minimum_capacity.load(Relaxed)
             {
                 // Triggers resize if the estimated load factor is smaller than 1/16.
                 let sample_size = current_array_ref.num_sample_size();
@@ -1003,7 +1045,7 @@ where
                 // Shrinks to fit.
                 estimated_num_entries
                     .next_power_of_two()
-                    .max(self.minimum_capacity)
+                    .max(self.minimum_capacity.load(Relaxed))
             } else {
                 capacity
             };
