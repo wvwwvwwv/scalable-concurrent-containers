@@ -89,8 +89,8 @@ mod hashmap_test {
                 checker2.insert((i, str_val.clone()));
             }
         }
-        assert_eq!(hashmap1.len(|_| 65536), checker1.len());
-        assert_eq!(hashmap2.len(|_| 65536), checker2.len());
+        assert_eq!(hashmap1.len(), checker1.len());
+        assert_eq!(hashmap2.len(), checker2.len());
         for iter in checker1 {
             let v = hashmap1.remove(&iter.0);
             assert_eq!(v.unwrap(), iter.1);
@@ -99,8 +99,8 @@ mod hashmap_test {
             let v = hashmap2.remove(&iter.0);
             assert_eq!(v.unwrap(), iter.1);
         }
-        assert_eq!(hashmap1.len(|_| 65536), 0);
-        assert_eq!(hashmap2.len(|_| 65536), 0);
+        assert_eq!(hashmap1.len(), 0);
+        assert_eq!(hashmap2.len(), 0);
     }
 
     #[test]
@@ -280,46 +280,6 @@ mod hashmap_test {
             assert_eq!(checker.load(Relaxed) as u64, range * 2);
             drop(hashmap);
             assert_eq!(checker.load(Relaxed), 0);
-        }
-    }
-
-    #[test]
-    fn sample() {
-        for s in vec![65536, 2097152] {
-            let hashmap: HashMap<usize, u8, RandomState> = HashMap::new(s, RandomState::new());
-            let step_size = s / 16;
-            let mut sample_warning_count = [(0usize, 0.0f32); 16];
-            for p in 0..16 {
-                for i in (p * step_size)..((p + 1) * step_size) {
-                    assert!(hashmap.insert(i, 0).is_ok());
-                }
-                let statistics = hashmap.statistics();
-                println!("{}/16: {}", p + 1, statistics);
-                for sample_size in 0..16 {
-                    let len = hashmap.len(|_| (1 << sample_size) * 16);
-                    let diff = if statistics.num_entries() > len {
-                        statistics.num_entries() - len
-                    } else {
-                        len - statistics.num_entries()
-                    };
-                    let div = diff as f32 / statistics.num_entries() as f32;
-                    if div > 0.05f32 {
-                        sample_warning_count[sample_size].0 += 1;
-                    }
-                    if div > sample_warning_count[sample_size].1 {
-                        sample_warning_count[sample_size].1 = div;
-                    }
-                    println!("{}/16: {};{};{}", p + 1, 1 << sample_size, len, div);
-                }
-            }
-            for (i, w) in sample_warning_count.iter().enumerate() {
-                println!(
-                    "sample cells: {}, errors > 0.05: {}, max: {}",
-                    1 << i,
-                    w.0,
-                    w.1
-                );
-            }
         }
     }
 }

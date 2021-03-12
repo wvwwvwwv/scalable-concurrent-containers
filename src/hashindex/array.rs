@@ -22,7 +22,7 @@ impl<K: Clone + Eq, V: Clone> Array<K, V> {
         Array {
             cell_array,
             cell_array_capacity,
-            lb_capacity: lb_capacity,
+            lb_capacity,
             rehashing: AtomicUsize::new(0),
             rehashed: AtomicUsize::new(0),
             old_array: current_array,

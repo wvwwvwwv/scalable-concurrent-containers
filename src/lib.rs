@@ -18,6 +18,7 @@ mod hashmap;
 pub use hashmap::Accessor;
 pub use hashmap::Cursor;
 pub use hashmap::HashMap;
+pub use hashmap::Ticket;
 
 // scc::HashIndex
 mod hashindex;

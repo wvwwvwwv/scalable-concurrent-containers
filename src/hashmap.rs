@@ -43,7 +43,8 @@ where
     H: BuildHasher,
 {
     array: Atomic<Array<K, V>>,
-    minimum_capacity: AtomicUsize,
+    minimum_capacity: usize,
+    additional_capacity: AtomicUsize,
     resize_mutex: AtomicBool,
     build_hasher: H,
 }
@@ -73,7 +74,8 @@ where
     fn default() -> Self {
         HashMap {
             array: Atomic::new(Array::<K, V>::new(DEFAULT_CAPACITY, Atomic::null())),
-            minimum_capacity: AtomicUsize::new(DEFAULT_CAPACITY),
+            minimum_capacity: DEFAULT_CAPACITY,
+            additional_capacity: AtomicUsize::new(0),
             resize_mutex: AtomicBool::new(false),
             build_hasher: RandomState::new(),
         }
@@ -115,48 +117,54 @@ where
         let current_capacity = array.capacity();
         HashMap {
             array: Atomic::from(array),
-            minimum_capacity: AtomicUsize::new(current_capacity),
+            minimum_capacity: current_capacity,
+            additional_capacity: AtomicUsize::new(0),
             resize_mutex: AtomicBool::new(false),
             build_hasher,
         }
     }
 
-    /// Adjusts the minimum capacity of the HashMap, and returns the original capacity.
+    /// Temporarily sets the minimum capacity of the HashMap higher.
     ///
-    /// The given capacity is implicitly adjusted to be a power of two and not less then 64.
+    /// If the additionally reserved space is not used when the returned Ticket is dropped,
+    /// the space can be reclaimed shortly afterwards.
     ///
     /// # Examples
     /// ```
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(1000000, RandomState::new());
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(1000, RandomState::new());
+    /// assert_eq!(hashmap.capacity(), 1024);
     ///
-    /// let result = hashmap.capacity();
-    /// assert_eq!(result, 1048576);
+    /// let ticket = hashmap.book(10000);
+    /// assert!(ticket.is_some());
+    /// assert_eq!(hashmap.capacity(), 16384);
+    /// drop(ticket);
     ///
-    /// let result = hashmap.adjust(256);
-    /// assert_eq!(result, 1048576);
-    /// assert_eq!(hashmap.capacity(), 256);
+    /// assert_eq!(hashmap.capacity(), 1024);
     /// ```
-    pub fn adjust(&self, capacity: usize) -> usize {
-        let new_capacity = capacity.max(DEFAULT_CAPACITY).next_power_of_two();
-        let mut current_capacity = self.minimum_capacity.load(Relaxed);
+    pub fn book(&self, capacity: usize) -> Option<Ticket<K, V, H>> {
+        let mut current_additional_capacity = self.additional_capacity.load(Relaxed);
         loop {
-            if current_capacity == new_capacity {
-                return current_capacity;
+            if usize::MAX - self.minimum_capacity - current_additional_capacity <= capacity {
+                // The given value is too large.
+                return None;
             }
-            match self.minimum_capacity.compare_exchange(
-                current_capacity,
-                new_capacity,
+            match self.additional_capacity.compare_exchange(
+                current_additional_capacity,
+                current_additional_capacity + capacity,
                 Relaxed,
                 Relaxed,
             ) {
-                Ok(current) => {
+                Ok(_) => {
                     self.resize();
-                    return current;
+                    return Some(Ticket {
+                        hash_map: self,
+                        increment: capacity,
+                    });
                 }
-                Err(current) => current_capacity = current,
+                Err(current) => current_additional_capacity = current,
             }
         }
     }
@@ -503,10 +511,11 @@ where
         self.retain(|_, _| false).1
     }
 
-    /// Returns an estimated size of the HashMap.
+    /// Returns the number of entries in the HashMap.
     ///
-    /// The given function determines the sampling size.
-    /// A function returning a fixed number larger than u16::MAX yields around 99% accuracy.
+    /// It scans the entire metadata cell array to calculate the number of valid entries,
+    /// making its time complexity O(N).
+    /// Apart from being inefficient, it may return a smaller number when the HashMap is being resized.
     ///
     /// # Examples
     /// ```
@@ -521,27 +530,25 @@ where
     ///     assert!(false);
     /// }
     ///
-    /// let result = hashmap.len(|capacity| capacity);
+    /// let result = hashmap.len();
     /// assert_eq!(result, 1);
-    ///
-    /// let result = hashmap.len(|capacity| capacity / 2);
-    /// assert!(result == 0 || result == 2);
     /// ```
-    pub fn len<F: FnOnce(usize) -> usize>(&self, f: F) -> usize {
+    pub fn len(&self) -> usize {
         let guard = crossbeam_epoch::pin();
         let current_array = self.array.load(Acquire, &guard);
         let current_array_ref = Self::array(current_array);
-        let capacity = current_array_ref.capacity();
-        let num_samples = std::cmp::min(f(capacity), capacity).next_power_of_two();
-        let num_cells_to_sample = (num_samples / ARRAY_SIZE).max(1);
-        if !current_array_ref.old_array(&guard).is_null() {
-            for _ in 0..num_cells_to_sample {
-                if current_array_ref.partial_rehash(|key| self.hash(key), &guard) {
-                    break;
-                }
+        let mut num_entries = 0;
+        for i in 0..current_array_ref.num_cells() {
+            num_entries += current_array_ref.cell(i).size();
+        }
+        let old_array = current_array_ref.old_array(&guard);
+        if !old_array.is_null() {
+            let old_array_ref = Self::array(old_array);
+            for i in 0..old_array_ref.num_cells() {
+                num_entries += old_array_ref.cell(i).size();
             }
         }
-        self.estimate(current_array_ref, num_cells_to_sample)
+        num_entries
     }
 
     /// Returns the capacity of the HashMap.
@@ -552,9 +559,7 @@ where
     /// use std::collections::hash_map::RandomState;
     ///
     /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(1000000, RandomState::new());
-    ///
-    /// let result = hashmap.capacity();
-    /// assert_eq!(result, 1048576);
+    /// assert_eq!(hashmap.capacity(), 1048576);
     /// ```
     pub fn capacity(&self) -> usize {
         let guard = crossbeam_epoch::pin();
@@ -814,7 +819,8 @@ where
             let current_array = self.array.load(Acquire, &guard);
             let current_array_ref = Self::array(current_array);
             if current_array_ref.old_array(&guard).is_null()
-                && current_array_ref.capacity() > self.minimum_capacity.load(Relaxed)
+                && current_array_ref.capacity()
+                    > self.minimum_capacity + self.additional_capacity.load(Relaxed)
             {
                 // Triggers resize if the estimated load factor is smaller than 1/16.
                 let sample_size = current_array_ref.num_sample_size();
@@ -1044,8 +1050,8 @@ where
             } else if estimated_num_entries <= capacity / 8 {
                 // Shrinks to fit.
                 estimated_num_entries
+                    .max(self.minimum_capacity + self.additional_capacity.load(Relaxed))
                     .next_power_of_two()
-                    .max(self.minimum_capacity.load(Relaxed))
             } else {
                 capacity
             };
@@ -1075,7 +1081,7 @@ where
     }
 
     /// Returns a reference to the Array instance.
-    fn array<'g>(array: Shared<'g, Array<K, V>>) -> &'g Array<K, V> {
+    fn array(array: Shared<Array<K, V>>) -> &Array<K, V> {
         unsafe { array.deref() }
     }
 
@@ -1107,6 +1113,35 @@ where
         if !array.is_null() {
             drop(unsafe { array.into_owned() });
         }
+    }
+}
+
+/// Ticket keeps the minimum capacity of the HashMap at a higher level.
+///
+/// The minimum capacity is lowered when the Ticket is dropped, thereby allowing unused space to be reclaimed.
+pub struct Ticket<'h, K, V, H>
+where
+    K: Eq + Hash + Sync,
+    V: Sync,
+    H: BuildHasher,
+{
+    hash_map: &'h HashMap<K, V, H>,
+    increment: usize,
+}
+
+impl<'h, K, V, H> Drop for Ticket<'h, K, V, H>
+where
+    K: Eq + Hash + Sync,
+    V: Sync,
+    H: BuildHasher,
+{
+    fn drop(&mut self) {
+        let result = self
+            .hash_map
+            .additional_capacity
+            .fetch_sub(self.increment, Relaxed);
+        self.hash_map.resize();
+        debug_assert!(result >= self.increment);
     }
 }
 
