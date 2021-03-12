@@ -91,7 +91,6 @@ where
     /// Creates an empty HashMap instance with the given capacity and build hasher.
     ///
     /// The actual capacity is equal to or greater than the given capacity.
-    /// It is recommended to give a capacity value that is larger than 16 * the number of threads to access the HashMap.
     ///
     /// # Panics
     ///
@@ -126,7 +125,11 @@ where
 
     /// Temporarily increases the minimum capacity of the HashMap.
     ///
-    /// Unused space can be immediately reclaimed when the returned Ticket is dropped,
+    /// Unused space can be immediately reclaimed when the returned Ticket is dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns None if the given value is too large.
     ///
     /// # Examples
     /// ```
@@ -214,7 +217,7 @@ where
         }
     }
 
-    /// Emplaces a key-value pair.
+    /// Constructs the value in-place.
     ///
     /// The given closure is never invoked if the key exists.
     ///
