@@ -124,10 +124,9 @@ where
         }
     }
 
-    /// Temporarily sets the minimum capacity of the HashMap higher.
+    /// Temporarily increases the minimum capacity of the HashMap.
     ///
-    /// If the additionally reserved space is not used when the returned Ticket is dropped,
-    /// the space can be reclaimed shortly afterwards.
+    /// Unused space can be immediately reclaimed when the returned Ticket is dropped,
     ///
     /// # Examples
     /// ```
@@ -216,6 +215,8 @@ where
     }
 
     /// Emplaces a key-value pair.
+    ///
+    /// The given closure is never invoked if the key exists.
     ///
     /// # Panics
     ///
