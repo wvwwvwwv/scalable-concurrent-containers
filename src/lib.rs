@@ -27,5 +27,6 @@ pub use hashindex::Visitor;
 
 // scc::TreeIndex
 mod treeindex;
+pub use treeindex::Range;
 pub use treeindex::Scanner;
 pub use treeindex::TreeIndex;

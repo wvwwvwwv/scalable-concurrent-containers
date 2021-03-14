@@ -7,7 +7,11 @@ use crossbeam_epoch::{Atomic, Guard, Owned};
 use error::{InsertError, RemoveError, SearchError};
 use leaf::{Leaf, LeafScanner};
 use node::Node;
+use std::cmp::Ordering;
 use std::fmt;
+use std::iter::FusedIterator;
+use std::ops::Bound::{Excluded, Included, Unbounded};
+use std::ops::RangeBounds;
 use std::sync::atomic::Ordering::{AcqRel, Acquire};
 
 /// A scalable concurrent tree map implementation.
@@ -313,10 +317,7 @@ where
         Scanner::new(self)
     }
 
-    /// Returns a Scanner that starts from the given key if it exists.
-    ///
-    /// In case the key does not exist, and there is a key that is greater than the given key,
-    /// a Scanner pointing to the key is returned.
+    /// Returns a Range that scans keys in the given range.
     ///
     /// # Examples
     /// ```
@@ -327,7 +328,7 @@ where
     /// let result = treeindex.insert(1, 10);
     /// assert!(result.is_ok());
     ///
-    /// for entry in treeindex.from(&2) {
+    /// for entry in treeindex.range(2..) {
     ///     assert!(false);
     /// }
     ///
@@ -338,14 +339,14 @@ where
     /// assert!(result.is_ok());
     ///
     /// let mut num_scanned = 0;
-    /// for entry in treeindex.from(&2) {
-    ///     assert!(*entry.0 == 2 || *entry.0 == 3);
+    /// for entry in treeindex.range(2..3) {
+    ///     assert!(*entry.0 == 2);
     ///     num_scanned += 1;
     /// }
-    /// assert_eq!(num_scanned, 2);
+    /// assert_eq!(num_scanned, 1);
     /// ```
-    pub fn from(&self, key: &K) -> Scanner<K, V> {
-        Scanner::from(self, key)
+    pub fn range<R: RangeBounds<K>>(&self, range: R) -> Range<K, V, R> {
+        Range::new(self, range)
     }
 }
 
@@ -398,56 +399,20 @@ where
 {
     tree: &'t TreeIndex<K, V>,
     leaf_scanner: Option<LeafScanner<'t, K, V>>,
-    from_iterator: bool,
     guard: Guard,
 }
 
-impl<'t, K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Scanner<'t, K, V> {
+impl<'t, K, V> Scanner<'t, K, V>
+where
+    K: Clone + Ord + Send + Sync,
+    V: Clone + Send + Sync,
+{
     fn new(tree: &'t TreeIndex<K, V>) -> Scanner<'t, K, V> {
         Scanner::<'t, K, V> {
             tree,
             leaf_scanner: None,
-            from_iterator: false,
             guard: crossbeam_epoch::pin(),
         }
-    }
-
-    fn from(tree: &'t TreeIndex<K, V>, min_allowed_key: &K) -> Scanner<'t, K, V> {
-        let mut scanner = Scanner::<'t, K, V> {
-            tree,
-            leaf_scanner: None,
-            from_iterator: false,
-            guard: crossbeam_epoch::pin(),
-        };
-        loop {
-            let root_node = tree.root.load(Acquire, &scanner.guard);
-            if root_node.is_null() {
-                // Empty.
-                scanner.from_iterator = true;
-                return scanner;
-            }
-            if let Ok(leaf_scanner) =
-                unsafe { &*root_node.as_raw() }.max_less(min_allowed_key, &scanner.guard)
-            {
-                scanner.leaf_scanner.replace(unsafe {
-                    // Prolongs the lifetime as the Rust type system cannot infer the actual lifetime correctly.
-                    std::mem::transmute::<_, LeafScanner<'t, K, V>>(leaf_scanner)
-                });
-                break;
-            }
-        }
-
-        while let Some((key_ref, _)) = scanner.next() {
-            if key_ref.cmp(min_allowed_key) != std::cmp::Ordering::Less {
-                scanner.from_iterator = true;
-                return scanner;
-            }
-        }
-
-        // No keys satisfy the condition.
-        scanner.leaf_scanner.take();
-        scanner.from_iterator = true;
-        scanner
     }
 }
 
@@ -458,15 +423,6 @@ where
 {
     type Item = (&'t K, &'t V);
     fn next(&mut self) -> Option<Self::Item> {
-        if self.from_iterator {
-            // It does not proceed to the next entry as it is supposed to point to a valid entry.
-            self.from_iterator = false;
-            if let Some(leaf_scanner) = self.leaf_scanner.as_ref() {
-                return leaf_scanner.get();
-            }
-            return None;
-        }
-
         // Starts scanning.
         if self.leaf_scanner.is_none() {
             loop {
@@ -502,7 +458,7 @@ where
                 while let Some(entry) = new_scanner.next() {
                     if min_allowed_key
                         .as_ref()
-                        .map_or_else(|| true, |&key| key.cmp(entry.0) == std::cmp::Ordering::Less)
+                        .map_or_else(|| true, |&key| key.cmp(entry.0) == Ordering::Less)
                     {
                         self.leaf_scanner.replace(new_scanner);
                         return Some(entry);
@@ -513,4 +469,161 @@ where
         }
         None
     }
+}
+
+impl<'t, K, V> FusedIterator for Scanner<'t, K, V>
+where
+    K: Clone + Ord + Send + Sync,
+    V: Clone + Send + Sync,
+{
+}
+
+/// Range represents a range of keys in the TreeIndex.
+pub struct Range<'t, K, V, R>
+where
+    K: Clone + Ord + Send + Sync,
+    V: Clone + Send + Sync,
+    R: RangeBounds<K>,
+{
+    tree: &'t TreeIndex<K, V>,
+    leaf_scanner: Option<LeafScanner<'t, K, V>>,
+    range: R,
+    guard: Guard,
+}
+
+impl<'t, K, V, R> Range<'t, K, V, R>
+where
+    K: Clone + Ord + Send + Sync,
+    V: Clone + Send + Sync,
+    R: RangeBounds<K>,
+{
+    fn new(tree: &'t TreeIndex<K, V>, range: R) -> Range<'t, K, V, R> {
+        Range::<'t, K, V, R> {
+            tree,
+            leaf_scanner: None,
+            range,
+            guard: crossbeam_epoch::pin(),
+        }
+    }
+
+    fn next_unbounded(&mut self) -> Option<(&'t K, &'t V)> {
+        // Starts scanning.
+        if self.leaf_scanner.is_none() {
+            loop {
+                let root_node = self.tree.root.load(Acquire, &self.guard);
+                if root_node.is_null() {
+                    // Empty.
+                    return None;
+                }
+                let min_allowed_key = match self.range.start_bound() {
+                    Excluded(key) => Some(key),
+                    Included(key) => Some(key),
+                    Unbounded => None,
+                };
+                if let Ok(leaf_scanner) = if let Some(min_allowed_key) = min_allowed_key {
+                    unsafe { &*root_node.as_raw() }.max_less(min_allowed_key, &self.guard)
+                } else {
+                    unsafe { &*root_node.as_raw() }.min(&self.guard)
+                } {
+                    self.leaf_scanner.replace(unsafe {
+                        // Prolongs the lifetime as the Rust type system cannot infer the actual lifetime correctly.
+                        std::mem::transmute::<_, LeafScanner<'t, K, V>>(leaf_scanner)
+                    });
+                    break;
+                }
+            }
+
+            // Recursive call.
+            while let Some((key_ref, value_ref)) = self.next() {
+                let (min_allowed_key, included) = match self.range.start_bound() {
+                    Excluded(key) => (Some(key), false),
+                    Included(key) => (Some(key), true),
+                    Unbounded => (None, false),
+                };
+                match key_ref.cmp(min_allowed_key.unwrap()) {
+                    Ordering::Less => {
+                        continue;
+                    }
+                    Ordering::Equal => {
+                        if included {
+                            return Some((key_ref, value_ref));
+                        }
+                    }
+                    Ordering::Greater => {
+                        return Some((key_ref, value_ref));
+                    }
+                }
+            }
+
+            // No keys satisfy the condition.
+            self.leaf_scanner.take();
+            return None;
+        }
+
+        // Proceeds to the next entry.
+        if let Some(mut scanner) = self.leaf_scanner.take() {
+            let min_allowed_key = scanner.get().map(|(key, _)| key);
+            if let Some(result) = scanner.next() {
+                self.leaf_scanner.replace(scanner);
+                return Some(result);
+            }
+            // Proceeds to the next leaf node.
+            while let Some(mut new_scanner) = unsafe {
+                // Checking min_allowed_key is necessary, because,
+                //  - Remove: merges two leaf nodes, therefore the unbounded leaf of the lower key node is relocated.
+                //  - Scanner: the unbounded leaf of the lower key node can be scanned twice after a jump.
+                std::mem::transmute::<_, Option<LeafScanner<'t, K, V>>>(scanner.jump(&self.guard))
+                    .take()
+            } {
+                while let Some(entry) = new_scanner.next() {
+                    if min_allowed_key
+                        .as_ref()
+                        .map_or_else(|| true, |&key| key.cmp(entry.0) == Ordering::Less)
+                    {
+                        self.leaf_scanner.replace(new_scanner);
+                        return Some(entry);
+                    }
+                }
+                scanner = new_scanner;
+            }
+        }
+        None
+    }
+}
+
+impl<'t, K, V, R> Iterator for Range<'t, K, V, R>
+where
+    K: Clone + Ord + Send + Sync,
+    V: Clone + Send + Sync,
+    R: RangeBounds<K>,
+{
+    type Item = (&'t K, &'t V);
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some((key_ref, value_ref)) = self.next_unbounded() {
+            match self.range.end_bound() {
+                Excluded(key) => {
+                    if key_ref.cmp(key) == Ordering::Less {
+                        return Some((key_ref, value_ref));
+                    }
+                }
+                Included(key) => {
+                    if key_ref.cmp(key) != Ordering::Greater {
+                        return Some((key_ref, value_ref));
+                    }
+                }
+                Unbounded => {
+                    return Some((key_ref, value_ref));
+                }
+            }
+        }
+        None
+    }
+}
+
+impl<'t, K, V, R> FusedIterator for Range<'t, K, V, R>
+where
+    K: Clone + Ord + Send + Sync,
+    V: Clone + Send + Sync,
+    R: RangeBounds<K>,
+{
 }
