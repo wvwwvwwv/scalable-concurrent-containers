@@ -981,6 +981,10 @@ where
         self.metadata
     }
 
+    pub fn max_entry(&self) -> Option<(&'a K, &'a V)> {
+        self.leaf.max()
+    }
+
     /// Returns a reference to the entry that the scanner is currently pointing to
     pub fn get(&self) -> Option<(&'a K, &'a V)> {
         if self.entry_ptr.is_null() {

@@ -7,6 +7,7 @@ use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::collections::hash_map::RandomState;
 use std::convert::TryInto;
 use std::hash::{BuildHasher, Hash, Hasher};
+use std::iter::FusedIterator;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
@@ -676,4 +677,12 @@ where
         }
         None
     }
+}
+
+impl<'h, K, V, H> FusedIterator for Visitor<'h, K, V, H>
+where
+    K: Clone + Eq + Hash + Sync,
+    V: Clone + Sync,
+    H: BuildHasher,
+{
 }

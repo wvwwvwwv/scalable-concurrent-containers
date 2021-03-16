@@ -9,6 +9,7 @@ use std::collections::hash_map::RandomState;
 use std::convert::TryInto;
 use std::fmt;
 use std::hash::{BuildHasher, Hash, Hasher};
+use std::iter::FusedIterator;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 
@@ -1300,6 +1301,14 @@ where
         }
         None
     }
+}
+
+impl<'h, K, V, H> FusedIterator for Cursor<'h, K, V, H>
+where
+    K: Eq + Hash + Sync,
+    V: Sync,
+    H: BuildHasher,
+{
 }
 
 /// Statistics shows aggregated views of the HashMap.

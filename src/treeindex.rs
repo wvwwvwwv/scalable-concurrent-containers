@@ -325,25 +325,29 @@ where
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
-    /// let result = treeindex.insert(1, 10);
-    /// assert!(result.is_ok());
+    /// for i in 0..10 {
+    ///     let result = treeindex.insert(i, 10);
+    ///     assert!(result.is_ok());
+    /// }
     ///
-    /// for entry in treeindex.range(2..) {
+    /// for entry in treeindex.range(1..1) {
     ///     assert!(false);
     /// }
     ///
-    /// let result = treeindex.insert(2, 11);
-    /// assert!(result.is_ok());
-    ///
-    /// let result = treeindex.insert(3, 13);
-    /// assert!(result.is_ok());
-    ///
-    /// let mut num_scanned = 0;
-    /// for entry in treeindex.range(2..3) {
-    ///     assert!(*entry.0 == 2);
-    ///     num_scanned += 1;
+    /// let mut scanned = 0;
+    /// for entry in treeindex.range(4..8) {
+    ///     assert!(*entry.0 >= 4 && *entry.0 < 8);
+    ///     scanned += 1;
     /// }
-    /// assert_eq!(num_scanned, 1);
+    /// assert_eq!(scanned, 4);
+    ///
+    /// scanned = 0;
+    /// for entry in treeindex.range(4..=8) {
+    ///     assert!(*entry.0 >= 4 && *entry.0 <= 8);
+    ///     scanned += 1;
+    /// }
+    /// assert_eq!(scanned, 5);
+
     /// ```
     pub fn range<R: RangeBounds<K>>(&self, range: R) -> Range<K, V, R> {
         Range::new(self, range)
@@ -488,6 +492,8 @@ where
     tree: &'t TreeIndex<K, V>,
     leaf_scanner: Option<LeafScanner<'t, K, V>>,
     range: R,
+    check_lower_bound: bool,
+    check_upper_bound: bool,
     guard: Guard,
 }
 
@@ -502,6 +508,8 @@ where
             tree,
             leaf_scanner: None,
             range,
+            check_lower_bound: true,
+            check_upper_bound: false,
             guard: crossbeam_epoch::pin(),
         }
     }
@@ -518,13 +526,33 @@ where
                 let min_allowed_key = match self.range.start_bound() {
                     Excluded(key) => Some(key),
                     Included(key) => Some(key),
-                    Unbounded => None,
+                    Unbounded => {
+                        self.check_lower_bound = false;
+                        None
+                    }
                 };
                 if let Ok(leaf_scanner) = if let Some(min_allowed_key) = min_allowed_key {
                     unsafe { &*root_node.as_raw() }.max_less(min_allowed_key, &self.guard)
                 } else {
                     unsafe { &*root_node.as_raw() }.min(&self.guard)
                 } {
+                    self.check_upper_bound = match self.range.end_bound() {
+                        Excluded(key) => {
+                            if let Some(max_entry) = leaf_scanner.max_entry() {
+                                max_entry.0.cmp(key) != Ordering::Less
+                            } else {
+                                false
+                            }
+                        }
+                        Included(key) => {
+                            if let Some(max_entry) = leaf_scanner.max_entry() {
+                                max_entry.0.cmp(key) == Ordering::Greater
+                            } else {
+                                false
+                            }
+                        }
+                        Unbounded => false,
+                    };
                     self.leaf_scanner.replace(unsafe {
                         // Prolongs the lifetime as the Rust type system cannot infer the actual lifetime correctly.
                         std::mem::transmute::<_, LeafScanner<'t, K, V>>(leaf_scanner)
@@ -532,32 +560,6 @@ where
                     break;
                 }
             }
-
-            // Recursive call.
-            while let Some((key_ref, value_ref)) = self.next() {
-                let (min_allowed_key, included) = match self.range.start_bound() {
-                    Excluded(key) => (Some(key), false),
-                    Included(key) => (Some(key), true),
-                    Unbounded => (None, false),
-                };
-                match key_ref.cmp(min_allowed_key.unwrap()) {
-                    Ordering::Less => {
-                        continue;
-                    }
-                    Ordering::Equal => {
-                        if included {
-                            return Some((key_ref, value_ref));
-                        }
-                    }
-                    Ordering::Greater => {
-                        return Some((key_ref, value_ref));
-                    }
-                }
-            }
-
-            // No keys satisfy the condition.
-            self.leaf_scanner.take();
-            return None;
         }
 
         // Proceeds to the next entry.
@@ -580,6 +582,23 @@ where
                         .as_ref()
                         .map_or_else(|| true, |&key| key.cmp(entry.0) == Ordering::Less)
                     {
+                        self.check_upper_bound = match self.range.end_bound() {
+                            Excluded(key) => {
+                                if let Some(max_entry) = new_scanner.max_entry() {
+                                    max_entry.0.cmp(key) != Ordering::Less
+                                } else {
+                                    false
+                                }
+                            }
+                            Included(key) => {
+                                if let Some(max_entry) = new_scanner.max_entry() {
+                                    max_entry.0.cmp(key) == Ordering::Greater
+                                } else {
+                                    false
+                                }
+                            }
+                            Unbounded => false,
+                        };
                         self.leaf_scanner.replace(new_scanner);
                         return Some(entry);
                     }
@@ -599,22 +618,42 @@ where
 {
     type Item = (&'t K, &'t V);
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some((key_ref, value_ref)) = self.next_unbounded() {
-            match self.range.end_bound() {
-                Excluded(key) => {
-                    if key_ref.cmp(key) == Ordering::Less {
-                        return Some((key_ref, value_ref));
+        while let Some((key_ref, value_ref)) = self.next_unbounded() {
+            if self.check_lower_bound {
+                match self.range.start_bound() {
+                    Excluded(key) => {
+                        if key_ref.cmp(key) != Ordering::Greater {
+                            continue;
+                        }
                     }
-                }
-                Included(key) => {
-                    if key_ref.cmp(key) != Ordering::Greater {
-                        return Some((key_ref, value_ref));
+                    Included(key) => {
+                        if key_ref.cmp(key) == Ordering::Less {
+                            continue;
+                        }
                     }
-                }
-                Unbounded => {
-                    return Some((key_ref, value_ref));
+                    Unbounded => (),
                 }
             }
+            self.check_lower_bound = false;
+            if self.check_upper_bound {
+                match self.range.end_bound() {
+                    Excluded(key) => {
+                        if key_ref.cmp(key) == Ordering::Less {
+                            return Some((key_ref, value_ref));
+                        }
+                    }
+                    Included(key) => {
+                        if key_ref.cmp(key) != Ordering::Greater {
+                            return Some((key_ref, value_ref));
+                        }
+                    }
+                    Unbounded => {
+                        return Some((key_ref, value_ref));
+                    }
+                }
+                break;
+            }
+            return Some((key_ref, value_ref));
         }
         None
     }
