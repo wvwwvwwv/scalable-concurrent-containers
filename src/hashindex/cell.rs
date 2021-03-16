@@ -305,6 +305,7 @@ impl<'g, K: Clone + Eq, V: Clone> CellLocker<'g, K, V> {
 
         // Starts Searching the entry at the preferred index first.
         let mut data_array = self.cell_ref.data.load(Relaxed, guard);
+        let mut removed = false;
         let preferred_index = partial_hash as usize % ARRAY_SIZE;
         while !data_array.is_null() {
             let data_array_ref = unsafe { data_array.deref_mut() };
@@ -312,9 +313,9 @@ impl<'g, K: Clone + Eq, V: Clone> CellLocker<'g, K, V> {
             if preferred_index_hash == ((partial_hash & (!REMOVED)) | OCCUPIED) {
                 let entry_ptr = data_array_ref.data[preferred_index].as_ptr();
                 if unsafe { &(*entry_ptr) }.0 == *key {
-                    self.cell_ref.num_entries.fetch_sub(1, Relaxed);
                     data_array_ref.partial_hash_array[preferred_index] |= REMOVED;
-                    return true;
+                    removed = true;
+                    break;
                 }
             }
             for (index, hash) in data_array_ref.partial_hash_array.iter().enumerate() {
@@ -324,15 +325,52 @@ impl<'g, K: Clone + Eq, V: Clone> CellLocker<'g, K, V> {
                 if *hash == ((partial_hash & (!REMOVED)) | OCCUPIED) {
                     let entry_ptr = data_array_ref.data[index].as_ptr();
                     if unsafe { &(*entry_ptr) }.0 == *key {
-                        self.cell_ref.num_entries.fetch_sub(1, Relaxed);
                         data_array_ref.partial_hash_array[index] |= REMOVED;
-                        return true;
+                        removed = true;
+                        break;
                     }
                 }
             }
             data_array = data_array_ref.link.load(Relaxed, guard);
         }
-        false
+
+        if removed {
+            // If the array has become sparse, and there is a linked list in the Cell, tries to optimize.
+            if (self.cell_ref.num_entries.fetch_sub(1, Relaxed) - 1) < ARRAY_SIZE / 8 {
+                let mut data_array = self.cell_ref.data.load(Relaxed, guard);
+                if !unsafe { data_array.deref() }
+                    .link
+                    .load(Relaxed, guard)
+                    .is_null()
+                {
+                    // Replaces the head with a new DataArray.
+                    let mut new_data_array = Owned::new(DataArray::new());
+                    let mut new_array_index = 0;
+                    while !data_array.is_null() {
+                        let data_array_ref = unsafe { data_array.deref_mut() };
+                        for (index, hash) in data_array_ref.partial_hash_array.iter().enumerate() {
+                            if (hash & (REMOVED | OCCUPIED)) == OCCUPIED {
+                                let entry_ptr = data_array_ref.data[index].as_ptr();
+                                let entry_ref = unsafe { &(*entry_ptr) };
+                                unsafe {
+                                    new_data_array.data[new_array_index]
+                                        .as_mut_ptr()
+                                        .write(entry_ref.clone())
+                                };
+                                new_data_array.partial_hash_array[new_array_index] = *hash;
+                                new_array_index += 1;
+                            }
+                        }
+                        data_array = data_array_ref.link.load(Relaxed, guard);
+                    }
+                    let old_array_link = self.cell_ref.data.swap(new_data_array, Release, guard);
+                    unsafe {
+                        guard.defer_destroy(old_array_link);
+                    }
+                }
+            }
+        }
+        removed
     }
 
     /// Kills the Cell.
