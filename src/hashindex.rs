@@ -16,6 +16,19 @@ const DEFAULT_CAPACITY: usize = 64;
 /// A scalable concurrent hash index implementation.
 ///
 /// scc::HashIndex is a concurrent hash index data structure that is optimized for read operations.
+/// The key characteristics of scc::HashIndex are similar to that of scc::HashMap.
+///
+/// ## The key differences between scc::HashIndex and scc::HashMap
+/// * Lock-free-read: read and scan operations do not entail shared data modification.
+/// * Immutability: pushed data becomes immutable until dropped, and can be copied multiple times.
+///
+/// ## The key statistics for scc::HashIndex
+/// * The expected size of metadata for a single key-value pair: 2-byte.
+/// * The expected number of atomic operations required for an operation on a single key: 0 or 2.
+/// * The expected number of atomic variables accessed during a single key operation: 1.
+/// * The number of entries managed by a single metadata cell without a linked list: 32.
+/// * The number of entries a single linked list entry manages: 32.
+/// * The expected maximum linked list length when resize is triggered: log(capacity) / 8.
 pub struct HashIndex<K, V, H>
 where
     K: Clone + Eq + Hash + Sync,
@@ -236,12 +249,12 @@ where
     /// let result = hashindex.insert(1, 0);
     /// assert!(result.is_ok());
     ///
-    /// let result = hashindex.len(|capacity| capacity);
+    /// let result = hashindex.len();
     /// assert_eq!(result, 1);
     ///
     /// hashindex.clear();
     ///
-    /// let result = hashindex.len(|capacity| capacity);
+    /// let result = hashindex.len();
     /// assert_eq!(result, 0);
     /// ```
     pub fn clear(&self) {
@@ -272,8 +285,9 @@ where
 
     /// Returns an estimated size of the HashIndex.
     ///
-    /// The given function determines the sampling size.
-    /// A function returning a fixed number larger than u16::MAX yields around 99% accuracy.
+    /// It scans the entire metadata cell array to calculate the number of valid entries,
+    /// making its time complexity O(N).
+    /// Apart from being inefficient, it may return a smaller number when the HashIndex is being resized.
     ///
     /// # Examples
     /// ```
@@ -284,27 +298,25 @@ where
     /// let result = hashindex.insert(1, 0);
     /// assert!(result.is_ok());
     ///
-    /// let result = hashindex.len(|capacity| capacity);
+    /// let result = hashindex.len();
     /// assert_eq!(result, 1);
-    ///
-    /// let result = hashindex.len(|capacity| capacity / 2);
-    /// assert!(result == 0 || result == 2);
     /// ```
-    pub fn len<F: FnOnce(usize) -> usize>(&self, f: F) -> usize {
+    pub fn len(&self) -> usize {
         let guard = crossbeam_epoch::pin();
         let current_array = self.array.load(Acquire, &guard);
         let current_array_ref = self.array_ref(current_array);
-        let capacity = current_array_ref.capacity();
-        let num_samples = std::cmp::min(f(capacity), capacity).next_power_of_two();
-        let num_cells_to_sample = (num_samples / ARRAY_SIZE).max(1);
-        if !current_array_ref.old_array(&guard).is_null() {
-            for _ in 0..num_cells_to_sample {
-                if current_array_ref.partial_rehash(|key| self.hash(key), &guard) {
-                    break;
-                }
+        let mut num_entries = 0;
+        for i in 0..current_array_ref.num_cells() {
+            num_entries += current_array_ref.cell_ref(i).num_entries();
+        }
+        let old_array = current_array_ref.old_array(&guard);
+        if !old_array.is_null() {
+            let old_array_ref = self.array_ref(old_array);
+            for i in 0..old_array_ref.num_cells() {
+                num_entries += old_array_ref.cell_ref(i).num_entries();
             }
         }
-        self.estimate(current_array_ref, num_cells_to_sample)
+        num_entries
     }
 
     /// Returns the capacity of the HashIndex.

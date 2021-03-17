@@ -529,11 +529,7 @@ where
     /// let hashmap: HashMap<u64, u32, _> = Default::default();
     ///
     /// let result = hashmap.insert(1, 0);
-    /// if let Ok(result) = result {
-    ///     assert_eq!(result.get(), (&1, &mut 0));
-    /// } else {
-    ///     assert!(false);
-    /// }
+    /// assert!(result.is_ok());
     ///
     /// let result = hashmap.len();
     /// assert_eq!(result, 1);

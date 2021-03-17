@@ -314,16 +314,16 @@ mod hashindex_test {
                 checker2.insert((i, str_val.clone()));
             }
         }
-        assert_eq!(hashindex1.len(|_| 65536), checker1.len());
-        assert_eq!(hashindex2.len(|_| 65536), checker2.len());
+        assert_eq!(hashindex1.len(), checker1.len());
+        assert_eq!(hashindex2.len(), checker2.len());
         for iter in checker1 {
             assert!(hashindex1.remove(&iter.0));
         }
         for iter in checker2 {
             assert!(hashindex2.remove(&iter.0));
         }
-        assert_eq!(hashindex1.len(|_| 65536), 0);
-        assert_eq!(hashindex2.len(|_| 65536), 0);
+        assert_eq!(hashindex1.len(), 0);
+        assert_eq!(hashindex2.len(), 0);
     }
 
     #[test]

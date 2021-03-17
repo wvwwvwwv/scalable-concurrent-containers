@@ -331,44 +331,18 @@ impl<'g, K: Clone + Eq, V: Clone> CellLocker<'g, K, V> {
                     }
                 }
             }
+            if removed {
+                break;
+            }
             data_array = data_array_ref.link.load(Relaxed, guard);
         }
 
         if removed {
-            // If the array has become sparse, and there is a linked list in the Cell, tries to optimize.
-            if (self.cell_ref.num_entries.fetch_sub(1, Relaxed) - 1) < ARRAY_SIZE / 8 {
-                let mut data_array = self.cell_ref.data.load(Relaxed, guard);
-                if !unsafe { data_array.deref() }
-                    .link
-                    .load(Relaxed, guard)
-                    .is_null()
-                {
-                    // Replaces the head with a new DataArray.
-                    let mut new_data_array = Owned::new(DataArray::new());
-                    let mut new_array_index = 0;
-                    while !data_array.is_null() {
-                        let data_array_ref = unsafe { data_array.deref_mut() };
-                        for (index, hash) in data_array_ref.partial_hash_array.iter().enumerate() {
-                            if (hash & (REMOVED | OCCUPIED)) == OCCUPIED {
-                                let entry_ptr = data_array_ref.data[index].as_ptr();
-                                let entry_ref = unsafe { &(*entry_ptr) };
-                                unsafe {
-                                    new_data_array.data[new_array_index]
-                                        .as_mut_ptr()
-                                        .write(entry_ref.clone())
-                                };
-                                new_data_array.partial_hash_array[new_array_index] = *hash;
-                                new_array_index += 1;
-                            }
-                        }
-                        data_array = data_array_ref.link.load(Relaxed, guard);
-                    }
-                    let old_array_link = self.cell_ref.data.swap(new_data_array, Release, guard);
-                    unsafe {
-                        guard.defer_destroy(old_array_link);
-                    }
-                }
-            }
+            self.optimize(
+                data_array,
+                self.cell_ref.num_entries.fetch_sub(1, Relaxed) - 1,
+                guard,
+            );
         }
         removed
     }
@@ -385,6 +359,83 @@ impl<'g, K: Clone + Eq, V: Clone> CellLocker<'g, K, V> {
             unsafe { guard.defer_destroy(data_array_shared) };
         }
         self.cell_ref.num_entries.store(0, Relaxed);
+    }
+
+    /// Optimizes the linked list.
+    ///
+    /// Two strategies.
+    ///  1. Clears the entire Cell if there is no valid entry.
+    ///  2. Coalesce if the given data array is non-empty and the linked list is sparse.
+    ///  3. Unlinks the given data array if the data array is empty.
+    fn optimize(&self, data_array: Shared<DataArray<K, V>>, num_entries: usize, guard: &Guard) {
+        if num_entries == 0 {
+            // Clears the entire Cell.
+            let deprecated_data_array = self.cell_ref.data.swap(Shared::null(), Relaxed, guard);
+            unsafe { guard.defer_destroy(deprecated_data_array) };
+            return;
+        }
+
+        for hash in unsafe { data_array.deref() }.partial_hash_array.iter() {
+            if (hash & REMOVED) == 0 {
+                // The given data array is still valid, therefore it tries to coalesce the linked list.
+                let head_data_array = self.cell_ref.data.load(Relaxed, guard);
+                let head_data_array_link_shared =
+                    unsafe { head_data_array.deref() }.link.load(Relaxed, guard);
+                if !head_data_array_link_shared.is_null() && num_entries < ARRAY_SIZE / 4 {
+                    // Replaces the head with a new DataArray.
+                    let mut new_data_array = Owned::new(DataArray::new());
+                    let mut new_array_index = 0;
+                    let mut current_data_array = head_data_array;
+                    while !current_data_array.is_null() {
+                        let current_data_array_ref = unsafe { current_data_array.deref_mut() };
+                        for (index, hash) in
+                            current_data_array_ref.partial_hash_array.iter().enumerate()
+                        {
+                            if (hash & (REMOVED | OCCUPIED)) == OCCUPIED {
+                                let entry_ptr = current_data_array_ref.data[index].as_ptr();
+                                let entry_ref = unsafe { &(*entry_ptr) };
+                                unsafe {
+                                    new_data_array.data[new_array_index]
+                                        .as_mut_ptr()
+                                        .write(entry_ref.clone())
+                                };
+                                new_data_array.partial_hash_array[new_array_index] = *hash;
+                                new_array_index += 1;
+                            }
+                        }
+                        current_data_array = current_data_array_ref.link.load(Relaxed, guard);
+                    }
+                    let old_array_link = self.cell_ref.data.swap(new_data_array, Release, guard);
+                    unsafe {
+                        guard.defer_destroy(old_array_link);
+                    }
+                }
+                return;
+            }
+        }
+
+        // Unlinks the given data array from the linked list.
+        let mut prev_data_array: Shared<DataArray<K, V>> = Shared::null();
+        let mut current_data_array = self.cell_ref.data.load(Relaxed, guard);
+        while !current_data_array.is_null() {
+            let current_data_array_ref = unsafe { current_data_array.deref() };
+            let next_data_array = current_data_array_ref.link.load(Relaxed, guard);
+            if current_data_array == data_array {
+                if prev_data_array.is_null() {
+                    // Updates the head.
+                    self.cell_ref.data.store(next_data_array, Relaxed);
+                } else {
+                    let prev_data_array_ref = unsafe { prev_data_array.deref() };
+                    prev_data_array_ref.link.store(next_data_array, Relaxed);
+                }
+                current_data_array_ref.link.store(Shared::null(), Relaxed);
+                unsafe { guard.defer_destroy(current_data_array) };
+                break;
+            } else {
+                prev_data_array = current_data_array;
+                current_data_array = next_data_array;
+            }
+        }
     }
 
     fn try_lock(cell: &'g Cell<K, V>, guard: &'g Guard) -> Option<CellLocker<'g, K, V>> {
