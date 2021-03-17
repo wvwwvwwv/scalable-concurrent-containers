@@ -403,6 +403,9 @@ impl<'g, K: Clone + Eq, V: Clone> CellLocker<'g, K, V> {
                                 new_array_index += 1;
                             }
                         }
+                        if new_array_index == num_entries {
+                            break;
+                        }
                         current_data_array = current_data_array_ref.link.load(Relaxed, guard);
                     }
                     let old_array_link = self.cell_ref.data.swap(new_data_array, Release, guard);
