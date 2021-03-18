@@ -12,8 +12,8 @@ const LOCK_TAG: usize = 1;
 const KILL_TAG: usize = 1 << 1;
 
 /// Flags are embedded inside a partial hash value.
-const OCCUPIED: u8 = 1u8;
-const REMOVED: u8 = 1u8 << 1;
+const OCCUPIED: u8 = 1u8 << 6;
+const REMOVED: u8 = 1u8 << 7;
 
 pub struct Cell<K: Clone + Eq, V: Clone> {
     /// wait_queue additionally stores the state of the Cell: locked or killed.
@@ -353,12 +353,12 @@ impl<'g, K: Clone + Eq, V: Clone> CellLocker<'g, K, V> {
     }
 
     /// Purges all the data.
-    pub fn purge(&mut self, guard: &Guard) {
+    pub fn purge(&mut self, guard: &Guard) -> usize {
         let data_array_shared = self.cell_ref.data.swap(Shared::null(), Relaxed, guard);
         if !data_array_shared.is_null() {
             unsafe { guard.defer_destroy(data_array_shared) };
         }
-        self.cell_ref.num_entries.store(0, Relaxed);
+        self.cell_ref.num_entries.swap(0, Relaxed)
     }
 
     /// Optimizes the linked list.

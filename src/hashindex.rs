@@ -20,7 +20,7 @@ const DEFAULT_CAPACITY: usize = 64;
 ///
 /// ## The key differences between scc::HashIndex and scc::HashMap
 /// * Lock-free-read: read and scan operations do not entail shared data modification.
-/// * Immutability: pushed data becomes immutable until dropped, and can be copied multiple times.
+/// * Immutability: the data is treated immutable until it becomes unreachable.
 ///
 /// ## The key statistics for scc::HashIndex
 /// * The expected size of metadata for a single key-value pair: 2-byte.
@@ -78,7 +78,6 @@ where
     /// Creates an empty HashIndex instance with the given capacity and build hasher.
     ///
     /// The actual capacity is equal to or greater than the given capacity.
-    /// It is recommended to give a capacity value that is larger than 16 * the number of threads to access the HashMap.
     ///
     /// # Panics
     ///
@@ -89,7 +88,15 @@ where
     /// use scc::HashIndex;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashindex: HashIndex<u64, u32, RandomState> = HashIndex::new(0, RandomState::new());
+    /// let hashindex: HashIndex<u64, u32, RandomState> = HashIndex::new(1000, RandomState::new());
+    ///
+    /// let result = hashindex.capacity();
+    /// assert_eq!(result, 1024);
+    ///
+    ///
+    /// let hashindex: HashIndex<u64, u32, _> = Default::default();
+    /// let result = hashindex.capacity();
+    /// assert_eq!(result, 64);
     /// ```
     pub fn new(capacity: usize, build_hasher: H) -> HashIndex<K, V, H> {
         let initial_capacity = capacity.max(DEFAULT_CAPACITY);
@@ -211,10 +218,9 @@ where
         loop {
             let current_array_ref = self.array_ref(current_array_shared);
             let old_array_shared = current_array_ref.old_array(&guard);
-            if !old_array_shared.is_null() {
-                if current_array_ref.partial_rehash(|key| self.hash(key), &guard) {
-                    continue;
-                }
+            if !old_array_shared.is_null()
+                && !current_array_ref.partial_rehash(|key| self.hash(key), &guard)
+            {
                 let old_array_ref = self.array_ref(old_array_shared);
                 let cell_index = old_array_ref.calculate_cell_index(hash);
                 let cell_ref = old_array_ref.cell_ref(cell_index);
@@ -227,7 +233,6 @@ where
             if let Some(entry) = cell_ref.search(key, partial_hash, &guard) {
                 return Some(f(&entry.0, &entry.1));
             }
-            // Reaching here indicates that self.array is updated.
             let new_current_array_shared = self.array.load(Acquire, &guard);
             if new_current_array_shared == current_array_shared {
                 break;
@@ -236,6 +241,27 @@ where
             current_array_shared = new_current_array_shared;
         }
         None
+    }
+
+    /// Checks if the key exists.
+    ///
+    /// # Examples
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32, _> = Default::default();
+    ///
+    /// let result = hashindex.contains(&1);
+    /// assert!(!result);
+    ///
+    /// let result = hashindex.insert(1, 0);
+    /// assert!(result.is_ok());
+    ///
+    /// let result = hashindex.contains(&1);
+    /// assert!(result);
+    /// ```
+    pub fn contains(&self, key: &K) -> bool {
+        self.read(key, |_, _| ()).is_some()
     }
 
     /// Clears all the key-value pairs.
@@ -252,12 +278,14 @@ where
     /// let result = hashindex.len();
     /// assert_eq!(result, 1);
     ///
-    /// hashindex.clear();
+    /// let result = hashindex.clear();
+    /// assert_eq!(result, 1);
     ///
     /// let result = hashindex.len();
     /// assert_eq!(result, 0);
     /// ```
-    pub fn clear(&self) {
+    pub fn clear(&self) -> usize {
+        let mut num_removed = 0;
         let guard = crossbeam_epoch::pin();
         let mut current_array_shared = self.array.load(Acquire, &guard);
         loop {
@@ -272,18 +300,20 @@ where
                 if let Some(mut cell_locker) =
                     CellLocker::lock(current_array_ref.cell_ref(index), &guard)
                 {
-                    cell_locker.purge(&guard);
+                    num_removed += cell_locker.purge(&guard);
                 }
             }
             let new_current_array_shared = self.array.load(Acquire, &guard);
             if current_array_shared == new_current_array_shared {
+                self.resize(&guard);
                 break;
             }
             current_array_shared = new_current_array_shared;
         }
+        num_removed
     }
 
-    /// Returns an estimated size of the HashIndex.
+    /// Returns the number of entries in the HashIndex.
     ///
     /// It scans the entire metadata cell array to calculate the number of valid entries,
     /// making its time complexity O(N).

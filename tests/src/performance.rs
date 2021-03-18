@@ -229,11 +229,11 @@ mod benchmark {
         let num_threads_vector = vec![1, 4, 16];
         for num_threads in num_threads_vector {
             let hashmap: Arc<HashMap<usize, usize, RandomState>> = Arc::new(Default::default());
-            let worload_size = 262144;
+            let workload_size = 262144;
 
             // 1. insert-local
             let insert = Workload {
-                size: worload_size,
+                size: workload_size,
                 insert_local: 1,
                 insert_remote: 0,
                 read_local: 0,
@@ -247,13 +247,11 @@ mod benchmark {
                 "insert-local: {}, {:?}, {}",
                 num_threads, duration, total_num_operations
             );
-            let statistics = hashmap.statistics();
-            println!("after insert-local: {}", statistics);
-            assert_eq!(statistics.num_entries(), worload_size * num_threads);
+            assert_eq!(hashmap.len(), workload_size * num_threads);
 
             // 2. read-local
             let read = Workload {
-                size: worload_size,
+                size: workload_size,
                 insert_local: 0,
                 insert_remote: 0,
                 read_local: 1,
@@ -270,7 +268,7 @@ mod benchmark {
 
             // 3. remove-local
             let remove = Workload {
-                size: worload_size,
+                size: workload_size,
                 insert_local: 0,
                 insert_remote: 0,
                 read_local: 0,
@@ -284,9 +282,7 @@ mod benchmark {
                 "remove-local: {}, {:?}, {}",
                 num_threads, duration, total_num_operations
             );
-            let statistics = hashmap.statistics();
-            println!("after remove-local: {}", statistics);
-            assert_eq!(statistics.num_entries(), 0);
+            assert_eq!(hashmap.len(), 0);
 
             if num_threads < 2 {
                 continue;
@@ -294,7 +290,7 @@ mod benchmark {
 
             // 4. insert-local-remote
             let insert = Workload {
-                size: worload_size,
+                size: workload_size,
                 insert_local: 1,
                 insert_remote: 1,
                 read_local: 0,
@@ -308,13 +304,11 @@ mod benchmark {
                 "insert-local-remote: {}, {:?}, {}",
                 num_threads, duration, total_num_operations
             );
-            let statistics = hashmap.statistics();
-            println!("after insert-local-remote: {}", statistics);
-            assert_eq!(statistics.num_entries(), worload_size * num_threads);
+            assert_eq!(hashmap.len(), workload_size * num_threads);
 
             // 5. mixed
             let mixed = Workload {
-                size: worload_size,
+                size: workload_size,
                 insert_local: 1,
                 insert_remote: 1,
                 read_local: 1,
@@ -324,7 +318,7 @@ mod benchmark {
             };
             let (duration, total_num_operations) = perform(
                 num_threads,
-                statistics.num_entries(),
+                workload_size * num_threads,
                 hashmap.clone(),
                 mixed.clone(),
             );
@@ -332,13 +326,11 @@ mod benchmark {
                 "mixed: {}, {:?}, {}",
                 num_threads, duration, total_num_operations
             );
-            let statistics = hashmap.statistics();
-            println!("after mixed: {}", statistics);
-            assert_eq!(statistics.num_entries(), worload_size * num_threads);
+            assert_eq!(hashmap.len(), workload_size * num_threads);
 
             // 6. remove-local-remote
             let remove = Workload {
-                size: worload_size,
+                size: workload_size,
                 insert_local: 0,
                 insert_remote: 0,
                 read_local: 0,
@@ -352,9 +344,8 @@ mod benchmark {
                 "remove-local-remote: {}, {:?}, {}",
                 num_threads, duration, total_num_operations
             );
-            let statistics = hashmap.statistics();
-            println!("after remove-local-remote: {}", statistics);
-            assert_eq!(statistics.num_entries(), 0);
+            println!("final capacity: {}", hashmap.capacity());
+            assert_eq!(hashmap.len(), 0);
         }
     }
 
@@ -363,11 +354,11 @@ mod benchmark {
         let num_threads_vector = vec![1, 4, 16];
         for num_threads in num_threads_vector {
             let hashindex: Arc<HashIndex<usize, usize, RandomState>> = Arc::new(Default::default());
-            let worload_size = 262144;
+            let workload_size = 262144;
 
             // 1. insert-local
             let insert = Workload {
-                size: worload_size,
+                size: workload_size,
                 insert_local: 1,
                 insert_remote: 0,
                 read_local: 0,
@@ -381,13 +372,11 @@ mod benchmark {
                 "insert-local: {}, {:?}, {}",
                 num_threads, duration, total_num_operations
             );
-            // let statistics = hashindex.statistics();
-            // println!("after insert-local: {}", statistics);
-            // assert_eq!(statistics.num_entries(), worload_size * num_threads);
+            assert_eq!(hashindex.len(), workload_size * num_threads);
 
             // 2. read-local
             let read = Workload {
-                size: worload_size,
+                size: workload_size,
                 insert_local: 0,
                 insert_remote: 0,
                 read_local: 1,
@@ -404,7 +393,7 @@ mod benchmark {
 
             // 3. remove-local
             let remove = Workload {
-                size: worload_size,
+                size: workload_size,
                 insert_local: 0,
                 insert_remote: 0,
                 read_local: 0,
@@ -418,9 +407,7 @@ mod benchmark {
                 "remove-local: {}, {:?}, {}",
                 num_threads, duration, total_num_operations
             );
-            // let statistics = hashindex.statistics();
-            // println!("after remove-local: {}", statistics);
-            // assert_eq!(statistics.num_entries(), 0);
+            assert_eq!(hashindex.len(), 0);
 
             if num_threads < 2 {
                 continue;
@@ -428,7 +415,7 @@ mod benchmark {
 
             // 4. insert-local-remote
             let insert = Workload {
-                size: worload_size,
+                size: workload_size,
                 insert_local: 1,
                 insert_remote: 1,
                 read_local: 0,
@@ -442,13 +429,11 @@ mod benchmark {
                 "insert-local-remote: {}, {:?}, {}",
                 num_threads, duration, total_num_operations
             );
-            // let statistics = hashindex.statistics();
-            // println!("after insert-local-remote: {}", statistics);
-            // assert_eq!(statistics.num_entries(), worload_size * num_threads);
+            assert_eq!(hashindex.len(), workload_size * num_threads);
 
             // 5. mixed
             let mixed = Workload {
-                size: worload_size,
+                size: workload_size,
                 insert_local: 1,
                 insert_remote: 1,
                 read_local: 1,
@@ -458,7 +443,7 @@ mod benchmark {
             };
             let (duration, total_num_operations) = perform(
                 num_threads,
-                worload_size * num_threads,
+                workload_size * num_threads,
                 hashindex.clone(),
                 mixed.clone(),
             );
@@ -466,13 +451,11 @@ mod benchmark {
                 "mixed: {}, {:?}, {}",
                 num_threads, duration, total_num_operations
             );
-            // let statistics = hashindex.statistics();
-            // println!("after mixed: {}", statistics);
-            // assert_eq!(statistics.num_entries(), worload_size * num_threads);
+            assert_eq!(hashindex.len(), workload_size * num_threads);
 
             // 6. remove-local-remote
             let remove = Workload {
-                size: worload_size,
+                size: workload_size,
                 insert_local: 0,
                 insert_remote: 0,
                 read_local: 0,
@@ -486,9 +469,8 @@ mod benchmark {
                 "remove-local-remote: {}, {:?}, {}",
                 num_threads, duration, total_num_operations
             );
-            // let statistics = hashindex.statistics();
-            // println!("after remove-local-remote: {}", statistics);
-            // assert_eq!(statistics.num_entries(), 0);
+            println!("final capacity: {}", hashindex.capacity());
+            assert_eq!(hashindex.len(), 0);
         }
     }
 
@@ -497,11 +479,11 @@ mod benchmark {
         let num_threads_vector = vec![1, 4, 16];
         for num_threads in num_threads_vector {
             let treeindex: Arc<TreeIndex<String, String>> = Arc::new(Default::default());
-            let worload_size = 65536;
+            let workload_size = 65536;
 
             // 1. insert-local
             let insert = Workload {
-                size: worload_size,
+                size: workload_size,
                 insert_local: 1,
                 insert_remote: 0,
                 read_local: 0,
@@ -517,11 +499,11 @@ mod benchmark {
             );
             let (len, depth) = (treeindex.len(), treeindex.depth());
             println!("after insert-local: num_elements {}, depth {}", len, depth);
-            assert_eq!(len, worload_size * num_threads);
+            assert_eq!(len, workload_size * num_threads);
 
             // 2. read-local
             let read = Workload {
-                size: worload_size,
+                size: workload_size,
                 insert_local: 0,
                 insert_remote: 0,
                 read_local: 1,
@@ -538,7 +520,7 @@ mod benchmark {
 
             // 3. remove-local
             let remove = Workload {
-                size: worload_size,
+                size: workload_size,
                 insert_local: 0,
                 insert_remote: 0,
                 read_local: 0,
@@ -558,7 +540,7 @@ mod benchmark {
 
             // 4. insert-local-remote
             let insert = Workload {
-                size: worload_size,
+                size: workload_size,
                 insert_local: 1,
                 insert_remote: 1,
                 read_local: 0,
@@ -580,7 +562,7 @@ mod benchmark {
 
             // 5. mixed
             let mixed = Workload {
-                size: worload_size,
+                size: workload_size,
                 insert_local: 1,
                 insert_remote: 1,
                 read_local: 1,
@@ -599,7 +581,7 @@ mod benchmark {
 
             // 6. remove-local-remote
             let remove = Workload {
-                size: worload_size,
+                size: workload_size,
                 insert_local: 0,
                 insert_remote: 0,
                 read_local: 0,

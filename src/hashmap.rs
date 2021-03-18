@@ -7,7 +7,6 @@ use cell::{CellLocker, CellReader, ARRAY_SIZE, MAX_RESIZING_FACTOR};
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::collections::hash_map::RandomState;
 use std::convert::TryInto;
-use std::fmt;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::iter::FusedIterator;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -57,7 +56,7 @@ where
 {
     /// Creates a HashMap instance with the default parameters.
     ///
-    /// The default hash builder is RandomState, and the default capacity is 256.
+    /// The default hash builder is RandomState, and the default capacity is 64.
     ///
     /// # Panics
     ///
@@ -386,26 +385,37 @@ where
         let guard = crossbeam_epoch::pin();
 
         // An acquire fence is required to correctly load the contents of the array.
-        let current_array = self.array.load(Acquire, &guard);
-        let current_array_ref = Self::array(current_array);
-        let old_array = current_array_ref.old_array(&guard);
-        for array in [&old_array, &current_array].iter() {
-            if array.is_null() {
-                continue;
-            }
-            if array.as_raw() == old_array.as_raw() {
-                let old_array_removed =
-                    current_array_ref.partial_rehash(|key| self.hash(key), &guard);
-                if old_array_removed {
-                    continue;
+        let mut current_array_shared = self.array.load(Acquire, &guard);
+        loop {
+            let current_array_ref = Self::array(current_array_shared);
+            let old_array_shared = current_array_ref.old_array(&guard);
+            if !old_array_shared.is_null()
+                && !current_array_ref.partial_rehash(|key| self.hash(key), &guard)
+            {
+                let old_array_ref = Self::array(old_array_shared);
+                let cell_index = old_array_ref.calculate_cell_index(hash);
+                let reader =
+                    CellReader::read(old_array_ref.cell(cell_index), &key, partial_hash, &guard);
+                if let Some((key, value)) = reader.get() {
+                    return Some(f(key, value));
                 }
             }
-            let array_ref = Self::array(**array);
-            let cell_index = array_ref.calculate_cell_index(hash);
-            let reader = CellReader::read(array_ref.cell(cell_index), &key, partial_hash, &guard);
+            let cell_index = current_array_ref.calculate_cell_index(hash);
+            let reader = CellReader::read(
+                current_array_ref.cell(cell_index),
+                &key,
+                partial_hash,
+                &guard,
+            );
             if let Some((key, value)) = reader.get() {
                 return Some(f(key, value));
             }
+            let new_current_array_shared = self.array.load(Acquire, &guard);
+            if new_current_array_shared == current_array_shared {
+                break;
+            }
+            // The pointer value has changed.
+            current_array_shared = new_current_array_shared;
         }
         None
     }
@@ -584,70 +594,6 @@ where
     /// ```
     pub fn hasher(&self) -> &H {
         &self.build_hasher
-    }
-
-    /// Returns the statistics of the current state of the HashMap.
-    ///
-    /// # Examples
-    /// ```
-    /// use scc::HashMap;
-    /// use std::collections::hash_map::RandomState;
-    ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(1000, RandomState::new());
-    ///
-    /// let result = hashmap.insert(1, 0);
-    /// if let Ok(result) = result {
-    ///     assert_eq!(result.get(), (&1, &mut 0));
-    /// }
-    ///
-    /// let result = hashmap.statistics();
-    /// assert_eq!(result.effective_capacity(), 1024);
-    /// assert_eq!(result.num_entries(), 1);
-    /// ```
-    pub fn statistics(&self) -> Statistics {
-        let mut statistics = Statistics {
-            effective_capacity: 0,
-            deprecated_capacity: 0,
-            num_entries: 0,
-            num_killed_entries: 0,
-            num_cells: 0,
-            num_empty_cells: 0,
-            num_max_consecutive_empty_cells: 0,
-        };
-        let guard = crossbeam_epoch::pin();
-        let current_array = self.array.load(Acquire, &guard);
-        let old_array = Self::array(current_array).old_array(&guard);
-        for array in [old_array, current_array].iter() {
-            if array.is_null() {
-                continue;
-            }
-            let array_ref = Self::array(*array);
-            let num_cells = array_ref.num_cells();
-            let mut consecutive_empty_cells = 0;
-            if array.as_raw() == current_array.as_raw() {
-                statistics.effective_capacity = array_ref.capacity();
-            } else {
-                statistics.deprecated_capacity += array_ref.capacity();
-            }
-            statistics.num_cells += num_cells;
-            for i in 0..num_cells {
-                let size = array_ref.cell(i).size();
-                statistics.num_entries += size;
-                if size == 0 {
-                    statistics.num_empty_cells += 1;
-                    consecutive_empty_cells += 1;
-                } else {
-                    if statistics.num_max_consecutive_empty_cells < consecutive_empty_cells {
-                        statistics.num_max_consecutive_empty_cells = consecutive_empty_cells;
-                    }
-                    consecutive_empty_cells = 0;
-                }
-                if array_ref.cell(i).killed() {
-                    statistics.num_killed_entries += 1;
-                }
-            }
-        }
-        statistics
     }
 
     /// Returns a Cursor.
@@ -1305,69 +1251,4 @@ where
     V: Sync,
     H: BuildHasher,
 {
-}
-
-/// Statistics shows aggregated views of the HashMap.
-///
-/// # Examples
-/// ```
-/// use scc::HashMap;
-///
-/// let hashmap: HashMap<u64, u32, _> = Default::default();
-///
-/// let result = hashmap.insert(1, 0);
-/// if let Ok(result) = result {
-///     assert_eq!(result.get(), (&1, &mut 0));
-/// }
-///
-/// println!("{}", hashmap.statistics());
-/// ```
-pub struct Statistics {
-    effective_capacity: usize,
-    deprecated_capacity: usize,
-    num_entries: usize,
-    num_killed_entries: usize,
-    num_cells: usize,
-    num_empty_cells: usize,
-    num_max_consecutive_empty_cells: usize,
-}
-
-impl Statistics {
-    pub fn effective_capacity(&self) -> usize {
-        self.effective_capacity
-    }
-    pub fn deprecated_capacity(&self) -> usize {
-        self.deprecated_capacity
-    }
-    pub fn num_entries(&self) -> usize {
-        self.num_entries
-    }
-    pub fn num_killed_entries(&self) -> usize {
-        self.num_killed_entries
-    }
-    pub fn num_cells(&self) -> usize {
-        self.num_cells
-    }
-    pub fn num_empty_cells(&self) -> usize {
-        self.num_empty_cells
-    }
-    pub fn num_max_consecutive_empty_cells(&self) -> usize {
-        self.num_max_consecutive_empty_cells
-    }
-}
-
-impl fmt::Display for Statistics {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "effective_capacity: {}, deprecated_capacity: {}, entries: {}, killed_entries: {}, cells: {}, empty_cells: {}, max_consecutive_empty_cells: {}",
-            self.effective_capacity,
-            self.deprecated_capacity,
-            self.num_entries,
-            self.num_killed_entries,
-            self.num_cells,
-            self.num_empty_cells,
-            self.num_max_consecutive_empty_cells,
-        )
-    }
 }
