@@ -56,19 +56,20 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 
 ## scc::HashIndex <a name="hashindex"></a>
 
-- Not fully implemented.
-- Not optimized.
+- Not fully optimized.
 
 scc::HashIndex is an index version of scc::HashMap. It allows readers to access key-value pairs without performing a single write operation on the data structure. In order to take advantage of immutability and epoch-based reclamation, it requires the key and value types to implement the Clone trait.
 
 ## scc::TreeIndex <a name="treeindex"></a>
 
-- Not fully optimized; benchmark results will come once adequately optimized.
+- Not fully optimized.
 
 scc::TreeIndex is a B+ tree optimized for read operations. Locks are only acquired on structural changes, and read/scan operations are neither blocked nor interrupted by other threads. The semantics of the read operation on a single key is similar to snapshot isolation in terms of database management software, as readers may not see the snapshot of data that is newer than the read snapshot. All the key-value pairs stored in a leaf are never dropped until the leaf becomes completely unreachable, thereby ensuring immutability of all the reachable key-value pairs. scc::TreeIndex harnesses this immutability of the leaf data structure to allow read operations to access key-value pairs without modifying the data structure.
 
 ## Changelog
 
+#### 0.4.11
+Optimized TreeIndex: #24
 #### 0.4.10
 Fix HashIndex::remove: #32, API change HashIndex::len
 #### 0.4.9
@@ -77,8 +78,6 @@ API change: TreeIndex::from -> TreeIndex::range, #33, fix #32
 Optimize HashIndex: #32, add HashMap::book: #31, change HashMap::len
 #### 0.4.7
 HashIndex initial implementation
-#### 0.4.6
-HashMap: fix #28 and API change #30
 
 ## Milestones <a name="milestones"></a>
 

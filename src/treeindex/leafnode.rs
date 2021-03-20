@@ -713,20 +713,22 @@ where
         leaf_node: &'a LeafNode<K, V>,
         guard: &Guard,
     ) -> Option<LeafNodeLocker<'a, K, V>> {
-        let mut new_nodes_dummy = NewLeaves::new();
-        if let Err(error) = leaf_node.new_leaves.compare_exchange(
-            Shared::null(),
-            unsafe { Owned::from_raw(&mut new_nodes_dummy as *mut NewLeaves<K, V>) },
-            Acquire,
-            Relaxed,
-            guard,
-        ) {
-            error.new.into_shared(guard);
-            None
-        } else {
+        if leaf_node
+            .new_leaves
+            .compare_exchange(
+                Shared::null(),
+                Shared::null().with_tag(1),
+                Acquire,
+                Relaxed,
+                guard,
+            )
+            .is_ok()
+        {
             Some(LeafNodeLocker {
                 lock: &leaf_node.new_leaves,
             })
+        } else {
+            None
         }
     }
 
@@ -761,19 +763,4 @@ where
     origin_leaf_ptr: Atomic<Leaf<K, V>>,
     low_key_leaf: Atomic<Leaf<K, V>>,
     high_key_leaf: Atomic<Leaf<K, V>>,
-}
-
-impl<K, V> NewLeaves<K, V>
-where
-    K: Clone + Ord + Send + Sync,
-    V: Clone + Send + Sync,
-{
-    fn new() -> NewLeaves<K, V> {
-        NewLeaves {
-            origin_leaf_key: None,
-            origin_leaf_ptr: Atomic::null(),
-            low_key_leaf: Atomic::null(),
-            high_key_leaf: Atomic::null(),
-        }
-    }
 }

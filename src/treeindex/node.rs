@@ -1012,20 +1012,22 @@ where
         internal_node: &'a InternalNode<K, V>,
         guard: &Guard,
     ) -> Option<InternalNodeLocker<'a, K, V>> {
-        let mut new_nodes_dummy = NewNodes::new();
-        if let Err(error) = internal_node.new_children.compare_exchange(
-            Shared::null(),
-            unsafe { Owned::from_raw(&mut new_nodes_dummy as *mut NewNodes<K, V>) },
-            Acquire,
-            Relaxed,
-            guard,
-        ) {
-            error.new.into_shared(guard);
-            None
-        } else {
+        if internal_node
+            .new_children
+            .compare_exchange(
+                Shared::null(),
+                Shared::null().with_tag(1),
+                Acquire,
+                Relaxed,
+                guard,
+            )
+            .is_ok()
+        {
             Some(InternalNodeLocker {
                 lock: &internal_node.new_children,
             })
+        } else {
+            None
         }
     }
 
@@ -1062,22 +1064,6 @@ where
     low_key_node: Atomic<Node<K, V>>,
     middle_key: Option<K>,
     high_key_node: Atomic<Node<K, V>>,
-}
-
-impl<K, V> NewNodes<K, V>
-where
-    K: Clone + Ord + Send + Sync,
-    V: Clone + Send + Sync,
-{
-    fn new() -> NewNodes<K, V> {
-        NewNodes {
-            origin_node_key: None,
-            origin_node_ptr: Atomic::null(),
-            low_key_node: Atomic::null(),
-            middle_key: None,
-            high_key_node: Atomic::null(),
-        }
-    }
 }
 
 #[cfg(test)]
