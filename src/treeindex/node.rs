@@ -546,7 +546,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             if let Some((_, child)) = result.0 {
                 let child_node = child.load(Acquire, guard);
                 if !(self.children.0).validate(result.1) {
-                    // Data race resolution - see 'InternalNode::search'.
+                    // Data race resolution - see LeafNode::search.
                     continue;
                 }
                 if child_node.is_null() {
@@ -563,8 +563,9 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             }
             let unbounded_shared = (self.children.1).load(Acquire, guard);
             if !unbounded_shared.is_null() {
+                debug_assert!(unbounded_shared.tag() == 0);
                 if !(self.children.0).validate(result.1) {
-                    // Data race resolution - see 'InternalNode::search'.
+                    // Data race resolution - see LeafNode::search.
                     continue;
                 }
                 return match unsafe { unbounded_shared.deref().remove(key, guard) } {
@@ -576,6 +577,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 };
             }
             // unbounded_node being null indicates that the node is bound to be freed.
+            debug_assert!(unbounded_shared.tag() == 1);
             return Err(RemoveError::Retry(false));
         }
     }
@@ -829,7 +831,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         };
         true
     }
-
+    
+    /// Rolls back the ongoing split operation recursively.
     fn rollback(&self, guard: &Guard) {
         let new_children = self.new_children.load(Relaxed, guard);
         unsafe {

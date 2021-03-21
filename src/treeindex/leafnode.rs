@@ -298,124 +298,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         }
     }
 
-    pub fn rollback(&self, guard: &Guard) {
-        let new_leaves = self.new_leaves.load(Relaxed, guard);
-        unsafe {
-            // Inserts the origin leaf into the linked list.
-            let origin_leaf_shared = new_leaves.deref().origin_leaf_ptr.load(Relaxed, guard);
-            let low_key_leaf_shared = new_leaves.deref().low_key_leaf.load(Relaxed, guard);
-            let high_key_leaf_shared = new_leaves.deref().high_key_leaf.load(Relaxed, guard);
-            high_key_leaf_shared
-                .deref()
-                .push_back(origin_leaf_shared.deref(), guard);
-
-            // The leaf with higher keys must be unlinked first.
-            high_key_leaf_shared.deref().unlink(guard);
-            guard.defer_destroy(high_key_leaf_shared);
-
-            // Unlinks the leaf with lower keys.
-            low_key_leaf_shared.deref().unlink(guard);
-            guard.defer_destroy(low_key_leaf_shared);
-
-            // Unlocks the leaf node.
-            drop(
-                self.new_leaves
-                    .swap(Shared::null(), Release, guard)
-                    .into_owned(),
-            );
-        };
-    }
-
-    /// Splits itself into the given leaf nodes, and returns the middle key value.
-    pub fn split_leaf_node(
-        &self,
-        low_key_leaf_node: &LeafNode<K, V>,
-        high_key_leaf_node: &LeafNode<K, V>,
-        guard: &Guard,
-    ) -> Option<K> {
-        let mut middle_key = None;
-
-        debug_assert!(!self.new_leaves.load(Relaxed, guard).is_null());
-        let new_leaves_ref = unsafe { self.new_leaves.load(Relaxed, guard).deref_mut() };
-
-        let low_key_leaves = &low_key_leaf_node.leaves;
-        let high_key_leaves = &high_key_leaf_node.leaves;
-
-        // Builds a list of valid leaves
-        let mut entry_array: [Option<(Option<&K>, Atomic<Leaf<K, V>>)>; ARRAY_SIZE + 2] =
-            [None, None, None, None, None, None, None, None, None, None];
-        let mut num_entries = 0;
-        let low_key_leaf_ref = unsafe { new_leaves_ref.low_key_leaf.load(Relaxed, guard).deref() };
-        let middle_key_ref = low_key_leaf_ref.max().unwrap().0;
-        for entry in LeafScanner::new(&self.leaves.0) {
-            if new_leaves_ref
-                .origin_leaf_key
-                .as_ref()
-                .map_or_else(|| false, |key| entry.0.cmp(key) == Ordering::Equal)
-            {
-                entry_array[num_entries]
-                    .replace((Some(middle_key_ref), new_leaves_ref.low_key_leaf.clone()));
-                num_entries += 1;
-                if !new_leaves_ref.high_key_leaf.load(Relaxed, guard).is_null() {
-                    entry_array[num_entries]
-                        .replace((Some(entry.0), new_leaves_ref.high_key_leaf.clone()));
-                    num_entries += 1;
-                }
-            } else {
-                entry_array[num_entries].replace((Some(entry.0), entry.1.clone()));
-                num_entries += 1;
-            }
-        }
-        if new_leaves_ref.origin_leaf_key.is_some() {
-            // If the origin is a bounded node, assign the unbounded node to the high key node's unbounded.
-            entry_array[num_entries].replace((None, self.leaves.1.clone()));
-            num_entries += 1;
-        } else {
-            // If the origin is an unbounded node, assign the high key node to the high key node's unbounded.
-            entry_array[num_entries]
-                .replace((Some(middle_key_ref), new_leaves_ref.low_key_leaf.clone()));
-            num_entries += 1;
-            if !new_leaves_ref.high_key_leaf.load(Relaxed, guard).is_null() {
-                entry_array[num_entries].replace((None, new_leaves_ref.high_key_leaf.clone()));
-                num_entries += 1;
-            }
-        }
-        debug_assert!(num_entries >= 2);
-
-        let low_key_leaf_array_size = num_entries / 2;
-        for (index, entry) in entry_array.iter().enumerate() {
-            if let Some(entry) = entry {
-                match (index + 1).cmp(&low_key_leaf_array_size) {
-                    Ordering::Less => {
-                        low_key_leaves
-                            .0
-                            .insert(entry.0.unwrap().clone(), entry.1.clone());
-                    }
-                    Ordering::Equal => {
-                        middle_key.replace(entry.0.unwrap().clone());
-                        low_key_leaves
-                            .1
-                            .store(entry.1.load(Relaxed, guard), Relaxed);
-                    }
-                    Ordering::Greater => {
-                        if let Some(key) = entry.0 {
-                            high_key_leaves.0.insert(key.clone(), entry.1.clone());
-                        } else {
-                            high_key_leaves
-                                .1
-                                .store(entry.1.load(Relaxed, guard), Relaxed);
-                        }
-                    }
-                }
-            } else {
-                break;
-            }
-        }
-
-        debug_assert!(middle_key.is_some());
-        middle_key
-    }
-
     /// Splits a full leaf.
     ///
     /// Returns true if the leaf is successfully split or a conflict is detected, false otherwise.
@@ -522,6 +404,96 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         true
     }
 
+    /// Splits itself into the given leaf nodes, and returns the middle key value.
+    pub fn split_leaf_node(
+        &self,
+        low_key_leaf_node: &LeafNode<K, V>,
+        high_key_leaf_node: &LeafNode<K, V>,
+        guard: &Guard,
+    ) -> Option<K> {
+        let mut middle_key = None;
+
+        debug_assert!(!self.new_leaves.load(Relaxed, guard).is_null());
+        let new_leaves_ref = unsafe { self.new_leaves.load(Relaxed, guard).deref_mut() };
+
+        let low_key_leaves = &low_key_leaf_node.leaves;
+        let high_key_leaves = &high_key_leaf_node.leaves;
+
+        // Builds a list of valid leaves
+        let mut entry_array: [Option<(Option<&K>, Atomic<Leaf<K, V>>)>; ARRAY_SIZE + 2] =
+            [None, None, None, None, None, None, None, None, None, None];
+        let mut num_entries = 0;
+        let low_key_leaf_ref = unsafe { new_leaves_ref.low_key_leaf.load(Relaxed, guard).deref() };
+        let middle_key_ref = low_key_leaf_ref.max().unwrap().0;
+        for entry in LeafScanner::new(&self.leaves.0) {
+            if new_leaves_ref
+                .origin_leaf_key
+                .as_ref()
+                .map_or_else(|| false, |key| entry.0.cmp(key) == Ordering::Equal)
+            {
+                entry_array[num_entries]
+                    .replace((Some(middle_key_ref), new_leaves_ref.low_key_leaf.clone()));
+                num_entries += 1;
+                if !new_leaves_ref.high_key_leaf.load(Relaxed, guard).is_null() {
+                    entry_array[num_entries]
+                        .replace((Some(entry.0), new_leaves_ref.high_key_leaf.clone()));
+                    num_entries += 1;
+                }
+            } else {
+                entry_array[num_entries].replace((Some(entry.0), entry.1.clone()));
+                num_entries += 1;
+            }
+        }
+        if new_leaves_ref.origin_leaf_key.is_some() {
+            // If the origin is a bounded node, assign the unbounded node to the high key node's unbounded.
+            entry_array[num_entries].replace((None, self.leaves.1.clone()));
+            num_entries += 1;
+        } else {
+            // If the origin is an unbounded node, assign the high key node to the high key node's unbounded.
+            entry_array[num_entries]
+                .replace((Some(middle_key_ref), new_leaves_ref.low_key_leaf.clone()));
+            num_entries += 1;
+            if !new_leaves_ref.high_key_leaf.load(Relaxed, guard).is_null() {
+                entry_array[num_entries].replace((None, new_leaves_ref.high_key_leaf.clone()));
+                num_entries += 1;
+            }
+        }
+        debug_assert!(num_entries >= 2);
+
+        let low_key_leaf_array_size = num_entries / 2;
+        for (index, entry) in entry_array.iter().enumerate() {
+            if let Some(entry) = entry {
+                match (index + 1).cmp(&low_key_leaf_array_size) {
+                    Ordering::Less => {
+                        low_key_leaves
+                            .0
+                            .insert(entry.0.unwrap().clone(), entry.1.clone());
+                    }
+                    Ordering::Equal => {
+                        middle_key.replace(entry.0.unwrap().clone());
+                        low_key_leaves
+                            .1
+                            .store(entry.1.load(Relaxed, guard), Relaxed);
+                    }
+                    Ordering::Greater => {
+                        if let Some(key) = entry.0 {
+                            high_key_leaves.0.insert(key.clone(), entry.1.clone());
+                        } else {
+                            high_key_leaves
+                                .1
+                                .store(entry.1.load(Relaxed, guard), Relaxed);
+                        }
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+
+        debug_assert!(middle_key.is_some());
+        middle_key
+    }
+
     fn check_full_leaf(
         &self,
         removed: bool,
@@ -586,6 +558,35 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         } else {
             Ok(removed)
         }
+    }
+
+    /// Rolls back the ongoing split operation recursively.
+    pub fn rollback(&self, guard: &Guard) {
+        let new_leaves = self.new_leaves.load(Relaxed, guard);
+        unsafe {
+            // Inserts the origin leaf into the linked list.
+            let origin_leaf_shared = new_leaves.deref().origin_leaf_ptr.load(Relaxed, guard);
+            let low_key_leaf_shared = new_leaves.deref().low_key_leaf.load(Relaxed, guard);
+            let high_key_leaf_shared = new_leaves.deref().high_key_leaf.load(Relaxed, guard);
+            high_key_leaf_shared
+                .deref()
+                .push_back(origin_leaf_shared.deref(), guard);
+
+            // The leaf with higher keys must be unlinked first.
+            high_key_leaf_shared.deref().unlink(guard);
+            guard.defer_destroy(high_key_leaf_shared);
+
+            // Unlinks the leaf with lower keys.
+            low_key_leaf_shared.deref().unlink(guard);
+            guard.defer_destroy(low_key_leaf_shared);
+
+            // Unlocks the leaf node.
+            drop(
+                self.new_leaves
+                    .swap(Shared::null(), Release, guard)
+                    .into_owned(),
+            );
+        };
     }
 
     /// Unlinks all the leaves.
