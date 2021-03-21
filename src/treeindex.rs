@@ -17,7 +17,7 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire};
 /// A scalable concurrent tree map implementation.
 ///
 /// scc::TreeIndex is a B+ tree variant that is optimized for read operations.
-/// Read operations, such as scan, read, are neither blocked nor interrupted by all the other types of operations.
+/// Read operations, such as read, scan, are neither blocked nor interrupted by all the other types of operations.
 /// Write operations, such as insert, remove, do not block if they do not entail structural changes to the tree.
 ///
 /// ## The key features of scc::TreeIndex
@@ -102,7 +102,7 @@ where
             let guard = crossbeam_epoch::pin();
             let mut root_node = self.root.load(Acquire, &guard);
             if root_node.is_null() {
-                let new_root = Owned::new(Node::new(0, true));
+                let new_root = Owned::new(Node::new());
                 match self
                     .root
                     .compare_exchange(root_node, new_root, AcqRel, Acquire, &guard)
@@ -211,6 +211,7 @@ where
                     }
                 }
                 Err(err) => match err {
+                    SearchError::Empty => return None,
                     SearchError::Retry => continue,
                 },
             }
@@ -282,7 +283,7 @@ where
         let guard = crossbeam_epoch::pin();
         let root_node = self.root.load(Acquire, &guard);
         if !root_node.is_null() {
-            unsafe { root_node.deref().floor() + 1 }
+            unsafe { root_node.deref().depth(1, &guard) }
         } else {
             0
         }
@@ -377,7 +378,7 @@ where
         let guard = crossbeam_epoch::pin();
         let root_node = self.root.load(Acquire, &guard);
         if !root_node.is_null() {
-            unsafe { root_node.deref().print(output, &guard) }?
+            unsafe { root_node.deref().print(output, 1, &guard) }?
         }
         output.write_fmt(format_args!("}}"))
     }

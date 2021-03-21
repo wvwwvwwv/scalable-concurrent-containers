@@ -24,6 +24,8 @@ pub enum RemoveError {
 
 /// SearchError types.
 pub enum SearchError {
+    /// Empty: the tree, node, or leaf is empty.
+    Empty,
     /// Retry: the target node, or leaf is being modified.
     Retry,
 }

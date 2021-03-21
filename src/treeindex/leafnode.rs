@@ -11,6 +11,8 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 /// The layout of a leaf node: |ptr(entry array)/max(child keys)|...|ptr(entry array)|
 pub struct LeafNode<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
     /// Child leaves.
+    ///
+    /// The pointer to the unbounded leaf storing a non-zero tag indicates that the leaf is obsolete.
     leaves: (Leaf<K, Atomic<Leaf<K, V>>>, Atomic<Leaf<K, V>>),
     /// New leaves in an intermediate state during merge and split.
     ///
@@ -19,14 +21,10 @@ pub struct LeafNode<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> {
 }
 
 impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
-    pub fn new(allocate_unbounded_leaf: bool) -> LeafNode<K, V> {
-        let unbounded_leaf: Atomic<Leaf<K, V>> = if allocate_unbounded_leaf {
-            Atomic::from(Owned::new(Leaf::new()))
-        } else {
-            Atomic::null()
-        };
+    /// Creates a new empty leaf node.
+    pub fn new() -> LeafNode<K, V> {
         LeafNode {
-            leaves: (Leaf::new(), unbounded_leaf),
+            leaves: (Leaf::new(), Atomic::null()),
             new_leaves: Atomic::null(),
         }
     }
@@ -36,48 +34,18 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         self as *const _ as usize
     }
 
-    /// Checks if the internal node is obsolete.
-    pub fn obsolete(&self, check_unbounded: bool, guard: &Guard) -> bool {
+    /// Checks if the leaf node is obsolete.
+    pub fn obsolete(&self, guard: &Guard) -> bool {
         if self.leaves.0.obsolete() {
-            if check_unbounded {
-                let unbounded_shared = self.leaves.1.load(Relaxed, guard);
-                if !unbounded_shared.is_null() {
-                    return unsafe { unbounded_shared.deref().obsolete() };
-                }
-                return true;
-            }
-            return true;
+            let unbounded_shared = self.leaves.1.load(Relaxed, guard);
+            // The unbounded leaf is specially marked when becoming obsolete.
+            return unbounded_shared.tag() == 1;
         }
         false
     }
 
-    pub fn detach(&self, guard: &Guard) {
-        debug_assert!(self.obsolete(true, guard));
-        let _locker = LeafNodeLocker::lock(self, guard);
-        let unbounded_shared = self.leaves.1.swap(Shared::null(), Relaxed, guard);
-        unsafe {
-            unbounded_shared.deref().unlink(guard);
-            guard.defer_destroy(unbounded_shared);
-        }
-    }
-
-    pub fn unlink(&self, guard: &Guard) {
-        for entry in LeafScanner::new(&self.leaves.0) {
-            entry.1.store(Shared::null(), Relaxed);
-        }
-        self.leaves.1.store(Shared::null(), Relaxed);
-
-        let unused_leaves = self.new_leaves.load(Relaxed, &guard);
-        if !unused_leaves.is_null() {
-            let obsolete_leaf =
-                unsafe { unused_leaves.deref().origin_leaf_ptr.load(Relaxed, &guard) };
-            unsafe {
-                guard.defer_destroy(obsolete_leaf);
-            }
-        }
-    }
-
-    pub fn search<'a>(&self, key: &'a K, guard: &'a Guard) -> Result<Option<&'a V>, SearchError> {
+    /// Searches for an entry associated with the given key.
+    pub fn search<'g>(&self, key: &'g K, guard: &'g Guard) -> Result<Option<&'g V>, SearchError> {
         loop {
             let result = (self.leaves.0).min_greater_equal(&key);
             if let Some((_, child)) = result.0 {
@@ -99,25 +67,31 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             }
             let unbounded_shared = (self.leaves.1).load(Relaxed, guard);
             if !unbounded_shared.is_null() {
+                debug_assert!(unbounded_shared.tag() == 0);
                 if !(self.leaves.0).validate(result.1) {
                     // Data race resolution - see above.
                     continue;
                 }
                 return Ok(unsafe { unbounded_shared.deref().search(key) });
             }
-            // unbounded_shared being null indicates that the leaf node is bound to be freed.
-            return Err(SearchError::Retry);
+            if unbounded_shared.tag() == 1 {
+                // The leaf node has become obsolete.
+                return Err(SearchError::Retry);
+            }
+            // The TreeIndex is empty.
+            return Err(SearchError::Empty);
         }
     }
 
-    pub fn min<'a>(&'a self, guard: &'a Guard) -> Result<LeafScanner<'a, K, V>, SearchError> {
+    /// Returns the minimum key entry.
+    pub fn min<'g>(&self, guard: &'g Guard) -> Result<LeafScanner<'g, K, V>, SearchError> {
         loop {
             let mut scanner = LeafScanner::new(&self.leaves.0);
             let metadata = scanner.metadata();
             if let Some((_, child)) = scanner.next() {
                 let child_leaf = child.load(Acquire, guard);
                 if !(self.leaves.0).validate(metadata) {
-                    // Data race resolution - see 'LeafNode::search'.
+                    // Data race resolution - see LeafNode::search.
                     continue;
                 }
                 if child_leaf.is_null() {
@@ -128,29 +102,35 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             }
             let unbounded_shared = (self.leaves.1).load(Relaxed, guard);
             if !unbounded_shared.is_null() {
+                debug_assert!(unbounded_shared.tag() == 0);
                 if !(self.leaves.0).validate(metadata) {
-                    // Data race resolution - see above
+                    // Data race resolution - see LeafNode::search.
                     continue;
                 }
                 return Ok(LeafScanner::new(unsafe { unbounded_shared.deref() }));
             }
-            // unbounded_shared being null indicates that the leaf node is bound to be freed.
-            return Err(SearchError::Retry);
+            if unbounded_shared.tag() == 1 {
+                // unbounded_shared being null indicates that the leaf node is bound to be freed.
+                return Err(SearchError::Retry);
+            }
+            // The TreeIndex is empty.
+            return Err(SearchError::Empty);
         }
     }
 
-    pub fn max_less<'a>(
-        &'a self,
+    /// Returns the maximum key entry less than the given key.
+    pub fn max_less<'g>(
+        &self,
         key: &K,
-        guard: &'a Guard,
-    ) -> Result<LeafScanner<'a, K, V>, SearchError> {
+        guard: &'g Guard,
+    ) -> Result<LeafScanner<'g, K, V>, SearchError> {
         loop {
             let mut scanner = LeafScanner::max_less(&self.leaves.0, key);
             let metadata = scanner.metadata();
             if let Some((_, child)) = scanner.next() {
                 let child_leaf = child.load(Acquire, guard);
                 if !(self.leaves.0).validate(metadata) {
-                    // Data race resolution - see 'LeafNode::search'.
+                    // Data race resolution - see LeafNode::search.
                     continue;
                 }
                 if child_leaf.is_null() {
@@ -161,8 +141,9 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             }
             let unbounded_shared = (self.leaves.1).load(Relaxed, guard);
             if !unbounded_shared.is_null() {
+                debug_assert!(unbounded_shared.tag() == 0);
                 if !(self.leaves.0).validate(metadata) {
-                    // Data race resolution - see above
+                    // Data race resolution - see LeafNode::search.
                     continue;
                 }
                 return Ok(LeafScanner::max_less(
@@ -170,18 +151,23 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                     key,
                 ));
             }
-            // unbounded_shared being null indicates that the leaf node is bound to be freed.
-            return Err(SearchError::Retry);
+            if unbounded_shared.tag() == 1 {
+                // unbounded_shared being null indicates that the leaf node is bound to be freed.
+                return Err(SearchError::Retry);
+            }
+            // The TreeIndex is empty.
+            return Err(SearchError::Empty);
         }
     }
 
+    /// Inserts a key-value pair.
     pub fn insert(&self, key: K, value: V, guard: &Guard) -> Result<(), InsertError<K, V>> {
         loop {
             let result = (self.leaves.0).min_greater_equal(&key);
             if let Some((child_key, child)) = result.0 {
                 let child_leaf = child.load(Acquire, guard);
                 if !(self.leaves.0).validate(result.1) {
-                    // Data race resolution - see 'InternalNode::search'.
+                    // Data race resolution - see LeafNode::search.
                     continue;
                 }
                 if child_leaf.is_null() {
@@ -202,8 +188,33 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                     },
                 );
             }
-            let unbounded_shared = self.leaves.1.load(Relaxed, guard);
+
+            let mut unbounded_shared = self.leaves.1.load(Relaxed, guard);
+            while unbounded_shared.is_null() {
+                if unbounded_shared.tag() == 1 {
+                    // The leaf node has become obsolete.
+                    break;
+                }
+                // Tries to allocate a new leaf.
+                //  - It only happens when the first entry is being inserted into the TreeIndex.
+                match self.leaves.1.compare_exchange(
+                    unbounded_shared,
+                    Owned::new(Leaf::new()),
+                    Release,
+                    Relaxed,
+                    guard,
+                ) {
+                    Ok(result) => {
+                        unbounded_shared = result;
+                        break;
+                    }
+                    Err(result) => {
+                        unbounded_shared = result.current;
+                    }
+                }
+            }
             if !unbounded_shared.is_null() {
+                debug_assert!(unbounded_shared.tag() == 0);
                 if !(self.leaves.0).validate(result.1) {
                     // Data race resolution - see 'InternalNode::search'.
                     continue;
@@ -223,18 +234,20 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                     },
                 );
             }
+
             // unbounded_shared being null indicates that the leaf node is bound to be freed.
             return Err(InsertError::Retry((key, value)));
         }
     }
 
-    pub fn remove<'a>(&'a self, key: &K, guard: &'a Guard) -> Result<bool, RemoveError> {
+    /// Removes an entry associated with the given key.
+    pub fn remove(&self, key: &K, guard: &Guard) -> Result<bool, RemoveError> {
         loop {
             let result = (self.leaves.0).min_greater_equal(&key);
             if let Some((_, child)) = result.0 {
                 let child_leaf = child.load(Acquire, guard);
                 if !(self.leaves.0).validate(result.1) {
-                    // Data race resolution - see 'InternalNode::search'.
+                    // Data race resolution - see LeafNode::search.
                     continue;
                 }
                 if child_leaf.is_null() {
@@ -260,8 +273,9 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             }
             let unbounded_shared = (self.leaves.1).load(Relaxed, guard);
             if !unbounded_shared.is_null() {
+                debug_assert!(unbounded_shared.tag() == 0);
                 if !(self.leaves.0).validate(result.1) {
-                    // Data race resolution - see 'InternalNode::search'.
+                    // Data race resolution - see LeafNode::search.
                     continue;
                 }
                 let unbounded_leaf_ref = unsafe { unbounded_shared.deref() };
@@ -275,8 +289,12 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 unbounded_leaf_ref.retire();
                 return self.coalesce(removed, guard);
             }
-            // unbounded_shared being null indicates that the leaf node is bound to be freed.
-            return Err(RemoveError::Retry(false));
+            if unbounded_shared.tag() == 1 {
+                // unbounded_shared being null indicates that the leaf node is bound to be freed.
+                return Err(RemoveError::Retry(false));
+            }
+            // The TreeIndex is empty.
+            return Ok(false);
         }
     }
 
@@ -569,10 +587,34 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             Ok(removed)
         }
     }
+
+    /// Unlinks all the leaves.
+    ///
+    /// It is called only when the leaf node is a temporary one for split/merge.
+    pub fn unlink(&self, guard: &Guard) {
+        for entry in LeafScanner::new(&self.leaves.0) {
+            entry.1.store(Shared::null(), Relaxed);
+        }
+        self.leaves.1.store(Shared::null(), Relaxed);
+
+        let unused_leaves = self.new_leaves.load(Relaxed, &guard);
+        if !unused_leaves.is_null() {
+            let obsolete_leaf =
+                unsafe { unused_leaves.deref().origin_leaf_ptr.load(Relaxed, &guard) };
+            unsafe {
+                guard.defer_destroy(obsolete_leaf);
+            }
+        }
+    }
 }
 
 impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> LeafNode<K, V> {
-    pub fn print<T: std::io::Write>(&self, output: &mut T, guard: &Guard) -> std::io::Result<()> {
+    pub fn print<T: std::io::Write>(
+        &self,
+        output: &mut T,
+        depth: usize,
+        guard: &Guard,
+    ) -> std::io::Result<()> {
         // Collects information.
         let mut leaf_ref_array: [Option<(Option<&Leaf<K, V>>, Option<&K>, usize)>; ARRAY_SIZE + 1] =
             [None; ARRAY_SIZE + 1];
@@ -596,10 +638,11 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
 
         // Prints the label.
         output.write_fmt(format_args!(
-            "{} [shape=plaintext\nlabel=<\n<table border='1' cellborder='1'>\n<tr><td colspan='{}'>ID: {}, Level: 0, Cardinality: {}</td></tr>\n<tr>",
+            "{} [shape=plaintext\nlabel=<\n<table border='1' cellborder='1'>\n<tr><td colspan='{}'>ID: {}, Level: {}, Cardinality: {}</td></tr>\n<tr>",
             self.id(),
             index + 1,
             self.id(),
+            depth,
             index + 1,
         ))?;
         for leaf_info in leaf_ref_array.iter() {
