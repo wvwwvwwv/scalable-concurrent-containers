@@ -102,7 +102,7 @@ where
             let guard = crossbeam_epoch::pin();
             let mut root_node = self.root.load(Acquire, &guard);
             if root_node.is_null() {
-                let new_root = Owned::new(Node::new());
+                let new_root = Owned::new(Node::new_leaf_node());
                 match self
                     .root
                     .compare_exchange(root_node, new_root, AcqRel, Acquire, &guard)
@@ -159,11 +159,11 @@ where
             match root_node_ref.remove(key, &guard) {
                 Ok(removed) => return removed || has_been_removed,
                 Err(remove_error) => match remove_error {
-                    RemoveError::Coalesce(removed) => {
+                    RemoveError::Empty(removed) => {
                         if removed && !has_been_removed {
                             has_been_removed = true;
                         }
-                        Node::update_root(root_node, &self.root, &guard);
+                        Node::remove_root(&self.root, true, &guard);
                         return has_been_removed;
                     }
                     RemoveError::Retry(removed) => {
@@ -238,7 +238,7 @@ where
     /// ```
     pub fn clear(&self) {
         let guard = crossbeam_epoch::pin();
-        Node::remove_root(&self.root, &guard);
+        Node::remove_root(&self.root, false, &guard);
     }
 
     /// Returns the size of the TreeIndex.
@@ -392,7 +392,7 @@ where
     fn drop(&mut self) {
         // The TreeIndex has become unreachable, therefore pinning is unnecessary.
         let guard = unsafe { crossbeam_epoch::unprotected() };
-        Node::remove_root(&self.root, guard);
+        Node::remove_root(&self.root, false, guard);
     }
 }
 

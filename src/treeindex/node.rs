@@ -46,7 +46,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
     pub fn depth(&self, depth: usize, guard: &Guard) -> usize {
         match &self.entry {
             NodeType::Internal(internal_node) => internal_node.depth(depth, guard),
-            NodeType::Leaf(leaf_node) => depth,
+            NodeType::Leaf(_) => depth,
         }
     }
 
@@ -112,11 +112,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
             self as *const Node<K, V>,
             root_ptr.load(Relaxed, guard).as_raw()
         );
-        let new_root: Node<K, V> = if let NodeType::Internal(internal_node) = &self.entry {
-            Node::new_internal_node()
-        } else {
-            Node::new_leaf_node()
-        };
+        let new_root: Node<K, V> = Node::new_internal_node();
         if let NodeType::Internal(internal_node) = &new_root.entry {
             if internal_node.split_node(None, root_ptr.load(Relaxed, guard), root_ptr, true, guard)
             {
@@ -163,79 +159,12 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         }
     }
 
-    /// Updates the current root node.
-    pub fn update_root(
-        mut current_root: Shared<Node<K, V>>,
+    /// Removes the current root node.
+    pub fn remove_root(
         root_ptr: &Atomic<Node<K, V>>,
+        donot_remove_valid_root: bool,
         guard: &Guard,
     ) {
-        while let NodeType::Internal(internal_node) = unsafe { &current_root.deref().entry } {
-            // If locked and the pointer has remained the same, invalidates the node, and return invalid.
-            let root_lock = InternalNodeLocker::try_lock(internal_node, guard);
-            if root_lock.is_none() {
-                return;
-            }
-            let new_root = internal_node.children.1.load(Acquire, guard);
-            if new_root.is_null() {
-                return;
-            }
-            if unsafe { new_root.deref().obsolete(true, guard) } {
-                // The soon-to-be root turns out to be obsolete.
-                if root_ptr
-                    .compare_exchange(current_root, Shared::null(), Release, Relaxed, &guard)
-                    .is_ok()
-                {
-                    unsafe {
-                        new_root.deref().detach(guard);
-                        guard.defer_destroy(new_root);
-                    }
-                    return;
-                }
-            }
-
-            match unsafe { &new_root.deref().entry } {
-                NodeType::Internal(new_root_internal) => {
-                    let new_root_lock = InternalNodeLocker::try_lock(new_root_internal, guard);
-                    if new_root_lock.is_some()
-                        && root_ptr
-                            .compare_exchange(current_root, new_root, Release, Relaxed, guard)
-                            .is_ok()
-                    {
-                        internal_node
-                            .children
-                            .1
-                            .store(Shared::null().with_tag(1), Relaxed);
-                        unsafe {
-                            debug_assert!(current_root.deref().obsolete(true, guard));
-                            guard.defer_destroy(current_root)
-                        };
-                        if new_root_internal.obsolete(false, guard) {
-                            current_root = Shared::from(new_root.as_raw());
-                            continue;
-                        }
-                    }
-                }
-                NodeType::Leaf(new_root_leaf) => {
-                    let new_root_lock = LeafNodeLocker::try_lock(new_root_leaf, guard);
-                    if new_root_lock.is_some()
-                        && root_ptr
-                            .compare_exchange(current_root, new_root, Release, Relaxed, guard)
-                            .is_ok()
-                    {
-                        internal_node.children.1.store(Shared::null(), Relaxed);
-                        unsafe {
-                            debug_assert!(current_root.deref().obsolete(true, guard));
-                            guard.defer_destroy(current_root)
-                        };
-                    }
-                }
-            }
-            return;
-        }
-    }
-
-    /// Removes the current root node.
-    pub fn remove_root(root_ptr: &Atomic<Node<K, V>>, guard: &Guard) {
         let mut current_root_node = root_ptr.load(Acquire, &guard);
         loop {
             if !current_root_node.is_null() {
@@ -255,7 +184,12 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                 };
                 if internal_node_locker.is_none() && leaf_node_locker.is_none() {
                     // The root node is locked by another thread.
+                    current_root_node = root_ptr.load(Acquire, &guard);
                     continue;
+                }
+                let root_ref = unsafe { current_root_node.deref() };
+                if donot_remove_valid_root && !root_ref.obsolete(guard) {
+                    break;
                 }
                 match root_ptr.compare_exchange(
                     current_root_node,
@@ -265,6 +199,15 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     &guard,
                 ) {
                     Ok(_) => {
+                        // It is important to keep the locked state until the node is dropped
+                        // in order for all the on-going structural changes being made to its
+                        // child nodes to fail.
+                        if let Some(internal_node_locker) = internal_node_locker.as_mut() {
+                            internal_node_locker.deprecate();
+                        }
+                        if let Some(leaf_node_locker) = leaf_node_locker.as_mut() {
+                            leaf_node_locker.deprecate();
+                        }
                         unsafe { guard.defer_destroy(current_root_node) };
                     }
                     Err(err) => {
@@ -464,7 +407,6 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         }
     }
 
-    
     /// Inserts a key-value pair.
     fn insert(&self, key: K, value: V, guard: &Guard) -> Result<(), InsertError<K, V>> {
         // Possible data race: the node is being split, for instance,
@@ -538,7 +480,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             return Err(InsertError::Retry((key, value)));
         }
     }
-    
+
     /// Removes an entry associated with the given key.
     fn remove(&self, key: &K, guard: &Guard) -> Result<bool, RemoveError> {
         loop {
@@ -556,7 +498,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 return match unsafe { child_node.deref().remove(key, guard) } {
                     Ok(removed) => Ok(removed),
                     Err(remove_error) => match remove_error {
-                        RemoveError::Coalesce(removed) => self.coalesce(removed, guard),
+                        RemoveError::Empty(removed) => self.coalesce(removed, guard),
                         RemoveError::Retry(_) => Err(remove_error),
                     },
                 };
@@ -571,14 +513,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                 return match unsafe { unbounded_shared.deref().remove(key, guard) } {
                     Ok(removed) => Ok(removed),
                     Err(remove_error) => match remove_error {
-                        RemoveError::Coalesce(removed) => self.coalesce(removed, guard),
+                        RemoveError::Empty(removed) => self.coalesce(removed, guard),
                         RemoveError::Retry(_) => Err(remove_error),
                     },
                 };
             }
             // unbounded_node being null indicates that the node is bound to be freed.
             debug_assert!(unbounded_shared.tag() == 1);
-            return Err(RemoveError::Retry(false));
+            return Err(RemoveError::Empty(false));
         }
     }
 
@@ -765,7 +707,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             }
             NodeType::Leaf(leaf_node) => {
                 // Copies leaves except for the known full leaf to the newly allocated leaf node entries.
-                let leaf_nodes = (Box::new(Node::new(0, false)), Box::new(Node::new(0, false)));
+                let leaf_nodes = (
+                    Box::new(Node::new_leaf_node()),
+                    Box::new(Node::new_leaf_node()),
+                );
                 let low_key_leaf_node =
                     if let NodeType::Leaf(low_key_leaf_node) = &leaf_nodes.0.entry {
                         Some(low_key_leaf_node)
@@ -831,7 +776,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         };
         true
     }
-    
+
     /// Rolls back the ongoing split operation recursively.
     fn rollback(&self, guard: &Guard) {
         let new_children = self.new_children.load(Relaxed, guard);
@@ -884,26 +829,50 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
             return Err(RemoveError::Retry(removed));
         }
 
-        let mut empty = false;
         for entry in LeafScanner::new(&self.children.0) {
             let node_shared = entry.1.load(Relaxed, guard);
             let node_ref = unsafe { node_shared.deref() };
-            if node_ref.obsolete(true, guard) {
-                empty = self.children.0.remove(entry.0).2;
+            if node_ref.obsolete(guard) {
+                self.children.0.remove(entry.0);
                 // Once the key is removed, it is safe to deallocate the node as the validation loop ensures the absence of readers.
                 entry.1.store(Shared::null(), Release);
-                node_ref.detach(guard);
                 unsafe {
                     guard.defer_destroy(node_shared);
                 };
             }
         }
-        if empty && self.children.0.retire() {
-            return Err(RemoveError::Coalesce(removed));
+
+        let unbounded_shared = self.children.1.load(Relaxed, guard);
+        if !unbounded_shared.is_null() {
+            if unsafe { unbounded_shared.deref().obsolete(guard) } {
+                // If the unbounded node has become obsolete, either marks the node obsolete, or replaces the unbounded node with another.
+                if let Some(max_entry) = self.children.0.max() {
+                    // Firstly, replaces the unbounded node with the max entry.
+                    self.children
+                        .1
+                        .store(max_entry.1.load(Relaxed, guard), Release);
+                    // Then, removes the node from the children list.
+                    if self.children.0.remove(max_entry.0).2 {
+                        let result = self.children.0.retire();
+                        debug_assert!(result);
+                    }
+                    max_entry.1.store(Shared::null(), Release);
+                } else {
+                    // Deprecates this internal node.
+                    let result = self.children.0.retire();
+                    debug_assert!(result);
+                    self.children.1.store(Shared::null().with_tag(1), Release);
+                }
+                unsafe {
+                    unbounded_shared.deref().unlink(guard);
+                    guard.defer_destroy(unbounded_shared);
+                }
+            }
         }
 
-        if self.children.0.obsolete() {
-            Err(RemoveError::Coalesce(removed))
+        if self.children.1.load(Relaxed, guard).is_null() {
+            debug_assert!(self.children.0.obsolete());
+            Err(RemoveError::Empty(removed))
         } else {
             Ok(removed)
         }
@@ -1010,6 +979,8 @@ where
     V: Clone + Send + Sync,
 {
     lock: &'a Atomic<NewNodes<K, V>>,
+    /// When the internal node is bound to be dropped, the flag may be set true.
+    deprecate: bool,
 }
 
 impl<'a, K, V> InternalNodeLocker<'a, K, V>
@@ -1034,18 +1005,15 @@ where
         {
             Some(InternalNodeLocker {
                 lock: &internal_node.new_children,
+                deprecate: false,
             })
         } else {
             None
         }
     }
 
-    fn lock(internal_node: &'a InternalNode<K, V>, guard: &Guard) -> InternalNodeLocker<'a, K, V> {
-        loop {
-            if let Some(internal_node_locker) = InternalNodeLocker::try_lock(internal_node, guard) {
-                return internal_node_locker;
-            }
-        }
+    fn deprecate(&mut self) {
+        self.deprecate = true;
     }
 }
 
@@ -1055,7 +1023,9 @@ where
     V: Clone + Send + Sync,
 {
     fn drop(&mut self) {
-        self.lock.store(Shared::null(), Release);
+        if !self.deprecate {
+            self.lock.store(Shared::null(), Release);
+        }
     }
 }
 
@@ -1087,7 +1057,7 @@ mod test {
         let num_threads = 16;
         let range = 16384;
         let barrier = Arc::new(Barrier::new(num_threads));
-        let node = Arc::new(Node::new(4, true));
+        let node = Arc::new(Node::new_leaf_node());
         assert!(node.insert(0, 0, &crossbeam_epoch::pin()).is_ok());
         let inserted = Arc::new(Mutex::new(Vec::new()));
         inserted.lock().unwrap().push(0);

@@ -291,7 +291,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             }
             if unbounded_shared.tag() == 1 {
                 // unbounded_shared being null indicates that the leaf node is bound to be freed.
-                return Err(RemoveError::Retry(false));
+                return Err(RemoveError::Empty(false));
             }
             // The TreeIndex is empty.
             return Ok(false);
@@ -494,6 +494,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         middle_key
     }
 
+    /// Checks the given full leaf whether it is being split.
     fn check_full_leaf(
         &self,
         removed: bool,
@@ -549,12 +550,38 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 }
             }
         }
-        if empty && self.leaves.0.retire() {
-            return Err(RemoveError::Coalesce(removed));
-        }
 
-        if self.leaves.0.obsolete() {
-            Err(RemoveError::Coalesce(removed))
+        // Checks the unbounded leaf only when all the other leaves have become obsolete.
+        let check_unbounded = if empty && self.leaves.0.retire() {
+            true
+        } else {
+            self.leaves.0.obsolete()
+        };
+
+        // The unbounded leaf becomes unreachable after all the other leaves are gone.
+        let fully_empty = if check_unbounded {
+            let unbounded_shared = self.leaves.1.load(Relaxed, guard);
+            if unbounded_shared.is_null() {
+                debug_assert!(unbounded_shared.tag() == 1);
+                true
+            } else {
+                if unsafe { unbounded_shared.deref().obsolete() } {
+                    self.leaves.1.store(Shared::null().with_tag(1), Release);
+                    unsafe {
+                        unbounded_shared.deref().unlink(guard);
+                        guard.defer_destroy(unbounded_shared);
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
+        } else {
+            false
+        };
+
+        if fully_empty {
+            Err(RemoveError::Empty(removed))
         } else {
             Ok(removed)
         }
@@ -746,6 +773,8 @@ where
     V: Clone + Send + Sync,
 {
     lock: &'a Atomic<NewLeaves<K, V>>,
+    /// When the leaf node is bound to be dropped, the flag may be set true.
+    deprecate: bool,
 }
 
 impl<'a, K, V> LeafNodeLocker<'a, K, V>
@@ -770,18 +799,15 @@ where
         {
             Some(LeafNodeLocker {
                 lock: &leaf_node.new_leaves,
+                deprecate: false,
             })
         } else {
             None
         }
     }
 
-    pub fn lock(leaf_node: &'a LeafNode<K, V>, guard: &Guard) -> LeafNodeLocker<'a, K, V> {
-        loop {
-            if let Some(leaf_node_locker) = LeafNodeLocker::try_lock(leaf_node, guard) {
-                return leaf_node_locker;
-            }
-        }
+    pub fn deprecate(&mut self) {
+        self.deprecate = true;
     }
 }
 
@@ -791,7 +817,9 @@ where
     V: Clone + Send + Sync,
 {
     fn drop(&mut self) {
-        self.lock.store(Shared::null(), Release);
+        if !self.deprecate {
+            self.lock.store(Shared::null(), Release);
+        }
     }
 }
 
