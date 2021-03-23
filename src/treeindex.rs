@@ -17,7 +17,7 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire};
 /// A scalable concurrent tree map implementation.
 ///
 /// scc::TreeIndex is a B+ tree variant that is optimized for read operations.
-/// Read operations, such as scan, read, are neither blocked nor interrupted by all the other types of operations.
+/// Read operations, such as read, scan, are neither blocked nor interrupted by all the other types of operations.
 /// Write operations, such as insert, remove, do not block if they do not entail structural changes to the tree.
 ///
 /// ## The key features of scc::TreeIndex
@@ -102,7 +102,7 @@ where
             let guard = crossbeam_epoch::pin();
             let mut root_node = self.root.load(Acquire, &guard);
             if root_node.is_null() {
-                let new_root = Owned::new(Node::new(0, true));
+                let new_root = Owned::new(Node::new_leaf_node());
                 match self
                     .root
                     .compare_exchange(root_node, new_root, AcqRel, Acquire, &guard)
@@ -159,12 +159,13 @@ where
             match root_node_ref.remove(key, &guard) {
                 Ok(removed) => return removed || has_been_removed,
                 Err(remove_error) => match remove_error {
-                    RemoveError::Coalesce(removed) => {
+                    RemoveError::Empty(removed) => {
                         if removed && !has_been_removed {
                             has_been_removed = true;
                         }
-                        Node::update_root(root_node, &self.root, &guard);
-                        return has_been_removed;
+                        if Node::remove_root(&self.root, true, &guard) {
+                            return has_been_removed;
+                        }
                     }
                     RemoveError::Retry(removed) => {
                         if removed && !has_been_removed {
@@ -211,6 +212,7 @@ where
                     }
                 }
                 Err(err) => match err {
+                    SearchError::Empty => return None,
                     SearchError::Retry => continue,
                 },
             }
@@ -237,7 +239,7 @@ where
     /// ```
     pub fn clear(&self) {
         let guard = crossbeam_epoch::pin();
-        Node::remove_root(&self.root, &guard);
+        Node::remove_root(&self.root, false, &guard);
     }
 
     /// Returns the size of the TreeIndex.
@@ -282,7 +284,7 @@ where
         let guard = crossbeam_epoch::pin();
         let root_node = self.root.load(Acquire, &guard);
         if !root_node.is_null() {
-            unsafe { root_node.deref().floor() + 1 }
+            unsafe { root_node.deref().depth(1, &guard) }
         } else {
             0
         }
@@ -377,7 +379,7 @@ where
         let guard = crossbeam_epoch::pin();
         let root_node = self.root.load(Acquire, &guard);
         if !root_node.is_null() {
-            unsafe { root_node.deref().print(output, &guard) }?
+            unsafe { root_node.deref().print(output, 1, &guard) }?
         }
         output.write_fmt(format_args!("}}"))
     }
@@ -391,7 +393,7 @@ where
     fn drop(&mut self) {
         // The TreeIndex has become unreachable, therefore pinning is unnecessary.
         let guard = unsafe { crossbeam_epoch::unprotected() };
-        Node::remove_root(&self.root, guard);
+        Node::remove_root(&self.root, false, guard);
     }
 }
 

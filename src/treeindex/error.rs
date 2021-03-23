@@ -16,14 +16,16 @@ where
 ///
 /// The boolean value tagged to the error code indicates that the target entry has been removed.
 pub enum RemoveError {
-    /// Coalesce: the node is coarse or obsolete.
-    Coalesce(bool),
+    /// Empty: the node is empty.
+    Empty(bool),
     /// Retry: the target node, or leaf is being modified.
     Retry(bool),
 }
 
 /// SearchError types.
 pub enum SearchError {
+    /// Empty: the tree, node, or leaf is empty.
+    Empty,
     /// Retry: the target node, or leaf is being modified.
     Retry,
 }

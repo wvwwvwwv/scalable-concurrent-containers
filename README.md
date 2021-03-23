@@ -20,7 +20,7 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 - RAM: 1TB
 - Rust compiler version: 1.50.0
 - SCC version: 0.4.1
-- The hashmap is generated using the default parameters: the RandomState hasher builder, and 256 preallocated entries.
+- The hashmap is generated using the default parameters.
 - Each test is run twice in a single process in order to minimize the effect of page faults as the overhead is unpredictable.
 
 #### Test data
@@ -60,11 +60,67 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 
 scc::HashIndex is an index version of scc::HashMap. It allows readers to access key-value pairs without performing a single write operation on the data structure. In order to take advantage of immutability and epoch-based reclamation, it requires the key and value types to implement the Clone trait.
 
+### Performance
+
+#### Test setup
+- OS: SUSE Linux Enterprise Server 15 SP1
+- CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
+- RAM: 1TB
+- Rust compiler version: 1.50.0
+- SCC version: 0.4.11
+- The hashindex is generated using the default parameters.
+- Each test is run twice in a single process in order to minimize the effect of page faults as the overhead is unpredictable.
+
+#### Test data
+- Each thread is assigned a disjoint range of u64 integers, and each u64 integer is converted into a String.
+- The performance test code asserts the expected outcome of each operation, and the post state of the hashindex instance.
+
+#### Test workload
+- Insert: each thread inserts 16M records.
+- Read: each thread reads 16M records.
+- Scan: each thread scans the entire treeindex.
+- Remove: each thread removes 16M records.
+- The data for Read/Remove tests is populated by the Insert test.
+
+|        | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
+|--------|----------------|----------------|----------------|----------------|
+| Insert |                |                |                |                |
+| Read   |                |                |                |                |
+| Scan   |                |                |                |                |
+| Remove |                |                |                |                |
+
 ## scc::TreeIndex <a name="treeindex"></a>
 
-- Not fully optimized.
-
 scc::TreeIndex is a B+ tree optimized for read operations. Locks are only acquired on structural changes, and read/scan operations are neither blocked nor interrupted by other threads. The semantics of the read operation on a single key is similar to snapshot isolation in terms of database management software, as readers may not see the snapshot of data that is newer than the read snapshot. All the key-value pairs stored in a leaf are never dropped until the leaf becomes completely unreachable, thereby ensuring immutability of all the reachable key-value pairs. scc::TreeIndex harnesses this immutability of the leaf data structure to allow read operations to access key-value pairs without modifying the data structure.
+
+### Performance
+
+#### Test setup
+- OS: SUSE Linux Enterprise Server 15 SP1
+- CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
+- RAM: 1TB
+- Rust compiler version: 1.50.0
+- SCC version: 0.4.11
+- The treeindex is generated using the default parameters.
+- Each test is run twice in a single process in order to minimize the effect of page faults as the overhead is unpredictable.
+
+#### Test data
+- Each thread is assigned a disjoint range of u64 integers, and each u64 integer is converted into a String.
+- The performance test code asserts the expected outcome of each operation, and the post state of the treeindex instance.
+
+#### Test workload
+- Insert: each thread inserts 16M records.
+- Read: each thread reads 16M records.
+- Scan: each thread scans the entire treeindex.
+- Remove: each thread removes 16M records.
+- The data for Read/Remove tests is populated by the Insert test.
+
+|        | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
+|--------|----------------|----------------|----------------|----------------|
+| Insert |                |                |                |                |
+| Read   |                |                |                |                |
+| Scan   |                |                |                |                |
+| Remove |                |                |                |                |
 
 ## Changelog
 
@@ -74,10 +130,6 @@ Optimized TreeIndex: #24
 Fix HashIndex::remove: #32, API change HashIndex::len
 #### 0.4.9
 API change: TreeIndex::from -> TreeIndex::range, #33, fix #32
-#### 0.4.8
-Optimize HashIndex: #32, add HashMap::book: #31, change HashMap::len
-#### 0.4.7
-HashIndex initial implementation
 
 ## Milestones <a name="milestones"></a>
 
