@@ -163,8 +163,9 @@ where
                         if removed && !has_been_removed {
                             has_been_removed = true;
                         }
-                        Node::remove_root(&self.root, true, &guard);
-                        return has_been_removed;
+                        if Node::remove_root(&self.root, true, &guard) {
+                            return has_been_removed;
+                        }
                     }
                     RemoveError::Retry(removed) => {
                         if removed && !has_been_removed {

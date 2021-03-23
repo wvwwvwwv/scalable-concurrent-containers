@@ -91,8 +91,6 @@ scc::HashIndex is an index version of scc::HashMap. It allows readers to access 
 
 ## scc::TreeIndex <a name="treeindex"></a>
 
-- Not fully optimized.
-
 scc::TreeIndex is a B+ tree optimized for read operations. Locks are only acquired on structural changes, and read/scan operations are neither blocked nor interrupted by other threads. The semantics of the read operation on a single key is similar to snapshot isolation in terms of database management software, as readers may not see the snapshot of data that is newer than the read snapshot. All the key-value pairs stored in a leaf are never dropped until the leaf becomes completely unreachable, thereby ensuring immutability of all the reachable key-value pairs. scc::TreeIndex harnesses this immutability of the leaf data structure to allow read operations to access key-value pairs without modifying the data structure.
 
 ### Performance
@@ -132,10 +130,6 @@ Optimized TreeIndex: #24
 Fix HashIndex::remove: #32, API change HashIndex::len
 #### 0.4.9
 API change: TreeIndex::from -> TreeIndex::range, #33, fix #32
-#### 0.4.8
-Optimize HashIndex: #32, add HashMap::book: #31, change HashMap::len
-#### 0.4.7
-HashIndex initial implementation
 
 ## Milestones <a name="milestones"></a>
 

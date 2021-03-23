@@ -623,7 +623,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         for entry in LeafScanner::new(&self.leaves.0) {
             entry.1.store(Shared::null(), Relaxed);
         }
-        self.leaves.1.store(Shared::null(), Relaxed);
+        self.leaves.1.store(Shared::null().with_tag(1), Relaxed);
 
         let unused_leaves = self.new_leaves.load(Relaxed, &guard);
         if !unused_leaves.is_null() {

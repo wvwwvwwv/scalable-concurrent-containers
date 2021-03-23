@@ -164,7 +164,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         root_ptr: &Atomic<Node<K, V>>,
         donot_remove_valid_root: bool,
         guard: &Guard,
-    ) {
+    ) -> bool {
         let mut current_root_node = root_ptr.load(Acquire, &guard);
         loop {
             if !current_root_node.is_null() {
@@ -216,8 +216,9 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
                     }
                 }
             }
-            break;
+            return true;
         }
+        false
     }
 
     /// Rolls back the ongoing split operation recursively.
@@ -853,6 +854,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
                         .store(max_entry.1.load(Relaxed, guard), Release);
                     // Then, removes the node from the children list.
                     if self.children.0.remove(max_entry.0).2 {
+                        // Retires the children if it was the last child.
                         let result = self.children.0.retire();
                         debug_assert!(result);
                     }
@@ -873,8 +875,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         if self.children.1.load(Relaxed, guard).is_null() {
             debug_assert!(self.children.0.obsolete());
             Err(RemoveError::Empty(removed))
-        } else {
+        } else if removed {
             Ok(removed)
+        } else {
+            // Retry is necessary as it may have not attempted removal.
+            Err(RemoveError::Retry(false))
         }
     }
 }
