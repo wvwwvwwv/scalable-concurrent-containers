@@ -20,7 +20,7 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 - RAM: 1TB
 - Rust compiler version: 1.50.0
 - SCC version: 0.4.1
-- The hashmap is generated using the default parameters.
+- The hashmap is generated using the default parameters: HashMap<usize, usize, RandomState> = Default::default().
 - Each test is run twice in a single process in order to minimize the effect of page faults as the overhead is unpredictable.
 
 #### Test data
@@ -68,7 +68,7 @@ scc::HashIndex is an index version of scc::HashMap. It allows readers to access 
 - RAM: 1TB
 - Rust compiler version: 1.50.0
 - SCC version: 0.4.11
-- The hashindex is generated using the default parameters.
+- The hashindex is generated using the default parameters: HashIndex<String, String, RandomState> = Default::default().
 - Each test is run twice in a single process in order to minimize the effect of page faults as the overhead is unpredictable.
 
 #### Test data
@@ -101,7 +101,7 @@ scc::TreeIndex is a B+ tree optimized for read operations. Locks are only acquir
 - RAM: 1TB
 - Rust compiler version: 1.50.0
 - SCC version: 0.4.11
-- The treeindex is generated using the default parameters.
+- The treeindex is generated using the default parameters: TreeIndex<String, String> = Default::default().
 - Each test is run twice in a single process in order to minimize the effect of page faults as the overhead is unpredictable.
 
 #### Test data

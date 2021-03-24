@@ -576,7 +576,7 @@ mod benchmark {
             );
 
             // 2. scan
-            let read = Workload {
+            let scan = Workload {
                 size: workload_size,
                 insert_local: 0,
                 insert_remote: 0,
@@ -587,7 +587,7 @@ mod benchmark {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                perform(num_threads, 0, treeindex.clone(), read.clone());
+                perform(num_threads, 0, treeindex.clone(), scan.clone());
             println!(
                 "treeindex-scan: {}, {:?}, {}",
                 num_threads, duration, total_num_operations
