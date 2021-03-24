@@ -31,6 +31,7 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 #### Test workload: local
 - Insert: each thread inserts 128M records.
 - Read: each thread reads 128M records.
+- Scan: each thread scans the entire hashmap.
 - Remove: each thread removes 128M records.
 - The data for Read/Remove tests is populated by the Insert test.
 
@@ -38,6 +39,7 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 |--------|----------------|----------------|----------------|----------------|
 | Insert | 129.704352035s | 153.744335742s | 220.257070192s | 299.582540084s |
 | Read   |  94.333388963s | 106.670376931s | 118.535401915s | 130.963194287s |
+| Scan   |                |                |                |                |
 | Remove | 109.926310571s | 123.499814546s | 139.1093042s   | 169.109640038s |
 
 #### Test workload: local-remote
@@ -55,8 +57,6 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 | Remove | 192.868693139s | 211.50268085s  | 230.968140497s | 265.453334202s |
 
 ## scc::HashIndex <a name="hashindex"></a>
-
-- Not fully optimized.
 
 scc::HashIndex is an index version of scc::HashMap. It allows readers to access key-value pairs without performing a single write operation on the data structure. In order to take advantage of immutability and epoch-based reclamation, it requires the key and value types to implement the Clone trait.
 
@@ -78,7 +78,7 @@ scc::HashIndex is an index version of scc::HashMap. It allows readers to access 
 #### Test workload
 - Insert: each thread inserts 16M records.
 - Read: each thread reads 16M records.
-- Scan: each thread scans the entire treeindex.
+- Scan: each thread scans the entire hashindex.
 - Remove: each thread removes 16M records.
 - The data for Read/Remove tests is populated by the Insert test.
 
