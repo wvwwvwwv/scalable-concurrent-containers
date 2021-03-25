@@ -19,7 +19,7 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
 - RAM: 1TB
 - Rust compiler version: 1.50.0
-- SCC version: 0.4.1
+- SCC version: 0.4.11
 - The hashmap is generated using the default parameters: HashMap<usize, usize, RandomState> = Default::default().
 - Each test is run twice in a single process in order to minimize the effect of page faults as the overhead is unpredictable.
 
@@ -37,10 +37,10 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 
 |        | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
 |--------|----------------|----------------|----------------|----------------|
-| Insert | 129.704352035s | 153.744335742s | 220.257070192s | 299.582540084s |
-| Read   |  94.333388963s | 106.670376931s | 118.535401915s | 130.963194287s |
-| Scan   |                |                |                |                |
-| Remove | 109.926310571s | 123.499814546s | 139.1093042s   | 169.109640038s |
+| Insert | 134.519639194s | 165.001678899s | 231.081117542s | 351.286311763s |
+| Read   |  92.83194805s  | 104.560364479s | 114.468443191s | 124.8641862s   |
+| Scan   |  42.086156353s | 108.655462554s | 229.909702447s | 474.113480956s |
+| Remove | 109.926310571s | 123.499814546s | 139.1093042s   | 154.684509984s |
 
 #### Test workload: local-remote
 - Insert/Remove: each thread additionally tries to perform assigned operations using keys belonging to other threads.
@@ -52,9 +52,9 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 
 |        | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
 |--------|----------------|----------------|----------------|----------------|
-| Insert | 229.7548302s   | 261.184001135s | 296.469319497s | 364.441279906s |
-| Mixed  | 303.608915125s | 325.812785309s | 365.778084065s | 409.283309922s |
-| Remove | 192.868693139s | 211.50268085s  | 230.968140497s | 265.453334202s |
+| Insert | 249.260816589s | 301.757140479s | 399.315496693s | 598.363026383s |
+| Mixed  | 310.705241166s | 337.750491321s | 363.707265976s | 410.698464196s |
+| Remove | 208.355622788s | 226.59800359s  | 251.086396624s | 266.482387949s |
 
 ## scc::HashIndex <a name="hashindex"></a>
 
@@ -84,10 +84,10 @@ scc::HashIndex is an index version of scc::HashMap. It allows readers to access 
 
 |        | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
 |--------|----------------|----------------|----------------|----------------|
-| Insert |                |                |                |                |
-| Read   |                |                |                |                |
-| Scan   |                |                |                |                |
-| Remove |                |                |                |                |
+| Insert |  89.015914443s | 116.402345094s | 143.86420979s  | 223.296876115s |
+| Read   |  18.975302649s |  19.858082662s |  20.862552983s |  22.646245396s |
+| Scan   |   3.640621149s |   7.327157641s |  15.847438364s |  31.771622377s |
+| Remove |  69.259331734s |  82.053630018s |  98.725056905s | 109.829727509s |
 
 ## scc::TreeIndex <a name="treeindex"></a>
 
@@ -117,15 +117,15 @@ scc::TreeIndex is a B+ tree optimized for read operations. Locks are only acquir
 
 |        | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
 |--------|----------------|----------------|----------------|----------------|
-| Insert |                |                |                |                |
-| Read   |                |                |                |                |
-| Scan   |                |                |                |                |
-| Remove |                |                |                |                |
+| Insert |  71.105692153s |  71.60182204s  |  69.300164192s |  70.050318852s |
+| Read   |  25.959253558s |  28.21858048s  |  31.636098149s |  32.678456754s |
+| Scan   |  36.059027123s |  68.349526938s | 129.710438186s | 218.026359862s |
+| Remove |  82.910451376s | 120.185809134s | 162.444301189s | 241.25877992s  |
 
 ## Changelog
 
 #### 0.4.11
-Optimized TreeIndex: #24
+Optimize memory-usage of TreeIndex: #24 (partial)
 #### 0.4.10
 Fix HashIndex::remove: #32, API change HashIndex::len
 #### 0.4.9

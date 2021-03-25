@@ -617,7 +617,7 @@ where
     }
 }
 
-/// Visitor implements the Iterator trait.
+/// Visitor traverses all the key-value pairs in the HashIndex.
 ///
 /// It is guaranteed to visit a key-value pair that exists at the time the Visitor is created,
 /// and outlives the Visitor. However, the same key-value pair can be visited more than once.

@@ -397,7 +397,7 @@ where
     }
 }
 
-/// Scanner implements Iterator for TreeIndex.
+/// Scanner scans all the key-value pairs in the TreeIndex.
 pub struct Scanner<'t, K, V>
 where
     K: Clone + Ord + Send + Sync,

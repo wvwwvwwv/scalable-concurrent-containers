@@ -1063,7 +1063,7 @@ where
     }
 }
 
-/// Ticket keeps the minimum capacity of the HashMap at a higher level.
+/// Ticket keeps the increased minimum capacity of the HashMap during its lifetime.
 ///
 /// The minimum capacity is lowered when the Ticket is dropped, thereby allowing unused space to be reclaimed.
 pub struct Ticket<'h, K, V, H>
@@ -1167,7 +1167,7 @@ where
     }
 }
 
-/// Cursor implements Iterator for HashMap.
+/// Cursor scans all the key-value pairs in the HashMap.
 ///
 /// It is !Send, thus disallowing other threads to have references to it.
 /// It acquires an exclusive lock on the Cell that is currently being visited.
