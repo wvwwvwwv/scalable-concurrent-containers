@@ -2,9 +2,9 @@
 
 The crate offers highly scalable concurrent containers written in the Rust language.
 
-- [scc::HashMap](#hash map) is a concurrent hash map.
+- [scc::HashMap](#hashmap) is a concurrent hash map.
 - [scc::HashIndex](#hashindex) is a concurrent hash index allowing lock-free read and scan.
-- [scc::TreeIndex](#tree index) is a concurrent B+ tree allowing lock-free read and scan.
+- [scc::TreeIndex](#treeindex) is a concurrent B+ tree allowing lock-free read and scan.
 
 ## scc::HashMap <a name="hash map"></a>
 
@@ -87,7 +87,7 @@ scc::HashIndex is an index version of scc::HashMap. It inherits all the characte
 
 ## scc::TreeIndex <a name="tree index"></a>
 
-scc::TreeIndex is a order-8 B+ tree variant optimized for read operations. Locks are only acquired on structural changes, and read/scan operations are neither blocked nor interrupted by other threads. The semantics of the read operation on a single key is similar to snapshot isolation in terms of database management software, as readers may not see the latest snapshot of data. The strategy to make the data structure lock-free is similar to that of scc::HashIndex; it harnesses immutability. All the key-value pairs stored in a leaf are never dropped until the leaf becomes completely unreachable, thereby ensuring immutability of all the reachable key-value pairs.
+scc::TreeIndex is an order-8 B+ tree variant optimized for read operations. Locks are only acquired on structural changes, and read/scan operations are neither blocked nor interrupted by other threads. The semantics of the read operation on a single key is similar to snapshot isolation in terms of database management software, as readers may not see the latest snapshot of data. The strategy to make the data structure lock-free is similar to that of scc::HashIndex; it harnesses immutability. All the key-value pairs stored in a leaf are never dropped until the leaf becomes completely unreachable, thereby ensuring immutability of all the reachable key-value pairs.
 
 ### Performance
 
