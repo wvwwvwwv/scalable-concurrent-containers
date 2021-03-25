@@ -20,7 +20,7 @@ const DEFAULT_CAPACITY: usize = 64;
 ///
 /// ## The key differences between scc::HashIndex and scc::HashMap
 /// * Lock-free-read: read and scan operations do not entail shared data modification.
-/// * Immutability: the data is treated immutable until it becomes unreachable.
+/// * Immutability: the data in the container is treated immutable until it becomes unreachable.
 ///
 /// ## The key statistics for scc::HashIndex
 /// * The expected size of metadata for a single key-value pair: 2-byte.
@@ -48,7 +48,7 @@ where
 {
     /// Creates a HashIndex instance with the default parameters.
     ///
-    /// The default hash builder is RandomState, and the default capacity is 256.
+    /// The default hash builder is RandomState, and the default capacity is 64.
     ///
     /// # Panics
     ///
@@ -619,8 +619,8 @@ where
 
 /// Visitor traverses all the key-value pairs in the HashIndex.
 ///
-/// It is guaranteed to visit a key-value pair that exists at the time the Visitor is created,
-/// and outlives the Visitor. However, the same key-value pair can be visited more than once.
+/// It is guaranteed to visit all the key-value pairs that outlive the Visitor.
+/// However, the same key-value pair can be visited more than once.
 pub struct Visitor<'h, K, V, H>
 where
     K: Clone + Eq + Hash + Sync,

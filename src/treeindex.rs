@@ -17,7 +17,7 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire};
 /// A scalable concurrent B+ tree.
 ///
 /// scc::TreeIndex is a B+ tree variant that is optimized for read operations.
-/// Read operations, such as read, scan, are neither blocked nor interrupted by all the other types of operations.
+/// Read operations, such as read, scan, are neither blocked nor interrupted by other threads.
 /// Write operations, such as insert, remove, do not block if they do not entail structural changes to the tree.
 ///
 /// ## The key features of scc::TreeIndex
@@ -25,9 +25,9 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire};
 /// * Near lock-free write: write operations do not block unless a structural change is required.
 ///
 /// ## The key statistics for scc::TreeIndex
-/// * The maximum number of entries that a leaf can store: 8.
-/// * The maximum number of leaves or nodes that a node can store: 9.
-/// * The size of metadata per entry in a leaf: 3-byte.
+/// * The maximum number of key-value pairs that a leaf can store: 8.
+/// * The maximum number of leaves or child nodes that a node can point to: 9.
+/// * The size of metadata per key-value pair in a leaf: 3-byte.
 /// * The size of metadata per leaf or node in a node: size_of(K) + 4.
 pub struct TreeIndex<K, V>
 where
@@ -398,6 +398,9 @@ where
 }
 
 /// Scanner scans all the key-value pairs in the TreeIndex.
+///
+/// It is guaranteed to visit all the key-value pairs that outlive the Scanner,
+/// and it scans keys in monotonically increasing order.
 pub struct Scanner<'t, K, V>
 where
     K: Clone + Ord + Send + Sync,
@@ -485,6 +488,8 @@ where
 }
 
 /// Range represents a range of keys in the TreeIndex.
+///
+/// It is identical to Scanner except that it does not traverse keys outside of the given range.
 pub struct Range<'t, K, V, R>
 where
     K: Clone + Ord + Send + Sync,

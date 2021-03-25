@@ -17,16 +17,16 @@ const DEFAULT_CAPACITY: usize = 64;
 /// A scalable concurrent hash map data structure.
 ///
 /// scc::HashMap is a concurrent hash map data structure that is targeted at a highly concurrent workload.
-/// The use of epoch-based reclamation technique enables the data structure to implement non-blocking resizing and bucket-level locking.
-/// It has a single array of metadata cells, and each metadata cell manages a fixed size entry array and a linked list for collision resolution.
-/// Each metadata cell owns a customized 8-byte read-write mutex to protect the data structure.
+/// The use of epoch-based reclamation technique enables the data structure to implement non-blocking resizing and fine-granular locking.
+/// It has a single array of entry metadata, and each entry, called a cell, manages a fixed size entry array.
+/// Each cell has a customized 8-byte read-write mutex to protect the data structure, and a linked list for hash collision resolution.
 ///
 /// ## The key features of scc::HashMap
-/// * Non-sharded: the data is managed by a single metadata cell array.
+/// * Non-sharded: the data is managed by a single entry metadata array.
 /// * Automatic resizing: it automatically grows or shrinks.
 /// * Non-blocking resizing: resizing does not block other threads.
-/// * Incremental resizing: each access to the data structure is mandated to rehash a certain number of key-value pairs.
-/// * Optimized resizing: key-value pairs in a single metadata cell are guaranteed to be relocated to adjacent cells.
+/// * Incremental resizing: each access to the data structure is mandated to rehash a fixed number of key-value pairs.
+/// * Optimized resizing: key-value pairs managed by a single cell are guaranteed to be relocated to adjacent cells.
 /// * No busy waiting: the customized mutex never spins.
 ///
 /// ## The key statistics for scc::HashMap
@@ -1169,7 +1169,9 @@ where
 
 /// Cursor scans all the key-value pairs in the HashMap.
 ///
-/// It is !Send, thus disallowing other threads to have references to it.
+/// It is guaranteed to visit all the key-value pairs that outlive the Cursor.
+/// However, the same key-value pair can be visited more than once.
+///
 /// It acquires an exclusive lock on the Cell that is currently being visited.
 /// A thread having multiple Accessor or Cursor instances poses a possibility of deadlock.
 pub struct Cursor<'h, K, V, H>
