@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 const DEFAULT_CAPACITY: usize = 64;
 
-/// A scalable concurrent hash map implementation.
+/// A scalable concurrent hash map data structure.
 ///
 /// scc::HashMap is a concurrent hash map data structure that is targeted at a highly concurrent workload.
 /// The use of epoch-based reclamation technique enables the data structure to implement non-blocking resizing and bucket-level locking.

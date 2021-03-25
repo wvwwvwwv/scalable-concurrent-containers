@@ -13,7 +13,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 const DEFAULT_CAPACITY: usize = 64;
 
-/// A scalable concurrent hash index implementation.
+/// A scalable concurrent hash index data structure.
 ///
 /// scc::HashIndex is a concurrent hash index data structure that is optimized for read operations.
 /// The key characteristics of scc::HashIndex are similar to that of scc::HashMap.

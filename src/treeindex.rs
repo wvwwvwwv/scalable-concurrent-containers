@@ -14,7 +14,7 @@ use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::ops::RangeBounds;
 use std::sync::atomic::Ordering::{AcqRel, Acquire};
 
-/// A scalable concurrent tree map implementation.
+/// A scalable concurrent B+ tree.
 ///
 /// scc::TreeIndex is a B+ tree variant that is optimized for read operations.
 /// Read operations, such as read, scan, are neither blocked nor interrupted by all the other types of operations.
