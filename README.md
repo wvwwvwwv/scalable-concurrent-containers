@@ -95,8 +95,8 @@ scc::TreeIndex is an order-8 B+ tree variant optimized for read operations. Lock
 - OS: SUSE Linux Enterprise Server 15 SP1
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
 - RAM: 1TB
-- Rust: 1.50.0
-- SCC: 0.4.11
+- Rust: 1.51.0
+- SCC: 0.4.12
 - TreeIndex<String, String> = Default::default()
 
 #### Test data

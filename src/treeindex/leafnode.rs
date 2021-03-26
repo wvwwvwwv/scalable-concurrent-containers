@@ -358,7 +358,16 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         let high_key_leaf_shared = new_leaves_ref.high_key_leaf.load(Relaxed, guard);
         let unused_leaf = if !high_key_leaf_shared.is_null() {
             // From here, Scanners can reach the new leaves.
-            full_leaf_ref.swap_out(low_key_leaf_shared, high_key_leaf_shared, guard);
+            //
+            // Immediately unlinking the full leaf causes the current scanners reading the full leaf
+            // to omit a number of leaves.
+            //  - Leaf: l, insert: i, split: s, rollback: r.
+            //  - Insert 1-2: i1(l1)|                   |i2(l2)|s(l2)|l12:l2:l21:l22|l12:l21:l22|
+            //  - Insert 0  : i0(l1)|s(l1)|l1:l11:l12:l2|                                       |r|l1:l12...
+            // In this scenario, without keeping l1, l2 in the linked list, l1 would point to l2,
+            // and therefore a range scanner would start from l1, and cannot traverse l21 and l22,
+            // missing newly inserted entries in l21 and l22 before starting the range scanner.
+            full_leaf_ref.push_back(low_key_leaf_shared, high_key_leaf_shared, guard);
             // Takes the max key value stored in the low key leaf as the leaf key.
             let max_key = unsafe { low_key_leaf_shared.deref().max().unwrap().0 };
             if self
@@ -375,7 +384,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             full_leaf_ptr.swap(high_key_leaf_shared, Release, &guard)
         } else {
             // From here, Scanners can reach the new leaf.
-            full_leaf_ref.swap_out(low_key_leaf_shared, low_key_leaf_shared, guard);
+            full_leaf_ref.push_back(low_key_leaf_shared, low_key_leaf_shared, guard);
             // Replaces the full leaf with the low-key leaf.
             full_leaf_ptr.swap(low_key_leaf_shared, Release, &guard)
         };
@@ -383,6 +392,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         // Drops the deprecated leaf.
         unsafe {
             debug_assert!(unused_leaf.deref().full());
+            unused_leaf.deref().opt_out(guard);
             guard.defer_destroy(unused_leaf);
 
             // Unlocks the leaf node.
@@ -534,7 +544,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             let leaf_ref = unsafe { leaf_shared.deref() };
             if leaf_ref.obsolete() {
                 // Data race resolution - see LeafScanner::jump.
-                leaf_ref.unlink(guard);
+                leaf_ref.opt_out(guard);
                 empty = self.leaves.0.remove(entry.0).2;
                 // Data race resolution - see LeafNode::search.
                 entry.1.store(Shared::null(), Release);
@@ -561,7 +571,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 unsafe {
                     if unbounded_shared.deref().obsolete() {
                         // Data race resolution - see LeafScanner::jump.
-                        unbounded_shared.deref().unlink(guard);
+                        unbounded_shared.deref().opt_out(guard);
                         self.leaves.1.store(Shared::null().with_tag(1), Release);
                         guard.defer_destroy(unbounded_shared);
                         true
@@ -586,14 +596,15 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         let new_leaves = self.new_leaves.load(Relaxed, guard);
         unsafe {
             // Inserts the origin leaf into the linked list.
-            let origin_leaf_shared = new_leaves.deref().origin_leaf_ptr.load(Relaxed, guard);
             let low_key_leaf_shared = new_leaves.deref().low_key_leaf.load(Relaxed, guard);
             let high_key_leaf_shared = new_leaves.deref().high_key_leaf.load(Relaxed, guard);
 
-            // Rolls back the linked list.
-            origin_leaf_shared
-                .deref()
-                .swap_in(low_key_leaf_shared, high_key_leaf_shared, guard);
+            // Rolls back the linked list state.
+            //
+            // In order to keep the forward_link flag of the origin leaf,
+            // high_key_leaf must be opted out first.
+            high_key_leaf_shared.deref().opt_out(guard);
+            low_key_leaf_shared.deref().opt_out(guard);
 
             // Drops the unreachable leaves.
             guard.defer_destroy(low_key_leaf_shared);
@@ -610,18 +621,23 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
 
     /// Unlinks all the leaves.
     ///
-    /// It is called only when the leaf node is a temporary one for split/merge.
+    /// It is called only when the leaf node is a temporary one for split/merge,
+    /// or has become unreachable after split/merge/remove.
     pub fn unlink(&self, guard: &Guard) {
         for entry in LeafScanner::new(&self.leaves.0) {
             entry.1.store(Shared::null(), Relaxed);
         }
         self.leaves.1.store(Shared::null().with_tag(1), Relaxed);
 
-        let unused_leaves = self.new_leaves.load(Relaxed, &guard);
+        // Keeps the leaf node locked to prevent locking attempts.
+        let unused_leaves = self
+            .new_leaves
+            .swap(Shared::null().with_tag(1), Relaxed, &guard);
         if !unused_leaves.is_null() {
-            let obsolete_leaf =
-                unsafe { unused_leaves.deref().origin_leaf_ptr.load(Relaxed, &guard) };
             unsafe {
+                let obsolete_leaf = unused_leaves.deref().origin_leaf_ptr.load(Relaxed, &guard);
+                // Makes the leaf unreachable before dropping it.
+                obsolete_leaf.deref().opt_out(guard);
                 guard.defer_destroy(obsolete_leaf);
             }
         }
@@ -733,6 +749,11 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
 
 impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for LeafNode<K, V> {
     fn drop(&mut self) {
+        debug_assert!(self
+            .new_leaves
+            .load(Relaxed, unsafe { crossbeam_epoch::unprotected() })
+            .is_null());
+
         // The leaf node has become unreachable, and so have all the children, therefore pinning is unnecessary.
         for entry in LeafScanner::new(&self.leaves.0) {
             let child = entry
@@ -757,25 +778,25 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for LeafNode<K, 
 }
 
 /// Leaf node locker.
-pub struct LeafNodeLocker<'a, K, V>
+pub struct LeafNodeLocker<'n, K, V>
 where
     K: Clone + Ord + Send + Sync,
     V: Clone + Send + Sync,
 {
-    lock: &'a Atomic<NewLeaves<K, V>>,
+    lock: &'n Atomic<NewLeaves<K, V>>,
     /// When the leaf node is bound to be dropped, the flag may be set true.
     deprecate: bool,
 }
 
-impl<'a, K, V> LeafNodeLocker<'a, K, V>
+impl<'n, K, V> LeafNodeLocker<'n, K, V>
 where
     K: Clone + Ord + Send + Sync,
     V: Clone + Send + Sync,
 {
     pub fn try_lock(
-        leaf_node: &'a LeafNode<K, V>,
+        leaf_node: &'n LeafNode<K, V>,
         guard: &Guard,
-    ) -> Option<LeafNodeLocker<'a, K, V>> {
+    ) -> Option<LeafNodeLocker<'n, K, V>> {
         if leaf_node
             .new_leaves
             .compare_exchange(
@@ -801,7 +822,7 @@ where
     }
 }
 
-impl<'a, K, V> Drop for LeafNodeLocker<'a, K, V>
+impl<'n, K, V> Drop for LeafNodeLocker<'n, K, V>
 where
     K: Clone + Ord + Send + Sync,
     V: Clone + Send + Sync,

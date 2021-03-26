@@ -509,6 +509,7 @@ mod treeindex_test {
         for i in 0..512 {
             let mut found_0 = false;
             let mut found_markers = 0;
+            let mut prev_marker = 0;
             let mut prev = 0;
             for iter in tree.iter() {
                 let current = *iter.0;
@@ -517,6 +518,10 @@ mod treeindex_test {
                     if current == 0 {
                         found_0 = true;
                     }
+                    if current > 0 {
+                        assert_eq!(prev_marker + range, current);
+                    }
+                    prev_marker = current;
                 }
                 assert!(prev == 0 || prev < current);
                 prev = current
@@ -564,7 +569,7 @@ mod treeindex_test {
 
     #[test]
     fn scanner() {
-        let data_size = 4096;
+        let data_size = 16384;
         for _ in 0..64 {
             let tree: Arc<TreeIndex<usize, u64>> = Arc::new(Default::default());
             let tree_copied = tree.clone();
