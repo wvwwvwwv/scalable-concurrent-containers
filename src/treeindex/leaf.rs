@@ -159,12 +159,17 @@ where
 
         // Locks the left leaf and its prev.
         let left_leaf_ref = unsafe { left_leaf_shared.deref() };
+        let left_locker = LeafListLocker::lock(left_leaf_ref, guard);
 
         debug_assert!(left_leaf_shared != right_leaf_shared);
         debug_assert_eq!(left_leaf_shared, right_leaf_ref.backward_link(guard));
+        debug_assert_eq!(left_leaf_ref.forward_link(guard), right_leaf_shared);
 
-        let left_locker = LeafListLocker::lock(left_leaf_ref, guard);
-        let left_prev_link = left_locker.leaf.backward_link(guard);
+        let left_prev_link = left_locker
+            .leaf
+            .backward_link
+            .load(Relaxed, guard)
+            .with_tag(0);
         let mut left_left_locker = if !left_prev_link.is_null() {
             Some(LeafListLocker::lock(
                 unsafe { left_prev_link.deref() },
@@ -175,10 +180,8 @@ where
         };
 
         // Makes links to the left of the left leaf, and the right of the right leaf.
-        self.backward_link.store(
-            left_leaf_ref.backward_link.load(Relaxed, guard).with_tag(0),
-            Relaxed,
-        );
+        debug_assert_eq!(self.backward_link.load(Relaxed, guard).tag(), 0);
+        self.backward_link.store(left_prev_link, Relaxed);
         self.forward_link
             .store(right_leaf_ref.forward_link.load(Relaxed, guard), Relaxed);
 
@@ -201,12 +204,12 @@ where
     }
 
     /// Unlinks itself from the linked list.
-    pub fn unlink(&self, guard: &Guard) {
+    pub fn opt_out(&self, guard: &Guard) {
         // Locks the next leaf and self.
         let mut lockers = LeafListLocker::lock_next_self(self, guard);
 
         // Locks the previous leaf and modifies the linked list.
-        let prev_shared = self.backward_link(guard);
+        let prev_shared = self.backward_link.load(Relaxed, guard).with_tag(0);
         if !prev_shared.is_null() {
             // Makes the prev leaf point to the next leaf.
             let prev_leaf_locker = LeafListLocker::lock(unsafe { prev_shared.deref() }, guard);
@@ -625,25 +628,25 @@ where
     }
 }
 
-struct Inserter<'a, K, V>
+struct Inserter<'l, K, V>
 where
     K: Clone + Ord + Sync,
     V: Clone + Sync,
 {
-    leaf: &'a Leaf<K, V>,
+    leaf: &'l Leaf<K, V>,
     metadata: u32,
     index: usize,
     committed: bool,
 }
 
 /// Inserter locks a single vacant slot.
-impl<'a, K, V> Inserter<'a, K, V>
+impl<'l, K, V> Inserter<'l, K, V>
 where
     K: Clone + Ord + Sync,
     V: Clone + Sync,
 {
     /// Returns Some if there is a vacant slot.
-    fn new(leaf: &'a Leaf<K, V>) -> Option<Inserter<'a, K, V>> {
+    fn new(leaf: &'l Leaf<K, V>) -> Option<Inserter<'l, K, V>> {
         let mut current = leaf.metadata.load(Relaxed);
         loop {
             let mut full = true;
@@ -719,7 +722,7 @@ where
     }
 }
 
-impl<'a, K, V> Drop for Inserter<'a, K, V>
+impl<'l, K, V> Drop for Inserter<'l, K, V>
 where
     K: Clone + Ord + Sync,
     V: Clone + Sync,
@@ -745,23 +748,23 @@ where
 }
 
 /// InsertBlocker locks all the vacant slots.
-struct InsertBlocker<'a, K, V>
+struct InsertBlocker<'l, K, V>
 where
     K: Clone + Ord + Sync,
     V: Clone + Sync,
 {
-    leaf: &'a Leaf<K, V>,
+    leaf: &'l Leaf<K, V>,
     metadata: u32,
     retired: bool,
 }
 
-impl<'a, K, V> InsertBlocker<'a, K, V>
+impl<'l, K, V> InsertBlocker<'l, K, V>
 where
     K: Clone + Ord + Sync,
     V: Clone + Sync,
 {
     /// Returns None if there is a locked slot.
-    fn new(leaf: &'a Leaf<K, V>) -> Option<InsertBlocker<'a, K, V>> {
+    fn new(leaf: &'l Leaf<K, V>) -> Option<InsertBlocker<'l, K, V>> {
         let mut current = leaf.metadata.load(Relaxed);
         loop {
             let mut new_metadata = current;
@@ -828,7 +831,7 @@ where
     }
 }
 
-impl<'a, K, V> Drop for InsertBlocker<'a, K, V>
+impl<'l, K, V> Drop for InsertBlocker<'l, K, V>
 where
     K: Clone + Ord + Sync,
     V: Clone + Sync,
@@ -940,7 +943,7 @@ where
                     continue;
                 }
                 if next_leaf_ptr != leaf.forward_link.load(Relaxed, guard) {
-                    // Pointer changed with the known next leaf is locked.
+                    // Pointer changed with the known next leaf locked.
                     break;
                 }
                 if let Err(err) = leaf.backward_link.compare_exchange(
@@ -953,6 +956,7 @@ where
                     current_state = err.current;
                     continue;
                 }
+
                 debug_assert_eq!(
                     next_leaf_locker.as_ref().map_or_else(
                         || leaf as *const _,
@@ -960,6 +964,11 @@ where
                     ),
                     leaf as *const _
                 );
+                debug_assert!(next_leaf_locker.as_ref().map_or_else(
+                    || true,
+                    |locker| locker.leaf as *const _
+                        == leaf.forward_link.load(Relaxed, guard).as_raw()
+                ));
 
                 return (next_leaf_locker, LeafListLocker { leaf, guard });
             }

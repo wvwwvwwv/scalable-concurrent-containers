@@ -534,7 +534,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             let leaf_ref = unsafe { leaf_shared.deref() };
             if leaf_ref.obsolete() {
                 // Data race resolution - see LeafScanner::jump.
-                leaf_ref.unlink(guard);
+                leaf_ref.opt_out(guard);
                 empty = self.leaves.0.remove(entry.0).2;
                 // Data race resolution - see LeafNode::search.
                 entry.1.store(Shared::null(), Release);
@@ -561,7 +561,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 unsafe {
                     if unbounded_shared.deref().obsolete() {
                         // Data race resolution - see LeafScanner::jump.
-                        unbounded_shared.deref().unlink(guard);
+                        unbounded_shared.deref().opt_out(guard);
                         self.leaves.1.store(Shared::null().with_tag(1), Release);
                         guard.defer_destroy(unbounded_shared);
                         true
