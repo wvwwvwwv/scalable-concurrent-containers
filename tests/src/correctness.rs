@@ -479,6 +479,10 @@ mod treeindex_test {
                     assert_eq!(entry, (&first_key, &first_key));
                     let entry = range_scanner.next().unwrap();
                     assert_eq!(entry, (&(first_key + 1), &(first_key + 1)));
+                    let entry = range_scanner.next().unwrap();
+                    assert_eq!(entry, (&(first_key + 2), &(first_key + 2)));
+                    let entry = range_scanner.next().unwrap();
+                    assert_eq!(entry, (&(first_key + 3), &(first_key + 3)));
 
                     let key_at_halfway = first_key + range / 2;
                     for key in (first_key + 1)..(first_key + range) {
@@ -574,17 +578,15 @@ mod treeindex_test {
                 // test insert
                 for _ in 0..2 {
                     barrier_copied.wait();
-                    let mut checker = BTreeSet::new();
                     let max = inserted_copied.load(Acquire);
                     let mut prev = 0;
+                    let mut iterated = 0;
                     for iter in tree_copied.iter() {
-                        checker.insert(*iter.0);
-                        assert!(prev == 0 || prev < *iter.0);
+                        assert!(prev == 0 || prev + 1 == *iter.0);
                         prev = *iter.0;
+                        iterated += 1;
                     }
-                    for key in 0..max {
-                        assert!(checker.contains(&key));
-                    }
+                    assert!(iterated >= max);
                 }
                 // test remove
                 for _ in 0..2 {

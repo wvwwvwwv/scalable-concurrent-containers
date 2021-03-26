@@ -457,23 +457,16 @@ where
                 return Some(result);
             }
             // Proceeds to the next leaf node.
-            while let Some(mut new_scanner) = unsafe {
-                // Checking min_allowed_key is necessary, because,
-                //  - Remove: merges two leaf nodes, therefore the unbounded leaf of the lower key node is relocated.
-                //  - Scanner: the unbounded leaf of the lower key node can be scanned twice after a jump.
-                std::mem::transmute::<_, Option<LeafScanner<'t, K, V>>>(scanner.jump(&self.guard))
-                    .take()
+            if let Some(new_scanner) = unsafe {
+                std::mem::transmute::<_, Option<LeafScanner<'t, K, V>>>(
+                    scanner.jump(min_allowed_key, &self.guard),
+                )
+                .take()
             } {
-                while let Some(entry) = new_scanner.next() {
-                    if min_allowed_key
-                        .as_ref()
-                        .map_or_else(|| true, |&key| key.cmp(entry.0) == Ordering::Less)
-                    {
-                        self.leaf_scanner.replace(new_scanner);
-                        return Some(entry);
-                    }
+                if let Some(entry) = new_scanner.get() {
+                    self.leaf_scanner.replace(new_scanner);
+                    return Some(entry);
                 }
-                scanner = new_scanner;
             }
         }
         None
@@ -577,40 +570,33 @@ where
                 return Some(result);
             }
             // Proceeds to the next leaf node.
-            while let Some(mut new_scanner) = unsafe {
-                // Checking min_allowed_key is necessary, because,
-                //  - Remove: merges two leaf nodes, therefore the unbounded leaf of the lower key node is relocated.
-                //  - Scanner: the unbounded leaf of the lower key node can be scanned twice after a jump.
-                std::mem::transmute::<_, Option<LeafScanner<'t, K, V>>>(scanner.jump(&self.guard))
-                    .take()
+            if let Some(new_scanner) = unsafe {
+                std::mem::transmute::<_, Option<LeafScanner<'t, K, V>>>(
+                    scanner.jump(min_allowed_key, &self.guard),
+                )
+                .take()
             } {
-                while let Some(entry) = new_scanner.next() {
-                    if min_allowed_key
-                        .as_ref()
-                        .map_or_else(|| true, |&key| key.cmp(entry.0) == Ordering::Less)
-                    {
-                        self.check_upper_bound = match self.range.end_bound() {
-                            Excluded(key) => {
-                                if let Some(max_entry) = new_scanner.max_entry() {
-                                    max_entry.0.cmp(key) != Ordering::Less
-                                } else {
-                                    false
-                                }
+                if let Some(entry) = new_scanner.get() {
+                    self.check_upper_bound = match self.range.end_bound() {
+                        Excluded(key) => {
+                            if let Some(max_entry) = new_scanner.max_entry() {
+                                max_entry.0.cmp(key) != Ordering::Less
+                            } else {
+                                false
                             }
-                            Included(key) => {
-                                if let Some(max_entry) = new_scanner.max_entry() {
-                                    max_entry.0.cmp(key) == Ordering::Greater
-                                } else {
-                                    false
-                                }
+                        }
+                        Included(key) => {
+                            if let Some(max_entry) = new_scanner.max_entry() {
+                                max_entry.0.cmp(key) == Ordering::Greater
+                            } else {
+                                false
                             }
-                            Unbounded => false,
-                        };
-                        self.leaf_scanner.replace(new_scanner);
-                        return Some(entry);
-                    }
+                        }
+                        Unbounded => false,
+                    };
+                    self.leaf_scanner.replace(new_scanner);
+                    return Some(entry);
                 }
-                scanner = new_scanner;
             }
         }
         None

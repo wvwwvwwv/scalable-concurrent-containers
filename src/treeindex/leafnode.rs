@@ -355,17 +355,12 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
         // Inserts the newly added leaves into the main array.
         //  - Inserts the new leaves into the linked list, and removes the full leaf from it.
         let low_key_leaf_shared = new_leaves_ref.low_key_leaf.load(Relaxed, guard);
-        let low_key_leaf_ref = unsafe { low_key_leaf_shared.deref() };
         let high_key_leaf_shared = new_leaves_ref.high_key_leaf.load(Relaxed, guard);
         let unused_leaf = if !high_key_leaf_shared.is_null() {
-            let high_key_leaf_ref = unsafe { high_key_leaf_shared.deref() };
             // From here, Scanners can reach the new leaves.
-            full_leaf_ref.push_back(low_key_leaf_ref, guard);
-            low_key_leaf_ref.push_back(high_key_leaf_ref, guard);
-            // From here, Scanners cannot reach the full leaf.
-            full_leaf_ref.unlink(guard);
+            full_leaf_ref.swap_out(low_key_leaf_shared, high_key_leaf_shared, guard);
             // Takes the max key value stored in the low key leaf as the leaf key.
-            let max_key = low_key_leaf_ref.max().unwrap().0;
+            let max_key = unsafe { low_key_leaf_shared.deref().max().unwrap().0 };
             if self
                 .leaves
                 .0
@@ -379,17 +374,14 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             // Replaces the full leaf with the high-key leaf.
             full_leaf_ptr.swap(high_key_leaf_shared, Release, &guard)
         } else {
-            // From here, Scanners can reach the new leaves.
-            full_leaf_ref.push_back(low_key_leaf_ref, guard);
-            // From here, Scanners cannot reach the full leaf.
-            full_leaf_ref.unlink(guard);
+            // From here, Scanners can reach the new leaf.
+            full_leaf_ref.swap_out(low_key_leaf_shared, low_key_leaf_shared, guard);
             // Replaces the full leaf with the low-key leaf.
             full_leaf_ptr.swap(low_key_leaf_shared, Release, &guard)
         };
 
         // Drops the deprecated leaf.
         unsafe {
-            // Unlinks the full leaf before unlocking the leaf node.
             debug_assert!(unused_leaf.deref().full());
             guard.defer_destroy(unused_leaf);
 
@@ -541,11 +533,12 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             let leaf_shared = entry.1.load(Relaxed, guard);
             let leaf_ref = unsafe { leaf_shared.deref() };
             if leaf_ref.obsolete() {
+                // Data race resolution - see LeafScanner::jump.
+                leaf_ref.unlink(guard);
                 empty = self.leaves.0.remove(entry.0).2;
-                // Once the key is removed, it is safe to deallocate the node as the validation loop ensures the absence of readers.
+                // Data race resolution - see LeafNode::search.
                 entry.1.store(Shared::null(), Release);
                 unsafe {
-                    leaf_ref.unlink(guard);
                     guard.defer_destroy(leaf_shared);
                 }
             }
@@ -565,15 +558,16 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
                 debug_assert!(unbounded_shared.tag() == 1);
                 true
             } else {
-                if unsafe { unbounded_shared.deref().obsolete() } {
-                    self.leaves.1.store(Shared::null().with_tag(1), Release);
-                    unsafe {
+                unsafe {
+                    if unbounded_shared.deref().obsolete() {
+                        // Data race resolution - see LeafScanner::jump.
                         unbounded_shared.deref().unlink(guard);
+                        self.leaves.1.store(Shared::null().with_tag(1), Release);
                         guard.defer_destroy(unbounded_shared);
+                        true
+                    } else {
+                        false
                     }
-                    true
-                } else {
-                    false
                 }
             }
         } else {
@@ -595,17 +589,15 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
             let origin_leaf_shared = new_leaves.deref().origin_leaf_ptr.load(Relaxed, guard);
             let low_key_leaf_shared = new_leaves.deref().low_key_leaf.load(Relaxed, guard);
             let high_key_leaf_shared = new_leaves.deref().high_key_leaf.load(Relaxed, guard);
-            high_key_leaf_shared
+
+            // Rolls back the linked list.
+            origin_leaf_shared
                 .deref()
-                .push_back(origin_leaf_shared.deref(), guard);
+                .swap_in(low_key_leaf_shared, high_key_leaf_shared, guard);
 
-            // The leaf with higher keys must be unlinked first.
-            high_key_leaf_shared.deref().unlink(guard);
-            guard.defer_destroy(high_key_leaf_shared);
-
-            // Unlinks the leaf with lower keys.
-            low_key_leaf_shared.deref().unlink(guard);
+            // Drops the unreachable leaves.
             guard.defer_destroy(low_key_leaf_shared);
+            guard.defer_destroy(high_key_leaf_shared);
 
             // Unlocks the leaf node.
             drop(
@@ -748,8 +740,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for LeafNode<K, 
                 .load(Acquire, unsafe { crossbeam_epoch::unprotected() });
             if !child.is_null() {
                 unsafe {
-                    let leaf = child.into_owned();
-                    leaf.unlink(crossbeam_epoch::unprotected());
+                    drop(child.into_owned());
                 }
             }
         }
@@ -759,8 +750,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for LeafNode<K, 
             .load(Acquire, unsafe { crossbeam_epoch::unprotected() });
         if !unbounded_shared.is_null() {
             unsafe {
-                let leaf = unbounded_shared.into_owned();
-                leaf.unlink(crossbeam_epoch::unprotected());
+                drop(unbounded_shared.into_owned());
             }
         }
     }

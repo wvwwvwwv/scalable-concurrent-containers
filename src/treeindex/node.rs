@@ -288,7 +288,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         if !unbounded_shared.is_null() {
             return unsafe { unbounded_shared.deref().depth(depth + 1, guard) };
         }
-        return depth;
+        depth
     }
 
     /// Checks if the internal node is obsolete.
@@ -844,31 +844,29 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         }
 
         let unbounded_shared = self.children.1.load(Relaxed, guard);
-        if !unbounded_shared.is_null() {
-            if unsafe { unbounded_shared.deref().obsolete(guard) } {
-                // If the unbounded node has become obsolete, either marks the node obsolete, or replaces the unbounded node with another.
-                if let Some(max_entry) = self.children.0.max() {
-                    // Firstly, replaces the unbounded node with the max entry.
-                    self.children
-                        .1
-                        .store(max_entry.1.load(Relaxed, guard), Release);
-                    // Then, removes the node from the children list.
-                    if self.children.0.remove(max_entry.0).2 {
-                        // Retires the children if it was the last child.
-                        let result = self.children.0.retire();
-                        debug_assert!(result);
-                    }
-                    max_entry.1.store(Shared::null(), Release);
-                } else {
-                    // Deprecates this internal node.
+        if !unbounded_shared.is_null() && unsafe { unbounded_shared.deref().obsolete(guard) } {
+            // If the unbounded node has become obsolete, either marks the node obsolete, or replaces the unbounded node with another.
+            if let Some(max_entry) = self.children.0.max() {
+                // Firstly, replaces the unbounded node with the max entry.
+                self.children
+                    .1
+                    .store(max_entry.1.load(Relaxed, guard), Release);
+                // Then, removes the node from the children list.
+                if self.children.0.remove(max_entry.0).2 {
+                    // Retires the children if it was the last child.
                     let result = self.children.0.retire();
                     debug_assert!(result);
-                    self.children.1.store(Shared::null().with_tag(1), Release);
                 }
-                unsafe {
-                    unbounded_shared.deref().unlink(guard);
-                    guard.defer_destroy(unbounded_shared);
-                }
+                max_entry.1.store(Shared::null(), Release);
+            } else {
+                // Deprecates this internal node.
+                let result = self.children.0.retire();
+                debug_assert!(result);
+                self.children.1.store(Shared::null().with_tag(1), Release);
+            }
+            unsafe {
+                unbounded_shared.deref().unlink(guard);
+                guard.defer_destroy(unbounded_shared);
             }
         }
 

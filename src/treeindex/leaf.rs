@@ -86,36 +86,118 @@ where
         (self.metadata.load(Relaxed) & OBSOLETE_MASK) == OBSOLETE_MASK
     }
 
-    pub fn forward_link<'a>(&self, guard: &'a Guard) -> Shared<'a, Leaf<K, V>> {
+    pub fn forward_link<'g>(&self, guard: &'g Guard) -> Shared<'g, Leaf<K, V>> {
         self.forward_link.load(Acquire, guard)
     }
 
-    pub fn backward_link<'a>(&self, guard: &'a Guard) -> Shared<'a, Leaf<K, V>> {
-        self.backward_link.load(Acquire, guard)
+    pub fn backward_link<'g>(&self, guard: &'g Guard) -> Shared<'g, Leaf<K, V>> {
+        self.backward_link.load(Acquire, guard).with_tag(0)
     }
 
-    /// Attaches the given leaf to its forward link.
-    pub fn push_back(&self, leaf: &Leaf<K, V>, guard: &Guard) {
+    /// Swaps the position of self in the linked list for that of the given leaves.
+    pub fn swap_out(
+        &self,
+        left_leaf_shared: Shared<Leaf<K, V>>,
+        right_leaf_shared: Shared<Leaf<K, V>>,
+        guard: &Guard,
+    ) {
         // Locks the next leaf and self.
         let mut lockers = LeafListLocker::lock_next_self(self, guard);
 
-        // Makes the new leaf point to self and the next leaf.
-        //  - The update order is, store(leaf.back)|release|store(leaf.forward)
-        leaf.backward_link
-            .store(Shared::from(self as *const _), Relaxed);
-        leaf.forward_link
-            .store(self.forward_link.load(Relaxed, guard), Release);
+        // Locks the prev leaf.
+        let prev_shared = self.backward_link.load(Relaxed, guard).with_tag(0);
+        let mut prev_locker = if !prev_shared.is_null() {
+            Some(LeafListLocker::lock(unsafe { prev_shared.deref() }, guard))
+        } else {
+            None
+        };
 
-        // Makes the next leaf point to the new leaf.
-        //  - From here, the new leaf is reachable by LeafListLockers.
-        if let Some(next_leaf_locker) = lockers.0.as_mut() {
-            next_leaf_locker.update_backward_link(Shared::from(leaf as *const _));
+        // It does not have to lock the given leaves, instead it needs to link them together.
+        let right_leaf_ref = unsafe { right_leaf_shared.deref() };
+        let left_leaf_ref = unsafe { left_leaf_shared.deref() };
+        if left_leaf_shared != right_leaf_shared {
+            left_leaf_ref.forward_link.store(right_leaf_shared, Relaxed);
+            right_leaf_ref
+                .backward_link
+                .store(left_leaf_shared, Relaxed);
         }
 
-        // Makes self point to the new leaf.
-        //  - From here, the new leaf is reachable by Scanners.
+        // Makes links to the backward and forward leaves of self.
+        right_leaf_ref
+            .forward_link
+            .store(self.forward_link.load(Relaxed, guard), Relaxed);
+        left_leaf_ref.backward_link.store(prev_shared, Relaxed);
+
+        // Makes the next leaf point to the right leaf.
+        if let Some(next_locker) = lockers.0.as_mut() {
+            next_locker
+                .leaf
+                .backward_link
+                .store(right_leaf_shared.with_tag(1), Relaxed);
+        }
+
+        // Makes the prev leaf point to the left leaf.
+        if let Some(prev_locker) = prev_locker.as_mut() {
+            // In order to publish the correct linked list state, a release fence is required.
+            prev_locker
+                .leaf
+                .forward_link
+                .store(left_leaf_shared, Release);
+        }
+    }
+
+    /// Swaps the position of the given leaves in the linked list for that of self.
+    pub fn swap_in(
+        &self,
+        left_leaf_shared: Shared<Leaf<K, V>>,
+        right_leaf_shared: Shared<Leaf<K, V>>,
+        guard: &Guard,
+    ) {
+        // Locks the right leaf and its next.
+        let right_leaf_ref = unsafe { right_leaf_shared.deref() };
+        let mut right_lockers = LeafListLocker::lock_next_self(right_leaf_ref, guard);
+
+        // Locks the left leaf and its prev.
+        let left_leaf_ref = unsafe { left_leaf_shared.deref() };
+
+        debug_assert!(left_leaf_shared != right_leaf_shared);
+        debug_assert_eq!(left_leaf_shared, right_leaf_ref.backward_link(guard));
+
+        let left_locker = LeafListLocker::lock(left_leaf_ref, guard);
+        let left_prev_link = left_locker.leaf.backward_link(guard);
+        let mut left_left_locker = if !left_prev_link.is_null() {
+            Some(LeafListLocker::lock(
+                unsafe { left_prev_link.deref() },
+                guard,
+            ))
+        } else {
+            None
+        };
+
+        // Makes links to the left of the left leaf, and the right of the right leaf.
+        self.backward_link.store(
+            left_leaf_ref.backward_link.load(Relaxed, guard).with_tag(0),
+            Relaxed,
+        );
         self.forward_link
-            .store(Shared::from(leaf as *const _), Release);
+            .store(right_leaf_ref.forward_link.load(Relaxed, guard), Relaxed);
+
+        // Makes the next leaf point to the right leaf.
+        if let Some(right_right_locker) = right_lockers.0.as_mut() {
+            right_right_locker
+                .leaf
+                .backward_link
+                .store(Shared::from(self as *const _).with_tag(1), Relaxed);
+        }
+
+        // Makes self a part of the linked list.
+        if let Some(left_left_leaf_locker) = left_left_locker.as_mut() {
+            // It makes self reachable, therefore a release fence is required
+            left_left_leaf_locker
+                .leaf
+                .forward_link
+                .store(Shared::from(self as *const _), Release);
+        }
     }
 
     /// Unlinks itself from the linked list.
@@ -124,23 +206,29 @@ where
         let mut lockers = LeafListLocker::lock_next_self(self, guard);
 
         // Locks the previous leaf and modifies the linked list.
-        let prev_leaf = lockers.1.backward_link;
-        if !prev_leaf.is_null() {
+        let prev_shared = self.backward_link(guard);
+        if !prev_shared.is_null() {
             // Makes the prev leaf point to the next leaf.
-            let prev_leaf_locker = LeafListLocker::lock(unsafe { prev_leaf.deref() }, guard);
+            let prev_leaf_locker = LeafListLocker::lock(unsafe { prev_shared.deref() }, guard);
             debug_assert_eq!(
-                prev_leaf_locker.leaf.forward_link.load(Relaxed, guard),
+                prev_leaf_locker.leaf.forward_link(guard),
                 Shared::from(self as *const _)
             );
+            if let Some(next_leaf_locker) = lockers.0.as_mut() {
+                next_leaf_locker
+                    .leaf
+                    .backward_link
+                    .store(prev_shared.with_tag(1), Relaxed);
+            }
             prev_leaf_locker
                 .leaf
                 .forward_link
                 .store(self.forward_link.load(Relaxed, guard), Release);
-            if let Some(next_leaf_locker) = lockers.0.as_mut() {
-                next_leaf_locker.update_backward_link(prev_leaf);
-            }
         } else if let Some(next_leaf_locker) = lockers.0.as_mut() {
-            next_leaf_locker.update_backward_link(prev_leaf);
+            next_leaf_locker
+                .leaf
+                .backward_link
+                .store(prev_shared.with_tag(1), Relaxed);
         }
     }
 
@@ -783,47 +871,46 @@ where
 }
 
 /// Leaf list locker.
-struct LeafListLocker<'a, K, V>
+struct LeafListLocker<'g, K, V>
 where
     K: Clone + Ord + Sync,
     V: Clone + Sync,
 {
-    leaf: &'a Leaf<K, V>,
-    backward_link: Shared<'a, Leaf<K, V>>,
+    leaf: &'g Leaf<K, V>,
+    guard: &'g Guard,
 }
 
-impl<'a, K, V> LeafListLocker<'a, K, V>
+impl<'g, K, V> LeafListLocker<'g, K, V>
 where
     K: Clone + Ord + Sync,
     V: Clone + Sync,
 {
-    fn lock(leaf: &'a Leaf<K, V>, guard: &'a Guard) -> LeafListLocker<'a, K, V> {
+    fn lock(leaf: &'g Leaf<K, V>, guard: &'g Guard) -> LeafListLocker<'g, K, V> {
         let mut current = leaf.backward_link.load(Relaxed, guard);
-        let locked_state = Shared::from(leaf as *const _);
         loop {
-            if current == locked_state {
+            if current.tag() == 1 {
                 current = leaf.backward_link.load(Relaxed, guard);
                 continue;
             }
-            if let Err(err) =
-                leaf.backward_link
-                    .compare_exchange(current, locked_state, Acquire, Relaxed, guard)
-            {
+            if let Err(err) = leaf.backward_link.compare_exchange(
+                current,
+                current.with_tag(1),
+                Acquire,
+                Relaxed,
+                guard,
+            ) {
                 current = err.current;
                 continue;
             }
             break;
         }
-        LeafListLocker {
-            leaf,
-            backward_link: current,
-        }
+        LeafListLocker { leaf, guard }
     }
 
     fn lock_next_self(
-        leaf: &'a Leaf<K, V>,
-        guard: &'a Guard,
-    ) -> (Option<LeafListLocker<'a, K, V>>, LeafListLocker<'a, K, V>) {
+        leaf: &'g Leaf<K, V>,
+        guard: &'g Guard,
+    ) -> (Option<LeafListLocker<'g, K, V>>, LeafListLocker<'g, K, V>) {
         loop {
             // Locks the next leaf.
             let next_leaf_ptr = leaf.forward_link.load(Relaxed, guard);
@@ -837,18 +924,17 @@ where
 
             if next_leaf_locker.as_ref().map_or_else(
                 || false,
-                |locker| locker.backward_link.as_raw() != leaf as *const _,
+                |locker| locker.leaf.backward_link(guard).as_raw() != leaf as *const _,
             ) {
                 // The link has changed in the meantime.
                 continue;
             }
 
-            // Lock the leaf.
-            //  - Reading backward_link needs to be an Acquire fence to correctly read forward_link.
-            let locked_state = Shared::from(leaf as *const _);
+            // Locks the leaf.
+            //  - Reading backward_link needs to be an acquire fence to correctly read forward_link.
             let mut current_state = leaf.backward_link.load(Acquire, guard);
             loop {
-                if current_state == locked_state {
+                if current_state.tag() == 1 {
                     // Currently, locked.
                     current_state = leaf.backward_link.load(Acquire, guard);
                     continue;
@@ -859,7 +945,7 @@ where
                 }
                 if let Err(err) = leaf.backward_link.compare_exchange(
                     current_state,
-                    locked_state,
+                    current_state.with_tag(1),
                     Acquire,
                     Relaxed,
                     guard,
@@ -868,56 +954,61 @@ where
                     continue;
                 }
                 debug_assert_eq!(
-                    next_leaf_locker
-                        .as_ref()
-                        .map_or_else(|| leaf as *const _, |locker| locker.backward_link.as_raw()),
+                    next_leaf_locker.as_ref().map_or_else(
+                        || leaf as *const _,
+                        |locker| locker.leaf.backward_link(guard).as_raw()
+                    ),
                     leaf as *const _
                 );
 
-                return (
-                    next_leaf_locker,
-                    LeafListLocker {
-                        leaf,
-                        backward_link: current_state,
-                    },
-                );
+                return (next_leaf_locker, LeafListLocker { leaf, guard });
             }
         }
     }
-
-    fn update_backward_link(&mut self, new_ptr: Shared<'a, Leaf<K, V>>) {
-        self.backward_link = new_ptr;
-    }
 }
 
-impl<'a, K, V> Drop for LeafListLocker<'a, K, V>
+impl<'g, K, V> Drop for LeafListLocker<'g, K, V>
 where
     K: Clone + Ord + Sync,
     V: Clone + Sync,
 {
     fn drop(&mut self) {
-        self.leaf.backward_link.store(self.backward_link, Release);
+        let mut current = self.leaf.backward_link.load(Relaxed, self.guard);
+        loop {
+            debug_assert_eq!(current.tag(), 1);
+            if let Err(result) = self.leaf.backward_link.compare_exchange(
+                current,
+                current.with_tag(0),
+                Release,
+                Relaxed,
+                self.guard,
+            ) {
+                current = result.current;
+                continue;
+            }
+            break;
+        }
     }
 }
 
 /// Leaf scanner.
-pub struct LeafScanner<'a, K, V>
+pub struct LeafScanner<'l, K, V>
 where
     K: Clone + Ord + Sync,
     V: Clone + Sync,
 {
-    leaf: &'a Leaf<K, V>,
+    leaf: &'l Leaf<K, V>,
     metadata: u32,
     entry_index: usize,
     entry_ptr: *const (K, V),
 }
 
-impl<'a, K, V> LeafScanner<'a, K, V>
+impl<'l, K, V> LeafScanner<'l, K, V>
 where
     K: Clone + Ord + Sync,
     V: Clone + Sync,
 {
-    pub fn new(leaf: &'a Leaf<K, V>) -> LeafScanner<'a, K, V> {
+    pub fn new(leaf: &'l Leaf<K, V>) -> LeafScanner<'l, K, V> {
         LeafScanner {
             leaf,
             metadata: leaf.metadata.load(Acquire),
@@ -926,7 +1017,7 @@ where
         }
     }
 
-    pub fn max_less(leaf: &'a Leaf<K, V>, key: &K) -> LeafScanner<'a, K, V> {
+    pub fn max_less(leaf: &'l Leaf<K, V>, key: &K) -> LeafScanner<'l, K, V> {
         let metadata = leaf.metadata.load(Acquire);
         let (index, ptr) = leaf.max_less(metadata, key);
         if !ptr.is_null() {
@@ -941,7 +1032,7 @@ where
         }
     }
 
-    pub fn new_including_removed(leaf: &'a Leaf<K, V>) -> LeafScanner<'a, K, V> {
+    pub fn new_including_removed(leaf: &'l Leaf<K, V>) -> LeafScanner<'l, K, V> {
         let mut metadata = leaf.metadata.load(Acquire);
         let mut unused_ranks = 0;
         let mut current_unused_ranks_index = 0;
@@ -981,12 +1072,12 @@ where
         self.metadata
     }
 
-    pub fn max_entry(&self) -> Option<(&'a K, &'a V)> {
+    pub fn max_entry(&self) -> Option<(&'l K, &'l V)> {
         self.leaf.max()
     }
 
     /// Returns a reference to the entry that the scanner is currently pointing to
-    pub fn get(&self) -> Option<(&'a K, &'a V)> {
+    pub fn get(&self) -> Option<(&'l K, &'l V)> {
         if self.entry_ptr.is_null() {
             return None;
         }
@@ -997,10 +1088,42 @@ where
         Leaf::<K, V>::rank(self.entry_index, self.leaf.metadata.load(Relaxed)) == REMOVED
     }
 
-    pub fn jump(&self, guard: &'a Guard) -> Option<LeafScanner<'a, K, V>> {
-        let next = self.leaf.forward_link.load(Relaxed, guard);
-        if !next.is_null() {
-            return Some(LeafScanner::new(unsafe { next.deref() }));
+    pub fn jump<'g>(
+        &self,
+        min_allowed_key: Option<&K>,
+        guard: &'g Guard,
+    ) -> Option<LeafScanner<'g, K, V>> {
+        // Data race resolution: compare keys if the current leaf has been unlinked.
+        //
+        // There is a chance that the current leaf has been unlinked,
+        // and smaller keys have been inserted into the next leaf.
+        //  - Next leaf = nl, current leaf = l, leaf node = ln, unlink = u.
+        //  - Remove: u_back(nl)|u_forward(l)|release|update(ln)|
+        //  - Insert:           |                               |insert(nl)|
+        //  - Scan:   load(nl)  |                               |          |load(nl)
+        // Therefore, it reads the backward link of the next leaf if it points to the current leaf.
+        // If not, it compares keys in order not to return keys smaller than the current one.
+        //  - Remove: u_back(nl)|u_forward(l)|release|update(ln)|
+        //  - Insert:           |                               |insert(nl)|
+        //  - Scan:   load(nl)  |                               |          |load(nl)|acquire|validate(nl->l)
+        let mut next = self.leaf.forward_link(guard);
+        while !next.is_null() {
+            let mut leaf_scanner = LeafScanner::new(unsafe { next.deref() });
+            if let Some(key) = min_allowed_key.as_ref() {
+                if leaf_scanner.leaf.backward_link(guard).as_raw() != self.leaf as *const _ {
+                    // The current leaf node may have been unlinked.
+                    while let Some(entry) = leaf_scanner.next() {
+                        if key.cmp(&entry.0) == Ordering::Less {
+                            return Some(leaf_scanner);
+                        }
+                        leaf_scanner.next();
+                    }
+                }
+            }
+            if leaf_scanner.next().is_some() {
+                return Some(leaf_scanner);
+            }
+            next = leaf_scanner.leaf.forward_link(guard);
         }
         None
     }
@@ -1016,12 +1139,12 @@ where
     }
 }
 
-impl<'a, K, V> Iterator for LeafScanner<'a, K, V>
+impl<'l, K, V> Iterator for LeafScanner<'l, K, V>
 where
     K: Clone + Ord + Sync,
     V: Clone + Sync,
 {
-    type Item = (&'a K, &'a V);
+    type Item = (&'l K, &'l V);
     fn next(&mut self) -> Option<Self::Item> {
         self.proceed();
         self.get()
