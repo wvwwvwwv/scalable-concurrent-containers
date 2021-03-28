@@ -16,8 +16,8 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 - OS: SUSE Linux Enterprise Server 15 SP1
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
 - RAM: 1TB
-- Rust: 1.50.0
-- SCC: 0.4.11
+- Rust: 1.51.0
+- SCC: 0.4.12
 - HashMap<usize, usize, RandomState> = Default::default()
 
 #### Test data
@@ -62,8 +62,8 @@ scc::HashIndex is an index version of scc::HashMap. It inherits all the characte
 - OS: SUSE Linux Enterprise Server 15 SP1
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
 - RAM: 1TB
-- Rust: 1.50.0
-- SCC: 0.4.11
+- Rust: 1.51.0
+- SCC: 0.4.12
 - HashIndex<String, String, RandomState> = Default::default()
 
 #### Test data
