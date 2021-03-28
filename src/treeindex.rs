@@ -122,6 +122,7 @@ where
                         value = entry.1;
                     }
                     InsertError::Retry(entry) => {
+                        std::thread::yield_now();
                         key = entry.0;
                         value = entry.1;
                     }
@@ -171,6 +172,7 @@ where
                         if removed && !has_been_removed {
                             has_been_removed = true;
                         }
+                        std::thread::yield_now();
                     }
                 },
             };
@@ -213,7 +215,10 @@ where
                 }
                 Err(err) => match err {
                     SearchError::Empty => return None,
-                    SearchError::Retry => continue,
+                    SearchError::Retry => {
+                        std::thread::yield_now();
+                        continue;
+                    }
                 },
             }
         }

@@ -8,7 +8,7 @@ The crate offers highly scalable concurrent containers written in the Rust langu
 
 ## scc::HashMap <a name="hash map"></a>
 
-scc::HashMap is a scalable in-memory unique key-value store that is targeted at highly concurrent heavy workloads. It does not distribute data to a fixed number of shards as most concurrent hash maps do, instead it has only one single dynamically resizable array of entry metadata. The entry metadata, called a cell, is a 64-byte data structure for managing an array of consecutive 32 key-value pairs. The fixed size key-value pair array is only reachable through its corresponding cell, and its entries are protected by a mutex in the cell; this means that the number of mutex instances increases as the hash map grows, thereby reducing the chance of multiple threads trying to acquire the same mutex. The metadata cell also has a linked list of key-value pair arrays for hash collision resolution. Apart from scc::HashMap having a single cell array, it automatically enlarges and shrinks the capacity of the cell array without blocking other operations and threads; the cell array is resized without relocating all the entries at once, instead it delegates the rehashing workload to future access to the data structure to keep the latency predictable.
+scc::HashMap is a scalable in-memory unique key-value store that is targeted at highly concurrent heavy workloads. It does not distribute data to a fixed number of shards as most concurrent hash maps do, instead it has only one single dynamically resizable array of entry metadata. The entry metadata, called a cell, is a 64-byte data structure for managing an array of consecutive 32 key-value pairs. The fixed size key-value pair array is only reachable through its corresponding cell, and its entries are protected by a mutex in the cell; this means that the number of mutex instances increases as the hash map grows, thereby reducing the chance of multiple threads trying to acquire the same mutex. In addition to the array and mutex, the metadata cell has a linked list of key-value pair arrays for hash collision resolution. Apart from scc::HashMap having a single cell array, it automatically enlarges and shrinks the capacity of the cell array without blocking other operations and threads; the cell array is resized without relocating all the entries at once, instead it delegates the rehashing workload to future access to the data structure to keep the latency predictable.
 
 ### Performance
 
@@ -87,7 +87,7 @@ scc::HashIndex is an index version of scc::HashMap. It inherits all the characte
 
 ## scc::TreeIndex <a name="tree index"></a>
 
-scc::TreeIndex is an order-8 B+ tree variant optimized for read operations. Locks are only acquired on structural changes, and read/scan operations are neither blocked nor interrupted by other threads. The semantics of the read operation on a single key is similar to snapshot isolation in terms of database management software, as readers may not see the latest snapshot of data. The strategy to make the data structure lock-free is similar to that of scc::HashIndex; it harnesses immutability. All the key-value pairs stored in a leaf are never dropped until the leaf becomes completely unreachable, thereby ensuring immutability of all the reachable key-value pairs.
+scc::TreeIndex is an order-8 B+ tree variant optimized for read operations. Locks are only acquired on structural changes, and read/scan operations are neither blocked nor interrupted by other threads. The semantics of the read operation on a single key is similar to snapshot isolation in terms of database management software, as readers may not see the latest snapshot of data. The strategy to make the data structure lock-free is similar to that of scc::HashIndex; it harnesses immutability. All the key-value pairs stored in a leaf are never dropped until the leaf becomes completely unreachable, thereby ensuring immutability of all the reachable key-value pairs. The leaf data structure is unique to scc::TreeIndex, that it allows non-blocking multi-threaded modification while it keeps the key-value pair ordering information and the metadata consistent.
 
 ### Performance
 
@@ -114,10 +114,10 @@ scc::TreeIndex is an order-8 B+ tree variant optimized for read operations. Lock
 
 |        | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
 |--------|----------------|----------------|----------------|----------------|
-| Insert |  71.105692153s |  71.60182204s  |  69.300164192s |  70.050318852s |
-| Read   |  25.959253558s |  28.21858048s  |  31.636098149s |  32.678456754s |
-| Scan   |  36.059027123s |  68.349526938s | 129.710438186s | 218.026359862s |
-| Remove |  82.910451376s | 120.185809134s | 162.444301189s | 241.25877992s  |
+| Insert |  75.312037299s |  75.9613236s   |  73.590353581s |  79.835608473s |
+| Read   |  26.027856123s |  28.522993002s |  32.284400279s |  33.907327607s |
+| Scan   |  17.745212214s |  34.334674985s |  67.668828349s | 135.802180234s |
+| Remove |  82.458748986s | 112.610040412s | 164.552950283s | 135.285141432s |
 
 ## Changelog
 
