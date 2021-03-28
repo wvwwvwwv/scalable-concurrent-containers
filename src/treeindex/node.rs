@@ -229,9 +229,10 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
         }
     }
 
-    /// Clears all the children for drop the deprecated split nodes.
+    /// Clears links to all the children to drop the deprecated node.
     ///
-    /// It is called only when the node is a temporary one for split/merge.
+    /// It is called only when the node is a temporary one for split/merge,
+    /// or has become unreachable after split/merge/remove.
     fn unlink(&self, guard: &Guard) {
         match &self.entry {
             NodeType::Internal(internal_node) => internal_node.unlink(guard),
@@ -763,7 +764,7 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         // Drops the deprecated nodes.
         // - Still, the deprecated full leaf can be reachable by Scanners.
         unsafe {
-            // Unlinks the full node before unlocking the leaf node.
+            // Cleans up the split operation by unlinking the unused node.
             unused_node.deref().unlink(guard);
             guard.defer_destroy(unused_node);
 
@@ -804,7 +805,8 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
 
     /// Unlinks all the leaves.
     ///
-    /// It is called only when the internal node is a temporary one for split/merge.
+    /// It is called only when the internal node is a temporary one for split/merge,
+    /// or has become unreachable after split/merge/remove.
     fn unlink(&self, guard: &Guard) {
         for entry in LeafScanner::new(&self.children.0) {
             entry.1.store(Shared::null(), Relaxed);
@@ -812,7 +814,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
         self.children.1.store(Shared::null().with_tag(1), Relaxed);
 
         // In case the node is locked, implying that it has been split, unlinks recursively.
-        let unused_nodes = self.new_children.load(Relaxed, &guard);
+        //
+        // Keeps the internal node locked to prevent locking attempts.
+        let unused_nodes = self
+            .new_children
+            .swap(Shared::null().with_tag(1), Relaxed, &guard);
         if !unused_nodes.is_null() {
             let unused_nodes = unsafe { unused_nodes.into_owned() };
             let obsolete_node = unused_nodes.origin_node_ptr.load(Relaxed, &guard);
@@ -884,6 +890,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
 
 impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for InternalNode<K, V> {
     fn drop(&mut self) {
+        debug_assert!(self
+            .new_children
+            .load(Relaxed, unsafe { crossbeam_epoch::unprotected() })
+            .is_null());
+
         // The internal node has become unreachable, and so have all the children, therefore pinning is unnecessary.
         for entry in LeafScanner::new(&self.children.0) {
             let child = entry
@@ -976,25 +987,25 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> I
 }
 
 /// Internal node locker.
-struct InternalNodeLocker<'a, K, V>
+struct InternalNodeLocker<'n, K, V>
 where
     K: Clone + Ord + Send + Sync,
     V: Clone + Send + Sync,
 {
-    lock: &'a Atomic<NewNodes<K, V>>,
+    lock: &'n Atomic<NewNodes<K, V>>,
     /// When the internal node is bound to be dropped, the flag may be set true.
     deprecate: bool,
 }
 
-impl<'a, K, V> InternalNodeLocker<'a, K, V>
+impl<'n, K, V> InternalNodeLocker<'n, K, V>
 where
     K: Clone + Ord + Send + Sync,
     V: Clone + Send + Sync,
 {
     fn try_lock(
-        internal_node: &'a InternalNode<K, V>,
+        internal_node: &'n InternalNode<K, V>,
         guard: &Guard,
-    ) -> Option<InternalNodeLocker<'a, K, V>> {
+    ) -> Option<InternalNodeLocker<'n, K, V>> {
         if internal_node
             .new_children
             .compare_exchange(
@@ -1020,7 +1031,7 @@ where
     }
 }
 
-impl<'a, K, V> Drop for InternalNodeLocker<'a, K, V>
+impl<'n, K, V> Drop for InternalNodeLocker<'n, K, V>
 where
     K: Clone + Ord + Send + Sync,
     V: Clone + Send + Sync,
