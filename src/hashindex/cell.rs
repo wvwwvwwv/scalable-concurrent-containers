@@ -365,7 +365,7 @@ impl<'g, K: Clone + Eq, V: Clone> CellLocker<'g, K, V> {
     ///
     /// Two strategies.
     ///  1. Clears the entire Cell if there is no valid entry.
-    ///  2. Coalesce if the given data array is non-empty and the linked list is sparse.
+    ///  2. Coalesces if the given data array is non-empty and the linked list is sparse.
     ///  3. Unlinks the given data array if the data array is empty.
     fn optimize(&self, data_array: Shared<DataArray<K, V>>, num_entries: usize, guard: &Guard) {
         if num_entries == 0 {

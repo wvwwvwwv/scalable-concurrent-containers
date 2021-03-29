@@ -169,10 +169,10 @@ where
                         }
                     }
                     RemoveError::Retry(removed) => {
+                        std::thread::yield_now();
                         if removed && !has_been_removed {
                             has_been_removed = true;
                         }
-                        std::thread::yield_now();
                     }
                 },
             };

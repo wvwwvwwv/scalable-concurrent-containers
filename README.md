@@ -121,12 +121,12 @@ scc::TreeIndex is an order-8 B+ tree variant optimized for read operations. Lock
 
 ## Changelog
 
+#### 0.5.0
+Stabilize TreeIndex
 #### 0.4.12
 Optimize TreeIndex: #24
 #### 0.4.11
 Optimize memory-usage of TreeIndex: #24 (partial)
-#### 0.4.10
-Fix HashIndex::remove: #32, API change HashIndex::len
 
 ## Milestones <a name="milestones"></a>
 
