@@ -13,19 +13,22 @@
 //! [`scc::HashIndex`]: hashindex::HashIndex
 //! [`scc::TreeIndex`]: treeindex::TreeIndex
 
-// scc::HashMap
+// Common modules.
+mod common;
+
+// scc::HashMap.
 mod hashmap;
 pub use hashmap::Accessor;
 pub use hashmap::Cursor;
 pub use hashmap::HashMap;
 pub use hashmap::Ticket;
 
-// scc::HashIndex
+// scc::HashIndex.
 mod hashindex;
 pub use hashindex::HashIndex;
 pub use hashindex::Visitor;
 
-// scc::TreeIndex
+// scc::TreeIndex.
 mod treeindex;
 pub use treeindex::Range;
 pub use treeindex::Scanner;
