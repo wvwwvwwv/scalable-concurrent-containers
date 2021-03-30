@@ -1,7 +1,9 @@
 use crossbeam_epoch::{Atomic, Guard, Shared};
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-/// The element of LinkedList must implement the Link trait.
+/// LinkedList is a self-referential doubly linked list.
+///
+/// The default implementation of push_back and pop_self functions relies on traditional locking mechanisms.
 pub trait LinkedList: crossbeam_epoch::Pointable + Sized {
     /// Returns a reference to the forward link.
     ///
@@ -129,6 +131,7 @@ impl<'g, T: LinkedList> LinkedListLocker<'g, T> {
         loop {
             if current.tag() == 1 {
                 current = entry.backward_link().load(Relaxed, guard);
+                std::thread::yield_now();
                 continue;
             }
             if let Err(err) = entry.backward_link().compare_exchange(
@@ -180,6 +183,7 @@ impl<'g, T: LinkedList> LinkedListLocker<'g, T> {
                 if current_state.tag() == 1 {
                     // Currently, locked.
                     current_state = entry.backward_link().load(Acquire, guard);
+                    std::thread::yield_now();
                     continue;
                 }
                 if next_entry_ptr != entry.forward_link().load(Relaxed, guard) {
