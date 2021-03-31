@@ -3,7 +3,7 @@ pub mod cell;
 
 use crate::common::cell_array::CellSize;
 use array::Array;
-use cell::{Cell, CellIterator, CellLocker, MAX_RESIZING_FACTOR};
+use cell::{Cell, CellIterator, CellLocker};
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::collections::hash_map::RandomState;
 use std::convert::TryInto;
@@ -563,8 +563,10 @@ where
                         .next_power_of_two()
                         .min(max_capacity / 2)
                         * 2;
-                    if new_capacity_candidate / capacity > (1 << MAX_RESIZING_FACTOR) {
-                        capacity * (1 << MAX_RESIZING_FACTOR)
+                    if new_capacity_candidate / capacity
+                        > (1 << Cell::<K, V>::max_resizing_factor())
+                    {
+                        capacity * (1 << Cell::<K, V>::max_resizing_factor())
                     } else {
                         new_capacity_candidate
                     }

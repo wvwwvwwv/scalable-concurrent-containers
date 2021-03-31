@@ -173,6 +173,9 @@ impl<K: Eq, V> CellSize for Cell<K, V> {
     fn cell_size() -> usize {
         ARRAY_SIZE
     }
+    fn max_resizing_factor() -> usize {
+        MAX_RESIZING_FACTOR
+    }
 }
 
 /// CellLocker.

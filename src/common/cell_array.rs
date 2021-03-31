@@ -19,7 +19,7 @@ pub struct CellArray<C: CellSize + Pointable + Sized> {
 }
 
 impl<C: CellSize + Pointable + Sized> CellArray<C> {
-    /// Create a new Array of given capacity.
+    /// Creates a new Array of given capacity.
     ///
     /// total_cell_capacity is the desired number of cell entries that the CellArray can accommodate.
     /// The given array instance is attached to the newly created Array instance.
@@ -133,4 +133,7 @@ impl<C: CellSize + Pointable + Sized> Drop for CellArray<C> {
 pub trait CellSize {
     /// Returns an unsigned integer.
     fn cell_size() -> usize;
+
+    /// Returns the max resizing factor.
+    fn max_resizing_factor() -> usize;
 }
