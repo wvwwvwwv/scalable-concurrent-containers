@@ -2,8 +2,9 @@ pub mod array;
 pub mod cell;
 pub mod link;
 
+use crate::common::cell_array::CellSize;
 use array::Array;
-use cell::{CellLocker, CellReader, ARRAY_SIZE, MAX_RESIZING_FACTOR};
+use cell::{Cell, CellLocker, CellReader, MAX_RESIZING_FACTOR};
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::collections::hash_map::RandomState;
 use std::convert::TryInto;
@@ -113,7 +114,7 @@ where
     pub fn new(capacity: usize, build_hasher: H) -> HashMap<K, V, H> {
         let initial_capacity = capacity.max(DEFAULT_CAPACITY);
         let array = Owned::new(Array::<K, V>::new(initial_capacity, Atomic::null()));
-        let current_capacity = array.capacity();
+        let current_capacity = array.num_cell_entries();
         HashMap {
             array: Atomic::from(array),
             minimum_capacity: current_capacity,
@@ -488,7 +489,7 @@ where
         let guard = crossbeam_epoch::pin();
         let current_array = self.array.load(Acquire, &guard);
         let current_array_ref = Self::array(current_array);
-        if retained_entries <= current_array_ref.capacity() / 8 {
+        if retained_entries <= current_array_ref.num_cell_entries() / 8 {
             self.resize();
         }
 
@@ -549,13 +550,13 @@ where
         let current_array = self.array.load(Acquire, &guard);
         let current_array_ref = Self::array(current_array);
         let mut num_entries = 0;
-        for i in 0..current_array_ref.num_cells() {
+        for i in 0..current_array_ref.array_size() {
             num_entries += current_array_ref.cell(i).size();
         }
         let old_array = current_array_ref.old_array(&guard);
         if !old_array.is_null() {
             let old_array_ref = Self::array(old_array);
-            for i in 0..old_array_ref.num_cells() {
+            for i in 0..old_array_ref.array_size() {
                 num_entries += old_array_ref.cell(i).size();
             }
         }
@@ -579,7 +580,7 @@ where
         if !current_array_ref.old_array(&guard).is_null() {
             current_array_ref.partial_rehash(|key| self.hash(key), &guard);
         }
-        current_array_ref.capacity()
+        current_array_ref.num_cell_entries()
     }
 
     /// Returns a reference to its build hasher.
@@ -661,8 +662,8 @@ where
                 return Err((accessor, key));
             }
             if !resize_triggered
-                && accessor.cell_index < ARRAY_SIZE
-                && accessor.cell_locker.size() >= ARRAY_SIZE
+                && accessor.cell_index < Cell::<K, V>::cell_size()
+                && accessor.cell_locker.size() >= Cell::<K, V>::cell_size()
             {
                 drop(accessor);
                 resize_triggered = true;
@@ -671,8 +672,8 @@ where
                 let current_array_ref = Self::array(current_array);
                 if current_array_ref.old_array(&guard).is_null() {
                     // Triggers resize if the estimated load factor is greater than 7/8.
-                    let sample_size = current_array_ref.num_sample_size();
-                    let threshold = sample_size * (ARRAY_SIZE / 8) * 7;
+                    let sample_size = current_array_ref.sample_size();
+                    let threshold = sample_size * (Cell::<K, V>::cell_size() / 8) * 7;
                     let mut num_entries = 0;
                     for i in 0..sample_size {
                         num_entries += current_array_ref.cell(i).size();
@@ -760,21 +761,21 @@ where
             accessor.entry_array_link_ptr,
             accessor.entry_ptr,
         );
-        if accessor.cell_locker.empty() && accessor.cell_index < ARRAY_SIZE {
+        if accessor.cell_locker.empty() && accessor.cell_index < Cell::<K, V>::cell_size() {
             drop(accessor);
             let guard = crossbeam_epoch::pin();
             let current_array = self.array.load(Acquire, &guard);
             let current_array_ref = Self::array(current_array);
             if current_array_ref.old_array(&guard).is_null()
-                && current_array_ref.capacity()
+                && current_array_ref.num_cell_entries()
                     > self.minimum_capacity + self.additional_capacity.load(Relaxed)
             {
                 // Triggers resize if the estimated load factor is smaller than 1/16.
-                let sample_size = current_array_ref.num_sample_size();
+                let sample_size = current_array_ref.sample_size();
                 let mut num_entries = 0;
                 for i in 0..sample_size {
                     num_entries += current_array_ref.cell(i).size();
-                    if num_entries >= sample_size * ARRAY_SIZE / 16 {
+                    if num_entries >= sample_size * Cell::<K, V>::cell_size() / 16 {
                         return value;
                     }
                 }
@@ -837,7 +838,7 @@ where
                     continue;
                 }
                 let array_ref = unsafe { &(**array_ptr) };
-                let num_cells = array_ref.num_cells();
+                let num_cells = array_ref.array_size();
                 for cell_index in 0..num_cells {
                     let cell_locker = CellLocker::lock(array_ref.cell(cell_index), &guard);
                     if !cell_locker.empty() {
@@ -874,7 +875,7 @@ where
         if old_array.as_raw() == array_ptr {
             // Bypasses the lifetime checker by not calling Shared::deref().
             let old_array_ref = unsafe { &(*old_array.as_raw()) };
-            let num_cells = old_array_ref.num_cells();
+            let num_cells = old_array_ref.array_size();
             for cell_index in (current_index + 1)..num_cells {
                 let cell_locker = CellLocker::lock(old_array_ref.cell(cell_index), &guard);
                 if !cell_locker.killed() && !cell_locker.empty() {
@@ -886,7 +887,7 @@ where
         }
 
         let mut new_array = Shared::<Array<K, V>>::null();
-        let num_cells = current_array_ref.num_cells();
+        let num_cells = current_array_ref.array_size();
         let start_index = if old_array.as_raw() == array_ptr {
             0
         } else {
@@ -906,7 +907,7 @@ where
         if !new_array.is_null() {
             // Bypasses the lifetime checker by not calling Shared::deref().
             let new_array_ref = unsafe { &(*new_array.as_raw()) };
-            let num_cells = new_array_ref.num_cells();
+            let num_cells = new_array_ref.array_size();
             for cell_index in 0..num_cells {
                 let cell_locker = CellLocker::lock(new_array_ref.cell(cell_index), &guard);
                 if !cell_locker.killed() && !cell_locker.empty() {
@@ -970,9 +971,11 @@ where
             // The resizing policies are as follows.
             //  - The load factor reaches 7/8, then the array grows up to 64x.
             //  - The load factor reaches 1/16, then the array shrinks to fit.
-            let capacity = current_array_ref.capacity();
-            let num_cells = current_array_ref.num_cells();
-            let num_cells_to_sample = (num_cells / 8).max(DEFAULT_CAPACITY / ARRAY_SIZE).min(4096);
+            let capacity = current_array_ref.num_cell_entries();
+            let num_cells = current_array_ref.array_size();
+            let num_cells_to_sample = (num_cells / 8)
+                .max(DEFAULT_CAPACITY / Cell::<K, V>::cell_size())
+                .min(4096);
             let estimated_num_entries = self.estimate(current_array_ref, num_cells_to_sample);
             let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
                 let max_capacity = 1usize << (std::mem::size_of::<usize>() * 8 - 1);
@@ -1024,7 +1027,7 @@ where
         for i in 0..num_cells_to_sample {
             num_entries += current_array_ref.cell(i).size();
         }
-        num_entries * (current_array_ref.num_cells() / num_cells_to_sample)
+        num_entries * (current_array_ref.array_size() / num_cells_to_sample)
     }
 
     /// Returns a reference to the Array instance.

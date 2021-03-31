@@ -1,10 +1,10 @@
-use crossbeam_epoch::{Atomic, Guard, Shared};
+use crossbeam_epoch::{Atomic, Guard, Pointable, Shared};
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 /// LinkedList is a self-referential doubly linked list.
 ///
 /// The default implementation of push_back and pop_self functions relies on traditional locking mechanisms.
-pub trait LinkedList: crossbeam_epoch::Pointable + Sized {
+pub trait LinkedList: Pointable + Sized {
     /// Returns a reference to the forward link.
     ///
     /// The pointer value may be tagged if the caller of push_back or remove has given a tag.

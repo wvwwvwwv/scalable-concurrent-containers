@@ -17,19 +17,19 @@
 mod common;
 
 // scc::HashMap.
-mod hashmap;
-pub use hashmap::Accessor;
-pub use hashmap::Cursor;
-pub use hashmap::HashMap;
-pub use hashmap::Ticket;
+mod hash_map;
+pub use hash_map::Accessor;
+pub use hash_map::Cursor;
+pub use hash_map::HashMap;
+pub use hash_map::Ticket;
 
 // scc::HashIndex.
-mod hashindex;
-pub use hashindex::HashIndex;
-pub use hashindex::Visitor;
+mod hash_index;
+pub use hash_index::HashIndex;
+pub use hash_index::Visitor;
 
 // scc::TreeIndex.
-mod treeindex;
-pub use treeindex::Range;
-pub use treeindex::Scanner;
-pub use treeindex::TreeIndex;
+mod tree_index;
+pub use tree_index::Range;
+pub use tree_index::Scanner;
+pub use tree_index::TreeIndex;

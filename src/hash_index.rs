@@ -1,8 +1,9 @@
 pub mod array;
 pub mod cell;
 
+use crate::common::cell_array::CellSize;
 use array::Array;
-use cell::{CellIterator, CellLocker, ARRAY_SIZE, MAX_RESIZING_FACTOR};
+use cell::{Cell, CellIterator, CellLocker, MAX_RESIZING_FACTOR};
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::collections::hash_map::RandomState;
 use std::convert::TryInto;
@@ -163,19 +164,19 @@ where
         let guard = crossbeam_epoch::pin();
         let (cell_locker, cell_index) = self.lock(hash, &guard);
         if cell_locker.remove(key, partial_hash, &guard) {
-            if cell_locker.cell_ref().num_entries() == 0 && cell_index < ARRAY_SIZE {
+            if cell_locker.cell_ref().num_entries() == 0 && cell_index < Cell::<K, V>::cell_size() {
                 drop(cell_locker);
                 let current_array = self.array.load(Acquire, &guard);
                 let current_array_ref = self.array_ref(current_array);
                 if current_array_ref.old_array(&guard).is_null()
-                    && current_array_ref.capacity() > self.minimum_capacity
+                    && current_array_ref.num_cell_entries() > self.minimum_capacity
                 {
                     // Triggers resize if the estimated load factor is smaller than 1/16.
-                    let sample_size = current_array_ref.num_sample_size();
+                    let sample_size = current_array_ref.sample_size();
                     let mut num_entries = 0;
                     for i in 0..sample_size {
-                        num_entries += current_array_ref.cell_ref(i).num_entries();
-                        if num_entries >= sample_size * ARRAY_SIZE / 16 {
+                        num_entries += current_array_ref.cell(i).num_entries();
+                        if num_entries >= sample_size * Cell::<K, V>::cell_size() / 16 {
                             return true;
                         }
                     }
@@ -223,13 +224,13 @@ where
             {
                 let old_array_ref = self.array_ref(old_array_shared);
                 let cell_index = old_array_ref.calculate_cell_index(hash);
-                let cell_ref = old_array_ref.cell_ref(cell_index);
+                let cell_ref = old_array_ref.cell(cell_index);
                 if let Some(entry) = cell_ref.search(key, partial_hash, &guard) {
                     return Some(f(&entry.0, &entry.1));
                 }
             }
             let cell_index = current_array_ref.calculate_cell_index(hash);
-            let cell_ref = current_array_ref.cell_ref(cell_index);
+            let cell_ref = current_array_ref.cell(cell_index);
             if let Some(entry) = cell_ref.search(key, partial_hash, &guard) {
                 return Some(f(&entry.0, &entry.1));
             }
@@ -296,9 +297,9 @@ where
                     continue;
                 }
             }
-            for index in 0..current_array_ref.num_cells() {
+            for index in 0..current_array_ref.array_size() {
                 if let Some(mut cell_locker) =
-                    CellLocker::lock(current_array_ref.cell_ref(index), &guard)
+                    CellLocker::lock(current_array_ref.cell(index), &guard)
                 {
                     num_removed += cell_locker.purge(&guard);
                 }
@@ -336,14 +337,14 @@ where
         let current_array = self.array.load(Acquire, &guard);
         let current_array_ref = self.array_ref(current_array);
         let mut num_entries = 0;
-        for i in 0..current_array_ref.num_cells() {
-            num_entries += current_array_ref.cell_ref(i).num_entries();
+        for i in 0..current_array_ref.array_size() {
+            num_entries += current_array_ref.cell(i).num_entries();
         }
         let old_array = current_array_ref.old_array(&guard);
         if !old_array.is_null() {
             let old_array_ref = self.array_ref(old_array);
-            for i in 0..old_array_ref.num_cells() {
-                num_entries += old_array_ref.cell_ref(i).num_entries();
+            for i in 0..old_array_ref.array_size() {
+                num_entries += old_array_ref.cell(i).num_entries();
             }
         }
         num_entries
@@ -368,7 +369,7 @@ where
         if !current_array_ref.old_array(&guard).is_null() {
             current_array_ref.partial_rehash(|key| self.hash(key), &guard);
         }
-        current_array_ref.capacity()
+        current_array_ref.num_cell_entries()
     }
 
     /// Returns a reference to its build hasher.
@@ -445,8 +446,8 @@ where
         loop {
             let (cell_locker, cell_index) = self.lock(hash, guard);
             if !resize_triggered
-                && cell_index < ARRAY_SIZE
-                && cell_locker.cell_ref().num_entries() >= ARRAY_SIZE
+                && cell_index < Cell::<K, V>::cell_size()
+                && cell_locker.cell_ref().num_entries() >= Cell::<K, V>::cell_size()
             {
                 drop(cell_locker);
                 resize_triggered = true;
@@ -454,11 +455,11 @@ where
                 let current_array_ref = self.array_ref(current_array);
                 if current_array_ref.old_array(&guard).is_null() {
                     // Triggers resize if the estimated load factor is greater than 7/8.
-                    let sample_size = current_array_ref.num_sample_size();
-                    let threshold = sample_size * (ARRAY_SIZE / 8) * 7;
+                    let sample_size = current_array_ref.sample_size();
+                    let threshold = sample_size * (Cell::<K, V>::cell_size() / 8) * 7;
                     let mut num_entries = 0;
                     for i in 0..sample_size {
-                        num_entries += current_array_ref.cell_ref(i).num_entries();
+                        num_entries += current_array_ref.cell(i).num_entries();
                         if num_entries > threshold {
                             self.resize(guard);
                             break;
@@ -486,7 +487,7 @@ where
                 let old_array_ref = self.array_ref(old_array_shared);
                 let cell_index = old_array_ref.calculate_cell_index(hash);
                 if let Some(mut cell_locker) =
-                    CellLocker::lock(old_array_ref.cell_ref(cell_index), guard)
+                    CellLocker::lock(old_array_ref.cell(cell_index), guard)
                 {
                     // Kills the Cell.
                     current_array_ref.kill_cell(
@@ -499,9 +500,7 @@ where
                 }
             }
             let cell_index = current_array_ref.calculate_cell_index(hash);
-            if let Some(cell_locker) =
-                CellLocker::lock(current_array_ref.cell_ref(cell_index), guard)
-            {
+            if let Some(cell_locker) = CellLocker::lock(current_array_ref.cell(cell_index), guard) {
                 return (cell_locker, cell_index);
             }
             // Reaching here indicates that self.array is updated.
@@ -512,9 +511,9 @@ where
     fn estimate(&self, current_array_ref: &Array<K, V>, num_cells_to_sample: usize) -> usize {
         let mut num_entries = 0;
         for i in 0..num_cells_to_sample {
-            num_entries += current_array_ref.cell_ref(i).num_entries();
+            num_entries += current_array_ref.cell(i).num_entries();
         }
-        num_entries * (current_array_ref.num_cells() / num_cells_to_sample)
+        num_entries * (current_array_ref.array_size() / num_cells_to_sample)
     }
 
     /// Resizes the array.
@@ -544,9 +543,11 @@ where
             // The resizing policies are as follows.
             //  - The load factor reaches 7/8, then the array grows up to 64x.
             //  - The load factor reaches 1/16, then the array shrinks to fit.
-            let capacity = current_array_ref.capacity();
-            let num_cells = current_array_ref.num_cells();
-            let num_cells_to_sample = (num_cells / 8).max(DEFAULT_CAPACITY / ARRAY_SIZE).min(4096);
+            let capacity = current_array_ref.num_cell_entries();
+            let num_cells = current_array_ref.array_size();
+            let num_cells_to_sample = (num_cells / 8)
+                .max(DEFAULT_CAPACITY / Cell::<K, V>::cell_size())
+                .min(4096);
             let estimated_num_entries = self.estimate(current_array_ref, num_cells_to_sample);
             let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
                 let max_capacity = 1usize << (std::mem::size_of::<usize>() * 8 - 1);
@@ -608,8 +609,8 @@ where
         let array = self.array.swap(Shared::null(), Relaxed, guard);
         if !array.is_null() {
             let array = unsafe { array.into_owned() };
-            for index in 0..array.num_cells() {
-                if let Some(mut cell_locker) = CellLocker::lock(array.cell_ref(index), guard) {
+            for index in 0..array.array_size() {
+                if let Some(mut cell_locker) = CellLocker::lock(array.cell(index), guard) {
                     cell_locker.kill();
                 }
             }
@@ -666,7 +667,7 @@ where
                 current_array
             };
             self.current_cell_iterator.replace(CellIterator::new(
-                self.hash_index.array_ref(self.current_array).cell_ref(0),
+                self.hash_index.array_ref(self.current_array).cell(0),
                 self.guard_ref(),
             ));
         }
@@ -680,7 +681,7 @@ where
             // Proceeds to the next Cell.
             let array_ref = self.hash_index.array_ref(self.current_array);
             self.current_index += 1;
-            if self.current_index == array_ref.num_cells() {
+            if self.current_index == array_ref.array_size() {
                 let current_array = self.hash_index.array.load(Acquire, self.guard_ref());
                 if self.current_array == current_array {
                     // Finished scanning the entire array.
@@ -693,7 +694,7 @@ where
                     self.current_array = current_array;
                     self.current_index = 0;
                     self.current_cell_iterator.replace(CellIterator::new(
-                        self.hash_index.array_ref(self.current_array).cell_ref(0),
+                        self.hash_index.array_ref(self.current_array).cell(0),
                         self.guard_ref(),
                     ));
                     continue;
@@ -706,13 +707,13 @@ where
                 };
                 self.current_index = 0;
                 self.current_cell_iterator.replace(CellIterator::new(
-                    self.hash_index.array_ref(self.current_array).cell_ref(0),
+                    self.hash_index.array_ref(self.current_array).cell(0),
                     self.guard_ref(),
                 ));
                 continue;
             } else {
                 self.current_cell_iterator.replace(CellIterator::new(
-                    array_ref.cell_ref(self.current_index),
+                    array_ref.cell(self.current_index),
                     self.guard_ref(),
                 ));
             }

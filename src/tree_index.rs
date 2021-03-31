@@ -1,6 +1,6 @@
 pub mod error;
 pub mod leaf;
-pub mod leafnode;
+pub mod leaf_node;
 pub mod node;
 
 use crossbeam_epoch::{Atomic, Guard, Owned};

@@ -1,4 +1,5 @@
 use super::link::{EntryArrayLink, LinkType};
+use crate::common::cell_array::CellSize;
 use crossbeam_epoch::Guard;
 use std::convert::TryInto;
 use std::mem::MaybeUninit;
@@ -165,6 +166,12 @@ impl<K: Eq, V> Drop for Cell<K, V> {
         while let Some(link) = link_option {
             link_option = link.cleanup();
         }
+    }
+}
+
+impl<K: Eq, V> CellSize for Cell<K, V> {
+    fn cell_size() -> usize {
+        ARRAY_SIZE
     }
 }
 

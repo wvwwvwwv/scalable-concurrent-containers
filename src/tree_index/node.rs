@@ -1,5 +1,5 @@
 use super::leaf::{LeafScanner, ARRAY_SIZE};
-use super::leafnode::{LeafNode, LeafNodeLocker};
+use super::leaf_node::{LeafNode, LeafNodeLocker};
 use super::Leaf;
 use super::{InsertError, RemoveError, SearchError};
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};

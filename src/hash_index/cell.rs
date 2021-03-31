@@ -1,3 +1,4 @@
+use crate::common::cell_array::CellSize;
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::mem::MaybeUninit;
 use std::sync::atomic::AtomicUsize;
@@ -143,6 +144,12 @@ impl<K: Clone + Eq, V: Clone> Drop for Cell<K, V> {
     fn drop(&mut self) {
         // The Cell must have been killed.
         debug_assert!(self.killed(unsafe { crossbeam_epoch::unprotected() }));
+    }
+}
+
+impl<K: Clone + Eq, V: Clone> CellSize for Cell<K, V> {
+    fn cell_size() -> usize {
+        ARRAY_SIZE
     }
 }
 
