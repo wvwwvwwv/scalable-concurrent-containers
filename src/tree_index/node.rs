@@ -3,6 +3,7 @@ use super::leaf_node::{LeafNode, LeafNodeLocker};
 use super::Leaf;
 use super::{InsertError, RemoveError, SearchError};
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
+use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::fmt::Display;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -59,7 +60,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
     }
 
     /// Searches for an entry associated with the given key.
-    pub fn search<'g>(&self, key: &'g K, guard: &'g Guard) -> Result<Option<&'g V>, SearchError> {
+    pub fn search<'g, Q>(&self, key: &'g Q, guard: &'g Guard) -> Result<Option<&'g V>, SearchError>
+    where
+        K: 'g + Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         match &self.entry {
             NodeType::Internal(internal_node) => internal_node.search(key, guard),
             NodeType::Leaf(leaf_node) => leaf_node.search(key, guard),
@@ -97,7 +102,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Node<K, V> {
     }
 
     /// Removes an entry associated with the given key.
-    pub fn remove(&self, key: &K, guard: &Guard) -> Result<bool, RemoveError> {
+    pub fn remove<Q>(&self, key: &Q, guard: &Guard) -> Result<bool, RemoveError>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         match &self.entry {
             NodeType::Internal(internal_node) => internal_node.remove(key, guard),
             NodeType::Leaf(leaf_node) => leaf_node.remove(key, guard),
@@ -303,7 +312,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
     }
 
     /// Searches for an entry associated with the given key.
-    fn search<'g>(&self, key: &'g K, guard: &'g Guard) -> Result<Option<&'g V>, SearchError> {
+    fn search<'g, Q>(&self, key: &'g Q, guard: &'g Guard) -> Result<Option<&'g V>, SearchError>
+    where
+        K: 'g + Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         loop {
             let result = (self.children.0).min_greater_equal(&key);
             if let Some((_, child)) = result.0 {
@@ -484,7 +497,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> InternalNode<K, V> {
     }
 
     /// Removes an entry associated with the given key.
-    fn remove(&self, key: &K, guard: &Guard) -> Result<bool, RemoveError> {
+    fn remove<Q>(&self, key: &Q, guard: &Guard) -> Result<bool, RemoveError>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         loop {
             let result = (self.children.0).min_greater_equal(&key);
             if let Some((_, child)) = result.0 {

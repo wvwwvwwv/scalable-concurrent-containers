@@ -1,6 +1,7 @@
 use super::link::{EntryArrayLink, LinkType};
 use crate::common::cell_array::CellSize;
 use crossbeam_epoch::Guard;
+use std::borrow::Borrow;
 use std::convert::TryInto;
 use std::mem::MaybeUninit;
 use std::ptr;
@@ -106,17 +107,21 @@ impl<K: Eq, V> Cell<K, V> {
         }
     }
 
-    fn search(
+    fn search<Q>(
         &self,
-        key: &K,
+        key: &Q,
         partial_hash: u8,
-    ) -> Option<(u8, *const EntryArrayLink<K, V>, *const (K, V))> {
+    ) -> Option<(u8, *const EntryArrayLink<K, V>, *const (K, V))>
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
         if let Some(entry_array) = self.entry_array.as_ref() {
             // Starts with the preferred index.
             let preferred_index = partial_hash % (ARRAY_SIZE as u8);
             if self.partial_hash_array[preferred_index as usize] == (partial_hash | 1) {
                 let entry_ptr = entry_array[preferred_index as usize].as_ptr();
-                if unsafe { &(*entry_ptr) }.0 == *key {
+                if *unsafe { &(*entry_ptr) }.0.borrow() == *key {
                     return Some((preferred_index, ptr::null(), entry_ptr));
                 }
             }
@@ -126,7 +131,7 @@ impl<K: Eq, V> Cell<K, V> {
                 if i != preferred_index && self.partial_hash_array[i as usize] == (partial_hash | 1)
                 {
                     let entry_ptr = entry_array[i as usize].as_ptr();
-                    if unsafe { &(*entry_ptr) }.0 == *key {
+                    if *unsafe { &(*entry_ptr) }.0.borrow() == *key {
                         return Some((i, ptr::null(), entry_ptr));
                     }
                 }
@@ -275,11 +280,15 @@ impl<'c, K: Eq, V> CellLocker<'c, K, V> {
         None
     }
 
-    pub fn search(
+    pub fn search<Q>(
         &self,
-        key: &K,
+        key: &Q,
         partial_hash: u8,
-    ) -> Option<(u8, *const EntryArrayLink<K, V>, *const (K, V))> {
+    ) -> Option<(u8, *const EntryArrayLink<K, V>, *const (K, V))>
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
         self.cell.search(key, partial_hash)
     }
 
@@ -498,12 +507,16 @@ impl<'c, K: Eq, V> CellReader<'c, K, V> {
     /// Creates a new CellReader instance with the Cell shared locked.
     ///
     /// The thread has to be pinned to keep the Cell from being dropped.
-    pub fn read(
+    pub fn read<Q>(
         cell: &'c Cell<K, V>,
-        key: &K,
+        key: &Q,
         partial_hash: u8,
         _guard: &Guard,
-    ) -> CellReader<'c, K, V> {
+    ) -> CellReader<'c, K, V>
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
         loop {
             // Early exit: neither locked nor empty.
             let current = cell.metadata.load(Acquire);
@@ -527,12 +540,16 @@ impl<'c, K: Eq, V> CellReader<'c, K, V> {
     }
 
     /// Creates a new CellReader instance if the Cell is shared locked.
-    fn try_read(
+    fn try_read<Q>(
         cell: &'c Cell<K, V>,
         metadata: u32,
-        key: &K,
+        key: &Q,
         partial_hash: u8,
-    ) -> Option<CellReader<'c, K, V>> {
+    ) -> Option<CellReader<'c, K, V>>
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
         let mut current = metadata;
         loop {
             if current & LOCK_MASK >= SLOCK_MAX {

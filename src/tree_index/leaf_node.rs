@@ -3,6 +3,7 @@ use super::Leaf;
 use super::{InsertError, RemoveError, SearchError};
 use crate::common::linked_list::LinkedList;
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
+use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::fmt::Display;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
@@ -46,9 +47,13 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
     }
 
     /// Searches for an entry associated with the given key.
-    pub fn search<'g>(&self, key: &'g K, guard: &'g Guard) -> Result<Option<&'g V>, SearchError> {
+    pub fn search<'g, Q>(&self, key: &'g Q, guard: &'g Guard) -> Result<Option<&'g V>, SearchError>
+    where
+        K: 'g + Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         loop {
-            let result = (self.leaves.0).min_greater_equal(&key);
+            let result = (self.leaves.0).min_greater_equal(key);
             if let Some((_, child)) = result.0 {
                 let child_leaf = child.load(Acquire, guard);
                 if !(self.leaves.0).validate(result.1) {
@@ -242,7 +247,11 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
     }
 
     /// Removes an entry associated with the given key.
-    pub fn remove(&self, key: &K, guard: &Guard) -> Result<bool, RemoveError> {
+    pub fn remove<Q>(&self, key: &Q, guard: &Guard) -> Result<bool, RemoveError>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         loop {
             let result = (self.leaves.0).min_greater_equal(&key);
             if let Some((_, child)) = result.0 {
@@ -498,13 +507,17 @@ impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> LeafNode<K, V> {
     }
 
     /// Checks the given full leaf whether it is being split.
-    fn check_full_leaf(
+    fn check_full_leaf<Q>(
         &self,
         removed: bool,
-        key: &K,
+        key: &Q,
         leaf_shared: Shared<Leaf<K, V>>,
         guard: &Guard,
-    ) -> Result<bool, RemoveError> {
+    ) -> Result<bool, RemoveError>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         // There is a chance that the target key value pair has been copied to new_leaves,
         // and the following scenario cannot be prevented by memory fences.
         //  - Remove: release(leaf)|load(mutex_old)|acquire|load(leaf_ptr_old)

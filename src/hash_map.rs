@@ -6,6 +6,7 @@ use crate::common::cell_array::CellSize;
 use array::Array;
 use cell::{Cell, CellLocker, CellReader};
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
+use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
 use std::convert::TryInto;
 use std::hash::{BuildHasher, Hash, Hasher};
@@ -324,7 +325,11 @@ where
     /// let result = hashmap.get(&1);
     /// assert_eq!(result.unwrap().get(), (&1, &mut 0));
     /// ```
-    pub fn get<'h>(&'h self, key: &K) -> Option<Accessor<'h, K, V, H>> {
+    pub fn get<'h, Q>(&'h self, key: &Q) -> Option<Accessor<'h, K, V, H>>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
         let (hash, partial_hash) = self.hash(key);
         let accessor = self.acquire(key, hash, partial_hash);
         if accessor.entry_ptr.is_null() {
@@ -356,7 +361,11 @@ where
     /// let result = hashmap.remove(&1);
     /// assert_eq!(result.unwrap(), 0);
     /// ```
-    pub fn remove(&self, key: &K) -> Option<V> {
+    pub fn remove<Q>(&self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
         self.get(key)
             .map_or_else(|| None, |accessor| accessor.erase())
     }
@@ -381,7 +390,11 @@ where
     /// let result = hashmap.read(&1, |key, value| *value);
     /// assert_eq!(result.unwrap(), 0);
     /// ```
-    pub fn read<R, F: FnOnce(&K, &V) -> R>(&self, key: &K, f: F) -> Option<R> {
+    pub fn read<Q, R, F: FnOnce(&Q, &V) -> R>(&self, key: &Q, f: F) -> Option<R>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
         let (hash, partial_hash) = self.hash(key);
         let guard = crossbeam_epoch::pin();
 
@@ -396,20 +409,20 @@ where
                 let old_array_ref = Self::array(old_array_shared);
                 let cell_index = old_array_ref.calculate_cell_index(hash);
                 let reader =
-                    CellReader::read(old_array_ref.cell(cell_index), &key, partial_hash, &guard);
+                    CellReader::read(old_array_ref.cell(cell_index), key, partial_hash, &guard);
                 if let Some((key, value)) = reader.get() {
-                    return Some(f(key, value));
+                    return Some(f(key.borrow(), value));
                 }
             }
             let cell_index = current_array_ref.calculate_cell_index(hash);
             let reader = CellReader::read(
                 current_array_ref.cell(cell_index),
-                &key,
+                key,
                 partial_hash,
                 &guard,
             );
             if let Some((key, value)) = reader.get() {
-                return Some(f(key, value));
+                return Some(f(key.borrow(), value));
             }
             let new_current_array_shared = self.array.load(Acquire, &guard);
             if new_current_array_shared == current_array_shared {
@@ -440,7 +453,11 @@ where
     /// let result = hashmap.contains(&1);
     /// assert!(result);
     /// ```
-    pub fn contains(&self, key: &K) -> bool {
+    pub fn contains<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
         self.read(key, |_, _| ()).is_some()
     }
 
@@ -637,7 +654,11 @@ where
     }
 
     /// Returns the hash value of the given key.
-    fn hash(&self, key: &K) -> (u64, u8) {
+    fn hash<Q>(&self, key: &Q) -> (u64, u8)
+    where
+        K: Borrow<Q>,
+        Q: Hash + ?Sized,
+    {
         // Generates a hash value.
         let mut h = self.build_hasher.build_hasher();
         key.hash(&mut h);
@@ -690,7 +711,11 @@ where
     }
 
     /// Acquires a cell.
-    fn acquire<'h>(&'h self, key: &K, hash: u64, partial_hash: u8) -> Accessor<'h, K, V, H> {
+    fn acquire<'h, Q>(&'h self, key: &Q, hash: u64, partial_hash: u8) -> Accessor<'h, K, V, H>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let guard = crossbeam_epoch::pin();
 
         // It is guaranteed that the thread reads a consistent snapshot of the current and
@@ -715,7 +740,7 @@ where
                     continue;
                 }
                 let (mut cell_locker, cell_index, sub_index, entry_array_link_ptr, entry_ptr) =
-                    self.search(&key, hash, partial_hash, old_array.as_raw(), &guard);
+                    self.search(key, hash, partial_hash, old_array.as_raw(), &guard);
                 if !entry_ptr.is_null() {
                     return Accessor {
                         hash_map: &self,
@@ -737,7 +762,7 @@ where
                 }
             }
             let (cell_locker, cell_index, sub_index, entry_array_link_ptr, entry_ptr) =
-                self.search(&key, hash, partial_hash, current_array.as_raw(), &guard);
+                self.search(key, hash, partial_hash, current_array.as_raw(), &guard);
             if !cell_locker.killed() {
                 return Accessor {
                     hash_map: &self,
@@ -786,9 +811,9 @@ where
     }
 
     /// Searches a cell for the key.
-    fn search<'c>(
+    fn search<'c, Q>(
         &self,
-        key: &K,
+        key: &Q,
         hash: u64,
         partial_hash: u8,
         array_ptr: *const Array<K, V>,
@@ -799,7 +824,11 @@ where
         u8,
         *const link::EntryArrayLink<K, V>,
         *const (K, V),
-    ) {
+    )
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
         let array_ref = unsafe { &(*array_ptr) };
         let cell_index = array_ref.calculate_cell_index(hash);
         let cell_locker = CellLocker::lock(array_ref.cell(cell_index), guard);

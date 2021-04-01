@@ -7,6 +7,7 @@ use crossbeam_epoch::{Atomic, Guard, Owned};
 use error::{InsertError, RemoveError, SearchError};
 use leaf::{Leaf, LeafScanner};
 use node::Node;
+use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::fmt;
 use std::iter::FusedIterator;
@@ -148,7 +149,11 @@ where
     /// let result = treeindex.remove(&1);
     /// assert!(result);
     /// ```
-    pub fn remove(&self, key: &K) -> bool {
+    pub fn remove<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         let mut has_been_removed = false;
         let guard = crossbeam_epoch::pin();
         let mut root_node = self.root.load(Acquire, &guard);
@@ -198,7 +203,11 @@ where
     /// let result = treeindex.read(&1, |key, value| *value);
     /// assert_eq!(result.unwrap(), 10);
     /// ```
-    pub fn read<R, F: FnOnce(&K, &V) -> R>(&self, key: &K, f: F) -> Option<R> {
+    pub fn read<Q, R, F: FnOnce(&Q, &V) -> R>(&self, key: &Q, f: F) -> Option<R>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         let guard = crossbeam_epoch::pin();
         loop {
             let root_node = self.root.load(Acquire, &guard);

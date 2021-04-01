@@ -5,6 +5,7 @@ use crate::common::cell_array::CellSize;
 use array::Array;
 use cell::{Cell, CellIterator, CellLocker};
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
+use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
 use std::convert::TryInto;
 use std::hash::{BuildHasher, Hash, Hasher};
@@ -159,7 +160,11 @@ where
     /// let result = hashindex.remove(&1);
     /// assert!(result);
     /// ```
-    pub fn remove(&self, key: &K) -> bool {
+    pub fn remove<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
         let (hash, partial_hash) = self.hash(key);
         let guard = crossbeam_epoch::pin();
         let (cell_locker, cell_index) = self.lock(hash, &guard);
@@ -210,7 +215,11 @@ where
     ///     assert!(false);
     /// }
     /// ```
-    pub fn read<R, F: FnOnce(&K, &V) -> R>(&self, key: &K, f: F) -> Option<R> {
+    pub fn read<Q, R, F: FnOnce(&Q, &V) -> R>(&self, key: &Q, f: F) -> Option<R>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
         let (hash, partial_hash) = self.hash(key);
         let guard = crossbeam_epoch::pin();
 
@@ -226,13 +235,13 @@ where
                 let cell_index = old_array_ref.calculate_cell_index(hash);
                 let cell_ref = old_array_ref.cell(cell_index);
                 if let Some(entry) = cell_ref.search(key, partial_hash, &guard) {
-                    return Some(f(&entry.0, &entry.1));
+                    return Some(f(entry.0.borrow(), &entry.1));
                 }
             }
             let cell_index = current_array_ref.calculate_cell_index(hash);
             let cell_ref = current_array_ref.cell(cell_index);
             if let Some(entry) = cell_ref.search(key, partial_hash, &guard) {
-                return Some(f(&entry.0, &entry.1));
+                return Some(f(entry.0.borrow(), &entry.1));
             }
             let new_current_array_shared = self.array.load(Acquire, &guard);
             if new_current_array_shared == current_array_shared {
@@ -261,7 +270,11 @@ where
     /// let result = hashindex.contains(&1);
     /// assert!(result);
     /// ```
-    pub fn contains(&self, key: &K) -> bool {
+    pub fn contains<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
         self.read(key, |_, _| ()).is_some()
     }
 
@@ -419,7 +432,11 @@ where
     }
 
     /// Returns the hash value of the given key.
-    fn hash(&self, key: &K) -> (u64, u8) {
+    fn hash<Q>(&self, key: &Q) -> (u64, u8)
+    where
+        K: Borrow<K>,
+        Q: Hash + ?Sized,
+    {
         // Generates a hash value.
         let mut h = self.build_hasher.build_hasher();
         key.hash(&mut h);

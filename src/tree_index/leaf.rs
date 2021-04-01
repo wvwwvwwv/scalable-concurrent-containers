@@ -1,5 +1,6 @@
 use crate::common::linked_list::LinkedList;
 use crossbeam_epoch::{Atomic, Guard};
+use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::convert::TryInto;
 use std::mem::MaybeUninit;
@@ -184,7 +185,11 @@ where
     /// The first boolean value returned from the function indicates that an entry has been removed.
     /// The second boolean value indicates that the leaf is full.
     /// The third boolean value indicates that the leaf is empty.
-    pub fn remove(&self, key: &K) -> (bool, bool, bool) {
+    pub fn remove<Q>(&self, key: &Q) -> (bool, bool, bool)
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         let mut removed = false;
         let mut full = true;
         let mut empty = true;
@@ -251,7 +256,11 @@ where
     }
 
     /// Returns a value associated with the key.
-    pub fn search(&self, key: &K) -> Option<&V> {
+    pub fn search<Q>(&self, key: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         let metadata = self.metadata.load(Acquire);
         let mut max_min_rank = 0;
         let mut min_max_rank = (ARRAY_SIZE + 1).try_into().unwrap();
@@ -327,7 +336,11 @@ where
     /// Returns the minimum entry among those that are not Ordering::Less than the given key.
     ///
     /// It additionally returns the current version of its metadata in order for the caller to validate the sanity of the result.
-    pub fn min_greater_equal(&self, key: &K) -> (Option<(&K, &V)>, u32) {
+    pub fn min_greater_equal<Q>(&self, key: &Q) -> (Option<(&K, &V)>, u32)
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         let metadata = self.metadata.load(Acquire);
         let mut max_min_rank = 0;
         let mut min_max_rank = (ARRAY_SIZE + 1).try_into().unwrap();
@@ -445,9 +458,13 @@ where
         REMOVED << (index * 4)
     }
 
-    fn compare(&self, index: usize, key: &K) -> std::cmp::Ordering {
+    fn compare<Q>(&self, index: usize, key: &Q) -> std::cmp::Ordering
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         let entry_ref = unsafe { &*self.entry_array[index].as_ptr() };
-        entry_ref.0.cmp(key)
+        (*entry_ref.0.borrow()).cmp(key)
     }
 
     fn take(&self, index: usize) -> (K, V) {

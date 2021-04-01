@@ -1,6 +1,8 @@
 use super::cell::{Cell, CellLocker, MAX_RESIZING_FACTOR};
 use crate::common::cell_array::{CellArray, CellSize};
 use crossbeam_epoch::Guard;
+use std::borrow::Borrow;
+use std::hash::Hash;
 use std::mem::MaybeUninit;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
@@ -14,14 +16,17 @@ impl<K: Eq, V> Array<K, V> {
     }
 
     /// Kills the Cell.
-    pub fn kill_cell<F: Fn(&K) -> (u64, u8)>(
+    pub fn kill_cell<Q, F: Fn(&Q) -> (u64, u8)>(
         &self,
         cell_locker: &mut CellLocker<K, V>,
         old_array: &Array<K, V>,
         old_cell_index: usize,
         hasher: &F,
         guard: &Guard,
-    ) {
+    ) where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
         if cell_locker.killed() {
             return;
         } else if cell_locker.empty() {
@@ -56,7 +61,7 @@ impl<K: Eq, V> Array<K, V> {
             let (new_cell_index, partial_hash) = if shrink && sub_index != u8::MAX {
                 (target_cell_index, cell_locker.partial_hash(sub_index))
             } else {
-                let (hash, partial_hash) = hasher(&key);
+                let (hash, partial_hash) = hasher(key.borrow());
                 (self.calculate_cell_index(hash), partial_hash)
             };
             debug_assert!(
@@ -87,7 +92,11 @@ impl<K: Eq, V> Array<K, V> {
     }
 
     /// Relocates a fixed number of Cell from the old array to the current array.
-    pub fn partial_rehash<F: Fn(&K) -> (u64, u8)>(&self, hasher: F, guard: &Guard) -> bool {
+    pub fn partial_rehash<Q, F: Fn(&Q) -> (u64, u8)>(&self, hasher: F, guard: &Guard) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
         let old_array = self.old_array(guard);
         if old_array.is_null() {
             return true;

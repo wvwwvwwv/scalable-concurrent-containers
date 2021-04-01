@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::mem::MaybeUninit;
 
 pub const ARRAY_SIZE: usize = 8;
@@ -79,16 +80,20 @@ impl<K: Eq, V> EntryArrayLink<K, V> {
             .map_or_else(|| None, |link| (*link).first_entry())
     }
 
-    pub fn search_entry(
+    pub fn search_entry<Q>(
         &self,
-        key: &K,
+        key: &Q,
         partial_hash: u8,
-    ) -> Option<(*const EntryArrayLink<K, V>, *const (K, V))> {
+    ) -> Option<(*const EntryArrayLink<K, V>, *const (K, V))>
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
         for (i, v) in self.partial_hash_array.iter().enumerate() {
             if *v != (partial_hash | 1) {
                 continue;
             }
-            if unsafe { &(*self.entry_array[i].as_ptr()).0 } == key {
+            if *unsafe { &(*self.entry_array[i].as_ptr()).0 }.borrow() == *key {
                 return Some((
                     self as *const EntryArrayLink<K, V>,
                     self.entry_array[i].as_ptr(),

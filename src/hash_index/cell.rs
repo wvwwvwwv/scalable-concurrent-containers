@@ -1,5 +1,6 @@
 use crate::common::cell_array::CellSize;
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
+use std::borrow::Borrow;
 use std::mem::MaybeUninit;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -52,7 +53,11 @@ impl<K: Clone + Eq, V: Clone> Cell<K, V> {
     }
 
     /// Searches for an entry associated with the given key.
-    pub fn search<'g>(&self, key: &K, partial_hash: u8, guard: &'g Guard) -> Option<&'g (K, V)> {
+    pub fn search<'g, Q>(&self, key: &Q, partial_hash: u8, guard: &'g Guard) -> Option<&'g (K, V)>
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
         // In order to read the linked list correctly, an acquire fence is required.
         let mut data_array = self.data.load(Acquire, guard);
         let preferred_index = partial_hash as usize % ARRAY_SIZE;
@@ -62,7 +67,7 @@ impl<K: Clone + Eq, V: Clone> Cell<K, V> {
             if preferred_index_hash == ((partial_hash & (!REMOVED)) | OCCUPIED) {
                 let entry_ptr = data_array_ref.data[preferred_index].as_ptr();
                 std::sync::atomic::fence(Acquire);
-                if unsafe { &(*entry_ptr) }.0 == *key {
+                if *unsafe { &(*entry_ptr) }.0.borrow() == *key {
                     return Some(unsafe { &(*entry_ptr) });
                 }
             }
@@ -73,7 +78,7 @@ impl<K: Clone + Eq, V: Clone> Cell<K, V> {
                 if *hash == ((partial_hash & (!REMOVED)) | OCCUPIED) {
                     let entry_ptr = data_array_ref.data[index].as_ptr();
                     std::sync::atomic::fence(Acquire);
-                    if unsafe { &(*entry_ptr) }.0 == *key {
+                    if *unsafe { &(*entry_ptr) }.0.borrow() == *key {
                         return Some(unsafe { &(*entry_ptr) });
                     }
                 }
@@ -307,7 +312,11 @@ impl<'g, K: Clone + Eq, V: Clone> CellLocker<'g, K, V> {
     }
 
     /// Removes a new key-value pair associated with the given key.
-    pub fn remove(&self, key: &K, partial_hash: u8, guard: &Guard) -> bool {
+    pub fn remove<Q>(&self, key: &Q, partial_hash: u8, guard: &Guard) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
         if self.kill_on_drop {
             // The Cell will be killed.
             return false;
@@ -322,7 +331,7 @@ impl<'g, K: Clone + Eq, V: Clone> CellLocker<'g, K, V> {
             let preferred_index_hash = data_array_ref.partial_hash_array[preferred_index];
             if preferred_index_hash == ((partial_hash & (!REMOVED)) | OCCUPIED) {
                 let entry_ptr = data_array_ref.data[preferred_index].as_ptr();
-                if unsafe { &(*entry_ptr) }.0 == *key {
+                if *unsafe { &(*entry_ptr) }.0.borrow() == *key {
                     data_array_ref.partial_hash_array[preferred_index] |= REMOVED;
                     removed = true;
                     break;
@@ -334,7 +343,7 @@ impl<'g, K: Clone + Eq, V: Clone> CellLocker<'g, K, V> {
                 }
                 if *hash == ((partial_hash & (!REMOVED)) | OCCUPIED) {
                     let entry_ptr = data_array_ref.data[index].as_ptr();
-                    if unsafe { &(*entry_ptr) }.0 == *key {
+                    if *unsafe { &(*entry_ptr) }.0.borrow() == *key {
                         data_array_ref.partial_hash_array[index] |= REMOVED;
                         removed = true;
                         break;

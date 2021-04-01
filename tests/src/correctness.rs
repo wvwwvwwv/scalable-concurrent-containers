@@ -32,7 +32,7 @@ mod hashmap_test {
 
             let result3 = hashmap.upsert(key, 1);
             assert_eq!(result3.get(), (&key, &mut 1));
-        drop(result3);
+            drop(result3);
 
             let result4 = hashmap.insert(key, 10);
             assert!(result4.is_err());
@@ -85,6 +85,10 @@ mod hashmap_test {
             if hashmap1.insert(str_val.clone(), i).is_ok() {
                 checker1.insert((str_val.clone(), i));
             }
+            let str_borrowed = str_val.as_str();
+            assert!(hashmap1.get(str_borrowed).is_some());
+            assert!(hashmap1.read(str_borrowed, |_, _| ()).is_some());
+
             if hashmap2.insert(i, str_val.clone()).is_ok() {
                 checker2.insert((i, str_val.clone()));
             }
@@ -92,7 +96,7 @@ mod hashmap_test {
         assert_eq!(hashmap1.len(), checker1.len());
         assert_eq!(hashmap2.len(), checker2.len());
         for iter in checker1 {
-            let v = hashmap1.remove(&iter.0);
+            let v = hashmap1.remove(iter.0.as_str());
             assert_eq!(v.unwrap(), iter.1);
         }
         for iter in checker2 {
@@ -297,6 +301,9 @@ mod hashindex_test {
             if hashindex1.insert(str_val.clone(), i).is_ok() {
                 checker1.insert((str_val.clone(), i));
             }
+            let str_borrowed = str_val.as_str();
+            assert!(hashindex1.read(str_borrowed, |_, _| ()).is_some());
+
             if hashindex2.insert(i, str_val.clone()).is_ok() {
                 checker2.insert((i, str_val.clone()));
             }
@@ -304,7 +311,7 @@ mod hashindex_test {
         assert_eq!(hashindex1.len(), checker1.len());
         assert_eq!(hashindex2.len(), checker2.len());
         for iter in checker1 {
-            assert!(hashindex1.remove(&iter.0));
+            assert!(hashindex1.remove(iter.0.as_str()));
         }
         for iter in checker2 {
             assert!(hashindex2.remove(&iter.0));
@@ -553,12 +560,15 @@ mod treeindex_test {
             if tree1.insert(str_val.clone(), i).is_ok() {
                 checker1.insert((str_val.clone(), i));
             }
+            let str_borrowed = str_val.as_str();
+            assert!(tree1.read(str_borrowed, |_, _| ()).is_some());
+
             if tree2.insert(i, str_val.clone()).is_ok() {
                 checker2.insert((i, str_val.clone()));
             }
         }
         for iter in checker1.iter() {
-            let v = tree1.read(&iter.0, |_, v| v.clone());
+            let v = tree1.read(iter.0.as_str(), |_, v| v.clone());
             assert_eq!(v.unwrap(), iter.1);
         }
         for iter in checker2.iter() {
