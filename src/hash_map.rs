@@ -38,7 +38,7 @@ const DEFAULT_CAPACITY: usize = 64;
 /// * The number of entries managed by a single metadata cell without a linked list: 32.
 /// * The number of entries a single linked list entry manages: 8.
 /// * The expected maximum linked list length when resize is triggered: log(capacity) / 8.
-pub struct HashMap<K, V, H>
+pub struct HashMap<K, V, H = RandomState>
 where
     K: Eq + Hash + Sync,
     V: Sync,
@@ -68,7 +68,7 @@ where
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32, _> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
     /// let result = hashmap.capacity();
     /// assert_eq!(result, 64);
@@ -108,7 +108,7 @@ where
     /// let result = hashmap.capacity();
     /// assert_eq!(result, 1024);
     ///
-    /// let hashmap: HashMap<u64, u32, _> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = Default::default();
     /// let result = hashmap.capacity();
     /// assert_eq!(result, 64);
     /// ```
@@ -127,7 +127,8 @@ where
 
     /// Temporarily increases the minimum capacity of the HashMap.
     ///
-    /// Unused space can be immediately reclaimed when the returned Ticket is dropped.
+    /// The reserved space is not exclusively owned by the Ticket, there thus can be overtaken.
+    /// Unused space is immediately reclaimed when the Ticket is dropped.
     ///
     /// # Errors
     ///
@@ -141,14 +142,14 @@ where
     /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(1000, RandomState::new());
     /// assert_eq!(hashmap.capacity(), 1024);
     ///
-    /// let ticket = hashmap.book(10000);
+    /// let ticket = hashmap.reserve(10000);
     /// assert!(ticket.is_some());
     /// assert_eq!(hashmap.capacity(), 16384);
     /// drop(ticket);
     ///
     /// assert_eq!(hashmap.capacity(), 1024);
     /// ```
-    pub fn book(&self, capacity: usize) -> Option<Ticket<K, V, H>> {
+    pub fn reserve(&self, capacity: usize) -> Option<Ticket<K, V, H>> {
         let mut current_additional_capacity = self.additional_capacity.load(Relaxed);
         loop {
             if usize::MAX - self.minimum_capacity - current_additional_capacity <= capacity {
@@ -187,7 +188,7 @@ where
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32, _> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
@@ -206,7 +207,7 @@ where
     /// }
     /// ```
     pub fn insert(&self, key: K, value: V) -> Result<Accessor<K, V, H>, (Accessor<K, V, H>, K, V)> {
-        match self.reserve(key) {
+        match self.lock(key) {
             Ok((mut accessor, key, partial_hash)) => {
                 let (sub_index, entry_array_link_ptr, entry_ptr) =
                     accessor.cell_locker.insert(key, partial_hash, value);
@@ -231,7 +232,7 @@ where
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32, _> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
     /// let mut current = 0;
     /// let result = hashmap.emplace(1, || { current += 1; current });
@@ -255,7 +256,7 @@ where
         key: K,
         constructor: F,
     ) -> Result<Accessor<K, V, H>, (Accessor<K, V, H>, K)> {
-        match self.reserve(key) {
+        match self.lock(key) {
             Ok((mut accessor, key, partial_hash)) => {
                 let (sub_index, entry_array_link_ptr, entry_ptr) =
                     accessor
@@ -280,7 +281,7 @@ where
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32, _> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
@@ -312,7 +313,7 @@ where
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32, _> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
     /// let result = hashmap.get(&1);
     /// assert!(result.is_none());
@@ -348,7 +349,7 @@ where
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32, _> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
     /// let result = hashmap.remove(&1);
     /// assert!(result.is_none());
@@ -380,7 +381,7 @@ where
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32, _> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
@@ -440,7 +441,7 @@ where
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32, _> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
     /// let result = hashmap.contains(&1);
     /// assert!(!result);
@@ -469,7 +470,7 @@ where
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32, _> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
@@ -519,7 +520,7 @@ where
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32, _> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
@@ -554,7 +555,7 @@ where
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32, _> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
     /// let result = hashmap.insert(1, 0);
     /// assert!(result.is_ok());
@@ -607,7 +608,7 @@ where
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, _> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = Default::default();
     /// let result: &RandomState = hashmap.hasher();
     /// ```
     pub fn hasher(&self) -> &H {
@@ -623,7 +624,7 @@ where
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32, _> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {
@@ -673,8 +674,8 @@ where
         (hash, (hash & ((1 << 8) - 1)).try_into().unwrap())
     }
 
-    /// Reserves a Cell for inserting a new key-value pair.
-    fn reserve(&self, key: K) -> Result<(Accessor<K, V, H>, K, u8), (Accessor<K, V, H>, K)> {
+    /// Locks a Cell for inserting a new key-value pair.
+    fn lock(&self, key: K) -> Result<(Accessor<K, V, H>, K, u8), (Accessor<K, V, H>, K)> {
         let (hash, partial_hash) = self.hash(&key);
         let mut resize_triggered = false;
         loop {
@@ -1157,7 +1158,7 @@ where
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32, _> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
     /// let result = hashmap.get(&1);
     /// assert!(result.is_none());
@@ -1181,7 +1182,7 @@ where
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32, _> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
     /// let result = hashmap.insert(1, 0);
     /// if let Ok(result) = result {

@@ -31,7 +31,7 @@ const DEFAULT_CAPACITY: usize = 64;
 /// * The number of entries managed by a single metadata cell without a linked list: 32.
 /// * The number of entries a single linked list entry manages: 32.
 /// * The expected maximum linked list length when resize is triggered: log(capacity) / 8.
-pub struct HashIndex<K, V, H>
+pub struct HashIndex<K, V, H = RandomState>
 where
     K: Clone + Eq + Hash + Sync,
     V: Clone + Sync,
@@ -122,7 +122,7 @@ where
     /// ```
     /// use scc::HashIndex;
     ///
-    /// let hashindex: HashIndex<u64, u32, _> = Default::default();
+    /// let hashindex: HashIndex<u64, u32> = Default::default();
     ///
     /// let result = hashindex.insert(1, 0);
     /// assert!(result.is_ok());
@@ -137,7 +137,7 @@ where
     /// ```
     pub fn insert(&self, key: K, value: V) -> Result<(), (K, V)> {
         let guard = crossbeam_epoch::pin();
-        let (cell_locker, key, partial_hash) = self.reserve(key, &guard);
+        let (cell_locker, key, partial_hash) = self.acquire(key, &guard);
         match cell_locker.insert(key, value, partial_hash, &guard) {
             Ok(()) => Ok(()),
             Err((key, value)) => Err((key, value)),
@@ -152,7 +152,7 @@ where
     /// ```
     /// use scc::HashIndex;
     ///
-    /// let hashindex: HashIndex<u64, u32, _> = Default::default();
+    /// let hashindex: HashIndex<u64, u32> = Default::default();
     ///
     /// let result = hashindex.insert(1, 0);
     /// assert!(result.is_ok());
@@ -203,7 +203,7 @@ where
     /// ```
     /// use scc::HashIndex;
     ///
-    /// let hashindex: HashIndex<u64, u32, _> = Default::default();
+    /// let hashindex: HashIndex<u64, u32> = Default::default();
     ///
     /// let result = hashindex.insert(1, 0);
     /// assert!(result.is_ok());
@@ -259,7 +259,7 @@ where
     /// ```
     /// use scc::HashIndex;
     ///
-    /// let hashindex: HashIndex<u64, u32, _> = Default::default();
+    /// let hashindex: HashIndex<u64, u32> = Default::default();
     ///
     /// let result = hashindex.contains(&1);
     /// assert!(!result);
@@ -284,7 +284,7 @@ where
     /// ```
     /// use scc::HashIndex;
     ///
-    /// let hashindex: HashIndex<u64, u32, _> = Default::default();
+    /// let hashindex: HashIndex<u64, u32> = Default::default();
     ///
     /// let result = hashindex.insert(1, 0);
     /// assert!(result.is_ok());
@@ -337,7 +337,7 @@ where
     /// ```
     /// use scc::HashIndex;
     ///
-    /// let hashindex: HashIndex<u64, u32, _> = Default::default();
+    /// let hashindex: HashIndex<u64, u32> = Default::default();
     ///
     /// let result = hashindex.insert(1, 0);
     /// assert!(result.is_ok());
@@ -392,7 +392,7 @@ where
     /// use scc::HashIndex;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashindex: HashIndex<u64, u32, _> = Default::default();
+    /// let hashindex: HashIndex<u64, u32> = Default::default();
     /// let result: &RandomState = hashindex.hasher();
     /// ```
     pub fn hasher(&self) -> &H {
@@ -408,7 +408,7 @@ where
     /// ```
     /// use scc::HashIndex;
     ///
-    /// let hashindex: HashIndex<u64, u32, _> = Default::default();
+    /// let hashindex: HashIndex<u64, u32> = Default::default();
     ///
     /// let result = hashindex.insert(1, 0);
     /// assert!(result.is_ok());
@@ -456,8 +456,8 @@ where
         unsafe { array_shared.deref() }
     }
 
-    /// Reserves a Cell for inserting a new key-value pair.
-    fn reserve<'g>(&self, key: K, guard: &'g Guard) -> (CellLocker<'g, K, V>, K, u8) {
+    /// Acquires a Cell for inserting a new key-value pair.
+    fn acquire<'g>(&self, key: K, guard: &'g Guard) -> (CellLocker<'g, K, V>, K, u8) {
         let (hash, partial_hash) = self.hash(&key);
         let mut resize_triggered = false;
         loop {

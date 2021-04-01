@@ -4,7 +4,6 @@ mod hashmap_test {
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
     use scc::HashMap;
-    use std::collections::hash_map::RandomState;
     use std::collections::BTreeSet;
     use std::hash::{Hash, Hasher};
     use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -15,7 +14,7 @@ mod hashmap_test {
     proptest! {
         #[test]
         fn basic(key in 0u64..10) {
-            let hashmap: HashMap<u64, u32, RandomState> = Default::default();
+            let hashmap: HashMap<u64, u32> = Default::default();
             assert!(hashmap.iter().next().is_none());
 
             let result1 = hashmap.insert(key, 0);
@@ -73,8 +72,8 @@ mod hashmap_test {
 
     #[test]
     fn string_key() {
-        let hashmap1: HashMap<String, u32, RandomState> = Default::default();
-        let hashmap2: HashMap<u32, String, RandomState> = Default::default();
+        let hashmap1: HashMap<String, u32> = Default::default();
+        let hashmap2: HashMap<u32, String> = Default::default();
         let mut checker1 = BTreeSet::new();
         let mut checker2 = BTreeSet::new();
         let mut runner = TestRunner::default();
@@ -111,7 +110,7 @@ mod hashmap_test {
     fn cursor() {
         let data_size = 4096;
         for _ in 0..64 {
-            let hashmap: Arc<HashMap<u64, u64, RandomState>> = Arc::new(Default::default());
+            let hashmap: Arc<HashMap<u64, u64>> = Arc::new(Default::default());
             let hashmap_copied = hashmap.clone();
             let barrier = Arc::new(Barrier::new(2));
             let barrier_copied = barrier.clone();
@@ -215,7 +214,7 @@ mod hashmap_test {
         fn insert(key in 0u64..16) {
             let range = 1024;
             let checker = AtomicUsize::new(0);
-            let hashmap: HashMap<Data, Data, RandomState> = Default::default();
+            let hashmap: HashMap<Data, Data> = Default::default();
             for d in key..(key + range) {
                 let result = hashmap.insert(Data::new(d, &checker), Data::new(d, &checker));
                 assert!(result.is_ok());
@@ -280,7 +279,6 @@ mod hashindex_test {
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
     use scc::HashIndex;
-    use std::collections::hash_map::RandomState;
     use std::collections::BTreeSet;
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering::{Acquire, Release};
@@ -289,8 +287,8 @@ mod hashindex_test {
 
     #[test]
     fn string_key() {
-        let hashindex1: HashIndex<String, u32, RandomState> = Default::default();
-        let hashindex2: HashIndex<u32, String, RandomState> = Default::default();
+        let hashindex1: HashIndex<String, u32> = Default::default();
+        let hashindex2: HashIndex<u32, String> = Default::default();
         let mut checker1 = BTreeSet::new();
         let mut checker2 = BTreeSet::new();
         let mut runner = TestRunner::default();
@@ -324,7 +322,7 @@ mod hashindex_test {
     fn cursor() {
         let data_size = 4096;
         for _ in 0..64 {
-            let hashindex: Arc<HashIndex<u64, u64, RandomState>> = Arc::new(Default::default());
+            let hashindex: Arc<HashIndex<u64, u64>> = Arc::new(Default::default());
             let hashindex_copied = hashindex.clone();
             let barrier = Arc::new(Barrier::new(2));
             let barrier_copied = barrier.clone();
