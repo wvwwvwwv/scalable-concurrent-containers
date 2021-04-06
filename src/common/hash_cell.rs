@@ -79,6 +79,45 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Cell<K, V, SIZE, LOCK_F
         None
     }
 
+    /// Gets a CellIterator pointing to an entry associated with the given key.
+    pub fn get<'g, Q>(
+        &'g self,
+        key: &Q,
+        partial_hash: u8,
+        guard: &'g Guard,
+    ) -> Option<CellIterator<'g, K, V, SIZE, LOCK_FREE>>
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
+        // In order to read the linked list correctly, an acquire fence is required.
+        let mut data_array = self.data.load(Acquire, guard);
+        let preferred_index = partial_hash as usize % SIZE;
+        let expected_hash = (partial_hash & (!REMOVED)) | OCCUPIED;
+        while !data_array.is_null() {
+            let data_array_ref = unsafe { data_array.deref() };
+            for i in preferred_index..preferred_index + SIZE {
+                let index = i % SIZE;
+                if data_array_ref.partial_hash_array[index] == expected_hash {
+                    let entry_ptr = data_array_ref.data[index].as_ptr();
+                    if LOCK_FREE {
+                        std::sync::atomic::fence(Acquire);
+                    }
+                    if *unsafe { &(*entry_ptr) }.0.borrow() == *key {
+                        return Some(CellIterator {
+                            cell_ref: Some(self),
+                            current_array: data_array,
+                            current_index: index,
+                            guard_ref: guard,
+                        });
+                    }
+                }
+            }
+            data_array = data_array_ref.link.load(Acquire, guard);
+        }
+        None
+    }
+
     /// Waits for the owner thread to release the Cell.
     fn wait<T, F: FnOnce() -> Option<T>>(&self, f: F, guard: &Guard) -> Option<T> {
         // Inserts the condvar into the wait queue.
@@ -377,6 +416,42 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'g, K, V
             data_array = data_array_ref.link.load(Relaxed, guard);
         }
         None
+    }
+
+    /// Removes a new key-value pair being pointed by the given CellIterator.
+    pub fn erase<Q>(&self, iterator: &mut CellIterator<K, V, SIZE, LOCK_FREE>) -> Option<(K, V)>
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
+        if self.killed {
+            // The Cell has been killed.
+            return None;
+        }
+
+        if LOCK_FREE {
+            // If the Cell is lock-free, instances cannot be dropped.
+            return None;
+        }
+
+        if iterator.current_array.is_null() || iterator.current_index == usize::MAX {
+            // The iterator is fused.
+            return None;
+        }
+
+        let data_array_ref = unsafe { iterator.current_array.deref_mut() };
+        if data_array_ref.partial_hash_array[iterator.current_index] == 0 {
+            // The entry has been dropped.
+            return None;
+        }
+
+        let entry_ptr = data_array_ref.data[iterator.current_index].as_ptr();
+        data_array_ref.partial_hash_array[iterator.current_index] = 0;
+        self.cell_ref.num_entries.fetch_sub(1, Relaxed);
+        let entry_mut_ptr = entry_ptr as *mut MaybeUninit<(K, V)>;
+        return Some(unsafe {
+            std::ptr::replace(entry_mut_ptr, MaybeUninit::uninit()).assume_init()
+        });
     }
 
     /// Purges all the data.
