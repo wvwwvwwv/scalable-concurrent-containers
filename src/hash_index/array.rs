@@ -38,7 +38,8 @@ impl<K: Clone + Eq, V: Clone> Array<K, V> {
 
         let mut target_cells: Vec<CellLocker<K, V, CELL_ARRAY_SIZE, true>> =
             Vec::with_capacity(1 << Cell::<K, V, CELL_ARRAY_SIZE, true>::max_resizing_factor());
-        for entry in cell_locker.cell_ref().iter(guard) {
+        let mut iter = cell_locker.cell_ref().iter(guard);
+        while let Some(entry) = iter.next() {
             let (new_cell_index, partial_hash) = if !shrink {
                 let (hash, partial_hash) = hasher(&entry.0 .0);
                 let new_cell_index = self.calculate_cell_index(hash);

@@ -429,29 +429,28 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'g, K, V
             return None;
         }
 
-        if LOCK_FREE {
-            // If the Cell is lock-free, instances cannot be dropped.
-            return None;
-        }
-
         if iterator.current_array.is_null() || iterator.current_index == usize::MAX {
             // The iterator is fused.
             return None;
         }
 
         let data_array_ref = unsafe { iterator.current_array.deref_mut() };
-        if data_array_ref.partial_hash_array[iterator.current_index] == 0 {
-            // The entry has been dropped.
+        let hash = data_array_ref.partial_hash_array[iterator.current_index];
+        if (hash & OCCUPIED) == 0 {
+            // The entry has been dropped, or never been used.
             return None;
         }
 
         let entry_ptr = data_array_ref.data[iterator.current_index].as_ptr();
-        data_array_ref.partial_hash_array[iterator.current_index] = 0;
-        self.cell_ref.num_entries.fetch_sub(1, Relaxed);
-        let entry_mut_ptr = entry_ptr as *mut MaybeUninit<(K, V)>;
-        return Some(unsafe {
-            std::ptr::replace(entry_mut_ptr, MaybeUninit::uninit()).assume_init()
-        });
+        if LOCK_FREE {
+            data_array_ref.partial_hash_array[iterator.current_index] |= REMOVED;
+            None
+        } else {
+            data_array_ref.partial_hash_array[iterator.current_index] = 0;
+            self.cell_ref.num_entries.fetch_sub(1, Relaxed);
+            let entry_mut_ptr = entry_ptr as *mut MaybeUninit<(K, V)>;
+            Some(unsafe { std::ptr::replace(entry_mut_ptr, MaybeUninit::uninit()).assume_init() })
+        }
     }
 
     /// Purges all the data.
