@@ -39,12 +39,17 @@ impl<K: Clone + Eq, V: Clone> Array<K, V> {
         let mut target_cells: Vec<CellLocker<K, V, CELL_ARRAY_SIZE, true>> =
             Vec::with_capacity(1 << Cell::<K, V, CELL_ARRAY_SIZE, true>::max_resizing_factor());
         for entry in cell_locker.cell_ref().iter(guard) {
-            let (hash, partial_hash) = hasher(&entry.0);
-            let new_cell_index = self.calculate_cell_index(hash);
-            debug_assert!(
-                (!shrink && (new_cell_index - target_cell_index) < ratio)
-                    || (shrink && new_cell_index == target_cell_index)
-            );
+            let (new_cell_index, partial_hash) = if !shrink {
+                let (hash, partial_hash) = hasher(&entry.0 .0);
+                let new_cell_index = self.calculate_cell_index(hash);
+                debug_assert!((new_cell_index - target_cell_index) < ratio);
+                (new_cell_index, partial_hash)
+            } else {
+                debug_assert!(
+                    self.calculate_cell_index(hasher(&entry.0 .0).0) == target_cell_index
+                );
+                (target_cell_index, entry.1)
+            };
 
             while target_cells.len() <= new_cell_index - target_cell_index {
                 target_cells.push(
@@ -54,8 +59,8 @@ impl<K: Clone + Eq, V: Clone> Array<K, V> {
             }
 
             let result = target_cells[new_cell_index - target_cell_index].insert(
-                entry.0.clone(),
-                entry.1.clone(),
+                entry.0 .0.clone(),
+                entry.0 .1.clone(),
                 partial_hash,
                 guard,
             );

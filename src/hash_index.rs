@@ -706,7 +706,7 @@ where
             if let Some(iterator) = self.current_cell_iterator.as_mut() {
                 // Proceeds to the next entry in the Cell.
                 if let Some(entry) = iterator.next() {
-                    return Some((&entry.0, &entry.1));
+                    return Some((&entry.0 .0, &entry.0 .1));
                 }
             }
             // Proceeds to the next Cell.

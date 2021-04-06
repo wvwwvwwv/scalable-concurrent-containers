@@ -185,7 +185,7 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool>
 impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Iterator
     for CellIterator<'g, K, V, SIZE, LOCK_FREE>
 {
-    type Item = &'g (K, V);
+    type Item = (&'g (K, V), u8);
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(&cell_ref) = self.cell_ref.as_ref() {
             if self.current_array.is_null() {
@@ -206,7 +206,10 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Iterator
                         std::sync::atomic::fence(Acquire);
                         self.current_index = index;
                         let entry_ptr = array_ref.data[index].as_ptr();
-                        return Some(unsafe { &(*entry_ptr) });
+                        return Some((
+                            unsafe { &(*entry_ptr) },
+                            array_ref.partial_hash_array[index],
+                        ));
                     }
                 }
 
@@ -332,6 +335,48 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'g, K, V
         }
         self.cell_ref.num_entries.fetch_add(1, Relaxed);
         Ok(())
+    }
+
+    /// Removes a new key-value pair associated with the given key.
+    pub fn remove<Q>(&self, key: &Q, partial_hash: u8, guard: &Guard) -> Option<(K, V)>
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
+        if self.killed {
+            // The Cell has been killed.
+            return None;
+        }
+
+        if LOCK_FREE {
+            // If the Cell is lock-free, instances cannot be dropped.
+            return None;
+        }
+
+        // Starts Searching the entry at the preferred index first.
+        let mut data_array = self.cell_ref.data.load(Relaxed, guard);
+        let preferred_index = partial_hash as usize % SIZE;
+        let expected_hash = (partial_hash & (!REMOVED)) | OCCUPIED;
+        while !data_array.is_null() {
+            let data_array_ref = unsafe { data_array.deref_mut() };
+            for i in preferred_index..preferred_index + SIZE {
+                let index = i % SIZE;
+                if data_array_ref.partial_hash_array[index] == expected_hash {
+                    let entry_ptr = data_array_ref.data[index].as_ptr();
+                    if *unsafe { &(*entry_ptr) }.0.borrow() == *key {
+                        // The key-value pair is dropped, and therefore the slot can be re-used.
+                        data_array_ref.partial_hash_array[index] = 0;
+                        self.cell_ref.num_entries.fetch_sub(1, Relaxed);
+                        let entry_mut_ptr = entry_ptr as *mut MaybeUninit<(K, V)>;
+                        return Some(unsafe {
+                            std::ptr::replace(entry_mut_ptr, MaybeUninit::uninit()).assume_init()
+                        });
+                    }
+                }
+            }
+            data_array = data_array_ref.link.load(Relaxed, guard);
+        }
+        None
     }
 
     /// Purges all the data.
@@ -656,8 +701,8 @@ mod test {
         }
         let mut iterated = 0;
         for entry in cell.iter(guard) {
-            assert!(entry.0 < num_threads);
-            assert_eq!(entry.1, 0);
+            assert!(entry.0 .0 < num_threads);
+            assert_eq!(entry.0 .1, 0);
             iterated += 1;
         }
         assert_eq!(cell.num_entries(), iterated);
