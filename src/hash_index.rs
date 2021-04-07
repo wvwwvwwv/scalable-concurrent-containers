@@ -1,8 +1,5 @@
-pub mod array;
-
-use crate::common::cell_array::CellSize;
+use crate::common::cell_array::CellArray;
 use crate::common::hash_cell::{Cell, CellIterator, CellLocker};
-use array::{Array, CELL_ARRAY_SIZE};
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
@@ -12,6 +9,7 @@ use std::iter::FusedIterator;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
+const CELL_SIZE: usize = 32;
 const DEFAULT_CAPACITY: usize = 64;
 
 /// A scalable concurrent hash index data structure.
@@ -36,7 +34,7 @@ where
     V: Clone + Sync,
     H: BuildHasher,
 {
-    array: Atomic<Array<K, V>>,
+    array: Atomic<CellArray<K, V, CELL_SIZE, true>>,
     minimum_capacity: usize,
     resize_mutex: AtomicBool,
     build_hasher: H,
@@ -62,7 +60,10 @@ where
     /// ```
     fn default() -> Self {
         HashIndex {
-            array: Atomic::new(Array::<K, V>::new(DEFAULT_CAPACITY, Atomic::null())),
+            array: Atomic::new(CellArray::<K, V, CELL_SIZE, true>::new(
+                DEFAULT_CAPACITY,
+                Atomic::null(),
+            )),
             minimum_capacity: DEFAULT_CAPACITY,
             resize_mutex: AtomicBool::new(false),
             build_hasher: RandomState::new(),
@@ -102,7 +103,10 @@ where
     pub fn new(capacity: usize, build_hasher: H) -> HashIndex<K, V, H> {
         let initial_capacity = capacity.max(DEFAULT_CAPACITY);
         HashIndex {
-            array: Atomic::new(Array::<K, V>::new(initial_capacity, Atomic::null())),
+            array: Atomic::new(CellArray::<K, V, CELL_SIZE, true>::new(
+                initial_capacity,
+                Atomic::null(),
+            )),
             minimum_capacity: initial_capacity,
             resize_mutex: AtomicBool::new(false),
             build_hasher,
@@ -168,9 +172,7 @@ where
         let guard = crossbeam_epoch::pin();
         let (cell_locker, cell_index) = self.lock(hash, &guard);
         if cell_locker.mark_removed(key, partial_hash, &guard) {
-            if cell_locker.cell_ref().num_entries() == 0
-                && cell_index < Cell::<K, V, CELL_ARRAY_SIZE, true>::cell_size()
-            {
+            if cell_locker.cell_ref().num_entries() == 0 && cell_index < CELL_SIZE {
                 drop(cell_locker);
                 let current_array = self.array.load(Acquire, &guard);
                 let current_array_ref = self.array_ref(current_array);
@@ -182,9 +184,7 @@ where
                     let mut num_entries = 0;
                     for i in 0..sample_size {
                         num_entries += current_array_ref.cell(i).num_entries();
-                        if num_entries
-                            >= sample_size * Cell::<K, V, CELL_ARRAY_SIZE, true>::cell_size() / 16
-                        {
+                        if num_entries >= sample_size * CELL_SIZE / 16 {
                             return true;
                         }
                     }
@@ -455,7 +455,10 @@ where
     }
 
     /// Returns a reference to the given array.
-    fn array_ref<'g>(&self, array_shared: Shared<'g, Array<K, V>>) -> &'g Array<K, V> {
+    fn array_ref<'g>(
+        &self,
+        array_shared: Shared<'g, CellArray<K, V, CELL_SIZE, true>>,
+    ) -> &'g CellArray<K, V, CELL_SIZE, true> {
         unsafe { array_shared.deref() }
     }
 
@@ -464,15 +467,14 @@ where
         &self,
         key: K,
         guard: &'g Guard,
-    ) -> (CellLocker<'g, K, V, CELL_ARRAY_SIZE, true>, K, u8) {
+    ) -> (CellLocker<'g, K, V, CELL_SIZE, true>, K, u8) {
         let (hash, partial_hash) = self.hash(&key);
         let mut resize_triggered = false;
         loop {
             let (cell_locker, cell_index) = self.lock(hash, guard);
             if !resize_triggered
-                && cell_index < Cell::<K, V, CELL_ARRAY_SIZE, true>::cell_size()
-                && cell_locker.cell_ref().num_entries()
-                    > (Cell::<K, V, CELL_ARRAY_SIZE, true>::cell_size() / 16) * 15
+                && cell_index < CELL_SIZE
+                && cell_locker.cell_ref().num_entries() > (CELL_SIZE / 16) * 15
             {
                 drop(cell_locker);
                 resize_triggered = true;
@@ -538,7 +540,11 @@ where
     }
 
     /// Estimates the number of entries using the given number of cells.
-    fn estimate(&self, current_array_ref: &Array<K, V>, num_cells_to_sample: usize) -> usize {
+    fn estimate(
+        &self,
+        current_array_ref: &CellArray<K, V, CELL_SIZE, true>,
+        num_cells_to_sample: usize,
+    ) -> usize {
         let mut num_entries = 0;
         for i in 0..num_cells_to_sample {
             num_entries += current_array_ref.cell(i).num_entries();
@@ -660,7 +666,7 @@ where
     H: BuildHasher,
 {
     hash_index: &'h HashIndex<K, V, H>,
-    current_array: Shared<'h, Array<K, V>>,
+    current_array: Shared<'h, CellArray<K, V, CELL_SIZE, true>>,
     current_index: usize,
     current_cell_iterator: Option<CellIterator<'h, K, V, CELL_ARRAY_SIZE, true>>,
     guard: Option<Guard>,

@@ -1,10 +1,5 @@
-pub mod array;
-pub mod cell;
-pub mod link;
-
-use crate::common::cell_array::CellSize;
-use array::Array;
-use cell::{Cell, CellLocker, CellReader};
+use crate::common::cell_array::CellArray;
+use crate::common::hash_cell::{Cell, CellIterator, CellLocker};
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
@@ -14,6 +9,7 @@ use std::iter::FusedIterator;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 
+const CELL_SIZE: usize = 32;
 const DEFAULT_CAPACITY: usize = 64;
 
 /// A scalable concurrent hash map data structure.
@@ -44,7 +40,7 @@ where
     V: Sync,
     H: BuildHasher,
 {
-    array: Atomic<Array<K, V>>,
+    array: Atomic<CellArray<K, V, CELL_SIZE, false>>,
     minimum_capacity: usize,
     additional_capacity: AtomicUsize,
     resize_mutex: AtomicBool,
@@ -75,7 +71,10 @@ where
     /// ```
     fn default() -> Self {
         HashMap {
-            array: Atomic::new(Array::<K, V>::new(DEFAULT_CAPACITY, Atomic::null())),
+            array: Atomic::new(CellArray::<K, V, CELL_SIZE, false>::new(
+                DEFAULT_CAPACITY,
+                Atomic::null(),
+            )),
             minimum_capacity: DEFAULT_CAPACITY,
             additional_capacity: AtomicUsize::new(0),
             resize_mutex: AtomicBool::new(false),
@@ -114,7 +113,10 @@ where
     /// ```
     pub fn new(capacity: usize, build_hasher: H) -> HashMap<K, V, H> {
         let initial_capacity = capacity.max(DEFAULT_CAPACITY);
-        let array = Owned::new(Array::<K, V>::new(initial_capacity, Atomic::null()));
+        let array = Owned::new(CellArray::<K, V, CELL_SIZE, false>::new(
+            initial_capacity,
+            Atomic::null(),
+        ));
         let current_capacity = array.num_cell_entries();
         HashMap {
             array: Atomic::from(array),
@@ -409,21 +411,18 @@ where
             {
                 let old_array_ref = Self::array(old_array_shared);
                 let cell_index = old_array_ref.calculate_cell_index(hash);
-                let reader =
-                    CellReader::read(old_array_ref.cell(cell_index), key, partial_hash, &guard);
-                if let Some((key, value)) = reader.get() {
-                    return Some(f(key.borrow(), value));
+                if let Some(locker) = CellLocker::lock(old_array_ref.cell(cell_index), &guard) {
+                    if let Some((key, value)) = locker.cell_ref().search(key, partial_hash, &guard)
+                    {
+                        return Some(f(key.borrow(), value));
+                    }
                 }
             }
             let cell_index = current_array_ref.calculate_cell_index(hash);
-            let reader = CellReader::read(
-                current_array_ref.cell(cell_index),
-                key,
-                partial_hash,
-                &guard,
-            );
-            if let Some((key, value)) = reader.get() {
-                return Some(f(key.borrow(), value));
+            if let Some(locker) = CellLocker::lock(current_array_ref.cell(cell_index), &guard) {
+                if let Some((key, value)) = locker.cell_ref().search(key, partial_hash, &guard) {
+                    return Some(f(key.borrow(), value));
+                }
             }
             let new_current_array_shared = self.array.load(Acquire, &guard);
             if new_current_array_shared == current_array_shared {
@@ -737,50 +736,41 @@ where
             let current_array_ref = Self::array(current_array);
             let old_array = current_array_ref.old_array(&guard);
             if !old_array.is_null() {
-                if current_array_ref.partial_rehash(|key| self.hash(key), &guard) {
+                if current_array_ref.partial_rehash(|key| self.hash(key), None, &guard) {
                     continue;
                 }
-                let (mut cell_locker, cell_index, sub_index, entry_array_link_ptr, entry_ptr) =
-                    self.search(key, hash, partial_hash, old_array.as_raw(), &guard);
-                if !entry_ptr.is_null() {
-                    return Accessor {
-                        hash_map: &self,
-                        cell_locker,
-                        cell_index,
-                        sub_index,
-                        entry_array_link_ptr,
-                        entry_ptr,
-                    };
-                } else if !cell_locker.killed() {
+                let old_array_ref = Self::array(old_array);
+                let cell_index = old_array_ref.calculate_cell_index(hash);
+                if let Some(locker) = CellLocker::lock(old_array_ref.cell(cell_index), &guard) {
+                    if let Some(iterator) = locker.cell_ref().get(key, partial_hash, &guard) {
+                        return Some((locker, iterator));
+                    }
                     // Kills the Cell.
                     current_array_ref.kill_cell(
-                        &mut cell_locker,
+                        &mut locker,
                         Self::array(old_array),
                         cell_index,
                         &|key| self.hash(key),
+                        None,
                         &guard,
                     );
                 }
             }
-            let (cell_locker, cell_index, sub_index, entry_array_link_ptr, entry_ptr) =
-                self.search(key, hash, partial_hash, current_array.as_raw(), &guard);
-            if !cell_locker.killed() {
-                return Accessor {
-                    hash_map: &self,
-                    cell_locker,
-                    cell_index,
-                    sub_index,
-                    entry_array_link_ptr,
-                    entry_ptr,
-                };
+            let cell_index = current_array_ref.calculate_cell_index(hash);
+            if let Some(locker) = CellLocker::lock(current_array_ref.cell(cell_index), &guard) {
+                if let Some(iterator) = locker.cell_ref().get(key, partial_hash, &guard) {
+                    return Some((locker, iterator));
+                }
+                return locker;
             }
+
             // Reaching here indicates that self.array is updated.
         }
     }
 
     /// Erases a key-value pair owned by the Accessor.
     fn erase<'h>(&'h self, mut accessor: Accessor<'h, K, V, H>) -> V {
-        let value = Array::<K, V>::extract_key_value(accessor.entry_ptr).1;
+        let value = CellArray::<K, V, CELL_SIZE, false>::extract_key_value(accessor.entry_ptr).1;
         accessor.cell_locker.remove(
             false,
             accessor.sub_index,
@@ -811,86 +801,12 @@ where
         value
     }
 
-    /// Searches a cell for the key.
-    fn search<'c, Q>(
-        &self,
-        key: &Q,
-        hash: u64,
-        partial_hash: u8,
-        array_ptr: *const Array<K, V>,
-        guard: &Guard,
-    ) -> (
-        CellLocker<'c, K, V>,
-        usize,
-        u8,
-        *const link::EntryArrayLink<K, V>,
-        *const (K, V),
-    )
-    where
-        K: Borrow<Q>,
-        Q: Eq + ?Sized,
-    {
-        let array_ref = unsafe { &(*array_ptr) };
-        let cell_index = array_ref.calculate_cell_index(hash);
-        let cell_locker = CellLocker::lock(array_ref.cell(cell_index), guard);
-        if !cell_locker.killed() && !cell_locker.empty() {
-            if let Some((sub_index, entry_array_link_ptr, entry_ptr)) =
-                cell_locker.search(key, partial_hash)
-            {
-                return (
-                    cell_locker,
-                    cell_index,
-                    sub_index,
-                    entry_array_link_ptr,
-                    entry_ptr,
-                );
-            }
-        }
-        (
-            cell_locker,
-            cell_index,
-            0,
-            std::ptr::null(),
-            std::ptr::null(),
-        )
-    }
-
-    /// Returns the first valid cell.
-    fn first(&self) -> (Option<CellLocker<K, V>>, *const Array<K, V>, usize) {
-        let guard = crossbeam_epoch::pin();
-
-        // An acquire fence is required to correctly load the contents of the array.
-        let mut current_array = self.array.load(Acquire, &guard);
-        loop {
-            let old_array = Self::array(current_array).old_array(&guard);
-            for array_ptr in [old_array.as_raw(), current_array.as_raw()].iter() {
-                if array_ptr.is_null() {
-                    continue;
-                }
-                let array_ref = unsafe { &(**array_ptr) };
-                let num_cells = array_ref.array_size();
-                for cell_index in 0..num_cells {
-                    let cell_locker = CellLocker::lock(array_ref.cell(cell_index), &guard);
-                    if !cell_locker.empty() {
-                        // once a valid cell is locked, the array is guaranteed to retain
-                        return (Some(cell_locker), *array_ptr, cell_index);
-                    }
-                }
-            }
-            // No valid cells found.
-            let current_array_new = self.array.load(Acquire, &guard);
-            if current_array == current_array_new {
-                break;
-            }
-
-            // Resized in the meantime.
-            current_array = current_array_new;
-        }
-        (None, std::ptr::null(), 0)
-    }
-
     /// Returns the next valid cell.
-    fn next(&self, array_ptr: *const Array<K, V>, current_index: usize) -> Option<Cursor<K, V, H>> {
+    fn next(
+        &self,
+        array_ptr: *const CellArray<K, V, CELL_SIZE, false>,
+        current_index: usize,
+    ) -> Option<Cursor<K, V, H>> {
         let guard = crossbeam_epoch::pin();
 
         // An acquire fence is required to correctly load the contents of the array.
@@ -916,7 +832,7 @@ where
             }
         }
 
-        let mut new_array = Shared::<Array<K, V>>::null();
+        let mut new_array = Shared::<CellArray<K, V, CELL_SIZE, false>>::null();
         let num_cells = current_array_ref.array_size();
         let start_index = if old_array.as_raw() == array_ptr {
             0
@@ -954,7 +870,7 @@ where
     fn pick<'h>(
         &'h self,
         cell_locker: CellLocker<'h, K, V>,
-        array_ptr: *const Array<K, V>,
+        array_ptr: *const CellArray<K, V, CELL_SIZE, false>,
         cell_index: usize,
     ) -> Option<Cursor<'h, K, V, H>> {
         if let Some((sub_index, entry_array_link_ptr, entry_ptr)) = cell_locker.first() {
@@ -1041,7 +957,7 @@ where
             // Array::new may not be able to allocate the requested number of cells.
             if new_capacity != capacity {
                 self.array.store(
-                    Owned::new(Array::<K, V>::new(
+                    Owned::new(CellArray::<K, V, CELL_SIZE, false>::new(
                         new_capacity,
                         Atomic::from(current_array),
                     )),
@@ -1054,7 +970,11 @@ where
     }
 
     /// Estimates the number of entries using the given number of cells.
-    fn estimate(&self, current_array_ref: &Array<K, V>, num_cells_to_sample: usize) -> usize {
+    fn estimate(
+        &self,
+        current_array_ref: &CellArray<K, V, CELL_SIZE, false>,
+        num_cells_to_sample: usize,
+    ) -> usize {
         let mut num_entries = 0;
         for i in 0..num_cells_to_sample {
             num_entries += current_array_ref.cell(i).size();
@@ -1063,7 +983,9 @@ where
     }
 
     /// Returns a reference to the Array instance.
-    fn array(array: Shared<Array<K, V>>) -> &Array<K, V> {
+    fn array(
+        array: Shared<CellArray<K, V, CELL_SIZE, false>>,
+    ) -> &CellArray<K, V, CELL_SIZE, false> {
         unsafe { array.deref() }
     }
 
@@ -1139,11 +1061,8 @@ where
     H: BuildHasher,
 {
     hash_map: &'h HashMap<K, V, H>,
-    cell_locker: CellLocker<'h, K, V>,
-    cell_index: usize,
-    sub_index: u8,
-    entry_array_link_ptr: *const link::EntryArrayLink<K, V>,
-    entry_ptr: *const (K, V),
+    cell_locker: CellLocker<'h, K, V, CELL_SIZE, false>,
+    cell_iterator: Option<CellIterator<'h, K, V, CELL_SIZE, false>>,
 }
 
 impl<'h, K, V, H> Accessor<'h, K, V, H>
@@ -1216,7 +1135,7 @@ where
     H: BuildHasher,
 {
     accessor: Option<Accessor<'h, K, V, H>>,
-    array_ptr: *const Array<K, V>,
+    array_ptr: *const CellArray<K, V, CELL_SIZE, false>,
     activated: bool,
     erase_on_next: bool,
 }

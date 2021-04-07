@@ -1,4 +1,3 @@
-use super::cell_array::CellSize;
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::borrow::Borrow;
 use std::mem::MaybeUninit;
@@ -175,26 +174,17 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Cell<K, V, SIZE, LOCK_F
             current = next_ptr;
         }
     }
-}
 
-impl<K: Clone + Eq, V: Clone, const SIZE: usize, const LOCK_FREE: bool>
-    Cell<K, V, SIZE, LOCK_FREE>
-{
+    /// Returns the max resizing factor.
+    pub fn max_resizing_factor() -> usize {
+        (SIZE.next_power_of_two().trailing_zeros() + 1) as usize
+    }
 }
 
 impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Drop for Cell<K, V, SIZE, LOCK_FREE> {
     fn drop(&mut self) {
         // The Cell must have been killed.
         debug_assert!(self.killed(unsafe { crossbeam_epoch::unprotected() }));
-    }
-}
-
-impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellSize for Cell<K, V, SIZE, LOCK_FREE> {
-    fn cell_size() -> usize {
-        SIZE
-    }
-    fn max_resizing_factor() -> usize {
-        (SIZE.next_power_of_two().trailing_zeros() + 1) as usize
     }
 }
 
@@ -315,17 +305,26 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'g, K, V
     }
 
     /// Inserts a new key-value pair into the Cell.
-    pub fn insert(&self, key: K, value: V, partial_hash: u8, guard: &Guard) -> Result<(), (K, V)> {
+    pub fn insert(
+        &'g self,
+        key: K,
+        value: V,
+        partial_hash: u8,
+        guard: &'g Guard,
+    ) -> (
+        Option<CellIterator<'g, K, V, SIZE, LOCK_FREE>>,
+        Option<(K, V)>,
+    ) {
         if self.killed {
             // The Cell will be killed.
-            return Err((key, value));
+            return (None, Some((key, value)));
         }
 
         let mut data_array = self.cell_ref.data.load(Relaxed, guard);
         let data_array_head = data_array;
         let preferred_index = partial_hash as usize % SIZE;
         let expected_hash = (partial_hash & (!REMOVED)) | OCCUPIED;
-        let mut free_data_array_ref: Option<&mut DataArray<K, V, SIZE>> = None;
+        let mut free_data_array: Option<Shared<DataArray<K, V, SIZE>>> = None;
         let mut free_index = SIZE;
         while !data_array.is_null() {
             let data_array_ref = unsafe { data_array.deref_mut() };
@@ -335,26 +334,49 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'g, K, V
                 if hash == expected_hash {
                     let entry_ptr = data_array_ref.data[index].as_ptr();
                     if unsafe { &(*entry_ptr) }.0 == key {
-                        return Err((key, value));
+                        return (
+                            Some(CellIterator {
+                                cell_ref: Some(self),
+                                current_array: data_array,
+                                current_index: index,
+                                guard_ref: guard,
+                            }),
+                            Some((key, value)),
+                        );
                     }
-                } else if free_data_array_ref.is_none() && hash == 0 {
+                } else if free_data_array.is_none() && hash == 0 {
                     free_index = index;
                 }
             }
             data_array = data_array_ref.link.load(Relaxed, guard);
-            if free_data_array_ref.is_none() && free_index != SIZE {
-                free_data_array_ref.replace(data_array_ref);
+            if free_data_array.is_none() && free_index != SIZE {
+                free_data_array.replace(data_array);
             }
         }
 
-        if let Some(array_ref) = free_data_array_ref.take() {
-            debug_assert_eq!(array_ref.partial_hash_array[free_index], 0u8);
-            unsafe { array_ref.data[free_index].as_mut_ptr().write((key, value)) };
+        if let Some(free_data_array_shared) = free_data_array.take() {
+            let data_array_ref = unsafe { free_data_array_shared.deref() };
+            debug_assert_eq!(data_array_ref.partial_hash_array[free_index], 0u8);
+            unsafe {
+                data_array_ref.data[free_index]
+                    .as_mut_ptr()
+                    .write((key, value))
+            };
             if LOCK_FREE {
                 // A release fence is required to make the contents fully visible to a reader having read the slot as occupied.
                 std::sync::atomic::fence(Release);
             }
-            array_ref.partial_hash_array[free_index] = expected_hash;
+            data_array_ref.partial_hash_array[free_index] = expected_hash;
+            self.cell_ref.num_entries.fetch_add(1, Relaxed);
+            return (
+                Some(CellIterator {
+                    cell_ref: Some(self),
+                    current_array: free_data_array_shared,
+                    current_index: free_index,
+                    guard_ref: guard,
+                }),
+                None,
+            );
         } else {
             // Inserts a new DataArray at the head.
             let mut new_data_array = Owned::new(DataArray::new());
@@ -371,9 +393,17 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'g, K, V
             // Relaxed is sufficient as it is unimportant to read the latest state of the partial hash value for readers.
             new_data_array.link.store(data_array_head, Relaxed);
             self.cell_ref.data.swap(new_data_array, Release, guard);
+            self.cell_ref.num_entries.fetch_add(1, Relaxed);
+            return (
+                Some(CellIterator {
+                    cell_ref: Some(self),
+                    current_array: self.cell_ref.data.load(Relaxed, guard),
+                    current_index: preferred_index,
+                    guard_ref: guard,
+                }),
+                None,
+            );
         }
-        self.cell_ref.num_entries.fetch_add(1, Relaxed);
-        Ok(())
     }
 
     /// Removes a new key-value pair associated with the given key.
@@ -419,11 +449,7 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'g, K, V
     }
 
     /// Removes a new key-value pair being pointed by the given CellIterator.
-    pub fn erase<Q>(&self, iterator: &mut CellIterator<K, V, SIZE, LOCK_FREE>) -> Option<(K, V)>
-    where
-        K: Borrow<Q>,
-        Q: Eq + ?Sized,
-    {
+    pub fn erase(&self, iterator: &mut CellIterator<K, V, SIZE, LOCK_FREE>) -> Option<(K, V)> {
         if self.killed {
             // The Cell has been killed.
             return None;
