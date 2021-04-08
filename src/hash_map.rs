@@ -1,6 +1,6 @@
 use crate::common::cell_array::CellArray;
 use crate::common::hash_cell::{Cell, CellIterator, CellLocker};
-use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
+use crossbeam_epoch::{Atomic, Owned, Shared};
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
 use std::convert::TryInto;
@@ -209,17 +209,18 @@ where
     /// }
     /// ```
     pub fn insert(&self, key: K, value: V) -> Result<Accessor<K, V, H>, (Accessor<K, V, H>, K, V)> {
-        match self.lock(key) {
-            Ok((mut accessor, key, partial_hash)) => {
-                let (sub_index, entry_array_link_ptr, entry_ptr) =
-                    accessor.cell_locker.insert(key, partial_hash, value);
-                accessor.sub_index = sub_index;
-                accessor.entry_array_link_ptr = entry_array_link_ptr;
-                accessor.entry_ptr = entry_ptr;
-                Ok(accessor)
-            }
-            Err((accessor, key)) => Err((accessor, key, value)),
+        let (mut accessor, key, partial_hash) = self.lock(key);
+        if accessor.cell_iterator.is_some() {
+            return Err((accessor, key, value));
         }
+        let (iterator, result) = accessor
+            .cell_locker
+            .insert(key, value, partial_hash, unsafe {
+                crossbeam_epoch::unprotected()
+            });
+        debug_assert!(result.is_none());
+        accessor.cell_iterator.replace(iterator);
+        Ok(accessor)
     }
 
     /// Constructs the value in-place.
@@ -258,19 +259,19 @@ where
         key: K,
         constructor: F,
     ) -> Result<Accessor<K, V, H>, (Accessor<K, V, H>, K)> {
-        match self.lock(key) {
-            Ok((mut accessor, key, partial_hash)) => {
-                let (sub_index, entry_array_link_ptr, entry_ptr) =
-                    accessor
-                        .cell_locker
-                        .insert(key, partial_hash, constructor());
-                accessor.sub_index = sub_index;
-                accessor.entry_array_link_ptr = entry_array_link_ptr;
-                accessor.entry_ptr = entry_ptr;
-                Ok(accessor)
-            }
-            Err((accessor, key)) => Err((accessor, key)),
+        let (mut accessor, key, partial_hash) = self.lock(key);
+        if accessor.cell_iterator.is_some() {
+            return Err((accessor, key));
         }
+        let (iterator, result) =
+            accessor
+                .cell_locker
+                .insert(key, constructor(), partial_hash, unsafe {
+                    crossbeam_epoch::unprotected()
+                });
+        debug_assert!(result.is_none());
+        accessor.cell_iterator.replace(iterator);
+        Ok(accessor)
     }
 
     /// Upserts a key-value pair into the HashMap.
@@ -296,13 +297,19 @@ where
     /// assert_eq!(result.get(), (&1, &mut 1));
     /// ```
     pub fn upsert(&self, key: K, value: V) -> Accessor<K, V, H> {
-        match self.insert(key, value) {
-            Ok(result) => result,
-            Err((accessor, _, value)) => {
-                *self.entry(accessor.entry_ptr).1 = value;
-                accessor
-            }
+        let (mut accessor, key, partial_hash) = self.lock(key);
+        if accessor.cell_iterator.is_some() {
+            std::mem::replace(accessor.get().1, value);
+            return accessor;
         }
+        let (iterator, result) = accessor
+            .cell_locker
+            .insert(key, value, partial_hash, unsafe {
+                crossbeam_epoch::unprotected()
+            });
+        debug_assert!(result.is_none());
+        accessor.cell_iterator.replace(iterator);
+        accessor
     }
 
     /// Gets a mutable reference to the value associated with the key.
@@ -335,7 +342,7 @@ where
     {
         let (hash, partial_hash) = self.hash(key);
         let accessor = self.acquire(key, hash, partial_hash);
-        if accessor.entry_ptr.is_null() {
+        if accessor.cell_iterator.is_none() {
             return None;
         }
         Some(accessor)
@@ -407,7 +414,7 @@ where
             let current_array_ref = Self::array(current_array_shared);
             let old_array_shared = current_array_ref.old_array(&guard);
             if !old_array_shared.is_null()
-                && !current_array_ref.partial_rehash(|key| self.hash(key), &guard)
+                && !current_array_ref.partial_rehash(|key| self.hash(key), |_, _| None, &guard)
             {
                 let old_array_ref = Self::array(old_array_shared);
                 let cell_index = old_array_ref.calculate_cell_index(hash);
@@ -493,10 +500,12 @@ where
     pub fn retain<F: Fn(&K, &mut V) -> bool>(&self, f: F) -> (usize, usize) {
         let mut retained_entries = 0;
         let mut removed_entries = 0;
-        let mut cursor = self.iter();
-        while let Some((key, value)) = cursor.next() {
+        let mut accessor = self.iter();
+        while let Some((key, value)) = accessor.next() {
             if !f(key, value) {
-                cursor.erase_on_next = true;
+                accessor
+                    .cell_locker
+                    .erase(accessor.cell_iterator.as_mut().unwrap());
                 removed_entries += 1;
             } else {
                 retained_entries += 1;
@@ -568,13 +577,13 @@ where
         let current_array_ref = Self::array(current_array);
         let mut num_entries = 0;
         for i in 0..current_array_ref.array_size() {
-            num_entries += current_array_ref.cell(i).size();
+            num_entries += current_array_ref.cell(i).num_entries();
         }
         let old_array = current_array_ref.old_array(&guard);
         if !old_array.is_null() {
             let old_array_ref = Self::array(old_array);
             for i in 0..old_array_ref.array_size() {
-                num_entries += old_array_ref.cell(i).size();
+                num_entries += old_array_ref.cell(i).num_entries();
             }
         }
         num_entries
@@ -595,7 +604,7 @@ where
         let current_array = self.array.load(Acquire, &guard);
         let current_array_ref = Self::array(current_array);
         if !current_array_ref.old_array(&guard).is_null() {
-            current_array_ref.partial_rehash(|key| self.hash(key), &guard);
+            current_array_ref.partial_rehash(|key| self.hash(key), |_, _| None, &guard);
         }
         current_array_ref.num_cell_entries()
     }
@@ -614,7 +623,7 @@ where
         &self.build_hasher
     }
 
-    /// Returns a Cursor.
+    /// Returns an Accessor.
     ///
     /// It is guaranteed to go through all the key-value pairs pertaining in the HashMap at the moment,
     /// however the same key-value pair can be visited more than once if the HashMap is being resized.
@@ -638,18 +647,49 @@ where
     ///     assert_eq!(iter, (&1, &mut 0));
     /// }
     /// ```
-    pub fn iter(&self) -> Cursor<K, V, H> {
-        let (cell_locker, array_ptr, cell_index) = self.first();
-        if let Some(cell_locker) = cell_locker {
-            if let Some(cursor) = self.pick(cell_locker, array_ptr, cell_index) {
-                return cursor;
+    pub fn iter(&self) -> Accessor<K, V, H> {
+        // The proper guard is used to read the array pointer.
+        let guard = crossbeam_epoch::pin();
+        // Once a Cell is locked, protection is not required.
+        let unprotected_guard = unsafe { crossbeam_epoch::unprotected() };
+        loop {
+            // An acquire fence is required to correctly load the contents of the array.
+            let current_array = self.array.load(Acquire, &guard);
+            let current_array_ref = Self::array(current_array);
+            let old_array = current_array_ref.old_array(&guard);
+            if !old_array.is_null() {
+                if current_array_ref.partial_rehash(|key| self.hash(key), |_, _| None, &guard) {
+                    continue;
+                }
+                let old_array_ref = Self::array(old_array);
+                for index in 0..old_array_ref.array_size() {
+                    if let Some(locker) =
+                        CellLocker::lock(old_array_ref.cell(index), unprotected_guard)
+                    {
+                        return Accessor {
+                            hash_map: &self,
+                            array_ptr: old_array.as_raw(),
+                            cell_index: index,
+                            cell_locker: locker,
+                            cell_iterator: None,
+                        };
+                    }
+                }
             }
-        }
-        Cursor {
-            accessor: None,
-            array_ptr: std::ptr::null(),
-            activated: false,
-            erase_on_next: false,
+            for index in 0..current_array_ref.array_size() {
+                if let Some(locker) =
+                    CellLocker::lock(current_array_ref.cell(index), unprotected_guard)
+                {
+                    return Accessor {
+                        hash_map: &self,
+                        array_ptr: current_array.as_raw(),
+                        cell_index: index,
+                        cell_locker: locker,
+                        cell_iterator: None,
+                    };
+                }
+            }
+            // Reaching here indicates that self.array is updated.
         }
     }
 
@@ -674,17 +714,14 @@ where
     }
 
     /// Locks a Cell for inserting a new key-value pair.
-    fn lock(&self, key: K) -> Result<(Accessor<K, V, H>, K, u8), (Accessor<K, V, H>, K)> {
+    fn lock(&self, key: K) -> (Accessor<K, V, H>, K, u8) {
         let (hash, partial_hash) = self.hash(&key);
         let mut resize_triggered = false;
         loop {
             let accessor = self.acquire(&key, hash, partial_hash);
-            if !accessor.entry_ptr.is_null() {
-                return Err((accessor, key));
-            }
             if !resize_triggered
-                && accessor.cell_index < Cell::<K, V>::cell_size()
-                && accessor.cell_locker.size() >= Cell::<K, V>::cell_size()
+                && accessor.cell_index < CELL_SIZE
+                && accessor.cell_locker.cell_ref().num_entries() >= CELL_SIZE
             {
                 drop(accessor);
                 resize_triggered = true;
@@ -694,10 +731,10 @@ where
                 if current_array_ref.old_array(&guard).is_null() {
                     // Triggers resize if the estimated load factor is greater than 7/8.
                     let sample_size = current_array_ref.sample_size();
-                    let threshold = sample_size * (Cell::<K, V>::cell_size() / 8) * 7;
+                    let threshold = sample_size * (CELL_SIZE / 8) * 7;
                     let mut num_entries = 0;
                     for i in 0..sample_size {
-                        num_entries += current_array_ref.cell(i).size();
+                        num_entries += current_array_ref.cell(i).num_entries();
                         if num_entries > threshold {
                             self.resize();
                             break;
@@ -706,7 +743,7 @@ where
                 }
                 continue;
             }
-            return Ok((accessor, key, partial_hash));
+            return (accessor, key, partial_hash);
         }
     }
 
@@ -716,7 +753,10 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
+        // The proper guard is used to read the array pointer.
         let guard = crossbeam_epoch::pin();
+        // Once a Cell is locked, protection is not required.
+        let unprotected_guard = unsafe { crossbeam_epoch::unprotected() };
 
         // It is guaranteed that the thread reads a consistent snapshot of the current and
         // old array pair by a release fence in the resize function, hence the following
@@ -736,14 +776,24 @@ where
             let current_array_ref = Self::array(current_array);
             let old_array = current_array_ref.old_array(&guard);
             if !old_array.is_null() {
-                if current_array_ref.partial_rehash(|key| self.hash(key), None, &guard) {
+                if current_array_ref.partial_rehash(|key| self.hash(key), |_, _| None, &guard) {
                     continue;
                 }
                 let old_array_ref = Self::array(old_array);
                 let cell_index = old_array_ref.calculate_cell_index(hash);
-                if let Some(locker) = CellLocker::lock(old_array_ref.cell(cell_index), &guard) {
-                    if let Some(iterator) = locker.cell_ref().get(key, partial_hash, &guard) {
-                        return Some((locker, iterator));
+                if let Some(locker) =
+                    CellLocker::lock(old_array_ref.cell(cell_index), unprotected_guard)
+                {
+                    if let Some(iterator) =
+                        locker.cell_ref().get(key, partial_hash, unprotected_guard)
+                    {
+                        return Accessor {
+                            hash_map: &self,
+                            array_ptr: old_array.as_raw(),
+                            cell_index,
+                            cell_locker: locker,
+                            cell_iterator: Some(iterator),
+                        };
                     }
                     // Kills the Cell.
                     current_array_ref.kill_cell(
@@ -751,17 +801,32 @@ where
                         Self::array(old_array),
                         cell_index,
                         &|key| self.hash(key),
-                        None,
+                        &|_, _| None,
                         &guard,
                     );
                 }
             }
             let cell_index = current_array_ref.calculate_cell_index(hash);
-            if let Some(locker) = CellLocker::lock(current_array_ref.cell(cell_index), &guard) {
-                if let Some(iterator) = locker.cell_ref().get(key, partial_hash, &guard) {
-                    return Some((locker, iterator));
+            if let Some(locker) =
+                CellLocker::lock(current_array_ref.cell(cell_index), unprotected_guard)
+            {
+                if let Some(iterator) = locker.cell_ref().get(key, partial_hash, unprotected_guard)
+                {
+                    return Accessor {
+                        hash_map: &self,
+                        array_ptr: current_array.as_raw(),
+                        cell_index,
+                        cell_locker: locker,
+                        cell_iterator: Some(iterator),
+                    };
                 }
-                return locker;
+                return Accessor {
+                    hash_map: &self,
+                    array_ptr: current_array.as_raw(),
+                    cell_index,
+                    cell_locker: locker,
+                    cell_iterator: None,
+                };
             }
 
             // Reaching here indicates that self.array is updated.
@@ -770,14 +835,9 @@ where
 
     /// Erases a key-value pair owned by the Accessor.
     fn erase<'h>(&'h self, mut accessor: Accessor<'h, K, V, H>) -> V {
-        let value = CellArray::<K, V, CELL_SIZE, false>::extract_key_value(accessor.entry_ptr).1;
-        accessor.cell_locker.remove(
-            false,
-            accessor.sub_index,
-            accessor.entry_array_link_ptr,
-            accessor.entry_ptr,
-        );
-        if accessor.cell_locker.empty() && accessor.cell_index < Cell::<K, V>::cell_size() {
+        let mut iterator = accessor.cell_iterator.take().unwrap();
+        let value = accessor.cell_locker.erase(&mut iterator).unwrap().1;
+        if accessor.cell_locker.cell_ref().num_entries() == 0 && accessor.cell_index < CELL_SIZE {
             drop(accessor);
             let guard = crossbeam_epoch::pin();
             let current_array = self.array.load(Acquire, &guard);
@@ -790,8 +850,8 @@ where
                 let sample_size = current_array_ref.sample_size();
                 let mut num_entries = 0;
                 for i in 0..sample_size {
-                    num_entries += current_array_ref.cell(i).size();
-                    if num_entries >= sample_size * Cell::<K, V>::cell_size() / 16 {
+                    num_entries += current_array_ref.cell(i).num_entries();
+                    if num_entries >= sample_size * CELL_SIZE / 16 {
                         return value;
                     }
                 }
@@ -799,96 +859,6 @@ where
             }
         }
         value
-    }
-
-    /// Returns the next valid cell.
-    fn next(
-        &self,
-        array_ptr: *const CellArray<K, V, CELL_SIZE, false>,
-        current_index: usize,
-    ) -> Option<Cursor<K, V, H>> {
-        let guard = crossbeam_epoch::pin();
-
-        // An acquire fence is required to correctly load the contents of the array.
-        let current_array = self.array.load(Acquire, &guard);
-        // Bypasses the lifetime checker by not calling Shared::deref().
-        let current_array_ref = unsafe { &(*current_array.as_raw()) };
-        let old_array = current_array_ref.old_array(&guard);
-
-        // Either one of the two arrays must match with array_ptr.
-        debug_assert!(array_ptr == current_array.as_raw() || array_ptr == old_array.as_raw());
-
-        if old_array.as_raw() == array_ptr {
-            // Bypasses the lifetime checker by not calling Shared::deref().
-            let old_array_ref = unsafe { &(*old_array.as_raw()) };
-            let num_cells = old_array_ref.array_size();
-            for cell_index in (current_index + 1)..num_cells {
-                let cell_locker = CellLocker::lock(old_array_ref.cell(cell_index), &guard);
-                if !cell_locker.killed() && !cell_locker.empty() {
-                    if let Some(cursor) = self.pick(cell_locker, old_array.as_raw(), cell_index) {
-                        return Some(cursor);
-                    }
-                }
-            }
-        }
-
-        let mut new_array = Shared::<CellArray<K, V, CELL_SIZE, false>>::null();
-        let num_cells = current_array_ref.array_size();
-        let start_index = if old_array.as_raw() == array_ptr {
-            0
-        } else {
-            current_index + 1
-        };
-        for cell_index in (start_index)..num_cells {
-            let cell_locker = CellLocker::lock(current_array_ref.cell(cell_index), &guard);
-            if !cell_locker.killed() && !cell_locker.empty() {
-                if let Some(cursor) = self.pick(cell_locker, current_array.as_raw(), cell_index) {
-                    return Some(cursor);
-                }
-            } else if cell_locker.killed() && new_array.is_null() {
-                new_array = self.array.load(Acquire, &guard);
-            }
-        }
-
-        if !new_array.is_null() {
-            // Bypasses the lifetime checker by not calling Shared::deref().
-            let new_array_ref = unsafe { &(*new_array.as_raw()) };
-            let num_cells = new_array_ref.array_size();
-            for cell_index in 0..num_cells {
-                let cell_locker = CellLocker::lock(new_array_ref.cell(cell_index), &guard);
-                if !cell_locker.killed() && !cell_locker.empty() {
-                    if let Some(cursor) = self.pick(cell_locker, new_array.as_raw(), cell_index) {
-                        return Some(cursor);
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    /// Picks a key-value pair entry using the given CellLocker.
-    fn pick<'h>(
-        &'h self,
-        cell_locker: CellLocker<'h, K, V>,
-        array_ptr: *const CellArray<K, V, CELL_SIZE, false>,
-        cell_index: usize,
-    ) -> Option<Cursor<'h, K, V, H>> {
-        if let Some((sub_index, entry_array_link_ptr, entry_ptr)) = cell_locker.first() {
-            return Some(Cursor {
-                accessor: Some(Accessor {
-                    hash_map: &self,
-                    cell_locker,
-                    cell_index,
-                    sub_index,
-                    entry_array_link_ptr,
-                    entry_ptr,
-                }),
-                array_ptr,
-                activated: false,
-                erase_on_next: false,
-            });
-        }
-        None
     }
 
     /// Resizes the array.
@@ -899,7 +869,8 @@ where
         let current_array_ref = Self::array(current_array);
         let old_array = current_array_ref.old_array(&guard);
         if !old_array.is_null() {
-            let old_array_removed = current_array_ref.partial_rehash(|key| self.hash(key), &guard);
+            let old_array_removed =
+                current_array_ref.partial_rehash(|key| self.hash(key), |_, _| None, &guard);
             if !old_array_removed {
                 return;
             }
@@ -919,9 +890,7 @@ where
             //  - The load factor reaches 1/16, then the array shrinks to fit.
             let capacity = current_array_ref.num_cell_entries();
             let num_cells = current_array_ref.array_size();
-            let num_cells_to_sample = (num_cells / 8)
-                .max(DEFAULT_CAPACITY / Cell::<K, V>::cell_size())
-                .min(4096);
+            let num_cells_to_sample = (num_cells / 8).max(DEFAULT_CAPACITY / CELL_SIZE).min(4096);
             let estimated_num_entries = self.estimate(current_array_ref, num_cells_to_sample);
             let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
                 let max_capacity = 1usize << (std::mem::size_of::<usize>() * 8 - 1);
@@ -938,9 +907,9 @@ where
                         .min(max_capacity / 2)
                         * 2;
                     if new_capacity_candidate / capacity
-                        > (1 << Cell::<K, V>::max_resizing_factor())
+                        > (1 << Cell::<K, V, CELL_SIZE, false>::max_resizing_factor())
                     {
-                        capacity * (1 << Cell::<K, V>::max_resizing_factor())
+                        capacity * (1 << Cell::<K, V, CELL_SIZE, false>::max_resizing_factor())
                     } else {
                         new_capacity_candidate
                     }
@@ -977,7 +946,7 @@ where
     ) -> usize {
         let mut num_entries = 0;
         for i in 0..num_cells_to_sample {
-            num_entries += current_array_ref.cell(i).size();
+            num_entries += current_array_ref.cell(i).num_entries();
         }
         num_entries * (current_array_ref.array_size() / num_cells_to_sample)
     }
@@ -990,7 +959,7 @@ where
     }
 
     /// Returns a reference to the entry.
-    fn entry(&self, entry_ptr: *const (K, V)) -> (&K, &mut V) {
+    fn entry<'h>(&'h self, entry_ptr: *const (K, V)) -> (&'h K, &'h mut V) {
         unsafe {
             let key_ptr = &(*entry_ptr).0 as *const K;
             let value_ptr = &(*entry_ptr).1 as *const V;
@@ -1049,11 +1018,11 @@ where
     }
 }
 
-/// Accessor owns a key-value pair in the HashMap.
+/// Accessor owns a key-value pair in the HashMap, and it implements Iterator.
 ///
 /// It is !Send, thus disallowing other threads to have references to it.
 /// It acquires an exclusive lock on the Cell managing the key.
-/// A thread having multiple Accessor or Cursor instances poses a possibility of deadlock.
+/// A thread having multiple Accessor instances poses a possibility of deadlock.
 pub struct Accessor<'h, K, V, H>
 where
     K: Eq + Hash + Sync,
@@ -1061,6 +1030,8 @@ where
     H: BuildHasher,
 {
     hash_map: &'h HashMap<K, V, H>,
+    array_ptr: *const CellArray<K, V, CELL_SIZE, false>,
+    cell_index: usize,
     cell_locker: CellLocker<'h, K, V, CELL_SIZE, false>,
     cell_iterator: Option<CellIterator<'h, K, V, CELL_SIZE, false>>,
 }
@@ -1091,8 +1062,10 @@ where
     /// let result = hashmap.get(&1);
     /// assert_eq!(result.unwrap().get(), (&1, &mut 2));
     /// ```
-    pub fn get(&'h self) -> (&'h K, &'h mut V) {
-        self.hash_map.entry(self.entry_ptr)
+    pub fn get(&self) -> (&'h K, &'h mut V) {
+        let itr_ref = self.cell_iterator.as_ref().unwrap();
+        let entry_ref = itr_ref.get().unwrap();
+        self.hash_map.entry(entry_ref as *const _)
     }
 
     /// Erases the key-value pair owned by the Accessor.
@@ -1114,33 +1087,14 @@ where
     /// assert!(result.is_none());
     /// ```
     pub fn erase(self) -> Option<V> {
-        if self.entry_ptr.is_null() {
+        if self.cell_iterator.is_none() {
             return None;
         }
         Some(self.hash_map.erase(self))
     }
 }
 
-/// Cursor scans all the key-value pairs in the HashMap.
-///
-/// It is guaranteed to visit all the key-value pairs that outlive the Cursor.
-/// However, the same key-value pair can be visited more than once.
-///
-/// It acquires an exclusive lock on the Cell that is currently being visited.
-/// A thread having multiple Accessor or Cursor instances poses a possibility of deadlock.
-pub struct Cursor<'h, K, V, H>
-where
-    K: Eq + Hash + Sync,
-    V: Sync,
-    H: BuildHasher,
-{
-    accessor: Option<Accessor<'h, K, V, H>>,
-    array_ptr: *const CellArray<K, V, CELL_SIZE, false>,
-    activated: bool,
-    erase_on_next: bool,
-}
-
-impl<'h, K, V, H> Iterator for Cursor<'h, K, V, H>
+impl<'h, K, V, H> Iterator for Accessor<'h, K, V, H>
 where
     K: Eq + Hash + Sync,
     V: Sync,
@@ -1148,60 +1102,65 @@ where
 {
     type Item = (&'h K, &'h mut V);
     fn next(&mut self) -> Option<Self::Item> {
-        if !self.activated {
-            self.activated = true;
-        } else if self.accessor.is_some() {
-            let erase = self.erase_on_next;
-            if erase {
-                self.erase_on_next = false;
-            }
-            if let Some((next_sub_index, next_entry_array_link_ptr, next_entry_ptr)) =
-                self.accessor.as_mut().map_or_else(
-                    || None,
-                    |accessor| {
-                        accessor.cell_locker.next(
-                            erase,
-                            true,
-                            accessor.sub_index,
-                            accessor.entry_array_link_ptr,
-                            accessor.entry_ptr,
-                        )
-                    },
-                )
-            {
-                self.accessor.as_mut().map_or_else(
-                    || (),
-                    |accessor| {
-                        accessor.sub_index = next_sub_index;
-                        accessor.entry_array_link_ptr = next_entry_array_link_ptr;
-                        accessor.entry_ptr = next_entry_ptr;
-                    },
-                );
-            } else {
-                let current_array_ptr = self.array_ptr;
-                let cursor = self.accessor.as_ref().map_or_else(
-                    || None,
-                    |accessor| {
-                        accessor
-                            .hash_map
-                            .next(current_array_ptr, accessor.cell_index)
-                    },
-                );
-                self.accessor.take();
-                if let Some(mut cursor) = cursor {
-                    self.accessor = cursor.accessor.take();
-                    self.array_ptr = cursor.array_ptr;
+        let unprotected_guard = unsafe { crossbeam_epoch::unprotected() };
+        if self.cell_iterator.is_none() {
+            // Starts scanning.
+            self.cell_iterator.replace(CellIterator::new(
+                unsafe {
+                    std::mem::transmute::<_, &'h Cell<K, V, CELL_SIZE, false>>(
+                        self.cell_locker.cell_ref(),
+                    )
+                },
+                unprotected_guard,
+            ));
+        }
+        loop {
+            if let Some(iterator) = self.cell_iterator.as_mut() {
+                // Proceeds to the next entry in the Cell.
+                if let Some(_) = iterator.next() {
+                    return Some(self.get());
                 }
             }
-        }
-        if let Some(accessor) = &self.accessor {
-            return Some(accessor.hash_map.entry(accessor.entry_ptr));
+            // Proceeds to the next Cell.
+            let array_ref = unsafe { &*self.array_ptr };
+            self.cell_index += 1;
+            if self.cell_index == array_ref.array_size() {
+                let current_array = self.hash_map.array.load(Acquire, unprotected_guard);
+                if self.array_ptr == current_array.as_raw() {
+                    // Finished scanning the entire array.
+                    break;
+                }
+                self.cell_iterator.take();
+                let current_array_ref = unsafe { current_array.deref() };
+                let old_array = current_array_ref.old_array(unprotected_guard);
+                if self.array_ptr == old_array.as_raw() {
+                    // Starts scanning the current array.
+                    self.array_ptr = current_array.as_raw();
+                    for index in 0..current_array_ref.array_size() {
+                        let cell_ref = current_array_ref.cell(index);
+                        if let Some(locker) = CellLocker::lock(cell_ref, unprotected_guard) {
+                            self.cell_locker = locker;
+                            self.cell_iterator
+                                .replace(CellIterator::new(cell_ref, unprotected_guard));
+                            break;
+                        }
+                    }
+                    if self.cell_iterator.is_some() {
+                        continue;
+                    }
+                }
+            } else {
+                self.cell_iterator.replace(CellIterator::new(
+                    array_ref.cell(self.cell_index),
+                    unprotected_guard,
+                ));
+            }
         }
         None
     }
 }
 
-impl<'h, K, V, H> FusedIterator for Cursor<'h, K, V, H>
+impl<'h, K, V, H> FusedIterator for Accessor<'h, K, V, H>
 where
     K: Eq + Hash + Sync,
     V: Sync,

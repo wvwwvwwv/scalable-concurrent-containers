@@ -141,10 +141,10 @@ where
     pub fn insert(&self, key: K, value: V) -> Result<(), (K, V)> {
         let guard = crossbeam_epoch::pin();
         let (cell_locker, key, partial_hash) = self.acquire(key, &guard);
-        match cell_locker.insert(key, value, partial_hash, &guard) {
-            Ok(()) => Ok(()),
-            Err((key, value)) => Err((key, value)),
+        if let Some((key, value)) = cell_locker.insert(key, value, partial_hash, &guard).1 {
+            return Err((key, value));
         }
+        Ok(())
     }
 
     /// Removes a key-value pair.
@@ -232,7 +232,11 @@ where
             let current_array_ref = self.array_ref(current_array_shared);
             let old_array_shared = current_array_ref.old_array(&guard);
             if !old_array_shared.is_null()
-                && !current_array_ref.partial_rehash(|key| self.hash(key), &guard)
+                && !current_array_ref.partial_rehash(
+                    |key| self.hash(key),
+                    |key, value| Some((key.clone(), value.clone())),
+                    &guard,
+                )
             {
                 let old_array_ref = self.array_ref(old_array_shared);
                 let cell_index = old_array_ref.calculate_cell_index(hash);
@@ -309,7 +313,11 @@ where
             let current_array_ref = self.array_ref(current_array_shared);
             let old_array_shared = current_array_ref.old_array(&guard);
             if !old_array_shared.is_null() {
-                while !current_array_ref.partial_rehash(|key| self.hash(key), &guard) {
+                while !current_array_ref.partial_rehash(
+                    |key| self.hash(key),
+                    |key, value| Some((key.clone(), value.clone())),
+                    &guard,
+                ) {
                     continue;
                 }
             }
@@ -383,7 +391,11 @@ where
         let current_array = self.array.load(Acquire, &guard);
         let current_array_ref = self.array_ref(current_array);
         if !current_array_ref.old_array(&guard).is_null() {
-            current_array_ref.partial_rehash(|key| self.hash(key), &guard);
+            current_array_ref.partial_rehash(
+                |key| self.hash(key),
+                |key, value| Some((key.clone(), value.clone())),
+                &guard,
+            );
         }
         current_array_ref.num_cell_entries()
     }
@@ -483,8 +495,7 @@ where
                 if current_array_ref.old_array(&guard).is_null() {
                     // Triggers resize if the estimated load factor is greater than 7/8.
                     let sample_size = current_array_ref.sample_size();
-                    let threshold =
-                        sample_size * (Cell::<K, V, CELL_ARRAY_SIZE, true>::cell_size() / 8) * 7;
+                    let threshold = sample_size * (CELL_SIZE / 8) * 7;
                     let mut num_entries = 0;
                     for i in 0..sample_size {
                         num_entries += current_array_ref.cell(i).num_entries();
@@ -505,7 +516,7 @@ where
         &self,
         hash: u64,
         guard: &'g Guard,
-    ) -> (CellLocker<'g, K, V, CELL_ARRAY_SIZE, true>, usize) {
+    ) -> (CellLocker<'g, K, V, CELL_SIZE, true>, usize) {
         // The description about the loop can be found in HashMap::acquire.
         loop {
             // An acquire fence is required to correctly load the contents of the array.
@@ -513,7 +524,11 @@ where
             let current_array_ref = self.array_ref(current_array_shared);
             let old_array_shared = current_array_ref.old_array(&guard);
             if !old_array_shared.is_null() {
-                if current_array_ref.partial_rehash(|key| self.hash(key), &guard) {
+                if current_array_ref.partial_rehash(
+                    |key| self.hash(key),
+                    |key, value| Some((key.clone(), value.clone())),
+                    &guard,
+                ) {
                     continue;
                 }
                 let old_array_ref = self.array_ref(old_array_shared);
@@ -527,6 +542,7 @@ where
                         old_array_ref,
                         cell_index,
                         &|key| self.hash(key),
+                        &|key, value| Some((key.clone(), value.clone())),
                         &guard,
                     );
                 }
@@ -561,7 +577,11 @@ where
         let current_array_ref = self.array_ref(current_array);
         let old_array = current_array_ref.old_array(&guard);
         if !old_array.is_null() {
-            let old_array_removed = current_array_ref.partial_rehash(|key| self.hash(key), &guard);
+            let old_array_removed = current_array_ref.partial_rehash(
+                |key| self.hash(key),
+                |key, value| Some((key.clone(), value.clone())),
+                &guard,
+            );
             if !old_array_removed {
                 return;
             }
@@ -581,9 +601,7 @@ where
             //  - The load factor reaches 1/16, then the array shrinks to fit.
             let capacity = current_array_ref.num_cell_entries();
             let num_cells = current_array_ref.array_size();
-            let num_cells_to_sample = (num_cells / 8)
-                .max(DEFAULT_CAPACITY / Cell::<K, V, CELL_ARRAY_SIZE, true>::cell_size())
-                .min(4096);
+            let num_cells_to_sample = (num_cells / 8).max(DEFAULT_CAPACITY / CELL_SIZE).min(4096);
             let estimated_num_entries = self.estimate(current_array_ref, num_cells_to_sample);
             let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
                 let max_capacity = 1usize << (std::mem::size_of::<usize>() * 8 - 1);
@@ -598,7 +616,7 @@ where
                             break;
                         }
                         if new_capacity / capacity
-                            >= Cell::<K, V, CELL_ARRAY_SIZE, true>::max_resizing_factor()
+                            >= Cell::<K, V, CELL_SIZE, true>::max_resizing_factor()
                         {
                             break;
                         }
@@ -618,7 +636,7 @@ where
             // Array::new may not be able to allocate the requested number of cells.
             if new_capacity != capacity {
                 self.array.store(
-                    Owned::new(Array::<K, V>::new(
+                    Owned::new(CellArray::<K, V, CELL_SIZE, true>::new(
                         new_capacity,
                         Atomic::from(current_array),
                     )),
@@ -668,7 +686,7 @@ where
     hash_index: &'h HashIndex<K, V, H>,
     current_array: Shared<'h, CellArray<K, V, CELL_SIZE, true>>,
     current_index: usize,
-    current_cell_iterator: Option<CellIterator<'h, K, V, CELL_ARRAY_SIZE, true>>,
+    current_cell_iterator: Option<CellIterator<'h, K, V, CELL_SIZE, true>>,
     guard: Option<Guard>,
 }
 

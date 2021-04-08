@@ -209,6 +209,16 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool>
             guard_ref: guard,
         }
     }
+
+    pub fn get(&self) -> Option<&'g (K, V)> {
+        if self.current_array.is_null() {
+            None
+        } else {
+            let data_array_ref = unsafe { self.current_array.deref() };
+            let entry_ptr = data_array_ref.data[self.current_index].as_ptr();
+            return Some(unsafe { &(*entry_ptr) });
+        }
+    }
 }
 
 impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Iterator
@@ -311,14 +321,8 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'g, K, V
         value: V,
         partial_hash: u8,
         guard: &'g Guard,
-    ) -> (
-        Option<CellIterator<'g, K, V, SIZE, LOCK_FREE>>,
-        Option<(K, V)>,
-    ) {
-        if self.killed {
-            // The Cell will be killed.
-            return (None, Some((key, value)));
-        }
+    ) -> (CellIterator<'g, K, V, SIZE, LOCK_FREE>, Option<(K, V)>) {
+        debug_assert!(!self.killed);
 
         let mut data_array = self.cell_ref.data.load(Relaxed, guard);
         let data_array_head = data_array;
@@ -335,12 +339,12 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'g, K, V
                     let entry_ptr = data_array_ref.data[index].as_ptr();
                     if unsafe { &(*entry_ptr) }.0 == key {
                         return (
-                            Some(CellIterator {
-                                cell_ref: Some(self),
+                            CellIterator {
+                                cell_ref: Some(self.cell_ref),
                                 current_array: data_array,
                                 current_index: index,
                                 guard_ref: guard,
-                            }),
+                            },
                             Some((key, value)),
                         );
                     }
@@ -369,12 +373,12 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'g, K, V
             data_array_ref.partial_hash_array[free_index] = expected_hash;
             self.cell_ref.num_entries.fetch_add(1, Relaxed);
             return (
-                Some(CellIterator {
-                    cell_ref: Some(self),
+                CellIterator {
+                    cell_ref: Some(self.cell_ref),
                     current_array: free_data_array_shared,
                     current_index: free_index,
                     guard_ref: guard,
-                }),
+                },
                 None,
             );
         } else {
@@ -395,12 +399,12 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'g, K, V
             self.cell_ref.data.swap(new_data_array, Release, guard);
             self.cell_ref.num_entries.fetch_add(1, Relaxed);
             return (
-                Some(CellIterator {
-                    cell_ref: Some(self),
+                CellIterator {
+                    cell_ref: Some(self.cell_ref),
                     current_array: self.cell_ref.data.load(Relaxed, guard),
                     current_index: preferred_index,
                     guard_ref: guard,
-                }),
+                },
                 None,
             );
         }

@@ -1,7 +1,9 @@
-use super::hash_cell::{Cell, CellIterator, CellLocker};
-use crossbeam_epoch::{Atomic, Guard, Pointable, Shared};
+use super::hash_cell::{Cell, CellLocker};
+use crossbeam_epoch::{Atomic, Guard, Shared};
 use std::alloc::{alloc_zeroed, dealloc, Layout};
+use std::borrow::Borrow;
 use std::convert::TryInto;
+use std::hash::Hash;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
@@ -57,8 +59,8 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellArray<K, V, SIZE, L
     }
 
     /// Returns a reference to a Cell at the given position.
-    pub fn cell(&self, index: usize) -> &C {
-        let array_ptr = &(**self.array.as_ref().unwrap()) as *const C;
+    pub fn cell(&self, index: usize) -> &Cell<K, V, SIZE, LOCK_FREE> {
+        let array_ptr = &(**self.array.as_ref().unwrap()) as *const Cell<K, V, SIZE, LOCK_FREE>;
         unsafe { &(*(array_ptr.add(index))) }
     }
 
@@ -74,7 +76,7 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellArray<K, V, SIZE, L
 
     /// Returns the number of total cell entries.
     pub fn num_cell_entries(&self) -> usize {
-        self.array_capacity * Cell::<K, V, SIZE, LOCK_FREE>::cell_size()
+        self.array_capacity * SIZE
     }
 
     /// Returns a shared pointer to the old array.
@@ -103,15 +105,18 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellArray<K, V, SIZE, L
     }
 
     /// Kills the Cell.
-    pub fn kill_cell<F: Fn(&K) -> (u64, u8), C: Fn(&K, &V) -> (K, V)>(
+    pub fn kill_cell<Q, F: Fn(&Q) -> (u64, u8), C: Fn(&K, &V) -> Option<(K, V)>>(
         &self,
         cell_locker: &mut CellLocker<K, V, SIZE, LOCK_FREE>,
         old_array: &CellArray<K, V, SIZE, LOCK_FREE>,
         old_cell_index: usize,
         hasher: &F,
-        copier: &Option<C>,
+        copier: &C,
         guard: &Guard,
-    ) {
+    ) where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
         if cell_locker.cell_ref().killed(guard) {
             return;
         } else if cell_locker.cell_ref().num_entries() == 0 {
@@ -137,13 +142,13 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellArray<K, V, SIZE, L
         let mut iter = cell_locker.cell_ref().iter(guard);
         while let Some(entry) = iter.next() {
             let (new_cell_index, partial_hash) = if !shrink {
-                let (hash, partial_hash) = hasher(&entry.0 .0);
+                let (hash, partial_hash) = hasher(entry.0 .0.borrow());
                 let new_cell_index = self.calculate_cell_index(hash);
                 debug_assert!((new_cell_index - target_cell_index) < ratio);
                 (new_cell_index, partial_hash)
             } else {
                 debug_assert!(
-                    self.calculate_cell_index(hasher(&entry.0 .0).0) == target_cell_index
+                    self.calculate_cell_index(hasher(entry.0 .0.borrow()).0) == target_cell_index
                 );
                 (target_cell_index, entry.1)
             };
@@ -155,43 +160,34 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellArray<K, V, SIZE, L
                 );
             }
 
-            let new_entry = if let Some(copier) = copier.as_ref() {
+            let new_entry = if let Some(entry) = copier(&entry.0 .0, &entry.0 .1) {
                 // HashIndex.
                 debug_assert!(LOCK_FREE);
-                copier(&entry.0 .0, &entry.0 .1)
+                entry
             } else {
                 // HashMap.
                 debug_assert!(!LOCK_FREE);
                 cell_locker.erase(&mut iter).unwrap()
             };
-            let result = target_cells[new_cell_index - target_cell_index].insert(
-                new_entry.0,
-                new_entry.1,
-                partial_hash,
-                guard,
-            );
-            debug_assert!(result.is_ok());
+            let result = target_cells[new_cell_index - target_cell_index]
+                .insert(new_entry.0, new_entry.1, partial_hash, guard)
+                .1;
+            debug_assert!(result.is_none());
         }
         cell_locker.purge(guard);
     }
 
-    /// Moves an existing entry.
-    fn move_entry(
-        &self,
-        from: &CellLocker<K, V, SIZE, LOCK_FREE>,
-        to: &CellLocker<K, V, SIZE, LOCK_FREE>,
-        partial_hash: u8,
-        guard: &Guard,
-    ) {
-    }
-
     /// Relocates a fixed number of Cells from the old array to the current array.
-    pub fn partial_rehash<F: Fn(&K) -> (u64, u8), C: Fn(&K, &V) -> (K, V)>(
+    pub fn partial_rehash<Q, F: Fn(&Q) -> (u64, u8), C: Fn(&K, &V) -> Option<(K, V)>>(
         &self,
         hasher: F,
-        copier: Option<C>,
+        copier: C,
         guard: &Guard,
-    ) -> bool {
+    ) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
         let old_array = self.old_array(guard);
         if old_array.is_null() {
             return true;
@@ -219,7 +215,14 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellArray<K, V, SIZE, L
                 continue;
             }
             if let Some(mut locker) = CellLocker::lock(old_cell_ref, guard) {
-                self.kill_cell(&mut locker, old_array_ref, old_cell_index, &hasher, guard);
+                self.kill_cell(
+                    &mut locker,
+                    old_array_ref,
+                    old_cell_index,
+                    &hasher,
+                    &copier,
+                    guard,
+                );
             }
         }
 

@@ -19,7 +19,6 @@ mod common;
 // scc::HashMap.
 mod hash_map;
 pub use hash_map::Accessor;
-pub use hash_map::Cursor;
 pub use hash_map::HashMap;
 pub use hash_map::Ticket;
 
