@@ -656,13 +656,13 @@ where
         loop {
             // An acquire fence is required to correctly load the contents of the array.
             let current_array = self.array.load(Acquire, &guard);
-            let current_array_ref = Self::array(current_array);
+            let current_array_ref = unsafe { &*current_array.as_raw() };
             let old_array = current_array_ref.old_array(&guard);
             if !old_array.is_null() {
                 if current_array_ref.partial_rehash(|key| self.hash(key), |_, _| None, &guard) {
                     continue;
                 }
-                let old_array_ref = Self::array(old_array);
+                let old_array_ref = unsafe { &*old_array.as_raw() };
                 for index in 0..old_array_ref.array_size() {
                     if let Some(locker) =
                         CellLocker::lock(old_array_ref.cell(index), unprotected_guard)
@@ -774,13 +774,13 @@ where
         loop {
             // An acquire fence is required to correctly load the contents of the array.
             let current_array = self.array.load(Acquire, &guard);
-            let current_array_ref = Self::array(current_array);
+            let current_array_ref = unsafe { &*current_array.as_raw() };
             let old_array = current_array_ref.old_array(&guard);
             if !old_array.is_null() {
                 if current_array_ref.partial_rehash(|key| self.hash(key), |_, _| None, &guard) {
                     continue;
                 }
-                let old_array_ref = Self::array(old_array);
+                let old_array_ref = unsafe { &*old_array.as_raw() };
                 let cell_index = old_array_ref.calculate_cell_index(hash);
                 if let Some(locker) =
                     CellLocker::lock(old_array_ref.cell(cell_index), unprotected_guard)
