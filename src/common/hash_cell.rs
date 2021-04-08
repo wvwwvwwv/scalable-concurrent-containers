@@ -410,48 +410,6 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'g, K, V
         }
     }
 
-    /// Removes a new key-value pair associated with the given key.
-    pub fn remove<Q>(&self, key: &Q, partial_hash: u8, guard: &Guard) -> Option<(K, V)>
-    where
-        K: Borrow<Q>,
-        Q: Eq + ?Sized,
-    {
-        if self.killed {
-            // The Cell has been killed.
-            return None;
-        }
-
-        if LOCK_FREE {
-            // If the Cell is lock-free, instances cannot be dropped.
-            return None;
-        }
-
-        // Starts Searching the entry at the preferred index first.
-        let mut data_array = self.cell_ref.data.load(Relaxed, guard);
-        let preferred_index = partial_hash as usize % SIZE;
-        let expected_hash = (partial_hash & (!REMOVED)) | OCCUPIED;
-        while !data_array.is_null() {
-            let data_array_ref = unsafe { data_array.deref_mut() };
-            for i in preferred_index..preferred_index + SIZE {
-                let index = i % SIZE;
-                if data_array_ref.partial_hash_array[index] == expected_hash {
-                    let entry_ptr = data_array_ref.data[index].as_ptr();
-                    if *unsafe { &(*entry_ptr) }.0.borrow() == *key {
-                        // The key-value pair is dropped, and therefore the slot can be re-used.
-                        data_array_ref.partial_hash_array[index] = 0;
-                        self.cell_ref.num_entries.fetch_sub(1, Relaxed);
-                        let entry_mut_ptr = entry_ptr as *mut MaybeUninit<(K, V)>;
-                        return Some(unsafe {
-                            std::ptr::replace(entry_mut_ptr, MaybeUninit::uninit()).assume_init()
-                        });
-                    }
-                }
-            }
-            data_array = data_array_ref.link.load(Relaxed, guard);
-        }
-        None
-    }
-
     /// Removes a new key-value pair being pointed by the given CellIterator.
     pub fn erase(&self, iterator: &mut CellIterator<K, V, SIZE, LOCK_FREE>) -> Option<(K, V)> {
         if self.killed {
