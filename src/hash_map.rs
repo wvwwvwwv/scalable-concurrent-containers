@@ -218,8 +218,9 @@ where
             .insert(key, value, partial_hash, unsafe {
                 crossbeam_epoch::unprotected()
             });
-        debug_assert!(result.is_none());
         accessor.cell_iterator.replace(iterator);
+        debug_assert!(result.is_none());
+        drop(result);
         Ok(accessor)
     }
 

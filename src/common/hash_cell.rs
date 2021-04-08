@@ -358,8 +358,8 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'g, K, V
             }
         }
 
-        if let Some(free_data_array_shared) = free_data_array.take() {
-            let data_array_ref = unsafe { free_data_array_shared.deref() };
+        if let Some(mut free_data_array_shared) = free_data_array.take() {
+            let data_array_ref = unsafe { free_data_array_shared.deref_mut() };
             debug_assert_eq!(data_array_ref.partial_hash_array[free_index], 0u8);
             unsafe {
                 data_array_ref.data[free_index]
