@@ -217,11 +217,14 @@ where
         if accessor.cell_iterator.is_some() {
             return Err((accessor, key, value));
         }
-        let (iterator, result) = accessor
-            .cell_locker
-            .insert(key, value, partial_hash, unsafe {
-                crossbeam_epoch::unprotected()
-            });
+        let (iterator, result) =
+            accessor
+                .cell_locker
+                .as_ref()
+                .unwrap()
+                .insert(key, value, partial_hash, unsafe {
+                    crossbeam_epoch::unprotected()
+                });
         accessor.cell_iterator.replace(unsafe {
             std::mem::transmute::<_, CellIterator<'h, K, V, CELL_SIZE, false>>(iterator)
         });
@@ -270,12 +273,12 @@ where
         if accessor.cell_iterator.is_some() {
             return Err((accessor, key));
         }
-        let (iterator, result) =
-            accessor
-                .cell_locker
-                .insert(key, constructor(), partial_hash, unsafe {
-                    crossbeam_epoch::unprotected()
-                });
+        let (iterator, result) = accessor.cell_locker.as_ref().unwrap().insert(
+            key,
+            constructor(),
+            partial_hash,
+            unsafe { crossbeam_epoch::unprotected() },
+        );
         debug_assert!(result.is_none());
         accessor.cell_iterator.replace(unsafe {
             std::mem::transmute::<_, CellIterator<'h, K, V, CELL_SIZE, false>>(iterator)
@@ -311,11 +314,14 @@ where
             drop(std::mem::replace(accessor.get().1, value));
             return accessor;
         }
-        let (iterator, result) = accessor
-            .cell_locker
-            .insert(key, value, partial_hash, unsafe {
-                crossbeam_epoch::unprotected()
-            });
+        let (iterator, result) =
+            accessor
+                .cell_locker
+                .as_ref()
+                .unwrap()
+                .insert(key, value, partial_hash, unsafe {
+                    crossbeam_epoch::unprotected()
+                });
         debug_assert!(result.is_none());
         accessor.cell_iterator.replace(unsafe {
             std::mem::transmute::<_, CellIterator<'h, K, V, CELL_SIZE, false>>(iterator)
@@ -516,6 +522,8 @@ where
             if !f(key, value) {
                 accessor
                     .cell_locker
+                    .as_ref()
+                    .unwrap()
                     .erase(accessor.cell_iterator.as_mut().unwrap());
                 removed_entries += 1;
             } else {
@@ -659,50 +667,13 @@ where
     /// }
     /// ```
     pub fn iter(&self) -> Accessor<K, V, H> {
-        // The proper guard is used to read the array pointer.
-        let guard = crossbeam_epoch::pin();
-        // Once a Cell is locked, protection is not required.
-        let unprotected_guard = unsafe { crossbeam_epoch::unprotected() };
-        loop {
-            // An acquire fence is required to correctly load the contents of the array.
-            let current_array = self.array.load(Acquire, &guard);
-            let current_array_ref = unsafe { &*current_array.as_raw() };
-            let old_array = current_array_ref.old_array(&guard);
-            if !old_array.is_null() {
-                if current_array_ref.partial_rehash(|key| self.hash(key), |_, _| None, &guard) {
-                    continue;
-                }
-                let old_array_ref = unsafe { &*old_array.as_raw() };
-                for index in 0..old_array_ref.array_size() {
-                    if let Some(locker) =
-                        CellLocker::lock(old_array_ref.cell(index), unprotected_guard)
-                    {
-                        return Accessor {
-                            hash_map: &self,
-                            array_ptr: old_array.as_raw(),
-                            cell_index: index,
-                            cell_locker: locker,
-                            cell_iterator: None,
-                            guard: None,
-                        };
-                    }
-                }
-            }
-            for index in 0..current_array_ref.array_size() {
-                if let Some(locker) =
-                    CellLocker::lock(current_array_ref.cell(index), unprotected_guard)
-                {
-                    return Accessor {
-                        hash_map: &self,
-                        array_ptr: current_array.as_raw(),
-                        cell_index: index,
-                        cell_locker: locker,
-                        cell_iterator: None,
-                        guard: None,
-                    };
-                }
-            }
-            // Reaching here indicates that self.array is updated.
+        Accessor {
+            hash_map: &self,
+            array_ptr: std::ptr::null(),
+            cell_index: 0,
+            cell_locker: None,
+            cell_iterator: None,
+            guard: None,
         }
     }
 
@@ -734,7 +705,13 @@ where
             let accessor = self.acquire(&key, hash, partial_hash);
             if !resize_triggered
                 && accessor.cell_index < CELL_SIZE
-                && accessor.cell_locker.cell_ref().num_entries() >= CELL_SIZE
+                && accessor
+                    .cell_locker
+                    .as_ref()
+                    .unwrap()
+                    .cell_ref()
+                    .num_entries()
+                    >= CELL_SIZE
             {
                 drop(accessor);
                 resize_triggered = true;
@@ -809,7 +786,7 @@ where
                             hash_map: &self,
                             array_ptr: old_array.as_raw(),
                             cell_index,
-                            cell_locker: locker,
+                            cell_locker: Some(locker),
                             cell_iterator: iterator,
                             guard: None,
                         };
@@ -838,7 +815,7 @@ where
                         hash_map: &self,
                         array_ptr: current_array.as_raw(),
                         cell_index,
-                        cell_locker: locker,
+                        cell_locker: Some(locker),
                         cell_iterator: iterator,
                         guard: None,
                     };
@@ -847,7 +824,7 @@ where
                     hash_map: &self,
                     array_ptr: current_array.as_raw(),
                     cell_index,
-                    cell_locker: locker,
+                    cell_locker: Some(locker),
                     cell_iterator: None,
                     guard: None,
                 };
@@ -860,8 +837,22 @@ where
     /// Erases a key-value pair owned by the Accessor.
     fn erase<'h>(&'h self, mut accessor: Accessor<'h, K, V, H>) -> V {
         let mut iterator = accessor.cell_iterator.take().unwrap();
-        let value = accessor.cell_locker.erase(&mut iterator).unwrap().1;
-        if accessor.cell_locker.cell_ref().num_entries() == 0 && accessor.cell_index < CELL_SIZE {
+        let value = accessor
+            .cell_locker
+            .as_ref()
+            .unwrap()
+            .erase(&mut iterator)
+            .unwrap()
+            .1;
+        if accessor
+            .cell_locker
+            .as_ref()
+            .unwrap()
+            .cell_ref()
+            .num_entries()
+            == 0
+            && accessor.cell_index < CELL_SIZE
+        {
             drop(accessor);
             let guard = crossbeam_epoch::pin();
             let current_array = self.array.load(Acquire, &guard);
@@ -1056,9 +1047,9 @@ where
     hash_map: &'h HashMap<K, V, H>,
     array_ptr: *const CellArray<K, V, CELL_SIZE, false>,
     cell_index: usize,
-    cell_locker: CellLocker<'h, K, V, CELL_SIZE, false>,
+    cell_locker: Option<CellLocker<'h, K, V, CELL_SIZE, false>>,
     cell_iterator: Option<CellIterator<'h, K, V, CELL_SIZE, false>>,
-    guard: Option<&'static Guard>,
+    guard: Option<&'h Guard>,
 }
 
 impl<'h, K, V, H> Accessor<'h, K, V, H>
@@ -1128,8 +1119,50 @@ where
     type Item = (&'h K, &'h mut V);
     fn next(&mut self) -> Option<Self::Item> {
         if self.guard.is_none() {
+            // It always owns a CellLocker preventing the array from being dropped,
+            // therefore a dummy Guard is sufficient.
             self.guard
                 .replace(unsafe { crossbeam_epoch::unprotected() });
+
+            // A valid Guard is required to load Arrays.
+            let guard = crossbeam_epoch::pin();
+            loop {
+                let current_array = self.hash_map.array.load(Acquire, &guard);
+                let current_array_ref = unsafe { &*current_array.as_raw() };
+                let old_array = current_array_ref.old_array(&guard);
+                if !old_array.is_null() {
+                    let old_array_ref = unsafe { &*old_array.as_raw() };
+                    for index in 0..old_array_ref.array_size() {
+                        if let Some(locker) = CellLocker::lock(
+                            old_array_ref.cell(index),
+                            self.guard.as_ref().unwrap(),
+                        ) {
+                            self.array_ptr = old_array.as_raw();
+                            self.cell_index = index;
+                            self.cell_locker.replace(locker);
+                            break;
+                        }
+                    }
+                    if self.cell_locker.is_some() {
+                        break;
+                    }
+                }
+                for index in 0..current_array_ref.array_size() {
+                    if let Some(locker) = CellLocker::lock(
+                        current_array_ref.cell(index),
+                        self.guard.as_ref().unwrap(),
+                    ) {
+                        self.array_ptr = current_array.as_raw();
+                        self.cell_index = index;
+                        self.cell_locker.replace(locker);
+                        break;
+                    }
+                }
+                if self.cell_locker.is_some() {
+                    break;
+                }
+                // Reaching here indicates that self.array is updated.
+            }
         }
 
         if self.cell_iterator.is_none() {
@@ -1137,7 +1170,7 @@ where
             self.cell_iterator.replace(CellIterator::new(
                 unsafe {
                     std::mem::transmute::<_, &'h Cell<K, V, CELL_SIZE, false>>(
-                        self.cell_locker.cell_ref(),
+                        self.cell_locker.as_ref().unwrap().cell_ref(),
                     )
                 },
                 self.guard.as_ref().unwrap(),
@@ -1151,8 +1184,10 @@ where
                 }
             }
             // Proceeds to the next Cell.
-            let array_ref = unsafe { &*self.array_ptr };
+            let mut array_ref = unsafe { &*self.array_ptr };
             self.cell_index += 1;
+            self.cell_iterator.take();
+
             if self.cell_index == array_ref.array_size() {
                 let current_array = self
                     .hash_map
@@ -1162,34 +1197,30 @@ where
                     // Finished scanning the entire array.
                     break;
                 }
-                self.cell_iterator.take();
-                let current_array_ref = unsafe { current_array.deref() };
-                let old_array = current_array_ref.old_array(self.guard.as_ref().unwrap());
-                if self.array_ptr == old_array.as_raw() {
-                    // Starts scanning the current array.
-                    self.array_ptr = current_array.as_raw();
-                    for index in 0..current_array_ref.array_size() {
-                        let cell_ref = current_array_ref.cell(index);
-                        if let Some(locker) =
-                            CellLocker::lock(cell_ref, self.guard.as_ref().unwrap())
-                        {
-                            self.cell_locker = locker;
-                            self.cell_iterator
-                                .replace(CellIterator::new(cell_ref, self.guard.as_ref().unwrap()));
-                            break;
-                        }
-                    }
-                    if self.cell_iterator.is_some() {
-                        continue;
-                    }
-                }
-            } else {
-                self.cell_iterator.replace(CellIterator::new(
-                    array_ref.cell(self.cell_index),
-                    self.guard.as_ref().unwrap(),
-                ));
+
+                // Proceeds to the current array.
+                array_ref = unsafe { current_array.deref() };
+                self.array_ptr = current_array.as_raw();
+                self.cell_index = 0;
             }
+
+            // Proceeds to the next Cell in the current array.
+            for index in self.cell_index..array_ref.array_size() {
+                let cell_ref = array_ref.cell(index);
+                if let Some(locker) = CellLocker::lock(cell_ref, self.guard.as_ref().unwrap()) {
+                    self.cell_index = index;
+                    self.cell_locker.replace(locker);
+                    self.cell_iterator
+                        .replace(CellIterator::new(cell_ref, self.guard.as_ref().unwrap()));
+                    break;
+                }
+            }
+            if self.cell_iterator.is_some() {
+                continue;
+            }
+            break;
         }
+        self.cell_locker.take();
         None
     }
 }

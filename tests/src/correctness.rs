@@ -107,7 +107,7 @@ mod hashmap_test {
     }
 
     #[test]
-    fn cursor() {
+    fn accessor() {
         let data_size = 4096;
         for _ in 0..64 {
             let hashmap: Arc<HashMap<u64, u64>> = Arc::new(Default::default());
@@ -319,7 +319,7 @@ mod hashindex_test {
     }
 
     #[test]
-    fn cursor() {
+    fn visitor() {
         let data_size = 4096;
         for _ in 0..64 {
             let hashindex: Arc<HashIndex<u64, u64>> = Arc::new(Default::default());

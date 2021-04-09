@@ -325,7 +325,8 @@ where
                 if let Some(mut cell_locker) =
                     CellLocker::lock(current_array_ref.cell(index), &guard)
                 {
-                    num_removed += cell_locker.purge(&guard);
+                    num_removed += cell_locker.cell_ref().num_entries();
+                    cell_locker.purge(&guard);
                 }
             }
             let new_current_array_shared = self.array.load(Acquire, &guard);

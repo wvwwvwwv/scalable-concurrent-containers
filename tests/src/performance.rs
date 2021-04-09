@@ -65,9 +65,9 @@ mod benchmark {
         }
         #[inline(always)]
         fn scan_test(&self) -> usize {
-            let mut cursor = self.iter();
+            let mut accessor = self.iter();
             let mut scanned = 0;
-            while let Some(_) = cursor.next() {
+            while let Some(_) = accessor.next() {
                 scanned += 1;
             }
             scanned

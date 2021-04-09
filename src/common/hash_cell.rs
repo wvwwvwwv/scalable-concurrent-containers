@@ -242,13 +242,12 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Iterator
                 for index in start_index..SIZE {
                     let hash = array_ref.partial_hash_array[index];
                     if (hash & OCCUPIED) != 0 && (hash & REMOVED) == 0 {
-                        std::sync::atomic::fence(Acquire);
+                        if LOCK_FREE {
+                            std::sync::atomic::fence(Acquire);
+                        }
                         self.current_index = index;
                         let entry_ptr = array_ref.data[index].as_ptr();
-                        return Some((
-                            unsafe { &(*entry_ptr) },
-                            array_ref.partial_hash_array[index],
-                        ));
+                        return Some((unsafe { &(*entry_ptr) }, hash));
                     }
                 }
 
@@ -352,10 +351,10 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'g, K, V
                     free_index = index;
                 }
             }
-            data_array = data_array_ref.link.load(Relaxed, guard);
             if free_data_array.is_none() && free_index != SIZE {
                 free_data_array.replace(data_array);
             }
+            data_array = data_array_ref.link.load(Relaxed, guard);
         }
 
         if let Some(mut free_data_array_shared) = free_data_array.take() {
@@ -429,13 +428,14 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'g, K, V
             return None;
         }
 
+        debug_assert!(self.cell_ref.num_entries.load(Relaxed) > 0);
+        self.cell_ref.num_entries.fetch_sub(1, Relaxed);
         let entry_ptr = data_array_ref.data[iterator.current_index].as_ptr();
         if LOCK_FREE {
             data_array_ref.partial_hash_array[iterator.current_index] |= REMOVED;
             None
         } else {
             data_array_ref.partial_hash_array[iterator.current_index] = 0;
-            self.cell_ref.num_entries.fetch_sub(1, Relaxed);
             let entry_mut_ptr = entry_ptr as *mut MaybeUninit<(K, V)>;
             Some(unsafe { std::ptr::replace(entry_mut_ptr, MaybeUninit::uninit()).assume_init() })
         }
@@ -732,7 +732,8 @@ mod test {
                     if i == 0 {
                         assert!(xlocker
                             .insert(thread_id, 0, (thread_id % SIZE).try_into().unwrap(), &guard,)
-                            .is_ok());
+                            .1
+                            .is_none());
                         drop(xlocker);
                     }
                     assert_eq!(
