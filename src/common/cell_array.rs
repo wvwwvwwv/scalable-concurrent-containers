@@ -1,4 +1,4 @@
-use super::hash_cell::{Cell, CellLocker};
+use super::cell::{Cell, CellLocker};
 use crossbeam_epoch::{Atomic, Guard, Shared};
 use std::alloc::{alloc_zeroed, dealloc, Layout};
 use std::borrow::Borrow;

@@ -1,13 +1,14 @@
+use crate::common::cell::{CellIterator, CellLocker};
 use crate::common::cell_array::CellArray;
-use crate::common::hash_cell::{Cell, CellIterator, CellLocker};
-use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
+use crate::common::hash_table::HashTable;
+
+use crossbeam_epoch::{Atomic, Guard, Shared};
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
-use std::convert::TryInto;
-use std::hash::{BuildHasher, Hash, Hasher};
+use std::hash::{BuildHasher, Hash};
 use std::iter::FusedIterator;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
 const CELL_SIZE: usize = 32;
 const DEFAULT_CAPACITY: usize = 64;
@@ -36,7 +37,7 @@ where
 {
     array: Atomic<CellArray<K, V, CELL_SIZE, true>>,
     minimum_capacity: usize,
-    resize_mutex: AtomicBool,
+    resizing_flag: AtomicBool,
     build_hasher: H,
 }
 
@@ -65,7 +66,7 @@ where
                 Atomic::null(),
             )),
             minimum_capacity: DEFAULT_CAPACITY,
-            resize_mutex: AtomicBool::new(false),
+            resizing_flag: AtomicBool::new(false),
             build_hasher: RandomState::new(),
         }
     }
@@ -108,7 +109,7 @@ where
                 Atomic::null(),
             )),
             minimum_capacity: initial_capacity,
-            resize_mutex: AtomicBool::new(false),
+            resizing_flag: AtomicBool::new(false),
             build_hasher,
         }
     }
@@ -175,7 +176,7 @@ where
             if cell_locker.cell_ref().num_entries() == 0 && cell_index < CELL_SIZE {
                 drop(cell_locker);
                 let current_array = self.array.load(Acquire, &guard);
-                let current_array_ref = self.array_ref(current_array);
+                let current_array_ref = Self::cell_array_ref(current_array);
                 if current_array_ref.old_array(&guard).is_null()
                     && current_array_ref.num_cell_entries() > self.minimum_capacity
                 {
@@ -229,7 +230,7 @@ where
         // An acquire fence is required to correctly load the contents of the array.
         let mut current_array_shared = self.array.load(Acquire, &guard);
         loop {
-            let current_array_ref = self.array_ref(current_array_shared);
+            let current_array_ref = Self::cell_array_ref(current_array_shared);
             let old_array_shared = current_array_ref.old_array(&guard);
             if !old_array_shared.is_null()
                 && !current_array_ref.partial_rehash(
@@ -238,7 +239,7 @@ where
                     &guard,
                 )
             {
-                let old_array_ref = self.array_ref(old_array_shared);
+                let old_array_ref = Self::cell_array_ref(old_array_shared);
                 let cell_index = old_array_ref.calculate_cell_index(hash);
                 let cell_ref = old_array_ref.cell(cell_index);
                 if let Some(entry) = cell_ref.search(key, partial_hash, &guard) {
@@ -310,7 +311,7 @@ where
         let guard = crossbeam_epoch::pin();
         let mut current_array_shared = self.array.load(Acquire, &guard);
         loop {
-            let current_array_ref = self.array_ref(current_array_shared);
+            let current_array_ref = Self::cell_array_ref(current_array_shared);
             let old_array_shared = current_array_ref.old_array(&guard);
             if !old_array_shared.is_null() {
                 while !current_array_ref.partial_rehash(
@@ -358,21 +359,7 @@ where
     /// assert_eq!(result, 1);
     /// ```
     pub fn len(&self) -> usize {
-        let guard = crossbeam_epoch::pin();
-        let current_array = self.array.load(Acquire, &guard);
-        let current_array_ref = self.array_ref(current_array);
-        let mut num_entries = 0;
-        for i in 0..current_array_ref.array_size() {
-            num_entries += current_array_ref.cell(i).num_entries();
-        }
-        let old_array = current_array_ref.old_array(&guard);
-        if !old_array.is_null() {
-            let old_array_ref = self.array_ref(old_array);
-            for i in 0..old_array_ref.array_size() {
-                num_entries += old_array_ref.cell(i).num_entries();
-            }
-        }
-        num_entries
+        self.num_entries()
     }
 
     /// Returns the capacity of the HashIndex.
@@ -388,31 +375,7 @@ where
     /// assert_eq!(result, 1048576);
     /// ```
     pub fn capacity(&self) -> usize {
-        let guard = crossbeam_epoch::pin();
-        let current_array = self.array.load(Acquire, &guard);
-        let current_array_ref = self.array_ref(current_array);
-        if !current_array_ref.old_array(&guard).is_null() {
-            current_array_ref.partial_rehash(
-                |key| self.hash(key),
-                |key, value| Some((key.clone(), value.clone())),
-                &guard,
-            );
-        }
-        current_array_ref.num_cell_entries()
-    }
-
-    /// Returns a reference to its build hasher.
-    ///
-    /// # Examples
-    /// ```
-    /// use scc::HashIndex;
-    /// use std::collections::hash_map::RandomState;
-    ///
-    /// let hashindex: HashIndex<u64, u32> = Default::default();
-    /// let result: &RandomState = hashindex.hasher();
-    /// ```
-    pub fn hasher(&self) -> &H {
-        &self.build_hasher
+        self.num_slots()
     }
 
     /// Returns a Visitor.
@@ -447,34 +410,6 @@ where
         }
     }
 
-    /// Returns the hash value of the given key.
-    fn hash<Q>(&self, key: &Q) -> (u64, u8)
-    where
-        K: Borrow<K>,
-        Q: Hash + ?Sized,
-    {
-        // Generates a hash value.
-        let mut h = self.build_hasher.build_hasher();
-        key.hash(&mut h);
-        let mut hash = h.finish();
-
-        // Bitmix: https://mostlymangling.blogspot.com/2019/01/better-stronger-mixer-and-test-procedure.html
-        hash = hash ^ (hash.rotate_right(25) ^ hash.rotate_right(50));
-        hash = hash.overflowing_mul(0xA24BAED4963EE407u64).0;
-        hash = hash ^ (hash.rotate_right(24) ^ hash.rotate_right(49));
-        hash = hash.overflowing_mul(0x9FB21C651E98DF25u64).0;
-        hash = hash ^ (hash >> 28);
-        (hash, (hash & ((1 << 8) - 1)).try_into().unwrap())
-    }
-
-    /// Returns a reference to the given array.
-    fn array_ref<'g>(
-        &self,
-        array_shared: Shared<'g, CellArray<K, V, CELL_SIZE, true>>,
-    ) -> &'g CellArray<K, V, CELL_SIZE, true> {
-        unsafe { array_shared.deref() }
-    }
-
     /// Acquires a Cell for inserting a new key-value pair.
     fn acquire<'g>(
         &self,
@@ -492,7 +427,7 @@ where
                 drop(cell_locker);
                 resize_triggered = true;
                 let current_array = self.array.load(Acquire, &guard);
-                let current_array_ref = self.array_ref(current_array);
+                let current_array_ref = Self::cell_array_ref(current_array);
                 if current_array_ref.old_array(&guard).is_null() {
                     // Triggers resize if the estimated load factor is greater than 7/8.
                     let sample_size = current_array_ref.sample_size();
@@ -522,7 +457,7 @@ where
         loop {
             // An acquire fence is required to correctly load the contents of the array.
             let current_array_shared = self.array.load(Acquire, &guard);
-            let current_array_ref = self.array_ref(current_array_shared);
+            let current_array_ref = Self::cell_array_ref(current_array_shared);
             let old_array_shared = current_array_ref.old_array(&guard);
             if !old_array_shared.is_null() {
                 if current_array_ref.partial_rehash(
@@ -532,7 +467,7 @@ where
                 ) {
                     continue;
                 }
-                let old_array_ref = self.array_ref(old_array_shared);
+                let old_array_ref = Self::cell_array_ref(old_array_shared);
                 let cell_index = old_array_ref.calculate_cell_index(hash);
                 if let Some(mut cell_locker) =
                     CellLocker::lock(old_array_ref.cell(cell_index), guard)
@@ -555,99 +490,6 @@ where
             // Reaching here indicates that self.array is updated.
         }
     }
-
-    /// Estimates the number of entries using the given number of cells.
-    fn estimate(
-        &self,
-        current_array_ref: &CellArray<K, V, CELL_SIZE, true>,
-        num_cells_to_sample: usize,
-    ) -> usize {
-        let mut num_entries = 0;
-        for i in 0..num_cells_to_sample {
-            num_entries += current_array_ref.cell(i).num_entries();
-        }
-        num_entries * (current_array_ref.array_size() / num_cells_to_sample)
-    }
-
-    /// Resizes the array.
-    ///
-    /// The implementation is the same with that of HashMap.
-    fn resize(&self, guard: &Guard) {
-        // Initial rough size estimation using a small number of cells.
-        let current_array = self.array.load(Acquire, &guard);
-        let current_array_ref = self.array_ref(current_array);
-        let old_array = current_array_ref.old_array(&guard);
-        if !old_array.is_null() {
-            let old_array_removed = current_array_ref.partial_rehash(
-                |key| self.hash(key),
-                |key, value| Some((key.clone(), value.clone())),
-                &guard,
-            );
-            if !old_array_removed {
-                return;
-            }
-        }
-
-        if !self.resize_mutex.swap(true, Acquire) {
-            let memory_ordering = Relaxed;
-            let mut mutex_guard = scopeguard::guard(memory_ordering, |memory_ordering| {
-                self.resize_mutex.store(false, memory_ordering);
-            });
-            if current_array != self.array.load(Acquire, &guard) {
-                return;
-            }
-
-            // The resizing policies are as follows.
-            //  - The load factor reaches 7/8, then the array grows up to 64x.
-            //  - The load factor reaches 1/16, then the array shrinks to fit.
-            let capacity = current_array_ref.num_cell_entries();
-            let num_cells = current_array_ref.array_size();
-            let num_cells_to_sample = (num_cells / 8).max(DEFAULT_CAPACITY / CELL_SIZE).min(4096);
-            let estimated_num_entries = self.estimate(current_array_ref, num_cells_to_sample);
-            let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
-                let max_capacity = 1usize << (std::mem::size_of::<usize>() * 8 - 1);
-                if capacity == max_capacity {
-                    // Do not resize if the capacity cannot be increased.
-                    capacity
-                } else {
-                    let mut new_capacity = capacity;
-                    while new_capacity < (estimated_num_entries / 8) * 15 {
-                        // Doubles the new capacity until it can accommodate the estimated number of entries * 15/8.
-                        if new_capacity == max_capacity {
-                            break;
-                        }
-                        if new_capacity / capacity
-                            >= Cell::<K, V, CELL_SIZE, true>::max_resizing_factor()
-                        {
-                            break;
-                        }
-                        new_capacity *= 2;
-                    }
-                    new_capacity
-                }
-            } else if estimated_num_entries <= capacity / 16 {
-                // Shrinks to fit.
-                estimated_num_entries
-                    .next_power_of_two()
-                    .max(self.minimum_capacity)
-            } else {
-                capacity
-            };
-
-            // Array::new may not be able to allocate the requested number of cells.
-            if new_capacity != capacity {
-                self.array.store(
-                    Owned::new(CellArray::<K, V, CELL_SIZE, true>::new(
-                        new_capacity,
-                        Atomic::from(current_array),
-                    )),
-                    Release,
-                );
-                // The release fence assures that future calls to the function see the latest state.
-                *mutex_guard = Release;
-            }
-        }
-    }
 }
 
 impl<K, V, H> Drop for HashIndex<K, V, H>
@@ -660,7 +502,7 @@ where
         // The HashIndex has become unreachable, therefore pinning is unnecessary.
         let guard = unsafe { crossbeam_epoch::unprotected() };
         let current_array = self.array.load(Acquire, guard);
-        let current_array_ref = self.array_ref(current_array);
+        let current_array_ref = Self::cell_array_ref(current_array);
         current_array_ref.drop_old_array(true, guard);
         let array = self.array.swap(Shared::null(), Relaxed, guard);
         if !array.is_null() {
@@ -671,6 +513,26 @@ where
                 }
             }
         }
+    }
+}
+
+impl<K, V, H> HashTable<K, V, H, CELL_SIZE, true> for HashIndex<K, V, H>
+where
+    K: Clone + Eq + Hash + Sync,
+    V: Clone + Sync,
+    H: BuildHasher,
+{
+    fn hasher(&self) -> &H {
+        &self.build_hasher
+    }
+    fn cell_array_ptr(&self) -> &Atomic<CellArray<K, V, CELL_SIZE, true>> {
+        &self.array
+    }
+    fn minimum_capacity(&self) -> usize {
+        self.minimum_capacity
+    }
+    fn resizing_flag_ref(&self) -> &AtomicBool {
+        &self.resizing_flag
     }
 }
 
@@ -715,7 +577,7 @@ where
             // Starts scanning.
             self.guard.replace(crossbeam_epoch::pin());
             let current_array = self.hash_index.array.load(Acquire, self.guard_ref());
-            let current_array_ref = self.hash_index.array_ref(current_array);
+            let current_array_ref = HashIndex::<K, V, H>::cell_array_ref(current_array);
             let old_array = current_array_ref.old_array(self.guard_ref());
             self.current_array = if !old_array.is_null() {
                 old_array
@@ -723,7 +585,7 @@ where
                 current_array
             };
             self.current_cell_iterator.replace(CellIterator::new(
-                self.hash_index.array_ref(self.current_array).cell(0),
+                HashIndex::<K, V, H>::cell_array_ref(self.current_array).cell(0),
                 self.guard_ref(),
             ));
         }
@@ -735,7 +597,7 @@ where
                 }
             }
             // Proceeds to the next Cell.
-            let array_ref = self.hash_index.array_ref(self.current_array);
+            let array_ref = HashIndex::<K, V, H>::cell_array_ref(self.current_array);
             self.current_index += 1;
             if self.current_index == array_ref.array_size() {
                 let current_array = self.hash_index.array.load(Acquire, self.guard_ref());
@@ -743,14 +605,14 @@ where
                     // Finished scanning the entire array.
                     break;
                 }
-                let current_array_ref = self.hash_index.array_ref(current_array);
+                let current_array_ref = HashIndex::<K, V, H>::cell_array_ref(current_array);
                 let old_array = current_array_ref.old_array(self.guard_ref());
                 if self.current_array == old_array {
                     // Starts scanning the current array.
                     self.current_array = current_array;
                     self.current_index = 0;
                     self.current_cell_iterator.replace(CellIterator::new(
-                        self.hash_index.array_ref(self.current_array).cell(0),
+                        HashIndex::<K, V, H>::cell_array_ref(self.current_array).cell(0),
                         self.guard_ref(),
                     ));
                     continue;
@@ -763,7 +625,7 @@ where
                 };
                 self.current_index = 0;
                 self.current_cell_iterator.replace(CellIterator::new(
-                    self.hash_index.array_ref(self.current_array).cell(0),
+                    HashIndex::<K, V, H>::cell_array_ref(self.current_array).cell(0),
                     self.guard_ref(),
                 ));
                 continue;
