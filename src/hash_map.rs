@@ -142,12 +142,15 @@ where
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(1000, RandomState::new());
+    /// let hashmap: HashMap<usize, usize, RandomState> = HashMap::new(1000, RandomState::new());
     /// assert_eq!(hashmap.capacity(), 1024);
     ///
     /// let ticket = hashmap.reserve(10000);
     /// assert!(ticket.is_some());
     /// assert_eq!(hashmap.capacity(), 16384);
+    /// for i in 0..16 {
+    ///     assert!(hashmap.insert(i, i).is_ok());
+    /// }
     /// drop(ticket);
     ///
     /// assert_eq!(hashmap.capacity(), 1024);
@@ -806,8 +809,7 @@ where
             let current_array = self.array.load(Acquire, &guard);
             let current_array_ref = Self::cell_array_ref(current_array);
             if current_array_ref.old_array(&guard).is_null()
-                && current_array_ref.num_cell_entries()
-                    > self.minimum_capacity + self.additional_capacity.load(Relaxed)
+                && current_array_ref.num_cell_entries() > self.minimum_capacity()
             {
                 // Triggers resize if the estimated load factor is smaller than 1/16.
                 let sample_size = current_array_ref.sample_size();
