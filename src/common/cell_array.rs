@@ -117,7 +117,7 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellArray<K, V, SIZE, L
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        if cell_locker.cell_ref().killed(guard) {
+        if cell_locker.cell_ref().killed() {
             return;
         } else if cell_locker.cell_ref().num_entries() == 0 {
             cell_locker.purge(guard);
@@ -211,7 +211,7 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellArray<K, V, SIZE, L
 
         for old_cell_index in current..(current + SIZE).min(old_array_size) {
             let old_cell_ref = old_array_ref.cell(old_cell_index);
-            if old_cell_ref.killed(guard) {
+            if old_cell_ref.killed() {
                 continue;
             }
             if let Some(mut locker) = CellLocker::lock(old_cell_ref, guard) {

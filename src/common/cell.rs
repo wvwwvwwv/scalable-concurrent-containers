@@ -1,47 +1,52 @@
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::borrow::Borrow;
 use std::mem::MaybeUninit;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::{Condvar, Mutex};
-
-/// Tags are embedded inside the wait_queue variable.
-const LOCK_TAG: usize = 1;
-const KILL_TAG: usize = 1 << 1;
 
 /// Flags are embedded inside a partial hash value.
 const OCCUPIED: u8 = 1u8 << 6;
 const REMOVED: u8 = 1u8 << 7;
 
+/// State bits.
+const KILLED: u32 = 1_u32 << 31;
+const WAITING: u32 = 1_u32 << 30;
+const LOCK: u32 = 1_u32 << 29;
+const SLOCK_MAX: u32 = LOCK - 1;
+
 /// Cell is a small fixed-size hash table that resolves hash conflicts using a linked list of entry arrays.
 pub struct Cell<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> {
     /// wait_queue additionally stores the state of the Cell: locked or killed.
     wait_queue: Atomic<WaitQueueEntry>,
+    /// The state of the Cell.
+    state: AtomicU32,
+    /// The number of valid entries in the Cell.
+    num_entries: u32,
     /// DataArray stores key-value pairs with their metadata.
     data: Atomic<DataArray<K, V, SIZE>>,
-    /// The number of valid entries in the Cell.
-    num_entries: AtomicUsize,
 }
 
 impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Default for Cell<K, V, SIZE, LOCK_FREE> {
     fn default() -> Self {
         Cell::<K, V, SIZE, LOCK_FREE> {
             wait_queue: Atomic::null(),
+            state: AtomicU32::new(0),
+            num_entries: 0,
             data: Atomic::null(),
-            num_entries: AtomicUsize::new(0),
         }
     }
 }
 
 impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Cell<K, V, SIZE, LOCK_FREE> {
     /// Returns true if the Cell has been killed.
-    pub fn killed(&self, guard: &Guard) -> bool {
-        (self.wait_queue.load(Relaxed, guard).tag() & KILL_TAG) == KILL_TAG
+    pub fn killed(&self) -> bool {
+        (self.state.load(Relaxed) & KILLED) == KILLED
     }
 
     /// Returns the number of entries in the Cell.
     pub fn num_entries(&self) -> usize {
-        self.num_entries.load(Relaxed)
+        self.num_entries as usize
     }
 
     /// Iterates the contents of the Cell.
@@ -55,6 +60,10 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Cell<K, V, SIZE, LOCK_F
         K: Borrow<Q>,
         Q: Eq + ?Sized,
     {
+        if self.num_entries == 0 {
+            return None;
+        }
+
         // In order to read the linked list correctly, an acquire fence is required.
         let mut data_array = self.data.load(Acquire, guard);
         let preferred_index = partial_hash as usize % SIZE;
@@ -89,6 +98,10 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Cell<K, V, SIZE, LOCK_F
         K: Borrow<Q>,
         Q: Eq + ?Sized,
     {
+        if self.num_entries == 0 {
+            return None;
+        }
+
         // In order to read the linked list correctly, an acquire fence is required.
         let mut data_array = self.data.load(Acquire, guard);
         let preferred_index = partial_hash as usize % SIZE;
@@ -121,24 +134,20 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Cell<K, V, SIZE, LOCK_F
     fn wait<T, F: FnOnce() -> Option<T>>(&self, f: F, guard: &Guard) -> Option<T> {
         // Inserts the condvar into the wait queue.
         let mut current = self.wait_queue.load(Relaxed, guard);
-        if (current.tag() & KILL_TAG) == KILL_TAG {
-            return None;
-        }
         let mut condvar = WaitQueueEntry::new(Atomic::from(current));
 
-        // Keeps the tag as it is.
-        let mut next = Shared::from(&condvar as *const _).with_tag(current.tag());
+        let mut next = Shared::from(&condvar as *const _);
         while let Err(result) = self
             .wait_queue
             .compare_exchange(current, next, Release, Relaxed, guard)
         {
             current = result.current;
-            if (current.tag() & KILL_TAG) == KILL_TAG {
-                return None;
-            }
-            next = Shared::from(&condvar as *const _).with_tag(current.tag());
+            next = Shared::from(&condvar as *const _);
             condvar.next = Atomic::from(result.current);
         }
+
+        // Marks that there is a waiting thread.
+        self.state.fetch_or(WAITING, Relaxed);
 
         // Tries to lock again once the condvar is inserted into the wait queue.
         let locked = f();
@@ -155,7 +164,7 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Cell<K, V, SIZE, LOCK_F
     fn wakeup(&self, guard: &Guard) {
         // Keeps the tag as it is.
         let mut current = self.wait_queue.load(Acquire, guard);
-        let mut next = Shared::null().with_tag(current.tag());
+        let mut next = Shared::null();
         while let Err(result) = self
             .wait_queue
             .compare_exchange(current, next, Acquire, Relaxed, guard)
@@ -164,7 +173,7 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Cell<K, V, SIZE, LOCK_F
             if current.is_null() {
                 return;
             }
-            next = Shared::null().with_tag(current.tag());
+            next = Shared::null();
         }
 
         while !current.is_null() {
@@ -184,7 +193,7 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Cell<K, V, SIZE, LOCK_F
 impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Drop for Cell<K, V, SIZE, LOCK_FREE> {
     fn drop(&mut self) {
         // The Cell must have been killed.
-        debug_assert!(self.killed(unsafe { crossbeam_epoch::unprotected() }));
+        debug_assert!(self.killed());
     }
 }
 
@@ -275,12 +284,18 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'g, K, V
     ) -> Option<CellLocker<'g, K, V, SIZE, LOCK_FREE>> {
         loop {
             if let Some(result) = Self::try_lock(cell, guard) {
+                if result.killed {
+                    return None;
+                }
                 return Some(result);
             }
             if let Some(result) = cell.wait(|| Self::try_lock(cell, guard), guard) {
+                if result.killed {
+                    return None;
+                }
                 return Some(result);
             }
-            if cell.killed(guard) {
+            if cell.killed() {
                 return None;
             }
         }
@@ -289,21 +304,14 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'g, K, V
     /// Tries to lock the Cell.
     fn try_lock(
         cell: &'g Cell<K, V, SIZE, LOCK_FREE>,
-        guard: &'g Guard,
+        _guard: &'g Guard,
     ) -> Option<CellLocker<'g, K, V, SIZE, LOCK_FREE>> {
-        let current = cell.wait_queue.load(Relaxed, guard);
-        if current.tag() == 0 {
-            let next = current.with_tag(LOCK_TAG);
-            if cell
-                .wait_queue
-                .compare_exchange(current, next, Acquire, Relaxed, guard)
-                .is_ok()
-            {
-                return Some(CellLocker {
-                    cell_ref: cell,
-                    killed: false,
-                });
-            }
+        let prev_state = cell.state.fetch_or(LOCK, Acquire);
+        if (prev_state & LOCK) == 0 {
+            return Some(CellLocker {
+                cell_ref: cell,
+                killed: (prev_state & KILLED) == KILLED,
+            });
         }
         None
     }
@@ -323,6 +331,12 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'g, K, V
     ) -> (CellIterator<'g, K, V, SIZE, LOCK_FREE>, Option<(K, V)>) {
         debug_assert!(!self.killed);
 
+        if self.cell_ref.num_entries == u32::MAX {
+            panic!("Entries overflow");
+        }
+
+        let cell_mut_ref =
+            unsafe { &mut *(self.cell_ref as *const _ as *mut Cell<K, V, SIZE, LOCK_FREE>) };
         let mut data_array = self.cell_ref.data.load(Relaxed, guard);
         let data_array_head = data_array;
         let preferred_index = partial_hash as usize % SIZE;
@@ -370,7 +384,7 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'g, K, V
                 std::sync::atomic::fence(Release);
             }
             data_array_ref.partial_hash_array[free_index] = expected_hash;
-            self.cell_ref.num_entries.fetch_add(1, Relaxed);
+            cell_mut_ref.num_entries += 1;
             return (
                 CellIterator {
                     cell_ref: Some(self.cell_ref),
@@ -396,7 +410,7 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'g, K, V
             // Relaxed is sufficient as it is unimportant to read the latest state of the partial hash value for readers.
             new_data_array.link.store(data_array_head, Relaxed);
             self.cell_ref.data.swap(new_data_array, Release, guard);
-            self.cell_ref.num_entries.fetch_add(1, Relaxed);
+            cell_mut_ref.num_entries += 1;
             return (
                 CellIterator {
                     cell_ref: Some(self.cell_ref),
@@ -428,8 +442,10 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'g, K, V
             return None;
         }
 
-        debug_assert!(self.cell_ref.num_entries.load(Relaxed) > 0);
-        self.cell_ref.num_entries.fetch_sub(1, Relaxed);
+        debug_assert!(self.cell_ref.num_entries > 0);
+        let cell_mut_ref =
+            unsafe { &mut *(self.cell_ref as *const _ as *mut Cell<K, V, SIZE, LOCK_FREE>) };
+        cell_mut_ref.num_entries -= 1;
         let entry_ptr = data_array_ref.data[iterator.current_index].as_ptr();
         if LOCK_FREE {
             data_array_ref.partial_hash_array[iterator.current_index] |= REMOVED;
@@ -452,7 +468,12 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'g, K, V
             }
         }
         self.killed = true;
-        self.cell_ref.num_entries.swap(0, Relaxed)
+
+        let num_entries = self.cell_ref.num_entries;
+        let cell_mut_ref =
+            unsafe { &mut *(self.cell_ref as *const _ as *mut Cell<K, V, SIZE, LOCK_FREE>) };
+        cell_mut_ref.num_entries = 0;
+        num_entries as usize
     }
 }
 
@@ -495,11 +516,10 @@ impl<'g, K: Clone + Eq, V: Clone, const SIZE: usize, const LOCK_FREE: bool>
         }
 
         if removed {
-            self.optimize(
-                data_array,
-                self.cell_ref.num_entries.fetch_sub(1, Relaxed) - 1,
-                guard,
-            );
+            let cell_mut_ref =
+                unsafe { &mut *(self.cell_ref as *const _ as *mut Cell<K, V, SIZE, LOCK_FREE>) };
+            cell_mut_ref.num_entries -= 1;
+            self.optimize(data_array, self.cell_ref.num_entries, guard);
         }
         removed
     }
@@ -510,12 +530,7 @@ impl<'g, K: Clone + Eq, V: Clone, const SIZE: usize, const LOCK_FREE: bool>
     ///  1. Clears the entire Cell if there is no valid entry.
     ///  2. Coalesces if the given data array is non-empty and the linked list is sparse.
     ///  3. Unlinks the given data array if the data array is empty.
-    fn optimize(
-        &self,
-        data_array: Shared<DataArray<K, V, SIZE>>,
-        num_entries: usize,
-        guard: &Guard,
-    ) {
+    fn optimize(&self, data_array: Shared<DataArray<K, V, SIZE>>, num_entries: u32, guard: &Guard) {
         if num_entries == 0 {
             // Clears the entire Cell.
             let deprecated_data_array = self.cell_ref.data.swap(Shared::null(), Relaxed, guard);
@@ -529,7 +544,7 @@ impl<'g, K: Clone + Eq, V: Clone, const SIZE: usize, const LOCK_FREE: bool>
                 let head_data_array = self.cell_ref.data.load(Relaxed, guard);
                 let head_data_array_link_shared =
                     unsafe { head_data_array.deref() }.link.load(Relaxed, guard);
-                if !head_data_array_link_shared.is_null() && num_entries < SIZE / 4 {
+                if !head_data_array_link_shared.is_null() && (num_entries as usize) < SIZE / 4 {
                     // Replaces the head with a new DataArray.
                     let mut new_data_array = Owned::new(DataArray::new());
                     let mut new_array_index = 0;
@@ -551,7 +566,7 @@ impl<'g, K: Clone + Eq, V: Clone, const SIZE: usize, const LOCK_FREE: bool>
                                 new_array_index += 1;
                             }
                         }
-                        if new_array_index == num_entries {
+                        if new_array_index == num_entries as usize {
                             break;
                         }
                         current_data_array = current_data_array_ref.link.load(Relaxed, guard);
@@ -595,13 +610,9 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Drop
 {
     fn drop(&mut self) {
         let mut guard: Option<Guard> = None;
-        let mut current = self
-            .cell_ref
-            .wait_queue
-            .load(Relaxed, unsafe { crossbeam_epoch::unprotected() });
+        let mut current = self.cell_ref.state.load(Relaxed);
         loop {
-            debug_assert!(current.tag() == LOCK_TAG);
-            let wakeup = if !current.is_null() {
+            let wakeup = if (current & WAITING) == WAITING {
                 // In order to prevent the Cell from being dropped while waking up other threads, pins the thread.
                 if guard.is_none() {
                     guard.replace(crossbeam_epoch::pin());
@@ -611,24 +622,22 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Drop
                 false
             };
             let next = if !self.killed {
-                current.with_tag(current.tag() & (!LOCK_TAG))
+                current & (!(WAITING | LOCK))
             } else {
-                current.with_tag((current.tag() & (!LOCK_TAG)) | KILL_TAG)
+                KILLED | (current & (!(WAITING | LOCK)))
             };
-            match self.cell_ref.wait_queue.compare_exchange(
-                current,
-                next,
-                Release,
-                Relaxed,
-                unsafe { crossbeam_epoch::unprotected() },
-            ) {
+            match self
+                .cell_ref
+                .state
+                .compare_exchange(current, next, Release, Relaxed)
+            {
                 Ok(_) => {
                     if wakeup {
                         self.cell_ref.wakeup(guard.as_ref().unwrap());
                     }
                     break;
                 }
-                Err(result) => current = result.current,
+                Err(result) => current = result,
             }
         }
     }
@@ -784,7 +793,7 @@ mod test {
         xlocker.purge(&guard);
         drop(xlocker);
 
-        assert!(cell.killed(guard));
+        assert!(cell.killed());
         assert_eq!(cell.num_entries(), 0);
         assert!(CellLocker::lock(&*cell, guard).is_none());
     }
