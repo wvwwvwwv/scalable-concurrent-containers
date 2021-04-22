@@ -1,4 +1,4 @@
-use crate::common::cell::{Cell, CellIterator, CellLocker};
+use crate::common::cell::{Cell, CellIterator, CellLocker, CellReader};
 use crate::common::cell_array::CellArray;
 use crate::common::hash_table::HashTable;
 
@@ -440,16 +440,16 @@ where
             {
                 let old_array_ref = Self::cell_array_ref(old_array_shared);
                 let cell_index = old_array_ref.calculate_cell_index(hash);
-                if let Some(locker) = CellLocker::lock(old_array_ref.cell(cell_index), &guard) {
-                    if let Some((key, value)) = locker.cell_ref().search(key, partial_hash, &guard)
+                if let Some(reader) = CellReader::lock(old_array_ref.cell(cell_index), &guard) {
+                    if let Some((key, value)) = reader.cell_ref().search(key, partial_hash, &guard)
                     {
                         return Some(f(key.borrow(), value));
                     }
                 }
             }
             let cell_index = current_array_ref.calculate_cell_index(hash);
-            if let Some(locker) = CellLocker::lock(current_array_ref.cell(cell_index), &guard) {
-                if let Some((key, value)) = locker.cell_ref().search(key, partial_hash, &guard) {
+            if let Some(reader) = CellReader::lock(current_array_ref.cell(cell_index), &guard) {
+                if let Some((key, value)) = reader.cell_ref().search(key, partial_hash, &guard) {
                     return Some(f(key.borrow(), value));
                 }
             }

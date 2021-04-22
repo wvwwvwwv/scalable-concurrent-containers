@@ -14,6 +14,7 @@ const KILLED: u32 = 1_u32 << 31;
 const WAITING: u32 = 1_u32 << 30;
 const LOCK: u32 = 1_u32 << 29;
 const SLOCK_MAX: u32 = LOCK - 1;
+const LOCK_MASK: u32 = LOCK | SLOCK_MAX;
 
 /// Cell is a small fixed-size hash table that resolves hash conflicts using a linked list of entry arrays.
 pub struct Cell<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> {
@@ -283,17 +284,17 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'g, K, V
         guard: &'g Guard,
     ) -> Option<CellLocker<'g, K, V, SIZE, LOCK_FREE>> {
         loop {
-            if let Some(result) = Self::try_lock(cell, guard) {
-                if result.killed {
+            if let Some(locker) = Self::try_lock(cell, guard) {
+                if locker.killed {
                     return None;
                 }
-                return Some(result);
+                return Some(locker);
             }
-            if let Some(result) = cell.wait(|| Self::try_lock(cell, guard), guard) {
-                if result.killed {
+            if let Some(locker) = cell.wait(|| Self::try_lock(cell, guard), guard) {
+                if locker.killed {
                     return None;
                 }
-                return Some(result);
+                return Some(locker);
             }
             if cell.killed() {
                 return None;
@@ -306,11 +307,18 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'g, K, V
         cell: &'g Cell<K, V, SIZE, LOCK_FREE>,
         _guard: &'g Guard,
     ) -> Option<CellLocker<'g, K, V, SIZE, LOCK_FREE>> {
-        let prev_state = cell.state.fetch_or(LOCK, Acquire);
-        if (prev_state & LOCK) == 0 {
+        let current = cell.state.load(Relaxed);
+        if (current & LOCK_MASK) != 0 {
+            return None;
+        }
+        if cell
+            .state
+            .compare_exchange(current, current | LOCK, Acquire, Relaxed)
+            .is_ok()
+        {
             return Some(CellLocker {
                 cell_ref: cell,
-                killed: (prev_state & KILLED) == KILLED,
+                killed: (current & KILLED) == KILLED,
             });
         }
         None
@@ -643,6 +651,98 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Drop
     }
 }
 
+pub struct CellReader<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> {
+    cell_ref: &'g Cell<K, V, SIZE, LOCK_FREE>,
+    killed: bool,
+}
+
+impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellReader<'g, K, V, SIZE, LOCK_FREE> {
+    /// Locks the given Cell.
+    pub fn lock(
+        cell: &'g Cell<K, V, SIZE, LOCK_FREE>,
+        guard: &'g Guard,
+    ) -> Option<CellReader<'g, K, V, SIZE, LOCK_FREE>> {
+        loop {
+            if let Some(reader) = Self::try_lock(cell, guard) {
+                if reader.killed {
+                    return None;
+                }
+                return Some(reader);
+            }
+            if let Some(reader) = cell.wait(|| Self::try_lock(cell, guard), guard) {
+                if reader.killed {
+                    return None;
+                }
+                return Some(reader);
+            }
+            if cell.killed() {
+                return None;
+            }
+        }
+    }
+
+    /// Tries to lock the Cell.
+    fn try_lock(
+        cell: &'g Cell<K, V, SIZE, LOCK_FREE>,
+        _guard: &'g Guard,
+    ) -> Option<CellReader<'g, K, V, SIZE, LOCK_FREE>> {
+        let current = cell.state.load(Relaxed);
+        if (current & LOCK_MASK) >= SLOCK_MAX {
+            return None;
+        }
+        if cell
+            .state
+            .compare_exchange(current, current + 1, Acquire, Relaxed)
+            .is_ok()
+        {
+            return Some(CellReader {
+                cell_ref: cell,
+                killed: (current & KILLED) == KILLED,
+            });
+        }
+        None
+    }
+
+    /// Returns a reference to the Cell.
+    pub fn cell_ref(&self) -> &Cell<K, V, SIZE, LOCK_FREE> {
+        self.cell_ref
+    }
+}
+
+impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Drop
+    for CellReader<'g, K, V, SIZE, LOCK_FREE>
+{
+    fn drop(&mut self) {
+        let mut guard: Option<Guard> = None;
+        let mut current = self.cell_ref.state.load(Relaxed);
+        loop {
+            let wakeup = if (current & WAITING) == WAITING {
+                // In order to prevent the Cell from being dropped while waking up other threads, pins the thread.
+                if guard.is_none() {
+                    guard.replace(crossbeam_epoch::pin());
+                }
+                true
+            } else {
+                false
+            };
+            let next = (current - 1) & !(WAITING);
+            match self
+                .cell_ref
+                .state
+                .compare_exchange(current, next, Relaxed, Relaxed)
+            {
+                Ok(_) => {
+                    if wakeup {
+                        self.cell_ref.wakeup(guard.as_ref().unwrap());
+                    }
+                    break;
+                }
+                Err(result) => current = result,
+            }
+        }
+    }
+}
+
 pub struct DataArray<K: Eq, V, const SIZE: usize> {
     /// The lower two-bit of a partial hash value represents the state of the corresponding entry.
     partial_hash_array: [u8; SIZE],
@@ -743,10 +843,21 @@ mod test {
                             .insert(thread_id, 0, (thread_id % SIZE).try_into().unwrap(), &guard,)
                             .1
                             .is_none());
-                        drop(xlocker);
+                    } else {
+                        assert_eq!(
+                            xlocker
+                                .cell_ref()
+                                .search(&thread_id, (thread_id % SIZE).try_into().unwrap(), &guard)
+                                .unwrap(),
+                            &(thread_id, 0usize)
+                        );
                     }
+                    drop(xlocker);
+
+                    let slocker = CellReader::lock(&*cell_copied, &guard).unwrap();
                     assert_eq!(
-                        cell_copied
+                        slocker
+                            .cell_ref()
                             .search(&thread_id, (thread_id % SIZE).try_into().unwrap(), &guard)
                             .unwrap(),
                         &(thread_id, 0usize)
