@@ -66,7 +66,8 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Cell<K, V, SIZE, LOCK_F
         }
 
         // In order to read the linked list correctly, an acquire fence is required.
-        let mut data_array = self.data.load(Acquire, guard);
+        let read_order = if LOCK_FREE { Acquire } else { Relaxed };
+        let mut data_array = self.data.load(read_order, guard);
         let preferred_index = partial_hash as usize % SIZE;
         let expected_hash = (partial_hash & (!REMOVED)) | OCCUPIED;
         while !data_array.is_null() {
@@ -83,7 +84,7 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Cell<K, V, SIZE, LOCK_F
                     }
                 }
             }
-            data_array = data_array_ref.link.load(Acquire, guard);
+            data_array = data_array_ref.link.load(read_order, guard);
         }
         None
     }
@@ -104,7 +105,8 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Cell<K, V, SIZE, LOCK_F
         }
 
         // In order to read the linked list correctly, an acquire fence is required.
-        let mut data_array = self.data.load(Acquire, guard);
+        let read_order = if LOCK_FREE { Acquire } else { Relaxed };
+        let mut data_array = self.data.load(read_order, guard);
         let preferred_index = partial_hash as usize % SIZE;
         let expected_hash = (partial_hash & (!REMOVED)) | OCCUPIED;
         while !data_array.is_null() {
@@ -126,7 +128,7 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Cell<K, V, SIZE, LOCK_F
                     }
                 }
             }
-            data_array = data_array_ref.link.load(Acquire, guard);
+            data_array = data_array_ref.link.load(read_order, guard);
         }
         None
     }
@@ -163,7 +165,6 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Cell<K, V, SIZE, LOCK_F
 
     /// Wakes up the threads in the wait queue.
     fn wakeup(&self, guard: &Guard) {
-        // Keeps the tag as it is.
         let mut current = self.wait_queue.load(Acquire, guard);
         let mut next = Shared::null();
         while let Err(result) = self
@@ -237,9 +238,10 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Iterator
     type Item = (&'g (K, V), u8);
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(&cell_ref) = self.cell_ref.as_ref() {
+            let read_order = if LOCK_FREE { Acquire } else { Relaxed };
             if self.current_array.is_null() {
                 // Starts scanning from the beginning.
-                self.current_array = cell_ref.data.load(Acquire, self.guard_ref);
+                self.current_array = cell_ref.data.load(read_order, self.guard_ref);
             }
             while !self.current_array.is_null() {
                 // Search for the next valid entry.
@@ -262,7 +264,7 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Iterator
                 }
 
                 // Proceeds to the next DataArray.
-                self.current_array = array_ref.link.load(Acquire, self.guard_ref);
+                self.current_array = array_ref.link.load(read_order, self.guard_ref);
                 self.current_index = usize::MAX;
             }
             // Fuses itself.
@@ -284,11 +286,13 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'g, K, V
         guard: &'g Guard,
     ) -> Option<CellLocker<'g, K, V, SIZE, LOCK_FREE>> {
         loop {
-            if let Some(locker) = Self::try_lock(cell, guard) {
-                if locker.killed {
-                    return None;
+            for _ in 0..(SIZE * 4) {
+                if let Some(locker) = Self::try_lock(cell, guard) {
+                    if locker.killed {
+                        return None;
+                    }
+                    return Some(locker);
                 }
-                return Some(locker);
             }
             if let Some(locker) = cell.wait(|| Self::try_lock(cell, guard), guard) {
                 if locker.killed {
@@ -417,7 +421,8 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'g, K, V
             new_data_array.partial_hash_array[preferred_index] = expected_hash;
             // Relaxed is sufficient as it is unimportant to read the latest state of the partial hash value for readers.
             new_data_array.link.store(data_array_head, Relaxed);
-            self.cell_ref.data.swap(new_data_array, Release, guard);
+            let write_order = if LOCK_FREE { Release } else { Relaxed };
+            self.cell_ref.data.swap(new_data_array, write_order, guard);
             cell_mut_ref.num_entries += 1;
             return (
                 CellIterator {
@@ -663,11 +668,13 @@ impl<'g, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellReader<'g, K, V
         guard: &'g Guard,
     ) -> Option<CellReader<'g, K, V, SIZE, LOCK_FREE>> {
         loop {
-            if let Some(reader) = Self::try_lock(cell, guard) {
-                if reader.killed {
-                    return None;
+            for _ in 0..(SIZE * 4) {
+                if let Some(reader) = Self::try_lock(cell, guard) {
+                    if reader.killed {
+                        return None;
+                    }
+                    return Some(reader);
                 }
-                return Some(reader);
             }
             if let Some(reader) = cell.wait(|| Self::try_lock(cell, guard), guard) {
                 if reader.killed {
