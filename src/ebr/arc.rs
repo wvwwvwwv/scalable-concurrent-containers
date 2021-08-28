@@ -55,7 +55,7 @@ impl<T> Drop for Arc<T> {
     fn drop(&mut self) {
         // TODO: push it into a reclaimer.
         if unsafe { self.instance.as_ref().drop_ref() } {
-            unsafe { Box::from_raw(self.instance.as_ptr()) };
+            unsafe { self.instance.as_mut().dealloc() }
         }
     }
 }
@@ -130,6 +130,10 @@ impl<T> Link for Underlying<T> {
 
     fn set(&mut self, next_ptr: *const dyn Link) {
         self.next_or_refcnt.next = next_ptr;
+    }
+
+    fn dealloc(&mut self) {
+        unsafe { Box::from_raw(self as *mut Underlying<T>) };
     }
 }
 

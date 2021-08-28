@@ -1,4 +1,5 @@
 use super::arc::Underlying;
+use super::link::Link;
 
 use std::ptr;
 use std::sync::atomic::AtomicPtr;
@@ -23,21 +24,20 @@ impl<T> Drop for AtomicArc<T> {
     fn drop(&mut self) {
         let underlying_ptr = self.underlying.swap(ptr::null_mut(), Relaxed);
         // TODO: push it into a reclaimer.
-        if unsafe {
-            underlying_ptr
-                .as_ref()
-                .map_or_else(|| false, |u| u.drop_ref())
-        } {
-            unsafe { Box::from_raw(underlying_ptr) };
-        }
+        unsafe {
+            underlying_ptr.as_mut().map(|u| {
+                if u.drop_ref() {
+                    u.dealloc()
+                }
+            })
+        };
     }
 }
-
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::sync::atomic::{AtomicU8, AtomicBool};
+    use std::sync::atomic::{AtomicBool, AtomicU8};
 
     #[test]
     fn arc() {
@@ -55,4 +55,3 @@ mod test {
         assert!(DESTROYED.load(Relaxed));
     }
 }
-
