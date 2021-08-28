@@ -1,4 +1,5 @@
 use super::link::Link;
+use super::Reclaimer;
 
 use std::mem::ManuallyDrop;
 use std::ops::Deref;
@@ -10,11 +11,11 @@ use std::sync::atomic::Ordering::Relaxed;
 ///
 /// TODO: it does not drop the instance when the last reference is dropped, instead it passes
 /// it to the EBR garbage collector.
-pub struct Arc<T> {
-    instance: NonNull<Underlying<T>>,
+pub struct Arc<T: 'static> {
+    pub(super) instance: NonNull<Underlying<T>>,
 }
 
-impl<T> Arc<T> {
+impl<T: 'static> Arc<T> {
     /// Creates a new instance of [`Arc`].
     pub fn new(t: T) -> Arc<T> {
         let boxed = Box::new(Underlying::new(t));
@@ -34,7 +35,7 @@ impl<T> Arc<T> {
     }
 }
 
-impl<T> Clone for Arc<T> {
+impl<T: 'static> Clone for Arc<T> {
     fn clone(&self) -> Self {
         unsafe { self.instance.as_ref().add_ref() };
         Self {
@@ -43,7 +44,7 @@ impl<T> Clone for Arc<T> {
     }
 }
 
-impl<T> Deref for Arc<T> {
+impl<T: 'static> Deref for Arc<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -51,11 +52,11 @@ impl<T> Deref for Arc<T> {
     }
 }
 
-impl<T> Drop for Arc<T> {
+impl<T: 'static> Drop for Arc<T> {
     fn drop(&mut self) {
-        // TODO: push it into a reclaimer.
         if unsafe { self.instance.as_ref().drop_ref() } {
-            unsafe { self.instance.as_mut().dealloc() }
+            let reader = Reclaimer::read();
+            reader.reclaim_underlying(self.instance.as_ptr());
         }
     }
 }
@@ -76,7 +77,7 @@ impl Default for LinkOrRefCnt {
 /// [`Underlying`] stores the instance and a link to the next [`Underlying`].
 pub(super) struct Underlying<T> {
     next_or_refcnt: LinkOrRefCnt,
-    t: T,
+    pub(super) t: T,
 }
 
 impl<T> Underlying<T> {
@@ -124,16 +125,14 @@ impl<T> Underlying<T> {
 }
 
 impl<T> Link for Underlying<T> {
-    fn next(&self) -> *const dyn Link {
-        unsafe { self.next_or_refcnt.next }
-    }
-
     fn set(&mut self, next_ptr: *const dyn Link) {
         self.next_or_refcnt.next = next_ptr;
     }
 
-    fn dealloc(&mut self) {
+    fn dealloc(&mut self) -> *mut Link {
+        let next = unsafe { self.next_or_refcnt.next as *mut dyn Link };
         unsafe { Box::from_raw(self as *mut Underlying<T>) };
+        next
     }
 }
 
@@ -179,6 +178,8 @@ mod test {
         assert!(arc_cloned_again.get_mut().is_some());
 
         drop(arc_cloned_again);
-        assert!(DESTROYED.load(Relaxed));
+        while !DESTROYED.load(Relaxed) {
+            drop(Reclaimer::read());
+        }
     }
 }
