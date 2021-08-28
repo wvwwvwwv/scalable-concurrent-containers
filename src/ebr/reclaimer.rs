@@ -96,7 +96,7 @@ impl Reclaimer {
         }
     }
 
-    pub(super) fn reclaim(&mut self, reader: &Reader, instance_ptr: *mut dyn Link) {
+    pub(super) fn reclaim(&mut self, _reader: &Reader, instance_ptr: *mut dyn Link) {
         debug_assert_eq!(self.announcement.load(Relaxed) & Self::INACTIVE, 0);
 
         if let Some(mut non_null_ptr) = NonNull::new(instance_ptr) {

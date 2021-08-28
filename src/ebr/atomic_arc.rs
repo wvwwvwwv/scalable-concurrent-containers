@@ -8,6 +8,7 @@ use std::sync::atomic::Ordering::{self, Relaxed};
 
 /// [`AtomicArc`] owns the underlying instance, and allows users to perform atomic operations
 /// on it.
+#[derive(Debug)]
 pub struct AtomicArc<T: 'static> {
     underlying: AtomicPtr<Underlying<T>>,
 }
@@ -44,6 +45,21 @@ impl<T: 'static> AtomicArc<T> {
         }
     }
 
+    /// Returns `true` if the [`AtomicArc`] is null.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::AtomicArc;
+    /// use std::sync::atomic::Ordering::Relaxed;
+    ///
+    /// let atomic_arc: AtomicArc<usize> = AtomicArc::null();
+    /// assert!(atomic_arc.is_null(Relaxed));
+    /// ```
+    pub fn is_null(&self, order: Ordering) -> bool {
+        self.underlying.load(order).is_null()
+    }
+
     /// Loads a pointer value from the [`AtomicArc`].
     ///
     /// # Examples
@@ -58,19 +74,79 @@ impl<T: 'static> AtomicArc<T> {
     /// assert_eq!(*ptr.as_ref().unwrap(), 11);
     /// ```
     pub fn load<'r>(&self, order: Ordering, _reader: &'r Reader) -> Ptr<'r, T> {
-        Ptr::new(self.underlying.load(order))
+        Ptr::from(self.underlying.load(order))
     }
 
-    /// Performs CAS on the atomic pointer.
+    /// Performs CAS on the [`AtomicArc`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::{Arc, AtomicArc, Reclaimer};
+    /// use std::sync::atomic::Ordering::Relaxed;
+    ///
+    /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(14);
+    /// let reader = Reclaimer::read();
+    /// let old = atomic_arc.swap(Some(Arc::new(15)), Relaxed);
+    /// assert_eq!(*old.unwrap(), 14);
+    /// let old = atomic_arc.swap(None, Relaxed);
+    /// assert_eq!(*old.unwrap(), 15);
+    /// let old = atomic_arc.swap(None, Relaxed);
+    /// assert!(old.is_none());
+    /// ```
+    pub fn swap(&self, val: Option<Arc<T>>, order: Ordering) -> Option<Arc<T>> {
+        let new = val
+            .as_ref()
+            .map_or_else(ptr::null_mut, |a| a.instance.as_ptr());
+        let prev = self.underlying.swap(new, order);
+        if let Some(non_null_ptr) = NonNull::new(prev) {
+            Some(Arc::from(non_null_ptr))
+        } else {
+            None
+        }
+    }
+
+    /// Performs CAS on the [`AtomicArc`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::{Arc, AtomicArc, Reclaimer};
+    /// use std::sync::atomic::Ordering::Relaxed;
+    ///
+    /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(17);
+    /// let reader = Reclaimer::read();
+    /// let ptr = atomic_arc.load(Relaxed, &reader);
+    /// let old = atomic_arc.compare_exchange(
+    ///     ptr, Some(Arc::new(18)), Relaxed, Relaxed).unwrap().0.unwrap();
+    /// assert_eq!(*old, 17);
+    /// assert!(atomic_arc.compare_exchange(
+    ///     ptr, Some(Arc::new(19)), Relaxed, Relaxed).is_err());
+    /// ```
     pub fn compare_exchange<'r>(
         &self,
         current: Ptr<'r, T>,
         new: Option<Arc<T>>,
         success: Ordering,
         failure: Ordering,
-        reader: &'r Reader,
     ) -> Result<(Option<Arc<T>>, Ptr<'r, T>), (Option<Arc<T>>, Ptr<'r, T>)> {
-        unimplemented!()
+        let desired = new
+            .as_ref()
+            .map_or_else(ptr::null_mut, |a| a.instance.as_ptr());
+        match self
+            .underlying
+            .compare_exchange(current.ptr as *mut _, desired, success, failure)
+        {
+            Ok(prev) => {
+                let prev_arc = if let Some(non_null_ptr) = NonNull::new(prev) {
+                    Some(Arc::from(non_null_ptr))
+                } else {
+                    None
+                };
+                Ok((prev_arc, Ptr::from(prev)))
+            }
+            Err(actual) => Err((new, Ptr::from(actual))),
+        }
     }
 }
 

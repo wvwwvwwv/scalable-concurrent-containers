@@ -1,5 +1,5 @@
 use super::link::Link;
-use super::Reclaimer;
+use super::{Ptr, Reader, Reclaimer};
 
 use std::mem::ManuallyDrop;
 use std::ops::Deref;
@@ -8,15 +8,21 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 
 /// [`Arc`] is a reference-counted handle to an instance.
-///
-/// TODO: it does not drop the instance when the last reference is dropped, instead it passes
-/// it to the EBR garbage collector.
+#[derive(Debug)]
 pub struct Arc<T: 'static> {
     pub(super) instance: NonNull<Underlying<T>>,
 }
 
 impl<T: 'static> Arc<T> {
     /// Creates a new instance of [`Arc`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::Arc;
+    ///
+    /// let arc: Arc<usize> = Arc::new(31);
+    /// ```
     pub fn new(t: T) -> Arc<T> {
         let boxed = Box::new(Underlying::new(t));
         Arc {
@@ -24,13 +30,45 @@ impl<T: 'static> Arc<T> {
         }
     }
 
+    /// Generates a pointer out of the [`Arc`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::{Arc, Reclaimer};
+    ///
+    /// let arc: Arc<usize> = Arc::new(37);
+    /// let reader = Reclaimer::read();
+    /// let ptr = arc.ptr(&reader);
+    /// assert_eq!(*ptr.as_ref().unwrap(), 37);
+    /// ```
+    pub fn ptr<'r>(&self, _reader: &'r Reader) -> Ptr<'r, T> {
+        Ptr::from(self.instance.as_ptr())
+    }
+
     /// Returns a mutable reference to the underlying instance if the instance is exclusively
     /// owned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::Arc;
+    ///
+    /// let mut arc: Arc<usize> = Arc::new(38);
+    /// *arc.get_mut().unwrap() += 1;
+    /// assert_eq!(*arc, 39);
+    /// ```
     pub fn get_mut(&mut self) -> Option<&mut T> {
         if unsafe { self.instance.as_ref().ref_cnt() } == 0 {
             Some(unsafe { &mut self.instance.as_mut().t })
         } else {
             None
+        }
+    }
+
+    pub(super) fn from(non_null_ptr: NonNull<Underlying<T>>) -> Arc<T> {
+        Arc {
+            instance: non_null_ptr,
         }
     }
 }
@@ -129,7 +167,7 @@ impl<T> Link for Underlying<T> {
         self.next_or_refcnt.next = next_ptr;
     }
 
-    fn dealloc(&mut self) -> *mut Link {
+    fn dealloc(&mut self) -> *mut dyn Link {
         let next = unsafe { self.next_or_refcnt.next as *mut dyn Link };
         unsafe { Box::from_raw(self as *mut Underlying<T>) };
         next
