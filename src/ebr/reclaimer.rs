@@ -76,7 +76,9 @@ impl Reclaimer {
                 while let Some(reclaimer_ref) = unsafe { reclaimer_ptr.as_ref() } {
                     if !ptr::eq(self, reclaimer_ref) {
                         let announcement_of_other = reclaimer_ref.announcement.load(SeqCst);
-                        if announcement_of_other & Self::INACTIVE == 0 && announcement_of_other != announcement {
+                        if announcement_of_other & Self::INACTIVE == 0
+                            && announcement_of_other != announcement
+                        {
                             update_global_epoch = false;
                             break;
                         }
@@ -125,9 +127,8 @@ impl Reclaimer {
         }
     }
 
-    pub fn read() -> Reader {
-        let reclaimer_ptr = TLS.with(|tls| *tls.borrow_mut());
-        Reader::new(reclaimer_ptr)
+    pub(super) fn current() -> *mut Reclaimer {
+        TLS.with(|tls| *tls.borrow_mut())
     }
 }
 

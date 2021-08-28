@@ -65,11 +65,11 @@ impl<T: 'static> AtomicArc<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{AtomicArc, Reclaimer};
+    /// use scc::ebr::{AtomicArc, Reader};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(11);
-    /// let reader = Reclaimer::read();
+    /// let reader = Reader::new();
     /// let ptr = atomic_arc.load(Relaxed, &reader);
     /// assert_eq!(*ptr.as_ref().unwrap(), 11);
     /// ```
@@ -82,11 +82,11 @@ impl<T: 'static> AtomicArc<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Arc, AtomicArc, Reclaimer};
+    /// use scc::ebr::{Arc, AtomicArc, Reader};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(14);
-    /// let reader = Reclaimer::read();
+    /// let reader = Reader::new();
     /// let old = atomic_arc.swap(Some(Arc::new(15)), Relaxed);
     /// assert_eq!(*old.unwrap(), 14);
     /// let old = atomic_arc.swap(None, Relaxed);
@@ -111,11 +111,11 @@ impl<T: 'static> AtomicArc<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Arc, AtomicArc, Reclaimer};
+    /// use scc::ebr::{Arc, AtomicArc, Reader};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(17);
-    /// let reader = Reclaimer::read();
+    /// let reader = Reader::new();
     /// let ptr = atomic_arc.load(Relaxed, &reader);
     /// let old = atomic_arc.compare_exchange(
     ///     ptr, Some(Arc::new(18)), Relaxed, Relaxed).unwrap().0.unwrap();
@@ -164,8 +164,6 @@ impl<T: 'static> Drop for AtomicArc<T> {
 mod test {
     use super::*;
 
-    use crate::ebr::Reclaimer;
-
     use std::sync::atomic::{AtomicBool, AtomicU8};
 
     #[test]
@@ -183,7 +181,7 @@ mod test {
         drop(atomic_arc);
 
         while !DESTROYED.load(Relaxed) {
-            drop(Reclaimer::read());
+            drop(Reader::new());
         }
     }
 }

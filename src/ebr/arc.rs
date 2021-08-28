@@ -1,5 +1,5 @@
 use super::link::Link;
-use super::{Ptr, Reader, Reclaimer};
+use super::{Ptr, Reader};
 
 use std::mem::ManuallyDrop;
 use std::ops::Deref;
@@ -35,10 +35,10 @@ impl<T: 'static> Arc<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Arc, Reclaimer};
+    /// use scc::ebr::{Arc, Reader};
     ///
     /// let arc: Arc<usize> = Arc::new(37);
-    /// let reader = Reclaimer::read();
+    /// let reader = Reader::new();
     /// let ptr = arc.ptr(&reader);
     /// assert_eq!(*ptr.as_ref().unwrap(), 37);
     /// ```
@@ -93,7 +93,7 @@ impl<T: 'static> Deref for Arc<T> {
 impl<T: 'static> Drop for Arc<T> {
     fn drop(&mut self) {
         if unsafe { self.instance.as_ref().drop_ref() } {
-            let reader = Reclaimer::read();
+            let reader = Reader::new();
             reader.reclaim_underlying(self.instance.as_ptr());
         }
     }
@@ -217,7 +217,7 @@ mod test {
 
         drop(arc_cloned_again);
         while !DESTROYED.load(Relaxed) {
-            drop(Reclaimer::read());
+            drop(Reader::new());
         }
     }
 }

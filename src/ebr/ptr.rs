@@ -31,11 +31,11 @@ impl<'r, T> Ptr<'r, T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{AtomicArc, Reclaimer};
+    /// use scc::ebr::{AtomicArc, Reader};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(21);
-    /// let reader = Reclaimer::read();
+    /// let reader = Reader::new();
     /// let ptr = atomic_arc.load(Relaxed, &reader);
     /// assert_eq!(*ptr.as_ref().unwrap(), 21);
     /// ```
