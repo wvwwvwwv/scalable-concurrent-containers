@@ -1,4 +1,4 @@
 pub(super) trait Link {
-    fn next(&self) -> Option<&dyn Link>;
-    fn set(&mut self, next: &dyn Link);
+    fn next(&self) -> *const dyn Link;
+    fn set(&mut self, next_ptr: *const dyn Link);
 }

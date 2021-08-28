@@ -9,8 +9,8 @@
 mod arc;
 pub use arc::Arc;
 
-mod atomic_ptr;
-pub use atomic_ptr::AtomicPtr;
+mod atomic_arc;
+pub use atomic_arc::AtomicArc;
 
 mod link;
 
