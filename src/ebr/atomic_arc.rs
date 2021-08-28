@@ -20,7 +20,7 @@ impl<T: 'static> AtomicArc<T> {
     /// ```
     /// use scc::ebr::AtomicArc;
     ///
-    /// let atomic_arc = AtomicArc::new(10);
+    /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(10);
     /// ```
     pub fn new(t: T) -> AtomicArc<T> {
         let boxed = Box::new(Underlying::new(t));
@@ -36,7 +36,7 @@ impl<T: 'static> AtomicArc<T> {
     /// ```
     /// use scc::ebr::AtomicArc;
     ///
-    /// let atomic_arc = AtomicArc::null();
+    /// let atomic_arc: AtomicArc<usize> = AtomicArc::null();
     /// ```
     pub fn null() -> AtomicArc<T> {
         AtomicArc {
@@ -52,10 +52,10 @@ impl<T: 'static> AtomicArc<T> {
     /// use scc::ebr::{AtomicArc, Reclaimer};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
-    /// let atomic_arc = AtomicArc::new(11);
+    /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(11);
     /// let reader = Reclaimer::read();
     /// let ptr = atomic_arc.load(Relaxed, &reader);
-    /// assert_eq!(*ptr.as_ref().unwrap(), 10);
+    /// assert_eq!(*ptr.as_ref().unwrap(), 11);
     /// ```
     pub fn load<'r>(&self, order: Ordering, _reader: &'r Reader) -> Ptr<'r, T> {
         Ptr::new(self.underlying.load(order))
