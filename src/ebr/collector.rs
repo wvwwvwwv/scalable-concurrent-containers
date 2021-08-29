@@ -14,8 +14,9 @@ pub(super) struct Collector {
     next_epoch_update: usize,
     announcement: AtomicU64,
     epoch_ref: &'static AtomicU64,
-    current_instance_link: Option<NonNull<dyn Link>>,
+    num_instances: usize,
     previous_instance_link: Option<NonNull<dyn Link>>,
+    current_instance_link: Option<NonNull<dyn Link>>,
     next_instance_link: Option<NonNull<dyn Link>>,
     next_collector: *mut Collector,
     link: *const dyn Link,
@@ -39,8 +40,9 @@ impl Collector {
             next_epoch_update: Self::CADENCE,
             announcement: AtomicU64::new(Self::INACTIVE),
             epoch_ref: &EPOCH,
-            current_instance_link: None,
+            num_instances: 0,
             previous_instance_link: None,
+            current_instance_link: None,
             next_instance_link: None,
             next_collector: ptr::null_mut(),
             link: nullptr,
@@ -82,7 +84,7 @@ impl Collector {
         if self.num_readers == 1 {
             if self.next_epoch_update == 0 {
                 self.next_epoch_update = Self::CADENCE;
-                if !tag::tags(ANCHOR.load(Relaxed)).0 {
+                if self.num_instances != 0 && !tag::tags(ANCHOR.load(Relaxed)).0 {
                     self.try_scan();
                 }
             } else {
@@ -104,6 +106,7 @@ impl Collector {
                     ptr.as_mut().set(head.as_ptr());
                 }
                 self.current_instance_link.replace(ptr);
+                self.num_instances += 1;
             }
         }
     }
@@ -186,15 +189,18 @@ impl Collector {
     /// Acknowledges a new global epoch.
     fn epoch_updated(&mut self, new_epoch: u64) {
         self.announcement.store(new_epoch, Relaxed);
+        let mut num_reclaimed = 0;
         let mut garbage_link = self.next_instance_link.take();
         self.next_instance_link = self.previous_instance_link.take();
         self.previous_instance_link = self.current_instance_link.take();
         while let Some(mut instance_ptr) = garbage_link.take() {
             let next = unsafe { instance_ptr.as_mut().free() };
+            num_reclaimed += 1;
             if let Some(ptr) = NonNull::new(next) {
                 garbage_link.replace(ptr);
             }
         }
+        self.num_instances -= num_reclaimed;
     }
 
     /// Returns the [`Collector`] attached to the current thread.

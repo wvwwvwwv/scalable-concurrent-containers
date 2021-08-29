@@ -17,15 +17,11 @@ jobs:
       - uses: actions/checkout@v2
       - name: Debug - Build
         run: cargo build --verbose
-      - name: Debug -Run unit tests
+      - name: Debug -Run tests
         run: cargo test --verbose
-      - name: Debug - Run tests
-        run: cargo test -p tests
       - name: Release - Build
         run: cargo build --release --verbose
-      - name: Release - Run unit tests
-        run: cargo test --release --verbose
       - name: Release - Run tests
-        run: cargo test --release -p tests
+        run: cargo test --release --verbose
       - name: Bench - Run benchmarks
         run: cargo bench

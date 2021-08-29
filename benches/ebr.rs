@@ -19,5 +19,5 @@ fn barrier_superposed(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, barrier_single, barrier_superposed);
-criterion_main!(benches);
+criterion_group!(ebr, barrier_single, barrier_superposed);
+criterion_main!(ebr);
