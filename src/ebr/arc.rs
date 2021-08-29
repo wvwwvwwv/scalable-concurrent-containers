@@ -1,16 +1,13 @@
-use super::link::Link;
-use super::{Ptr, Reader};
+use super::underlying::Underlying;
+use super::{Barrier, Ptr};
 
-use std::mem::ManuallyDrop;
 use std::ops::Deref;
 use std::ptr::NonNull;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::Relaxed;
 
 /// [`Arc`] is a reference-counted handle to an instance.
 #[derive(Debug)]
 pub struct Arc<T: 'static> {
-    pub(super) instance: NonNull<Underlying<T>>,
+    instance_ptr: NonNull<Underlying<T>>,
 }
 
 impl<T: 'static> Arc<T> {
@@ -26,24 +23,24 @@ impl<T: 'static> Arc<T> {
     pub fn new(t: T) -> Arc<T> {
         let boxed = Box::new(Underlying::new(t));
         Arc {
-            instance: unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) },
+            instance_ptr: unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) },
         }
     }
 
-    /// Generates a pointer out of the [`Arc`].
+    /// Generates a [`Ptr`] out of the [`Arc`].
     ///
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Arc, Reader};
+    /// use scc::ebr::{Arc, Barrier};
     ///
     /// let arc: Arc<usize> = Arc::new(37);
-    /// let reader = Reader::new();
-    /// let ptr = arc.ptr(&reader);
+    /// let barrier = Barrier::new();
+    /// let ptr = arc.ptr(&barrier);
     /// assert_eq!(*ptr.as_ref().unwrap(), 37);
     /// ```
-    pub fn ptr<'r>(&self, _reader: &'r Reader) -> Ptr<'r, T> {
-        Ptr::from(self.instance.as_ptr())
+    pub fn ptr<'r>(&self, _barrier: &'r Barrier) -> Ptr<'r, T> {
+        Ptr::from(self.instance_ptr.as_ptr())
     }
 
     /// Returns a mutable reference to the underlying instance if the instance is exclusively
@@ -59,25 +56,40 @@ impl<T: 'static> Arc<T> {
     /// assert_eq!(*arc, 39);
     /// ```
     pub fn get_mut(&mut self) -> Option<&mut T> {
-        if unsafe { self.instance.as_ref().ref_cnt() } == 0 {
-            Some(unsafe { &mut self.instance.as_mut().t })
+        unsafe { self.instance_ptr.as_mut().get_mut() }
+    }
+
+    /// Creates a new [`Arc`] from the given pointer.
+    pub(super) fn from(ptr: NonNull<Underlying<T>>) -> Arc<T> {
+        Arc { instance_ptr: ptr }
+    }
+
+    /// Returns its underlying pointer.
+    pub(super) fn raw_ptr(&self) -> *mut Underlying<T> {
+        self.instance_ptr.as_ptr()
+    }
+
+    /// Drops the reference, and returns the underlying pointer if the last reference was
+    /// dropped.
+    pub(super) fn drop_ref(&self) -> Option<*mut Underlying<T>> {
+        if self.underlying().drop_ref() {
+            Some(self.instance_ptr.as_ptr())
         } else {
             None
         }
     }
 
-    pub(super) fn from(non_null_ptr: NonNull<Underlying<T>>) -> Arc<T> {
-        Arc {
-            instance: non_null_ptr,
-        }
+    /// Returns a reference to the underlying instance.
+    fn underlying(&self) -> &Underlying<T> {
+        unsafe { self.instance_ptr.as_ref() }
     }
 }
 
 impl<T: 'static> Clone for Arc<T> {
     fn clone(&self) -> Self {
-        unsafe { self.instance.as_ref().add_ref() };
+        self.underlying().add_ref();
         Self {
-            instance: self.instance.clone(),
+            instance_ptr: self.instance_ptr.clone(),
         }
     }
 }
@@ -86,98 +98,25 @@ impl<T: 'static> Deref for Arc<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        unsafe { &self.instance.as_ref().t }
+        self.underlying().deref()
     }
 }
 
 impl<T: 'static> Drop for Arc<T> {
     fn drop(&mut self) {
-        if unsafe { self.instance.as_ref().drop_ref() } {
-            let reader = Reader::new();
-            reader.reclaim_underlying(self.instance.as_ptr());
+        if self.underlying().drop_ref() {
+            let barrier = Barrier::new();
+            barrier.reclaim_underlying(self.instance_ptr.as_ptr());
         }
-    }
-}
-
-pub(super) union LinkOrRefCnt {
-    next: *const dyn Link,
-    refcnt: ManuallyDrop<(AtomicUsize, usize)>,
-}
-
-impl Default for LinkOrRefCnt {
-    fn default() -> Self {
-        LinkOrRefCnt {
-            refcnt: ManuallyDrop::new((AtomicUsize::new(0), 0)),
-        }
-    }
-}
-
-/// [`Underlying`] stores the instance and a link to the next [`Underlying`].
-pub(super) struct Underlying<T> {
-    next_or_refcnt: LinkOrRefCnt,
-    pub(super) t: T,
-}
-
-impl<T> Underlying<T> {
-    // Creates a new underlying instance.
-    pub(super) fn new(t: T) -> Underlying<T> {
-        Underlying {
-            next_or_refcnt: LinkOrRefCnt::default(),
-            t,
-        }
-    }
-
-    /// Returns the count of strong references.
-    fn ref_cnt(&self) -> usize {
-        unsafe { self.next_or_refcnt.refcnt.0.load(Relaxed) }
-    }
-
-    /// Adds a strong reference to the underlying instance.
-    pub(super) fn add_ref(&self) {
-        unsafe { self.next_or_refcnt.refcnt.0.fetch_add(1, Relaxed) };
-    }
-
-    /// Drops a strong reference to the underlying instance.
-    pub(super) fn drop_ref(&self) -> bool {
-        // It does not have to be a load-acquire as everything's synchronized via the global
-        // epoch. In addition to that, it also does not have to be read-modify-write as a
-        // reference count increment is guaranteed to be observed by the one that decrements
-        // the last reference.
-        let mut current = unsafe { self.next_or_refcnt.refcnt.0.load(Relaxed) };
-        while current > 0 {
-            if let Err(actual) = unsafe {
-                self.next_or_refcnt.refcnt.0.compare_exchange(
-                    current,
-                    current - 1,
-                    Relaxed,
-                    Relaxed,
-                )
-            } {
-                current = actual;
-            } else {
-                break;
-            }
-        }
-        current == 0
-    }
-}
-
-impl<T> Link for Underlying<T> {
-    fn set(&mut self, next_ptr: *const dyn Link) {
-        self.next_or_refcnt.next = next_ptr;
-    }
-
-    fn dealloc(&mut self) -> *mut dyn Link {
-        let next = unsafe { self.next_or_refcnt.next as *mut dyn Link };
-        unsafe { Box::from_raw(self as *mut Underlying<T>) };
-        next
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::sync::atomic::AtomicBool;
+
+    use std::sync::atomic::Ordering::Relaxed;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
 
     #[test]
     fn arc() {
@@ -217,7 +156,7 @@ mod test {
 
         drop(arc_cloned_again);
         while !DESTROYED.load(Relaxed) {
-            drop(Reader::new());
+            drop(Barrier::new());
         }
     }
 }

@@ -1,5 +1,5 @@
-use super::link::Link;
-use super::Reader;
+use super::underlying::Link;
+use super::Barrier;
 
 use std::cell::RefCell;
 use std::ptr;
@@ -53,7 +53,7 @@ impl Reclaimer {
         ptr
     }
 
-    pub(super) fn start_reader(&mut self) {
+    pub(super) fn new_barrier(&mut self) {
         self.num_readers += 1;
         if self.num_readers == 1 {
             let announcement = self.announcement.load(Relaxed) & (!Self::INACTIVE);
@@ -65,7 +65,7 @@ impl Reclaimer {
         }
     }
 
-    pub(super) fn end_reader(&mut self) {
+    pub(super) fn end_barrier(&mut self) {
         self.num_readers -= 1;
         if self.num_readers == 0 {
             let announcement = self.announcement.load(Relaxed);
@@ -98,15 +98,15 @@ impl Reclaimer {
         }
     }
 
-    pub(super) fn reclaim(&mut self, _reader: &Reader, instance_ptr: *mut dyn Link) {
+    pub(super) fn reclaim(&mut self, _barrier: &Barrier, instance_ptr: *mut dyn Link) {
         debug_assert_eq!(self.announcement.load(Relaxed) & Self::INACTIVE, 0);
 
-        if let Some(mut non_null_ptr) = NonNull::new(instance_ptr) {
+        if let Some(mut ptr) = NonNull::new(instance_ptr) {
             unsafe {
                 if let Some(head) = self.current_instance_link.as_ref() {
-                    non_null_ptr.as_mut().set(head.as_ptr());
+                    ptr.as_mut().set(head.as_ptr());
                 }
-                self.current_instance_link.replace(non_null_ptr);
+                self.current_instance_link.replace(ptr);
             }
         }
     }
@@ -120,9 +120,9 @@ impl Reclaimer {
         self.next_instance_link = self.previous_instance_link.take();
         self.previous_instance_link = self.current_instance_link.take();
         while let Some(mut instance_ptr) = garbage_link.take() {
-            let next = unsafe { instance_ptr.as_mut().dealloc() };
-            if let Some(non_null_ptr) = NonNull::new(next) {
-                garbage_link.replace(non_null_ptr);
+            let next = unsafe { instance_ptr.as_mut().free() };
+            if let Some(ptr) = NonNull::new(next) {
+                garbage_link.replace(ptr);
             }
         }
     }
@@ -142,7 +142,7 @@ impl Link for Reclaimer {
     fn set(&mut self, next_ptr: *const dyn Link) {
         self.link = next_ptr;
     }
-    fn dealloc(&mut self) -> *mut dyn Link {
+    fn free(&mut self) -> *mut dyn Link {
         let next = self.link as *mut dyn Link;
         unsafe { Box::from_raw(self as *mut Reclaimer) };
         next
