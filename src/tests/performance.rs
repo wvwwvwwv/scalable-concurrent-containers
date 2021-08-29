@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod benchmark {
-    use scc::{HashIndex, HashMap, TreeIndex};
+    use crate::{HashIndex, HashMap, TreeIndex};
+
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hash};
     use std::sync::atomic::AtomicUsize;
@@ -263,7 +264,7 @@ mod benchmark {
         let num_threads_vector = vec![1, 4, 16];
         for num_threads in num_threads_vector {
             let hashmap: Arc<HashMap<usize, usize, RandomState>> = Arc::new(Default::default());
-            let workload_size = 262144;
+            let workload_size = 65536;
 
             // 1. insert-local
             let insert = Workload {
@@ -408,7 +409,7 @@ mod benchmark {
         for num_threads in num_threads_vector {
             let hashindex: Arc<HashIndex<String, String, RandomState>> =
                 Arc::new(Default::default());
-            let workload_size = 262144;
+            let workload_size = 65536;
 
             // 1. insert-local
             let insert = Workload {
@@ -552,7 +553,7 @@ mod benchmark {
         let num_threads_vector = vec![1, 4, 16];
         for num_threads in num_threads_vector {
             let treeindex: Arc<TreeIndex<String, String>> = Arc::new(Default::default());
-            let workload_size = 262144;
+            let workload_size = 65536;
 
             // 1. insert-local
             let insert = Workload {

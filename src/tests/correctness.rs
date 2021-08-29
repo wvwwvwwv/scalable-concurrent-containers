@@ -1,9 +1,10 @@
 #[cfg(test)]
 mod hashmap_test {
+    use crate::HashMap;
+
     use proptest::prelude::*;
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
-    use scc::HashMap;
     use std::collections::BTreeSet;
     use std::hash::{Hash, Hasher};
     use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -276,9 +277,10 @@ mod hashmap_test {
 
 #[cfg(test)]
 mod hashindex_test {
+    use crate::HashIndex;
+
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
-    use scc::HashIndex;
     use std::collections::BTreeSet;
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering::{Acquire, Release};
@@ -383,9 +385,10 @@ mod hashindex_test {
 
 #[cfg(test)]
 mod treeindex_test {
+    use crate::TreeIndex;
+
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
-    use scc::TreeIndex;
     use std::collections::BTreeSet;
     use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
     use std::sync::atomic::{AtomicBool, AtomicUsize};

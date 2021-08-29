@@ -77,7 +77,7 @@ impl<T: 'static> AtomicArc<T> {
         Ptr::from(self.instance_ptr.load(order))
     }
 
-    /// Performs CAS on the [`AtomicArc`].
+    /// Stores the given value into the [`AtomicArc`], and returns the original value.
     ///
     /// # Examples
     ///
@@ -146,13 +146,24 @@ impl<T: 'static> AtomicArc<T> {
             Err(actual) => Err((new, Ptr::from(actual))),
         }
     }
-}
 
-impl<T: 'static> Clone for AtomicArc<T> {
-    fn clone(&self) -> Self {
-        let _barrier = Barrier::new();
+    /// Clones itself.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::{Arc, AtomicArc, Barrier};
+    /// use std::sync::atomic::Ordering::Relaxed;
+    ///
+    /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(59);
+    /// let barrier = Barrier::new();
+    /// let atomic_arc_cloned = atomic_arc.clone(Relaxed, &barrier);
+    /// let ptr = atomic_arc_cloned.load(Relaxed, &barrier);
+    /// assert_eq!(*ptr.as_ref().unwrap(), 59);
+    /// ```
+    pub fn clone<'r>(&self, order: Ordering, _barrier: &'r Barrier) -> AtomicArc<T> {
         unsafe {
-            let ptr = self.instance_ptr.load(Relaxed);
+            let ptr = self.instance_ptr.load(order);
             if let Some(underlying_ref) = ptr.as_ref() {
                 if underlying_ref.try_add_ref() {
                     return Self {
@@ -191,9 +202,8 @@ mod test {
         let atomic_arc = AtomicArc::new(A(AtomicU8::new(10), 10, &DESTROYED));
         assert!(!DESTROYED.load(Relaxed));
 
-        let atomic_arc_cloned = atomic_arc.clone();
-
         let barrier = Barrier::new();
+        let atomic_arc_cloned = atomic_arc.clone(Relaxed, &barrier);
         assert_eq!(
             atomic_arc_cloned
                 .load(Relaxed, &barrier)

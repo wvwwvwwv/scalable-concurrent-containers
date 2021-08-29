@@ -18,7 +18,6 @@ pub use barrier::Barrier;
 mod ptr;
 pub use ptr::Ptr;
 
-mod reclaimer;
-pub use reclaimer::Reclaimer;
-
+mod collector;
+mod tag;
 mod underlying;

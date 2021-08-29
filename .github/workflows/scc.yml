@@ -27,3 +27,5 @@ jobs:
         run: cargo test --release --verbose
       - name: Release - Run tests
         run: cargo test --release -p tests
+      - name: Bench - Run benchmarks
+        run: cargo bench
