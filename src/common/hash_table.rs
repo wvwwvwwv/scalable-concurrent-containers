@@ -1,6 +1,8 @@
 use super::cell::Cell;
 use super::cell_array::CellArray;
-use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
+
+use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
+
 use std::borrow::Borrow;
 use std::convert::TryInto;
 use std::hash::{BuildHasher, Hash, Hasher};
@@ -38,13 +40,13 @@ where
     fn hasher(&self) -> &H;
 
     /// Returns a reference to the `CellArray` pointer.
-    fn cell_array_ptr(&self) -> &Atomic<CellArray<K, V, CELL_SIZE, LOCK_FREE>>;
+    fn cell_array_ptr(&self) -> &AtomicArc<CellArray<K, V, CELL_SIZE, LOCK_FREE>>;
 
     /// Returns a reference to the `CellArray` instance.
     fn cell_array_ref(
-        cell_array_shared: Shared<CellArray<K, V, CELL_SIZE, LOCK_FREE>>,
+        cell_array_ptr: Ptr<CellArray<K, V, CELL_SIZE, LOCK_FREE>>,
     ) -> &CellArray<K, V, CELL_SIZE, LOCK_FREE> {
-        unsafe { cell_array_shared.deref() }
+        cell_array_ptr.as_ref().unwrap()
     }
 
     /// Returns the minimum allowed capacity.
@@ -93,11 +95,11 @@ where
     }
 
     /// Resizes the array.
-    fn resize(&self, guard: &Guard) {
+    fn resize(&self, barrier: &Barrier) {
         // Initial rough size estimation using a small number of cells.
-        let current_array = self.cell_array_ptr().load(Acquire, guard);
+        let current_array = self.cell_array_ptr().load(Acquire, barrier);
         let current_array_ref = Self::cell_array_ref(current_array);
-        let old_array = current_array_ref.old_array(&guard);
+        let old_array = current_array_ref.old_array(&barrier);
         if !old_array.is_null() {
             // With a deprecated array present, it cannot be resized.
             return;
@@ -108,7 +110,7 @@ where
             let mut mutex_guard = scopeguard::guard(memory_ordering, |memory_ordering| {
                 self.resizing_flag_ref().store(false, memory_ordering);
             });
-            if current_array != self.cell_array_ptr().load(Acquire, guard) {
+            if current_array != self.cell_array_ptr().load(Acquire, barrier) {
                 return;
             }
 
@@ -151,11 +153,14 @@ where
 
             // Array::new may not be able to allocate the requested number of cells.
             if new_capacity != capacity {
-                self.cell_array_ptr().store(
-                    Owned::new(CellArray::<K, V, CELL_SIZE, LOCK_FREE>::new(
-                        new_capacity,
-                        Atomic::from(current_array),
-                    )),
+                self.cell_array_ptr().swap(
+                    (
+                        Some(Arc::new(CellArray::<K, V, CELL_SIZE, LOCK_FREE>::new(
+                            new_capacity,
+                            self.cell_array_ptr().clone(Relaxed, barrier),
+                        ))),
+                        Tag::None,
+                    ),
                     Release,
                 );
                 // The release fence assures that future calls to the function see the latest state.

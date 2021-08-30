@@ -1,8 +1,8 @@
 use crate::common::cell::{Cell, CellIterator, CellLocker, CellReader};
 use crate::common::cell_array::CellArray;
 use crate::common::hash_table::HashTable;
+use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
 
-use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash};
@@ -15,33 +15,37 @@ const DEFAULT_CAPACITY: usize = 64;
 
 /// A scalable concurrent hash map data structure.
 ///
-/// scc::HashMap is a concurrent hash map data structure that is targeted at a highly concurrent workload.
-/// The use of epoch-based reclamation technique enables the data structure to implement non-blocking resizing and fine-granular locking.
-/// It has a single array of entry metadata, and each entry, called a cell, manages a fixed size entry array.
-/// Each cell has a customized 8-byte read-write mutex to protect the data structure, and a linked list for hash collision resolution.
+/// [`HashMap`] is a concurrent hash map data structure that is targeted at a highly concurrent
+/// workload. The use of an epoch-based reclamation technique enables the data structure to
+/// implement non-blocking resizing and fine-granular locking. It has a single array of entry
+/// metadata, and each entry, called [`Cell`], manages a fixed size entry array.
+/// Each [`Cell`] has a customized 8-byte read-write mutex to protect the data structure, and a
+/// linked list for a hash collision resolution.
 ///
-/// ## The key features of scc::HashMap
+/// ## The key features of [`HashMap`]
 /// * Non-sharded: the data is managed by a single entry metadata array.
 /// * Automatic resizing: it automatically grows or shrinks.
 /// * Non-blocking resizing: resizing does not block other threads.
-/// * Incremental resizing: each access to the data structure is mandated to rehash a fixed number of key-value pairs.
-/// * Optimized resizing: key-value pairs managed by a single cell are guaranteed to be relocated to adjacent cells.
+/// * Incremental resizing: each access to the data structure is mandated to rehash a fixed
+///   number of key-value pairs.
+/// * Optimized resizing: key-value pairs managed by a single cell are guaranteed to be
+///   relocated to consecutive [`Cell`]s.
 /// * No busy waiting: the customized mutex never spins.
 ///
-/// ## The key statistics for scc::HashMap
+/// ## The key statistics for [`HashMap`]
 /// * The expected size of metadata for a single key-value pair: 2-byte.
 /// * The expected number of atomic operations required for an operation on a single key: 2.
 /// * The expected number of atomic variables accessed during a single key operation: 1.
-/// * The number of entries managed by a single metadata cell without a linked list: 32.
+/// * The number of entries managed by a single metadata [`Cell`] without a linked list: 32.
 /// * The number of entries a single linked list entry manages: 8.
 /// * The expected maximum linked list length when resize is triggered: log(capacity) / 8.
 pub struct HashMap<K, V, H = RandomState>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: 'static + Eq + Hash + Sync,
+    V: 'static + Sync,
     H: BuildHasher,
 {
-    array: Atomic<CellArray<K, V, CELL_SIZE, false>>,
+    array: AtomicArc<CellArray<K, V, CELL_SIZE, false>>,
     minimum_capacity: usize,
     additional_capacity: AtomicUsize,
     resizing_flag: AtomicBool,
@@ -50,18 +54,19 @@ where
 
 impl<K, V> Default for HashMap<K, V, RandomState>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: 'static + Eq + Hash + Sync,
+    V: 'static + Sync,
 {
-    /// Creates a HashMap instance with the default parameters.
+    /// Creates a [`HashMap`] with the default parameters.
     ///
-    /// The default hash builder is RandomState, and the default capacity is 64.
+    /// The default hash builder is [`RandomState`], and the default capacity is 64.
     ///
     /// # Panics
     ///
     /// Panics if memory allocation fails.
     ///
     /// # Examples
+    ///
     /// ```
     /// use scc::HashMap;
     ///
@@ -72,9 +77,9 @@ where
     /// ```
     fn default() -> Self {
         HashMap {
-            array: Atomic::new(CellArray::<K, V, CELL_SIZE, false>::new(
+            array: AtomicArc::new(CellArray::<K, V, CELL_SIZE, false>::new(
                 DEFAULT_CAPACITY,
-                Atomic::null(),
+                AtomicArc::null(),
             )),
             minimum_capacity: DEFAULT_CAPACITY,
             additional_capacity: AtomicUsize::new(0),
@@ -86,11 +91,11 @@ where
 
 impl<K, V, H> HashMap<K, V, H>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: 'static + Eq + Hash + Sync,
+    V: 'static + Sync,
     H: BuildHasher,
 {
-    /// Creates an empty HashMap instance with the given capacity and build hasher.
+    /// Creates an empty [`HashMap`] with the given capacity and [`BuildHasher`].
     ///
     /// The actual capacity is equal to or greater than the given capacity.
     ///
@@ -99,6 +104,7 @@ where
     /// Panics if memory allocation fails.
     ///
     /// # Examples
+    ///
     /// ```
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
@@ -114,13 +120,13 @@ where
     /// ```
     pub fn new(capacity: usize, build_hasher: H) -> HashMap<K, V, H> {
         let initial_capacity = capacity.max(DEFAULT_CAPACITY);
-        let array = Owned::new(CellArray::<K, V, CELL_SIZE, false>::new(
+        let array = Arc::new(CellArray::<K, V, CELL_SIZE, false>::new(
             initial_capacity,
-            Atomic::null(),
+            AtomicArc::null(),
         ));
         let current_capacity = array.num_cell_entries();
         HashMap {
-            array: Atomic::from(array),
+            array: AtomicArc::new(array),
             minimum_capacity: current_capacity,
             additional_capacity: AtomicUsize::new(0),
             resizing_flag: AtomicBool::new(false),
@@ -130,14 +136,15 @@ where
 
     /// Temporarily increases the minimum capacity of the HashMap.
     ///
-    /// The reserved space is not exclusively owned by the Ticket, there thus can be overtaken.
-    /// Unused space is immediately reclaimed when the Ticket is dropped.
+    /// The reserved space is not exclusively owned by the [`Ticket`], thus can be overtaken.
+    /// Unused space is immediately reclaimed when the [`Ticket`] is dropped.
     ///
     /// # Errors
     ///
-    /// Returns None if the given value is too large.
+    /// Returns [`None`] if a too large number is given.
     ///
     /// # Examples
+    ///
     /// ```
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
@@ -181,7 +188,7 @@ where
         }
     }
 
-    /// Inserts a key-value pair into the HashMap.
+    /// Inserts a key-value pair into the [`HashMap`].
     ///
     /// # Errors
     ///
@@ -357,7 +364,11 @@ where
     /// let result = hashmap.get(&1);
     /// assert_eq!(result.unwrap().get(), (&1, &mut 0));
     /// ```
-    pub fn get<'h, Q>(&'h self, key: &Q) -> Option<Accessor<'h, K, V, H>>
+    pub fn get<'h, 'b, Q>(
+        &'h self,
+        key: &Q,
+        barrier: &'b Barrier,
+    ) -> Option<Accessor<'h, 'b, K, V, H>>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
@@ -644,7 +655,7 @@ where
             cell_index: 0,
             cell_locker: None,
             cell_iterator: None,
-            guard: None,
+            barrier_ref: None,
         }
     }
 
@@ -739,7 +750,7 @@ where
                             cell_index,
                             cell_locker: Some(locker),
                             cell_iterator: iterator,
-                            guard: None,
+                            barrier_ref: None,
                         };
                     }
                     // Kills the Cell.
@@ -768,7 +779,7 @@ where
                         cell_index,
                         cell_locker: Some(locker),
                         cell_iterator: iterator,
-                        guard: None,
+                        barrier_ref: None,
                     };
                 }
                 return Accessor {
@@ -777,7 +788,7 @@ where
                     cell_index,
                     cell_locker: Some(locker),
                     cell_iterator: None,
-                    guard: None,
+                    barrier_ref: None,
                 };
             }
 
@@ -846,13 +857,12 @@ where
     fn drop(&mut self) {
         // The HashMap has become unreachable, therefore pinning is unnecessary.
         self.clear();
-        let guard = unsafe { crossbeam_epoch::unprotected() };
-        let current_array = self.array.load(Acquire, guard);
+        let barrier = Barrier::new();
+        let current_array = self.array.load(Acquire, &barrier);
         let current_array_ref = Self::cell_array_ref(current_array);
-        current_array_ref.drop_old_array(true, guard);
-        let array = self.array.swap(Shared::null(), Relaxed, guard);
-        if !array.is_null() {
-            drop(unsafe { array.into_owned() });
+        current_array_ref.drop_old_array(true, &barrier);
+        if let Some(current_array) = self.array.swap((None, Tag::None), Relaxed) {
+            barrier.reclaim(current_array);
         }
     }
 }
@@ -866,7 +876,7 @@ where
     fn hasher(&self) -> &H {
         &self.build_hasher
     }
-    fn cell_array_ptr(&self) -> &Atomic<CellArray<K, V, CELL_SIZE, false>> {
+    fn cell_array_ptr(&self) -> &AtomicArc<CellArray<K, V, CELL_SIZE, false>> {
         &self.array
     }
     fn minimum_capacity(&self) -> usize {
@@ -907,55 +917,63 @@ where
     }
 }
 
-/// Accessor owns a key-value pair in the HashMap, and it implements Iterator.
+/// Accessor owns a key-value pair in the HashMap, and it implements [`Iterator`].
 ///
 /// It is !Send, thus disallowing other threads to have references to it.
 /// It acquires an exclusive lock on the Cell managing the key.
 /// A thread having multiple Accessor instances poses a possibility of deadlock.
-pub struct Accessor<'h, K, V, H>
+pub struct Accessor<'h, 'b, K, V, H>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: 'static + Eq + Hash + Sync,
+    V: 'static + Sync,
     H: BuildHasher,
 {
     hash_map: &'h HashMap<K, V, H>,
     array_ptr: *const CellArray<K, V, CELL_SIZE, false>,
     cell_index: usize,
-    cell_locker: Option<CellLocker<'h, K, V, CELL_SIZE, false>>,
-    cell_iterator: Option<CellIterator<'h, K, V, CELL_SIZE, false>>,
-    guard: Option<&'h Guard>,
+    cell_locker: Option<CellLocker<'b, K, V, CELL_SIZE, false>>,
+    cell_iterator: Option<CellIterator<'b, K, V, CELL_SIZE, false>>,
+    barrier_ref: &'b Barrier,
 }
 
-impl<'h, K, V, H> Accessor<'h, K, V, H>
+impl<'h, 'b, K, V, H> Accessor<'h, 'b, K, V, H>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: 'static + Eq + Hash + Sync,
+    V: 'static + Sync,
     H: BuildHasher,
 {
-    /// Returns a reference to the key-value pair.
+    /// Gains access to the entry.
     ///
     /// # Examples
+    ///
     /// ```
+    /// use scc::ebr::Barrier;
     /// use scc::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
-    /// let result = hashmap.get(&1);
+    /// let barrier = Barrier::new();
+    ///
+    /// let result = hashmap.get(&1, &barrier);
     /// assert!(result.is_none());
     ///
-    /// let result = hashmap.insert(1, 0);
-    /// if let Ok(result) = result {
-    ///     assert_eq!(result.get(), (&1, &mut 0));
-    ///     (*result.get().1) = 2;
-    /// }
+    /// let result = hashmap.insert(1, 0, &barrier);
+    /// result.unwrap().access(|k, v| {
+    ///     assert_eq!((k, v), (&1, &mut 0));
+    ///     *v = 2;
+    /// });
     ///
-    /// let result = hashmap.get(&1);
-    /// assert_eq!(result.unwrap().get(), (&1, &mut 2));
+    /// let result = hashmap.get(&1, &barrier);
+    /// result.unwrap().access(|k, v| {
+    ///     assert_eq!((k, v), (&1, &mut 2));
+    ///     *v = 2;
+    /// });
     /// ```
-    pub fn get(&self) -> (&'h K, &'h mut V) {
+    pub fn access<R, F: FnOnce(&K, &mut V) -> R>(&mut self, f: F) -> R {
         let itr_ref = self.cell_iterator.as_ref().unwrap();
         let entry_ref = itr_ref.get().unwrap();
-        self.hash_map.entry(entry_ref as *const _)
+        let (key_ref, value_mut_ref) = self.hash_map.entry(entry_ref as *const _);
+        f(key_ref, value_mut_ref)
     }
 
     /// Erases the key-value pair owned by the Accessor.
@@ -984,18 +1002,18 @@ where
     }
 }
 
-impl<'h, K, V, H> Iterator for Accessor<'h, K, V, H>
+impl<'h, 'b, K, V, H> Iterator for Accessor<'h, 'b, K, V, H>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: 'static + Eq + Hash + Sync,
+    V: 'static + Sync,
     H: BuildHasher,
 {
-    type Item = (&'h K, &'h mut V);
+    type Item = (&'b K, &'b mut V);
     fn next(&mut self) -> Option<Self::Item> {
-        if self.guard.is_none() {
+        if self.barrier_ref.is_none() {
             // It always owns a CellLocker preventing the array from being dropped,
             // therefore a dummy Guard is sufficient.
-            self.guard
+            self.barrier_ref
                 .replace(unsafe { crossbeam_epoch::unprotected() });
 
             // A valid Guard is required to load Arrays.
@@ -1009,7 +1027,7 @@ where
                     for index in 0..old_array_ref.array_size() {
                         if let Some(locker) = CellLocker::lock(
                             old_array_ref.cell(index),
-                            self.guard.as_ref().unwrap(),
+                            self.barrier_ref.as_ref().unwrap(),
                         ) {
                             self.array_ptr = old_array.as_raw();
                             self.cell_index = index;
@@ -1024,7 +1042,7 @@ where
                 for index in 0..current_array_ref.array_size() {
                     if let Some(locker) = CellLocker::lock(
                         current_array_ref.cell(index),
-                        self.guard.as_ref().unwrap(),
+                        self.barrier_ref.as_ref().unwrap(),
                     ) {
                         self.array_ptr = current_array.as_raw();
                         self.cell_index = index;
@@ -1047,7 +1065,7 @@ where
                         self.cell_locker.as_ref().unwrap().cell_ref(),
                     )
                 },
-                self.guard.as_ref().unwrap(),
+                self.barrier_ref.as_ref().unwrap(),
             ));
         }
         loop {
@@ -1066,7 +1084,7 @@ where
                 let current_array = self
                     .hash_map
                     .array
-                    .load(Acquire, self.guard.as_ref().unwrap());
+                    .load(Acquire, self.barrier_ref.as_ref().unwrap());
                 if self.array_ptr == current_array.as_raw() {
                     // Finished scanning the entire array.
                     break;
@@ -1081,11 +1099,14 @@ where
             // Proceeds to the next Cell in the current array.
             for index in self.cell_index..array_ref.array_size() {
                 let cell_ref = array_ref.cell(index);
-                if let Some(locker) = CellLocker::lock(cell_ref, self.guard.as_ref().unwrap()) {
+                if let Some(locker) = CellLocker::lock(cell_ref, self.barrier_ref.as_ref().unwrap())
+                {
                     self.cell_index = index;
                     self.cell_locker.replace(locker);
-                    self.cell_iterator
-                        .replace(CellIterator::new(cell_ref, self.guard.as_ref().unwrap()));
+                    self.cell_iterator.replace(CellIterator::new(
+                        cell_ref,
+                        self.barrier_ref.as_ref().unwrap(),
+                    ));
                     break;
                 }
             }

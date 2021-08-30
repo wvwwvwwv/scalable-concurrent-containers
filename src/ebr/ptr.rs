@@ -6,12 +6,12 @@ use std::{ops::Deref, ptr, ptr::NonNull};
 
 /// [`Ptr`] points to an instance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Ptr<'r, T> {
+pub struct Ptr<'b, T> {
     instance_ptr: *const Underlying<T>,
-    _phantom: std::marker::PhantomData<&'r T>,
+    _phantom: std::marker::PhantomData<&'b T>,
 }
 
-impl<'r, T> Ptr<'r, T> {
+impl<'b, T> Ptr<'b, T> {
     /// Creates a null [`Ptr`].
     ///
     /// # Examples
@@ -21,7 +21,8 @@ impl<'r, T> Ptr<'r, T> {
     ///
     /// let ptr: Ptr<usize> = Ptr::null();
     /// ```
-    pub fn null() -> Ptr<'r, T> {
+    #[inline]
+    pub fn null() -> Ptr<'b, T> {
         Ptr {
             instance_ptr: ptr::null(),
             _phantom: std::marker::PhantomData,
@@ -41,6 +42,7 @@ impl<'r, T> Ptr<'r, T> {
     /// let ptr = atomic_arc.load(Relaxed, &barrier);
     /// assert_eq!(*ptr.as_ref().unwrap(), 21);
     /// ```
+    #[inline]
     pub fn as_ref(&self) -> Option<&T> {
         unsafe {
             Tag::unset_tag(self.instance_ptr)
@@ -59,6 +61,7 @@ impl<'r, T> Ptr<'r, T> {
     /// let ptr: Ptr<usize> = Ptr::null();
     /// assert_eq!(ptr.tag(), Tag::None);
     /// ```
+    #[inline]
     pub fn tag(&self) -> Tag {
         Tag::into_tag(self.instance_ptr)
     }
@@ -74,12 +77,13 @@ impl<'r, T> Ptr<'r, T> {
     /// ptr.set_tag(Tag::Both);
     /// assert_eq!(ptr.tag(), Tag::Both);
     /// ```
+    #[inline]
     pub fn set_tag(&mut self, tag: Tag) {
         self.instance_ptr = Tag::update_tag(self.instance_ptr, tag);
     }
 
     /// Creates a new [`Ptr`] from a raw pointer.
-    pub(super) fn from(ptr: *const Underlying<T>) -> Ptr<'r, T> {
+    pub(super) fn from(ptr: *const Underlying<T>) -> Ptr<'b, T> {
         Ptr {
             instance_ptr: ptr,
             _phantom: std::marker::PhantomData,
@@ -92,9 +96,10 @@ impl<'r, T> Ptr<'r, T> {
     }
 }
 
-impl<'r, T> TryInto<Arc<T>> for Ptr<'r, T> {
+impl<'b, T> TryInto<Arc<T>> for Ptr<'b, T> {
     type Error = ();
 
+    #[inline]
     fn try_into(self) -> Result<Arc<T>, Self::Error> {
         unsafe {
             if let Some(ptr) = NonNull::new(Tag::unset_tag(self.instance_ptr) as *mut Underlying<T>)

@@ -7,8 +7,8 @@ use std::sync::atomic::fence;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release, SeqCst};
 use std::sync::atomic::{AtomicPtr, AtomicU8};
 
-/// [`Collector`] is a garbage collector that collects thread-locally unreachable instances,
-/// and reclaims them when it is certain that no other threads can reach the instances.
+/// [`Collector`] is a garbage collector that reclaims thread-locally unreachable instances
+/// when they are globally unreachable.
 pub(super) struct Collector {
     announcement: u8,
     next_epoch_update: usize,
