@@ -513,6 +513,7 @@ where
     /// assert!(hashmap.insert(1, 0, &barrier).is_ok());
     /// assert_eq!(hashmap.clear(&barrier), 1);
     /// ```
+    #[inline]
     pub fn clear(&self, barrier: &Barrier) -> usize {
         self.retain(|_, _| false, barrier).1
     }
@@ -537,6 +538,7 @@ where
     /// assert!(hashmap.insert(1, 0, &barrier).is_ok());
     /// assert_eq!(hashmap.len(&barrier), 1);
     /// ```
+    #[inline]
     pub fn len(&self, barrier: &Barrier) -> usize {
         self.num_entries(barrier)
     }
@@ -553,47 +555,48 @@ where
     /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(1000000, RandomState::new());
     /// assert_eq!(hashmap.capacity(&Barrier::new()), 1048576);
     /// ```
+    #[inline]
     pub fn capacity(&self, barrier: &Barrier) -> usize {
         self.num_slots(barrier)
     }
 
     /// Returns an [`Accessor`].
     ///
-    /// It is guaranteed to go through all the key-value pairs pertaining in the HashMap at the moment,
-    /// however the same key-value pair can be visited more than once if the HashMap is being resized.
+    /// It is guaranteed to go through all the key-value pairs pertaining in the [`HashMap`] at
+    /// the moment, however the same key-value pair can be visited more than once if the
+    /// [`HashMap`] is being resized.
     ///
     /// # Examples
     ///
     /// ```
+    /// use scc::ebr::Barrier;
     /// use scc::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
-    /// let result = hashmap.insert(1, 0);
-    /// if let Ok(result) = result {
-    ///     assert_eq!(result.get(), (&1, &mut 0));
-    /// }
+    /// let barrier = Barrier::new();
     ///
-    /// let mut iter = hashmap.iter();
-    /// assert_eq!(iter.next(), Some((&1, &mut 0)));
-    /// assert_eq!(iter.next(), None);
+    /// assert!(hashmap.insert(1, 0, &barrier).is_ok());
     ///
-    /// for iter in hashmap.iter() {
-    ///     assert_eq!(iter, (&1, &mut 0));
-    /// }
+    /// let mut iter = hashmap.iter(&barrier);
+    /// assert!(iter.next().is_some());
+    /// iter.access(|k, v| {
+    ///     assert_eq!((k, v), (&1, &mut 0));
+    /// });
+    /// assert!(iter.next().is_none());
     /// ```
-    pub fn iter(&self) -> Accessor<K, V, H> {
+    pub fn iter(&self, barrier: &Barrier) -> Accessor<K, V, H> {
         Accessor {
             hash_map: &self,
             array_ptr: std::ptr::null(),
             cell_index: 0,
             cell_locker: None,
             cell_iterator: None,
-            barrier_ref: None,
+            barrier_ref: barrier,
         }
     }
 
-    /// Locks a Cell for inserting a new key-value pair.
+    /// Locks a [`Cell`] for inserting a new key-value pair.
     fn lock(&self, key: K, barrier: &Barrier) -> (Accessor<K, V, H>, K, u8) {
         let (hash, partial_hash) = self.hash(&key);
         let mut resize_triggered = false;
@@ -717,7 +720,7 @@ where
     }
 
     /// Erases a key-value pair owned by the Accessor.
-    fn erase<'h>(&'h self, mut accessor: Accessor<'h, K, V, H>) -> V {
+    fn erase<'h, 'b>(&'h self, mut accessor: Accessor<'h, 'b, K, V, H>) -> V {
         let mut iterator = accessor.cell_iterator.take().unwrap();
         let value = accessor
             .cell_locker
@@ -812,8 +815,8 @@ where
 /// The minimum capacity is lowered when the Ticket is dropped, thereby allowing unused space to be reclaimed.
 pub struct Ticket<'h, K, V, H>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: 'static + Eq + Hash + Sync,
+    V: 'static + Sync,
     H: BuildHasher,
 {
     hash_map: &'h HashMap<K, V, H>,
@@ -822,8 +825,8 @@ where
 
 impl<'h, K, V, H> Drop for Ticket<'h, K, V, H>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: 'static + Eq + Hash + Sync,
+    V: 'static + Sync,
     H: BuildHasher,
 {
     fn drop(&mut self) {
@@ -831,8 +834,7 @@ where
             .hash_map
             .additional_capacity
             .fetch_sub(self.increment, Relaxed);
-        let guard = crossbeam_epoch::pin();
-        self.hash_map.resize(&guard);
+        self.hash_map.resize(&Barrier::new());
         debug_assert!(result >= self.increment);
     }
 }
