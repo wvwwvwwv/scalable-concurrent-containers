@@ -1,19 +1,18 @@
-use super::tag;
+use super::tag::{self, Tag};
 use super::underlying::Link;
 
-use std::cell::RefCell;
 use std::ptr;
 use std::ptr::NonNull;
+use std::sync::atomic::fence;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release, SeqCst};
-use std::sync::atomic::{AtomicPtr, AtomicU64};
+use std::sync::atomic::{AtomicPtr, AtomicU8};
 
 /// [`Collector`] is a garbage collector that collects thread-locally unreachable instances,
 /// and reclaims them when it is certain that no other threads can reach the instances.
 pub(super) struct Collector {
-    num_readers: usize,
+    announcement: u8,
     next_epoch_update: usize,
-    announcement: AtomicU64,
-    epoch_ref: &'static AtomicU64,
+    num_readers: usize,
     num_instances: usize,
     previous_instance_link: Option<NonNull<dyn Link>>,
     current_instance_link: Option<NonNull<dyn Link>>,
@@ -23,37 +22,40 @@ pub(super) struct Collector {
 }
 
 impl Collector {
-    /// The value represents an inactive state of the collector.
-    const INACTIVE: u64 = 1_u64 << 63;
-
-    /// Epoch update cadence.
+    /// The cadence of an epoch update.
     const CADENCE: usize = 256;
 
-    /// Invalid [`Collector`].
-    const INVALID: u64 = u64::MAX;
+    /// Bits representing an epoch.
+    const EPOCH_BITS: u8 = (1_u8 << 2) - 1;
+
+    /// A bit field representing a thread state where the thread does not have a
+    /// [`Barrier`](super::Barrier).
+    const INACTIVE: u8 = 1_u8 << 2;
+
+    /// A bit field representing a thread state where the thread has been terminated.
+    const INVALID: u8 = 1_u8 << 3;
 
     /// Allocates a new [`Collector`].
     fn alloc() -> *mut Collector {
-        let nullptr: *const Collector = ptr::null();
+        let null_ptr: *const Collector = ptr::null();
         let boxed = Box::new(Collector {
-            num_readers: 0,
+            announcement: Self::INACTIVE,
             next_epoch_update: Self::CADENCE,
-            announcement: AtomicU64::new(Self::INACTIVE),
-            epoch_ref: &EPOCH,
+            num_readers: 0,
             num_instances: 0,
             previous_instance_link: None,
             current_instance_link: None,
             next_instance_link: None,
             next_collector: ptr::null_mut(),
-            link: nullptr,
+            link: null_ptr,
         });
         let ptr = Box::into_raw(boxed);
         let mut current = ANCHOR.load(Relaxed);
         loop {
-            unsafe { (*ptr).next_collector = tag::unset_tags(current) as *mut Collector };
-            let new = if tag::tags(current).0 {
+            unsafe { (*ptr).next_collector = tag::unset_tag(current) as *mut Collector };
+            let new = if let Tag::First = tag::into_tag(current) {
                 // It keeps the tag intact.
-                tag::update_tags(ptr, true, false) as *mut Collector
+                tag::update_tag(ptr, Tag::First) as *mut Collector
             } else {
                 ptr
             };
@@ -67,38 +69,48 @@ impl Collector {
     }
 
     /// Acknowledges a new [`Barrier`] being instantiated.
+    #[inline]
     pub(super) fn new_barrier(&mut self) {
         self.num_readers += 1;
         if self.num_readers == 1 {
-            let announcement = self.announcement.load(Relaxed) & (!Self::INACTIVE);
-            self.announcement.store(announcement, SeqCst);
-            let new_epoch = self.epoch_ref.load(SeqCst);
-            if announcement != new_epoch {
-                self.epoch_updated(new_epoch);
+            let known_epoch = self.announcement & Self::EPOCH_BITS;
+            let new_epoch = EPOCH.load(Relaxed);
+            self.announcement = new_epoch;
+
+            // What will happen after the fence strictly happens after the fence.
+            fence(SeqCst);
+
+            if known_epoch != new_epoch {
+                self.epoch_updated();
             }
         }
     }
 
     /// Acknowledges an existing [`Barrier`] being dropped.
+    #[inline]
     pub(super) fn end_barrier(&mut self) {
+        debug_assert_eq!(self.announcement & Self::INACTIVE, 0);
+
         if self.num_readers == 1 {
             if self.next_epoch_update == 0 {
                 self.next_epoch_update = Self::CADENCE;
-                if self.num_instances != 0 && !tag::tags(ANCHOR.load(Relaxed)).0 {
+                if self.num_instances != 0 && tag::into_tag(ANCHOR.load(Relaxed)) != Tag::First {
                     self.try_scan();
                 }
             } else {
                 self.next_epoch_update -= 1;
             }
-            self.announcement
-                .store(self.announcement.load(Relaxed) | Self::INACTIVE, SeqCst);
+
+            // What has happened cannot happen after the thread setting itself inactive.
+            fence(Release);
+            self.announcement |= Self::INACTIVE;
         }
         self.num_readers -= 1;
     }
 
     /// Reclaims garbage instances.
     pub(super) fn reclaim(&mut self, instance_ptr: *mut dyn Link) {
-        debug_assert_eq!(self.announcement.load(Relaxed) & Self::INACTIVE, 0);
+        debug_assert_eq!(self.announcement & Self::INACTIVE, 0);
 
         if let Some(mut ptr) = NonNull::new(instance_ptr) {
             unsafe {
@@ -113,28 +125,29 @@ impl Collector {
 
     /// Tries to scan the [`Collector`] instances to update the global epoch.
     fn try_scan(&mut self) {
+        debug_assert_eq!(self.announcement & Self::INACTIVE, 0);
+
         // Only one thread that acquires the anchor lock is allowed to scan the thread-local
         // collectors.
         if let Ok(mut collector_ptr) = ANCHOR.fetch_update(Acquire, Acquire, |p| {
-            if tag::tags(p).0 {
+            if tag::into_tag(p) == Tag::First {
                 None
             } else {
-                Some(tag::update_tags(p, true, false) as *mut Collector)
+                Some(tag::update_tag(p, Tag::First) as *mut Collector)
             }
         }) {
-            let announcement = self.announcement.load(Relaxed);
+            let known_epoch = self.announcement;
             let mut update_global_epoch = true;
             let mut prev_collector_ptr: *mut Collector = ptr::null_mut();
             while let Some(other_collector_ref) = unsafe { collector_ptr.as_ref() } {
                 if !ptr::eq(self, other_collector_ref) {
-                    let other_announcement = other_collector_ref.announcement.load(SeqCst);
-                    if other_announcement & Self::INACTIVE == 0
-                        && other_announcement != announcement
+                    if (other_collector_ref.announcement & Self::INACTIVE) != 0
+                        && other_collector_ref.announcement != known_epoch
                     {
                         // Not ready for an epoch update.
                         update_global_epoch = false;
                         break;
-                    } else if other_announcement == Self::INVALID {
+                    } else if (other_collector_ref.announcement & Self::INVALID) != 0 {
                         // The collector is obsolete.
                         let reclaimable = if let Some(prev_collector_ref) =
                             unsafe { prev_collector_ptr.as_mut() }
@@ -145,12 +158,11 @@ impl Collector {
                         } else {
                             ANCHOR
                                 .fetch_update(Release, Relaxed, |p| {
-                                    debug_assert!(tag::tags(p).0);
-                                    if ptr::eq(tag::unset_tags(p), collector_ptr) {
-                                        Some(tag::update_tags(
+                                    debug_assert!(tag::into_tag(p) == Tag::First);
+                                    if ptr::eq(tag::unset_tag(p), collector_ptr) {
+                                        Some(tag::update_tag(
                                             other_collector_ref.next_collector,
-                                            true,
-                                            false,
+                                            Tag::First,
                                         )
                                             as *mut Collector)
                                     } else {
@@ -171,15 +183,23 @@ impl Collector {
                 collector_ptr = other_collector_ref.next_collector;
             }
             if update_global_epoch {
-                self.epoch_ref.store(announcement + 1, SeqCst);
-                self.epoch_updated(announcement + 1);
+                // It is a new era; a fence is required.
+                fence(SeqCst);
+                let next_epoch = match known_epoch {
+                    0 => 1,
+                    1 => 2,
+                    _ => 0,
+                };
+                EPOCH.store(next_epoch, Relaxed);
+                self.announcement = next_epoch;
+                self.epoch_updated();
             }
 
             // Unlocks the anchor.
             while ANCHOR
                 .fetch_update(Release, Relaxed, |p| {
-                    debug_assert!(tag::tags(p).0);
-                    Some(tag::unset_tags(p) as *mut Collector)
+                    debug_assert!(tag::into_tag(p) == Tag::First);
+                    Some(tag::unset_tag(p) as *mut Collector)
                 })
                 .is_err()
             {}
@@ -187,8 +207,9 @@ impl Collector {
     }
 
     /// Acknowledges a new global epoch.
-    fn epoch_updated(&mut self, new_epoch: u64) {
-        self.announcement.store(new_epoch, Relaxed);
+    fn epoch_updated(&mut self) {
+        debug_assert_eq!(self.announcement & Self::INACTIVE, 0);
+
         let mut num_reclaimed = 0;
         let mut garbage_link = self.next_instance_link.take();
         self.next_instance_link = self.previous_instance_link.take();
@@ -205,15 +226,15 @@ impl Collector {
 
     /// Returns the [`Collector`] attached to the current thread.
     pub(super) fn current() -> *mut Collector {
-        TLS.with(|tls| tls.borrow_mut().collector_ptr)
+        TLS.with(|tls| tls.collector_ptr)
     }
 }
 
 impl Drop for Collector {
     fn drop(&mut self) {
-        self.epoch_updated(0);
-        self.epoch_updated(1);
-        self.epoch_updated(2);
+        self.epoch_updated();
+        self.epoch_updated();
+        self.epoch_updated();
     }
 }
 
@@ -229,7 +250,10 @@ impl Link for Collector {
 }
 
 /// The global epoch.
-static EPOCH: AtomicU64 = AtomicU64::new(0);
+///
+/// The global epoch can have one of 0, 1, or 2, and a difference in the local announcement of
+/// a thread and the global is considered to be an epoch change to the thread.
+static EPOCH: AtomicU8 = AtomicU8::new(0);
 
 /// The global anchor for thread-local instances of [`Collector`].
 static ANCHOR: AtomicPtr<Collector> = AtomicPtr::new(std::ptr::null_mut());
@@ -242,11 +266,11 @@ struct ThreadLocal {
 impl Drop for ThreadLocal {
     fn drop(&mut self) {
         if let Some(collector_ref) = unsafe { self.collector_ptr.as_mut() } {
-            collector_ref.announcement.store(Collector::INVALID, SeqCst);
+            collector_ref.announcement |= Collector::INVALID;
         }
     }
 }
 
 thread_local! {
-    static TLS: RefCell<ThreadLocal> = RefCell::new(ThreadLocal { collector_ptr: Collector::alloc() });
+    static TLS: ThreadLocal = ThreadLocal { collector_ptr: Collector::alloc() };
 }

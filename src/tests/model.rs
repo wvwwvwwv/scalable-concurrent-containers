@@ -1,33 +1,31 @@
 #[cfg(test)]
 mod ebr_model {
     use loom::sync::atomic::fence;
-    use loom::sync::atomic::{AtomicBool, AtomicU64};
+    use loom::sync::atomic::{AtomicBool, AtomicU8};
 
     use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering::{Relaxed, SeqCst};
+    use std::sync::atomic::Ordering::{Relaxed, Release, SeqCst};
     use std::sync::Arc;
 
     struct ModelCollector {
-        announcement: AtomicU64,
+        announcement: AtomicU8,
         epoch_witnessed: AtomicUsize,
         collected: [AtomicUsize; 3],
     }
 
     impl ModelCollector {
-        fn new_barrier(&self, epoch: &AtomicU64, ptr: &ModelPointer) {
-            let announcement = self.announcement.load(Relaxed) - 1;
-            self.announcement.store(announcement, Relaxed);
-            fence(SeqCst);
+        fn new_barrier(&self, epoch: &AtomicU8, ptr: &ModelPointer) {
+            let known_epoch = self.announcement.load(Relaxed) - 1;
             let epoch = epoch.load(Relaxed);
+            self.announcement.store(epoch, Relaxed);
             fence(SeqCst);
-            if epoch != announcement {
-                self.epoch_updated(epoch, ptr);
+            if epoch != known_epoch {
+                self.epoch_updated(ptr);
             }
         }
 
-        fn epoch_updated(&self, epoch: u64, ptr: &ModelPointer) {
+        fn epoch_updated(&self, ptr: &ModelPointer) {
             self.epoch_witnessed.fetch_add(1, Relaxed);
-            self.announcement.store(epoch, Relaxed);
             if self.collected[self.epoch_witnessed.load(Relaxed) % 3].swap(0, Relaxed) > 0 {
                 assert!(ptr.unreachable.load(Relaxed));
                 assert!(!ptr.reclaimed.swap(true, Relaxed));
@@ -38,27 +36,29 @@ mod ebr_model {
             self.collected[self.epoch_witnessed.load(Relaxed) % 3].fetch_add(1, Relaxed);
         }
 
-        fn end_barrier(&self, epoch: &AtomicU64, ptr: &ModelPointer, other: &ModelCollector) {
-            let announcement = self.announcement.load(Relaxed);
-            fence(SeqCst);
-            let announcement_other = other.announcement.load(Relaxed);
-            if announcement_other % 2 == 1 || announcement_other == announcement {
+        fn end_barrier(&self, epoch: &AtomicU8, ptr: &ModelPointer, other: &ModelCollector) {
+            let known_epoch = self.announcement.load(Relaxed);
+            let other_epoch = other.announcement.load(Relaxed);
+            if other_epoch % 2 == 1 || other_epoch == known_epoch {
+                let new = match known_epoch {
+                    0 => 2,
+                    2 => 4,
+                    _ => 0,
+                };
+                epoch.store(new, Relaxed);
                 fence(SeqCst);
-                let epoch = epoch.fetch_add(1, Relaxed) + 1;
-                fence(SeqCst);
-                self.epoch_updated(epoch, ptr);
-                self.announcement.store(epoch + 1, Relaxed);
-            } else {
-                self.announcement.store(announcement + 1, Relaxed);
+                self.announcement.store(new, Relaxed);
+                self.epoch_updated(ptr);
             }
-            fence(SeqCst);
+            fence(Release);
+            self.announcement.store(known_epoch + 1, Relaxed);
         }
     }
 
     impl Default for ModelCollector {
         fn default() -> Self {
             ModelCollector {
-                announcement: AtomicU64::new(1),
+                announcement: AtomicU8::new(1),
                 epoch_witnessed: AtomicUsize::new(0),
                 collected: Default::default(),
             }
@@ -78,7 +78,7 @@ mod ebr_model {
         let mut model = loom::model::Builder::new();
         model.max_threads = 2;
         model.check(move || {
-            let epoch: Arc<AtomicU64> = Arc::default();
+            let epoch: Arc<AtomicU8> = Arc::default();
             let collectors: Arc<(ModelCollector, ModelCollector)> = Arc::default();
             let ptr: Arc<ModelPointer> = Arc::default();
 

@@ -22,6 +22,7 @@ impl Barrier {
     ///
     /// let barrier = Barrier::new();
     /// ```
+    #[inline]
     pub fn new() -> Barrier {
         let collector_ptr = Collector::current();
         unsafe { (*collector_ptr).new_barrier() };
