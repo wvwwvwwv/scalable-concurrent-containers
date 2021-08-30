@@ -232,6 +232,7 @@ impl Collector {
 
 impl Drop for Collector {
     fn drop(&mut self) {
+        self.announcement = 0;
         self.epoch_updated();
         self.epoch_updated();
         self.epoch_updated();
