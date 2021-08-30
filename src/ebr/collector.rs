@@ -1,4 +1,4 @@
-use super::tag::{self, Tag};
+use super::tag::Tag;
 use super::underlying::Link;
 
 use std::ptr;
@@ -52,10 +52,10 @@ impl Collector {
         let ptr = Box::into_raw(boxed);
         let mut current = ANCHOR.load(Relaxed);
         loop {
-            unsafe { (*ptr).next_collector = tag::unset_tag(current) as *mut Collector };
-            let new = if let Tag::First = tag::into_tag(current) {
+            unsafe { (*ptr).next_collector = Tag::unset_tag(current) as *mut Collector };
+            let new = if let Tag::First = Tag::into_tag(current) {
                 // It keeps the tag intact.
-                tag::update_tag(ptr, Tag::First) as *mut Collector
+                Tag::update_tag(ptr, Tag::First) as *mut Collector
             } else {
                 ptr
             };
@@ -94,7 +94,7 @@ impl Collector {
         if self.num_readers == 1 {
             if self.next_epoch_update == 0 {
                 self.next_epoch_update = Self::CADENCE;
-                if self.num_instances != 0 && tag::into_tag(ANCHOR.load(Relaxed)) != Tag::First {
+                if self.num_instances != 0 && Tag::into_tag(ANCHOR.load(Relaxed)) != Tag::First {
                     self.try_scan();
                 }
             } else {
@@ -130,10 +130,10 @@ impl Collector {
         // Only one thread that acquires the anchor lock is allowed to scan the thread-local
         // collectors.
         if let Ok(mut collector_ptr) = ANCHOR.fetch_update(Acquire, Acquire, |p| {
-            if tag::into_tag(p) == Tag::First {
+            if Tag::into_tag(p) == Tag::First {
                 None
             } else {
-                Some(tag::update_tag(p, Tag::First) as *mut Collector)
+                Some(Tag::update_tag(p, Tag::First) as *mut Collector)
             }
         }) {
             let known_epoch = self.announcement;
@@ -158,9 +158,9 @@ impl Collector {
                         } else {
                             ANCHOR
                                 .fetch_update(Release, Relaxed, |p| {
-                                    debug_assert!(tag::into_tag(p) == Tag::First);
-                                    if ptr::eq(tag::unset_tag(p), collector_ptr) {
-                                        Some(tag::update_tag(
+                                    debug_assert!(Tag::into_tag(p) == Tag::First);
+                                    if ptr::eq(Tag::unset_tag(p), collector_ptr) {
+                                        Some(Tag::update_tag(
                                             other_collector_ref.next_collector,
                                             Tag::First,
                                         )
@@ -198,8 +198,8 @@ impl Collector {
             // Unlocks the anchor.
             while ANCHOR
                 .fetch_update(Release, Relaxed, |p| {
-                    debug_assert!(tag::into_tag(p) == Tag::First);
-                    Some(tag::unset_tag(p) as *mut Collector)
+                    debug_assert!(Tag::into_tag(p) == Tag::First);
+                    Some(Tag::unset_tag(p) as *mut Collector)
                 })
                 .is_err()
             {}
