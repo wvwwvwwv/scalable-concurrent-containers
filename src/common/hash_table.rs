@@ -56,17 +56,15 @@ where
     fn resizing_flag_ref(&self) -> &AtomicBool;
 
     /// Returns the number of entries.
-    fn num_entries(&self) -> usize {
-        let guard = crossbeam_epoch::pin();
-        let current_array = self.cell_array_ptr().load(Acquire, &guard);
-        let current_array_ref = Self::cell_array_ref(current_array);
+    fn num_entries(&self, barrier: &Barrier) -> usize {
+        let current_array_ptr = self.cell_array_ptr().load(Acquire, barrier);
+        let current_array_ref = Self::cell_array_ref(current_array_ptr);
         let mut num_entries = 0;
         for i in 0..current_array_ref.array_size() {
             num_entries += current_array_ref.cell(i).num_entries();
         }
-        let old_array = current_array_ref.old_array(&guard);
-        if !old_array.is_null() {
-            let old_array_ref = Self::cell_array_ref(old_array);
+        let old_array_ptr = current_array_ref.old_array(barrier);
+        if let Some(old_array_ref) = old_array_ptr.as_ref() {
             for i in 0..old_array_ref.array_size() {
                 num_entries += old_array_ref.cell(i).num_entries();
             }
@@ -75,10 +73,9 @@ where
     }
 
     /// Returns the number of slots.
-    fn num_slots(&self) -> usize {
-        let guard = crossbeam_epoch::pin();
-        let current_array = self.cell_array_ptr().load(Acquire, &guard);
-        let current_array_ref = Self::cell_array_ref(current_array);
+    fn num_slots(&self, barrier: &Barrier) -> usize {
+        let current_array_ptr = self.cell_array_ptr().load(Acquire, barrier);
+        let current_array_ref = Self::cell_array_ref(current_array_ptr);
         current_array_ref.num_cell_entries()
     }
 

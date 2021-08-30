@@ -146,6 +146,7 @@ where
     /// # Examples
     ///
     /// ```
+    /// use scc::ebr::Barrier;
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
@@ -156,7 +157,7 @@ where
     /// assert!(ticket.is_some());
     /// assert_eq!(hashmap.capacity(), 16384);
     /// for i in 0..16 {
-    ///     assert!(hashmap.insert(i, i).is_ok());
+    ///     assert!(hashmap.insert(i, i, &Barrier::new()).is_ok());
     /// }
     /// drop(ticket);
     ///
@@ -196,36 +197,35 @@ where
     ///
     /// # Panics
     ///
-    /// Panics if memory allocation fails, or the number of entries in the target cell reaches u32::MAX.
+    /// Panics if memory allocation fails, or the number of entries in the target cell is
+    /// reached `u32::MAX`.
     ///
     /// # Examples
+    ///
     /// ```
+    /// use scc::ebr::Barrier;
     /// use scc::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
-    /// let result = hashmap.insert(1, 0);
-    /// if let Ok(result) = result {
-    ///     assert_eq!(result.get(), (&1, &mut 0));
-    /// } else {
-    ///     assert!(false);
-    /// }
+    /// let barrier = Barrier::new();
     ///
-    /// let result = hashmap.insert(1, 1);
-    /// if let Err((accessor, key, value)) = result {
-    ///     assert_eq!(accessor.get(), (&1, &mut 0));
-    ///     assert_eq!(key, 1);
-    ///     assert_eq!(value, 1);
-    /// } else {
-    ///     assert!(false);
-    /// }
+    /// let result = hashmap.insert(1, 0, &barrier);
+    /// result.unwrap().access(|k, v| {
+    ///     assert_eq!((k, v), (&1, &mut 0));
+    /// });
+    ///
+    /// let result = hashmap.insert(1, 1, &Barrier);
+    /// assert!(result.is_err());
     /// ```
-    pub fn insert<'h>(
+    #[inline]
+    pub fn insert<'h, 'b>(
         &'h self,
         key: K,
         value: V,
+        barrier: &'b Barrier,
     ) -> Result<Accessor<K, V, H>, (Accessor<K, V, H>, K, V)> {
-        let (mut accessor, key, partial_hash) = self.lock(key);
+        let (mut accessor, key, partial_hash) = self.lock(key, barrier);
         if accessor.cell_iterator.is_some() {
             return Err((accessor, key, value));
         }
@@ -234,14 +234,9 @@ where
                 .cell_locker
                 .as_ref()
                 .unwrap()
-                .insert(key, value, partial_hash, unsafe {
-                    crossbeam_epoch::unprotected()
-                });
-        accessor.cell_iterator.replace(unsafe {
-            std::mem::transmute::<_, CellIterator<'h, K, V, CELL_SIZE, false>>(iterator)
-        });
+                .insert(key, value, partial_hash, barrier);
+        accessor.cell_iterator.replace(iterator);
         debug_assert!(result.is_none());
-        drop(result);
         Ok(accessor)
     }
 
@@ -251,37 +246,36 @@ where
     ///
     /// # Panics
     ///
-    /// Panics if memory allocation fails, or the number of entries in the target cell reaches u32::MAX.
+    /// Panics if memory allocation fails, or the number of entries in the target cell is
+    /// reached `u32::MAX`.
     ///
     /// # Examples
+    ///
     /// ```
+    /// use scc::ebr::Barrier;
     /// use scc::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
-    /// let mut current = 0;
-    /// let result = hashmap.emplace(1, || { current += 1; current });
-    /// if let Ok(result) = result {
-    ///     assert_eq!(result.get(), (&1, &mut 1));
-    /// } else {
-    ///     assert!(false);
-    /// }
+    /// let barrier = Barrier::new();
     ///
-    /// let result = hashmap.emplace(1, || { current += 1; current });
-    /// if let Err((result, key)) = result {
-    ///     assert_eq!(result.get(), (&1, &mut 1));
-    ///     assert_eq!(key, 1);
-    ///     assert_eq!(current, 1);
-    /// } else {
-    ///     assert!(false);
-    /// }
+    /// let mut current = 0;
+    /// let result = hashmap.emplace(1, || { current += 1; current }, &barrier);
+    /// result.unwrap().access(|k, v| {
+    ///     assert_eq!((k, v), (&1, &mut 1));
+    /// });
+    ///
+    /// let result = hashmap.emplace(1, || { current += 1; current }, &barrier);
+    /// assert!(result.is_err());
     /// ```
-    pub fn emplace<'h, F: FnOnce() -> V>(
+    #[inline]
+    pub fn emplace<'h, 'b, F: FnOnce() -> V>(
         &'h self,
         key: K,
         constructor: F,
+        barrier: &'b Barrier,
     ) -> Result<Accessor<K, V, H>, (Accessor<K, V, H>, K)> {
-        let (mut accessor, key, partial_hash) = self.lock(key);
+        let (mut accessor, key, partial_hash) = self.lock(key, barrier);
         if accessor.cell_iterator.is_some() {
             return Err((accessor, key));
         }
@@ -292,78 +286,37 @@ where
             unsafe { crossbeam_epoch::unprotected() },
         );
         debug_assert!(result.is_none());
-        accessor.cell_iterator.replace(unsafe {
-            std::mem::transmute::<_, CellIterator<'h, K, V, CELL_SIZE, false>>(iterator)
-        });
+        accessor.cell_iterator.replace(iterator);
         Ok(accessor)
-    }
-
-    /// Upserts a key-value pair into the HashMap.
-    ///
-    /// # Panics
-    ///
-    /// Panics if memory allocation fails, or the number of entries in the target cell reaches u32::MAX.
-    ///
-    /// # Examples
-    /// ```
-    /// use scc::HashMap;
-    ///
-    /// let hashmap: HashMap<u64, u32> = Default::default();
-    ///
-    /// let result = hashmap.insert(1, 0);
-    /// if let Ok(result) = result {
-    ///     assert_eq!(result.get(), (&1, &mut 0));
-    /// } else {
-    ///     assert!(false);
-    /// }
-    ///
-    /// let result = hashmap.upsert(1, 1);
-    /// assert_eq!(result.get(), (&1, &mut 1));
-    /// ```
-    pub fn upsert<'h>(&'h self, key: K, value: V) -> Accessor<K, V, H> {
-        let (mut accessor, key, partial_hash) = self.lock(key);
-        if accessor.cell_iterator.is_some() {
-            drop(std::mem::replace(accessor.get().1, value));
-            return accessor;
-        }
-        let (iterator, result) =
-            accessor
-                .cell_locker
-                .as_ref()
-                .unwrap()
-                .insert(key, value, partial_hash, unsafe {
-                    crossbeam_epoch::unprotected()
-                });
-        debug_assert!(result.is_none());
-        accessor.cell_iterator.replace(unsafe {
-            std::mem::transmute::<_, CellIterator<'h, K, V, CELL_SIZE, false>>(iterator)
-        });
-        accessor
     }
 
     /// Gets a mutable reference to the value associated with the key.
     ///
     /// # Errors
     ///
-    /// Returns None if the key does not exist.
+    /// Returns `None` if the key does not exist.
     ///
     /// # Examples
+    ///
     /// ```
+    /// use scc::ebr::Barrier;
     /// use scc::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
-    /// let result = hashmap.get(&1);
+    /// let barrier = Barrier::new();
+    ///
+    /// let result = hashmap.get(&1, &barrier);
     /// assert!(result.is_none());
     ///
-    /// let result = hashmap.insert(1, 0);
-    /// if let Ok(result) = result {
-    ///     assert_eq!(result.get(), (&1, &mut 0));
-    /// }
+    /// assert!(hashmap.insert(1, 0, &barrier).is_ok());
     ///
-    /// let result = hashmap.get(&1);
-    /// assert_eq!(result.unwrap().get(), (&1, &mut 0));
+    /// let result = hashmap.get(&1, &barrier);
+    /// result.unwrap().access(|k, v| {
+    ///     assert_eq!((k, v), (&1, &mut 0));
+    /// });
     /// ```
+    #[inline]
     pub fn get<'h, 'b, Q>(
         &'h self,
         key: &Q,
@@ -374,7 +327,7 @@ where
         Q: Eq + Hash + ?Sized,
     {
         let (hash, partial_hash) = self.hash(key);
-        let accessor = self.acquire(key, hash, partial_hash);
+        let accessor = self.acquire(key, hash, partial_hash, barrier);
         if accessor.cell_iterator.is_none() {
             return None;
         }
@@ -385,31 +338,33 @@ where
     ///
     /// # Errors
     ///
-    /// Returns None if the key does not exist.
+    /// Returns `None` if the key does not exist.
     ///
     /// # Examples
+    ///
     /// ```
+    /// use scc::ebr::Barrier;
     /// use scc::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
-    /// let result = hashmap.remove(&1);
+    /// let barrier = Barrier::new();
+    ///
+    /// let result = hashmap.remove(&1, &barrier);
     /// assert!(result.is_none());
     ///
-    /// let result = hashmap.insert(1, 0);
-    /// if let Ok(result) = result {
-    ///     assert_eq!(result.get(), (&1, &mut 0));
-    /// }
+    /// assert!(hashmap.insert(1, 0, &barrier).is_ok();
     ///
-    /// let result = hashmap.remove(&1);
+    /// let result = hashmap.remove(&1, &barrier);
     /// assert_eq!(result.unwrap(), 0);
     /// ```
-    pub fn remove<Q>(&self, key: &Q) -> Option<V>
+    #[inline]
+    pub fn remove<Q>(&self, key: &Q, barrier: &Barrier) -> Option<V>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.get(key)
+        self.get(key, barrier)
             .map_or_else(|| None, |accessor| accessor.erase())
     }
 
@@ -417,59 +372,61 @@ where
     ///
     /// # Errors
     ///
-    /// Returns None if the key does not exist.
+    /// Returns `None` if the key does not exist.
     ///
     /// # Examples
+    ///
     /// ```
+    /// use scc::ebr::Barrier;
     /// use scc::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
-    /// let result = hashmap.insert(1, 0);
-    /// if let Ok(result) = result {
-    ///     assert_eq!(result.get(), (&1, &mut 0));
-    /// }
+    /// let barrier = Barrier::new();
     ///
-    /// let result = hashmap.read(&1, |key, value| *value);
+    /// assert!(hashmap.insert(1, 0, &barrier).is_ok());
+    ///
+    /// let result = hashmap.read(&1, |key, value| *value, &barrier);
     /// assert_eq!(result.unwrap(), 0);
     /// ```
-    pub fn read<Q, R, F: FnOnce(&Q, &V) -> R>(&self, key: &Q, f: F) -> Option<R>
+    #[inline]
+    pub fn read<Q, R, F: FnOnce(&Q, &V) -> R>(&self, key: &Q, f: F, barrier: &Barrier) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
         let (hash, partial_hash) = self.hash(key);
-        let guard = crossbeam_epoch::pin();
 
         // An acquire fence is required to correctly load the contents of the array.
-        let mut current_array_shared = self.array.load(Acquire, &guard);
+        let mut current_array_ptr = self.array.load(Acquire, barrier);
         loop {
-            let current_array_ref = Self::cell_array_ref(current_array_shared);
-            let old_array_shared = current_array_ref.old_array(&guard);
-            if !old_array_shared.is_null()
-                && !current_array_ref.partial_rehash(|key| self.hash(key), |_, _| None, &guard)
+            let current_array_ref = Self::cell_array_ref(current_array_ptr);
+            let old_array_ptr = current_array_ref.old_array(&barrier);
+            if !old_array_ptr.is_null()
+                && !current_array_ref.partial_rehash(|key| self.hash(key), |_, _| None, &barrier)
             {
-                let old_array_ref = Self::cell_array_ref(old_array_shared);
+                let old_array_ref = Self::cell_array_ref(old_array_ptr);
                 let cell_index = old_array_ref.calculate_cell_index(hash);
-                if let Some(reader) = CellReader::lock(old_array_ref.cell(cell_index), &guard) {
-                    if let Some((key, value)) = reader.cell_ref().search(key, partial_hash, &guard)
+                if let Some(reader) = CellReader::lock(old_array_ref.cell(cell_index), &barrier) {
+                    if let Some((key, value)) =
+                        reader.cell_ref().search(key, partial_hash, &barrier)
                     {
                         return Some(f(key.borrow(), value));
                     }
                 }
             }
             let cell_index = current_array_ref.calculate_cell_index(hash);
-            if let Some(reader) = CellReader::lock(current_array_ref.cell(cell_index), &guard) {
-                if let Some((key, value)) = reader.cell_ref().search(key, partial_hash, &guard) {
+            if let Some(reader) = CellReader::lock(current_array_ref.cell(cell_index), &barrier) {
+                if let Some((key, value)) = reader.cell_ref().search(key, partial_hash, &barrier) {
                     return Some(f(key.borrow(), value));
                 }
             }
-            let new_current_array_shared = self.array.load(Acquire, &guard);
-            if new_current_array_shared == current_array_shared {
+            let new_current_array_ptr = self.array.load(Acquire, &barrier);
+            if new_current_array_ptr == current_array_ptr {
                 break;
             }
             // The pointer value has changed.
-            current_array_shared = new_current_array_shared;
+            current_array_ptr = new_current_array_ptr;
         }
         None
     }
@@ -477,28 +434,26 @@ where
     /// Checks if the key exists.
     ///
     /// # Examples
+    ///
     /// ```
+    /// use scc::ebr::Barrier;
     /// use scc::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
-    /// let result = hashmap.contains(&1);
-    /// assert!(!result);
+    /// let barrier = Barrier::new();
     ///
-    /// let result = hashmap.insert(1, 0);
-    /// if let Ok(result) = result {
-    ///     assert_eq!(result.get(), (&1, &mut 0));
-    /// }
-    ///
-    /// let result = hashmap.contains(&1);
-    /// assert!(result);
+    /// assert!(!hashmap.contains(&1, &barrier));
+    /// assert!(hashmap.insert(1, 0, &barrier).is_ok());
+    /// assert!(hashmap.contains(&1, &barrier));
     /// ```
-    pub fn contains<Q>(&self, key: &Q) -> bool
+    #[inline]
+    pub fn contains<Q>(&self, key: &Q, barrier: &Barrier) -> bool
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.read(key, |_, _| ()).is_some()
+        self.read(key, |_, _| (), barrier).is_some()
     }
 
     /// Retains the key-value pairs that satisfy the given predicate.
@@ -506,52 +461,38 @@ where
     /// It returns the number of entries remaining and removed.
     ///
     /// # Examples
+    ///
     /// ```
+    /// use scc::ebr::Barrier;
     /// use scc::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
-    /// let result = hashmap.insert(1, 0);
-    /// if let Ok(result) = result {
-    ///     assert_eq!(result.get(), (&1, &mut 0));
-    /// }
+    /// let barrier = Barrier::new();
     ///
-    /// let result = hashmap.insert(2, 0);
-    /// if let Ok(result) = result {
-    ///     assert_eq!(result.get(), (&2, &mut 0));
-    /// }
+    /// assert!(hashmap.insert(1, 0, &barrier).is_ok());
+    /// assert!(hashmap.insert(2, 0, &barrier).is_ok());
     ///
-    /// let result = hashmap.retain(|key, value| *key == 1 && *value == 0);
+    /// let result = hashmap.retain(|key, value| *key == 1 && *value == 0, &barrier);
     /// assert_eq!(result, (1, 1));
-    ///
-    /// let result = hashmap.get(&1);
-    /// assert_eq!(result.unwrap().get(), (&1, &mut 0));
-    ///
-    /// let result = hashmap.get(&2);
-    /// assert!(result.is_none());
     /// ```
-    pub fn retain<F: Fn(&K, &mut V) -> bool>(&self, f: F) -> (usize, usize) {
+    pub fn retain<F: Fn(&K, &mut V) -> bool>(&self, f: F, barrier: &Barrier) -> (usize, usize) {
         let mut retained_entries = 0;
         let mut removed_entries = 0;
         let mut accessor = self.iter();
-        while let Some((key, value)) = accessor.next() {
-            if !f(key, value) {
-                accessor
-                    .cell_locker
-                    .as_ref()
-                    .unwrap()
-                    .erase(accessor.cell_iterator.as_mut().unwrap());
+        while accessor.next().is_some() {
+            if !accessor.access(|k, v| f(k, v)) {
+                accessor.erase();
                 removed_entries += 1;
             } else {
                 retained_entries += 1;
             }
         }
 
-        let guard = crossbeam_epoch::pin();
-        let current_array = self.array.load(Acquire, &guard);
-        let current_array_ref = Self::cell_array_ref(current_array);
+        let current_array_ptr = self.array.load(Acquire, barrier);
+        let current_array_ref = Self::cell_array_ref(current_array_ptr);
         if retained_entries <= current_array_ref.num_cell_entries() / 8 {
-            self.resize(&guard);
+            self.resize(barrier);
         }
 
         (retained_entries, removed_entries)
@@ -560,76 +501,69 @@ where
     /// Clears all the key-value pairs.
     ///
     /// # Examples
+    ///
     /// ```
+    /// use scc::ebr::Barrier;
     /// use scc::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
-    /// let result = hashmap.insert(1, 0);
-    /// if let Ok(result) = result {
-    ///     assert_eq!(result.get(), (&1, &mut 0));
-    /// }
+    /// let barrier = Barrier::new();
     ///
-    /// let result = hashmap.insert(2, 0);
-    /// if let Ok(result) = result {
-    ///     assert_eq!(result.get(), (&2, &mut 0));
-    /// }
-    ///
-    /// let result = hashmap.clear();
-    /// assert_eq!(result, 2);
-    ///
-    /// let result = hashmap.get(&1);
-    /// assert!(result.is_none());
-    ///
-    /// let result = hashmap.get(&2);
-    /// assert!(result.is_none());
+    /// assert!(hashmap.insert(1, 0, &barrier).is_ok());
+    /// assert_eq!(hashmap.clear(&barrier), 1);
     /// ```
-    pub fn clear(&self) -> usize {
-        self.retain(|_, _| false).1
+    pub fn clear(&self, barrier: &Barrier) -> usize {
+        self.retain(|_, _| false, barrier).1
     }
 
     /// Returns the number of entries in the HashMap.
     ///
     /// It scans the entire metadata cell array to calculate the number of valid entries,
     /// making its time complexity O(N).
-    /// Apart from being inefficient, it may return a smaller number when the HashMap is being resized.
+    /// Apart from being inefficient, it may return a smaller number when the HashMap is being
+    /// resized.
     ///
     /// # Examples
+    ///
     /// ```
+    /// use scc::ebr::Barrier;
     /// use scc::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
-    /// let result = hashmap.insert(1, 0);
-    /// assert!(result.is_ok());
+    /// let barrier = Barrier::new();
     ///
-    /// let result = hashmap.len();
-    /// assert_eq!(result, 1);
+    /// assert!(hashmap.insert(1, 0, &barrier).is_ok());
+    /// assert_eq!(hashmap.len(&barrier), 1);
     /// ```
-    pub fn len(&self) -> usize {
-        self.num_entries()
+    pub fn len(&self, barrier: &Barrier) -> usize {
+        self.num_entries(barrier)
     }
 
     /// Returns the capacity of the HashMap.
     ///
     /// # Examples
+    ///
     /// ```
+    /// use scc::ebr::Barrier;
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
     /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(1000000, RandomState::new());
-    /// assert_eq!(hashmap.capacity(), 1048576);
+    /// assert_eq!(hashmap.capacity(&Barrier::new()), 1048576);
     /// ```
-    pub fn capacity(&self) -> usize {
-        self.num_slots()
+    pub fn capacity(&self, barrier: &Barrier) -> usize {
+        self.num_slots(barrier)
     }
 
-    /// Returns an Accessor.
+    /// Returns an [`Accessor`].
     ///
     /// It is guaranteed to go through all the key-value pairs pertaining in the HashMap at the moment,
     /// however the same key-value pair can be visited more than once if the HashMap is being resized.
     ///
     /// # Examples
+    ///
     /// ```
     /// use scc::HashMap;
     ///
@@ -660,11 +594,11 @@ where
     }
 
     /// Locks a Cell for inserting a new key-value pair.
-    fn lock(&self, key: K) -> (Accessor<K, V, H>, K, u8) {
+    fn lock(&self, key: K, barrier: &Barrier) -> (Accessor<K, V, H>, K, u8) {
         let (hash, partial_hash) = self.hash(&key);
         let mut resize_triggered = false;
         loop {
-            let accessor = self.acquire(&key, hash, partial_hash);
+            let accessor = self.acquire(&key, hash, partial_hash, barrier);
             if !resize_triggered
                 && accessor.cell_index < CELL_SIZE
                 && accessor
@@ -700,18 +634,19 @@ where
     }
 
     /// Acquires a cell.
-    fn acquire<'h, Q>(&'h self, key: &Q, hash: u64, partial_hash: u8) -> Accessor<'h, K, V, H>
+    fn acquire<'h, 'b, Q>(
+        &'h self,
+        key: &Q,
+        hash: u64,
+        partial_hash: u8,
+        barrier: &'b Barrier,
+    ) -> Accessor<'h, 'b, K, V, H>
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        // The proper guard is used to read the array pointer.
-        let guard = crossbeam_epoch::pin();
-        // Once a Cell is locked, protection is not required.
-        let unprotected_guard = unsafe { crossbeam_epoch::unprotected() };
-
-        // It is guaranteed that the thread reads a consistent snapshot of the current and
-        // old array pair by a release fence in the resize function, hence the following
+        // It is guaranteed that the thread reads a consistent snapshot of the current and old
+        // array pair by a release memory barrier in the resize function, hence the following
         // procedure is correct.
         //  - The thread reads self.array, and it kills the target cell in the old array
         //    if there is one attached to it, and inserts the key into array.
@@ -724,71 +659,56 @@ where
         //    If the array is deprecated while inserting the key, it falls into case 1.
         loop {
             // An acquire fence is required to correctly load the contents of the array.
-            let current_array = self.array.load(Acquire, &guard);
-            let current_array_ref = unsafe { &*current_array.as_raw() };
-            let old_array = current_array_ref.old_array(&guard);
-            if !old_array.is_null() {
-                if current_array_ref.partial_rehash(|key| self.hash(key), |_, _| None, &guard) {
+            let current_array_ptr = self.array.load(Acquire, &barrier);
+            let current_array_ref = current_array_ptr.as_ref().unwrap();
+            let old_array_ptr = current_array_ref.old_array(&barrier);
+            if let Some(old_array_ref) = old_array_ptr.as_ref() {
+                if current_array_ref.partial_rehash(|key| self.hash(key), |_, _| None, &barrier) {
                     continue;
                 }
-                let old_array_ref = unsafe { &*old_array.as_raw() };
                 let cell_index = old_array_ref.calculate_cell_index(hash);
-                if let Some(mut locker) =
-                    CellLocker::lock(old_array_ref.cell(cell_index), unprotected_guard)
+                if let Some(mut locker) = CellLocker::lock(old_array_ref.cell(cell_index), barrier)
                 {
-                    if let Some(iterator) =
-                        locker.cell_ref().get(key, partial_hash, unprotected_guard)
-                    {
-                        let iterator = Some(unsafe {
-                            std::mem::transmute::<_, CellIterator<'h, K, V, CELL_SIZE, false>>(
-                                iterator,
-                            )
-                        });
+                    if let Some(iterator) = locker.cell_ref().get(key, partial_hash, barrier) {
                         return Accessor {
                             hash_map: &self,
-                            array_ptr: old_array.as_raw(),
+                            array_ptr: old_array_ptr.as_raw(),
                             cell_index,
                             cell_locker: Some(locker),
                             cell_iterator: iterator,
-                            barrier_ref: None,
+                            barrier_ref: barrier,
                         };
                     }
                     // Kills the Cell.
                     current_array_ref.kill_cell(
                         &mut locker,
-                        Self::cell_array_ref(old_array),
+                        Self::cell_array_ref(old_array_ptr),
                         cell_index,
                         &|key| self.hash(key),
                         &|_, _| None,
-                        &guard,
+                        &barrier,
                     );
                 }
             }
             let cell_index = current_array_ref.calculate_cell_index(hash);
-            if let Some(locker) =
-                CellLocker::lock(current_array_ref.cell(cell_index), unprotected_guard)
-            {
-                if let Some(iterator) = locker.cell_ref().get(key, partial_hash, unprotected_guard)
-                {
-                    let iterator = Some(unsafe {
-                        std::mem::transmute::<_, CellIterator<'h, K, V, CELL_SIZE, false>>(iterator)
-                    });
+            if let Some(locker) = CellLocker::lock(current_array_ref.cell(cell_index), barrier) {
+                if let Some(iterator) = locker.cell_ref().get(key, partial_hash, barrier) {
                     return Accessor {
                         hash_map: &self,
-                        array_ptr: current_array.as_raw(),
+                        array_ptr: current_array_ptr.as_raw(),
                         cell_index,
                         cell_locker: Some(locker),
                         cell_iterator: iterator,
-                        barrier_ref: None,
+                        barrier_ref: barrier,
                     };
                 }
                 return Accessor {
                     hash_map: &self,
-                    array_ptr: current_array.as_raw(),
+                    array_ptr: current_array_ptr.as_raw(),
                     cell_index,
                     cell_locker: Some(locker),
                     cell_iterator: None,
-                    barrier_ref: None,
+                    barrier_ref: barrier,
                 };
             }
 
@@ -1002,6 +922,14 @@ where
     }
 }
 
+impl<'h, 'b, K, V, H> FusedIterator for Accessor<'h, 'b, K, V, H>
+where
+    K: 'static + Eq + Hash + Sync,
+    V: 'static + Sync,
+    H: 'static + BuildHasher,
+{
+}
+
 impl<'h, 'b, K, V, H> Iterator for Accessor<'h, 'b, K, V, H>
 where
     K: 'static + Eq + Hash + Sync,
@@ -1118,12 +1046,4 @@ where
         self.cell_locker.take();
         None
     }
-}
-
-impl<'h, K, V, H> FusedIterator for Accessor<'h, K, V, H>
-where
-    K: Eq + Hash + Sync,
-    V: Sync,
-    H: BuildHasher,
-{
 }
