@@ -136,6 +136,17 @@ impl Collector {
                 Some(Tag::update_tag(p, Tag::First) as *mut Collector)
             }
         }) {
+            let _scope = scopeguard::guard(&ANCHOR, |a| {
+                // Unlocks the anchor.
+                while a
+                    .fetch_update(Release, Relaxed, |p| {
+                        debug_assert!(Tag::into_tag(p) == Tag::First);
+                        Some(Tag::unset_tag(p) as *mut Collector)
+                    })
+                    .is_err()
+                {}
+            });
+
             let known_epoch = self.announcement;
             let mut update_global_epoch = true;
             let mut prev_collector_ptr: *mut Collector = ptr::null_mut();
@@ -194,15 +205,6 @@ impl Collector {
                 self.announcement = next_epoch;
                 self.epoch_updated();
             }
-
-            // Unlocks the anchor.
-            while ANCHOR
-                .fetch_update(Release, Relaxed, |p| {
-                    debug_assert!(Tag::into_tag(p) == Tag::First);
-                    Some(Tag::unset_tag(p) as *mut Collector)
-                })
-                .is_err()
-            {}
         }
     }
 

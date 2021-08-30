@@ -1,9 +1,9 @@
-use core::mem::discriminant;
 use std::cmp::PartialEq;
+use std::mem::transmute;
 
 /// [`Tag`] is a four-state enumerator that can be embedded in a pointer as the two least
 /// significant bits of the pointer value.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Tag {
     /// None tagged.
     None,
@@ -38,17 +38,11 @@ impl Tag {
 
     /// Sets a tag, overwriting any existing tag in the pointer.
     pub(super) fn update_tag<P>(ptr: *const P, tag: Tag) -> *const P {
-        unsafe { std::mem::transmute(((ptr as usize) & (!3)) | tag.value()) }
+        unsafe { transmute(((ptr as usize) & (!3)) | tag.value()) }
     }
 
     /// Returns the pointer with the tag bits erased.
     pub(super) fn unset_tag<P>(ptr: *const P) -> *const P {
-        unsafe { std::mem::transmute((ptr as usize) & (!3)) }
-    }
-}
-
-impl PartialEq for Tag {
-    fn eq(&self, other: &Self) -> bool {
-        discriminant(self) == discriminant(other)
+        unsafe { transmute((ptr as usize) & (!3)) }
     }
 }

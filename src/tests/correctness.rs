@@ -110,7 +110,7 @@ mod hashmap_test {
     #[test]
     fn accessor() {
         let data_size = 4096;
-        for _ in 0..64 {
+        for _ in 0..16 {
             let hashmap: Arc<HashMap<u64, u64>> = Arc::new(Default::default());
             let hashmap_copied = hashmap.clone();
             let barrier = Arc::new(Barrier::new(2));
@@ -580,7 +580,7 @@ mod treeindex_test {
 
     #[test]
     fn scanner() {
-        let data_size = 16384;
+        let data_size = 4096;
         for _ in 0..64 {
             let tree: Arc<TreeIndex<usize, u64>> = Arc::new(Default::default());
             let tree_copied = tree.clone();

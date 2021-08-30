@@ -1,10 +1,11 @@
 use super::underlying::Underlying;
-use super::Tag;
+use super::{Arc, Tag};
 
-use std::{ops::Deref, ptr};
+use std::convert::TryInto;
+use std::{ops::Deref, ptr, ptr::NonNull};
 
 /// [`Ptr`] points to an instance.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Ptr<'r, T> {
     instance_ptr: *const Underlying<T>,
     _phantom: std::marker::PhantomData<&'r T>,
@@ -88,5 +89,21 @@ impl<'r, T> Ptr<'r, T> {
     /// Returns its pointer value.
     pub(super) fn raw_ptr(&self) -> *const Underlying<T> {
         self.instance_ptr
+    }
+}
+
+impl<'r, T> TryInto<Arc<T>> for Ptr<'r, T> {
+    type Error = ();
+
+    fn try_into(self) -> Result<Arc<T>, Self::Error> {
+        unsafe {
+            if let Some(ptr) = NonNull::new(Tag::unset_tag(self.instance_ptr) as *mut Underlying<T>)
+            {
+                if ptr.as_ref().try_add_ref() {
+                    return Ok(Arc::from(ptr));
+                }
+            }
+        }
+        Err(())
     }
 }

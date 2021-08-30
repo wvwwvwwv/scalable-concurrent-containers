@@ -1,4 +1,5 @@
 use std::mem::ManuallyDrop;
+use std::ops::Deref;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -53,6 +54,7 @@ impl<T> Underlying<T> {
         // reference count increment is guaranteed to be observed by the one that decrements
         // the last reference.
         let mut current = self.ref_cnt().load(Relaxed);
+        debug_assert_ne!(current, 0);
         loop {
             let new = if current <= 1 { 0 } else { current - 2 };
             if let Err(actual) = self
@@ -68,12 +70,12 @@ impl<T> Underlying<T> {
     }
 
     /// Returns a reference to its reference count.
-    fn ref_cnt(&self) -> &AtomicUsize {
+    pub(super) fn ref_cnt(&self) -> &AtomicUsize {
         unsafe { &self.next_or_refcnt.refcnt.0 }
     }
 }
 
-impl<T> std::ops::Deref for Underlying<T> {
+impl<T> Deref for Underlying<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {

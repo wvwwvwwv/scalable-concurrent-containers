@@ -90,17 +90,18 @@ impl<T: 'static> AtomicArc<T> {
     /// let barrier = Barrier::new();
     /// let old = atomic_arc.swap((Some(Arc::new(15)), Tag::Second), Relaxed);
     /// assert_eq!(*old.unwrap(), 14);
-    /// let old = atomic_arc.swap((None, Tag::None), Relaxed);
+    /// let old = atomic_arc.swap((None, Tag::First), Relaxed);
     /// assert_eq!(*old.unwrap(), 15);
     /// let old = atomic_arc.swap((None, Tag::None), Relaxed);
     /// assert!(old.is_none());
     /// ```
-    pub fn swap(&self, val: (Option<Arc<T>>, Tag), order: Ordering) -> Option<Arc<T>> {
-        let new = Tag::update_tag(
-            val.0.as_ref().map_or_else(ptr::null_mut, |a| a.raw_ptr()),
-            val.1,
+    pub fn swap(&self, new: (Option<Arc<T>>, Tag), order: Ordering) -> Option<Arc<T>> {
+        let desired = Tag::update_tag(
+            new.0.as_ref().map_or_else(ptr::null_mut, |a| a.raw_ptr()),
+            new.1,
         ) as *mut Underlying<T>;
-        let prev = Tag::unset_tag(self.instance_ptr.swap(new, order)) as *mut Underlying<T>;
+        let prev = Tag::unset_tag(self.instance_ptr.swap(desired, order)) as *mut Underlying<T>;
+        std::mem::forget(new);
         if let Some(ptr) = NonNull::new(prev) {
             Some(Arc::from(ptr))
         } else {
@@ -202,6 +203,7 @@ impl<T: 'static> AtomicArc<T> {
                     } else {
                         None
                     };
+                std::mem::forget(new);
                 Ok((prev_arc, Ptr::from(desired)))
             }
             Err(actual) => Err((new.0, Ptr::from(actual))),
@@ -248,14 +250,19 @@ impl<T: 'static> Drop for AtomicArc<T> {
     }
 }
 
+unsafe impl<T: 'static> Send for AtomicArc<T> {}
+
 #[cfg(test)]
 mod test {
     use super::*;
 
+    use std::convert::TryInto;
+    use std::sync::atomic::Ordering::{Acquire, Release};
     use std::sync::atomic::{AtomicBool, AtomicU8};
+    use std::thread;
 
     #[test]
-    fn arc() {
+    fn atomic_arc() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
         struct A(AtomicU8, usize, &'static AtomicBool);
         impl Drop for A {
@@ -288,5 +295,67 @@ mod test {
         while !DESTROYED.load(Relaxed) {
             drop(Barrier::new());
         }
+    }
+
+    #[test]
+    fn atomic_arc_parallel() {
+        let atomic_arc: Arc<AtomicArc<String>> =
+            Arc::new(AtomicArc::new(String::from("How are you?")));
+        let mut thread_handles = Vec::new();
+        for _ in 0..4 {
+            let atomic_arc = atomic_arc.clone();
+            thread_handles.push(thread::spawn(move || {
+                for _ in 0..256 {
+                    let barrier = Barrier::new();
+                    let mut ptr = atomic_arc.load(Acquire, &barrier);
+                    assert!(ptr.tag() == Tag::None || ptr.tag() == Tag::Second);
+                    if let Some(str_ref) = ptr.as_ref() {
+                        assert!(str_ref == "How are you?" || str_ref == "How can I help you?");
+                    }
+                    let converted: Result<Arc<String>, ()> = ptr.clone().try_into();
+                    if let Ok(arc) = converted {
+                        assert!(*arc == "How are you?" || *arc == "How can I help you?");
+                    }
+                    while let Err((passed, current)) = atomic_arc.compare_exchange(
+                        ptr,
+                        (
+                            Some(Arc::new(String::from("How can I help you?"))),
+                            Tag::Second,
+                        ),
+                        Release,
+                        Relaxed,
+                    ) {
+                        if let Some(arc) = passed {
+                            assert!(*arc == "How can I help you?");
+                        }
+                        ptr = current;
+                        if let Some(str_ref) = ptr.as_ref() {
+                            assert!(str_ref == "How are you?" || str_ref == "How can I help you?");
+                        }
+                        assert!(ptr.tag() == Tag::None || ptr.tag() == Tag::Second);
+                    }
+                    drop(barrier);
+
+                    atomic_arc.set_tag(Tag::None, Relaxed);
+
+                    let barrier = Barrier::new();
+                    ptr = atomic_arc.load(Acquire, &barrier);
+                    assert!(ptr.tag() == Tag::None || ptr.tag() == Tag::Second);
+                    if let Some(str_ref) = ptr.as_ref() {
+                        assert!(str_ref == "How are you?" || str_ref == "How can I help you?");
+                    }
+                    drop(barrier);
+
+                    let old = atomic_arc.swap(
+                        (Some(Arc::new(String::from("How are you?"))), Tag::Second),
+                        Release,
+                    );
+                    if let Some(arc) = old {
+                        assert!(*arc == "How are you?" || *arc == "How can I help you?");
+                    }
+                }
+            }));
+        }
+        thread_handles.into_iter().for_each(|t| t.join().unwrap());
     }
 }

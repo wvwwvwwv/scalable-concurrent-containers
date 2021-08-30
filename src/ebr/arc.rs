@@ -61,6 +61,14 @@ impl<T: 'static> Arc<T> {
 
     /// Creates a new [`Arc`] from the given pointer.
     pub(super) fn from(ptr: NonNull<Underlying<T>>) -> Arc<T> {
+        debug_assert_ne!(
+            unsafe {
+                ptr.as_ref()
+                    .ref_cnt()
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            },
+            0
+        );
         Arc { instance_ptr: ptr }
     }
 
@@ -87,6 +95,12 @@ impl<T: 'static> Arc<T> {
 
 impl<T: 'static> Clone for Arc<T> {
     fn clone(&self) -> Self {
+        debug_assert_ne!(
+            self.underlying()
+                .ref_cnt()
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
         self.underlying().add_ref();
         Self {
             instance_ptr: self.instance_ptr.clone(),
@@ -110,6 +124,8 @@ impl<T: 'static> Drop for Arc<T> {
         }
     }
 }
+
+unsafe impl<T: 'static> Send for Arc<T> {}
 
 #[cfg(test)]
 mod test {
