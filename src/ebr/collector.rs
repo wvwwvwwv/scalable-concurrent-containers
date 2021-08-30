@@ -141,7 +141,7 @@ impl Collector {
             let mut prev_collector_ptr: *mut Collector = ptr::null_mut();
             while let Some(other_collector_ref) = unsafe { collector_ptr.as_ref() } {
                 if !ptr::eq(self, other_collector_ref) {
-                    if (other_collector_ref.announcement & Self::INACTIVE) != 0
+                    if (other_collector_ref.announcement & Self::INACTIVE) == 0
                         && other_collector_ref.announcement != known_epoch
                     {
                         // Not ready for an epoch update.
