@@ -94,7 +94,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
     }
 
     /// Drops the old array.
-    pub fn drop_old_array(&self, immediate_drop: bool, barrier: &Barrier) {
+    pub fn drop_old_array(&self, barrier: &Barrier) {
         if let Some(old_array) = self.old_array.swap((None, Tag::None), Relaxed) {
             barrier.reclaim(old_array);
         }

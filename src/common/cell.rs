@@ -35,7 +35,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool> Defa
 {
     fn default() -> Self {
         Cell::<K, V, SIZE, LOCK_FREE> {
-            wait_queue: AtomicArc::null(),
+            wait_queue: AtomicPtr::default(),
             state: AtomicU32::new(0),
             num_entries: 0,
             data: AtomicArc::null(),
@@ -188,7 +188,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
         while let Some(entry_ref) = unsafe { current.as_ref() } {
             let next_ptr = entry_ref.next_ptr;
             entry_ref.signal();
-            current = next_ptr;
+            current = next_ptr as *mut WaitQueueEntry;
         }
     }
 

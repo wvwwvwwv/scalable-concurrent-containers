@@ -1,4 +1,4 @@
-use crate::common::cell::{CellIterator, CellLocker, CellReader};
+use crate::common::cell::CellLocker;
 use crate::common::cell_array::CellArray;
 use crate::common::hash_table::HashTable;
 use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
@@ -59,7 +59,7 @@ where
 {
     /// Creates a [`HashMap`] with the default parameters.
     ///
-    /// The default hash builder is [`RandomState`], and the default capacity is 64.
+    /// The default hash builder is [`RandomState`], and the default capacity is `64`.
     ///
     /// # Panics
     ///
@@ -126,7 +126,7 @@ where
         ));
         let current_capacity = array.num_cell_entries();
         HashMap {
-            array: AtomicArc::new(array),
+            array: AtomicArc::from(array),
             minimum_capacity: current_capacity,
             additional_capacity: AtomicUsize::new(0),
             resizing_flag: AtomicBool::new(false),
@@ -204,24 +204,12 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
-    /// let barrier = Barrier::new();
-    ///
     /// assert!(hashmap.insert(1, 0).is_ok());
     /// assert!(hashmap.insert(1, 1).unwrap_err(), (1, 1));
     /// ```
     #[inline]
     pub fn insert(&self, key: K, val: V) -> Result<(), (K, V)> {
-        let (hash, partial_hash) = self.hash(&key);
-        let barrier = Barrier::new();
-        let (locker, iterator) = self.acquire(&key, hash, partial_hash, &barrier);
-        if iterator.is_some() {
-            return Err((key, val));
-        }
-        let (_, pair) = locker.insert(key, val, partial_hash, &barrier);
-        if let Some(pair) = pair {
-            return Err(pair);
-        }
-        Ok(())
+        self.insert_entry(key, val)
     }
 
     /// Updates an existing key-value pair.
@@ -249,7 +237,7 @@ where
     {
         let (hash, partial_hash) = self.hash(&key_ref);
         let barrier = Barrier::new();
-        let (locker, iterator) = self.acquire(key_ref, hash, partial_hash, &barrier);
+        let (_, locker, iterator) = self.acquire(key_ref, hash, partial_hash, &barrier);
         let pair_ref = if let Some(iterator) = iterator {
             iterator.get()
         } else {
@@ -291,7 +279,7 @@ where
     ) {
         let (hash, partial_hash) = self.hash(&key);
         let barrier = Barrier::new();
-        let (locker, iterator) = self.acquire(&key, hash, partial_hash, &barrier);
+        let (_, locker, iterator) = self.acquire(&key, hash, partial_hash, &barrier);
         let pair_ref = if let Some(iterator) = iterator {
             iterator.get()
         } else {
@@ -314,7 +302,7 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
-    /// assert!(hashmap.remove(&1, &barrier).is_none());
+    /// assert!(hashmap.remove(&1).is_none());
     /// assert!(hashmap.insert(1, 0).is_ok());
     /// assert_eq!(hashmap.remove(&1).unwrap(), (1, 0));
     /// ```
@@ -324,7 +312,7 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.remove_if(key_ref, || true)
+        self.remove_if(key_ref, |_| true)
     }
 
     /// Removes a key-value pair and returns the key-value-pair if the key exists and the given
@@ -349,7 +337,8 @@ where
     {
         let (hash, partial_hash) = self.hash(&key_ref);
         let barrier = Barrier::new();
-        let (locker, mut iterator) = self.acquire(key_ref, hash, partial_hash, &barrier);
+        let (cell_index, locker, mut iterator) =
+            self.acquire(key_ref, hash, partial_hash, &barrier);
         if iterator.is_none() {
             iterator = locker.cell_ref().get(key_ref, partial_hash, &barrier);
         }
@@ -361,23 +350,23 @@ where
             };
             if remove {
                 let result = locker.erase(&mut iterator);
-                drop(locker);
-
-                let current_array_ptr = self.array.load(Acquire, &barrier);
-                if let Some(current_array_ref) = current_array_ptr.as_ref() {
-                    if current_array_ref.old_array(&barrier).is_null()
-                        && current_array_ref.num_cell_entries() > self.minimum_capacity()
-                    {
-                        // Triggers resize if the estimated load factor is smaller than 1/16.
-                        let sample_size = current_array_ref.sample_size();
-                        let mut num_entries = 0;
-                        for i in 0..sample_size {
-                            num_entries += current_array_ref.cell(i).num_entries();
-                            if num_entries >= sample_size * CELL_SIZE / 16 {
-                                return result;
+                if cell_index < CELL_SIZE && locker.cell_ref().num_entries() < CELL_SIZE / 16 {
+                    drop(locker);
+                    let current_array_ptr = self.array.load(Acquire, &barrier);
+                    if let Some(current_array_ref) = current_array_ptr.as_ref() {
+                        if current_array_ref.old_array(&barrier).is_null()
+                            && current_array_ref.num_cell_entries() > self.minimum_capacity()
+                        {
+                            let sample_size = current_array_ref.sample_size();
+                            let mut num_entries = 0;
+                            for i in 0..sample_size {
+                                num_entries += current_array_ref.cell(i).num_entries();
+                                if num_entries >= sample_size * CELL_SIZE / 16 {
+                                    return result;
+                                }
                             }
+                            self.resize(&barrier);
                         }
-                        self.resize(&barrier);
                     }
                 }
                 return result;
@@ -406,42 +395,7 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let (hash, partial_hash) = self.hash(key_ref);
-        let barrier = Barrier::new();
-
-        // An acquire fence is required to correctly load the contents of the array.
-        let mut current_array_ptr = self.array.load(Acquire, &barrier);
-        while let Some(current_array_ref) = current_array_ptr.as_ref() {
-            if let Some(old_array_ref) = current_array_ref.old_array(&barrier).as_ref() {
-                if current_array_ref.partial_rehash(|key| self.hash(key), |_, _| None, &barrier) {
-                    current_array_ptr = self.array.load(Acquire, &barrier);
-                    continue;
-                }
-                let cell_index = old_array_ref.calculate_cell_index(hash);
-                if let Some(reader) = CellReader::lock(old_array_ref.cell(cell_index), &barrier) {
-                    if let Some((key, value)) =
-                        reader.cell_ref().search(key_ref, partial_hash, &barrier)
-                    {
-                        return Some(reader(key.borrow(), value));
-                    }
-                }
-            }
-            let cell_index = current_array_ref.calculate_cell_index(hash);
-            if let Some(reader) = CellReader::lock(current_array_ref.cell(cell_index), &barrier) {
-                if let Some((key, value)) =
-                    reader.cell_ref().search(key_ref, partial_hash, &barrier)
-                {
-                    return Some(reader(key.borrow(), value));
-                }
-            }
-            let new_current_array_ptr = self.array.load(Acquire, &barrier);
-            if new_current_array_ptr == current_array_ptr {
-                break;
-            }
-            // The pointer value has changed.
-            current_array_ptr = new_current_array_ptr;
-        }
-        None
+        self.read_entry(key_ref, reader)
     }
 
     /// Checks if the key exists.
@@ -484,6 +438,7 @@ where
     /// assert!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
     /// assert!(hashmap.read(&2, |_, v| *v).unwrap(), 2);
     /// ```
+    #[inline]
     pub fn for_each<F: FnMut(&K, &mut V)>(&self, f: F) {
         self.retain(|k, v| {
             f(k, v);
@@ -508,7 +463,6 @@ where
     ///
     /// assert_eq!(hashmap.retain(|key, value| *key == 1 && *value == 0), (2, 1));
     /// ```
-    #[inline]
     pub fn retain<F: FnMut(&K, &mut V) -> bool>(&self, filter: F) -> (usize, usize) {
         let mut retained_entries = 0;
         let mut removed_entries = 0;
@@ -599,24 +553,22 @@ where
 
     /// Returns the number of entries in the [`HashMap`].
     ///
-    /// It scans the entire metadata cell array to calculate the number of valid entries,
-    /// making its time complexity `O(N)`. Apart from being inefficient, it may return a
-    /// smaller number when the HashMap is being resized.
+    /// It scans the entire array to calculate the number of valid entries, making its time
+    /// complexity `O(N)`.
     ///
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::Barrier;
+    /// use scc::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
     /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert_eq!(hashmap.len(&barrier), 1);
+    /// assert_eq!(hashmap.len()), 1);
     /// ```
     #[inline]
     pub fn len(&self) -> usize {
-        let barrier = Barrier::new();
-        self.num_entries(&barrier)
+        self.num_entries(&Barrier::new())
     }
 
     /// Returns the capacity of the [`HashMap`].
@@ -632,103 +584,14 @@ where
     /// ```
     #[inline]
     pub fn capacity(&self) -> usize {
-        let barrier = Barrier::new();
-        self.num_slots(&barrier)
-    }
-
-    /// Acquires a [`CellLocker`] and [`CellIterator`].
-    ///
-    /// In case it successfully found the key, it returns a [`CellIterator`]. Not returning a
-    /// [`CellIterator`] does not mean that the key does not exist.
-    fn acquire<'h, 'b, Q>(
-        &'h self,
-        key_ref: Option<&Q>,
-        hash: u64,
-        partial_hash: u8,
-        barrier: &'b Barrier,
-    ) -> (
-        CellLocker<'b, K, V, CELL_SIZE, false>,
-        Option<CellIterator<'b, K, V, CELL_SIZE, false>>,
-    )
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq + ?Sized,
-    {
-        let mut resize_tried = false;
-
-        // It is guaranteed that the thread reads a consistent snapshot of the current and old
-        // array pair by a release memory barrier in the resize function, hence the following
-        // procedure is correct.
-        //  - The thread reads `self.array`, and it kills the target cell in the old array if
-        //    there is one attached to it, and inserts the key into array.
-        // There are two cases.
-        //  1. The thread reads an old version of `self.array`.
-        //    If there is another thread having read the latest version of `self.array`,
-        //    trying to insert the same key, it will try to kill the Cell in the old version
-        //    of `self.array`, thus competing with each other.
-        //  2. The thread reads the latest version of `self.array`.
-        //    If the array is deprecated while inserting the key, it falls into case 1.
-        loop {
-            // An acquire fence is required to correctly load the contents of the array.
-            let current_array_ptr = self.array.load(Acquire, &barrier);
-            let current_array_ref = current_array_ptr.as_ref().unwrap();
-            let old_array_ptr = current_array_ref.old_array(&barrier);
-            if let Some(old_array_ref) = old_array_ptr.as_ref() {
-                if current_array_ref.partial_rehash(|key| self.hash(key), |_, _| None, &barrier) {
-                    continue;
-                }
-                let cell_index = old_array_ref.calculate_cell_index(hash);
-                if let Some(mut locker) = CellLocker::lock(old_array_ref.cell(cell_index), barrier)
-                {
-                    if let Some(iterator) = locker.cell_ref().get(key_ref, partial_hash, barrier) {
-                        return (locker, Some(iterator));
-                    }
-                    // Kills the Cell.
-                    current_array_ref.kill_cell(
-                        &mut locker,
-                        old_array_ref,
-                        cell_index,
-                        &|key| self.hash(key),
-                        &|_, _| None,
-                        &barrier,
-                    );
-                }
-            }
-            let cell_index = current_array_ref.calculate_cell_index(hash);
-
-            // Tries to resize the array.
-            if !resize_tried
-                && old_array_ptr.is_null()
-                && cell_index < CELL_SIZE
-                && current_array_ref.cell(cell_index).num_entries() >= CELL_SIZE
-            {
-                // Triggers resize if the estimated load factor is greater than 7/8.
-                let sample_size = current_array_ref.sample_size();
-                let threshold = sample_size * (CELL_SIZE / 8) * 7;
-                let mut num_entries = 0;
-                for i in 0..sample_size {
-                    num_entries += current_array_ref.cell(i).num_entries();
-                    if num_entries > threshold {
-                        self.resize(barrier);
-                        break;
-                    }
-                }
-                continue;
-            }
-
-            if let Some(locker) = CellLocker::lock(current_array_ref.cell(cell_index), barrier) {
-                return (locker, None);
-            }
-
-            // Reaching here means that `self.array` is updated.
-        }
+        self.num_slots(&Barrier::new())
     }
 }
 
 impl<K, V, H> Drop for HashMap<K, V, H>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: 'static + Eq + Hash + Sync,
+    V: 'static + Sync,
     H: BuildHasher,
 {
     fn drop(&mut self) {
@@ -736,7 +599,7 @@ where
         let barrier = Barrier::new();
         let current_array_ptr = self.array.load(Acquire, &barrier);
         if let Some(current_array_ref) = current_array_ptr.as_ref() {
-            current_array_ref.drop_old_array(true, &barrier);
+            current_array_ref.drop_old_array(&barrier);
             if let Some(current_array) = self.array.swap((None, Tag::None), Relaxed) {
                 barrier.reclaim(current_array);
             }
@@ -746,14 +609,14 @@ where
 
 impl<K, V, H> HashTable<K, V, H, CELL_SIZE, false> for HashMap<K, V, H>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: 'static + Eq + Hash + Sync,
+    V: 'static + Sync,
     H: BuildHasher,
 {
     fn hasher(&self) -> &H {
         &self.build_hasher
     }
-    fn cell_array_ptr(&self) -> &AtomicArc<CellArray<K, V, CELL_SIZE, false>> {
+    fn cell_array(&self) -> &AtomicArc<CellArray<K, V, CELL_SIZE, false>> {
         &self.array
     }
     fn minimum_capacity(&self) -> usize {

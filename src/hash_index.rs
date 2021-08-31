@@ -1,41 +1,43 @@
 use crate::common::cell::{CellIterator, CellLocker};
 use crate::common::cell_array::CellArray;
 use crate::common::hash_table::HashTable;
+use crate::ebr::{Arc, AtomicArc, Barrier, Ptr};
 
-use crossbeam_epoch::{Atomic, Guard, Shared};
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash};
 use std::iter::FusedIterator;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering::{Acquire, Relaxed};
+use std::sync::atomic::Ordering::Acquire;
 
 const CELL_SIZE: usize = 32;
 const DEFAULT_CAPACITY: usize = 64;
 
 /// A scalable concurrent hash index data structure.
 ///
-/// scc::HashIndex is a concurrent hash index data structure that is optimized for read operations.
-/// The key characteristics of scc::HashIndex are similar to that of scc::HashMap.
+/// [`HashIndex`] is a concurrent hash index data structure that is optimized for read
+/// operations. The key characteristics of [`HashIndex`] are similar to that of
+/// [`HashMap`](crate::HashMap).
 ///
-/// ## The key differences between scc::HashIndex and scc::HashMap
+/// ## The key differences between [`HashIndex`] and [`HashMap`](crate::HashMap).
 /// * Lock-free-read: read and scan operations do not entail shared data modification.
-/// * Immutability: the data in the container is treated immutable until it becomes unreachable.
+/// * Immutability: the data in the container is treated immutable until it becomes
+///   unreachable.
 ///
-/// ## The key statistics for scc::HashIndex
+/// ## The key statistics for [`HashIndex`]
 /// * The expected size of metadata for a single key-value pair: 2-byte.
-/// * The expected number of atomic operations required for an operation on a single key: 0 or 2.
+/// * The expected number of atomic operations required for an operation on a single key: 2.
 /// * The expected number of atomic variables accessed during a single key operation: 1.
 /// * The number of entries managed by a single metadata cell without a linked list: 32.
 /// * The number of entries a single linked list entry manages: 32.
 /// * The expected maximum linked list length when resize is triggered: log(capacity) / 8.
 pub struct HashIndex<K, V, H = RandomState>
 where
-    K: Clone + Eq + Hash + Sync,
-    V: Clone + Sync,
+    K: 'static + Clone + Eq + Hash + Sync,
+    V: 'static + Clone + Sync,
     H: BuildHasher,
 {
-    array: Atomic<CellArray<K, V, CELL_SIZE, true>>,
+    array: AtomicArc<CellArray<K, V, CELL_SIZE, true>>,
     minimum_capacity: usize,
     resizing_flag: AtomicBool,
     build_hasher: H,
@@ -43,16 +45,18 @@ where
 
 impl<K, V> Default for HashIndex<K, V, RandomState>
 where
-    K: Clone + Eq + Hash + Sync,
-    V: Clone + Sync,
+    K: 'static + Clone + Eq + Hash + Sync,
+    V: 'static + Clone + Sync,
 {
-    /// Creates a HashIndex instance with the default parameters.
+    /// Creates a [`HashIndex`] with the default parameters.
     ///
-    /// The default hash builder is RandomState, and the default capacity is 64.
+    /// The default hash builder is RandomState, and the default capacity is `64`.
     ///
     /// # Panics
     ///
     /// Panics if memory allocation fails.
+    ///
+    /// # Examples
     ///
     /// ```
     /// use scc::HashIndex;
@@ -61,10 +65,10 @@ where
     /// ```
     fn default() -> Self {
         HashIndex {
-            array: Atomic::new(CellArray::<K, V, CELL_SIZE, true>::new(
+            array: AtomicArc::from(Arc::new(CellArray::<K, V, CELL_SIZE, true>::new(
                 DEFAULT_CAPACITY,
-                Atomic::null(),
-            )),
+                AtomicArc::null(),
+            ))),
             minimum_capacity: DEFAULT_CAPACITY,
             resizing_flag: AtomicBool::new(false),
             build_hasher: RandomState::new(),
@@ -74,11 +78,11 @@ where
 
 impl<K, V, H> HashIndex<K, V, H>
 where
-    K: Clone + Eq + Hash + Sync,
-    V: Clone + Sync,
+    K: 'static + Clone + Eq + Hash + Sync,
+    V: 'static + Clone + Sync,
     H: BuildHasher,
 {
-    /// Creates an empty HashIndex instance with the given capacity and build hasher.
+    /// Creates an empty [`HashIndex`] with the given capacity and build hasher.
     ///
     /// The actual capacity is equal to or greater than the given capacity.
     ///
@@ -87,6 +91,7 @@ where
     /// Panics if memory allocation fails.
     ///
     /// # Examples
+    ///
     /// ```
     /// use scc::HashIndex;
     /// use std::collections::hash_map::RandomState;
@@ -104,179 +109,166 @@ where
     pub fn new(capacity: usize, build_hasher: H) -> HashIndex<K, V, H> {
         let initial_capacity = capacity.max(DEFAULT_CAPACITY);
         HashIndex {
-            array: Atomic::new(CellArray::<K, V, CELL_SIZE, true>::new(
+            array: AtomicArc::from(Arc::new(CellArray::<K, V, CELL_SIZE, true>::new(
                 initial_capacity,
-                Atomic::null(),
-            )),
+                AtomicArc::null(),
+            ))),
             minimum_capacity: initial_capacity,
             resizing_flag: AtomicBool::new(false),
             build_hasher,
         }
     }
 
-    /// Inserts a key-value pair into the HashIndex.
+    /// Inserts a key-value pair into the [`HashIndex`].
     ///
-    /// Returns an error with the given key-value pair attached if the key exists.
+    /// # Errors
+    ///
+    /// Returns an error along with the supplied key-value pair if the key exists.
     ///
     /// # Panics
     ///
-    /// Panics if memory allocation fails, or the number of entries in the target cell reaches u32::MAX.
+    /// Panics if memory allocation fails, or the number of entries in the target cell is
+    /// reached `u32::MAX`.
     ///
     /// # Examples
+    ///
     /// ```
     /// use scc::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = Default::default();
     ///
-    /// let result = hashindex.insert(1, 0);
-    /// assert!(result.is_ok());
-    ///
-    /// let result = hashindex.insert(1, 1);
-    /// if let Err((key, value)) = result {
-    ///     assert_eq!(key, 1);
-    ///     assert_eq!(value, 1);
-    /// } else {
-    ///     assert!(false);
-    /// }
+    /// assert!(hashindex.insert(1, 0).is_ok());
+    /// assert!(hashindex.insert(1, 1).unwrap_err(), (1, 1));
     /// ```
-    pub fn insert(&self, key: K, value: V) -> Result<(), (K, V)> {
-        let guard = crossbeam_epoch::pin();
-        let (cell_locker, key, partial_hash) = self.acquire(key, &guard);
-        if let Some((key, value)) = cell_locker.insert(key, value, partial_hash, &guard).1 {
-            return Err((key, value));
-        }
-        Ok(())
+    #[inline]
+    pub fn insert(&self, key: K, val: V) -> Result<(), (K, V)> {
+        self.insert_entry(key, val)
     }
 
-    /// Removes a key-value pair.
+    /// Removes a key-value pair and returns the key-value-pair if the key exists.
     ///
-    /// Returns false if the key does not exist.
+    /// This methods only marks the entry unreachable, and the instances will be reclaimed
+    /// later.
     ///
     /// # Examples
+    ///
     /// ```
     /// use scc::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = Default::default();
     ///
-    /// let result = hashindex.insert(1, 0);
-    /// assert!(result.is_ok());
-    ///
-    /// let result = hashindex.remove(&1);
-    /// assert!(result);
+    /// assert!(hashindex.remove(&1).is_none());
+    /// assert!(hashindex.insert(1, 0).is_ok());
+    /// assert_eq!(hashindex.remove(&1).unwrap(), (1, 0));
     /// ```
-    pub fn remove<Q>(&self, key: &Q) -> bool
+    #[inline]
+    pub fn remove<Q>(&self, key_ref: &Q) -> bool
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let (hash, partial_hash) = self.hash(key);
-        let guard = crossbeam_epoch::pin();
-        let (cell_locker, cell_index) = self.lock(hash, &guard);
-        if cell_locker.mark_removed(key, partial_hash, &guard) {
-            if cell_locker.cell_ref().num_entries() == 0 && cell_index < CELL_SIZE {
-                drop(cell_locker);
-                let current_array = self.array.load(Acquire, &guard);
-                let current_array_ref = Self::cell_array_ref(current_array);
-                if current_array_ref.old_array(&guard).is_null()
-                    && current_array_ref.num_cell_entries() > self.minimum_capacity
-                {
-                    // Triggers resize if the estimated load factor is smaller than 1/16.
-                    let sample_size = current_array_ref.sample_size();
-                    let mut num_entries = 0;
-                    for i in 0..sample_size {
-                        num_entries += current_array_ref.cell(i).num_entries();
-                        if num_entries >= sample_size * CELL_SIZE / 16 {
-                            return true;
+        self.remove_if(key_ref, |_| true)
+    }
+
+    /// Removes a key-value pair and returns the key-value-pair if the key exists and the given
+    /// condition meets.
+    ///
+    /// This methods only marks the entry unreachable, and the instances will be reclaimed
+    /// later.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = Default::default();
+    ///
+    /// assert!(hashindex.insert(1, 0).is_ok());
+    /// assert!(hashindex.remove_if(&1, |v| *v == 1).is_none());
+    /// assert_eq!(hashindex.remove_if(&1, |v| *v == 0).unwrap(), (1, 0));
+    /// ```
+    #[inline]
+    pub fn remove_if<Q, F: FnOnce(&V) -> bool>(&self, key_ref: &Q, condition: F) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        let (hash, partial_hash) = self.hash(&key_ref);
+        let barrier = Barrier::new();
+        let (cell_index, locker, mut iterator) =
+            self.acquire(key_ref, hash, partial_hash, &barrier);
+        if iterator.is_none() {
+            iterator = locker.cell_ref().get(key_ref, partial_hash, &barrier);
+        }
+        if let Some(iterator) = iterator {
+            let remove = if let Some((_, v)) = iterator.get() {
+                condition(v)
+            } else {
+                false
+            };
+            if remove {
+                if locker.mark_removed(key_ref, partial_hash, &barrier) {
+                    if cell_index < CELL_SIZE && locker.cell_ref().num_entries() < CELL_SIZE / 16 {
+                        drop(locker);
+                        let current_array_ptr = self.array.load(Acquire, &barrier);
+                        if let Some(current_array_ref) = current_array_ptr.as_ref() {
+                            if current_array_ref.old_array(&barrier).is_null()
+                                && current_array_ref.num_cell_entries() > self.minimum_capacity()
+                            {
+                                let sample_size = current_array_ref.sample_size();
+                                let mut num_entries = 0;
+                                for i in 0..sample_size {
+                                    num_entries += current_array_ref.cell(i).num_entries();
+                                    if num_entries >= sample_size * CELL_SIZE / 16 {
+                                        return true;
+                                    }
+                                }
+                                self.resize(&barrier);
+                            }
                         }
                     }
-                    self.resize(&guard);
+                    return true;
                 }
             }
-            return true;
         }
         false
     }
 
     /// Reads a key-value pair.
     ///
-    /// # Errors
-    ///
-    /// Returns None if the key does not exist.
+    /// Returns `None` if the key does not exist.
     ///
     /// # Examples
+    ///
     /// ```
     /// use scc::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = Default::default();
     ///
-    /// let result = hashindex.insert(1, 0);
-    /// assert!(result.is_ok());
-    ///
-    /// let result = hashindex.read(&1, |_, &value| value);
-    /// if let Some(result) = result {
-    ///     assert_eq!(result, 0);
-    /// } else {
-    ///     assert!(false);
-    /// }
+    /// assert!(hashindex.insert(1, 0).is_ok());
+    /// assert!(hashindex.read(&1, |_, v| *v).unwrap(), 0);
     /// ```
-    pub fn read<Q, R, F: FnOnce(&Q, &V) -> R>(&self, key: &Q, f: F) -> Option<R>
+    #[inline]
+    pub fn read<Q, R, F: FnOnce(&Q, &V) -> R>(&self, key_ref: &Q, reader: F) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let (hash, partial_hash) = self.hash(key);
-        let guard = crossbeam_epoch::pin();
-
-        // An acquire fence is required to correctly load the contents of the array.
-        let mut current_array_shared = self.array.load(Acquire, &guard);
-        loop {
-            let current_array_ref = Self::cell_array_ref(current_array_shared);
-            let old_array_shared = current_array_ref.old_array(&guard);
-            if !old_array_shared.is_null()
-                && !current_array_ref.partial_rehash(
-                    |key| self.hash(key),
-                    |key, value| Some((key.clone(), value.clone())),
-                    &guard,
-                )
-            {
-                let old_array_ref = Self::cell_array_ref(old_array_shared);
-                let cell_index = old_array_ref.calculate_cell_index(hash);
-                let cell_ref = old_array_ref.cell(cell_index);
-                if let Some(entry) = cell_ref.search(key, partial_hash, &guard) {
-                    return Some(f(entry.0.borrow(), &entry.1));
-                }
-            }
-            let cell_index = current_array_ref.calculate_cell_index(hash);
-            let cell_ref = current_array_ref.cell(cell_index);
-            if let Some(entry) = cell_ref.search(key, partial_hash, &guard) {
-                return Some(f(entry.0.borrow(), &entry.1));
-            }
-            let new_current_array_shared = self.array.load(Acquire, &guard);
-            if new_current_array_shared == current_array_shared {
-                break;
-            }
-            // The pointer value has changed.
-            current_array_shared = new_current_array_shared;
-        }
-        None
+        self.read_entry(key_ref, reader)
     }
 
     /// Checks if the key exists.
     ///
     /// # Examples
+    ///
     /// ```
     /// use scc::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = Default::default();
     ///
-    /// let result = hashindex.contains(&1);
-    /// assert!(!result);
-    ///
-    /// let result = hashindex.insert(1, 0);
-    /// assert!(result.is_ok());
-    ///
-    /// let result = hashindex.contains(&1);
-    /// assert!(result);
+    /// assert!(!hashindex.contains(&1));
+    /// assert!(hashindex.insert(1, 0).is_ok());
+    /// assert!(hashindex.contains(&1));
     /// ```
     pub fn contains<Q>(&self, key: &Q) -> bool
     where
@@ -289,80 +281,68 @@ where
     /// Clears all the key-value pairs.
     ///
     /// # Examples
+    ///
     /// ```
     /// use scc::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = Default::default();
     ///
-    /// let result = hashindex.insert(1, 0);
-    /// assert!(result.is_ok());
-    ///
-    /// let result = hashindex.len();
-    /// assert_eq!(result, 1);
-    ///
-    /// let result = hashindex.clear();
-    /// assert_eq!(result, 1);
-    ///
-    /// let result = hashindex.len();
-    /// assert_eq!(result, 0);
+    /// assert!(hashindex.insert(1, 0, &barrier).is_ok());
+    /// assert_eq!(hashindex.clear(), 1);
     /// ```
     pub fn clear(&self) -> usize {
         let mut num_removed = 0;
-        let guard = crossbeam_epoch::pin();
-        let mut current_array_shared = self.array.load(Acquire, &guard);
-        loop {
-            let current_array_ref = Self::cell_array_ref(current_array_shared);
-            let old_array_shared = current_array_ref.old_array(&guard);
-            if !old_array_shared.is_null() {
+        let barrier = Barrier::new();
+        let mut current_array_ptr = self.array.load(Acquire, &barrier);
+        while let Some(current_array_ref) = current_array_ptr.as_ref() {
+            if !current_array_ref.old_array(&barrier).is_null() {
                 while !current_array_ref.partial_rehash(
                     |key| self.hash(key),
                     |key, value| Some((key.clone(), value.clone())),
-                    &guard,
+                    &barrier,
                 ) {
+                    current_array_ptr = self.array.load(Acquire, &barrier);
                     continue;
                 }
             }
             for index in 0..current_array_ref.array_size() {
                 if let Some(mut cell_locker) =
-                    CellLocker::lock(current_array_ref.cell(index), &guard)
+                    CellLocker::lock(current_array_ref.cell(index), &barrier)
                 {
                     num_removed += cell_locker.cell_ref().num_entries();
-                    cell_locker.purge(&guard);
+                    cell_locker.purge(&barrier);
                 }
             }
-            let new_current_array_shared = self.array.load(Acquire, &guard);
-            if current_array_shared == new_current_array_shared {
-                self.resize(&guard);
+            let new_current_array_ptr = self.array.load(Acquire, &barrier);
+            if current_array_ptr == new_current_array_ptr {
+                self.resize(&barrier);
                 break;
             }
-            current_array_shared = new_current_array_shared;
+            current_array_ptr = new_current_array_ptr;
         }
         num_removed
     }
 
-    /// Returns the number of entries in the HashIndex.
+    /// Returns the number of entries in the [`HashIndex`].
     ///
-    /// It scans the entire metadata cell array to calculate the number of valid entries,
-    /// making its time complexity O(N).
-    /// Apart from being inefficient, it may return a smaller number when the HashIndex is being resized.
+    /// It scans the entire array to calculate the number of valid entries, making its time
+    /// complexity `O(N)`.
     ///
     /// # Examples
+    ///
     /// ```
     /// use scc::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = Default::default();
     ///
-    /// let result = hashindex.insert(1, 0);
-    /// assert!(result.is_ok());
-    ///
-    /// let result = hashindex.len();
-    /// assert_eq!(result, 1);
+    /// assert!(hashindex.insert(1, 0).is_ok());
+    /// assert_eq!(hashindex.len(), 1);
     /// ```
     pub fn len(&self) -> usize {
-        self.num_entries()
+        self.num_entries(&Barrier::new())
     }
 
-    /// Returns the capacity of the HashIndex.
+    /// Returns the capacity of the [`HashIndex`].
     ///
     /// # Examples
     /// ```
@@ -370,18 +350,19 @@ where
     /// use std::collections::hash_map::RandomState;
     ///
     /// let hashindex: HashIndex<u64, u32, RandomState> = HashIndex::new(1000000, RandomState::new());
-    ///
-    /// let result = hashindex.capacity();
-    /// assert_eq!(result, 1048576);
+    /// assert_eq!(hashindex.capacity(), 1048576);
     /// ```
     pub fn capacity(&self) -> usize {
-        self.num_slots()
+        self.num_slots(&Barrier::new())
     }
 
-    /// Returns a Visitor.
+    /// Returns a [`Visitor`] that iterates over all the entries in the [`HashIndex`].
     ///
-    /// It is guaranteed to go through all the key-value pairs pertaining in the HashIndex at the moment,
-    /// however the same key-value pair can be visited more than once if the HashIndex is being resized.
+    /// It is guaranteed to go through all the key-value pairs pertaining in the [`HashIndex`]
+    /// at the moment, however the same key-value pair can be visited more than once if the
+    /// [`HashIndex`] is being resized.
+    ///
+    /// It requires the user to supply a reference to a [`Barrier`].
     ///
     /// # Examples
     /// ```
@@ -400,116 +381,34 @@ where
     ///     assert_eq!(iter, (&1, &0));
     /// }
     /// ```
-    pub fn iter(&self) -> Visitor<K, V, H> {
+    pub fn iter<'h, 'b>(&'h self, barrier: &'b Barrier) -> Visitor<'h, 'b, K, V, H> {
         Visitor {
             hash_index: self,
-            current_array: Shared::null(),
+            current_array_ptr: Ptr::null(),
             current_index: 0,
             current_cell_iterator: None,
-            guard: None,
-        }
-    }
-
-    /// Acquires a Cell for inserting a new key-value pair.
-    fn acquire<'g>(
-        &self,
-        key: K,
-        guard: &'g Guard,
-    ) -> (CellLocker<'g, K, V, CELL_SIZE, true>, K, u8) {
-        let (hash, partial_hash) = self.hash(&key);
-        let mut resize_triggered = false;
-        loop {
-            let (cell_locker, cell_index) = self.lock(hash, guard);
-            if !resize_triggered
-                && cell_index < CELL_SIZE
-                && cell_locker.cell_ref().num_entries() > (CELL_SIZE / 16) * 15
-            {
-                drop(cell_locker);
-                resize_triggered = true;
-                let current_array = self.array.load(Acquire, &guard);
-                let current_array_ref = Self::cell_array_ref(current_array);
-                if current_array_ref.old_array(&guard).is_null() {
-                    // Triggers resize if the estimated load factor is greater than 7/8.
-                    let sample_size = current_array_ref.sample_size();
-                    let threshold = sample_size * (CELL_SIZE / 8) * 7;
-                    let mut num_entries = 0;
-                    for i in 0..sample_size {
-                        num_entries += current_array_ref.cell(i).num_entries();
-                        if num_entries > threshold {
-                            self.resize(guard);
-                            break;
-                        }
-                    }
-                }
-                continue;
-            }
-            return (cell_locker, key, partial_hash);
-        }
-    }
-
-    /// Locks a cell.
-    fn lock<'g>(
-        &self,
-        hash: u64,
-        guard: &'g Guard,
-    ) -> (CellLocker<'g, K, V, CELL_SIZE, true>, usize) {
-        // The description about the loop can be found in HashMap::acquire.
-        loop {
-            // An acquire fence is required to correctly load the contents of the array.
-            let current_array_shared = self.array.load(Acquire, &guard);
-            let current_array_ref = Self::cell_array_ref(current_array_shared);
-            let old_array_shared = current_array_ref.old_array(&guard);
-            if !old_array_shared.is_null() {
-                if current_array_ref.partial_rehash(
-                    |key| self.hash(key),
-                    |key, value| Some((key.clone(), value.clone())),
-                    &guard,
-                ) {
-                    continue;
-                }
-                let old_array_ref = Self::cell_array_ref(old_array_shared);
-                let cell_index = old_array_ref.calculate_cell_index(hash);
-                if let Some(mut cell_locker) =
-                    CellLocker::lock(old_array_ref.cell(cell_index), guard)
-                {
-                    // Kills the Cell.
-                    current_array_ref.kill_cell(
-                        &mut cell_locker,
-                        old_array_ref,
-                        cell_index,
-                        &|key| self.hash(key),
-                        &|key, value| Some((key.clone(), value.clone())),
-                        &guard,
-                    );
-                }
-            }
-            let cell_index = current_array_ref.calculate_cell_index(hash);
-            if let Some(cell_locker) = CellLocker::lock(current_array_ref.cell(cell_index), guard) {
-                return (cell_locker, cell_index);
-            }
-            // Reaching here indicates that self.array is updated.
+            barrier_ref: barrier,
         }
     }
 }
 
 impl<K, V, H> Drop for HashIndex<K, V, H>
 where
-    K: Clone + Eq + Hash + Sync,
-    V: Clone + Sync,
+    K: 'static + Clone + Eq + Hash + Sync,
+    V: 'static + Clone + Sync,
     H: BuildHasher,
 {
     fn drop(&mut self) {
-        // The HashIndex has become unreachable, therefore pinning is unnecessary.
-        let guard = unsafe { crossbeam_epoch::unprotected() };
-        let current_array = self.array.load(Acquire, guard);
-        let current_array_ref = Self::cell_array_ref(current_array);
-        current_array_ref.drop_old_array(true, guard);
-        let array = self.array.swap(Shared::null(), Relaxed, guard);
-        if !array.is_null() {
-            let array = unsafe { array.into_owned() };
-            for index in 0..array.array_size() {
-                if let Some(mut cell_locker) = CellLocker::lock(array.cell(index), guard) {
-                    cell_locker.purge(&guard);
+        self.clear();
+        let barrier = Barrier::new();
+        let current_array_ptr = self.array.load(Acquire, &barrier);
+        if let Some(current_array_ref) = current_array_ptr.as_ref() {
+            current_array_ref.drop_old_array(&barrier);
+            for index in 0..current_array_ref.array_size() {
+                if let Some(mut cell_locker) =
+                    CellLocker::lock(current_array_ref.cell(index), &barrier)
+                {
+                    cell_locker.purge(&barrier);
                 }
             }
         }
@@ -518,14 +417,14 @@ where
 
 impl<K, V, H> HashTable<K, V, H, CELL_SIZE, true> for HashIndex<K, V, H>
 where
-    K: Clone + Eq + Hash + Sync,
-    V: Clone + Sync,
+    K: 'static + Clone + Eq + Hash + Sync,
+    V: 'static + Clone + Sync,
     H: BuildHasher,
 {
     fn hasher(&self) -> &H {
         &self.build_hasher
     }
-    fn cell_array_ptr(&self) -> &Atomic<CellArray<K, V, CELL_SIZE, true>> {
+    fn cell_array(&self) -> &AtomicArc<CellArray<K, V, CELL_SIZE, true>> {
         &self.array
     }
     fn minimum_capacity(&self) -> usize {
@@ -540,53 +439,40 @@ where
 ///
 /// It is guaranteed to visit all the key-value pairs that outlive the Visitor.
 /// However, the same key-value pair can be visited more than once.
-pub struct Visitor<'h, K, V, H>
+pub struct Visitor<'h, 'b, K, V, H>
 where
-    K: Clone + Eq + Hash + Sync,
-    V: Clone + Sync,
+    K: 'static + Clone + Eq + Hash + Sync,
+    V: 'static + Clone + Sync,
     H: BuildHasher,
 {
     hash_index: &'h HashIndex<K, V, H>,
-    current_array: Shared<'h, CellArray<K, V, CELL_SIZE, true>>,
+    current_array_ptr: Ptr<'b, CellArray<K, V, CELL_SIZE, true>>,
     current_index: usize,
     current_cell_iterator: Option<CellIterator<'h, K, V, CELL_SIZE, true>>,
-    guard: Option<Guard>,
+    barrier_ref: &'b Barrier,
 }
 
-impl<'h, K, V, H> Visitor<'h, K, V, H>
+impl<'h, 'b, K, V, H> Iterator for Visitor<'h, 'b, K, V, H>
 where
-    K: Clone + Eq + Hash + Sync,
-    V: Clone + Sync,
-    H: BuildHasher,
+    K: 'static + Clone + Eq + Hash + Sync,
+    V: 'static + Clone + Sync,
+    H: 'static + BuildHasher,
 {
-    fn guard_ref(&self) -> &'h Guard {
-        // The Rust type system cannot prove that self.guard outlives.
-        unsafe { std::mem::transmute::<_, &'h Guard>(self.guard.as_ref().unwrap()) }
-    }
-}
-
-impl<'h, K, V, H> Iterator for Visitor<'h, K, V, H>
-where
-    K: Clone + Eq + Hash + Sync,
-    V: Clone + Sync,
-    H: BuildHasher,
-{
-    type Item = (&'h K, &'h V);
+    type Item = (&'b K, &'b V);
     fn next(&mut self) -> Option<Self::Item> {
-        if self.guard.is_none() {
+        if self.current_array_ptr.is_null() {
             // Starts scanning.
-            self.guard.replace(crossbeam_epoch::pin());
-            let current_array = self.hash_index.array.load(Acquire, self.guard_ref());
-            let current_array_ref = HashIndex::<K, V, H>::cell_array_ref(current_array);
-            let old_array = current_array_ref.old_array(self.guard_ref());
-            self.current_array = if !old_array.is_null() {
-                old_array
+            let current_array_ptr = self.hash_index.array.load(Acquire, self.barrier_ref);
+            let current_array_ref = current_array_ptr.as_ref().unwrap();
+            let old_array_ptr = current_array_ref.old_array(self.barrier_ref);
+            self.current_array_ptr = if !old_array_ptr.is_null() {
+                old_array_ptr
             } else {
-                current_array
+                current_array_ptr
             };
             self.current_cell_iterator.replace(CellIterator::new(
-                HashIndex::<K, V, H>::cell_array_ref(self.current_array).cell(0),
-                self.guard_ref(),
+                self.current_array_ptr.as_ref().unwrap().cell(0),
+                self.barrier_ref,
             ));
         }
         loop {
@@ -597,42 +483,42 @@ where
                 }
             }
             // Proceeds to the next Cell.
-            let array_ref = HashIndex::<K, V, H>::cell_array_ref(self.current_array);
+            let array_ref = self.current_array_ptr.as_ref().unwrap();
             self.current_index += 1;
             if self.current_index == array_ref.array_size() {
-                let current_array = self.hash_index.array.load(Acquire, self.guard_ref());
-                if self.current_array == current_array {
+                let current_array_ptr = self.hash_index.array.load(Acquire, self.barrier_ref);
+                if self.current_array_ptr == current_array_ptr {
                     // Finished scanning the entire array.
                     break;
                 }
-                let current_array_ref = HashIndex::<K, V, H>::cell_array_ref(current_array);
-                let old_array = current_array_ref.old_array(self.guard_ref());
-                if self.current_array == old_array {
+                let current_array_ref = current_array_ptr.as_ref().unwrap();
+                let old_array_ptr = current_array_ref.old_array(self.barrier_ref);
+                if self.current_array_ptr == old_array_ptr {
                     // Starts scanning the current array.
-                    self.current_array = current_array;
+                    self.current_array_ptr = current_array_ptr;
                     self.current_index = 0;
                     self.current_cell_iterator.replace(CellIterator::new(
-                        HashIndex::<K, V, H>::cell_array_ref(self.current_array).cell(0),
-                        self.guard_ref(),
+                        current_array_ref.cell(0),
+                        self.barrier_ref,
                     ));
                     continue;
                 }
                 // Starts from the very beginning.
-                self.current_array = if !old_array.is_null() {
-                    old_array
+                self.current_array_ptr = if !old_array_ptr.is_null() {
+                    old_array_ptr
                 } else {
-                    current_array
+                    current_array_ptr
                 };
                 self.current_index = 0;
                 self.current_cell_iterator.replace(CellIterator::new(
-                    HashIndex::<K, V, H>::cell_array_ref(self.current_array).cell(0),
-                    self.guard_ref(),
+                    self.current_array_ptr.as_ref().unwrap().cell(0),
+                    self.barrier_ref,
                 ));
                 continue;
             } else {
                 self.current_cell_iterator.replace(CellIterator::new(
                     array_ref.cell(self.current_index),
-                    self.guard_ref(),
+                    self.barrier_ref,
                 ));
             }
         }
@@ -640,10 +526,10 @@ where
     }
 }
 
-impl<'h, K, V, H> FusedIterator for Visitor<'h, K, V, H>
+impl<'h, 'b, K, V, H> FusedIterator for Visitor<'h, 'b, K, V, H>
 where
-    K: Clone + Eq + Hash + Sync,
-    V: Clone + Sync,
-    H: BuildHasher,
+    K: 'static + Clone + Eq + Hash + Sync,
+    V: 'static + Clone + Sync,
+    H: 'static + BuildHasher,
 {
 }
