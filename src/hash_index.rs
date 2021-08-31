@@ -1,14 +1,14 @@
 use crate::common::cell::{CellIterator, CellLocker};
 use crate::common::cell_array::CellArray;
 use crate::common::hash_table::HashTable;
-use crate::ebr::{Arc, AtomicArc, Barrier, Ptr};
+use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash};
 use std::iter::FusedIterator;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering::Acquire;
+use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
 const CELL_SIZE: usize = 32;
 const DEFAULT_CAPACITY: usize = 64;
@@ -407,12 +407,8 @@ where
         let current_array_ptr = self.array.load(Acquire, &barrier);
         if let Some(current_array_ref) = current_array_ptr.as_ref() {
             current_array_ref.drop_old_array(&barrier);
-            for index in 0..current_array_ref.array_size() {
-                if let Some(mut cell_locker) =
-                    CellLocker::lock(current_array_ref.cell(index), &barrier)
-                {
-                    cell_locker.purge(&barrier);
-                }
+            if let Some(current_array) = self.array.swap((None, Tag::None), Relaxed) {
+                barrier.reclaim(current_array);
             }
         }
     }

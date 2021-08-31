@@ -2,13 +2,14 @@ use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 
 use std::borrow::Borrow;
 use std::mem::MaybeUninit;
+use std::ptr;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicPtr, AtomicU32};
 use std::sync::{Condvar, Mutex};
 
 /// Flags are embedded inside a partial hash value.
-const OCCUPIED: u8 = 1u8 << 6;
-const REMOVED: u8 = 1u8 << 7;
+const OCCUPIED: u8 = 1_u8 << 6;
+const REMOVED: u8 = 1_u8 << 7;
 
 /// State bits.
 const KILLED: u32 = 1_u32 << 31;
@@ -177,7 +178,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
         let mut current = self.wait_queue.load(Acquire);
         while let Err(actual) =
             self.wait_queue
-                .compare_exchange(current, std::ptr::null_mut(), Acquire, Relaxed)
+                .compare_exchange(current, ptr::null_mut(), Acquire, Relaxed)
         {
             if actual.is_null() {
                 return;
@@ -484,7 +485,7 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'b, K, V
             } else {
                 data_array_mut_ref.partial_hash_array[iterator.current_index] = 0;
                 return Some(unsafe {
-                    std::ptr::replace(entry_ptr, MaybeUninit::uninit().assume_init())
+                    ptr::replace(entry_ptr, MaybeUninit::uninit().assume_init())
                 });
             }
         }
@@ -553,7 +554,7 @@ impl<'b, K: 'static + Clone + Eq, V: 'static + Clone, const SIZE: usize, const L
             let cell_mut_ref =
                 unsafe { &mut *(self.cell_ref as *const _ as *mut Cell<K, V, SIZE, LOCK_FREE>) };
             cell_mut_ref.num_entries -= 1;
-            self.optimize(data_array_ptr, self.cell_ref.num_entries, barrier);
+            self.optimize(self.cell_ref.num_entries, barrier);
         }
         removed
     }
@@ -564,12 +565,7 @@ impl<'b, K: 'static + Clone + Eq, V: 'static + Clone, const SIZE: usize, const L
     ///  1. Clears the entire [`Cell`] if there is no valid entry.
     ///  2. Coalesces if the given data array is non-empty and the linked list is sparse.
     ///  3. Unlinks the given data array if the data array is empty.
-    fn optimize(
-        &self,
-        data_array: Ptr<DataArray<K, V, SIZE>>,
-        num_entries: u32,
-        barrier: &Barrier,
-    ) {
+    fn optimize(&self, num_entries: u32, barrier: &Barrier) {
         if num_entries == 0 {
             // Clears the entire Cell.
             if let Some(data_array) = self.cell_ref.data.swap((None, Tag::None), Relaxed) {
@@ -578,86 +574,53 @@ impl<'b, K: 'static + Clone + Eq, V: 'static + Clone, const SIZE: usize, const L
             return;
         }
 
-        for hash in data_array.as_ref().unwrap().partial_hash_array.iter() {
-            if (hash & REMOVED) == 0 {
-                // The given data array is still valid, therefore it tries to coalesce the
-                // linked list.
-                let head_data_array_ptr = self.cell_ref.data.load(Relaxed, barrier);
-                let head_data_array_link_ptr = head_data_array_ptr
-                    .as_ref()
-                    .unwrap()
-                    .link
-                    .load(Relaxed, barrier);
-                if !head_data_array_link_ptr.is_null() && (num_entries as usize) < SIZE / 4 {
-                    // Replaces the head with a new `DataArray`.
-                    let mut new_data_array = Arc::new(DataArray::new());
-                    let mut new_array_index = 0;
-                    let mut current_data_array_ptr = head_data_array_ptr;
-                    while let Some(current_data_array_ref) = current_data_array_ptr.as_ref() {
-                        for (index, hash) in
-                            current_data_array_ref.partial_hash_array.iter().enumerate()
-                        {
-                            if (hash & (REMOVED | OCCUPIED)) == OCCUPIED {
-                                let entry_ptr = current_data_array_ref.data[index].as_ptr();
-                                let entry_ref = unsafe { &(*entry_ptr) };
-                                unsafe {
-                                    new_data_array.get_mut().unwrap().data[new_array_index]
-                                        .as_mut_ptr()
-                                        .write(entry_ref.clone());
-                                    new_data_array.get_mut().unwrap().partial_hash_array
-                                        [new_array_index] = *hash;
-                                }
-                                new_array_index += 1;
-                            }
-                        }
-                        if new_array_index == num_entries as usize {
-                            break;
-                        }
-                        current_data_array_ptr = current_data_array_ref.link.load(Relaxed, barrier);
-                    }
-                    if let Some(old_array) = self
-                        .cell_ref
-                        .data
-                        .swap((Some(new_data_array), Tag::None), Release)
-                    {
-                        barrier.reclaim(old_array);
-                    }
-                }
-                return;
-            }
+        if num_entries as usize > SIZE / 4 {
+            // Too many entries for it to coalesce.
+            return;
         }
 
-        // Unlinks the given data array from the linked list.
-        let mut prev_data_array_ptr: Ptr<DataArray<K, V, SIZE>> = Ptr::null();
-        let mut current_data_array_ptr = self.cell_ref.data.load(Relaxed, barrier);
+        let head_data_array_ptr = self.cell_ref.data.load(Relaxed, barrier);
+        let head_data_array_link_ptr = head_data_array_ptr
+            .as_ref()
+            .unwrap()
+            .link
+            .load(Relaxed, barrier);
+
+        if head_data_array_link_ptr.is_null() {
+            // No linked list attached to the head.
+            return;
+        }
+
+        // Replaces the head with a new `DataArray`.
+        let mut new_data_array = Arc::new(DataArray::new());
+        let mut new_array_index = 0;
+        let mut current_data_array_ptr = head_data_array_ptr;
         while let Some(current_data_array_ref) = current_data_array_ptr.as_ref() {
-            let next_data_array_ptr = current_data_array_ref.link.load(Relaxed, barrier);
-            if current_data_array_ptr == data_array {
-                if let Some(next_data_array) = next_data_array_ptr.try_into_arc() {
-                    let obsolete = if let Some(prev_data_array_ref) = prev_data_array_ptr.as_ref() {
-                        prev_data_array_ref
-                            .link
-                            .swap((Some(next_data_array), Tag::None), Relaxed)
-                    } else {
-                        // Updates the head.
-                        self.cell_ref
-                            .data
-                            .swap((Some(next_data_array), Tag::None), Relaxed)
-                    };
-                    if let Some(obsolete_array) = obsolete {
-                        barrier.reclaim(obsolete_array);
+            for (index, hash) in current_data_array_ref.partial_hash_array.iter().enumerate() {
+                if (hash & (REMOVED | OCCUPIED)) == OCCUPIED {
+                    let entry_ptr = current_data_array_ref.data[index].as_ptr();
+                    unsafe {
+                        let entry_ref = &(*entry_ptr);
+                        new_data_array.get_mut().unwrap().data[new_array_index]
+                            .as_mut_ptr()
+                            .write(entry_ref.clone());
+                        new_data_array.get_mut().unwrap().partial_hash_array[new_array_index] =
+                            *hash;
                     }
+                    new_array_index += 1;
                 }
-                if let Some(obsolete_array) =
-                    current_data_array_ref.link.swap((None, Tag::None), Relaxed)
-                {
-                    barrier.reclaim(obsolete_array);
-                }
-                break;
-            } else {
-                prev_data_array_ptr = current_data_array_ptr;
-                current_data_array_ptr = next_data_array_ptr;
             }
+            if new_array_index == num_entries as usize {
+                break;
+            }
+            current_data_array_ptr = current_data_array_ref.link.load(Relaxed, barrier);
+        }
+        if let Some(old_array) = self
+            .cell_ref
+            .data
+            .swap((Some(new_data_array), Tag::None), Release)
+        {
+            barrier.reclaim(old_array);
         }
     }
 }
@@ -806,7 +769,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize> Drop for DataArray<K, V, SI
         for (index, hash) in self.partial_hash_array.iter().enumerate() {
             if (hash & OCCUPIED) == OCCUPIED {
                 let entry_mut_ptr = self.data[index].as_mut_ptr();
-                unsafe { std::ptr::drop_in_place(entry_mut_ptr) };
+                unsafe { ptr::drop_in_place(entry_mut_ptr) };
             }
         }
     }
