@@ -266,6 +266,30 @@ impl<T: 'static> AtomicArc<T> {
             Self::null()
         }
     }
+
+    /// Tries to convert itself into an [`Arc`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::{AtomicArc, Barrier};
+    /// use std::sync::atomic::Ordering::Relaxed;
+    ///
+    /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(47);
+    /// let barrier = Barrier::new();
+    /// let arc: Arc<usize> = atomic_arc.try_into_arc(Relaxed, &barrier).unwrap();
+    /// assert_eq!(*arc, 47);
+    /// ```
+    #[inline]
+    pub fn try_into_arc(self, order: Ordering, _barrier: &Barrier) -> Option<Arc<T>> {
+        let ptr = self.instance_ptr.swap(order);
+        if let Some(underlying_ptr) = NonNull::new(Tag::unset_tag(ptr)) {
+            if unsafe { underlying_ptr.as_ref() }.try_add_ref() {
+                return Some(Arc::from(underlying_ptr));
+            }
+        }
+        None
+    }
 }
 
 impl<T: 'static> Clone for AtomicArc<T> {

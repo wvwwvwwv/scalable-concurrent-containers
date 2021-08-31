@@ -127,11 +127,11 @@ impl<'b, T> Ptr<'b, T> {
     /// ```
     /// use scc::ebr::{Arc, Barrier, Ptr};
     ///
-    /// let arc: Arc<usize> = Arc::new(10);
+    /// let arc: Arc<usize> = Arc::new(83);
     /// let barrier = Barrier::new();
     /// let ptr = arc.ptr(&barrier);
     /// let converted_arc = ptr.try_into_arc().unwrap();
-    /// assert_eq!(*converted_arc, 10);
+    /// assert_eq!(*converted_arc, 83);
     /// ```
     #[inline]
     pub fn try_into_arc(self) -> Option<Arc<T>> {

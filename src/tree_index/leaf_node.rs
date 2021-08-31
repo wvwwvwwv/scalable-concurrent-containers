@@ -607,22 +607,21 @@ where
 
         // The unbounded leaf becomes unreachable after all the other leaves are gone.
         let fully_empty = if check_unbounded {
-            let unbounded_shared = self.leaves.1.load(Relaxed, barrier);
-            if unbounded_shared.is_null() {
-                debug_assert!(unbounded_shared.tag() == 1);
-                true
-            } else {
-                unsafe {
-                    if unbounded_shared.deref().obsolete() {
-                        // Data race resolution - see LeafScanner::jump.
-                        unbounded_shared.deref().pop_self(0, barrier);
-                        self.leaves.1.store(Shared::null().with_tag(1), Release);
-                        barrier.defer_destroy(unbounded_shared);
-                        true
-                    } else {
-                        false
+            let unbounded_ptr = self.leaves.1.load(Relaxed, barrier);
+            if let Some(unbounded_ref) = unbounded_ptr.as_ref() {
+                if unbounded_ref.obsolete() {
+                    // Data race resolution - see LeafScanner::jump.
+                    unbounded_ref.pop_self(0, barrier);
+                    if let Some(obsolete_leaf) = self.leaves.1.swap((None, Tag::First), Release) {
+                        barrier.reclaim(obsolete_leaf);
                     }
+                    true
+                } else {
+                    false
                 }
+            } else {
+                debug_assert!(unbounded_ptr.tag() == Tag::First);
+                true
             }
         } else {
             false
@@ -637,29 +636,27 @@ where
 
     /// Rolls back the ongoing split operation recursively.
     pub fn rollback(&self, barrier: &Barrier) {
-        let new_leaves = self.new_leaves.load(Relaxed, barrier);
-        unsafe {
+        let new_leaves_ptr = self.new_leaves.load(Relaxed, barrier);
+        if let Some(new_leaves_ref) = new_leaves_ptr.as_ref() {
             // Inserts the origin leaf into the linked list.
-            let low_key_leaf_shared = new_leaves.deref().low_key_leaf.load(Relaxed, barrier);
-            let high_key_leaf_shared = new_leaves.deref().high_key_leaf.load(Relaxed, barrier);
+            let low_key_leaf_ptr = new_leaves_ref.low_key_leaf.load(Relaxed, barrier);
+            let high_key_leaf_ptr = new_leaves_ref.high_key_leaf.load(Relaxed, barrier);
 
             // Rolls back the linked list state.
             //
             // In order to keep the forward_link flag of the origin leaf,
             // high_key_leaf must be opted out first.
-            high_key_leaf_shared.deref().pop_self(0, barrier);
-            low_key_leaf_shared.deref().pop_self(0, barrier);
-
-            // Drops the unreachable leaves.
-            barrier.defer_destroy(low_key_leaf_shared);
-            barrier.defer_destroy(high_key_leaf_shared);
+            high_key_leaf_ptr
+                .as_ref()
+                .map(|l| l.pop_self(Tag::None, barrier));
+            low_key_leaf_ptr
+                .as_ref()
+                .map(|l| l.pop_self(Tag::None, barrier));
 
             // Unlocks the leaf node.
-            drop(
-                self.new_leaves
-                    .swap(Shared::null(), Release, barrier)
-                    .into_owned(),
-            );
+            if let Some(new_leaves) = self.new_leaves.swap((None, Tag::None), Release) {
+                barrier.reclaim(new_leaves);
+            }
         };
     }
 
@@ -667,22 +664,21 @@ where
     ///
     /// It is called only when the leaf node is a temporary one for split/merge,
     /// or has become unreachable after split/merge/remove.
-    pub fn unlink(&self, guard: &Guard) {
+    pub fn unlink(&self, barrier: &Barrier) {
         for entry in LeafScanner::new(&self.leaves.0) {
-            entry.1.store(Shared::null(), Relaxed);
+            entry.1.swap((None, Tag::None), Relaxed);
         }
-        self.leaves.1.store(Shared::null().with_tag(1), Relaxed);
+        self.leaves.1.swap((None, Tag::None), Relaxed);
 
         // Keeps the leaf node locked to prevent locking attempts.
-        let unused_leaves = self
-            .new_leaves
-            .swap(Shared::null().with_tag(1), Relaxed, &guard);
-        if !unused_leaves.is_null() {
-            unsafe {
-                let obsolete_leaf = unused_leaves.deref().origin_leaf_ptr.load(Relaxed, &guard);
+        if let Some(unused_leaves) = self.new_leaves.swap((None, Tag::First), Relaxed) {
+            if let Some(obsolete_leaf) = unused_leaves
+                .origin_leaf_ptr
+                .swap((None, Tag::None), Relaxed)
+            {
                 // Makes the leaf unreachable before dropping it.
-                obsolete_leaf.deref().pop_self(0, guard);
-                guard.defer_destroy(obsolete_leaf);
+                obsolete_leaf.deref().pop_self(Tag::None, barrier);
+                barrier.reclaim(obsolete_leaf);
             }
         }
     }
@@ -693,7 +689,7 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
         &self,
         output: &mut T,
         depth: usize,
-        guard: &Guard,
+        barrier: &Barrier,
     ) -> std::io::Result<()> {
         // Collects information.
         let mut leaf_ref_array: [Option<(Option<&Leaf<K, V>>, Option<&K>, usize)>; ARRAY_SIZE + 1] =
@@ -702,18 +698,16 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
         let mut index = 0;
         while let Some(entry) = scanner.next() {
             if !scanner.removed() {
-                let leaf_share_ptr = entry.1.load(Relaxed, &guard);
-                let leaf_ref = unsafe { leaf_share_ptr.deref() };
-                leaf_ref_array[index].replace((Some(leaf_ref), Some(entry.0), index));
+                let leaf_ptr = entry.1.load(Relaxed, &barrier);
+                leaf_ref_array[index].replace((leaf_ptr.as_ref(), Some(entry.0), index));
             } else {
                 leaf_ref_array[index].replace((None, Some(entry.0), index));
             }
             index += 1;
         }
-        let unbounded_shared = self.leaves.1.load(Relaxed, &guard);
-        if !unbounded_shared.is_null() {
-            let leaf_ref = unsafe { unbounded_shared.deref() };
-            leaf_ref_array[index].replace((Some(leaf_ref), None, index));
+        let unbounded_ptr = self.leaves.1.load(Relaxed, &barrier);
+        if let Some(unbounded_ref) = unbounded_ptr.as_ref() {
+            leaf_ref_array[index].replace((Some(unbounded_ref), None, index));
         }
 
         // Prints the label.
@@ -772,13 +766,13 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
                     ))?;
                 }
                 output.write_fmt(format_args!("</table>\n>]\n"))?;
-                let prev_leaf = leaf_ref.backward_link().load(Acquire, guard);
+                let prev_leaf = leaf_ref.backward_link().load(Acquire, barrier);
                 if !prev_leaf.is_null() {
                     output.write_fmt(format_args!("{} -> {}\n", leaf_ref.id(), unsafe {
                         prev_leaf.deref().id()
                     }))?;
                 }
-                let next_leaf = leaf_ref.forward_link().load(Acquire, guard);
+                let next_leaf = leaf_ref.forward_link().load(Acquire, barrier);
                 if !next_leaf.is_null() {
                     output.write_fmt(format_args!("{} -> {}\n", leaf_ref.id(), unsafe {
                         next_leaf.deref().id()
@@ -788,36 +782,6 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
         }
 
         std::io::Result::Ok(())
-    }
-}
-
-impl<K: Clone + Ord + Send + Sync, V: Clone + Send + Sync> Drop for LeafNode<K, V> {
-    fn drop(&mut self) {
-        debug_assert!(self
-            .new_leaves
-            .load(Relaxed, unsafe { crossbeam_epoch::unprotected() })
-            .is_null());
-
-        // The leaf node has become unreachable, and so have all the children, therefore pinning is unnecessary.
-        for entry in LeafScanner::new(&self.leaves.0) {
-            let child = entry
-                .1
-                .load(Acquire, unsafe { crossbeam_epoch::unprotected() });
-            if !child.is_null() {
-                unsafe {
-                    drop(child.into_owned());
-                }
-            }
-        }
-        let unbounded_shared = self
-            .leaves
-            .1
-            .load(Acquire, unsafe { crossbeam_epoch::unprotected() });
-        if !unbounded_shared.is_null() {
-            unsafe {
-                drop(unbounded_shared.into_owned());
-            }
-        }
     }
 }
 
