@@ -334,7 +334,7 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'b, K, V
     }
 
     /// Returns a reference to the [`Cell`].
-    pub fn cell_ref(&self) -> &Cell<K, V, SIZE, LOCK_FREE> {
+    pub fn cell_ref(&self) -> &'b Cell<K, V, SIZE, LOCK_FREE> {
         self.cell_ref
     }
 
@@ -355,7 +355,7 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'b, K, V
         let cell_mut_ref =
             unsafe { &mut *(self.cell_ref as *const _ as *mut Cell<K, V, SIZE, LOCK_FREE>) };
         let mut data_array_ptr = self.cell_ref.data.load(Relaxed, barrier);
-        let data_array_head = data_array_ptr;
+        let data_array_head_ptr = data_array_ptr.clone();
         let preferred_index = partial_hash as usize % SIZE;
         let expected_hash = (partial_hash & (!REMOVED)) | OCCUPIED;
         let mut free_data_array: Option<Ptr<DataArray<K, V, SIZE>>> = None;
@@ -387,20 +387,23 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'b, K, V
             data_array_ptr = data_array_ref.link.load(Relaxed, barrier);
         }
 
-        if let Some(mut free_data_array_ptr) = free_data_array.take() {
+        if let Some(free_data_array_ptr) = free_data_array.take() {
             let data_array_ref = free_data_array_ptr.as_ref().unwrap();
             debug_assert_eq!(data_array_ref.partial_hash_array[free_index], 0u8);
             unsafe {
-                data_array_ref.data[free_index]
+                let data_array_mut_ref = &mut *(data_array_ref as *const DataArray<K, V, SIZE>
+                    as *mut DataArray<K, V, SIZE>);
+                data_array_mut_ref.data[free_index]
                     .as_mut_ptr()
-                    .write((key, value))
+                    .write((key, value));
+                if LOCK_FREE {
+                    // A release fence is required to make the contents fully visible to a reader
+                    // having found the slot occupied.
+                    std::sync::atomic::fence(Release);
+                }
+                data_array_mut_ref.partial_hash_array[free_index] = expected_hash;
             };
-            if LOCK_FREE {
-                // A release fence is required to make the contents fully visible to a reader
-                // having found the slot occupied.
-                std::sync::atomic::fence(Release);
-            }
-            data_array_ref.partial_hash_array[free_index] = expected_hash;
+
             cell_mut_ref.num_entries += 1;
             return (
                 CellIterator {
@@ -415,7 +418,7 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'b, K, V
             // Inserts a new DataArray at the head.
             let mut new_data_array = Arc::new(DataArray::new());
             unsafe {
-                new_data_array.data[preferred_index]
+                new_data_array.get_mut().unwrap().data[preferred_index]
                     .as_mut_ptr()
                     .write((key, value))
             };
@@ -424,14 +427,17 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'b, K, V
                 // having found the slot occupied.
                 std::sync::atomic::fence(Release);
             }
-            new_data_array.partial_hash_array[preferred_index] = expected_hash;
+            new_data_array.get_mut().unwrap().partial_hash_array[preferred_index] = expected_hash;
+
             // Relaxed is sufficient as it is unimportant to read the latest state of the
             // partial hash value for readers.
-            new_data_array.link.store(data_array_head, Relaxed);
+            new_data_array
+                .link
+                .swap((data_array_head_ptr.try_into_arc(), Tag::None), Relaxed);
             let write_order = if LOCK_FREE { Release } else { Relaxed };
             self.cell_ref
                 .data
-                .swap(new_data_array, write_order, barrier);
+                .swap((Some(new_data_array), Tag::None), write_order);
             cell_mut_ref.num_entries += 1;
             return (
                 CellIterator {
@@ -468,15 +474,18 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'b, K, V
             let cell_mut_ref =
                 unsafe { &mut *(self.cell_ref as *const _ as *mut Cell<K, V, SIZE, LOCK_FREE>) };
             cell_mut_ref.num_entries -= 1;
-            let data_array_mut_ref =
-                unsafe { &mut *(data_array_ref as *const DataArray<K, V> as *mut DataArray<K, V>) };
+            let data_array_mut_ref = unsafe {
+                &mut *(data_array_ref as *const DataArray<K, V, SIZE> as *mut DataArray<K, V, SIZE>)
+            };
             let entry_ptr = data_array_mut_ref.data[iterator.current_index].as_mut_ptr();
             if LOCK_FREE {
                 data_array_mut_ref.partial_hash_array[iterator.current_index] |= REMOVED;
-                None
+                return None;
             } else {
                 data_array_mut_ref.partial_hash_array[iterator.current_index] = 0;
-                Some(unsafe { std::ptr::replace(entry_ptr, MaybeUninit::uninit()).assume_init() })
+                return Some(unsafe {
+                    std::ptr::replace(entry_ptr, MaybeUninit::uninit().assume_init())
+                });
             }
         }
         None
@@ -502,7 +511,7 @@ impl<'b, K: 'static + Clone + Eq, V: 'static + Clone, const SIZE: usize, const L
 {
     /// Removes a new key-value pair associated with the given key with the instances kept
     /// intact.
-    pub fn mark_removed<Q>(&self, key: &Q, partial_hash: u8, barrier: &Barrier) -> bool
+    pub fn mark_removed<Q>(&self, key_ref: &Q, partial_hash: u8, barrier: &Barrier) -> bool
     where
         K: Borrow<Q>,
         Q: Eq + ?Sized,
@@ -522,10 +531,15 @@ impl<'b, K: 'static + Clone + Eq, V: 'static + Clone, const SIZE: usize, const L
                 let index = i % SIZE;
                 if data_array_ref.partial_hash_array[index] == expected_hash {
                     let entry_ptr = data_array_ref.data[index].as_ptr();
-                    if *unsafe { &(*entry_ptr) }.0.borrow() == *key {
-                        data_array_ref.partial_hash_array[index] |= REMOVED;
-                        removed = true;
-                        break;
+                    unsafe {
+                        let data_array_mut_ref = &mut *(data_array_ref
+                            as *const DataArray<K, V, SIZE>
+                            as *mut DataArray<K, V, SIZE>);
+                        if (*entry_ptr).0.borrow() == key_ref {
+                            data_array_mut_ref.partial_hash_array[index] |= REMOVED;
+                            removed = true;
+                            break;
+                        }
                     }
                 }
             }
@@ -587,7 +601,7 @@ impl<'b, K: 'static + Clone + Eq, V: 'static + Clone, const SIZE: usize, const L
                                 let entry_ptr = current_data_array_ref.data[index].as_ptr();
                                 let entry_ref = unsafe { &(*entry_ptr) };
                                 unsafe {
-                                    new_data_array.data[new_array_index]
+                                    new_data_array.get_mut().unwrap().data[new_array_index]
                                         .as_mut_ptr()
                                         .write(entry_ref.clone());
                                     new_data_array.get_mut().unwrap().partial_hash_array
@@ -619,8 +633,7 @@ impl<'b, K: 'static + Clone + Eq, V: 'static + Clone, const SIZE: usize, const L
         while let Some(current_data_array_ref) = current_data_array_ptr.as_ref() {
             let next_data_array_ptr = current_data_array_ref.link.load(Relaxed, barrier);
             if current_data_array_ptr == data_array {
-                let result: Result<Arc<DataArray<K, V, SIZE>>, ()> = next_data_array_ptr.try_into();
-                if let Ok(next_data_array) = result {
+                if let Some(next_data_array) = next_data_array_ptr.try_into_arc() {
                     let obsolete = if let Some(prev_data_array_ref) = prev_data_array_ptr.as_ref() {
                         prev_data_array_ref
                             .link
@@ -906,15 +919,19 @@ mod test {
         assert_eq!(sum % 256, 0);
         assert_eq!(cell.num_entries(), num_threads);
 
-        let guard = unsafe { crossbeam_epoch::unprotected() };
+        let epoch_barrier = Barrier::new();
         for thread_id in 0..SIZE {
             assert_eq!(
-                cell.search(&thread_id, (thread_id % SIZE).try_into().unwrap(), guard),
+                cell.search(
+                    &thread_id,
+                    (thread_id % SIZE).try_into().unwrap(),
+                    &epoch_barrier
+                ),
                 Some(&(thread_id, 0))
             );
         }
         let mut iterated = 0;
-        for entry in cell.iter(guard) {
+        for entry in cell.iter(&epoch_barrier) {
             assert!(entry.0 .0 < num_threads);
             assert_eq!(entry.0 .1, 0);
             iterated += 1;
@@ -922,21 +939,21 @@ mod test {
         assert_eq!(cell.num_entries(), iterated);
 
         for thread_id in 0..SIZE {
-            let xlocker = CellLocker::lock(&*cell, guard).unwrap();
+            let xlocker = CellLocker::lock(&*cell, &epoch_barrier).unwrap();
             assert!(xlocker.mark_removed(
                 &thread_id,
                 (thread_id % SIZE).try_into().unwrap(),
-                guard
+                &epoch_barrier
             ));
         }
         assert_eq!(cell.num_entries(), SIZE);
 
-        let mut xlocker = CellLocker::lock(&*cell, guard).unwrap();
-        xlocker.purge(&guard);
+        let mut xlocker = CellLocker::lock(&*cell, &epoch_barrier).unwrap();
+        xlocker.purge(&epoch_barrier);
         drop(xlocker);
 
         assert!(cell.killed());
         assert_eq!(cell.num_entries(), 0);
-        assert!(CellLocker::lock(&*cell, guard).is_none());
+        assert!(CellLocker::lock(&*cell, &epoch_barrier).is_none());
     }
 }

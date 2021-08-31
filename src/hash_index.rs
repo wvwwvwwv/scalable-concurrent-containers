@@ -424,6 +424,9 @@ where
     fn hasher(&self) -> &H {
         &self.build_hasher
     }
+    fn copier(key: &K, val: &V) -> Option<(K, V)>{
+        Some((key.clone(), val.clone()))
+    }
     fn cell_array(&self) -> &AtomicArc<CellArray<K, V, CELL_SIZE, true>> {
         &self.array
     }
@@ -448,7 +451,7 @@ where
     hash_index: &'h HashIndex<K, V, H>,
     current_array_ptr: Ptr<'b, CellArray<K, V, CELL_SIZE, true>>,
     current_index: usize,
-    current_cell_iterator: Option<CellIterator<'h, K, V, CELL_SIZE, true>>,
+    current_cell_iterator: Option<CellIterator<'b, K, V, CELL_SIZE, true>>,
     barrier_ref: &'b Barrier,
 }
 
@@ -470,10 +473,9 @@ where
             } else {
                 current_array_ptr
             };
-            self.current_cell_iterator.replace(CellIterator::new(
-                self.current_array_ptr.as_ref().unwrap().cell(0),
-                self.barrier_ref,
-            ));
+            let cell_ref = self.current_array_ptr.as_ref().unwrap().cell(0);
+            self.current_cell_iterator
+                .replace(CellIterator::new(cell_ref, self.barrier_ref));
         }
         loop {
             if let Some(iterator) = self.current_cell_iterator.as_mut() {

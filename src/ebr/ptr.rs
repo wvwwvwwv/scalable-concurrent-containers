@@ -2,13 +2,14 @@ use super::underlying::Underlying;
 use super::{Arc, Tag};
 
 use std::convert::TryInto;
+use std::marker::PhantomData;
 use std::{ops::Deref, ptr, ptr::NonNull};
 
 /// [`Ptr`] points to an instance.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Copy, Debug, Eq)]
 pub struct Ptr<'b, T> {
     instance_ptr: *const Underlying<T>,
-    _phantom: std::marker::PhantomData<&'b T>,
+    _phantom: PhantomData<&'b T>,
 }
 
 impl<'b, T> Ptr<'b, T> {
@@ -25,7 +26,7 @@ impl<'b, T> Ptr<'b, T> {
     pub fn null() -> Ptr<'b, T> {
         Ptr {
             instance_ptr: ptr::null(),
-            _phantom: std::marker::PhantomData,
+            _phantom: PhantomData,
         }
     }
 
@@ -58,7 +59,7 @@ impl<'b, T> Ptr<'b, T> {
     /// assert_eq!(*ptr.as_ref().unwrap(), 21);
     /// ```
     #[inline]
-    pub fn as_ref(&self) -> Option<&T> {
+    pub fn as_ref(&self) -> Option<&'b T> {
         unsafe {
             Tag::unset_tag(self.instance_ptr)
                 .as_ref()
@@ -97,6 +98,32 @@ impl<'b, T> Ptr<'b, T> {
         self.instance_ptr = Tag::update_tag(self.instance_ptr, tag);
     }
 
+    /// Tries to convert itself into an [`Arc`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::{Arc, Barrier, Ptr};
+    ///
+    /// let arc: Arc<usize> = Arc::new(10);
+    /// let barrier = Barrier::new();
+    /// let ptr = arc.ptr(&barrier);
+    /// let converted_arc = ptr.try_into_arc().unwrap();
+    /// assert_eq!(*converted_arc, 10);
+    /// ```
+    #[inline]
+    pub fn try_into_arc(self) -> Option<Arc<T>> {
+        unsafe {
+            if let Some(ptr) = NonNull::new(Tag::unset_tag(self.instance_ptr) as *mut Underlying<T>)
+            {
+                if ptr.as_ref().try_add_ref() {
+                    return Some(Arc::from(ptr));
+                }
+            }
+        }
+        None
+    }
+
     /// Creates a new [`Ptr`] from a raw pointer.
     pub(super) fn from(ptr: *const Underlying<T>) -> Ptr<'b, T> {
         Ptr {
@@ -111,18 +138,28 @@ impl<'b, T> Ptr<'b, T> {
     }
 }
 
+impl<'b, T> Clone for Ptr<'b, T> {
+    fn clone(&self) -> Self {
+        Self {
+            instance_ptr: self.instance_ptr.clone(),
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<'b, T> PartialEq for Ptr<'b, T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.instance_ptr == other.instance_ptr
+    }
+}
+
 impl<'b, T> TryInto<Arc<T>> for Ptr<'b, T> {
     type Error = ();
 
     #[inline]
     fn try_into(self) -> Result<Arc<T>, Self::Error> {
-        unsafe {
-            if let Some(ptr) = NonNull::new(Tag::unset_tag(self.instance_ptr) as *mut Underlying<T>)
-            {
-                if ptr.as_ref().try_add_ref() {
-                    return Ok(Arc::from(ptr));
-                }
-            }
+        if let Some(arc) = self.try_into_arc() {
+            return Ok(arc);
         }
         Err(())
     }

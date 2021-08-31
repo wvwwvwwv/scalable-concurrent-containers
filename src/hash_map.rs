@@ -275,7 +275,6 @@ where
         key: K,
         constructor: FI,
         updater: FU,
-        barrier: &'b Barrier,
     ) {
         let (hash, partial_hash) = self.hash(&key);
         let barrier = Barrier::new();
@@ -342,7 +341,7 @@ where
         if iterator.is_none() {
             iterator = locker.cell_ref().get(key_ref, partial_hash, &barrier);
         }
-        if let Some(iterator) = iterator {
+        if let Some(mut iterator) = iterator {
             let remove = if let Some((_, v)) = iterator.get() {
                 condition(v)
             } else {
@@ -412,7 +411,7 @@ where
     /// assert!(hashmap.contains(&1));
     /// ```
     #[inline]
-    pub fn contains<Q>(&self, key: &Q, barrier: &Barrier) -> bool
+    pub fn contains<Q>(&self, key: &Q) -> bool
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
@@ -439,7 +438,7 @@ where
     /// assert!(hashmap.read(&2, |_, v| *v).unwrap(), 2);
     /// ```
     #[inline]
-    pub fn for_each<F: FnMut(&K, &mut V)>(&self, f: F) {
+    pub fn for_each<F: FnMut(&K, &mut V)>(&self, mut f: F) {
         self.retain(|k, v| {
             f(k, v);
             true
@@ -463,7 +462,7 @@ where
     ///
     /// assert_eq!(hashmap.retain(|key, value| *key == 1 && *value == 0), (2, 1));
     /// ```
-    pub fn retain<F: FnMut(&K, &mut V) -> bool>(&self, filter: F) -> (usize, usize) {
+    pub fn retain<F: FnMut(&K, &mut V) -> bool>(&self, mut filter: F) -> (usize, usize) {
         let mut retained_entries = 0;
         let mut removed_entries = 0;
 
@@ -473,7 +472,7 @@ where
         let mut current_array_ptr = self.array.load(Acquire, &barrier);
         let mut prev_cell_locker = None;
         while let Some(current_array_ref) = current_array_ptr.as_ref() {
-            if let Some(old_array_ref) = current_array_ref.old_array(&barrier).as_ref() {
+            if !current_array_ref.old_array(&barrier).is_null() {
                 current_array_ref.partial_rehash(|key| self.hash(key), |_, _| None, &barrier);
                 current_array_ptr = self.array.load(Acquire, &barrier);
                 continue;
@@ -615,6 +614,9 @@ where
 {
     fn hasher(&self) -> &H {
         &self.build_hasher
+    }
+    fn copier(_: &K, _: &V) -> Option<(K, V)> {
+        None
     }
     fn cell_array(&self) -> &AtomicArc<CellArray<K, V, CELL_SIZE, false>> {
         &self.array

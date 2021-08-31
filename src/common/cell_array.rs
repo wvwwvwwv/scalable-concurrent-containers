@@ -184,12 +184,12 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let old_array = self.old_array(barrier);
-        if old_array.is_null() {
+        let old_array_ptr = self.old_array(barrier);
+        if old_array_ptr.is_null() {
             return true;
         }
 
-        let old_array_ref = unsafe { old_array.deref() };
+        let old_array_ref = old_array_ptr.as_ref().unwrap();
         let old_array_size = old_array_ref.array_size();
         let mut current = self.rehashing.load(Relaxed);
         loop {
@@ -224,7 +224,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
 
         let completed = self.rehashed.fetch_add(SIZE, Release) + SIZE;
         if old_array_size <= completed {
-            self.drop_old_array(false, barrier);
+            self.drop_old_array(barrier);
             return true;
         }
         false

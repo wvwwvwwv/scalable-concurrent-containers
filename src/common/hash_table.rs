@@ -12,8 +12,8 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 /// `HashTable` define common functions for `HashIndex` and `HashMap`.
 pub trait HashTable<K, V, H, const CELL_SIZE: usize, const LOCK_FREE: bool>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: 'static + Eq + Hash + Sync,
+    V: 'static + Sync,
     H: BuildHasher,
 {
     /// Returns the hash value of the given key.
@@ -25,19 +25,15 @@ where
         // Generates a hash value.
         let mut h = self.hasher().build_hasher();
         key.hash(&mut h);
-        let mut hash = h.finish();
-
-        // Bitmix: https://mostlymangling.blogspot.com/2019/01/better-stronger-mixer-and-test-procedure.html
-        hash = hash ^ (hash.rotate_right(25) ^ hash.rotate_right(50));
-        hash = hash.overflowing_mul(0xA24BAED4963EE407u64).0;
-        hash = hash ^ (hash.rotate_right(24) ^ hash.rotate_right(49));
-        hash = hash.overflowing_mul(0x9FB21C651E98DF25u64).0;
-        hash = hash ^ (hash >> 28);
+        let hash = h.finish();
         (hash, (hash & ((1 << 8) - 1)).try_into().unwrap())
     }
 
     /// Returns a reference to its build hasher.
     fn hasher(&self) -> &H;
+
+    /// Copying function.
+    fn copier(key: &K, val: &V) -> Option<(K, V)>;
 
     /// Returns a reference to the `CellArray` pointer.
     fn cell_array(&self) -> &AtomicArc<CellArray<K, V, CELL_SIZE, LOCK_FREE>>;
@@ -51,7 +47,7 @@ where
     /// Returns the number of entries.
     fn num_entries(&self, barrier: &Barrier) -> usize {
         let current_array_ptr = self.cell_array().load(Acquire, barrier);
-        let current_array_ref = Self::cell_array_ref(current_array_ptr);
+        let current_array_ref = current_array_ptr.as_ref().unwrap();
         let mut num_entries = 0;
         for i in 0..current_array_ref.array_size() {
             num_entries += current_array_ref.cell(i).num_entries();
@@ -68,7 +64,7 @@ where
     /// Returns the number of slots.
     fn num_slots(&self, barrier: &Barrier) -> usize {
         let current_array_ptr = self.cell_array().load(Acquire, barrier);
-        let current_array_ref = Self::cell_array_ref(current_array_ptr);
+        let current_array_ref = current_array_ptr.as_ref().unwrap();
         current_array_ref.num_cell_entries()
     }
 
@@ -112,7 +108,7 @@ where
         let mut current_array_ptr = self.cell_array().load(Acquire, &barrier);
         while let Some(current_array_ref) = current_array_ptr.as_ref() {
             if let Some(old_array_ref) = current_array_ref.old_array(&barrier).as_ref() {
-                if current_array_ref.partial_rehash(|key| self.hash(key), |_, _| None, &barrier) {
+                if current_array_ref.partial_rehash(|key| self.hash(key), &Self::copier, &barrier) {
                     current_array_ptr = self.cell_array().load(Acquire, &barrier);
                     continue;
                 }
@@ -123,10 +119,10 @@ where
                         return Some(reader(entry.0.borrow(), &entry.1));
                     }
                 } else {
-                    if let Some(reader) = CellReader::lock(old_array_ref.cell(cell_index), &barrier)
+                    if let Some(locker) = CellReader::lock(old_array_ref.cell(cell_index), &barrier)
                     {
                         if let Some((key, value)) =
-                            reader.cell_ref().search(key_ref, partial_hash, &barrier)
+                            locker.cell_ref().search(key_ref, partial_hash, &barrier)
                         {
                             return Some(reader(key.borrow(), value));
                         }
@@ -140,10 +136,10 @@ where
                     return Some(reader(entry.0.borrow(), &entry.1));
                 }
             } else {
-                if let Some(reader) = CellReader::lock(current_array_ref.cell(cell_index), &barrier)
+                if let Some(locker) = CellReader::lock(current_array_ref.cell(cell_index), &barrier)
                 {
                     if let Some((key, value)) =
-                        reader.cell_ref().search(key_ref, partial_hash, &barrier)
+                        locker.cell_ref().search(key_ref, partial_hash, &barrier)
                     {
                         return Some(reader(key.borrow(), value));
                     }
@@ -171,8 +167,8 @@ where
         barrier: &'b Barrier,
     ) -> (
         usize,
-        CellLocker<'b, K, V, CELL_SIZE, false>,
-        Option<CellIterator<'b, K, V, CELL_SIZE, false>>,
+        CellLocker<'b, K, V, CELL_SIZE, LOCK_FREE>,
+        Option<CellIterator<'b, K, V, CELL_SIZE, LOCK_FREE>>,
     )
     where
         K: Borrow<Q>,
@@ -198,7 +194,7 @@ where
             let current_array_ref = current_array_ptr.as_ref().unwrap();
             let old_array_ptr = current_array_ref.old_array(&barrier);
             if let Some(old_array_ref) = old_array_ptr.as_ref() {
-                if current_array_ref.partial_rehash(|key| self.hash(key), |_, _| None, &barrier) {
+                if current_array_ref.partial_rehash(|key| self.hash(key), &Self::copier, &barrier) {
                     continue;
                 }
                 let cell_index = old_array_ref.calculate_cell_index(hash);
@@ -213,7 +209,7 @@ where
                         old_array_ref,
                         cell_index,
                         &|key| self.hash(key),
-                        &|_, _| None,
+                        &Self::copier,
                         &barrier,
                     );
                 }
@@ -227,6 +223,7 @@ where
                 && current_array_ref.cell(cell_index).num_entries() >= CELL_SIZE
             {
                 // Triggers resize if the estimated load factor is greater than 7/8.
+                resize_tried = true;
                 let sample_size = current_array_ref.sample_size();
                 let threshold = sample_size * (CELL_SIZE / 8) * 7;
                 let mut num_entries = 0;
@@ -251,8 +248,8 @@ where
     /// Resizes the array.
     fn resize(&self, barrier: &Barrier) {
         // Initial rough size estimation using a small number of cells.
-        let current_array = self.cell_array().load(Acquire, barrier);
-        let current_array_ref = Self::cell_array_ref(current_array);
+        let current_array_ptr = self.cell_array().load(Acquire, barrier);
+        let current_array_ref = current_array_ptr.as_ref().unwrap();
         let old_array = current_array_ref.old_array(&barrier);
         if !old_array.is_null() {
             // With a deprecated array present, it cannot be resized.
@@ -264,7 +261,7 @@ where
             let mut mutex_guard = scopeguard::guard(memory_ordering, |memory_ordering| {
                 self.resizing_flag_ref().store(false, memory_ordering);
             });
-            if current_array != self.cell_array().load(Acquire, barrier) {
+            if current_array_ptr != self.cell_array().load(Acquire, barrier) {
                 return;
             }
 

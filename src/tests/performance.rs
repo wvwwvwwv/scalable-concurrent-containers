@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod benchmark {
+    use crate::ebr;
     use crate::{HashIndex, HashMap, TreeIndex};
 
     use std::collections::hash_map::RandomState;
@@ -66,11 +67,8 @@ mod benchmark {
         }
         #[inline(always)]
         fn scan_test(&self) -> usize {
-            let mut accessor = self.iter();
             let mut scanned = 0;
-            while let Some(_) = accessor.next() {
-                scanned += 1;
-            }
+            self.for_each(|_, _| scanned += 1);
             scanned
         }
 
@@ -83,7 +81,7 @@ mod benchmark {
     impl<
             K: Clone + Eq + Hash + Ord + Send + Sync,
             V: Clone + Send + Sync + Unpin,
-            H: BuildHasher,
+            H: 'static + BuildHasher,
         > BenchmarkOperation<K, V, H> for HashIndex<K, V, H>
     {
         #[inline(always)]
@@ -96,12 +94,8 @@ mod benchmark {
         }
         #[inline(always)]
         fn scan_test(&self) -> usize {
-            let mut visitor = self.iter();
-            let mut scanned = 0;
-            while let Some(_) = visitor.next() {
-                scanned += 1;
-            }
-            scanned
+            let barrier = ebr::Barrier::new();
+            self.iter(&barrier).count()
         }
         #[inline(always)]
         fn remove_test(&self, k: &K) -> bool {

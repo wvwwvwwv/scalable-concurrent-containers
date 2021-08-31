@@ -12,65 +12,6 @@ mod hashmap_test {
     use std::sync::{Arc, Barrier};
     use std::thread;
 
-    proptest! {
-        #[test]
-        fn basic(key in 0u64..10) {
-            let hashmap: HashMap<u64, u32> = Default::default();
-            assert!(hashmap.iter().next().is_none());
-
-            let result1 = hashmap.insert(key, 0);
-            assert!(result1.is_ok());
-            if let Ok(result) = result1 {
-                assert_eq!(result.get(), (&key, &mut 0));
-            }
-
-            let result2 = hashmap.insert(key, 0);
-            assert!(result2.is_err());
-            if let Err((result, _, _)) = result2 {
-                assert_eq!(result.get(), (&key, &mut 0));
-            }
-
-            let result3 = hashmap.upsert(key, 1);
-            assert_eq!(result3.get(), (&key, &mut 1));
-            drop(result3);
-
-            let result4 = hashmap.insert(key, 10);
-            assert!(result4.is_err());
-            if let Err((result, _, _)) = result4 {
-                assert_eq!(result.get(), (&key, &mut 1));
-                *result.get().1 = 2;
-            }
-
-            let mut result5 = hashmap.iter();
-            assert_eq!(result5.next(), Some((&key, &mut 2)));
-            assert_eq!(result5.next(), None);
-
-            for iter in hashmap.iter() {
-                assert_eq!(iter, (&key, &mut 2));
-                *iter.1 = 3;
-            }
-
-            let result6 = hashmap.get(&key);
-            assert_eq!(result6.unwrap().get(), (&key, &mut 3));
-
-            let result7 = hashmap.get(&(key + 1));
-            assert!(result7.is_none());
-
-            let result8 = hashmap.remove(&key);
-            assert_eq!(result8.unwrap(), 3);
-
-            let result9 = hashmap.insert(key + 2, 10);
-            assert!(result9.is_ok());
-            if let Ok(result) = result9 {
-                assert_eq!(result.get(), (&(key + 2), &mut 10));
-                result.erase();
-            }
-
-            let result10 = hashmap.get(&(key + 2));
-            assert!(result10.is_none());
-        }
-    }
-
     #[test]
     fn string_key() {
         let hashmap1: HashMap<String, u32> = Default::default();
@@ -86,7 +27,7 @@ mod hashmap_test {
                 checker1.insert((str_val.clone(), i));
             }
             let str_borrowed = str_val.as_str();
-            assert!(hashmap1.get(str_borrowed).is_some());
+            assert!(hashmap1.contains(str_borrowed));
             assert!(hashmap1.read(str_borrowed, |_, _| ()).is_some());
 
             if hashmap2.insert(i, str_val.clone()).is_ok() {
@@ -97,11 +38,11 @@ mod hashmap_test {
         assert_eq!(hashmap2.len(), checker2.len());
         for iter in checker1 {
             let v = hashmap1.remove(iter.0.as_str());
-            assert_eq!(v.unwrap(), iter.1);
+            assert_eq!(v.unwrap().1, iter.1);
         }
         for iter in checker2 {
             let v = hashmap2.remove(&iter.0);
-            assert_eq!(v.unwrap(), iter.1);
+            assert_eq!(v.unwrap().1, iter.1);
         }
         assert_eq!(hashmap1.len(), 0);
         assert_eq!(hashmap2.len(), 0);
@@ -126,10 +67,10 @@ mod hashmap_test {
                     let mut scanned = 0;
                     let mut checker = BTreeSet::new();
                     let max = inserted_copied.load(Acquire);
-                    for iter in hashmap_copied.iter() {
+                    hashmap_copied.for_each(|k, _| {
                         scanned += 1;
-                        checker.insert(*iter.0);
-                    }
+                        checker.insert(*k);
+                    });
                     println!("scanned: {}, max: {}", scanned, max);
                     for key in 0..max {
                         assert!(checker.contains(&key));
@@ -140,10 +81,10 @@ mod hashmap_test {
                     barrier_copied.wait();
                     let mut scanned = 0;
                     let max = removed_copied.load(Acquire);
-                    for iter in hashmap_copied.iter() {
+                    hashmap_copied.for_each(|k, _| {
                         scanned += 1;
-                        assert!(*iter.0 < max);
-                    }
+                        assert!(*k < max);
+                    });
                     println!("scanned: {}, max: {}", scanned, max);
                 }
             });
@@ -169,13 +110,13 @@ mod hashmap_test {
         }
     }
 
-    struct Data<'a> {
+    struct Data {
         data: u64,
-        checker: &'a AtomicUsize,
+        checker: Arc<AtomicUsize>,
     }
 
-    impl<'a> Data<'a> {
-        fn new(data: u64, checker: &'a AtomicUsize) -> Data<'a> {
+    impl Data {
+        fn new(data: u64, checker: Arc<AtomicUsize>) -> Data {
             checker.fetch_add(1, Relaxed);
             Data {
                 data: data,
@@ -184,27 +125,27 @@ mod hashmap_test {
         }
     }
 
-    impl<'a> Clone for Data<'a> {
+    impl Clone for Data {
         fn clone(&self) -> Self {
-            Data::new(self.data, self.checker)
+            Data::new(self.data, self.checker.clone())
         }
     }
 
-    impl<'a> Drop for Data<'a> {
+    impl Drop for Data {
         fn drop(&mut self) {
             self.checker.fetch_sub(1, Relaxed);
         }
     }
 
-    impl<'a> Eq for Data<'a> {}
+    impl Eq for Data {}
 
-    impl<'a> Hash for Data<'a> {
+    impl Hash for Data {
         fn hash<H: Hasher>(&self, state: &mut H) {
             self.data.hash(state);
         }
     }
 
-    impl<'a> PartialEq for Data<'a> {
+    impl PartialEq for Data {
         fn eq(&self, other: &Self) -> bool {
             self.data == other.data
         }
@@ -214,22 +155,16 @@ mod hashmap_test {
         #[test]
         fn insert(key in 0u64..16) {
             let range = 1024;
-            let checker = AtomicUsize::new(0);
+            let checker = Arc::new(AtomicUsize::new(0));
             let hashmap: HashMap<Data, Data> = Default::default();
             for d in key..(key + range) {
-                let result = hashmap.insert(Data::new(d, &checker), Data::new(d, &checker));
-                assert!(result.is_ok());
-                drop(result);
-                let result = hashmap.upsert(Data::new(d, &checker), Data::new(d + 1, &checker));
-                (*result.get().1) = Data::new(d + 2, &checker);
+                assert!(hashmap.insert(Data::new(d, checker.clone()), Data::new(d, checker.clone())).is_ok());
+                hashmap.upsert(Data::new(d, checker.clone()), || Data::new(d + 1, checker.clone()), |v| *v = Data::new(d + 2, checker.clone()));
             }
 
             for d in (key + range)..(key + range + range) {
-                let result = hashmap.insert(Data::new(d, &checker), Data::new(d, &checker));
-                assert!(result.is_ok());
-                drop(result);
-                let result = hashmap.upsert(Data::new(d, &checker), Data::new(d + 1, &checker));
-                (*result.get().1) = Data::new(d + 2, &checker);
+                assert!(hashmap.insert(Data::new(d, checker.clone()), Data::new(d, checker.clone())).is_ok());
+                hashmap.upsert(Data::new(d, checker.clone()), || Data::new(d, checker.clone()), |v| *v = Data::new(d + 1, checker.clone()));
             }
 
             let result = hashmap.retain(|k, _| k.data < key + range);
@@ -237,36 +172,29 @@ mod hashmap_test {
 
             assert_eq!(hashmap.len() as u64, range);
             let mut found_keys = 0;
-            for iter in hashmap.iter() {
-                assert!(iter.0.data < key + range);
-                assert!(iter.0.data >= key);
+            hashmap.for_each(|k, v| {
+                assert!(k.data < key + range);
+                assert!(v.data >= key);
                 found_keys += 1;
-            }
+            });
             assert_eq!(found_keys, range);
             assert_eq!(checker.load(Relaxed) as u64, range * 2);
             for d in key..(key + range) {
-                let result = hashmap.get(&Data::new(d, &checker));
-                result.unwrap().erase();
+                assert!(hashmap.remove(&Data::new(d, checker.clone())).is_some());
             }
             assert_eq!(checker.load(Relaxed), 0);
 
             for d in key..(key + range) {
-                let result = hashmap.insert(Data::new(d, &checker), Data::new(d, &checker));
-                assert!(result.is_ok());
-                drop(result);
-                let result = hashmap.upsert(Data::new(d, &checker), Data::new(d + 1, &checker));
-               (*result.get().1) = Data::new(d + 2, &checker);
+                assert!(hashmap.insert(Data::new(d, checker.clone()), Data::new(d, checker.clone())).is_ok());
+                hashmap.upsert(Data::new(d, checker.clone()), || Data::new(d, checker.clone()), |v| *v = Data::new(d + 2, checker.clone()));
             }
             let result = hashmap.clear();
             assert_eq!(result, range as usize);
             assert_eq!(checker.load(Relaxed), 0);
 
             for d in key..(key + range) {
-                let result = hashmap.insert(Data::new(d, &checker), Data::new(d, &checker));
-                assert!(result.is_ok());
-                drop(result);
-                let result = hashmap.upsert(Data::new(d, &checker), Data::new(d + 1, &checker));
-                (*result.get().1) = Data::new(d + 2, &checker);
+                assert!(hashmap.insert(Data::new(d, checker.clone()), Data::new(d, checker.clone())).is_ok());
+                hashmap.upsert(Data::new(d, checker.clone()), || Data::new(d, checker.clone()), |v| *v = Data::new(d + 2, checker.clone()));
             }
             assert_eq!(checker.load(Relaxed) as u64, range * 2);
             drop(hashmap);
@@ -277,6 +205,7 @@ mod hashmap_test {
 
 #[cfg(test)]
 mod hashindex_test {
+    use crate::ebr;
     use crate::HashIndex;
 
     use proptest::strategy::{Strategy, ValueTree};
@@ -339,7 +268,7 @@ mod hashindex_test {
                     let mut scanned = 0;
                     let mut checker = BTreeSet::new();
                     let max = inserted_copied.load(Acquire);
-                    for iter in hashindex_copied.iter() {
+                    for iter in hashindex_copied.iter(&ebr::Barrier::new()) {
                         scanned += 1;
                         checker.insert(*iter.0);
                     }
@@ -353,7 +282,7 @@ mod hashindex_test {
                     barrier_copied.wait();
                     let mut scanned = 0;
                     let max = removed_copied.load(Acquire);
-                    for iter in hashindex_copied.iter() {
+                    for iter in hashindex_copied.iter(&ebr::Barrier::new()) {
                         scanned += 1;
                         assert!(*iter.0 < max);
                     }
