@@ -268,6 +268,13 @@ impl<T: 'static> AtomicArc<T> {
     }
 }
 
+impl<T: 'static> Clone for AtomicArc<T> {
+    #[inline]
+    fn clone<'b>(&self) -> AtomicArc<T> {
+        self.clone(Relaxed, &Barrier::new())
+    }
+}
+
 impl<T: 'static> Drop for AtomicArc<T> {
     #[inline]
     fn drop(&mut self) {
