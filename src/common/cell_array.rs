@@ -9,10 +9,10 @@ use std::hash::Hash;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-/// CellArray is used by HashIndex and HashMap.
+/// [`CellArray`] is used by [`HashIndex`](crate::HashIndex) and [`HashMap`](crate::HashMap).
 ///
-/// It is a special purpose array since it does not construct instances of C,
-/// instead only does it allocate a large chunk of zeroed heap memory.
+/// It is a special purpose array since it does not construct instances, instead only does it
+/// allocate a large chunk of zeroed heap memory.
 pub struct CellArray<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool> {
     array: Option<Box<Cell<K, V, SIZE, LOCK_FREE>>>,
     array_ptr_offset: usize,

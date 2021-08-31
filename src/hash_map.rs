@@ -205,7 +205,7 @@ where
     /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
     /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.insert(1, 1).unwrap_err(), (1, 1));
+    /// assert_eq!(hashmap.insert(1, 1).unwrap_err(), (1, 1));
     /// ```
     #[inline]
     pub fn insert(&self, key: K, val: V) -> Result<(), (K, V)> {
@@ -225,8 +225,8 @@ where
     ///
     /// assert!(hashmap.update(&1, |_| true).is_none());
     /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.update(&1, |v| { *v = 2; *v }).unwrap(), 2);
-    /// assert!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
+    /// assert_eq!(hashmap.update(&1, |v| { *v = 2; *v }).unwrap(), 2);
+    /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
     /// ```
     #[inline]
     pub fn update<'h, 'b, Q, F, R>(&'h self, key_ref: &Q, updater: F) -> Option<R>
@@ -264,10 +264,10 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
-    /// hashmap.upsert(&1, || 2, |v| *v = 3);
-    /// assert!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
-    /// hashmap.upsert(&1, || 2, |v| *v = 3);
-    /// assert!(hashmap.read(&1, |_, v| *v).unwrap(), 3);
+    /// hashmap.upsert(1, || 2, |v| *v = 2);
+    /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
+    /// hashmap.upsert(1, || 2, |v| *v = 3);
+    /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 3);
     /// ```
     #[inline]
     pub fn upsert<'h, 'b, FI: FnOnce() -> V, FU: FnOnce(&mut V)>(
@@ -386,7 +386,7 @@ where
     /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
     /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.read(&1, |_, v| *v).unwrap(), 0);
+    /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 0);
     /// ```
     #[inline]
     pub fn read<Q, R, F: FnOnce(&Q, &V) -> R>(&self, key_ref: &Q, reader: F) -> Option<R>
@@ -434,8 +434,8 @@ where
     /// let mut acc = 0;
     /// hashmap.for_each(|k, v| { acc += *k; *v = 2; });
     /// assert_eq!(acc, 3);
-    /// assert!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
-    /// assert!(hashmap.read(&2, |_, v| *v).unwrap(), 2);
+    /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
+    /// assert_eq!(hashmap.read(&2, |_, v| *v).unwrap(), 2);
     /// ```
     #[inline]
     pub fn for_each<F: FnMut(&K, &mut V)>(&self, mut f: F) {
@@ -460,7 +460,7 @@ where
     /// assert!(hashmap.insert(2, 1).is_ok());
     /// assert!(hashmap.insert(3, 2).is_ok());
     ///
-    /// assert_eq!(hashmap.retain(|key, value| *key == 1 && *value == 0), (2, 1));
+    /// assert_eq!(hashmap.retain(|key, value| *key == 1 && *value == 0), (1, 2));
     /// ```
     pub fn retain<F: FnMut(&K, &mut V) -> bool>(&self, mut filter: F) -> (usize, usize) {
         let mut retained_entries = 0;
@@ -542,7 +542,7 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
-    /// assert!(hashmap.insert(1, 0, &barrier).is_ok());
+    /// assert!(hashmap.insert(1, 0).is_ok());
     /// assert_eq!(hashmap.clear(), 1);
     /// ```
     #[inline]
@@ -563,7 +563,7 @@ where
     /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
     /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert_eq!(hashmap.len()), 1);
+    /// assert_eq!(hashmap.len(), 1);
     /// ```
     #[inline]
     pub fn len(&self) -> usize {
@@ -579,7 +579,7 @@ where
     /// use std::collections::hash_map::RandomState;
     ///
     /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(1000000, RandomState::new());
-    /// assert_eq!(hashmap.capacity(&Barrier::new()), 1048576);
+    /// assert_eq!(hashmap.capacity(), 1048576);
     /// ```
     #[inline]
     pub fn capacity(&self) -> usize {

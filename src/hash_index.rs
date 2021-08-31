@@ -138,7 +138,7 @@ where
     /// let hashindex: HashIndex<u64, u32> = Default::default();
     ///
     /// assert!(hashindex.insert(1, 0).is_ok());
-    /// assert!(hashindex.insert(1, 1).unwrap_err(), (1, 1));
+    /// assert_eq!(hashindex.insert(1, 1).unwrap_err(), (1, 1));
     /// ```
     #[inline]
     pub fn insert(&self, key: K, val: V) -> Result<(), (K, V)> {
@@ -157,9 +157,9 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = Default::default();
     ///
-    /// assert!(hashindex.remove(&1).is_none());
+    /// assert!(!hashindex.remove(&1));
     /// assert!(hashindex.insert(1, 0).is_ok());
-    /// assert_eq!(hashindex.remove(&1).unwrap(), (1, 0));
+    /// assert!(hashindex.remove(&1));
     /// ```
     #[inline]
     pub fn remove<Q>(&self, key_ref: &Q) -> bool
@@ -184,8 +184,8 @@ where
     /// let hashindex: HashIndex<u64, u32> = Default::default();
     ///
     /// assert!(hashindex.insert(1, 0).is_ok());
-    /// assert!(hashindex.remove_if(&1, |v| *v == 1).is_none());
-    /// assert_eq!(hashindex.remove_if(&1, |v| *v == 0).unwrap(), (1, 0));
+    /// assert!(!hashindex.remove_if(&1, |v| *v == 1));
+    /// assert!(hashindex.remove_if(&1, |v| *v == 0));
     /// ```
     #[inline]
     pub fn remove_if<Q, F: FnOnce(&V) -> bool>(&self, key_ref: &Q, condition: F) -> bool
@@ -246,7 +246,7 @@ where
     /// let hashindex: HashIndex<u64, u32> = Default::default();
     ///
     /// assert!(hashindex.insert(1, 0).is_ok());
-    /// assert!(hashindex.read(&1, |_, v| *v).unwrap(), 0);
+    /// assert_eq!(hashindex.read(&1, |_, v| *v).unwrap(), 0);
     /// ```
     #[inline]
     pub fn read<Q, R, F: FnOnce(&Q, &V) -> R>(&self, key_ref: &Q, reader: F) -> Option<R>
@@ -287,7 +287,7 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = Default::default();
     ///
-    /// assert!(hashindex.insert(1, 0, &barrier).is_ok());
+    /// assert!(hashindex.insert(1, 0).is_ok());
     /// assert_eq!(hashindex.clear(), 1);
     /// ```
     pub fn clear(&self) -> usize {
@@ -366,6 +366,7 @@ where
     ///
     /// # Examples
     /// ```
+    /// use scc::ebr::Barrier;
     /// use scc::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = Default::default();
@@ -373,11 +374,13 @@ where
     /// let result = hashindex.insert(1, 0);
     /// assert!(result.is_ok());
     ///
-    /// let mut iter = hashindex.iter();
+    /// let barrier = Barrier::new();
+    ///
+    /// let mut iter = hashindex.iter(&barrier);
     /// assert_eq!(iter.next(), Some((&1, &0)));
     /// assert_eq!(iter.next(), None);
     ///
-    /// for iter in hashindex.iter() {
+    /// for iter in hashindex.iter(&barrier) {
     ///     assert_eq!(iter, (&1, &0));
     /// }
     /// ```
@@ -424,7 +427,7 @@ where
     fn hasher(&self) -> &H {
         &self.build_hasher
     }
-    fn copier(key: &K, val: &V) -> Option<(K, V)>{
+    fn copier(key: &K, val: &V) -> Option<(K, V)> {
         Some((key.clone(), val.clone()))
     }
     fn cell_array(&self) -> &AtomicArc<CellArray<K, V, CELL_SIZE, true>> {
