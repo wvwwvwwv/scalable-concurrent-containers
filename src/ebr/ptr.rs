@@ -67,6 +67,28 @@ impl<'b, T> Ptr<'b, T> {
         }
     }
 
+    /// Returns a raw pointer to the instance.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::{Arc, Barrier};
+    /// use std::sync::atomic::Ordering::Relaxed;
+    ///
+    /// let arc: Arc<usize> = Arc::new(29);
+    /// let barrier = Barrier::new();
+    /// let ptr = arc.ptr(&barrier);
+    /// assert_eq!(unsafe { *ptr.as_raw() }, 29);
+    /// ```
+    #[inline]
+    pub fn as_raw(&self) -> *const T {
+        unsafe {
+            Tag::unset_tag(self.instance_ptr)
+                .as_ref()
+                .map_or_else(|| ptr::null, |u| u.deref() as *const T)
+        }
+    }
+
     /// Returns its [`Tag`].
     ///
     /// # Examples

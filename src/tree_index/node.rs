@@ -2,7 +2,9 @@ use super::leaf::{LeafScanner, ARRAY_SIZE};
 use super::leaf_node::{LeafNode, LeafNodeLocker};
 use super::Leaf;
 use super::{InsertError, RemoveError, SearchError};
-use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
+
+use crate::ebr::{Arc, AtomicArc, Barrier, Ptr};
+
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::fmt::Display;

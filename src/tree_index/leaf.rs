@@ -1,5 +1,6 @@
 use crate::common::linked_list::LinkedList;
-use crossbeam_epoch::{Atomic, Guard};
+use crate::ebr::{Arc, AtomicArc, Barrier, Ptr};
+
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::convert::TryInto;

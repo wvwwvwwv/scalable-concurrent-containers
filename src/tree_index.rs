@@ -3,7 +3,8 @@ pub mod leaf;
 pub mod leaf_node;
 pub mod node;
 
-use crossbeam_epoch::{Atomic, Guard, Owned};
+use crate::ebr::{AtomicArc, Barrier, Ptr};
+
 use error::{InsertError, RemoveError, SearchError};
 use leaf::{Leaf, LeafScanner};
 use node::Node;
