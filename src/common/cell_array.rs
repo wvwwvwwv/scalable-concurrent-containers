@@ -1,5 +1,7 @@
 use super::cell::{Cell, CellLocker};
-use crossbeam_epoch::{Atomic, Guard, Shared};
+
+use crate::ebr::{AtomicArc, Barrier, Ptr, Tag};
+
 use std::alloc::{alloc_zeroed, dealloc, Layout};
 use std::borrow::Borrow;
 use std::convert::TryInto;
@@ -7,28 +9,30 @@ use std::hash::Hash;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-/// CellArray is used by HashIndex and HashMap.
+/// [`CellArray`] is used by [`HashIndex`](crate::HashIndex) and [`HashMap`](crate::HashMap).
 ///
-/// It is a special purpose array since it does not construct instances of C,
-/// instead only does it allocate a large chunk of zeroed heap memory.
-pub struct CellArray<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> {
+/// It is a special purpose array since it does not construct instances, instead only does it
+/// allocate a large chunk of zeroed heap memory.
+pub struct CellArray<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool> {
     array: Option<Box<Cell<K, V, SIZE, LOCK_FREE>>>,
     array_ptr_offset: usize,
     array_capacity: usize,
     lb_capacity: u8,
-    old_array: Atomic<CellArray<K, V, SIZE, LOCK_FREE>>,
+    old_array: AtomicArc<CellArray<K, V, SIZE, LOCK_FREE>>,
     rehashing: AtomicUsize,
     rehashed: AtomicUsize,
 }
 
-impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellArray<K, V, SIZE, LOCK_FREE> {
+impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
+    CellArray<K, V, SIZE, LOCK_FREE>
+{
     /// Creates a new Array of given capacity.
     ///
     /// total_cell_capacity is the desired number of cell entries that the CellArray can accommodate.
     /// The given array instance is attached to the newly created Array instance.
     pub fn new(
         total_cell_capacity: usize,
-        old_array: Atomic<CellArray<K, V, SIZE, LOCK_FREE>>,
+        old_array: AtomicArc<CellArray<K, V, SIZE, LOCK_FREE>>,
     ) -> CellArray<K, V, SIZE, LOCK_FREE> {
         let lb_capacity = Self::calculate_lb_array_size(total_cell_capacity);
         let array_capacity = 1usize << lb_capacity;
@@ -80,8 +84,8 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellArray<K, V, SIZE, L
     }
 
     /// Returns a shared pointer to the old array.
-    pub fn old_array<'g>(&self, guard: &'g Guard) -> Shared<'g, CellArray<K, V, SIZE, LOCK_FREE>> {
-        self.old_array.load(Relaxed, &guard)
+    pub fn old_array<'b>(&self, barrier: &'b Barrier) -> Ptr<'b, CellArray<K, V, SIZE, LOCK_FREE>> {
+        self.old_array.load(Relaxed, &barrier)
     }
 
     /// Calculates the cell index for the hash value.
@@ -90,17 +94,9 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellArray<K, V, SIZE, L
     }
 
     /// Drops the old array.
-    pub fn drop_old_array(&self, immediate_drop: bool, guard: &Guard) {
-        let old_array = self.old_array.swap(Shared::null(), Relaxed, guard);
-        if !old_array.is_null() {
-            unsafe {
-                if immediate_drop {
-                    // There is no possibility that the old array contains valid cells.
-                    drop(old_array.into_owned());
-                } else {
-                    guard.defer_destroy(old_array);
-                }
-            }
+    pub fn drop_old_array(&self, barrier: &Barrier) {
+        if let Some(old_array) = self.old_array.swap((None, Tag::None), Relaxed) {
+            barrier.reclaim(old_array);
         }
     }
 
@@ -112,7 +108,7 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellArray<K, V, SIZE, L
         old_cell_index: usize,
         hasher: &F,
         copier: &C,
-        guard: &Guard,
+        barrier: &Barrier,
     ) where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
@@ -120,7 +116,7 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellArray<K, V, SIZE, L
         if cell_locker.cell_ref().killed() {
             return;
         } else if cell_locker.cell_ref().num_entries() == 0 {
-            cell_locker.purge(guard);
+            cell_locker.purge(barrier);
             return;
         }
 
@@ -139,7 +135,7 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellArray<K, V, SIZE, L
 
         let mut target_cells: Vec<CellLocker<K, V, SIZE, LOCK_FREE>> =
             Vec::with_capacity(1 << Cell::<K, V, SIZE, LOCK_FREE>::max_resizing_factor());
-        let mut iter = cell_locker.cell_ref().iter(guard);
+        let mut iter = cell_locker.cell_ref().iter(barrier);
         while let Some(entry) = iter.next() {
             let (new_cell_index, partial_hash) = if !shrink {
                 let (hash, partial_hash) = hasher(entry.0 .0.borrow());
@@ -155,7 +151,7 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellArray<K, V, SIZE, L
 
             while target_cells.len() <= new_cell_index - target_cell_index {
                 target_cells.push(
-                    CellLocker::lock(self.cell(target_cell_index + target_cells.len()), guard)
+                    CellLocker::lock(self.cell(target_cell_index + target_cells.len()), barrier)
                         .unwrap(),
                 );
             }
@@ -170,11 +166,11 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellArray<K, V, SIZE, L
                 cell_locker.erase(&mut iter).unwrap()
             };
             let result = target_cells[new_cell_index - target_cell_index]
-                .insert(new_entry.0, new_entry.1, partial_hash, guard)
+                .insert(new_entry.0, new_entry.1, partial_hash, barrier)
                 .1;
             debug_assert!(result.is_none());
         }
-        cell_locker.purge(guard);
+        cell_locker.purge(barrier);
     }
 
     /// Relocates a fixed number of Cells from the old array to the current array.
@@ -182,18 +178,18 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellArray<K, V, SIZE, L
         &self,
         hasher: F,
         copier: C,
-        guard: &Guard,
+        barrier: &Barrier,
     ) -> bool
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let old_array = self.old_array(guard);
-        if old_array.is_null() {
+        let old_array_ptr = self.old_array(barrier);
+        if old_array_ptr.is_null() {
             return true;
         }
 
-        let old_array_ref = unsafe { old_array.deref() };
+        let old_array_ref = old_array_ptr.as_ref().unwrap();
         let old_array_size = old_array_ref.array_size();
         let mut current = self.rehashing.load(Relaxed);
         loop {
@@ -214,21 +210,21 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellArray<K, V, SIZE, L
             if old_cell_ref.killed() {
                 continue;
             }
-            if let Some(mut locker) = CellLocker::lock(old_cell_ref, guard) {
+            if let Some(mut locker) = CellLocker::lock(old_cell_ref, barrier) {
                 self.kill_cell(
                     &mut locker,
                     old_array_ref,
                     old_cell_index,
                     &hasher,
                     &copier,
-                    guard,
+                    barrier,
                 );
             }
         }
 
         let completed = self.rehashed.fetch_add(SIZE, Release) + SIZE;
         if old_array_size <= completed {
-            self.drop_old_array(false, guard);
+            self.drop_old_array(barrier);
             return true;
         }
         false

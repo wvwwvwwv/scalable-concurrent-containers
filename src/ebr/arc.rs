@@ -20,6 +20,7 @@ impl<T: 'static> Arc<T> {
     ///
     /// let arc: Arc<usize> = Arc::new(31);
     /// ```
+    #[inline]
     pub fn new(t: T) -> Arc<T> {
         let boxed = Box::new(Underlying::new(t));
         Arc {
@@ -39,7 +40,8 @@ impl<T: 'static> Arc<T> {
     /// let ptr = arc.ptr(&barrier);
     /// assert_eq!(*ptr.as_ref().unwrap(), 37);
     /// ```
-    pub fn ptr<'r>(&self, _barrier: &'r Barrier) -> Ptr<'r, T> {
+    #[inline]
+    pub fn ptr<'b>(&self, _barrier: &'b Barrier) -> Ptr<'b, T> {
         Ptr::from(self.instance_ptr.as_ptr())
     }
 
@@ -55,6 +57,7 @@ impl<T: 'static> Arc<T> {
     /// *arc.get_mut().unwrap() += 1;
     /// assert_eq!(*arc, 39);
     /// ```
+    #[inline]
     pub fn get_mut(&mut self) -> Option<&mut T> {
         unsafe { self.instance_ptr.as_mut().get_mut() }
     }
@@ -94,6 +97,7 @@ impl<T: 'static> Arc<T> {
 }
 
 impl<T: 'static> Clone for Arc<T> {
+    #[inline]
     fn clone(&self) -> Self {
         debug_assert_ne!(
             self.underlying()
@@ -111,12 +115,14 @@ impl<T: 'static> Clone for Arc<T> {
 impl<T: 'static> Deref for Arc<T> {
     type Target = T;
 
+    #[inline]
     fn deref(&self) -> &Self::Target {
         self.underlying().deref()
     }
 }
 
 impl<T: 'static> Drop for Arc<T> {
+    #[inline]
     fn drop(&mut self) {
         if self.underlying().drop_ref() {
             let barrier = Barrier::new();
