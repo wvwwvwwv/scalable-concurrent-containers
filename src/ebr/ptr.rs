@@ -85,7 +85,7 @@ impl<'b, T> Ptr<'b, T> {
         unsafe {
             Tag::unset_tag(self.instance_ptr)
                 .as_ref()
-                .map_or_else(|| ptr::null, |u| u.deref() as *const T)
+                .map_or_else(ptr::null, |u| u.deref() as *const T)
         }
     }
 

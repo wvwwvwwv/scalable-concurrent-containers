@@ -282,8 +282,8 @@ impl<T: 'static> AtomicArc<T> {
     /// ```
     #[inline]
     pub fn try_into_arc(self, order: Ordering, _barrier: &Barrier) -> Option<Arc<T>> {
-        let ptr = self.instance_ptr.swap(order);
-        if let Some(underlying_ptr) = NonNull::new(Tag::unset_tag(ptr)) {
+        let ptr = self.instance_ptr.swap(ptr::null_mut(), order);
+        if let Some(underlying_ptr) = NonNull::new(Tag::unset_tag(ptr) as *mut Underlying<T>) {
             if unsafe { underlying_ptr.as_ref() }.try_add_ref() {
                 return Some(Arc::from(underlying_ptr));
             }
