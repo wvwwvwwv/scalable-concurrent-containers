@@ -29,6 +29,21 @@ impl<'b, T> Ptr<'b, T> {
         }
     }
 
+    /// Returns `true` if the [`Ptr`] is null.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::Ptr;
+    ///
+    /// let ptr: Ptr<usize> = Ptr::null();
+    /// assert!(ptr.is_null());
+    /// ```
+    #[inline]
+    pub fn is_null(&self) -> bool {
+        Tag::unset_tag(self.instance_ptr).is_null()
+    }
+
     /// Tries to create a reference to the underlying instance.
     ///
     /// # Examples

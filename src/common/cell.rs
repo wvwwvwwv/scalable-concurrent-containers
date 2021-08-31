@@ -62,7 +62,12 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
     }
 
     /// Searches for an entry associated with the given key.
-    pub fn search<'b, Q>(&self, key: &Q, partial_hash: u8, guard: &'b Barrier) -> Option<&'b (K, V)>
+    pub fn search<'b, Q>(
+        &self,
+        key: &Q,
+        partial_hash: u8,
+        barrier: &'b Barrier,
+    ) -> Option<&'b (K, V)>
     where
         K: Borrow<Q>,
         Q: Eq + ?Sized,
@@ -73,7 +78,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
 
         // In order to read the linked list correctly, an acquire fence is required.
         let read_order = if LOCK_FREE { Acquire } else { Relaxed };
-        let mut data_array_ptr = self.data.load(read_order, guard);
+        let mut data_array_ptr = self.data.load(read_order, barrier);
         let preferred_index = partial_hash as usize % SIZE;
         let expected_hash = (partial_hash & (!REMOVED)) | OCCUPIED;
         while let Some(data_array_ref) = data_array_ptr.as_ref() {
@@ -89,7 +94,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
                     }
                 }
             }
-            data_array_ptr = data_array_ref.link.load(read_order, guard);
+            data_array_ptr = data_array_ref.link.load(read_order, barrier);
         }
         None
     }

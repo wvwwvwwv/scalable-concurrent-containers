@@ -1,7 +1,7 @@
 use super::cell::Cell;
 use super::cell_array::CellArray;
 
-use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
+use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
 
 use std::borrow::Borrow;
 use std::convert::TryInto;
@@ -41,13 +41,6 @@ where
 
     /// Returns a reference to the `CellArray` pointer.
     fn cell_array_ptr(&self) -> &AtomicArc<CellArray<K, V, CELL_SIZE, LOCK_FREE>>;
-
-    /// Returns a reference to the `CellArray` instance.
-    fn cell_array_ref(
-        cell_array_ptr: Ptr<CellArray<K, V, CELL_SIZE, LOCK_FREE>>,
-    ) -> &CellArray<K, V, CELL_SIZE, LOCK_FREE> {
-        cell_array_ptr.as_ref().unwrap()
-    }
 
     /// Returns the minimum allowed capacity.
     fn minimum_capacity(&self) -> usize;
