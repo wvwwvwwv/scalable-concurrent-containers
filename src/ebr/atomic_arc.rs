@@ -194,17 +194,21 @@ impl<T: 'static> AtomicArc<T> {
     /// let barrier = Barrier::new();
     ///
     /// let mut ptr = atomic_arc.load(Relaxed, &barrier);
+    /// assert_eq!(*ptr.as_ref().unwrap(), 17);
+    ///
     /// atomic_arc.set_tag(Tag::Both, Relaxed);
     /// assert!(atomic_arc.compare_exchange(
     ///     ptr, (Some(Arc::new(18)), Tag::First), Relaxed, Relaxed).is_err());
     ///
     /// ptr.set_tag(Tag::Both);
-    /// let old = atomic_arc.compare_exchange(
+    /// let old: Arc<usize> = atomic_arc.compare_exchange(
     ///     ptr, (Some(Arc::new(18)), Tag::First), Relaxed, Relaxed).unwrap().0.unwrap();
     /// assert_eq!(*old, 17);
+    /// drop(old);
     ///
     /// assert!(atomic_arc.compare_exchange(
     ///     ptr, (Some(Arc::new(19)), Tag::None), Relaxed, Relaxed).is_err());
+    /// assert_eq!(*ptr.as_ref().unwrap(), 17);
     /// ```
     #[inline]
     pub fn compare_exchange<'b>(

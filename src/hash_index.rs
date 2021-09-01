@@ -361,24 +361,28 @@ where
     /// It requires the user to supply a reference to a [`Barrier`].
     ///
     /// # Examples
+    ///
     /// ```
     /// use scc::ebr::Barrier;
     /// use scc::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = Default::default();
     ///
-    /// let result = hashindex.insert(1, 0);
-    /// assert!(result.is_ok());
+    /// assert!(hashindex.insert(1, 0).is_ok());
     ///
     /// let barrier = Barrier::new();
     ///
     /// let mut iter = hashindex.iter(&barrier);
-    /// assert_eq!(iter.next(), Some((&1, &0)));
+    /// let entry_ref = iter.next().unwrap();
     /// assert_eq!(iter.next(), None);
     ///
     /// for iter in hashindex.iter(&barrier) {
     ///     assert_eq!(iter, (&1, &0));
     /// }
+    ///
+    /// drop(hashindex);
+    ///
+    /// assert_eq!(entry_ref, (&1, &0));
     /// ```
     pub fn iter<'h, 'b>(&'h self, barrier: &'b Barrier) -> Visitor<'h, 'b, K, V, H> {
         Visitor {

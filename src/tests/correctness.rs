@@ -159,12 +159,12 @@ mod hashmap_test {
             let hashmap: HashMap<Data, Data> = Default::default();
             for d in key..(key + range) {
                 assert!(hashmap.insert(Data::new(d, checker.clone()), Data::new(d, checker.clone())).is_ok());
-                hashmap.upsert(Data::new(d, checker.clone()), || Data::new(d + 1, checker.clone()), |v| *v = Data::new(d + 2, checker.clone()));
+                hashmap.upsert(Data::new(d, checker.clone()), || Data::new(d + 1, checker.clone()), |_, v| *v = Data::new(d + 2, checker.clone()));
             }
 
             for d in (key + range)..(key + range + range) {
                 assert!(hashmap.insert(Data::new(d, checker.clone()), Data::new(d, checker.clone())).is_ok());
-                hashmap.upsert(Data::new(d, checker.clone()), || Data::new(d, checker.clone()), |v| *v = Data::new(d + 1, checker.clone()));
+                hashmap.upsert(Data::new(d, checker.clone()), || Data::new(d, checker.clone()), |_, v| *v = Data::new(d + 1, checker.clone()));
             }
 
             let result = hashmap.retain(|k, _| k.data < key + range);
@@ -186,7 +186,7 @@ mod hashmap_test {
 
             for d in key..(key + range) {
                 assert!(hashmap.insert(Data::new(d, checker.clone()), Data::new(d, checker.clone())).is_ok());
-                hashmap.upsert(Data::new(d, checker.clone()), || Data::new(d, checker.clone()), |v| *v = Data::new(d + 2, checker.clone()));
+                hashmap.upsert(Data::new(d, checker.clone()), || Data::new(d, checker.clone()), |_, v| *v = Data::new(d + 2, checker.clone()));
             }
             let result = hashmap.clear();
             assert_eq!(result, range as usize);
@@ -194,7 +194,7 @@ mod hashmap_test {
 
             for d in key..(key + range) {
                 assert!(hashmap.insert(Data::new(d, checker.clone()), Data::new(d, checker.clone())).is_ok());
-                hashmap.upsert(Data::new(d, checker.clone()), || Data::new(d, checker.clone()), |v| *v = Data::new(d + 2, checker.clone()));
+                hashmap.upsert(Data::new(d, checker.clone()), || Data::new(d, checker.clone()), |_, v| *v = Data::new(d + 2, checker.clone()));
             }
             assert_eq!(checker.load(Relaxed) as u64, range * 2);
             drop(hashmap);

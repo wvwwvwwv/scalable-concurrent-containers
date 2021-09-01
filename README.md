@@ -1,14 +1,123 @@
 # Scalable Concurrent Containers
 
-The crate offers highly scalable concurrent containers written in the Rust language.
+A collection of concurrent data structures and building blocks for concurrent programming.
 
-- [scc::HashMap](#hashmap) is a concurrent hash map.
+- [scc::ebr](#EBR) implements epoch-based reclamation.
+- [scc::HashMap](#HashMap) is a concurrent hash map.
 - [scc::HashIndex](#hashindex) is a concurrent hash index allowing lock-free read and scan.
 - [scc::TreeIndex](#treeindex) is a concurrent B+ tree allowing lock-free read and scan.
 
-## scc::HashMap <a name="hash map"></a>
+## EBR
 
-scc::HashMap is a scalable in-memory unique key-value store that is targeted at highly concurrent heavy workloads. It does not distribute data to a fixed number of shards as most concurrent hash maps do, instead it has only one single dynamically resizable array of entry metadata. The entry metadata, called a cell, is a 64-byte data structure for managing an array of consecutive 32 key-value pairs. The fixed size key-value pair array is only reachable through its corresponding cell, and its entries are protected by a mutex in the cell; this means that the number of mutex instances increases as the hash map grows, thereby reducing the chance of multiple threads trying to acquire the same mutex. In addition to the array and mutex, the metadata cell has a linked list of key-value pair arrays for hash collision resolution. Apart from scc::HashMap having a single cell array, it automatically enlarges and shrinks the capacity of the cell array without blocking other operations and threads; the cell array is resized without relocating all the entries at once, instead it delegates the rehashing workload to future access to the data structure to keep the latency predictable.
+The `ebr` module implements epoch-based reclamation and various types of auxiliary data structures to make use of it. Its epoch-based reclamation algorithm is similar to [crossbeam_epoch](https://docs.rs/crossbeam-epoch/), however users may find it easier to use as the lifetime of an instance is automatically managed. For instance, `ebr::AtomicArc` and `ebr::Arc` hold a strong reference to the underlying instance, and the instance is passed to the garbage collector when the reference count drops to zero.
+
+### Examples
+
+```rust
+use scc::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
+use std::sync::atomic::Ordering::Relaxed;
+
+// `atomic_arc` holds a strong reference to `17`.
+let atomic_arc: AtomicArc<usize> = AtomicArc::new(17);
+
+// `barrier` prevents the garbage collector from dropping reachable instances.
+let barrier: Barrier = Barrier::new();
+
+// `ptr` cannot outlive `barrier`.
+let mut ptr: Ptr<usize> = atomic_arc.load(Relaxed, &barrier);
+assert_eq!(*ptr.as_ref().unwrap(), 17);
+
+// `atomic_arc` can be tagged.
+atomic_arc.set_tag(Tag::First, Relaxed);
+
+// `ptr` is not tagged, so CAS fails.
+assert!(atomic_arc.compare_exchange(
+    ptr,
+    (Some(Arc::new(18)), Tag::First),
+    Relaxed,
+    Relaxed).is_err());
+
+// `ptr` can be tagged.
+ptr.set_tag(Tag::First);
+
+// The result of CAS is a handle to the instance that `atomic_arc` previously owned.
+let prev: Arc<usize> = atomic_arc.compare_exchange(
+    ptr,
+    (Some(Arc::new(18)), Tag::Second),
+    Relaxed,
+    Relaxed).unwrap().0.unwrap();
+assert_eq!(*prev, 17);
+
+// `17` will be garbage-collected later.
+drop(prev);
+
+// `ebr::AtomicArc` can be converted into `ebr::Arc`.
+let arc: Arc<usize> = atomic_arc.try_into_arc(Relaxed).unwrap();
+assert_eq!(*arc, 18);
+
+// `18` will be garbage-collected later.
+drop(arc);
+
+// `17` is still valid as `barrier` keeps the garbage collector from dropping it.
+assert_eq!(*ptr.as_ref().unwrap(), 17);
+```
+
+## HashMap
+
+`HashMap` is a scalable in-memory unique key-value store that is targeted at highly concurrent heavy workloads. It applies [`EBR`](#EBR) to its entry array management, thus allowing it to reduce the number of locks and avoid data sharding.
+
+### Examples
+
+A unique key can be inserted along with its corresponding value, then it can be updated, read, and removed.
+
+```rust
+use scc::HashMap;
+
+let hashmap: HashMap<u64, u32> = Default::default();
+
+assert!(hashmap.insert(1, 0).is_ok());
+assert_eq!(hashmap.update(&1, |v| { *v = 2; *v }).unwrap(), 2);
+assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
+assert_eq!(hashmap.remove(&1).unwrap(), (1, 2));
+```
+
+It supports `upsert` as in database management software; it tries to insert the given key-value pair, and if it fails, it updates the value field of an existing entry corresponding to the key.
+
+```rust
+use scc::HashMap;
+
+let hashmap: HashMap<u64, u32> = Default::default();
+
+hashmap.upsert(1, || 2, |_, v| *v = 2);
+assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
+hashmap.upsert(1, || 2, |_, v| *v = 3);
+assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 3);
+```
+
+Iteration over all the key-value pairs in a `HashMap` requires an `ebr::Barrier`, and all the references derived from it cannot outlive the `ebr::Barrier`, therefore `Iterator` is not implemented. Instead, it provides two methods that enable it to iterate over entries.
+
+```rust
+use scc::HashMap;
+
+let hashmap: HashMap<u64, u32> = Default::default();
+
+assert!(hashmap.insert(1, 0).is_ok());
+assert!(hashmap.insert(2, 1).is_ok());
+
+// Inside `for_each`, a `ebr::Barrier` protects the entry array.
+let mut acc = 0;
+hashmap.for_each(|k, v_mut| { acc += *k; *v_mut = 2; });
+assert_eq!(acc, 3);
+
+// `for_each` can modify the value field of an entry.
+assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
+assert_eq!(hashmap.read(&2, |_, v| *v).unwrap(), 2);
+
+assert!(hashmap.insert(3, 2).is_ok());
+
+// Inside `retain`, a `ebr::Barrier` protects the entry array.
+assert_eq!(hashmap.retain(|key, value| *key == 1 && *value == 0), (1, 2));
+```
 
 ### Performance
 
@@ -52,9 +161,47 @@ scc::HashMap is a scalable in-memory unique key-value store that is targeted at 
 | Mixed  | 310.705241166s | 337.750491321s | 363.707265976s | 410.698464196s |
 | Remove | 208.355622788s | 226.59800359s  | 251.086396624s | 266.482387949s |
 
-## scc::HashIndex <a name="hash index"></a>
+## HashIndex
 
-scc::HashIndex is an index version of scc::HashMap. It inherits all the characteristics of scc::HashMap except for the fact that it allows readers to access key-value pairs without performing a single write operation on the data structure. In order to make read and scan operations write-free, the key-value pair array is immutable; once a key-value pair is inserted into the array, it never gets modified until the entire array is dropped. The array is seldom coalesced when the array is full and the majority of key-value pairs are marked invalid. Due to the immutability and coalescing operation, it requires the key and value types to implement the Clone trait. Since no locks are acquire when reading a key-value pair, the semantics of scc::HashIndex::read is different from that of scc::HashMap; it is not guaranteed to read the latest snapshot of the key-value pair.
+`HashIndex` is a read-optimized version of [`HashMap`](#HashMap). It applies [`EBR`](#EBR) to its entry management as well, enabling it to perform read operations without acquiring locks.
+
+### Examples
+
+Its `read` method neither acquire locks nor modify any shared data.
+
+```rust
+use scc::HashIndex;
+
+let hashindex: HashIndex<u64, u32> = Default::default();
+
+assert!(hashindex.insert(1, 0).is_ok());
+assert_eq!(hashindex.read(&1, |_, v| *v).unwrap(), 0);
+```
+
+An `Iterator` is implemented for `HashIndex`, because entry references can survive as long as the supplied `ebr::Barrier` survives.
+
+```rust
+use scc::ebr::Barrier;
+use scc::HashIndex;
+
+let hashindex: HashIndex<u64, u32> = Default::default();
+
+assert!(hashindex.insert(1, 0).is_ok());
+
+let barrier = Barrier::new();
+
+// An `ebr::Barrier` has to be given to `iter`.
+let mut iter = hashindex.iter(&barrier);
+
+// The derived reference can live as long as `barrier`.
+let entry_ref = iter.next().unwrap();
+assert_eq!(iter.next(), None);
+
+drop(hashindex);
+
+// The entry can be read after `hashindex` is dropped.
+assert_eq!(entry_ref, (&1, &0));
+```
 
 ### Performance
 
@@ -85,9 +232,37 @@ scc::HashIndex is an index version of scc::HashMap. It inherits all the characte
 | Scan   |   3.640621149s |   7.327157641s |  15.847438364s |  31.771622377s |
 | Remove |  69.259331734s |  82.053630018s |  98.725056905s | 109.829727509s |
 
-## scc::TreeIndex <a name="tree index"></a>
+## TreeIndex
 
-scc::TreeIndex is an order-8 B+ tree variant optimized for read operations. Locks are only acquired on structural changes, and read/scan operations are neither blocked nor interrupted by other threads. The semantics of the read operation on a single key is similar to snapshot isolation in terms of database management software, as readers may not see the latest snapshot of data. The strategy to make the data structure lock-free is similar to that of scc::HashIndex; it harnesses immutability. All the key-value pairs stored in a leaf are never dropped until the leaf becomes completely unreachable, thereby ensuring immutability of all the reachable key-value pairs. The leaf data structure is unique to scc::TreeIndex, that it allows non-blocking multi-threaded modification while it keeps the key-value pair ordering information and the metadata consistent.
+`TreeIndex` is an order-8 B+ tree variant optimized for read operations. The `ebr` module enables it to implement lock-free read and scan methods.
+
+### Examples
+
+```rust
+use scc::ebr::Barrier;
+use scc::TreeIndex;
+let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+for i in 0..10 {
+    let result = treeindex.insert(i, 10);
+    assert!(result.is_ok());
+}
+let barrier = Barrier::new();
+for entry in treeindex.range(1..1, &barrier) {
+    assert!(false);
+}
+let mut scanned = 0;
+for entry in treeindex.range(4..8, &barrier) {
+    assert!(*entry.0 >= 4 && *entry.0 < 8);
+    scanned += 1;
+}
+assert_eq!(scanned, 4);
+scanned = 0;
+for entry in treeindex.range(4..=8, &barrier) {
+    assert!(*entry.0 >= 4 && *entry.0 <= 8);
+    scanned += 1;
+}
+assert_eq!(scanned, 5);
+```
 
 ### Performance
 

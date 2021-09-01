@@ -223,9 +223,9 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
-    /// assert!(hashmap.update(&1, |_| true).is_none());
+    /// assert!(hashmap.update(&1, |_, _| true).is_none());
     /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert_eq!(hashmap.update(&1, |v| { *v = 2; *v }).unwrap(), 2);
+    /// assert_eq!(hashmap.update(&1, |_, v| { *v = 2; *v }).unwrap(), 2);
     /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
     /// ```
     #[inline]
@@ -233,7 +233,7 @@ where
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
-        F: FnOnce(&mut V) -> R,
+        F: FnOnce(&K, &mut V) -> R,
     {
         let (hash, partial_hash) = self.hash(&key_ref);
         let barrier = Barrier::new();
@@ -243,9 +243,9 @@ where
         } else {
             locker.cell_ref().search(key_ref, partial_hash, &barrier)
         };
-        if let Some((_, val)) = pair_ref {
+        if let Some((k, v)) = pair_ref {
             // The presence of `locker` prevents the entry from being modified outside it.
-            return Some(updater(unsafe { &mut *(val as *const V as *mut V) }));
+            return Some(updater(&k, unsafe { &mut *(v as *const V as *mut V) }));
         }
         None
     }
@@ -264,13 +264,13 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
-    /// hashmap.upsert(1, || 2, |v| *v = 2);
+    /// hashmap.upsert(1, || 2, |_, v| *v = 2);
     /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
-    /// hashmap.upsert(1, || 2, |v| *v = 3);
+    /// hashmap.upsert(1, || 2, |_, v| *v = 3);
     /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 3);
     /// ```
     #[inline]
-    pub fn upsert<'h, 'b, FI: FnOnce() -> V, FU: FnOnce(&mut V)>(
+    pub fn upsert<'h, 'b, FI: FnOnce() -> V, FU: FnOnce(&K, &mut V)>(
         &'h self,
         key: K,
         constructor: FI,
@@ -284,9 +284,9 @@ where
         } else {
             locker.cell_ref().search(&key, partial_hash, &barrier)
         };
-        if let Some((_, val)) = pair_ref {
+        if let Some((k, v)) = pair_ref {
             // The presence of `locker` prevents the entry from being modified outside it.
-            updater(unsafe { &mut *(val as *const V as *mut V) });
+            updater(&k, unsafe { &mut *(v as *const V as *mut V) });
         } else {
             locker.insert(key, constructor(), partial_hash, &barrier);
         }
