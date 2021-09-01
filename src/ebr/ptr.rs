@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 use std::{ops::Deref, ptr, ptr::NonNull};
 
 /// [`Ptr`] points to an instance.
-#[derive(Copy, Debug, Eq)]
+#[derive(Debug)]
 pub struct Ptr<'b, T> {
     instance_ptr: *const Underlying<T>,
     _phantom: PhantomData<&'b T>,
@@ -168,6 +168,10 @@ impl<'b, T> Clone for Ptr<'b, T> {
         }
     }
 }
+
+impl<'b, T> Copy for Ptr<'b, T> {}
+
+impl<'b, T> Eq for Ptr<'b, T> {}
 
 impl<'b, T> PartialEq for Ptr<'b, T> {
     fn eq(&self, other: &Self) -> bool {

@@ -165,8 +165,7 @@ where
                 }
                 let final_rank = max_min_rank + 1;
                 debug_assert!(
-                    min_max_rank == (ARRAY_SIZE + 1).try_into().unwrap()
-                        || final_rank <= min_max_rank
+                    min_max_rank as usize == ARRAY_SIZE + 1 || final_rank <= min_max_rank
                 );
 
                 // Updates its own rank.

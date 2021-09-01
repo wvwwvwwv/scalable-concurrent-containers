@@ -331,13 +331,13 @@ where
         full_leaf: &AtomicArc<Leaf<K, V>>,
         barrier: &Barrier,
     ) -> bool {
-        let mut new_leaves_ptr;
+        let new_leaves_ptr;
         match self.new_leaves.compare_exchange(
             Ptr::null(),
             (
                 Some(Arc::new(NewLeaves {
                     origin_leaf_key: full_leaf_key,
-                    origin_leaf_ptr: full_leaf.clone(),
+                    origin_leaf_ptr: full_leaf.clone(Relaxed, barrier),
                     low_key_leaf: AtomicArc::null(),
                     high_key_leaf: AtomicArc::null(),
                 })),
@@ -352,7 +352,7 @@ where
 
         // Checks the full leaf pointer and the leaf node state after locking the leaf node.
         if full_leaf_ptr != full_leaf.load(Relaxed, barrier) {
-            drop(self.new_leaves.swap((None, Tag::None), Relaxed, barrier));
+            drop(self.new_leaves.swap((None, Tag::None), Relaxed));
             return true;
         }
 
@@ -360,20 +360,26 @@ where
         debug_assert!(full_leaf_ref.full());
 
         // Copies entries to the newly allocated leaves.
-        let new_leaves_ref = unsafe { new_leaves_ptr.deref_mut() };
+        let new_leaves_ref = new_leaves_ptr.as_ref().unwrap();
         let mut low_key_leaf_arc = None;
         let mut high_key_leaf_arc = None;
         full_leaf_ref.distribute(&mut low_key_leaf_arc, &mut high_key_leaf_arc);
 
         if let Some(low_key_leaf_boxed) = low_key_leaf_arc.take() {
             // The number of valid entries is small enough to fit into a single leaf.
-            new_leaves_ref.low_key_leaf = AtomicArc::from(low_key_leaf_boxed);
+            new_leaves_ref
+                .low_key_leaf
+                .swap((Some(low_key_leaf_boxed), Tag::None), Relaxed);
             if let Some(high_key_leaf) = high_key_leaf_arc.take() {
-                new_leaves_ref.high_key_leaf = AtomicArc::from(high_key_leaf);
+                new_leaves_ref
+                    .high_key_leaf
+                    .swap((Some(high_key_leaf), Tag::None), Relaxed);
             }
         } else {
             // No valid keys in the full leaf.
-            new_leaves_ref.low_key_leaf = AtomicArc::from(Arc::new(Leaf::new()));
+            new_leaves_ref
+                .low_key_leaf
+                .swap((Some(Arc::new(Leaf::new())), Tag::None), Relaxed);
         }
 
         // Inserts the newly added leaves into the main array.
@@ -391,13 +397,21 @@ where
             // In this scenario, without keeping l1, l2 in the linked list, l1 would point to l2,
             // and therefore a range scanner would start from l1, and cannot traverse l21 and l22,
             // missing newly inserted entries in l21 and l22 before starting the range scanner.
-            full_leaf_ref.push_back(&[low_key_leaf_ptr, high_key_leaf_ptr], 1, barrier);
+            full_leaf_ref.push_back(
+                full_leaf_ptr,
+                &[low_key_leaf_ptr, high_key_leaf_ptr],
+                Tag::First,
+                barrier,
+            );
             // Takes the max key value stored in the low key leaf as the leaf key.
             let max_key = low_key_leaf_ptr.as_ref().unwrap().max().unwrap().0;
             if self
                 .leaves
                 .0
-                .insert(max_key.clone(), new_leaves_ref.low_key_leaf.clone())
+                .insert(
+                    max_key.clone(),
+                    new_leaves_ref.low_key_leaf.clone(Relaxed, barrier),
+                )
                 .is_some()
             {
                 // Insertion failed: expects that the parent splits the leaf node.
@@ -408,7 +422,7 @@ where
             full_leaf.swap((high_key_leaf_ptr.try_into_arc(), Tag::None), Release)
         } else {
             // From here, Scanners can reach the new leaf.
-            full_leaf_ref.push_back(&[low_key_leaf_ptr], 1, barrier);
+            full_leaf_ref.push_back(full_leaf_ptr, &[low_key_leaf_ptr], Tag::First, barrier);
             // Replaces the full leaf with the low-key leaf.
             full_leaf.swap((low_key_leaf_ptr.try_into_arc(), Tag::None), Release)
         };
@@ -416,7 +430,7 @@ where
         // Drops the deprecated leaf.
         unused_leaf.map(|u| {
             debug_assert!(u.full());
-            u.pop_self(0, barrier);
+            u.pop_self(Tag::None, barrier);
             barrier.reclaim(u);
         });
 
@@ -514,7 +528,7 @@ where
                         middle_key.replace(entry.0.unwrap().clone());
                         low_key_leaves
                             .1
-                            .store(entry.1.load(Relaxed, barrier), Relaxed);
+                            .swap((entry.1.get_arc(Relaxed, barrier), Tag::None), Relaxed);
                     }
                     Ordering::Greater => {
                         if let Some(key) = entry.0 {
@@ -524,7 +538,7 @@ where
                         } else {
                             high_key_leaves
                                 .1
-                                .store(entry.1.load(Relaxed, barrier), Relaxed);
+                                .swap((entry.1.get_arc(Relaxed, barrier), Tag::None), Relaxed);
                         }
                     }
                 }
@@ -578,7 +592,7 @@ where
 
     /// Tries to coalesce empty or obsolete leaves.
     fn coalesce(&self, removed: bool, barrier: &Barrier) -> Result<bool, RemoveError> {
-        let lock = LeafNodeLocker::try_lock(self, barrier);
+        let lock = LeafNodeLocker::try_lock(self);
         if lock.is_none() {
             return Err(RemoveError::Retry(removed));
         }
@@ -589,7 +603,7 @@ where
             let leaf_ref = leaf_ptr.as_ref().unwrap();
             if leaf_ref.obsolete() {
                 // Data race resolution - see LeafScanner::jump.
-                leaf_ref.pop_self(0, barrier);
+                leaf_ref.pop_self(Tag::None, barrier);
                 empty = self.leaves.0.remove(entry.0).2;
                 // Data race resolution - see LeafNode::search.
                 if let Some(leaf) = entry.1.swap((None, Tag::None), Release) {
@@ -611,7 +625,7 @@ where
             if let Some(unbounded_ref) = unbounded_ptr.as_ref() {
                 if unbounded_ref.obsolete() {
                     // Data race resolution - see LeafScanner::jump.
-                    unbounded_ref.pop_self(0, barrier);
+                    unbounded_ref.pop_self(Tag::None, barrier);
                     if let Some(obsolete_leaf) = self.leaves.1.swap((None, Tag::First), Release) {
                         barrier.reclaim(obsolete_leaf);
                     }
@@ -677,7 +691,7 @@ where
                 .swap((None, Tag::None), Relaxed)
             {
                 // Makes the leaf unreachable before dropping it.
-                obsolete_leaf.deref().pop_self(Tag::None, barrier);
+                obsolete_leaf.pop_self(Tag::None, barrier);
                 barrier.reclaim(obsolete_leaf);
             }
         }
@@ -766,17 +780,13 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
                     ))?;
                 }
                 output.write_fmt(format_args!("</table>\n>]\n"))?;
-                let prev_leaf = leaf_ref.backward_link().load(Acquire, barrier);
-                if !prev_leaf.is_null() {
-                    output.write_fmt(format_args!("{} -> {}\n", leaf_ref.id(), unsafe {
-                        prev_leaf.deref().id()
-                    }))?;
+                let prev_ptr = leaf_ref.backward_link().load(Acquire, barrier);
+                if let Some(prev_ref) = prev_ptr.as_ref() {
+                    output.write_fmt(format_args!("{} -> {}\n", leaf_ref.id(), prev_ref.id()))?;
                 }
-                let next_leaf = leaf_ref.forward_link().load(Acquire, barrier);
-                if !next_leaf.is_null() {
-                    output.write_fmt(format_args!("{} -> {}\n", leaf_ref.id(), unsafe {
-                        next_leaf.deref().id()
-                    }))?;
+                let next_ptr = leaf_ref.forward_link().load(Acquire, barrier);
+                if let Some(next_ref) = next_ptr.as_ref() {
+                    output.write_fmt(format_args!("{} -> {}\n", leaf_ref.id(), next_ref.id()))?;
                 }
             }
         }
@@ -801,10 +811,7 @@ where
     K: 'static + Clone + Ord + Send + Sync,
     V: 'static + Clone + Send + Sync,
 {
-    pub fn try_lock(
-        leaf_node: &'n LeafNode<K, V>,
-        barrier: &Barrier,
-    ) -> Option<LeafNodeLocker<'n, K, V>> {
+    pub fn try_lock(leaf_node: &'n LeafNode<K, V>) -> Option<LeafNodeLocker<'n, K, V>> {
         if leaf_node
             .new_leaves
             .compare_exchange(Ptr::null(), (None, Tag::First), Acquire, Relaxed)

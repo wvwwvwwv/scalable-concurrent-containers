@@ -3,7 +3,7 @@ pub mod leaf;
 pub mod leaf_node;
 pub mod node;
 
-use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
+use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
 
 use error::{InsertError, RemoveError, SearchError};
 use leaf::{Leaf, LeafScanner};
@@ -104,8 +104,8 @@ where
     /// ```
     pub fn insert(&self, mut key: K, mut value: V) -> Result<(), (K, V)> {
         let barrier = Barrier::new();
+        let mut root_ptr = self.root.load(Acquire, &barrier);
         loop {
-            let mut root_ptr = self.root.load(Acquire, &barrier);
             if let Some(root_ref) = root_ptr.as_ref() {
                 match root_ref.insert(key, value, &barrier) {
                     Ok(_) => return Ok(()),
@@ -123,6 +123,8 @@ where
                         }
                     },
                 }
+                root_ptr = self.root.load(Acquire, &barrier);
+                continue;
             }
             let new_root = Arc::new(Node::new_leaf_node());
             match self
@@ -276,7 +278,8 @@ where
     /// assert_eq!(result, 16);
     /// ```
     pub fn len(&self) -> usize {
-        self.iter().count()
+        let barrier = Barrier::new();
+        self.iter(&barrier).count()
     }
 
     /// Returns the depth of the [`TreeIndex`].
@@ -333,7 +336,7 @@ where
     /// assert_eq!(scanner.next().unwrap(), (&3, &13));
     /// assert!(scanner.next().is_none());
     /// ```
-    pub fn iter<'t, 'b>(&'t self, barrier: &Barrier) -> Scanner<'t, 'b, K, V> {
+    pub fn iter<'t, 'b>(&'t self, barrier: &'b Barrier) -> Scanner<'t, 'b, K, V> {
         Scanner::new(self, barrier)
     }
 
@@ -458,7 +461,7 @@ where
         // Starts scanning.
         if self.leaf_scanner.is_none() {
             loop {
-                let root_ptr = self.tree.root.load(Acquire, &self.guard);
+                let root_ptr = self.tree.root.load(Acquire, self.barrier);
                 if let Some(root_ref) = root_ptr.as_ref() {
                     if let Ok(leaf_scanner) = root_ref.min(self.barrier) {
                         self.leaf_scanner.replace(leaf_scanner);
@@ -529,50 +532,48 @@ where
         }
     }
 
-    fn next_unbounded(&mut self) -> Option<(&'t K, &'t V)> {
+    fn next_unbounded(&mut self) -> Option<(&'b K, &'b V)> {
         // Starts scanning.
         if self.leaf_scanner.is_none() {
             loop {
-                let root_node = self.tree.root.load(Acquire, &self.guard);
-                if root_node.is_null() {
+                let root_ptr = self.tree.root.load(Acquire, self.barrier);
+                if let Some(root_ref) = root_ptr.as_ref() {
+                    let min_allowed_key = match self.range.start_bound() {
+                        Excluded(key) => Some(key),
+                        Included(key) => Some(key),
+                        Unbounded => {
+                            self.check_lower_bound = false;
+                            None
+                        }
+                    };
+                    if let Ok(leaf_scanner) = if let Some(min_allowed_key) = min_allowed_key {
+                        root_ref.max_less(min_allowed_key, self.barrier)
+                    } else {
+                        root_ref.min(self.barrier)
+                    } {
+                        self.check_upper_bound = match self.range.end_bound() {
+                            Excluded(key) => {
+                                if let Some(max_entry) = leaf_scanner.max_entry() {
+                                    max_entry.0.cmp(key) != Ordering::Less
+                                } else {
+                                    false
+                                }
+                            }
+                            Included(key) => {
+                                if let Some(max_entry) = leaf_scanner.max_entry() {
+                                    max_entry.0.cmp(key) == Ordering::Greater
+                                } else {
+                                    false
+                                }
+                            }
+                            Unbounded => false,
+                        };
+                        self.leaf_scanner.replace(leaf_scanner);
+                        break;
+                    }
+                } else {
                     // Empty.
                     return None;
-                }
-                let min_allowed_key = match self.range.start_bound() {
-                    Excluded(key) => Some(key),
-                    Included(key) => Some(key),
-                    Unbounded => {
-                        self.check_lower_bound = false;
-                        None
-                    }
-                };
-                if let Ok(leaf_scanner) = if let Some(min_allowed_key) = min_allowed_key {
-                    unsafe { &*root_node.as_raw() }.max_less(min_allowed_key, &self.guard)
-                } else {
-                    unsafe { &*root_node.as_raw() }.min(&self.guard)
-                } {
-                    self.check_upper_bound = match self.range.end_bound() {
-                        Excluded(key) => {
-                            if let Some(max_entry) = leaf_scanner.max_entry() {
-                                max_entry.0.cmp(key) != Ordering::Less
-                            } else {
-                                false
-                            }
-                        }
-                        Included(key) => {
-                            if let Some(max_entry) = leaf_scanner.max_entry() {
-                                max_entry.0.cmp(key) == Ordering::Greater
-                            } else {
-                                false
-                            }
-                        }
-                        Unbounded => false,
-                    };
-                    self.leaf_scanner.replace(unsafe {
-                        // Prolongs the lifetime as the Rust type system cannot infer the actual lifetime correctly.
-                        std::mem::transmute::<_, LeafScanner<'t, K, V>>(leaf_scanner)
-                    });
-                    break;
                 }
             }
         }
@@ -585,12 +586,7 @@ where
                 return Some(result);
             }
             // Proceeds to the next leaf node.
-            if let Some(new_scanner) = unsafe {
-                std::mem::transmute::<_, Option<LeafScanner<'t, K, V>>>(
-                    scanner.jump(min_allowed_key, &self.guard),
-                )
-                .take()
-            } {
+            if let Some(new_scanner) = scanner.jump(min_allowed_key, self.barrier).take() {
                 if let Some(entry) = new_scanner.get() {
                     self.check_upper_bound = match self.range.end_bound() {
                         Excluded(key) => {

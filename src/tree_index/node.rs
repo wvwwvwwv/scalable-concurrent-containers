@@ -142,11 +142,14 @@ where
         let new_root: Node<K, V> = Node::new_internal_node();
         if let NodeType::Internal(internal_node) = &new_root.entry {
             if internal_node.split_node(None, root.load(Relaxed, barrier), root, true, barrier) {
-                let new_nodes = internal_node
-                    .new_children
-                    .load(Relaxed, barrier)
-                    .as_ref()
-                    .unwrap();
+                let new_nodes = unsafe {
+                    &mut *(internal_node
+                        .new_children
+                        .load(Relaxed, barrier)
+                        .as_ref()
+                        .unwrap() as *const NewNodes<K, V>
+                        as *mut NewNodes<K, V>)
+                };
 
                 // Inserts the newly allocated internal nodes into the main array.
                 let low_key_node_cloned = new_nodes.low_key_node.clone(Relaxed, barrier);
@@ -159,10 +162,7 @@ where
                 let high_key_node_cloned = new_nodes.high_key_node.clone(Relaxed, barrier);
                 if !high_key_node_cloned.is_null(Relaxed) {
                     internal_node.children.1.swap(
-                        (
-                            high_key_node_cloned.try_into_arc(Relaxed, barrier),
-                            Tag::None,
-                        ),
+                        (high_key_node_cloned.get_arc(Relaxed, barrier), Tag::None),
                         Relaxed,
                     );
                 }
@@ -172,7 +172,7 @@ where
                     root.load(Relaxed, barrier).as_raw()
                 );
                 // Updates the pointer.
-                if let Some(old_root) = root.swap(Arc::new(new_root), Release) {
+                if let Some(old_root) = root.swap((Some(Arc::new(new_root)), Tag::None), Release) {
                     // Unlinks the former root node before dropping it.
                     old_root.unlink(barrier);
                     barrier.reclaim(old_root);
@@ -180,9 +180,7 @@ where
                     // Unlocks the new root.
                     let new_root = root.load(Relaxed, barrier).as_ref().unwrap();
                     if let NodeType::Internal(internal_node) = &new_root.entry {
-                        internal_node
-                            .new_children
-                            .swap((None, Tag::None), Release, barrier);
+                        internal_node.new_children.swap((None, Tag::None), Release);
                     }
                 };
             }
@@ -200,14 +198,14 @@ where
             if let Some(root_ref) = root_ptr.as_ref() {
                 let mut internal_node_locker = None;
                 let mut leaf_node_locker = None;
-                match root_ref.entry {
+                match &root_ref.entry {
                     NodeType::Internal(internal_node) => {
-                        if let Some(locker) = InternalNodeLocker::try_lock(internal_node, barrier) {
+                        if let Some(locker) = InternalNodeLocker::try_lock(internal_node) {
                             internal_node_locker.replace(locker);
                         }
                     }
                     NodeType::Leaf(leaf_node) => {
-                        if let Some(locker) = LeafNodeLocker::try_lock(leaf_node, barrier) {
+                        if let Some(locker) = LeafNodeLocker::try_lock(leaf_node) {
                             leaf_node_locker.replace(locker);
                         }
                     }
@@ -217,13 +215,11 @@ where
                     root_ptr = root.load(Acquire, &barrier);
                     continue;
                 }
-                let root_ref = unsafe { root_ptr.deref() };
                 if do_not_remove_valid_root && !root_ref.obsolete(barrier) {
                     break;
                 }
-                match root.compare_exchange(root_ptr, (None, Tag::None), Release, Relaxed, &barrier)
-                {
-                    Ok(_) => {
+                match root.compare_exchange(root_ptr, (None, Tag::None), Release, Relaxed) {
+                    Ok((old_root, _)) => {
                         // It is important to keep the locked state until the node is dropped
                         // in order for all the on-going structural changes being made to its
                         // child nodes to fail.
@@ -233,7 +229,9 @@ where
                         if let Some(leaf_node_locker) = leaf_node_locker.as_mut() {
                             leaf_node_locker.deprecate();
                         }
-                        unsafe { barrier.defer_destroy(root_ptr) };
+                        if let Some(old_root) = old_root {
+                            barrier.reclaim(old_root);
+                        }
                     }
                     Err((_, actual)) => {
                         root_ptr = actual;
@@ -393,7 +391,7 @@ where
             }
             let unbounded_ptr = (self.children.1).load(Acquire, barrier);
             if let Some(unbounded_ref) = unbounded_ptr.as_ref() {
-                debug_assert!(unbounded_ptr.tag() == 0);
+                debug_assert!(unbounded_ptr.tag() == Tag::None);
                 if !(self.children.0).validate(metadata) {
                     // Data race resolution - see LeafNode::search.
                     continue;
@@ -553,7 +551,7 @@ where
             }
             let unbounded_ptr = (self.children.1).load(Acquire, barrier);
             if let Some(unbounded_ref) = unbounded_ptr.as_ref() {
-                debug_assert!(unbounded_ptr.tag() == 0);
+                debug_assert!(unbounded_ptr.tag() == Tag::None);
                 if !(self.children.0).validate(result.1) {
                     // Data race resolution - see LeafNode::search.
                     continue;
@@ -567,7 +565,7 @@ where
                 };
             }
             // `unbounded_ptr` being null indicates that the node is bound to be freed.
-            debug_assert!(unbounded_ptr.tag() == 1);
+            debug_assert!(unbounded_ptr.tag() == Tag::First);
             return Err(RemoveError::Empty(false));
         }
     }
@@ -583,7 +581,8 @@ where
         root_node_split: bool,
         barrier: &Barrier,
     ) -> bool {
-        let mut new_split_nodes;
+        let new_split_nodes_ptr;
+        let full_node_ref = full_node_ptr.as_ref().unwrap();
         match self.new_children.compare_exchange(
             Ptr::null(),
             (
@@ -599,9 +598,9 @@ where
             Acquire,
             Relaxed,
         ) {
-            Ok((_, ptr)) => new_split_nodes = ptr,
+            Ok((_, ptr)) => new_split_nodes_ptr = ptr,
             Err(_) => {
-                full_node_ptr.as_ref().unwrap().rollback(barrier);
+                full_node_ref.rollback(barrier);
                 return true;
             }
         }
@@ -614,25 +613,27 @@ where
             if let Some(unused_children) = self.new_children.swap((None, Tag::None), Relaxed) {
                 barrier.reclaim(unused_children);
             }
-            full_node_ptr.as_ref().unwrap().rollback(barrier);
+            full_node_ref.rollback(barrier);
             return true;
         }
 
         // Copies entries to the newly allocated leaves.
-        let new_split_nodes_ref = new_split_nodes.as_ref().unwrap();
+        let new_split_nodes_mut_ref = unsafe {
+            &mut *(new_split_nodes_ptr.as_ref().unwrap() as *const NewNodes<K, V>
+                as *mut NewNodes<K, V>)
+        };
 
-        match unsafe { &full_node_ptr.deref().entry } {
+        match &full_node_ref.entry {
             NodeType::Internal(full_internal_node) => {
                 debug_assert!(!full_internal_node
                     .new_children
                     .load(Relaxed, barrier)
                     .is_null());
-                let new_children_ref = unsafe {
-                    full_internal_node
-                        .new_children
-                        .load(Relaxed, barrier)
-                        .deref_mut()
-                };
+                let new_children_ref = full_internal_node
+                    .new_children
+                    .load(Relaxed, barrier)
+                    .as_ref()
+                    .unwrap();
 
                 // Copies nodes except for the known full node to the newly allocated internal node entries.
                 let internal_nodes = (
@@ -667,15 +668,17 @@ where
                         if !low_key_node_shared.is_null() {
                             entry_array[num_entries].replace((
                                 Some(new_children_ref.middle_key.as_ref().unwrap()),
-                                new_children_ref.low_key_node.clone(),
+                                new_children_ref.low_key_node.clone(Relaxed, barrier),
                             ));
                             num_entries += 1;
                         }
                         let high_key_node_shared =
                             new_children_ref.high_key_node.load(Relaxed, barrier);
                         if !high_key_node_shared.is_null() {
-                            entry_array[num_entries]
-                                .replace((Some(entry.0), new_children_ref.high_key_node.clone()));
+                            entry_array[num_entries].replace((
+                                Some(entry.0),
+                                new_children_ref.high_key_node.clone(Relaxed, barrier),
+                            ));
                             num_entries += 1;
                         }
                     } else {
@@ -695,15 +698,17 @@ where
                     if !low_key_node_shared.is_null() {
                         entry_array[num_entries].replace((
                             Some(new_children_ref.middle_key.as_ref().unwrap()),
-                            new_children_ref.low_key_node.clone(),
+                            new_children_ref.low_key_node.clone(Relaxed, barrier),
                         ));
                         num_entries += 1;
                     }
                     let high_key_node_shared =
                         new_children_ref.high_key_node.load(Relaxed, barrier);
                     if !high_key_node_shared.is_null() {
-                        entry_array[num_entries]
-                            .replace((None, new_children_ref.high_key_node.clone()));
+                        entry_array[num_entries].replace((
+                            None,
+                            new_children_ref.high_key_node.clone(Relaxed, barrier),
+                        ));
                         num_entries += 1;
                     }
                 }
@@ -720,15 +725,14 @@ where
                                 );
                             }
                             Ordering::Equal => {
-                                new_split_nodes_ref
+                                new_split_nodes_mut_ref
                                     .middle_key
                                     .replace(entry.0.unwrap().clone());
-                                let child_node_ptr = entry.1.load(Relaxed, barrier);
                                 low_key_nodes
                                     .as_ref()
                                     .unwrap()
                                     .1
-                                    .store(child_node_ptr, Relaxed);
+                                    .swap((entry.1.get_arc(Relaxed, barrier), Tag::None), Relaxed);
                             }
                             Ordering::Greater => {
                                 if let Some(key) = entry.0 {
@@ -738,11 +742,10 @@ where
                                         .0
                                         .insert(key.clone(), entry.1.clone(Relaxed, barrier));
                                 } else {
-                                    high_key_nodes
-                                        .as_ref()
-                                        .unwrap()
-                                        .1
-                                        .store(entry.1.load(Relaxed, barrier), Relaxed);
+                                    high_key_nodes.as_ref().unwrap().1.swap(
+                                        (entry.1.get_arc(Relaxed, barrier), Tag::None),
+                                        Relaxed,
+                                    );
                                 }
                             }
                         };
@@ -752,10 +755,10 @@ where
                 }
 
                 // Turns the new nodes into internal nodes.
-                new_split_nodes_ref
+                new_split_nodes_mut_ref
                     .low_key_node
                     .swap((Some(internal_nodes.0), Tag::None), Relaxed);
-                new_split_nodes_ref
+                new_split_nodes_mut_ref
                     .high_key_node
                     .swap((Some(internal_nodes.1), Tag::None), Relaxed);
             }
@@ -783,15 +786,15 @@ where
                         high_key_leaf_node.unwrap(),
                         barrier,
                     )
-                    .map(|middle_key| new_split_nodes_ref.middle_key.replace(middle_key));
+                    .map(|middle_key| new_split_nodes_mut_ref.middle_key.replace(middle_key));
 
                 // Turns the new leaves into leaf nodes.
-                new_split_nodes_ref
+                new_split_nodes_mut_ref
                     .low_key_node
-                    .swap((Some(leaf_nodes.0), Tag::None), barrier);
-                new_split_nodes_ref
+                    .swap((Some(leaf_nodes.0), Tag::None), Relaxed);
+                new_split_nodes_mut_ref
                     .high_key_node
-                    .swap((Some(leaf_nodes.1), Tag::None), barrier);
+                    .swap((Some(leaf_nodes.1), Tag::None), Relaxed);
             }
         };
 
@@ -802,18 +805,20 @@ where
 
         // Inserts the newly allocated internal nodes into the main array.
         if let Some(((middle_key, _), _)) = self.children.0.insert(
-            new_split_nodes_ref.middle_key.take().unwrap(),
-            new_split_nodes_ref.low_key_node.clone(),
+            new_split_nodes_mut_ref.middle_key.take().unwrap(),
+            new_split_nodes_mut_ref.low_key_node.clone(Relaxed, barrier),
         ) {
             // Insertion failed: expects that the parent splits this node.
-            new_split_nodes_ref.middle_key.replace(middle_key);
+            new_split_nodes_mut_ref.middle_key.replace(middle_key);
             return false;
         }
 
         // Replaces the full node with the high-key node.
         let unused_node = full_node.swap(
             (
-                new_split_nodes_ref.high_key_node.clone(Relaxed, barrier),
+                new_split_nodes_mut_ref
+                    .high_key_node
+                    .get_arc(Relaxed, barrier),
                 Tag::None,
             ),
             Release,
@@ -876,7 +881,7 @@ where
 
     /// Tries to coalesce nodes.
     fn coalesce(&self, removed: bool, barrier: &Barrier) -> Result<bool, RemoveError> {
-        let lock = InternalNodeLocker::try_lock(self, barrier);
+        let lock = InternalNodeLocker::try_lock(self);
         if lock.is_none() {
             return Err(RemoveError::Retry(removed));
         }
@@ -914,7 +919,7 @@ where
                     // Deprecates this internal node.
                     let result = self.children.0.retire();
                     debug_assert!(result);
-                    self.children.1.store((None, Tag::First), Release);
+                    self.children.1.swap((None, Tag::First), Release);
                 }
                 unbounded_ref.unlink(barrier);
             }
@@ -951,17 +956,19 @@ where
         while let Some(entry) = scanner.next() {
             if !scanner.removed() {
                 let child_share_ptr = entry.1.load(Relaxed, &barrier);
-                let child_ref = unsafe { child_share_ptr.deref() };
-                child_ref_array[index].replace((Some(child_ref), Some(entry.0), index));
+                child_ref_array[index].replace((
+                    Some(child_share_ptr.as_ref().unwrap()),
+                    Some(entry.0),
+                    index,
+                ));
             } else {
                 child_ref_array[index].replace((None, Some(entry.0), index));
             }
             index += 1;
         }
-        let unbounded_child_ptr = self.children.1.load(Relaxed, &barrier);
-        if !unbounded_child_ptr.is_null() {
-            let child_ref = unsafe { unbounded_child_ptr.deref() };
-            child_ref_array[index].replace((Some(child_ref), None, index));
+        let unbounded_ptr = self.children.1.load(Relaxed, &barrier);
+        if let Some(unbounded_ref) = unbounded_ptr.as_ref() {
+            child_ref_array[index].replace((Some(unbounded_ref), None, index));
         }
 
         // Prints the label.
@@ -1024,10 +1031,7 @@ where
     K: 'static + Clone + Ord + Send + Sync,
     V: 'static + Clone + Send + Sync,
 {
-    fn try_lock(
-        internal_node: &'n InternalNode<K, V>,
-        barrier: &Barrier,
-    ) -> Option<InternalNodeLocker<'n, K, V>> {
+    fn try_lock(internal_node: &'n InternalNode<K, V>) -> Option<InternalNodeLocker<'n, K, V>> {
         if internal_node
             .new_children
             .compare_exchange(Ptr::null(), (None, Tag::First), Acquire, Relaxed)
@@ -1078,6 +1082,9 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+
+    use crate::ebr;
+
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
@@ -1088,7 +1095,7 @@ mod test {
         let range = 16384;
         let barrier = Arc::new(Barrier::new(num_threads));
         let node = Arc::new(Node::new_leaf_node());
-        assert!(node.insert(0, 0, &crossbeam_epoch::pin()).is_ok());
+        assert!(node.insert(0, 0, &ebr::Barrier::new()).is_ok());
         let inserted = Arc::new(Mutex::new(Vec::new()));
         inserted.lock().unwrap().push(0);
         let full = Arc::new(AtomicBool::new(false));
@@ -1103,9 +1110,9 @@ mod test {
                 let first_key = thread_id * range + 1;
                 barrier_copied.wait();
                 for key in first_key..(first_key + range) {
-                    let guard = crossbeam_epoch::pin();
+                    let ebr_barrier = ebr::Barrier::new();
                     loop {
-                        match node_copied.insert(key, key, &guard) {
+                        match node_copied.insert(key, key, &ebr_barrier) {
                             Ok(()) => {
                                 inserted_keys.push(key);
                                 break;
@@ -1140,12 +1147,12 @@ mod test {
             handle.join().unwrap();
         }
 
-        let guard = crossbeam_epoch::pin();
+        let ebr_barrier = ebr::Barrier::new();
         if full.load(Relaxed) {
-            node.rollback(&guard);
+            node.rollback(&ebr_barrier);
         }
         let mut prev = 0;
-        if let Ok(mut scanner) = node.min(&guard) {
+        if let Ok(mut scanner) = node.min(&ebr_barrier) {
             let mut iterated = 0;
             while let Some(entry) = scanner.next() {
                 println!("{} {}", entry.0, entry.1);

@@ -316,6 +316,8 @@ mod hashindex_test {
 mod treeindex_test {
     use crate::TreeIndex;
 
+    use crate::ebr;
+
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
     use std::collections::BTreeSet;
@@ -374,7 +376,8 @@ mod treeindex_test {
                 .is_some());
         }
 
-        let mut scanner = tree.iter();
+        let barrier = ebr::Barrier::new();
+        let mut scanner = tree.iter(&barrier);
         let mut prev = 0;
         while let Some(entry) = scanner.next() {
             assert!(prev == 0 || prev < *entry.0);
@@ -411,20 +414,25 @@ mod treeindex_test {
                             .read(&key, |key, value| assert_eq!(key, value))
                             .is_some());
                     }
-                    let mut range_scanner = tree_copied.range(first_key..);
-                    let entry = range_scanner.next().unwrap();
-                    assert_eq!(entry, (&first_key, &first_key));
-                    let entry = range_scanner.next().unwrap();
-                    assert_eq!(entry, (&(first_key + 1), &(first_key + 1)));
-                    let entry = range_scanner.next().unwrap();
-                    assert_eq!(entry, (&(first_key + 2), &(first_key + 2)));
-                    let entry = range_scanner.next().unwrap();
-                    assert_eq!(entry, (&(first_key + 3), &(first_key + 3)));
+                    {
+                        let ebr_barrier = ebr::Barrier::new();
+                        let mut range_scanner = tree_copied.range(first_key.., &ebr_barrier);
+                        let entry = range_scanner.next().unwrap();
+                        assert_eq!(entry, (&first_key, &first_key));
+                        let entry = range_scanner.next().unwrap();
+                        assert_eq!(entry, (&(first_key + 1), &(first_key + 1)));
+                        let entry = range_scanner.next().unwrap();
+                        assert_eq!(entry, (&(first_key + 2), &(first_key + 2)));
+                        let entry = range_scanner.next().unwrap();
+                        assert_eq!(entry, (&(first_key + 3), &(first_key + 3)));
+                    }
 
                     let key_at_halfway = first_key + range / 2;
                     for key in (first_key + 1)..(first_key + range) {
                         if key == key_at_halfway {
-                            let mut range_scanner = tree_copied.range((first_key + 1)..);
+                            let ebr_barrier = ebr::Barrier::new();
+                            let mut range_scanner =
+                                tree_copied.range((first_key + 1).., &ebr_barrier);
                             let entry = range_scanner.next().unwrap();
                             assert_eq!(entry, (&key_at_halfway, &key_at_halfway));
                             let entry = range_scanner.next().unwrap();
@@ -448,7 +456,8 @@ mod treeindex_test {
             let mut found_markers = 0;
             let mut prev_marker = 0;
             let mut prev = 0;
-            for iter in tree.iter() {
+            let ebr_barrier = ebr::Barrier::new();
+            for iter in tree.iter(&ebr_barrier) {
                 let current = *iter.0;
                 if current % range == 0 {
                     found_markers += 1;
@@ -526,7 +535,8 @@ mod treeindex_test {
                     let max = inserted_copied.load(Acquire);
                     let mut prev = 0;
                     let mut iterated = 0;
-                    for iter in tree_copied.iter() {
+                    let ebr_barrier = ebr::Barrier::new();
+                    for iter in tree_copied.iter(&ebr_barrier) {
                         assert!(prev == 0 || prev + 1 == *iter.0);
                         prev = *iter.0;
                         iterated += 1;
@@ -538,7 +548,8 @@ mod treeindex_test {
                     barrier_copied.wait();
                     let mut prev = 0;
                     let max = removed_copied.load(Acquire);
-                    for iter in tree_copied.iter() {
+                    let ebr_barrier = ebr::Barrier::new();
+                    for iter in tree_copied.iter(&ebr_barrier) {
                         let current = *iter.0;
                         assert!(current < max);
                         assert!(prev + 1 == current || prev == 0);

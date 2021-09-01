@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 ///
 /// The default implementation of `push_back` and `pop_self` functions rely on traditional
 /// locking mechanisms.
-pub trait LinkedList: Sized {
+pub trait LinkedList: 'static + Sized {
     /// Returns a reference to the forward link.
     ///
     /// The pointer value may be tagged if the caller of push_back or remove has given a tag.
@@ -40,8 +40,8 @@ pub trait LinkedList: Sized {
         let mut last_entry_ptr: Ptr<'b, Self> = Ptr::null();
         for entry_ptr in entries.iter() {
             if let Some(entry_ref) = entry_ptr.as_ref() {
-                if first_entry_ptr.is_null()() {
-                    first_entry_ptr = entry_ptr;
+                if first_entry_ptr.is_null() {
+                    first_entry_ptr = *entry_ptr;
                 }
                 if let Some(prev_entry) = last_entry_ptr.as_ref() {
                     prev_entry
@@ -51,7 +51,7 @@ pub trait LinkedList: Sized {
                         .backward_link()
                         .swap((last_entry_ptr.try_into_arc(), Tag::None), Relaxed);
                 }
-                last_entry_ptr = entry_ptr;
+                last_entry_ptr = *entry_ptr;
             }
         }
 
@@ -80,9 +80,9 @@ pub trait LinkedList: Sized {
 
             // Makes everything visible.
             self.forward_link()
-                .store((first_entry_ptr.try_into_arc(), tag), Release);
+                .swap((first_entry_ptr.try_into_arc(), tag), Release);
 
-            true
+            return true;
         }
         false
     }
@@ -123,7 +123,6 @@ pub trait LinkedList: Sized {
 /// Linked list locker.
 struct LinkedListLocker<'b, T: LinkedList> {
     entry: &'b T,
-    barrier: &'b Barrier,
 }
 
 impl<'b, T: LinkedList> LinkedListLocker<'b, T> {
@@ -147,7 +146,7 @@ impl<'b, T: LinkedList> LinkedListLocker<'b, T> {
             }
             break;
         }
-        LinkedListLocker { entry, barrier }
+        LinkedListLocker { entry }
     }
 
     /// Locks the next entry and self.
@@ -190,13 +189,13 @@ impl<'b, T: LinkedList> LinkedListLocker<'b, T> {
                     break;
                 }
 
-                if let Err(err) = entry.backward_link().compare_exchange(
+                if let Err((_, actual)) = entry.backward_link().compare_exchange(
                     current_ptr,
                     (current_ptr.try_into_arc(), Tag::First),
                     Acquire,
                     Relaxed,
                 ) {
-                    current_ptr = err.current;
+                    current_ptr = actual;
                     continue;
                 }
 
@@ -213,7 +212,7 @@ impl<'b, T: LinkedList> LinkedListLocker<'b, T> {
                         == entry.forward_link().load(Relaxed, barrier).as_raw()
                 ));
 
-                return (next_entry_locker, LinkedListLocker { entry, barrier });
+                return (next_entry_locker, LinkedListLocker { entry });
             }
         }
     }
