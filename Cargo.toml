@@ -11,7 +11,6 @@ categories = ["concurrency", "data-structures"]
 keywords = ["concurrent", "hashmap", "map", "tree", "index"]
 
 [dependencies]
-crossbeam-epoch = "^0.9.5"
 scopeguard = "^1.1.0"
 
 [dev-dependencies]

@@ -1,174 +1,172 @@
-use crossbeam_epoch::{Atomic, Guard, Pointable, Shared};
+use crate::ebr::{AtomicArc, Barrier, Ptr, Tag};
+
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-/// LinkedList is a self-referential doubly linked list.
+/// [`LinkedList`] is a self-referential doubly linked list.
 ///
-/// The default implementation of push_back and pop_self functions relies on traditional locking mechanisms.
-pub trait LinkedList: Pointable + Sized {
+/// The default implementation of `push_back` and `pop_self` functions rely on traditional
+/// locking mechanisms.
+pub trait LinkedList: 'static + Sized {
     /// Returns a reference to the forward link.
     ///
     /// The pointer value may be tagged if the caller of push_back or remove has given a tag.
     /// The tag is reset as soon as the pointer is replaced with a new one.
-    fn forward_link(&self) -> &Atomic<Self>;
+    fn forward_link(&self) -> &AtomicArc<Self>;
 
     /// Returns a reference to the backward link.
     ///
     /// The pointer value may be tagged 1 when the entry is being modified.
-    fn backward_link(&self) -> &Atomic<Self>;
+    fn backward_link(&self) -> &AtomicArc<Self>;
 
     /// Adds the given entries after self.
     ///
     /// The forward link pointer is tagged with the given tag to indicate a special state.
-    fn push_back<'g>(&self, entries: &[Shared<'g, Self>], tag: usize, guard: &'g Guard) -> bool {
+    fn push_back<'b>(
+        &self,
+        self_ptr: Ptr<'b, Self>,
+        entries: &[Ptr<'b, Self>],
+        tag: Tag,
+        barrier: &'b Barrier,
+    ) -> bool {
         if entries.is_empty() {
             return false;
         }
 
         // Locks the next and self.
-        let mut lockers = LinkedListLocker::lock_next_self(self, guard);
+        let mut lockers = LinkedListLocker::lock_next_self(self, barrier);
 
         // Connects the given entries one another.
-        let mut first_entry = None;
-        let mut last_entry: Option<&Self> = None;
-        for entry in entries.iter() {
-            if entry.is_null() {
-                continue;
+        let mut first_entry_ptr: Ptr<'b, Self> = Ptr::null();
+        let mut last_entry_ptr: Ptr<'b, Self> = Ptr::null();
+        for entry_ptr in entries.iter() {
+            if let Some(entry_ref) = entry_ptr.as_ref() {
+                if first_entry_ptr.is_null() {
+                    first_entry_ptr = *entry_ptr;
+                }
+                if let Some(prev_entry) = last_entry_ptr.as_ref() {
+                    prev_entry
+                        .forward_link()
+                        .swap((entry_ptr.try_into_arc(), Tag::None), Relaxed);
+                    entry_ref
+                        .backward_link()
+                        .swap((last_entry_ptr.try_into_arc(), Tag::None), Relaxed);
+                }
+                last_entry_ptr = *entry_ptr;
             }
-            let entry_ref = unsafe { entry.deref() };
-            if first_entry.is_none() {
-                first_entry.replace(entry_ref);
+        }
+
+        if let Some(first_entry_ref) = first_entry_ptr.as_ref() {
+            // Connects the given entries with the next and `self`.
+            if let Some(last_entry_ref) = last_entry_ptr.as_ref() {
+                last_entry_ref.forward_link().swap(
+                    (
+                        self.forward_link().load(Relaxed, barrier).try_into_arc(),
+                        Tag::None,
+                    ),
+                    Relaxed,
+                );
             }
-            if let Some(prev_entry) = last_entry.take() {
-                prev_entry
-                    .forward_link()
-                    .store(Shared::from(entry_ref as *const _), Relaxed);
-                entry_ref
+            first_entry_ref
+                .backward_link()
+                .swap((self_ptr.try_into_arc(), Tag::None), Relaxed);
+
+            // Makes the next entry point to the last entry.
+            if let Some(next_locker) = lockers.0.as_mut() {
+                next_locker
+                    .entry
                     .backward_link()
-                    .store(Shared::from(prev_entry as *const _), Relaxed);
+                    .swap((last_entry_ptr.try_into_arc(), Tag::First), Relaxed);
             }
-            last_entry.replace(entry_ref);
+
+            // Makes everything visible.
+            self.forward_link()
+                .swap((first_entry_ptr.try_into_arc(), tag), Release);
+
+            return true;
         }
-
-        if first_entry.is_none() {
-            return false;
-        }
-
-        // Connects the given entries with the next and self.
-        last_entry.as_ref().unwrap().forward_link().store(
-            self.forward_link().load(Relaxed, guard).with_tag(0),
-            Relaxed,
-        );
-        first_entry
-            .as_ref()
-            .unwrap()
-            .backward_link()
-            .store(Shared::from(self as *const _), Relaxed);
-
-        // Makes the next entry point to the last entry.
-        if let Some(next_locker) = lockers.0.as_mut() {
-            next_locker.entry.backward_link().store(
-                Shared::from(last_entry.unwrap() as *const _).with_tag(1),
-                Relaxed,
-            );
-        }
-
-        // Makes everything visible.
-        self.forward_link().store(
-            Shared::from(first_entry.unwrap() as *const _).with_tag(tag),
-            Release,
-        );
-
-        true
+        false
     }
 
-    /// Removes itself from the linked list.
-    fn pop_self(&self, tag: usize, guard: &Guard) {
+    /// Removes `self` from the linked list.
+    fn pop_self(&self, tag: Tag, barrier: &Barrier) {
         // Locks the next entry and self.
-        let mut lockers = LinkedListLocker::lock_next_self(self, guard);
+        let mut lockers = LinkedListLocker::lock_next_self(self, barrier);
 
         // Locks the previous entry and modifies the linked list.
-        let prev_shared = self.backward_link().load(Relaxed, guard).with_tag(0);
-        if !prev_shared.is_null() {
+        let mut prev_entry_ptr = self.backward_link().load(Relaxed, barrier);
+        prev_entry_ptr.set_tag(Tag::None);
+        if let Some(prev_entry_ref) = prev_entry_ptr.as_ref() {
             // Makes the prev entry point to the next entry.
-            let prev_entry_locker = LinkedListLocker::lock(unsafe { prev_shared.deref() }, guard);
-            debug_assert_eq!(
-                prev_entry_locker
-                    .entry
-                    .forward_link()
-                    .load(Relaxed, guard)
-                    .as_raw(),
-                self as *const _
-            );
+            let prev_entry_locker = LinkedListLocker::lock(prev_entry_ref, barrier);
             if let Some(next_entry_locker) = lockers.0.as_mut() {
                 next_entry_locker
                     .entry
                     .backward_link()
-                    .store(prev_shared.with_tag(1), Relaxed);
+                    .swap((prev_entry_ptr.try_into_arc(), Tag::First), Relaxed);
             }
-            prev_entry_locker.entry.forward_link().store(
-                self.forward_link().load(Relaxed, guard).with_tag(tag),
+            prev_entry_locker.entry.forward_link().swap(
+                (
+                    self.forward_link().load(Relaxed, barrier).try_into_arc(),
+                    tag,
+                ),
                 Release,
             );
         } else if let Some(next_entry_locker) = lockers.0.as_mut() {
             next_entry_locker
                 .entry
                 .backward_link()
-                .store(prev_shared.with_tag(1), Relaxed);
+                .swap((prev_entry_ptr.try_into_arc(), Tag::First), Relaxed);
         }
     }
 }
 
 /// Linked list locker.
-struct LinkedListLocker<'g, T: LinkedList> {
-    entry: &'g T,
-    guard: &'g Guard,
+struct LinkedListLocker<'b, T: LinkedList> {
+    entry: &'b T,
 }
 
-impl<'g, T: LinkedList> LinkedListLocker<'g, T> {
+impl<'b, T: LinkedList> LinkedListLocker<'b, T> {
     /// Locks a single entry.
-    fn lock(entry: &'g T, guard: &'g Guard) -> LinkedListLocker<'g, T> {
-        let mut current = entry.backward_link().load(Relaxed, guard);
+    fn lock(entry: &'b T, barrier: &'b Barrier) -> LinkedListLocker<'b, T> {
+        let mut current_ptr = entry.backward_link().load(Relaxed, barrier);
         loop {
-            if current.tag() == 1 {
-                current = entry.backward_link().load(Relaxed, guard);
+            if current_ptr.tag() == Tag::First {
+                current_ptr = entry.backward_link().load(Relaxed, barrier);
                 std::thread::yield_now();
                 continue;
             }
-            if let Err(err) = entry.backward_link().compare_exchange(
-                current,
-                current.with_tag(1),
+            if let Err((_, actual)) = entry.backward_link().compare_exchange(
+                current_ptr,
+                (current_ptr.try_into_arc(), Tag::First),
                 Acquire,
                 Relaxed,
-                guard,
             ) {
-                current = err.current;
+                current_ptr = actual;
                 continue;
             }
             break;
         }
-        LinkedListLocker { entry, guard }
+        LinkedListLocker { entry }
     }
 
     /// Locks the next entry and self.
     fn lock_next_self(
-        entry: &'g T,
-        guard: &'g Guard,
-    ) -> (Option<LinkedListLocker<'g, T>>, LinkedListLocker<'g, T>) {
+        entry: &'b T,
+        barrier: &'b Barrier,
+    ) -> (Option<LinkedListLocker<'b, T>>, LinkedListLocker<'b, T>) {
         loop {
             // Locks the next entry.
-            let next_entry_ptr = entry.forward_link().load(Relaxed, guard);
+            let next_entry_ptr = entry.forward_link().load(Relaxed, barrier);
             let mut next_entry_locker = None;
-            if !next_entry_ptr.is_null() {
-                next_entry_locker.replace(LinkedListLocker::lock(
-                    unsafe { next_entry_ptr.deref() },
-                    guard,
-                ));
+            if let Some(next_entry_ref) = next_entry_ptr.as_ref() {
+                next_entry_locker.replace(LinkedListLocker::lock(next_entry_ref, barrier));
             }
 
             if next_entry_locker.as_ref().map_or_else(
                 || false,
                 |locker| {
-                    locker.entry.backward_link().load(Relaxed, guard).as_raw() != entry as *const _
+                    locker.entry.backward_link().load(Relaxed, barrier).as_raw()
+                        != entry as *const _
                 },
             ) {
                 // The link has changed in the meantime.
@@ -178,65 +176,50 @@ impl<'g, T: LinkedList> LinkedListLocker<'g, T> {
             // Locks the next entry.
             //
             // Reading backward_link needs to be an acquire fence to correctly read forward_link.
-            let mut current_state = entry.backward_link().load(Acquire, guard);
+            let mut current_ptr = entry.backward_link().load(Acquire, barrier);
             loop {
-                if current_state.tag() == 1 {
+                if current_ptr.tag() == Tag::First {
                     // Currently, locked.
-                    current_state = entry.backward_link().load(Acquire, guard);
+                    current_ptr = entry.backward_link().load(Acquire, barrier);
                     std::thread::yield_now();
                     continue;
                 }
-                if next_entry_ptr != entry.forward_link().load(Relaxed, guard) {
+                if next_entry_ptr != entry.forward_link().load(Relaxed, barrier) {
                     // Pointer changed with the known next entry locked.
                     break;
                 }
 
-                if let Err(err) = entry.backward_link().compare_exchange(
-                    current_state,
-                    current_state.with_tag(1),
+                if let Err((_, actual)) = entry.backward_link().compare_exchange(
+                    current_ptr,
+                    (current_ptr.try_into_arc(), Tag::First),
                     Acquire,
                     Relaxed,
-                    guard,
                 ) {
-                    current_state = err.current;
+                    current_ptr = actual;
                     continue;
                 }
 
                 debug_assert_eq!(
                     next_entry_locker.as_ref().map_or_else(
                         || entry as *const _,
-                        |locker| locker.entry.backward_link().load(Relaxed, guard).as_raw()
+                        |locker| locker.entry.backward_link().load(Relaxed, barrier).as_raw()
                     ),
                     entry as *const _
                 );
                 debug_assert!(next_entry_locker.as_ref().map_or_else(
                     || true,
                     |locker| locker.entry as *const _
-                        == entry.forward_link().load(Relaxed, guard).as_raw()
+                        == entry.forward_link().load(Relaxed, barrier).as_raw()
                 ));
 
-                return (next_entry_locker, LinkedListLocker { entry, guard });
+                return (next_entry_locker, LinkedListLocker { entry });
             }
         }
     }
 }
 
-impl<'g, T: LinkedList> Drop for LinkedListLocker<'g, T> {
+impl<'b, T: LinkedList> Drop for LinkedListLocker<'b, T> {
     fn drop(&mut self) {
-        let mut current = self.entry.backward_link().load(Relaxed, self.guard);
-        loop {
-            debug_assert_eq!(current.tag(), 1);
-            if let Err(result) = self.entry.backward_link().compare_exchange(
-                current,
-                current.with_tag(0),
-                Release,
-                Relaxed,
-                self.guard,
-            ) {
-                current = result.current;
-                continue;
-            }
-            break;
-        }
+        self.entry.backward_link().set_tag(Tag::None, Release);
     }
 }

@@ -266,6 +266,64 @@ impl<T: 'static> AtomicArc<T> {
             Self::null()
         }
     }
+
+    /// Tries to create an [`Arc`] out of `self`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::{Arc, AtomicArc, Barrier};
+    /// use std::sync::atomic::Ordering::Relaxed;
+    ///
+    /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(47);
+    /// let barrier = Barrier::new();
+    /// let arc: Arc<usize> = atomic_arc.get_arc(Relaxed, &barrier).unwrap();
+    /// assert_eq!(*arc, 47);
+    /// ```
+    #[inline]
+    pub fn get_arc(&self, order: Ordering, _barrier: &Barrier) -> Option<Arc<T>> {
+        let ptr = self.instance_ptr.load(order);
+        if let Some(underlying_ptr) = NonNull::new(Tag::unset_tag(ptr) as *mut Underlying<T>) {
+            if unsafe { underlying_ptr.as_ref() }.try_add_ref() {
+                return Some(Arc::from(underlying_ptr));
+            }
+        }
+        None
+    }
+
+    /// Tries to convert `self` into an [`Arc`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::{Arc, AtomicArc};
+    /// use std::sync::atomic::Ordering::Relaxed;
+    ///
+    /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(55);
+    /// let arc: Arc<usize> = atomic_arc.try_into_arc(Relaxed).unwrap();
+    /// assert_eq!(*arc, 55);
+    /// ```
+    #[inline]
+    pub fn try_into_arc(self, order: Ordering) -> Option<Arc<T>> {
+        let ptr = self.instance_ptr.swap(ptr::null_mut(), order);
+        if let Some(underlying_ptr) = NonNull::new(Tag::unset_tag(ptr) as *mut Underlying<T>) {
+            return Some(Arc::from(underlying_ptr));
+        }
+        None
+    }
+}
+
+impl<T: 'static> Clone for AtomicArc<T> {
+    #[inline]
+    fn clone<'b>(&self) -> AtomicArc<T> {
+        self.clone(Relaxed, &Barrier::new())
+    }
+}
+
+impl<T> Default for AtomicArc<T> {
+    fn default() -> Self {
+        AtomicArc::null()
+    }
 }
 
 impl<T: 'static> Drop for AtomicArc<T> {
@@ -291,15 +349,17 @@ mod test {
     use std::sync::atomic::{AtomicBool, AtomicU8};
     use std::thread;
 
+    struct A(AtomicU8, usize, &'static AtomicBool);
+    impl Drop for A {
+        fn drop(&mut self) {
+            self.2.swap(true, Relaxed);
+        }
+    }
+
     #[test]
     fn atomic_arc() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
-        struct A(AtomicU8, usize, &'static AtomicBool);
-        impl Drop for A {
-            fn drop(&mut self) {
-                self.2.swap(true, Relaxed);
-            }
-        }
+
         let atomic_arc = AtomicArc::new(A(AtomicU8::new(10), 10, &DESTROYED));
         assert!(!DESTROYED.load(Relaxed));
 
@@ -320,6 +380,54 @@ mod test {
         atomic_arc_cloned.set_tag(Tag::Second, Relaxed);
 
         drop(atomic_arc_cloned);
+        drop(barrier);
+
+        while !DESTROYED.load(Relaxed) {
+            drop(Barrier::new());
+        }
+    }
+
+    #[test]
+    fn atomic_arc_creation() {
+        static DESTROYED: AtomicBool = AtomicBool::new(false);
+
+        let atomic_arc = AtomicArc::new(A(AtomicU8::new(11), 11, &DESTROYED));
+        assert!(!DESTROYED.load(Relaxed));
+
+        let barrier = Barrier::new();
+
+        let arc = atomic_arc.get_arc(Relaxed, &barrier);
+
+        drop(atomic_arc);
+        assert!(!DESTROYED.load(Relaxed));
+
+        if let Some(arc) = arc {
+            assert_eq!(arc.1, 11);
+            assert!(!DESTROYED.load(Relaxed));
+        }
+        drop(barrier);
+
+        while !DESTROYED.load(Relaxed) {
+            drop(Barrier::new());
+        }
+    }
+
+    #[test]
+    fn atomic_arc_conversion() {
+        static DESTROYED: AtomicBool = AtomicBool::new(false);
+
+        let atomic_arc = AtomicArc::new(A(AtomicU8::new(11), 11, &DESTROYED));
+        assert!(!DESTROYED.load(Relaxed));
+
+        let barrier = Barrier::new();
+
+        let arc = atomic_arc.try_into_arc(Relaxed);
+        assert!(!DESTROYED.load(Relaxed));
+
+        if let Some(arc) = arc {
+            assert_eq!(arc.1, 11);
+            assert!(!DESTROYED.load(Relaxed));
+        }
         drop(barrier);
 
         while !DESTROYED.load(Relaxed) {

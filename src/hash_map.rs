@@ -470,7 +470,6 @@ where
 
         // An acquire fence is required to correctly load the contents of the array.
         let mut current_array_ptr = self.array.load(Acquire, &barrier);
-        let mut prev_cell_locker = None;
         while let Some(current_array_ref) = current_array_ptr.as_ref() {
             if !current_array_ref.old_array(&barrier).is_null() {
                 current_array_ref.partial_rehash(|key| self.hash(key), |_, _| None, &barrier);
@@ -478,24 +477,9 @@ where
                 continue;
             }
 
-            let mut array_changed = false;
             for cell_index in 0..current_array_ref.array_size() {
                 if let Some(locker) = CellLocker::lock(current_array_ref.cell(cell_index), &barrier)
                 {
-                    if prev_cell_locker.is_none()
-                        && !current_array_ref.old_array(&barrier).is_null()
-                    {
-                        // The array has changed right after the first lock is acquired.
-                        //
-                        // Once a lock is acquired, and if the pointer stays the same, it stays the
-                        // same until it finishes iteration over all the entries.
-                        let new_current_array_ptr = self.array.load(Acquire, &barrier);
-                        if new_current_array_ptr != current_array_ptr {
-                            current_array_ptr = new_current_array_ptr;
-                            array_changed = true;
-                            break;
-                        }
-                    }
                     let mut iterator = locker.cell_ref().iter(&barrier);
                     while iterator.next().is_some() {
                         let retain = if let Some((k, v)) = iterator.get() {
@@ -509,25 +493,24 @@ where
                         } else {
                             retained_entries += 1;
                         }
+                        if retained_entries == usize::MAX || removed_entries == usize::MAX {
+                            // Gives up iteration on an integer overflow.
+                            return (retained_entries, removed_entries);
+                        }
                     }
-                    prev_cell_locker.replace(locker);
-                } else {
-                    // There is no way that a locking attempt fails unless the array has been
-                    // resized.
-                    current_array_ptr = self.array.load(Acquire, &barrier);
-                    array_changed = true;
-                    break;
                 }
             }
 
-            if array_changed {
-                continue;
+            let new_current_array_ptr = self.array.load(Acquire, &barrier);
+            if current_array_ptr == new_current_array_ptr {
+                break;
             }
+            retained_entries = 0;
+            current_array_ptr = new_current_array_ptr;
+        }
 
-            if retained_entries <= current_array_ref.num_cell_entries() / 8 {
-                self.resize(&barrier);
-            }
-            break;
+        if removed_entries >= retained_entries {
+            self.resize(&barrier);
         }
 
         (retained_entries, removed_entries)

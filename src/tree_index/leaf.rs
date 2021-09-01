@@ -1,5 +1,6 @@
 use crate::common::linked_list::LinkedList;
-use crossbeam_epoch::{Atomic, Guard};
+use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
+
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::convert::TryInto;
@@ -32,39 +33,43 @@ const OBSOLETE_MASK: u32 = (RETIRED << 28)
 /// Each entry in an EntryArray is never dropped until the Leaf is dropped once constructed.
 pub type EntryArray<K, V> = [MaybeUninit<(K, V)>; ARRAY_SIZE];
 
-/// Leaf is an ordered array of key-value pairs.
+/// [`Leaf`] is an ordered array of key-value pairs.
 ///
-/// A constructed key-value pair entry is never dropped until the entire Leaf instance is dropped.
+/// A constructed key-value pair entry is never dropped until the entire [`Leaf`] instance is
+/// dropped.
 pub struct Leaf<K, V>
 where
-    K: Clone + Ord + Sync,
-    V: Clone + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     /// The array of key-value pairs.
     entry_array: EntryArray<K, V>,
+
     /// A pointer that points to the next adjacent leaf.
     ///
     /// forward_link being tagged 1 means that the next leaf may contain smaller keys.
-    forward_link: Atomic<Leaf<K, V>>,
+    forward_link: AtomicArc<Leaf<K, V>>,
+
     /// A pointer that points to the previous adjacent leaf.
     ///
     /// backward_link being tagged 1 means the leaf is locked.
-    backward_link: Atomic<Leaf<K, V>>,
+    backward_link: AtomicArc<Leaf<K, V>>,
+
     /// The metadata that manages the contents.
     metadata: AtomicU32,
 }
 
 impl<K, V> Leaf<K, V>
 where
-    K: Clone + Ord + Sync,
-    V: Clone + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     /// Creates a new Leaf.
     pub fn new() -> Leaf<K, V> {
         Leaf {
             entry_array: unsafe { MaybeUninit::uninit().assume_init() },
-            forward_link: Atomic::null(),
-            backward_link: Atomic::null(),
+            forward_link: AtomicArc::null(),
+            backward_link: AtomicArc::null(),
             metadata: AtomicU32::new(0),
         }
     }
@@ -74,7 +79,7 @@ where
         self as *const _ as usize
     }
 
-    /// Returns true if the leaf is full.
+    /// Returns true if the [`Leaf`] is full.
     pub fn full(&self) -> bool {
         let metadata = self.metadata.load(Relaxed);
         for i in 0..ARRAY_SIZE {
@@ -85,7 +90,7 @@ where
         true
     }
 
-    /// Returns true if the leaf is obsolete.
+    /// Returns `true` if the [`Leaf`] is obsolete.
     pub fn obsolete(&self) -> bool {
         (self.metadata.load(Relaxed) & OBSOLETE_MASK) == OBSOLETE_MASK
     }
@@ -160,8 +165,7 @@ where
                 }
                 let final_rank = max_min_rank + 1;
                 debug_assert!(
-                    min_max_rank == (ARRAY_SIZE + 1).try_into().unwrap()
-                        || final_rank <= min_max_rank
+                    min_max_rank as usize == ARRAY_SIZE + 1 || final_rank <= min_max_rank
                 );
 
                 // Updates its own rank.
@@ -420,14 +424,14 @@ where
 
     pub fn distribute(
         &self,
-        low_key_leaf: &mut Option<Box<Leaf<K, V>>>,
-        high_key_leaf: &mut Option<Box<Leaf<K, V>>>,
+        low_key_leaf: &mut Option<Arc<Leaf<K, V>>>,
+        high_key_leaf: &mut Option<Arc<Leaf<K, V>>>,
     ) {
         let mut iterated = 0;
         for entry in LeafScanner::new(self) {
             if iterated < ARRAY_SIZE / 2 {
                 if low_key_leaf.is_none() {
-                    low_key_leaf.replace(Box::new(Leaf::new()));
+                    low_key_leaf.replace(Arc::new(Leaf::new()));
                 }
                 low_key_leaf
                     .as_ref()
@@ -436,7 +440,7 @@ where
                 iterated += 1;
             } else {
                 if high_key_leaf.is_none() {
-                    high_key_leaf.replace(Box::new(Leaf::new()));
+                    high_key_leaf.replace(Arc::new(Leaf::new()));
                 }
                 high_key_leaf
                     .as_ref()
@@ -485,8 +489,8 @@ where
 
 impl<K, V> Drop for Leaf<K, V>
 where
-    K: Clone + Ord + Sync,
-    V: Clone + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     fn drop(&mut self) {
         let metadata = self.metadata.swap(0, Acquire);
@@ -501,8 +505,8 @@ where
 
 struct Inserter<'l, K, V>
 where
-    K: Clone + Ord + Sync,
-    V: Clone + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     leaf: &'l Leaf<K, V>,
     metadata: u32,
@@ -513,8 +517,8 @@ where
 /// Inserter locks a single vacant slot.
 impl<'l, K, V> Inserter<'l, K, V>
 where
-    K: Clone + Ord + Sync,
-    V: Clone + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     /// Returns Some if there is a vacant slot.
     fn new(leaf: &'l Leaf<K, V>) -> Option<Inserter<'l, K, V>> {
@@ -595,8 +599,8 @@ where
 
 impl<'l, K, V> Drop for Inserter<'l, K, V>
 where
-    K: Clone + Ord + Sync,
-    V: Clone + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     fn drop(&mut self) {
         if !self.committed {
@@ -621,8 +625,8 @@ where
 /// InsertBlocker locks all the vacant slots.
 struct InsertBlocker<'l, K, V>
 where
-    K: Clone + Ord + Sync,
-    V: Clone + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     leaf: &'l Leaf<K, V>,
     metadata: u32,
@@ -631,8 +635,8 @@ where
 
 impl<'l, K, V> InsertBlocker<'l, K, V>
 where
-    K: Clone + Ord + Sync,
-    V: Clone + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     /// Returns None if there is a locked slot.
     fn new(leaf: &'l Leaf<K, V>) -> Option<InsertBlocker<'l, K, V>> {
@@ -704,8 +708,8 @@ where
 
 impl<'l, K, V> Drop for InsertBlocker<'l, K, V>
 where
-    K: Clone + Ord + Sync,
-    V: Clone + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     fn drop(&mut self) {
         if !self.retired {
@@ -747,14 +751,14 @@ where
 /// LinkedList implementation for Leaf.
 impl<K, V> LinkedList for Leaf<K, V>
 where
-    K: Clone + Ord + Sync,
-    V: Clone + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
-    fn forward_link(&self) -> &Atomic<Leaf<K, V>> {
+    fn forward_link(&self) -> &AtomicArc<Leaf<K, V>> {
         &self.forward_link
     }
 
-    fn backward_link(&self) -> &Atomic<Leaf<K, V>> {
+    fn backward_link(&self) -> &AtomicArc<Leaf<K, V>> {
         &self.backward_link
     }
 }
@@ -762,8 +766,8 @@ where
 /// Leaf scanner.
 pub struct LeafScanner<'l, K, V>
 where
-    K: Clone + Ord + Sync,
-    V: Clone + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     leaf: &'l Leaf<K, V>,
     metadata: u32,
@@ -773,8 +777,8 @@ where
 
 impl<'l, K, V> LeafScanner<'l, K, V>
 where
-    K: Clone + Ord + Sync,
-    V: Clone + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     pub fn new(leaf: &'l Leaf<K, V>) -> LeafScanner<'l, K, V> {
         LeafScanner {
@@ -856,21 +860,21 @@ where
         Leaf::<K, V>::rank(self.entry_index, self.leaf.metadata.load(Relaxed)) == REMOVED
     }
 
-    pub fn jump<'g>(
+    pub fn jump<'b>(
         &self,
         min_allowed_key: Option<&K>,
-        guard: &'g Guard,
-    ) -> Option<LeafScanner<'g, K, V>> {
-        let mut next = self.leaf.forward_link().load(Acquire, guard);
-        let mut being_split = next.tag() == 1;
-        while !next.is_null() {
-            let mut leaf_scanner = LeafScanner::new(unsafe { next.deref() });
+        barrier: &'b Barrier,
+    ) -> Option<LeafScanner<'b, K, V>> {
+        let mut next_ptr = self.leaf.forward_link().load(Acquire, barrier);
+        let mut being_split = next_ptr.tag() == Tag::First;
+        while let Some(next_ref) = next_ptr.as_ref() {
+            let mut leaf_scanner = LeafScanner::new(next_ref);
             if let Some(key) = min_allowed_key.as_ref() {
                 if being_split
                     || leaf_scanner
                         .leaf
                         .backward_link()
-                        .load(Acquire, guard)
+                        .load(Acquire, barrier)
                         .as_raw()
                         != self.leaf as *const _
                 {
@@ -897,8 +901,8 @@ where
             if leaf_scanner.next().is_some() {
                 return Some(leaf_scanner);
             }
-            next = leaf_scanner.leaf.forward_link().load(Acquire, guard);
-            being_split = being_split || next.tag() == 1;
+            next_ptr = leaf_scanner.leaf.forward_link().load(Acquire, barrier);
+            being_split = being_split || next_ptr.tag() == Tag::First;
         }
         None
     }

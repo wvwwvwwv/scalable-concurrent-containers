@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 use std::{ops::Deref, ptr, ptr::NonNull};
 
 /// [`Ptr`] points to an instance.
-#[derive(Copy, Debug, Eq)]
+#[derive(Debug)]
 pub struct Ptr<'b, T> {
     instance_ptr: *const Underlying<T>,
     _phantom: PhantomData<&'b T>,
@@ -67,6 +67,28 @@ impl<'b, T> Ptr<'b, T> {
         }
     }
 
+    /// Returns a raw pointer to the instance.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::{Arc, Barrier};
+    /// use std::sync::atomic::Ordering::Relaxed;
+    ///
+    /// let arc: Arc<usize> = Arc::new(29);
+    /// let barrier = Barrier::new();
+    /// let ptr = arc.ptr(&barrier);
+    /// assert_eq!(unsafe { *ptr.as_raw() }, 29);
+    /// ```
+    #[inline]
+    pub fn as_raw(&self) -> *const T {
+        unsafe {
+            Tag::unset_tag(self.instance_ptr)
+                .as_ref()
+                .map_or_else(ptr::null, |u| u.deref() as *const T)
+        }
+    }
+
     /// Returns its [`Tag`].
     ///
     /// # Examples
@@ -105,11 +127,11 @@ impl<'b, T> Ptr<'b, T> {
     /// ```
     /// use scc::ebr::{Arc, Barrier, Ptr};
     ///
-    /// let arc: Arc<usize> = Arc::new(10);
+    /// let arc: Arc<usize> = Arc::new(83);
     /// let barrier = Barrier::new();
     /// let ptr = arc.ptr(&barrier);
     /// let converted_arc = ptr.try_into_arc().unwrap();
-    /// assert_eq!(*converted_arc, 10);
+    /// assert_eq!(*converted_arc, 83);
     /// ```
     #[inline]
     pub fn try_into_arc(self) -> Option<Arc<T>> {
@@ -146,6 +168,16 @@ impl<'b, T> Clone for Ptr<'b, T> {
         }
     }
 }
+
+impl<'b, T> Copy for Ptr<'b, T> {}
+
+impl<'b, T> Default for Ptr<'b, T> {
+    fn default() -> Self {
+        Ptr::null()
+    }
+}
+
+impl<'b, T> Eq for Ptr<'b, T> {}
 
 impl<'b, T> PartialEq for Ptr<'b, T> {
     fn eq(&self, other: &Self) -> bool {

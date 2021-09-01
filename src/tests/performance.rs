@@ -119,7 +119,8 @@ mod benchmark {
         }
         #[inline(always)]
         fn scan_test(&self) -> usize {
-            let mut scanner = self.iter();
+            let ebr_barrier = ebr::Barrier::new();
+            let mut scanner = self.iter(&ebr_barrier);
             let mut scanned = 0;
             while let Some(_) = scanner.next() {
                 scanned += 1;
