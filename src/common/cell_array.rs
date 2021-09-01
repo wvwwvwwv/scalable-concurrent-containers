@@ -131,10 +131,10 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
         } else {
             old_cell_index * ratio
         };
-        debug_assert!(ratio <= (1 << Cell::<K, V, SIZE, LOCK_FREE>::max_resizing_factor()));
+        debug_assert!(ratio <= 32);
 
-        let mut target_cells: Vec<CellLocker<K, V, SIZE, LOCK_FREE>> =
-            Vec::with_capacity(1 << Cell::<K, V, SIZE, LOCK_FREE>::max_resizing_factor());
+        let mut target_cells: [Option<CellLocker<K, V, SIZE, LOCK_FREE>>; 32] = Default::default();
+        let mut max_index = 0;
         let mut iter = cell_locker.cell_ref().iter(barrier);
         while let Some(entry) = iter.next() {
             let (new_cell_index, partial_hash) = if !shrink {
@@ -149,11 +149,12 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
                 (target_cell_index, entry.1)
             };
 
-            while target_cells.len() <= new_cell_index - target_cell_index {
-                target_cells.push(
-                    CellLocker::lock(self.cell(target_cell_index + target_cells.len()), barrier)
-                        .unwrap(),
+            let cell_index = new_cell_index - target_cell_index;
+            while max_index <= cell_index {
+                target_cells[max_index].replace(
+                    CellLocker::lock(self.cell(max_index + target_cell_index), barrier).unwrap(),
                 );
+                max_index += 1;
             }
 
             let new_entry = if let Some(entry) = copier(&entry.0 .0, &entry.0 .1) {
@@ -165,10 +166,12 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
                 debug_assert!(!LOCK_FREE);
                 cell_locker.erase(&mut iter).unwrap()
             };
-            let result = target_cells[new_cell_index - target_cell_index]
-                .insert(new_entry.0, new_entry.1, partial_hash, barrier)
-                .1;
-            debug_assert!(result.is_none());
+            target_cells[cell_index].as_ref().unwrap().insert(
+                new_entry.0,
+                new_entry.1,
+                partial_hash,
+                barrier,
+            );
         }
         cell_locker.purge(barrier);
     }

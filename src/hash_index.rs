@@ -195,11 +195,7 @@ where
     {
         let (hash, partial_hash) = self.hash(&key_ref);
         let barrier = Barrier::new();
-        let (cell_index, locker, mut iterator) =
-            self.acquire(key_ref, hash, partial_hash, &barrier);
-        if iterator.is_none() {
-            iterator = locker.cell_ref().get(key_ref, partial_hash, &barrier);
-        }
+        let (cell_index, locker, iterator) = self.acquire(key_ref, hash, partial_hash, &barrier);
         if let Some(iterator) = iterator {
             let remove = if let Some((_, v)) = iterator.get() {
                 condition(v)

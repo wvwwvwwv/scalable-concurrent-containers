@@ -20,4 +20,4 @@ Cargo.lock
 **/*~
 
 # Proptest
-/tests/proptest-regressions/
+/proptest-regressions/

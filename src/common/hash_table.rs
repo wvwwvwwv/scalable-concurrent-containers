@@ -1,4 +1,4 @@
-use super::cell::{Cell, CellIterator, CellLocker, CellReader};
+use super::cell::{CellIterator, CellLocker, CellReader};
 use super::cell_array::CellArray;
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
@@ -88,10 +88,7 @@ where
         if iterator.is_some() {
             return Err((key, val));
         }
-        let (_, pair) = locker.insert(key, val, partial_hash, &barrier);
-        if let Some(pair) = pair {
-            return Err(pair);
-        }
+        locker.insert(key, val, partial_hash, &barrier);
         Ok(())
     }
 
@@ -158,7 +155,7 @@ where
     /// Acquires a [`CellLocker`] and [`CellIterator`].
     ///
     /// In case it successfully found the key, it returns a [`CellIterator`]. Not returning a
-    /// [`CellIterator`] does not mean that the key does not exist.
+    /// [`CellIterator`] means that the key does not exist.
     fn acquire<'h, 'b, Q>(
         &'h self,
         key_ref: &Q,
@@ -238,6 +235,9 @@ where
             }
 
             if let Some(locker) = CellLocker::lock(current_array_ref.cell(cell_index), barrier) {
+                if let Some(iterator) = locker.cell_ref().get(key_ref, partial_hash, barrier) {
+                    return (cell_index, locker, Some(iterator));
+                }
                 return (cell_index, locker, None);
             }
 
@@ -284,9 +284,7 @@ where
                         if new_capacity == max_capacity {
                             break;
                         }
-                        if new_capacity / capacity
-                            >= Cell::<K, V, CELL_SIZE, LOCK_FREE>::max_resizing_factor()
-                        {
+                        if new_capacity / capacity >= 32 {
                             break;
                         }
                         new_capacity *= 2;

@@ -3,13 +3,10 @@ use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 use std::borrow::Borrow;
 use std::mem::MaybeUninit;
 use std::ptr;
+use std::sync::atomic::fence;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicPtr, AtomicU32};
 use std::sync::{Condvar, Mutex};
-
-/// Flags are embedded inside a partial hash value.
-const OCCUPIED: u8 = 1_u8 << 6;
-const REMOVED: u8 = 1_u8 << 7;
 
 /// State bits.
 const KILLED: u32 = 1_u32 << 31;
@@ -65,7 +62,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
     /// Searches for an entry associated with the given key.
     pub fn search<'b, Q>(
         &self,
-        key: &Q,
+        key_ref: &Q,
         partial_hash: u8,
         barrier: &'b Barrier,
     ) -> Option<&'b (K, V)>
@@ -77,25 +74,15 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
             return None;
         }
 
-        // In order to read the linked list correctly, an acquire fence is required.
-        let read_order = if LOCK_FREE { Acquire } else { Relaxed };
-        let mut data_array_ptr = self.data.load(read_order, barrier);
+        let mut data_array_ptr = self.data.load(Relaxed, barrier);
         let preferred_index = partial_hash as usize % SIZE;
-        let expected_hash = (partial_hash & (!REMOVED)) | OCCUPIED;
         while let Some(data_array_ref) = data_array_ptr.as_ref() {
-            for i in preferred_index..preferred_index + SIZE {
-                let index = i % SIZE;
-                if data_array_ref.partial_hash_array[index] == expected_hash {
-                    let entry_ptr = data_array_ref.data[index].as_ptr();
-                    if LOCK_FREE {
-                        std::sync::atomic::fence(Acquire);
-                    }
-                    if *unsafe { &(*entry_ptr) }.0.borrow() == *key {
-                        return Some(unsafe { &(*entry_ptr) });
-                    }
-                }
+            if let Some((_, entry_ref)) =
+                Self::search_array(data_array_ref, key_ref, preferred_index, partial_hash)
+            {
+                return Some(entry_ref);
             }
-            data_array_ptr = data_array_ref.link.load(read_order, barrier);
+            data_array_ptr = data_array_ref.link.load(Relaxed, barrier);
         }
         None
     }
@@ -103,7 +90,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
     /// Gets a [`CellIterator`] pointing to an entry associated with the given key.
     pub fn get<'b, Q>(
         &'b self,
-        key: &Q,
+        key_ref: &Q,
         partial_hash: u8,
         barrier: &'b Barrier,
     ) -> Option<CellIterator<'b, K, V, SIZE, LOCK_FREE>>
@@ -119,27 +106,105 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
         let read_order = if LOCK_FREE { Acquire } else { Relaxed };
         let mut data_array_ptr = self.data.load(read_order, barrier);
         let preferred_index = partial_hash as usize % SIZE;
-        let expected_hash = (partial_hash & (!REMOVED)) | OCCUPIED;
         while let Some(data_array_ref) = data_array_ptr.as_ref() {
-            for i in preferred_index..preferred_index + SIZE {
-                let index = i % SIZE;
-                if data_array_ref.partial_hash_array[index] == expected_hash {
-                    let entry_ptr = data_array_ref.data[index].as_ptr();
-                    if LOCK_FREE {
-                        std::sync::atomic::fence(Acquire);
-                    }
-                    if *unsafe { &(*entry_ptr) }.0.borrow() == *key {
-                        return Some(CellIterator {
-                            cell_ref: Some(self),
-                            current_array_ptr: data_array_ptr,
-                            current_index: index,
-                            barrier_ref: barrier,
-                        });
-                    }
-                }
+            if let Some((index, _)) =
+                Self::search_array(data_array_ref, key_ref, preferred_index, partial_hash)
+            {
+                return Some(CellIterator {
+                    cell_ref: Some(self),
+                    current_array_ptr: data_array_ptr,
+                    current_index: index,
+                    barrier_ref: barrier,
+                });
             }
             data_array_ptr = data_array_ref.link.load(read_order, barrier);
         }
+        None
+    }
+
+    /// Searches the given [`DataArray`] for an entry matching the key.
+    fn search_array<'b, Q>(
+        data_array_ref: &'b DataArray<K, V, SIZE>,
+        key_ref: &Q,
+        preferred_index: usize,
+        partial_hash: u8,
+    ) -> Option<(usize, &'b (K, V))>
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
+        let mut occupied = if LOCK_FREE {
+            data_array_ref.occupied & (!data_array_ref.removed)
+        } else {
+            data_array_ref.occupied
+        };
+        if LOCK_FREE {
+            fence(Acquire);
+        }
+
+        // Looks into the preferred slot.
+        if (occupied & (1_u32 << preferred_index)) != 0
+            && data_array_ref.partial_hash_array[preferred_index] == partial_hash
+        {
+            let entry_ptr = data_array_ref.data[preferred_index].as_ptr();
+            let entry_ref = unsafe { &(*entry_ptr) };
+            if entry_ref.0.borrow() == key_ref {
+                return Some((preferred_index, entry_ref));
+            }
+            occupied &= !(1_u32 << preferred_index);
+        }
+
+        // Looks into other slots.
+        let mut current_index = occupied.trailing_zeros();
+        while (current_index as usize) < SIZE {
+            let entry_ptr = data_array_ref.data[current_index as usize].as_ptr();
+            let entry_ref = unsafe { &(*entry_ptr) };
+            if entry_ref.0.borrow() == key_ref {
+                return Some((current_index as usize, entry_ref));
+            }
+            occupied &= !(1_u32 << current_index);
+            current_index = occupied.trailing_zeros();
+        }
+
+        None
+    }
+
+    /// Searches for a next closest valid slot to the given slot in the [`DataArray`].
+    ///
+    /// If the given slot is valid, it returns the given slot.
+    fn next_entry<'b, Q>(
+        data_array_ref: &'b DataArray<K, V, SIZE>,
+        current_index: usize,
+    ) -> Option<(usize, &'b (K, V), u8)>
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
+        if current_index >= SIZE {
+            return None;
+        }
+
+        let occupied = if LOCK_FREE {
+            (data_array_ref.occupied & (!data_array_ref.removed))
+                & (!((1_u32 << current_index) - 1))
+        } else {
+            data_array_ref.occupied & (!((1_u32 << current_index) - 1))
+        };
+
+        if LOCK_FREE {
+            fence(Acquire);
+        }
+
+        let next_index = occupied.trailing_zeros() as usize;
+        if next_index < SIZE {
+            let entry_ptr = data_array_ref.data[next_index].as_ptr();
+            return Some((
+                next_index,
+                unsafe { &(*entry_ptr) },
+                data_array_ref.partial_hash_array[next_index],
+            ));
+        }
+
         None
     }
 
@@ -191,11 +256,6 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
             entry_ref.signal();
             current = next_ptr as *mut WaitQueueEntry;
         }
-    }
-
-    /// Returns the max resizing factor.
-    pub fn max_resizing_factor() -> usize {
-        (SIZE.next_power_of_two().trailing_zeros() + 1) as usize
     }
 }
 
@@ -250,27 +310,22 @@ impl<'b, K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool> 
                 // Starts scanning from the beginning.
                 self.current_array_ptr = cell_ref.data.load(read_order, self.barrier_ref);
             }
-            while let Some(array_ref) = self.current_array_ptr.as_ref() {
+            while let Some(data_array_ref) = self.current_array_ptr.as_ref() {
                 // Searches for the next valid entry.
-                let start_index = if self.current_index == usize::MAX {
+                let current_index = if self.current_index == usize::MAX {
                     0
                 } else {
                     self.current_index + 1
                 };
-                for index in start_index..SIZE {
-                    let hash = array_ref.partial_hash_array[index];
-                    if (hash & OCCUPIED) != 0 && (hash & REMOVED) == 0 {
-                        if LOCK_FREE {
-                            std::sync::atomic::fence(Acquire);
-                        }
-                        self.current_index = index;
-                        let entry_ptr = array_ref.data[index].as_ptr();
-                        return Some((unsafe { &(*entry_ptr) }, hash));
-                    }
+                if let Some((index, entry_ref, hash)) =
+                    Cell::<K, V, SIZE, LOCK_FREE>::next_entry(data_array_ref, current_index)
+                {
+                    self.current_index = index;
+                    return Some((entry_ref, hash));
                 }
 
                 // Proceeds to the next DataArray.
-                self.current_array_ptr = array_ref.link.load(read_order, self.barrier_ref);
+                self.current_array_ptr = data_array_ref.link.load(read_order, self.barrier_ref);
                 self.current_index = usize::MAX;
             }
             // Fuses itself.
@@ -339,82 +394,50 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'b, K, V
         self.cell_ref
     }
 
-    /// Inserts a new key-value pair into the [`Cell`].
-    pub fn insert(
-        &'b self,
-        key: K,
-        value: V,
-        partial_hash: u8,
-        barrier: &'b Barrier,
-    ) -> (CellIterator<'b, K, V, SIZE, LOCK_FREE>, Option<(K, V)>) {
+    /// Inserts a new key-value pair into the [`Cell`] without a uniqueness check.
+    pub fn insert(&'b self, key: K, value: V, partial_hash: u8, barrier: &'b Barrier) {
         debug_assert!(!self.killed);
 
         if self.cell_ref.num_entries == u32::MAX {
-            panic!("Entries overflow");
+            panic!("array overflow");
         }
 
         let cell_mut_ref =
             unsafe { &mut *(self.cell_ref as *const _ as *mut Cell<K, V, SIZE, LOCK_FREE>) };
         let mut data_array_ptr = self.cell_ref.data.load(Relaxed, barrier);
-        let data_array_head_ptr = data_array_ptr.clone();
+        let data_array_head_ptr = data_array_ptr;
         let preferred_index = partial_hash as usize % SIZE;
-        let expected_hash = (partial_hash & (!REMOVED)) | OCCUPIED;
-        let mut free_data_array: Option<Ptr<DataArray<K, V, SIZE>>> = None;
         let mut free_index = SIZE;
         while let Some(data_array_ref) = data_array_ptr.as_ref() {
-            for i in preferred_index..preferred_index + SIZE {
-                let index = i % SIZE;
-                let hash = data_array_ref.partial_hash_array[index];
-                if hash == expected_hash {
-                    let entry_ptr = data_array_ref.data[index].as_ptr();
-                    if unsafe { &(*entry_ptr) }.0 == key {
-                        return (
-                            CellIterator {
-                                cell_ref: Some(self.cell_ref),
-                                current_array_ptr: data_array_ptr,
-                                current_index: index,
-                                barrier_ref: barrier,
-                            },
-                            Some((key, value)),
-                        );
-                    }
-                } else if free_data_array.is_none() && hash == 0 {
-                    free_index = index;
-                }
+            if (data_array_ref.occupied & (1_u32 << preferred_index)) == 0 {
+                free_index = preferred_index;
+                break;
             }
-            if free_data_array.is_none() && free_index != SIZE {
-                free_data_array.replace(data_array_ptr);
+            let next_free_index = data_array_ref.occupied.trailing_ones() as usize;
+            if next_free_index < SIZE {
+                free_index = next_free_index;
+                break;
             }
+
             data_array_ptr = data_array_ref.link.load(Relaxed, barrier);
         }
 
-        if let Some(free_data_array_ptr) = free_data_array.take() {
-            let data_array_ref = free_data_array_ptr.as_ref().unwrap();
-            debug_assert_eq!(data_array_ref.partial_hash_array[free_index], 0u8);
+        if free_index < SIZE {
+            let data_array_ref = data_array_ptr.as_ref().unwrap();
             unsafe {
                 let data_array_mut_ref = &mut *(data_array_ref as *const DataArray<K, V, SIZE>
                     as *mut DataArray<K, V, SIZE>);
                 data_array_mut_ref.data[free_index]
                     .as_mut_ptr()
                     .write((key, value));
-                if LOCK_FREE {
-                    // A release fence is required to make the contents fully visible to a reader
-                    // having found the slot occupied.
-                    std::sync::atomic::fence(Release);
-                }
-                data_array_mut_ref.partial_hash_array[free_index] = expected_hash;
-            };
+                data_array_mut_ref.partial_hash_array[free_index] = partial_hash;
 
-            cell_mut_ref.num_entries += 1;
-            return (
-                CellIterator {
-                    cell_ref: Some(self.cell_ref),
-                    current_array_ptr: free_data_array_ptr,
-                    current_index: free_index,
-                    barrier_ref: barrier,
-                },
-                None,
-            );
+                if LOCK_FREE {
+                    fence(Release);
+                }
+
+                data_array_mut_ref.occupied |= 1_u32 << free_index;
+            };
         } else {
             // Inserts a new DataArray at the head.
             let mut new_data_array = Arc::new(DataArray::new());
@@ -423,33 +446,22 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'b, K, V
                     .as_mut_ptr()
                     .write((key, value))
             };
-            if LOCK_FREE {
-                // A release fence is required to make the contents fully visible to a reader
-                // having found the slot occupied.
-                std::sync::atomic::fence(Release);
-            }
-            new_data_array.get_mut().unwrap().partial_hash_array[preferred_index] = expected_hash;
+            new_data_array.get_mut().unwrap().partial_hash_array[preferred_index] = partial_hash;
 
-            // Relaxed is sufficient as it is unimportant to read the latest state of the
-            // partial hash value for readers.
+            if LOCK_FREE {
+                fence(Release);
+            }
+
+            new_data_array.get_mut().unwrap().occupied |= 1_u32 << preferred_index;
+
             new_data_array
                 .link
                 .swap((data_array_head_ptr.try_into_arc(), Tag::None), Relaxed);
-            let write_order = if LOCK_FREE { Release } else { Relaxed };
             self.cell_ref
                 .data
-                .swap((Some(new_data_array), Tag::None), write_order);
-            cell_mut_ref.num_entries += 1;
-            return (
-                CellIterator {
-                    cell_ref: Some(self.cell_ref),
-                    current_array_ptr: self.cell_ref.data.load(Relaxed, barrier),
-                    current_index: preferred_index,
-                    barrier_ref: barrier,
-                },
-                None,
-            );
+                .swap((Some(new_data_array), Tag::None), Release);
         }
+        cell_mut_ref.num_entries += 1;
     }
 
     /// Removes a new key-value pair being pointed by the given [`CellIterator`].
@@ -465,9 +477,11 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'b, K, V
         }
 
         if let Some(data_array_ref) = iterator.current_array_ptr.as_ref() {
-            let hash = data_array_ref.partial_hash_array[iterator.current_index];
-            if (hash & OCCUPIED) == 0 {
-                // The entry has been dropped, or never been used.
+            if data_array_ref.occupied & (1_u32 << iterator.current_index) == 0 {
+                return None;
+            }
+
+            if LOCK_FREE && data_array_ref.removed & (1_u32 << iterator.current_index) == 0 {
                 return None;
             }
 
@@ -480,10 +494,10 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'b, K, V
             };
             let entry_ptr = data_array_mut_ref.data[iterator.current_index].as_mut_ptr();
             if LOCK_FREE {
-                data_array_mut_ref.partial_hash_array[iterator.current_index] |= REMOVED;
+                data_array_mut_ref.removed |= 1_u32 << iterator.current_index;
                 return None;
             } else {
-                data_array_mut_ref.partial_hash_array[iterator.current_index] = 0;
+                data_array_mut_ref.occupied &= !(1_u32 << iterator.current_index);
                 return Some(unsafe {
                     ptr::replace(entry_ptr, MaybeUninit::uninit().assume_init())
                 });
@@ -507,8 +521,8 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'b, K, V
     }
 }
 
-impl<'b, K: 'static + Clone + Eq, V: 'static + Clone, const SIZE: usize, const LOCK_FREE: bool>
-    CellLocker<'b, K, V, SIZE, LOCK_FREE>
+impl<'b, K: 'static + Clone + Eq, V: 'static + Clone, const SIZE: usize>
+    CellLocker<'b, K, V, SIZE, true>
 {
     /// Removes a new key-value pair associated with the given key with the instances kept
     /// intact.
@@ -524,61 +538,43 @@ impl<'b, K: 'static + Clone + Eq, V: 'static + Clone, const SIZE: usize, const L
 
         // Starts Searching the entry at the preferred index first.
         let mut data_array_ptr = self.cell_ref.data.load(Relaxed, barrier);
-        let mut removed = false;
         let preferred_index = partial_hash as usize % SIZE;
-        let expected_hash = (partial_hash & (!REMOVED)) | OCCUPIED;
         while let Some(data_array_ref) = data_array_ptr.as_ref() {
-            for i in preferred_index..preferred_index + SIZE {
-                let index = i % SIZE;
-                if data_array_ref.partial_hash_array[index] == expected_hash {
-                    let entry_ptr = data_array_ref.data[index].as_ptr();
-                    unsafe {
-                        let data_array_mut_ref = &mut *(data_array_ref
-                            as *const DataArray<K, V, SIZE>
-                            as *mut DataArray<K, V, SIZE>);
-                        if (*entry_ptr).0.borrow() == key_ref {
-                            data_array_mut_ref.partial_hash_array[index] |= REMOVED;
-                            removed = true;
-                            break;
+            if let Some((index, _)) = Cell::<K, V, SIZE, true>::search_array(
+                data_array_ref,
+                key_ref,
+                preferred_index,
+                partial_hash,
+            ) {
+                debug_assert!(self.cell_ref.num_entries > 0);
+                debug_assert!((data_array_ref.removed & (1_u32 << index)) == 0);
+
+                unsafe {
+                    let data_array_mut_ref = &mut *(data_array_ref as *const DataArray<K, V, SIZE>
+                        as *mut DataArray<K, V, SIZE>);
+                    data_array_mut_ref.removed |= 1_u32 << index;
+                    let cell_mut_ref =
+                        &mut *(self.cell_ref as *const _ as *mut Cell<K, V, SIZE, true>);
+                    cell_mut_ref.num_entries -= 1;
+                    if cell_mut_ref.num_entries == 0 {
+                        if let Some(data_array) =
+                            self.cell_ref.data.swap((None, Tag::None), Relaxed)
+                        {
+                            barrier.reclaim(data_array);
                         }
+                    } else if (cell_mut_ref.num_entries as usize) <= SIZE / 4 {
+                        self.optimize(self.cell_ref.num_entries, barrier);
                     }
+                    return true;
                 }
-            }
-            if removed {
-                break;
             }
             data_array_ptr = data_array_ref.link.load(Relaxed, barrier);
         }
-
-        if removed {
-            let cell_mut_ref =
-                unsafe { &mut *(self.cell_ref as *const _ as *mut Cell<K, V, SIZE, LOCK_FREE>) };
-            cell_mut_ref.num_entries -= 1;
-            self.optimize(self.cell_ref.num_entries, barrier);
-        }
-        removed
+        false
     }
 
     /// Optimizes the linked list.
-    ///
-    /// Three strategies.
-    ///  1. Clears the entire [`Cell`] if there is no valid entry.
-    ///  2. Coalesces if the given data array is non-empty and the linked list is sparse.
-    ///  3. Unlinks the given data array if the data array is empty.
     fn optimize(&self, num_entries: u32, barrier: &Barrier) {
-        if num_entries == 0 {
-            // Clears the entire Cell.
-            if let Some(data_array) = self.cell_ref.data.swap((None, Tag::None), Relaxed) {
-                barrier.reclaim(data_array);
-            }
-            return;
-        }
-
-        if num_entries as usize > SIZE / 4 {
-            // Too many entries for it to coalesce.
-            return;
-        }
-
         let head_data_array_ptr = self.cell_ref.data.load(Relaxed, barrier);
         let head_data_array_link_ptr = head_data_array_ptr
             .as_ref()
@@ -594,26 +590,30 @@ impl<'b, K: 'static + Clone + Eq, V: 'static + Clone, const SIZE: usize, const L
         // Replaces the head with a new `DataArray`.
         let mut new_data_array = Arc::new(DataArray::new());
         let mut new_array_index = 0;
-        let mut current_data_array_ptr = head_data_array_ptr;
-        while let Some(current_data_array_ref) = current_data_array_ptr.as_ref() {
-            for (index, hash) in current_data_array_ref.partial_hash_array.iter().enumerate() {
-                if (hash & (REMOVED | OCCUPIED)) == OCCUPIED {
-                    let entry_ptr = current_data_array_ref.data[index].as_ptr();
-                    unsafe {
-                        let entry_ref = &(*entry_ptr);
-                        new_data_array.get_mut().unwrap().data[new_array_index]
-                            .as_mut_ptr()
-                            .write(entry_ref.clone());
-                        new_data_array.get_mut().unwrap().partial_hash_array[new_array_index] =
-                            *hash;
-                    }
-                    new_array_index += 1;
+        let mut data_array_ptr = head_data_array_ptr;
+        while let Some(data_array_ref) = data_array_ptr.as_ref() {
+            let mut occupied = data_array_ref.occupied & (!data_array_ref.removed);
+            let mut index = occupied.trailing_zeros();
+            while (index as usize) < SIZE {
+                let entry_ptr = data_array_ref.data[index as usize].as_ptr();
+                unsafe {
+                    let entry_ref = &(*entry_ptr);
+                    new_data_array.get_mut().unwrap().data[new_array_index]
+                        .as_mut_ptr()
+                        .write(entry_ref.clone());
+                    new_data_array.get_mut().unwrap().partial_hash_array[new_array_index] =
+                        data_array_ref.partial_hash_array[index as usize];
+                    new_data_array.get_mut().unwrap().occupied |= 1_u32 << new_array_index;
                 }
+                new_array_index += 1;
+
+                occupied &= !(1_u32 << index);
+                index = occupied.trailing_zeros();
             }
             if new_array_index == num_entries as usize {
                 break;
             }
-            current_data_array_ptr = current_data_array_ref.link.load(Relaxed, barrier);
+            data_array_ptr = data_array_ref.link.load(Relaxed, barrier);
         }
         if let Some(old_array) = self
             .cell_ref
@@ -748,29 +748,34 @@ impl<'b, K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool> 
 }
 
 pub struct DataArray<K: 'static + Eq, V: 'static, const SIZE: usize> {
-    /// The lower two-bit of a partial hash value represents the state of the corresponding entry.
+    link: AtomicArc<DataArray<K, V, SIZE>>,
+    occupied: u32,
+    removed: u32,
     partial_hash_array: [u8; SIZE],
     data: [MaybeUninit<(K, V)>; SIZE],
-    link: AtomicArc<DataArray<K, V, SIZE>>,
 }
 
 impl<K: 'static + Eq, V: 'static, const SIZE: usize> DataArray<K, V, SIZE> {
     fn new() -> DataArray<K, V, SIZE> {
         DataArray {
+            link: AtomicArc::null(),
+            occupied: 0,
+            removed: 0,
             partial_hash_array: [0; SIZE],
             data: unsafe { MaybeUninit::uninit().assume_init() },
-            link: AtomicArc::null(),
         }
     }
 }
 
 impl<K: 'static + Eq, V: 'static, const SIZE: usize> Drop for DataArray<K, V, SIZE> {
     fn drop(&mut self) {
-        for (index, hash) in self.partial_hash_array.iter().enumerate() {
-            if (hash & OCCUPIED) == OCCUPIED {
-                let entry_mut_ptr = self.data[index].as_mut_ptr();
-                unsafe { ptr::drop_in_place(entry_mut_ptr) };
-            }
+        let mut occupied = self.occupied;
+        let mut index = occupied.trailing_zeros();
+        while (index as usize) < SIZE {
+            let entry_mut_ptr = self.data[index as usize].as_mut_ptr();
+            unsafe { ptr::drop_in_place(entry_mut_ptr) };
+            occupied &= !(1_u32 << index);
+            index = occupied.trailing_zeros();
         }
     }
 }
@@ -837,15 +842,12 @@ mod test {
                     }
                     assert_eq!(sum % 256, 0);
                     if i == 0 {
-                        assert!(xlocker
-                            .insert(
-                                thread_id,
-                                0,
-                                (thread_id % SIZE).try_into().unwrap(),
-                                &barrier,
-                            )
-                            .1
-                            .is_none());
+                        xlocker.insert(
+                            thread_id,
+                            0,
+                            (thread_id % SIZE).try_into().unwrap(),
+                            &barrier,
+                        );
                     } else {
                         assert_eq!(
                             xlocker
