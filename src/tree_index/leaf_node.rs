@@ -682,7 +682,7 @@ where
         for entry in LeafScanner::new(&self.leaves.0) {
             entry.1.swap((None, Tag::None), Relaxed);
         }
-        self.leaves.1.swap((None, Tag::None), Relaxed);
+        self.leaves.1.swap((None, Tag::First), Relaxed);
 
         // Keeps the leaf node locked to prevent locking attempts.
         if let Some(unused_leaves) = self.new_leaves.swap((None, Tag::First), Relaxed) {

@@ -131,8 +131,7 @@ where
                 .root
                 .compare_exchange(root_ptr, (Some(new_root), Tag::None), AcqRel, Acquire)
             {
-                Ok((_, ptr)) => root_ptr = ptr,
-                Err(_) => continue,
+                Ok((_, ptr)) | Err((_, ptr)) => root_ptr = ptr,
             }
         }
     }

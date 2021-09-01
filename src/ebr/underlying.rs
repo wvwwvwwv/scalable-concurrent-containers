@@ -42,7 +42,21 @@ impl<T> Underlying<T> {
 
     /// Adds a strong reference to the underlying instance.
     pub(super) fn add_ref(&self) {
-        self.ref_cnt().fetch_add(2, Relaxed);
+        let mut current = self.ref_cnt().load(Relaxed);
+        debug_assert_eq!(current % 2, 1);
+        if current > usize::MAX - 2 {
+            panic!("reference count overflow");
+        }
+        loop {
+            if let Err(actual) =
+                self.ref_cnt()
+                    .compare_exchange(current, current + 2, Relaxed, Relaxed)
+            {
+                current = actual;
+            } else {
+                break;
+            }
+        }
     }
 
     /// Drops a strong reference to the underlying instance.

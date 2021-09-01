@@ -43,8 +43,8 @@ impl Barrier {
     pub fn reclaim<T: 'static>(&self, arc: Arc<T>) {
         if let Some(ptr) = arc.drop_ref() {
             self.reclaim_underlying(ptr);
-            std::mem::forget(arc);
         }
+        std::mem::forget(arc);
     }
 
     /// Reclaims the underlying instance of an [`Arc`] or [`AtomicArc`](super::AtomicArc).

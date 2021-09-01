@@ -272,7 +272,7 @@ impl<T: 'static> AtomicArc<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{AtomicArc, Barrier};
+    /// use scc::ebr::{Arc, AtomicArc, Barrier};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(47);
@@ -296,19 +296,18 @@ impl<T: 'static> AtomicArc<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{AtomicArc, Barrier};
+    /// use scc::ebr::{Arc, AtomicArc};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(55);
-    /// let barrier = Barrier::new();
-    /// let arc: Arc<usize> = atomic_arc.try_into_arc(Relaxed, &barrier).unwrap();
+    /// let arc: Arc<usize> = atomic_arc.try_into_arc(Relaxed).unwrap();
     /// assert_eq!(*arc, 55);
     /// ```
     #[inline]
-    pub fn try_into_arc(self, order: Ordering, _barrier: &Barrier) -> Option<Arc<T>> {
+    pub fn try_into_arc(self, order: Ordering) -> Option<Arc<T>> {
         let ptr = self.instance_ptr.swap(ptr::null_mut(), order);
         if let Some(underlying_ptr) = NonNull::new(Tag::unset_tag(ptr) as *mut Underlying<T>) {
-            Some(Arc::from(underlying_ptr));
+            return Some(Arc::from(underlying_ptr));
         }
         None
     }
@@ -318,6 +317,12 @@ impl<T: 'static> Clone for AtomicArc<T> {
     #[inline]
     fn clone<'b>(&self) -> AtomicArc<T> {
         self.clone(Relaxed, &Barrier::new())
+    }
+}
+
+impl<T> Default for AtomicArc<T> {
+    fn default() -> Self {
+        AtomicArc::null()
     }
 }
 
@@ -416,7 +421,7 @@ mod test {
 
         let barrier = Barrier::new();
 
-        let arc = atomic_arc.try_into_arc(Relaxed, &barrier);
+        let arc = atomic_arc.try_into_arc(Relaxed);
         assert!(!DESTROYED.load(Relaxed));
 
         if let Some(arc) = arc {
