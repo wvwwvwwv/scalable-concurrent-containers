@@ -385,7 +385,7 @@ where
     /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 0);
     /// ```
     #[inline]
-    pub fn read<Q, R, F: FnOnce(&Q, &V) -> R>(&self, key_ref: &Q, reader: F) -> Option<R>
+    pub fn read<Q, R, F: FnOnce(&K, &V) -> R>(&self, key_ref: &Q, reader: F) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,

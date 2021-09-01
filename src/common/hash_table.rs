@@ -93,7 +93,7 @@ where
     }
 
     /// Reads an entry from the [`HashTable`].
-    fn read_entry<Q, R, F: FnOnce(&Q, &V) -> R>(&self, key_ref: &Q, reader: F) -> Option<R>
+    fn read_entry<Q, R, F: FnOnce(&K, &V) -> R>(&self, key_ref: &Q, reader: F) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
@@ -113,7 +113,7 @@ where
                 if LOCK_FREE {
                     let cell_ref = old_array_ref.cell(cell_index);
                     if let Some(entry) = cell_ref.search(key_ref, partial_hash, &barrier) {
-                        return Some(reader(entry.0.borrow(), &entry.1));
+                        return Some(reader(&entry.0, &entry.1));
                     }
                 } else {
                     if let Some(locker) = CellReader::lock(old_array_ref.cell(cell_index), &barrier)
@@ -121,7 +121,7 @@ where
                         if let Some((key, value)) =
                             locker.cell_ref().search(key_ref, partial_hash, &barrier)
                         {
-                            return Some(reader(key.borrow(), value));
+                            return Some(reader(&key, value));
                         }
                     }
                 }
@@ -130,7 +130,7 @@ where
             if LOCK_FREE {
                 let cell_ref = current_array_ref.cell(cell_index);
                 if let Some(entry) = cell_ref.search(key_ref, partial_hash, &barrier) {
-                    return Some(reader(entry.0.borrow(), &entry.1));
+                    return Some(reader(&entry.0, &entry.1));
                 }
             } else {
                 if let Some(locker) = CellReader::lock(current_array_ref.cell(cell_index), &barrier)
@@ -138,7 +138,7 @@ where
                     if let Some((key, value)) =
                         locker.cell_ref().search(key_ref, partial_hash, &barrier)
                     {
-                        return Some(reader(key.borrow(), value));
+                        return Some(reader(&key, value));
                     }
                 }
             }
