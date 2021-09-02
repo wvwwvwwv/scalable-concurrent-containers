@@ -1,4 +1,4 @@
-use super::leaf::{LeafScanner, ARRAY_SIZE};
+use super::leaf::{Scanner, ARRAY_SIZE};
 use super::leaf_node::{LeafNode, LeafNodeLocker};
 use super::Leaf;
 use super::{InsertError, RemoveError, SearchError};
@@ -90,7 +90,7 @@ where
     }
 
     /// Returns the minimum key-value pair.
-    pub fn min<'b>(&self, barrier: &'b Barrier) -> Result<LeafScanner<'b, K, V>, SearchError> {
+    pub fn min<'b>(&self, barrier: &'b Barrier) -> Result<Scanner<'b, K, V>, SearchError> {
         match &self.entry {
             NodeType::Internal(internal_node) => internal_node.min(barrier),
             NodeType::Leaf(leaf_node) => leaf_node.min(barrier),
@@ -102,7 +102,7 @@ where
         &self,
         key: &K,
         barrier: &'b Barrier,
-    ) -> Result<LeafScanner<'b, K, V>, SearchError> {
+    ) -> Result<Scanner<'b, K, V>, SearchError> {
         match &self.entry {
             NodeType::Internal(internal_node) => internal_node.max_less(key, barrier),
             NodeType::Leaf(leaf_node) => leaf_node.max_less(key, barrier),
@@ -373,9 +373,9 @@ where
     }
 
     /// Returns the minimum key entry.
-    fn min<'b>(&self, barrier: &'b Barrier) -> Result<LeafScanner<'b, K, V>, SearchError> {
+    fn min<'b>(&self, barrier: &'b Barrier) -> Result<Scanner<'b, K, V>, SearchError> {
         loop {
-            let mut scanner = LeafScanner::new(&self.children.0);
+            let mut scanner = Scanner::new(&self.children.0);
             let metadata = scanner.metadata();
             if let Some(child) = scanner.next() {
                 let child_ptr = child.1.load(Acquire, barrier);
@@ -409,9 +409,9 @@ where
         &self,
         key: &K,
         barrier: &'b Barrier,
-    ) -> Result<LeafScanner<'b, K, V>, SearchError> {
+    ) -> Result<Scanner<'b, K, V>, SearchError> {
         loop {
-            let mut scanner = LeafScanner::max_less(&self.children.0, key);
+            let mut scanner = Scanner::max_less(&self.children.0, key);
             let metadata = scanner.metadata();
             let mut retry = false;
             while let Some(child) = scanner.next() {
@@ -654,7 +654,7 @@ where
                 let mut entry_array: [Option<(Option<&K>, AtomicArc<Node<K, V>>)>; ARRAY_SIZE + 2] =
                     Default::default();
                 let mut num_entries = 0;
-                for entry in LeafScanner::new(&full_internal_node.children.0) {
+                for entry in Scanner::new(&full_internal_node.children.0) {
                     if new_children_ref
                         .origin_node_key
                         .as_ref()
@@ -859,7 +859,7 @@ where
     /// It is called only when the internal node is a temporary one for split/merge,
     /// or has become unreachable after split/merge/remove.
     fn unlink(&self, barrier: &Barrier) {
-        for entry in LeafScanner::new(&self.children.0) {
+        for entry in Scanner::new(&self.children.0) {
             entry.1.swap((None, Tag::None), Relaxed);
         }
         self.children.1.swap((None, Tag::First), Relaxed);
@@ -883,7 +883,7 @@ where
             return Err(RemoveError::Retry(removed));
         }
 
-        for entry in LeafScanner::new(&self.children.0) {
+        for entry in Scanner::new(&self.children.0) {
             let node_ptr = entry.1.load(Relaxed, barrier);
             let node_ref = node_ptr.as_ref().unwrap();
             if node_ref.obsolete(barrier) {
@@ -948,7 +948,7 @@ where
         // Collects information.
         let mut child_ref_array: [Option<(Option<&Node<K, V>>, Option<&K>, usize)>;
             ARRAY_SIZE + 1] = [None; ARRAY_SIZE + 1];
-        let mut scanner = LeafScanner::new_including_removed(&self.children.0);
+        let mut scanner = Scanner::new_including_removed(&self.children.0);
         let mut index = 0;
         while let Some(entry) = scanner.next() {
             if scanner.removed() {

@@ -118,10 +118,7 @@ mod hashmap_test {
     impl Data {
         fn new(data: u64, checker: Arc<AtomicUsize>) -> Data {
             checker.fetch_add(1, Relaxed);
-            Data {
-                data: data,
-                checker: checker,
-            }
+            Data { data, checker }
         }
     }
 
@@ -153,7 +150,7 @@ mod hashmap_test {
 
     proptest! {
         #[test]
-        fn insert(key in 0u64..16) {
+        fn insert(key in 0_u64..16) {
             let range = 1024;
             let checker = Arc::new(AtomicUsize::new(0));
             let hashmap: HashMap<Data, Data> = Default::default();

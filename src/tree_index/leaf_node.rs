@@ -1,4 +1,4 @@
-use super::leaf::{LeafScanner, ARRAY_SIZE};
+use super::leaf::{Scanner, ARRAY_SIZE};
 use super::Leaf;
 use super::{InsertError, RemoveError, SearchError};
 
@@ -21,6 +21,7 @@ where
     /// Child leaves.
     ///
     /// The pointer to the unbounded leaf storing a non-zero tag indicates that the leaf is obsolete.
+    #[allow(clippy::type_complexity)]
     leaves: (Leaf<K, AtomicArc<Leaf<K, V>>>, AtomicArc<Leaf<K, V>>),
     /// New leaves in an intermediate state during merge and split.
     ///
@@ -104,9 +105,9 @@ where
     }
 
     /// Returns the minimum key entry.
-    pub fn min<'b>(&self, barrier: &'b Barrier) -> Result<LeafScanner<'b, K, V>, SearchError> {
+    pub fn min<'b>(&self, barrier: &'b Barrier) -> Result<Scanner<'b, K, V>, SearchError> {
         loop {
-            let mut scanner = LeafScanner::new(&self.leaves.0);
+            let mut scanner = Scanner::new(&self.leaves.0);
             let metadata = scanner.metadata();
             if let Some((_, child)) = scanner.next() {
                 let child_ptr = child.load(Acquire, barrier);
@@ -115,7 +116,7 @@ where
                     continue;
                 }
                 if let Some(child_ref) = child_ptr.as_ref() {
-                    return Ok(LeafScanner::new(child_ref));
+                    return Ok(Scanner::new(child_ref));
                 }
                 // `child_ptr` being null indicates that the leaf node is bound to be freed.
                 return Err(SearchError::Retry);
@@ -127,7 +128,7 @@ where
                     // Data race resolution - see LeafNode::search.
                     continue;
                 }
-                return Ok(LeafScanner::new(unbounded_ref));
+                return Ok(Scanner::new(unbounded_ref));
             }
             if unbounded_ptr.tag() == Tag::First {
                 // The leaf node has become obsolete.
@@ -143,9 +144,9 @@ where
         &self,
         key: &K,
         barrier: &'b Barrier,
-    ) -> Result<LeafScanner<'b, K, V>, SearchError> {
+    ) -> Result<Scanner<'b, K, V>, SearchError> {
         loop {
-            let mut scanner = LeafScanner::max_less(&self.leaves.0, key);
+            let mut scanner = Scanner::max_less(&self.leaves.0, key);
             let metadata = scanner.metadata();
             if let Some((_, child)) = scanner.next() {
                 let child_ptr = child.load(Acquire, barrier);
@@ -154,7 +155,7 @@ where
                     continue;
                 }
                 if let Some(child_ref) = child_ptr.as_ref() {
-                    return Ok(LeafScanner::max_less(child_ref, key));
+                    return Ok(Scanner::max_less(child_ref, key));
                 }
                 // `child_ptr` being null indicates that the leaf node is bound to be freed.
                 return Err(SearchError::Retry);
@@ -166,7 +167,7 @@ where
                     // Data race resolution - see LeafNode::search.
                     continue;
                 }
-                return Ok(LeafScanner::max_less(unbounded_ref, key));
+                return Ok(Scanner::max_less(unbounded_ref, key));
             }
             if unbounded_ptr.tag() == Tag::First {
                 // The leaf node has become obsolete.
@@ -465,7 +466,7 @@ where
             .as_ref()
             .unwrap();
         let middle_key_ref = low_key_leaf_ref.max().unwrap().0;
-        for entry in LeafScanner::new(&self.leaves.0) {
+        for entry in Scanner::new(&self.leaves.0) {
             if new_leaves_ref
                 .origin_leaf_key
                 .as_ref()
@@ -598,7 +599,7 @@ where
         }
 
         let mut empty = false;
-        for entry in LeafScanner::new(&self.leaves.0) {
+        for entry in Scanner::new(&self.leaves.0) {
             let leaf_ptr = entry.1.load(Relaxed, barrier);
             let leaf_ref = leaf_ptr.as_ref().unwrap();
             if leaf_ref.obsolete() {
@@ -679,7 +680,7 @@ where
     /// It is called only when the leaf node is a temporary one for split/merge,
     /// or has become unreachable after split/merge/remove.
     pub fn unlink(&self, barrier: &Barrier) {
-        for entry in LeafScanner::new(&self.leaves.0) {
+        for entry in Scanner::new(&self.leaves.0) {
             entry.1.swap((None, Tag::None), Relaxed);
         }
         self.leaves.1.swap((None, Tag::First), Relaxed);
@@ -708,7 +709,7 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
         // Collects information.
         let mut leaf_ref_array: [Option<(Option<&Leaf<K, V>>, Option<&K>, usize)>; ARRAY_SIZE + 1] =
             [None; ARRAY_SIZE + 1];
-        let mut scanner = LeafScanner::new_including_removed(&self.leaves.0);
+        let mut scanner = Scanner::new_including_removed(&self.leaves.0);
         let mut index = 0;
         while let Some(entry) = scanner.next() {
             if scanner.removed() {
@@ -765,7 +766,7 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
                         leaf_ref.id(),
                         leaf_ref.id(),
                     ))?;
-                let mut leaf_scanner = LeafScanner::new_including_removed(leaf_ref);
+                let mut leaf_scanner = Scanner::new_including_removed(leaf_ref);
                 let mut rank = 0;
                 while let Some(entry) = leaf_scanner.next() {
                     let (entry_rank, font_color) = if leaf_scanner.removed() {

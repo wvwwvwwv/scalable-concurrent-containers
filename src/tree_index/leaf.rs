@@ -142,7 +142,7 @@ where
                         updated_rank_map = (updated_rank_map & (!Self::rank_mask(i))) | rank_bits;
                         continue;
                     }
-                    match self.compare(i, &entry_ref.0) {
+                    match self.compare(i, entry_ref.0) {
                         Ordering::Less => {
                             if max_min_rank < rank {
                                 max_min_rank = rank;
@@ -295,12 +295,10 @@ where
     ///
     /// Returns true if the leaf has become obsolete.
     pub fn retire(&self) -> bool {
-        if let Some(self_locker) = InsertBlocker::new(self) {
+        InsertBlocker::new(self).map_or(false, |self_locker| {
             let metadata = self_locker.retire();
             (metadata & OBSOLETE_MASK) == OBSOLETE_MASK
-        } else {
-            false
-        }
+        })
     }
 
     /// Returns the index and a pointer to the key-value pair that is smaller than the given key.
@@ -337,9 +335,10 @@ where
         (usize::MAX, std::ptr::null())
     }
 
-    /// Returns the minimum entry among those that are not Ordering::Less than the given key.
+    /// Returns the minimum entry among those that are not `Ordering::Less` than the given key.
     ///
-    /// It additionally returns the current version of its metadata in order for the caller to validate the sanity of the result.
+    /// It additionally returns the current version of its metadata in order for the caller to
+    /// validate the sanity of the result.
     pub fn min_greater_equal<Q>(&self, key: &Q) -> (Option<(&K, &V)>, u32)
     where
         K: Borrow<Q>,
@@ -428,7 +427,7 @@ where
         high_key_leaf: &mut Option<Arc<Leaf<K, V>>>,
     ) {
         let mut iterated = 0;
-        for entry in LeafScanner::new(self) {
+        for entry in Scanner::new(self) {
             if iterated < ARRAY_SIZE / 2 {
                 if low_key_leaf.is_none() {
                     low_key_leaf.replace(Arc::new(Leaf::new()));
@@ -764,7 +763,7 @@ where
 }
 
 /// Leaf scanner.
-pub struct LeafScanner<'l, K, V>
+pub struct Scanner<'l, K, V>
 where
     K: 'static + Clone + Ord + Sync,
     V: 'static + Clone + Sync,
@@ -775,13 +774,13 @@ where
     entry_ptr: *const (K, V),
 }
 
-impl<'l, K, V> LeafScanner<'l, K, V>
+impl<'l, K, V> Scanner<'l, K, V>
 where
     K: 'static + Clone + Ord + Sync,
     V: 'static + Clone + Sync,
 {
-    pub fn new(leaf: &'l Leaf<K, V>) -> LeafScanner<'l, K, V> {
-        LeafScanner {
+    pub fn new(leaf: &'l Leaf<K, V>) -> Scanner<'l, K, V> {
+        Scanner {
             leaf,
             metadata: leaf.metadata.load(Acquire),
             entry_index: ARRAY_SIZE,
@@ -789,13 +788,13 @@ where
         }
     }
 
-    pub fn max_less(leaf: &'l Leaf<K, V>, key: &K) -> LeafScanner<'l, K, V> {
+    pub fn max_less(leaf: &'l Leaf<K, V>, key: &K) -> Scanner<'l, K, V> {
         let metadata = leaf.metadata.load(Acquire);
         let (index, ptr) = leaf.max_less(metadata, key);
         if ptr.is_null() {
-            LeafScanner::new(leaf)
+            Scanner::new(leaf)
         } else {
-            LeafScanner {
+            Scanner {
                 leaf,
                 metadata,
                 entry_index: index,
@@ -804,7 +803,7 @@ where
         }
     }
 
-    pub fn new_including_removed(leaf: &'l Leaf<K, V>) -> LeafScanner<'l, K, V> {
+    pub fn new_including_removed(leaf: &'l Leaf<K, V>) -> Scanner<'l, K, V> {
         let mut metadata = leaf.metadata.load(Acquire);
         let mut unused_ranks = 0;
         let mut current_unused_ranks_index = 0;
@@ -832,7 +831,7 @@ where
                     | Leaf::<K, V>::rank_bits(i, new_rank);
             }
         }
-        LeafScanner {
+        Scanner {
             leaf,
             metadata,
             entry_index: ARRAY_SIZE,
@@ -864,11 +863,11 @@ where
         &self,
         min_allowed_key: Option<&K>,
         barrier: &'b Barrier,
-    ) -> Option<LeafScanner<'b, K, V>> {
+    ) -> Option<Scanner<'b, K, V>> {
         let mut next_ptr = self.leaf.forward_link().load(Acquire, barrier);
         let mut being_split = next_ptr.tag() == Tag::First;
         while let Some(next_ref) = next_ptr.as_ref() {
-            let mut leaf_scanner = LeafScanner::new(next_ref);
+            let mut leaf_scanner = Scanner::new(next_ref);
             if let Some(key) = min_allowed_key.as_ref() {
                 if being_split
                     || leaf_scanner
@@ -918,7 +917,7 @@ where
     }
 }
 
-impl<'l, K, V> Iterator for LeafScanner<'l, K, V>
+impl<'l, K, V> Iterator for Scanner<'l, K, V>
 where
     K: Clone + Ord + Sync,
     V: Clone + Sync,
@@ -937,6 +936,7 @@ mod test {
     use std::thread;
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn basic() {
         let leaf = Leaf::new();
         assert!(leaf.insert(50, 51).is_none());
@@ -957,7 +957,7 @@ mod test {
         assert_eq!(leaf.max(), Some((&70, &71)));
         assert!(leaf.full());
 
-        let mut scanner = LeafScanner::new(&leaf);
+        let mut scanner = Scanner::new(&leaf);
         let mut prev_key = 0;
         while let Some(entry) = scanner.next() {
             assert_eq!(scanner.get(), Some(entry));
@@ -967,10 +967,10 @@ mod test {
         }
         drop(scanner);
 
-        let mut scanner = LeafScanner::new_including_removed(&leaf);
-        let mut prev_key = 0;
+        let mut scanner = Scanner::new_including_removed(&leaf);
         let mut found_40_40 = false;
         let mut found_60_61 = false;
+        prev_key = 0;
         while let Some(entry) = scanner.next() {
             assert_eq!(scanner.get(), Some(entry));
             if *entry.0 == 60 {
@@ -994,10 +994,10 @@ mod test {
         assert!(found_60_61);
         drop(scanner);
 
-        let mut scanner = LeafScanner::max_less(&leaf, &50);
+        let mut scanner = Scanner::max_less(&leaf, &50);
         assert_eq!(scanner.get().unwrap(), (&40, &41));
-        let mut prev_key = 40;
         let mut iterated = 0;
+        prev_key = 40;
         while let Some(entry) = scanner.next() {
             assert_eq!(scanner.get(), Some(entry));
             assert!(prev_key < *entry.0);
@@ -1045,8 +1045,8 @@ mod test {
         assert_eq!(leaf.max(), Some((&20, &21)));
         assert!(leaf.full());
 
-        let mut scanner = LeafScanner::new(&leaf);
-        let mut prev_key = 0;
+        let mut scanner = Scanner::new(&leaf);
+        prev_key = 0;
         while let Some(entry) = scanner.next() {
             assert_eq!(scanner.get(), Some(entry));
             assert!(prev_key < *entry.0);
@@ -1057,9 +1057,9 @@ mod test {
 
         let mut leaves_boxed = (None, None);
         leaf.distribute(&mut leaves_boxed.0, &mut leaves_boxed.1);
-        let mut prev_key = 0;
         let mut iterated_low = 0;
-        let mut scanner_low = LeafScanner::new(leaves_boxed.0.as_ref().unwrap());
+        let mut scanner_low = Scanner::new(leaves_boxed.0.as_ref().unwrap());
+        prev_key = 0;
         while let Some(entry) = scanner_low.next() {
             assert_eq!(scanner_low.get(), Some(entry));
             assert!(prev_key < *entry.0);
@@ -1089,7 +1089,7 @@ mod test {
             Some(((ARRAY_SIZE, ARRAY_SIZE), false))
         );
 
-        let mut scanner = LeafScanner::new_including_removed(&leaf);
+        let mut scanner = Scanner::new_including_removed(&leaf);
         let mut expected = 0;
         while let Some(_) = scanner.next() {
             assert!(scanner.removed());
@@ -1144,7 +1144,7 @@ mod test {
                             assert!(leaf_copied.remove(&tid).0);
                         }
                     }
-                    let mut scanner = LeafScanner::new(&leaf_copied);
+                    let mut scanner = Scanner::new(&leaf_copied);
                     let mut prev_key = 0;
                     while let Some(entry) = scanner.next() {
                         assert_eq!(scanner.get(), Some(entry));
@@ -1157,9 +1157,9 @@ mod test {
             for handle in thread_handles {
                 handle.join().unwrap();
             }
-            let mut scanner = LeafScanner::new(&leaf);
+            let scanner = Scanner::new(&leaf);
             let mut prev_key = 0;
-            while let Some(entry) = scanner.next() {
+            for entry in scanner {
                 assert_eq!(entry.1, &1);
                 assert!((prev_key == 0 && *entry.0 == 0) || prev_key < *entry.0);
                 assert!(entry.0 % 2 == 0);

@@ -8,7 +8,7 @@ mod node;
 use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
 
 use error::{InsertError, RemoveError, SearchError};
-use leaf::{Leaf, LeafScanner};
+use leaf::{Leaf, Scanner};
 use node::Node;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
@@ -314,9 +314,9 @@ where
             .map_or(0, |root_ref| root_ref.depth(1, &barrier))
     }
 
-    /// Returns a [`Scanner`].
+    /// Returns a [`Visitor`].
     ///
-    /// The returned [`Scanner`] starts scanning from the minimum key-value pair.
+    /// The returned [`Visitor`] starts scanning from the minimum key-value pair.
     ///
     /// # Examples
     ///
@@ -332,15 +332,15 @@ where
     ///
     /// let barrier = Barrier::new();
     ///
-    /// let mut scanner = treeindex.iter(&barrier);
-    /// assert_eq!(scanner.next().unwrap(), (&1, &10));
-    /// assert_eq!(scanner.next().unwrap(), (&2, &11));
-    /// assert_eq!(scanner.next().unwrap(), (&3, &13));
-    /// assert!(scanner.next().is_none());
+    /// let mut visitor = treeindex.iter(&barrier);
+    /// assert_eq!(visitor.next().unwrap(), (&1, &10));
+    /// assert_eq!(visitor.next().unwrap(), (&2, &11));
+    /// assert_eq!(visitor.next().unwrap(), (&3, &13));
+    /// assert!(visitor.next().is_none());
     /// ```
     #[inline]
-    pub fn iter<'t, 'b>(&'t self, barrier: &'b Barrier) -> Scanner<'t, 'b, K, V> {
-        Scanner::new(self, barrier)
+    pub fn iter<'t, 'b>(&'t self, barrier: &'b Barrier) -> Visitor<'t, 'b, K, V> {
+        Visitor::new(self, barrier)
     }
 
     /// Returns a [`Range`] that scans keys in the given range.
@@ -415,27 +415,27 @@ where
     }
 }
 
-/// [`Scanner`] scans all the key-value pairs in the [`TreeIndex`].
+/// [`Visitor`] scans all the key-value pairs in the [`TreeIndex`].
 ///
-/// It is guaranteed to visit all the key-value pairs that outlive the Scanner, and it scans
-/// keys in monotonically increasing order.
-pub struct Scanner<'t, 'b, K, V>
+/// It is guaranteed to visit all the key-value pairs that outlive the [`Visitor`], and it
+/// scans keys in monotonically increasing order.
+pub struct Visitor<'t, 'b, K, V>
 where
     K: 'static + Clone + Ord + Send + Sync,
     V: 'static + Clone + Send + Sync,
 {
     tree: &'t TreeIndex<K, V>,
-    leaf_scanner: Option<LeafScanner<'b, K, V>>,
+    leaf_scanner: Option<Scanner<'b, K, V>>,
     barrier: &'b Barrier,
 }
 
-impl<'t, 'b, K, V> Scanner<'t, 'b, K, V>
+impl<'t, 'b, K, V> Visitor<'t, 'b, K, V>
 where
     K: 'static + Clone + Ord + Send + Sync,
     V: 'static + Clone + Send + Sync,
 {
-    fn new(tree: &'t TreeIndex<K, V>, barrier: &'b Barrier) -> Scanner<'t, 'b, K, V> {
-        Scanner::<'t, 'b, K, V> {
+    fn new(tree: &'t TreeIndex<K, V>, barrier: &'b Barrier) -> Visitor<'t, 'b, K, V> {
+        Visitor::<'t, 'b, K, V> {
             tree,
             leaf_scanner: None,
             barrier,
@@ -443,7 +443,7 @@ where
     }
 }
 
-impl<'t, 'b, K, V> Iterator for Scanner<'t, 'b, K, V>
+impl<'t, 'b, K, V> Iterator for Visitor<'t, 'b, K, V>
 where
     K: 'static + Clone + Ord + Send + Sync,
     V: 'static + Clone + Send + Sync,
@@ -454,8 +454,8 @@ where
         if self.leaf_scanner.is_none() {
             let root_ptr = self.tree.root.load(Acquire, self.barrier);
             if let Some(root_ref) = root_ptr.as_ref() {
-                if let Ok(leaf_scanner) = root_ref.min(self.barrier) {
-                    self.leaf_scanner.replace(leaf_scanner);
+                if let Ok(scanner) = root_ref.min(self.barrier) {
+                    self.leaf_scanner.replace(scanner);
                 }
             } else {
                 return None;
@@ -481,7 +481,7 @@ where
     }
 }
 
-impl<'t, 'b, K, V> FusedIterator for Scanner<'t, 'b, K, V>
+impl<'t, 'b, K, V> FusedIterator for Visitor<'t, 'b, K, V>
 where
     K: 'static + Clone + Ord + Send + Sync,
     V: 'static + Clone + Send + Sync,
@@ -490,7 +490,8 @@ where
 
 /// [`Range`] represents a range of keys in the [`TreeIndex`].
 ///
-/// It is identical to Scanner except that it does not traverse keys outside of the given range.
+/// It is identical to [`Visitor`] except that it does not traverse keys outside of the given
+/// range.
 pub struct Range<'t, 'b, K, V, R>
 where
     K: 'static + Clone + Ord + Send + Sync,
@@ -498,7 +499,7 @@ where
     R: 'static + RangeBounds<K>,
 {
     tree: &'t TreeIndex<K, V>,
-    leaf_scanner: Option<LeafScanner<'b, K, V>>,
+    leaf_scanner: Option<Scanner<'b, K, V>>,
     range: R,
     check_lower_bound: bool,
     check_upper_bound: bool,
@@ -535,26 +536,17 @@ where
                             None
                         }
                     };
-                    if let Ok(leaf_scanner) = if let Some(min_allowed_key) = min_allowed_key {
-                        root_ref.max_less(min_allowed_key, self.barrier)
-                    } else {
-                        root_ref.min(self.barrier)
-                    } {
+                    if let Ok(leaf_scanner) = min_allowed_key.map_or_else(
+                        || root_ref.min(self.barrier),
+                        |min_allowed_key| root_ref.max_less(min_allowed_key, self.barrier),
+                    ) {
                         self.check_upper_bound = match self.range.end_bound() {
-                            Excluded(key) => {
-                                if let Some(max_entry) = leaf_scanner.max_entry() {
-                                    max_entry.0.cmp(key) != Ordering::Less
-                                } else {
-                                    false
-                                }
-                            }
-                            Included(key) => {
-                                if let Some(max_entry) = leaf_scanner.max_entry() {
-                                    max_entry.0.cmp(key) == Ordering::Greater
-                                } else {
-                                    false
-                                }
-                            }
+                            Excluded(key) => leaf_scanner
+                                .max_entry()
+                                .map_or(false, |max_entry| max_entry.0.cmp(key) != Ordering::Less),
+                            Included(key) => leaf_scanner.max_entry().map_or(false, |max_entry| {
+                                max_entry.0.cmp(key) == Ordering::Greater
+                            }),
                             Unbounded => false,
                         };
                         self.leaf_scanner.replace(leaf_scanner);
@@ -578,20 +570,12 @@ where
             if let Some(new_scanner) = scanner.jump(min_allowed_key, self.barrier).take() {
                 if let Some(entry) = new_scanner.get() {
                     self.check_upper_bound = match self.range.end_bound() {
-                        Excluded(key) => {
-                            if let Some(max_entry) = new_scanner.max_entry() {
-                                max_entry.0.cmp(key) != Ordering::Less
-                            } else {
-                                false
-                            }
-                        }
-                        Included(key) => {
-                            if let Some(max_entry) = new_scanner.max_entry() {
-                                max_entry.0.cmp(key) == Ordering::Greater
-                            } else {
-                                false
-                            }
-                        }
+                        Excluded(key) => new_scanner
+                            .max_entry()
+                            .map_or(false, |max_entry| max_entry.0.cmp(key) != Ordering::Less),
+                        Included(key) => new_scanner
+                            .max_entry()
+                            .map_or(false, |max_entry| max_entry.0.cmp(key) == Ordering::Greater),
                         Unbounded => false,
                     };
                     self.leaf_scanner.replace(new_scanner);

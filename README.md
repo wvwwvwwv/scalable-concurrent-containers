@@ -1,6 +1,6 @@
 # Scalable Concurrent Containers
 
-![Crates.io](https://img.shields.io/crates/v/scc?style=for-the-badge)
+[![Cargo](https://img.shields.io/crates/v/scc?style=for-the-badge)](https://crates.io/crates/scc)
 ![Crates.io](https://img.shields.io/crates/l/scc?style=for-the-badge)
 ![GitHub Workflow Status](https://img.shields.io/github/workflow/status/wvwwvwwv/scalable-concurrent-containers/SCC?style=for-the-badge)
 
@@ -199,11 +199,11 @@ assert!(treeindex.insert(3, 13).is_ok());
 
 let barrier = Barrier::new();
 
-let mut scanner = treeindex.iter(&barrier);
-assert_eq!(scanner.next().unwrap(), (&1, &10));
-assert_eq!(scanner.next().unwrap(), (&2, &11));
-assert_eq!(scanner.next().unwrap(), (&3, &13));
-assert!(scanner.next().is_none());
+let mut visitor = treeindex.iter(&barrier);
+assert_eq!(visitor.next().unwrap(), (&1, &10));
+assert_eq!(visitor.next().unwrap(), (&2, &11));
+assert_eq!(visitor.next().unwrap(), (&3, &13));
+assert!(visitor.next().is_none());
 ```
 
 Key-value pairs in a specific range can be scanned.
@@ -261,27 +261,27 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 
 - [`HashMap`](#HashMap)
 
-|         | 11 threads | 22 threads | 44 threads     |
-|---------|------------|------------|----------------|
-| InsertL | 186.564s   | 192.279s   | 383.752s !!    |
-| ReadL   | 102.086s   | 108.321s   | 114.468443191s |
-| ScanL   |  35.874s   | 63.281s    | 229.909702447s |
-| RemoveL | 118.931s   | 127.682s   | 139.1093042s   |
-| InsertR | 334.535s   | 342.914s   | 399.315496693s |
-| MixedR  | 363.165s   | 384.775s   | 363.707265976s |
-| RemoveR | 260.543s   | 277.702s   | 251.086396624s |
+|         | 11 threads | 22 threads | 44 threads |
+|---------|------------|------------|------------|
+| InsertL | 186.564s   | 192.279s   | 258.713s   |
+| ReadL   | 102.086s   | 108.321s   | 117.399s   |
+| ScanL   |  35.874s   | 63.281s    | 134.607s   |
+| RemoveL | 118.931s   | 127.682s   | 135.774s   |
+| InsertR | 334.535s   | 342.914s   | 359.023s   |
+| MixedR  | 363.165s   | 384.775s   | 396.604s   |
+| RemoveR | 260.543s   | 277.702s   | 302.858s   |
 
 - [`HashIndex`](#HashIndex)
 
-|         | 11 threads     | 22 threads     | 44 threads     |
-|---------|----------------|----------------|----------------|
-| InsertL | 134.519639194s | 165.001678899s | 231.081117542s |
-| ReadL   |  92.83194805s  | 104.560364479s | 114.468443191s |
-| ScanL   |  42.086156353s | 108.655462554s | 229.909702447s |
-| RemoveL | 109.926310571s | 123.499814546s | 139.1093042s   |
-| InsertR | 249.260816589s | 301.757140479s | 399.315496693s |
-| MixedR  | 310.705241166s | 337.750491321s | 363.707265976s |
-| RemoveR | 208.355622788s | 226.59800359s  | 251.086396624s |
+|         | 11 threads | 22 threads | 44 threads |
+|---------|------------|------------|------------|
+| InsertL |   4.172s   |   4.693s   |   5.947s   |
+| ReadL   |   2.291s   |   2.337s   |   2.647s   |
+| ScanL   |   0.703s   |   1.459s   |   3.04s    |
+| RemoveL |   2.719s   |   2.877s   |   3.706s   |
+| InsertR |   7.201s   |   7.853s   |   9.105s   |
+| MixedR  |  12.343s   |  13.367s   |  15.063s   |
+| RemoveR |   8.726s   |   9.357s   |  10.94s    |
 
 - [`TreeIndex`](#TreeIndex)
 
