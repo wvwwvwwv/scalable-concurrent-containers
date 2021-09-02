@@ -236,35 +236,60 @@ assert_eq!(entry_ref, (&1, &0));
 
 ## TreeIndex
 
-`TreeIndex` is an order-12 B+ tree variant optimized for read operations. The `ebr` module enables it to implement lock-free read and scan methods.
+`TreeIndex` is a B+ tree variant optimized for read operations. The `ebr` module enables it to implement lock-free read and scan methods.
 
 ### Examples
+
+Key-value pairs can be inserted, read, and removed.
+
+```rust
+use scc::TreeIndex;
+
+let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+
+assert!(treeindex.insert(1, 10).is_ok());
+assert_eq!(treeindex.read(&1, |_, value| *value).unwrap(), 10);
+assert!(treeindex.remove(&1));
+```
+
+Key-value pairs can be scanned.
 
 ```rust
 use scc::ebr::Barrier;
 use scc::TreeIndex;
 
 let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
-for i in 0..10 {
-    let result = treeindex.insert(i, 10);
-    assert!(result.is_ok());
-}
+
+assert!(treeindex.insert(1, 10).is_ok());
+assert!(treeindex.insert(2, 11).is_ok());
+assert!(treeindex.insert(3, 13).is_ok());
+
 let barrier = Barrier::new();
-for entry in treeindex.range(1..1, &barrier) {
-    assert!(false);
+
+let mut scanner = treeindex.iter(&barrier);
+assert_eq!(scanner.next().unwrap(), (&1, &10));
+assert_eq!(scanner.next().unwrap(), (&2, &11));
+assert_eq!(scanner.next().unwrap(), (&3, &13));
+assert!(scanner.next().is_none());
+```
+
+Key-value pairs in a specific range can be scanned.
+
+```rust
+use scc::ebr::Barrier;
+use scc::TreeIndex;
+
+let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+
+for i in 0..10 {
+    assert!(treeindex.insert(i, 10).is_ok());
 }
-let mut scanned = 0;
-for entry in treeindex.range(4..8, &barrier) {
-    assert!(*entry.0 >= 4 && *entry.0 < 8);
-    scanned += 1;
-}
-assert_eq!(scanned, 4);
-scanned = 0;
-for entry in treeindex.range(4..=8, &barrier) {
-    assert!(*entry.0 >= 4 && *entry.0 <= 8);
-    scanned += 1;
-}
-assert_eq!(scanned, 5);
+
+let barrier = Barrier::new();
+
+assert_eq!(treeindex.range(1..1, &barrier).count(), 0);
+assert_eq!(treeindex.range(4..8, &barrier).count(), 4);
+assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 ```
 
 ### Performance

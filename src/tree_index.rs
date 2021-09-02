@@ -53,8 +53,7 @@ where
     ///
     /// let treeindex: TreeIndex<u64, u32> = Default::default();
     ///
-    /// let result = treeindex.read(&1, |key, value| *value);
-    /// assert!(result.is_none());
+    /// assert!(treeindex.read(&1, |key, value| *value).is_none());
     /// ```
     fn default() -> Self {
         TreeIndex::new()
@@ -75,8 +74,7 @@ where
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
-    /// let result = treeindex.read(&1, |key, value| *value);
-    /// assert!(result.is_none());
+    /// assert!(treeindex.read(&1, |key, value| *value).is_none());
     /// ```
     pub fn new() -> TreeIndex<K, V> {
         TreeIndex {
@@ -93,14 +91,9 @@ where
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
-    /// let result = treeindex.insert(1, 10);
-    /// assert!(result.is_ok());
-    ///
-    /// let result = treeindex.insert(1, 11);
-    /// assert_eq!(result.err().unwrap(), (1, 11));
-    ///
-    /// let result = treeindex.read(&1, |key, value| *value);
-    /// assert_eq!(result.unwrap(), 10);
+    /// assert!(treeindex.insert(1, 10).is_ok());
+    /// assert_eq!(treeindex.insert(1, 11).err().unwrap(), (1, 11));
+    /// assert_eq!(treeindex.read(&1, |key, value| *value).unwrap(), 10);
     /// ```
     pub fn insert(&self, mut key: K, mut value: V) -> Result<(), (K, V)> {
         let barrier = Barrier::new();
@@ -145,14 +138,9 @@ where
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
-    /// let result = treeindex.remove(&1);
-    /// assert!(!result);
-    ///
-    /// let result = treeindex.insert(1, 10);
-    /// assert!(result.is_ok());
-    ///
-    /// let result = treeindex.remove(&1);
-    /// assert!(result);
+    /// assert!(!treeindex.remove(&1));
+    /// assert!(treeindex.insert(1, 10).is_ok());
+    /// assert!(treeindex.remove(&1));
     /// ```
     pub fn remove<Q>(&self, key_ref: &Q) -> bool
     where
@@ -196,14 +184,9 @@ where
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
-    /// let result = treeindex.read(&1, |key, value| *value);
-    /// assert!(result.is_none());
-    ///
-    /// let result = treeindex.insert(1, 10);
-    /// assert!(result.is_ok());
-    ///
-    /// let result = treeindex.read(&1, |key, value| *value);
-    /// assert_eq!(result.unwrap(), 10);
+    /// assert!(treeindex.read(&1, |key, value| *value).is_none());
+    /// assert!(treeindex.insert(1, 10).is_ok());
+    /// assert_eq!(treeindex.read(&1, |key, value| *value).unwrap(), 10);
     /// ```
     pub fn read<Q, R, F: FnOnce(&Q, &V) -> R>(&self, key_ref: &Q, f: F) -> Option<R>
     where
@@ -243,15 +226,13 @@ where
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
-    /// for key in 0..16u64 {
-    ///     let result = treeindex.insert(key, 10);
-    ///     assert!(result.is_ok());
+    /// for key in 0..16_u64 {
+    ///     assert!(treeindex.insert(key, 10).is_ok());
     /// }
     ///
     /// treeindex.clear();
     ///
-    /// let result = treeindex.len();
-    /// assert_eq!(result, 0);
+    /// assert_eq!(treeindex.len(), 0);
     /// ```
     pub fn clear(&self) {
         Node::remove_root(&self.root, false, &Barrier::new());
@@ -268,13 +249,11 @@ where
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
-    /// for key in 0..16u64 {
-    ///     let result = treeindex.insert(key, 10);
-    ///     assert!(result.is_ok());
+    /// for key in 0..16_u64 {
+    ///     assert!(treeindex.insert(key, 10).is_ok());
     /// }
     ///
-    /// let result = treeindex.len();
-    /// assert_eq!(result, 16);
+    /// assert_eq!(treeindex.len(), 16);
     /// ```
     pub fn len(&self) -> usize {
         let barrier = Barrier::new();
@@ -284,18 +263,18 @@ where
     /// Returns the depth of the [`TreeIndex`].
     ///
     /// # Examples
+    ///
     /// ```
     /// use scc::TreeIndex;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
-    /// for key in 0..16u64 {
+    /// for key in 0..16_u64 {
     ///     let result = treeindex.insert(key, 10);
     ///     assert!(result.is_ok());
     /// }
     ///
-    /// let result = treeindex.depth();
-    /// assert_eq!(result, 1);
+    /// assert_eq!(treeindex.depth(), 1);
     /// ```
     pub fn depth(&self) -> usize {
         let barrier = Barrier::new();
@@ -318,14 +297,9 @@ where
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
-    /// let result = treeindex.insert(1, 10);
-    /// assert!(result.is_ok());
-    ///
-    /// let result = treeindex.insert(2, 11);
-    /// assert!(result.is_ok());
-    ///
-    /// let result = treeindex.insert(3, 13);
-    /// assert!(result.is_ok());
+    /// assert!(treeindex.insert(1, 10).is_ok());
+    /// assert!(treeindex.insert(2, 11).is_ok());
+    /// assert!(treeindex.insert(3, 13).is_ok());
     ///
     /// let barrier = Barrier::new();
     ///
@@ -350,29 +324,14 @@ where
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
     /// for i in 0..10 {
-    ///     let result = treeindex.insert(i, 10);
-    ///     assert!(result.is_ok());
+    ///     assert!(treeindex.insert(i, 10).is_ok());
     /// }
     ///
     /// let barrier = Barrier::new();
     ///
-    /// for entry in treeindex.range(1..1, &barrier) {
-    ///     assert!(false);
-    /// }
-    ///
-    /// let mut scanned = 0;
-    /// for entry in treeindex.range(4..8, &barrier) {
-    ///     assert!(*entry.0 >= 4 && *entry.0 < 8);
-    ///     scanned += 1;
-    /// }
-    /// assert_eq!(scanned, 4);
-    ///
-    /// scanned = 0;
-    /// for entry in treeindex.range(4..=8, &barrier) {
-    ///     assert!(*entry.0 >= 4 && *entry.0 <= 8);
-    ///     scanned += 1;
-    /// }
-    /// assert_eq!(scanned, 5);
+    /// assert_eq!(treeindex.range(1..1, &barrier).count(), 0);
+    /// assert_eq!(treeindex.range(4..8, &barrier).count(), 4);
+    /// assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
     /// ```
     pub fn range<'t, 'b, R: RangeBounds<K>>(
         &'t self,
@@ -391,13 +350,13 @@ where
     /// Prints the TreeIndex contents to the given output in the DOT language.
     ///
     /// # Examples
+    ///
     /// ```
     /// use scc::TreeIndex;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
-    /// let result = treeindex.insert(1, 10);
-    /// assert!(result.is_ok());
+    /// assert!(treeindex.insert(1, 10).is_ok());
     ///
     /// treeindex.print(&mut std::io::stdout());
     /// ```
@@ -421,10 +380,10 @@ where
     }
 }
 
-/// Scanner scans all the key-value pairs in the TreeIndex.
+/// [`Scanner`] scans all the key-value pairs in the [`TreeIndex`].
 ///
-/// It is guaranteed to visit all the key-value pairs that outlive the Scanner,
-/// and it scans keys in monotonically increasing order.
+/// It is guaranteed to visit all the key-value pairs that outlive the Scanner, and it scans
+/// keys in monotonically increasing order.
 pub struct Scanner<'t, 'b, K, V>
 where
     K: 'static + Clone + Ord + Send + Sync,
@@ -496,7 +455,7 @@ where
 {
 }
 
-/// Range represents a range of keys in the TreeIndex.
+/// [`Range`] represents a range of keys in the [`TreeIndex`].
 ///
 /// It is identical to Scanner except that it does not traverse keys outside of the given range.
 pub struct Range<'t, 'b, K, V, R>
