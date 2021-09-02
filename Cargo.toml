@@ -8,7 +8,7 @@ readme = "README.md"
 repository = "https://github.com/wvwwvwwv/scalable-concurrent-containers/"
 license = "Apache-2.0"
 categories = ["concurrency", "data-structures"]
-keywords = ["concurrent", "hashmap", "map", "tree", "index"]
+keywords = ["concurrent", "hashmap", "map", "tree", "ebr"]
 
 [dependencies]
 scopeguard = "^1.1.0"

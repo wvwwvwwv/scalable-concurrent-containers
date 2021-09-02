@@ -17,7 +17,7 @@ The `ebr` module implements epoch-based reclamation and various types of auxilia
 
 ### Examples
 
-The `ebr` module can be used without relying on `unsafe` blocks.
+The `ebr` module can be used without an `unsafe` block.
 
 ```rust
 use scc::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
@@ -131,7 +131,7 @@ assert_eq!(hashmap.retain(|key, value| *key == 1 && *value == 0), (1, 2));
 
 ### Examples
 
-Its `read` method neither acquire locks nor modify any shared data.
+Its `read` methods does not modify any shared data.
 
 ```rust
 use scc::HashIndex;
@@ -142,7 +142,7 @@ assert!(hashindex.insert(1, 0).is_ok());
 assert_eq!(hashindex.read(&1, |_, v| *v).unwrap(), 0);
 ```
 
-An [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is implemented for [`HashIndex`](#HashIndex), because entry references can survive as long as the supplied `ebr::Barrier` survives.
+An [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is implemented for [`HashIndex`](#HashIndex), because entry derived references can survive as long as the supplied `ebr::Barrier` survives.
 
 ```rust
 use scc::ebr::Barrier;
@@ -170,6 +170,8 @@ assert_eq!(entry_ref, (&1, &0));
 ## TreeIndex
 
 [`TreeIndex`](#TreeIndex) is a B+ tree variant optimized for read operations. The `ebr` module enables it to implement lock-free read and scan methods.
+
+* [`TreeIndex`](#TreeIndex) has known [issues](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues).
 
 ### Examples
 
@@ -228,6 +230,7 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 ## Performance
 
 ### Test setup
+
 - OS: SUSE Linux Enterprise Server 15 SP1
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
 - RAM: 1TB
@@ -283,22 +286,9 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 | MixedR  |  12.343s   |  13.367s   |  15.063s   |
 | RemoveR |   8.726s   |   9.357s   |  10.94s    |
 
-- [`TreeIndex`](#TreeIndex)
-
-|         | 11 threads     | 22 threads     | 44 threads     |
-|---------|----------------|----------------|----------------|
-| InsertL | 134.519639194s | 165.001678899s | 231.081117542s |
-| ReadL   |  92.83194805s  | 104.560364479s | 114.468443191s |
-| ScanL   |  42.086156353s | 108.655462554s | 229.909702447s |
-| RemoveL | 109.926310571s | 123.499814546s | 139.1093042s   |
-| InsertR | 249.260816589s | 301.757140479s | 399.315496693s |
-| MixedR  | 310.705241166s | 337.750491321s | 363.707265976s |
-| RemoveR | 208.355622788s | 226.59800359s  | 251.086396624s |
-
 ## Changelog
 
 #### 0.5.0
 
 * Own EBR implementation.
 * Substantial API changes.
-

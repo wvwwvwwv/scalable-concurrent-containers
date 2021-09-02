@@ -898,7 +898,8 @@ where
             let node_ref = node_ptr.as_ref().unwrap();
             if node_ref.obsolete(barrier) {
                 self.children.0.remove(entry.0);
-                // Once the key is removed, it is safe to deallocate the node as the validation loop ensures the absence of readers.
+                // Once the key is removed, it is safe to deallocate the node as the validation
+                // loop ensures the absence of readers.
                 if let Some(node) = entry.1.swap((None, Tag::None), Release) {
                     barrier.reclaim(node);
                 }
@@ -908,7 +909,8 @@ where
         let unbounded_ptr = self.children.1.load(Relaxed, barrier);
         if let Some(unbounded_ref) = unbounded_ptr.as_ref() {
             if unbounded_ref.obsolete(barrier) {
-                // If the unbounded node has become obsolete, either marks the node obsolete, or replaces the unbounded node with another.
+                // If the unbounded node has become obsolete, either marks the node obsolete,
+                // or replaces the unbounded node with another.
                 if let Some(max_entry) = self.children.0.max() {
                     // Firstly, replaces the unbounded node with the max entry.
                     self.children.1.swap(
