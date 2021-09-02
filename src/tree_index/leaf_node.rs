@@ -196,7 +196,7 @@ where
                                 return Err(InsertError::Duplicated(result.0));
                             }
                             debug_assert!(child_ref.full());
-                            if !self.split_leaf(Some(child_key.clone()), child_ptr, &child, barrier)
+                            if !self.split_leaf(Some(child_key.clone()), child_ptr, child, barrier)
                             {
                                 return Err(InsertError::Full(result.0));
                             }
@@ -261,13 +261,13 @@ where
     }
 
     /// Removes an entry associated with the given key.
-    pub fn remove<Q>(&self, key: &Q, barrier: &Barrier) -> Result<bool, RemoveError>
+    pub fn remove<Q>(&self, key_ref: &Q, barrier: &Barrier) -> Result<bool, RemoveError>
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
         loop {
-            let result = (self.leaves.0).min_greater_equal(&key);
+            let result = (self.leaves.0).min_greater_equal(key_ref);
             if let Some((_, child)) = result.0 {
                 let child_ptr = child.load(Acquire, barrier);
                 if !(self.leaves.0).validate(result.1) {
@@ -275,7 +275,7 @@ where
                     continue;
                 }
                 if let Some(child_ref) = child_ptr.as_ref() {
-                    let (removed, full, empty) = child_ref.remove(key);
+                    let (removed, full, empty) = child_ref.remove(key_ref);
                     if !full && !empty {
                         return Ok(removed);
                     } else if !empty {
@@ -286,7 +286,7 @@ where
                         //  - Remove: find the leaf full, and the leaf node is not locked, returning 'Ok(true)'
                         // Consequently, the key remains.
                         // In order to resolve this, check the pointer again.
-                        return self.check_full_leaf(removed, key, child_ptr, barrier);
+                        return self.check_full_leaf(removed, key_ref, child_ptr, barrier);
                     }
                     child_ref.retire();
                     return self.coalesce(removed, barrier);
@@ -302,12 +302,12 @@ where
                     // Data race resolution - see LeafNode::search.
                     continue;
                 }
-                let (removed, full, empty) = unbounded_ref.remove(key);
+                let (removed, full, empty) = unbounded_ref.remove(key_ref);
                 if !full && !empty {
                     return Ok(removed);
                 } else if !empty {
                     // Data race resolution - see above.
-                    return self.check_full_leaf(removed, key, unbounded_ptr, barrier);
+                    return self.check_full_leaf(removed, key_ref, unbounded_ptr, barrier);
                 }
                 unbounded_ref.retire();
                 return self.coalesce(removed, barrier);
@@ -457,6 +457,7 @@ where
         let high_key_leaves = &high_key_leaf_node.leaves;
 
         // Builds a list of valid leaves
+        #[allow(clippy::type_complexity)]
         let mut entry_array: [Option<(Option<&K>, AtomicArc<Leaf<K, V>>)>; ARRAY_SIZE + 2] =
             Default::default();
         let mut num_entries = 0;
@@ -493,6 +494,7 @@ where
                 num_entries += 1;
             }
         }
+        #[allow(clippy::branches_sharing_code)]
         if new_leaves_ref.origin_leaf_key.is_some() {
             // If the origin is a bounded node, assign the unbounded node to the high key node's unbounded.
             entry_array[num_entries].replace((None, self.leaves.1.clone(Relaxed, barrier)));
@@ -556,7 +558,7 @@ where
     fn check_full_leaf<Q>(
         &self,
         removed: bool,
-        key: &Q,
+        key_ref: &Q,
         leaf_ptr: Ptr<Leaf<K, V>>,
         barrier: &Barrier,
     ) -> Result<bool, RemoveError>
@@ -578,7 +580,7 @@ where
         {
             return Err(RemoveError::Retry(removed));
         }
-        let result = (self.leaves.0).min_greater_equal(&key);
+        let result = (self.leaves.0).min_greater_equal(key_ref);
         let leaf_current_ptr = if let Some((_, child)) = result.0 {
             child.load(Relaxed, barrier)
         } else {
@@ -593,7 +595,7 @@ where
 
     /// Tries to coalesce empty or obsolete leaves.
     fn coalesce(&self, removed: bool, barrier: &Barrier) -> Result<bool, RemoveError> {
-        let lock = LeafNodeLocker::try_lock(self);
+        let lock = Locker::try_lock(self);
         if lock.is_none() {
             return Err(RemoveError::Retry(removed));
         }
@@ -661,12 +663,10 @@ where
             //
             // In order to keep the forward_link flag of the origin leaf,
             // high_key_leaf must be opted out first.
-            high_key_leaf_ptr
-                .as_ref()
-                .map(|l| l.pop_self(Tag::None, barrier));
-            low_key_leaf_ptr
-                .as_ref()
-                .map(|l| l.pop_self(Tag::None, barrier));
+            if let Some(leaf_ref) = high_key_leaf_ptr
+                .as_ref() { leaf_ref.pop_self(Tag::None, barrier); }
+            if let Some(leaf_ref) = low_key_leaf_ptr
+                .as_ref() { leaf_ref.pop_self(Tag::None, barrier); }
 
             // Unlocks the leaf node.
             if let Some(new_leaves) = self.new_leaves.swap((None, Tag::None), Release) {
@@ -707,6 +707,7 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
         barrier: &Barrier,
     ) -> std::io::Result<()> {
         // Collects information.
+        #[allow(clippy::type_complexity)]
         let mut leaf_ref_array: [Option<(Option<&Leaf<K, V>>, Option<&K>, usize)>; ARRAY_SIZE + 1] =
             [None; ARRAY_SIZE + 1];
         let mut scanner = Scanner::new_including_removed(&self.leaves.0);
@@ -715,12 +716,12 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
             if scanner.removed() {
                 leaf_ref_array[index].replace((None, Some(entry.0), index));
             } else {
-                let leaf_ptr = entry.1.load(Relaxed, &barrier);
+                let leaf_ptr = entry.1.load(Relaxed, barrier);
                 leaf_ref_array[index].replace((leaf_ptr.as_ref(), Some(entry.0), index));
             }
             index += 1;
         }
-        let unbounded_ptr = self.leaves.1.load(Relaxed, &barrier);
+        let unbounded_ptr = self.leaves.1.load(Relaxed, barrier);
         if let Some(unbounded_ref) = unbounded_ptr.as_ref() {
             leaf_ref_array[index].replace((Some(unbounded_ref), None, index));
         }
@@ -734,7 +735,8 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
             depth,
             index + 1,
         ))?;
-        for leaf_info in leaf_ref_array.iter() {
+        #[allow(clippy::manual_flatten)]
+        for leaf_info in &leaf_ref_array {
             if let Some((leaf_ref, key_ref, index)) = leaf_info {
                 let font_color = if leaf_ref.is_some() { "black" } else { "red" };
                 if let Some(key_ref) = key_ref {
@@ -744,7 +746,7 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
                     ))?;
                 } else {
                     output.write_fmt(format_args!(
-                        "<td port='p_{}'><font color='{}'>∞</font></td>",
+                        "<td port='p_{}'><font color='{}'>\u{221e}</font></td>",
                         index, font_color,
                     ))?;
                 }
@@ -753,7 +755,8 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
         output.write_fmt(format_args!("</tr>\n</table>\n>]\n"))?;
 
         // Prints the edges and children.
-        for leaf_info in leaf_ref_array.iter() {
+        #[allow(clippy::manual_flatten)]
+        for leaf_info in &leaf_ref_array {
             if let Some((Some(leaf_ref), _, index)) = leaf_info {
                 output.write_fmt(format_args!(
                     "{}:p_{} -> {}\n",
@@ -762,7 +765,7 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
                     leaf_ref.id()
                 ))?;
                 output.write_fmt(format_args!(
-                        "{} [shape=plaintext\nlabel=<\n<table border='1' cellborder='1'>\n<tr><td colspan='3'>ID: {}</td></tr>¬<tr><td>Rank</td><td>Key</td><td>Value</td></tr>\n",
+                        "{} [shape=plaintext\nlabel=<\n<table border='1' cellborder='1'>\n<tr><td colspan='3'>ID: {}</td></tr><tr><td>Rank</td><td>Key</td><td>Value</td></tr>\n",
                         leaf_ref.id(),
                         leaf_ref.id(),
                     ))?;
@@ -797,7 +800,7 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
 }
 
 /// Leaf node locker.
-pub struct LeafNodeLocker<'n, K, V>
+pub struct Locker<'n, K, V>
 where
     K: 'static + Clone + Ord + Send + Sync,
     V: 'static + Clone + Send + Sync,
@@ -807,18 +810,18 @@ where
     deprecate: bool,
 }
 
-impl<'n, K, V> LeafNodeLocker<'n, K, V>
+impl<'n, K, V> Locker<'n, K, V>
 where
     K: 'static + Clone + Ord + Send + Sync,
     V: 'static + Clone + Send + Sync,
 {
-    pub fn try_lock(leaf_node: &'n LeafNode<K, V>) -> Option<LeafNodeLocker<'n, K, V>> {
+    pub fn try_lock(leaf_node: &'n LeafNode<K, V>) -> Option<Locker<'n, K, V>> {
         if leaf_node
             .new_leaves
             .compare_exchange(Ptr::null(), (None, Tag::First), Acquire, Relaxed)
             .is_ok()
         {
-            Some(LeafNodeLocker {
+            Some(Locker {
                 lock: &leaf_node.new_leaves,
                 deprecate: false,
             })
@@ -832,7 +835,7 @@ where
     }
 }
 
-impl<'n, K, V> Drop for LeafNodeLocker<'n, K, V>
+impl<'n, K, V> Drop for Locker<'n, K, V>
 where
     K: Clone + Ord + Send + Sync,
     V: Clone + Send + Sync,

@@ -1,3 +1,6 @@
+#![allow(clippy::inline_always)]
+#![allow(clippy::needless_pass_by_value)]
+
 #[cfg(test)]
 mod benchmark {
     use crate::ebr;
@@ -120,12 +123,7 @@ mod benchmark {
         #[inline(always)]
         fn scan_test(&self) -> usize {
             let ebr_barrier = ebr::Barrier::new();
-            let mut scanner = self.iter(&ebr_barrier);
-            let mut num_scanned = 0;
-            while let Some(_) = scanner.next() {
-                num_scanned += 1;
-            }
-            num_scanned
+            self.iter(&ebr_barrier).count()
         }
         #[inline(always)]
         fn remove_test(&self, k: &K) -> bool {
@@ -147,7 +145,7 @@ mod benchmark {
     impl ConvertFromUsize for String {
         #[inline(always)]
         fn convert(from: usize) -> String {
-            String::from(from.to_string())
+            from.to_string()
         }
     }
 
@@ -254,6 +252,7 @@ mod benchmark {
         )
     }
 
+    #[allow(clippy::too_many_lines)]
     fn hashmap_benchmark<
         T: 'static + ConvertFromUsize + Clone + Eq + Hash + Ord + Send + Sync + Unpin,
     >(
@@ -261,7 +260,7 @@ mod benchmark {
         num_threads: Vec<usize>,
     ) {
         for num_threads in num_threads {
-            let hashmap: Arc<HashMap<usize, usize, RandomState>> = Arc::new(Default::default());
+            let hashmap: Arc<HashMap<usize, usize, RandomState>> = Arc::new(HashMap::default());
 
             // 1. insert-local
             let insert = Workload {
@@ -400,6 +399,7 @@ mod benchmark {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn hashindex_benchmark<
         T: 'static + ConvertFromUsize + Clone + Eq + Hash + Ord + Send + Sync + Unpin,
     >(
@@ -407,7 +407,7 @@ mod benchmark {
         num_threads: Vec<usize>,
     ) {
         for num_threads in num_threads {
-            let hashindex: Arc<HashIndex<T, T, RandomState>> = Arc::new(Default::default());
+            let hashindex: Arc<HashIndex<T, T, RandomState>> = Arc::new(HashIndex::default());
 
             // 1. insert-local
             let insert = Workload {
@@ -546,6 +546,7 @@ mod benchmark {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn treeindex_benchmark<
         T: 'static + ConvertFromUsize + Clone + Hash + Ord + Send + Sync + Unpin,
     >(
@@ -553,7 +554,7 @@ mod benchmark {
         num_threads: Vec<usize>,
     ) {
         for num_threads in num_threads {
-            let treeindex: Arc<TreeIndex<T, T>> = Arc::new(Default::default());
+            let treeindex: Arc<TreeIndex<T, T>> = Arc::new(TreeIndex::default());
 
             // 1. insert-local
             let insert = Workload {

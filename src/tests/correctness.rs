@@ -14,8 +14,8 @@ mod hashmap_test {
 
     #[test]
     fn string_key() {
-        let hashmap1: HashMap<String, u32> = Default::default();
-        let hashmap2: HashMap<u32, String> = Default::default();
+        let hashmap1: HashMap<String, u32> = HashMap::default();
+        let hashmap2: HashMap<u32, String> = HashMap::default();
         let mut checker1 = BTreeSet::new();
         let mut checker2 = BTreeSet::new();
         let mut runner = TestRunner::default();
@@ -52,7 +52,7 @@ mod hashmap_test {
     fn accessor() {
         let data_size = 4096;
         for _ in 0..16 {
-            let hashmap: Arc<HashMap<u64, u64>> = Arc::new(Default::default());
+            let hashmap: Arc<HashMap<u64, u64>> = Arc::new(HashMap::default());
             let hashmap_copied = hashmap.clone();
             let barrier = Arc::new(Barrier::new(2));
             let barrier_copied = barrier.clone();
@@ -111,12 +111,12 @@ mod hashmap_test {
     }
 
     struct Data {
-        data: u64,
+        data: usize,
         checker: Arc<AtomicUsize>,
     }
 
     impl Data {
-        fn new(data: u64, checker: Arc<AtomicUsize>) -> Data {
+        fn new(data: usize, checker: Arc<AtomicUsize>) -> Data {
             checker.fetch_add(1, Relaxed);
             Data { data, checker }
         }
@@ -150,10 +150,10 @@ mod hashmap_test {
 
     proptest! {
         #[test]
-        fn insert(key in 0_u64..16) {
+        fn insert(key in 0_usize..16) {
             let range = 1024;
             let checker = Arc::new(AtomicUsize::new(0));
-            let hashmap: HashMap<Data, Data> = Default::default();
+            let hashmap: HashMap<Data, Data> = HashMap::default();
             for d in key..(key + range) {
                 assert!(hashmap.insert(Data::new(d, checker.clone()), Data::new(d, checker.clone())).is_ok());
                 hashmap.upsert(Data::new(d, checker.clone()), || Data::new(d + 1, checker.clone()), |_, v| *v = Data::new(d + 2, checker.clone()));
@@ -165,9 +165,9 @@ mod hashmap_test {
             }
 
             let result = hashmap.retain(|k, _| k.data < key + range);
-            assert_eq!(result, (range as usize, range as usize));
+            assert_eq!(result, (range, range));
 
-            assert_eq!(hashmap.len() as u64, range);
+            assert_eq!(hashmap.len(), range);
             let mut found_keys = 0;
             hashmap.for_each(|k, v| {
                 assert!(k.data < key + range);
@@ -175,7 +175,7 @@ mod hashmap_test {
                 found_keys += 1;
             });
             assert_eq!(found_keys, range);
-            assert_eq!(checker.load(Relaxed) as u64, range * 2);
+            assert_eq!(checker.load(Relaxed), range * 2);
             for d in key..(key + range) {
                 assert!(hashmap.remove(&Data::new(d, checker.clone())).is_some());
             }
@@ -193,7 +193,7 @@ mod hashmap_test {
                 assert!(hashmap.insert(Data::new(d, checker.clone()), Data::new(d, checker.clone())).is_ok());
                 hashmap.upsert(Data::new(d, checker.clone()), || Data::new(d, checker.clone()), |_, v| *v = Data::new(d + 2, checker.clone()));
             }
-            assert_eq!(checker.load(Relaxed) as u64, range * 2);
+            assert_eq!(checker.load(Relaxed), range * 2);
             drop(hashmap);
             assert_eq!(checker.load(Relaxed), 0);
         }
@@ -215,8 +215,8 @@ mod hashindex_test {
 
     #[test]
     fn string_key() {
-        let hashindex1: HashIndex<String, u32> = Default::default();
-        let hashindex2: HashIndex<u32, String> = Default::default();
+        let hashindex1: HashIndex<String, u32> = HashIndex::default();
+        let hashindex2: HashIndex<u32, String> = HashIndex::default();
         let mut checker1 = BTreeSet::new();
         let mut checker2 = BTreeSet::new();
         let mut runner = TestRunner::default();
@@ -250,7 +250,7 @@ mod hashindex_test {
     fn visitor() {
         let data_size = 4096;
         for _ in 0..64 {
-            let hashindex: Arc<HashIndex<u64, u64>> = Arc::new(Default::default());
+            let hashindex: Arc<HashIndex<u64, u64>> = Arc::new(HashIndex::default());
             let hashindex_copied = hashindex.clone();
             let barrier = Arc::new(Barrier::new(2));
             let barrier_copied = barrier.clone();
@@ -374,9 +374,9 @@ mod treeindex_test {
         }
 
         let barrier = ebr::Barrier::new();
-        let mut scanner = tree.iter(&barrier);
+        let scanner = tree.iter(&barrier);
         let mut prev = 0;
-        while let Some(entry) = scanner.next() {
+        for entry in scanner {
             assert!(prev == 0 || prev < *entry.0);
             assert_eq!(*entry.0, *entry.1);
             prev = *entry.0;
@@ -414,13 +414,13 @@ mod treeindex_test {
                     {
                         let ebr_barrier = ebr::Barrier::new();
                         let mut range_scanner = tree_copied.range(first_key.., &ebr_barrier);
-                        let entry = range_scanner.next().unwrap();
+                        let mut entry = range_scanner.next().unwrap();
                         assert_eq!(entry, (&first_key, &first_key));
-                        let entry = range_scanner.next().unwrap();
+                        entry = range_scanner.next().unwrap();
                         assert_eq!(entry, (&(first_key + 1), &(first_key + 1)));
-                        let entry = range_scanner.next().unwrap();
+                        entry = range_scanner.next().unwrap();
                         assert_eq!(entry, (&(first_key + 2), &(first_key + 2)));
-                        let entry = range_scanner.next().unwrap();
+                        entry = range_scanner.next().unwrap();
                         assert_eq!(entry, (&(first_key + 3), &(first_key + 3)));
                     }
 
@@ -467,7 +467,7 @@ mod treeindex_test {
                     prev_marker = current;
                 }
                 assert!(prev == 0 || prev < current);
-                prev = current
+                prev = current;
             }
             if i % 64 == 0 {
                 println!("{} {}", i, found_markers);
@@ -484,8 +484,8 @@ mod treeindex_test {
 
     #[test]
     fn string_key() {
-        let tree1: TreeIndex<String, u32> = Default::default();
-        let tree2: TreeIndex<u32, String> = Default::default();
+        let tree1: TreeIndex<String, u32> = TreeIndex::default();
+        let tree2: TreeIndex<u32, String> = TreeIndex::default();
         let mut checker1 = BTreeSet::new();
         let mut checker2 = BTreeSet::new();
         let mut runner = TestRunner::default();
@@ -503,11 +503,11 @@ mod treeindex_test {
                 checker2.insert((i, str_val.clone()));
             }
         }
-        for iter in checker1.iter() {
-            let v = tree1.read(iter.0.as_str(), |_, v| v.clone());
+        for iter in &checker1 {
+            let v = tree1.read(iter.0.as_str(), |_, v| *v);
             assert_eq!(v.unwrap(), iter.1);
         }
-        for iter in checker2.iter() {
+        for iter in &checker2 {
             let v = tree2.read(&iter.0, |_, v| v.clone());
             assert_eq!(v.unwrap(), iter.1);
         }
@@ -517,7 +517,7 @@ mod treeindex_test {
     fn scanner() {
         let data_size = 4096;
         for _ in 0..64 {
-            let tree: Arc<TreeIndex<usize, u64>> = Arc::new(Default::default());
+            let tree: Arc<TreeIndex<usize, u64>> = Arc::new(TreeIndex::default());
             let tree_copied = tree.clone();
             let barrier = Arc::new(Barrier::new(2));
             let barrier_copied = barrier.clone();

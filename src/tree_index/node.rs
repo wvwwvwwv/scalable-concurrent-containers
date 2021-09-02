@@ -1,5 +1,6 @@
 use super::leaf::{Scanner, ARRAY_SIZE};
-use super::leaf_node::{LeafNode, LeafNodeLocker};
+use super::leaf_node::LeafNode;
+use super::leaf_node::Locker as LeafLocker;
 use super::Leaf;
 use super::{InsertError, RemoveError, SearchError};
 
@@ -143,6 +144,7 @@ where
         if let NodeType::Internal(internal_node) = &new_root.entry {
             if internal_node.split_node(None, root.load(Relaxed, barrier), root, true, barrier) {
                 let new_nodes = unsafe {
+                    #[allow(clippy::cast_ref_to_mut)]
                     &mut *(internal_node
                         .new_children
                         .load(Relaxed, barrier)
@@ -193,7 +195,7 @@ where
         do_not_remove_valid_root: bool,
         barrier: &Barrier,
     ) -> bool {
-        let mut root_ptr = root.load(Acquire, &barrier);
+        let mut root_ptr = root.load(Acquire, barrier);
         loop {
             if let Some(root_ref) = root_ptr.as_ref() {
                 let mut internal_node_locker = None;
@@ -205,14 +207,14 @@ where
                         }
                     }
                     NodeType::Leaf(leaf_node) => {
-                        if let Some(locker) = LeafNodeLocker::try_lock(leaf_node) {
+                        if let Some(locker) = LeafLocker::try_lock(leaf_node) {
                             leaf_node_locker.replace(locker);
                         }
                     }
                 };
                 if internal_node_locker.is_none() && leaf_node_locker.is_none() {
                     // The root node is locked by another thread.
-                    root_ptr = root.load(Acquire, &barrier);
+                    root_ptr = root.load(Acquire, barrier);
                     continue;
                 }
                 if do_not_remove_valid_root && !root_ref.obsolete(barrier) {
@@ -293,6 +295,7 @@ where
     /// Child nodes.
     ///
     /// The pointer to the unbounded node storing a non-zero tag indicates that the leaf is obsolete.
+    #[allow(clippy::type_complexity)]
     children: (Leaf<K, AtomicArc<Node<K, V>>>, AtomicArc<Node<K, V>>),
     /// New nodes in an intermediate state during merge and split.
     ///
@@ -338,13 +341,17 @@ where
     }
 
     /// Searches for an entry associated with the given key.
-    fn search<'b, Q>(&self, key: &'b Q, barrier: &'b Barrier) -> Result<Option<&'b V>, SearchError>
+    fn search<'b, Q>(
+        &self,
+        key_ref: &'b Q,
+        barrier: &'b Barrier,
+    ) -> Result<Option<&'b V>, SearchError>
     where
         K: 'b + Borrow<Q>,
         Q: Ord + ?Sized,
     {
         loop {
-            let result = (self.children.0).min_greater_equal(&key);
+            let result = (self.children.0).min_greater_equal(key_ref);
             if let Some((_, child)) = result.0 {
                 let child_ptr = child.load(Acquire, barrier);
                 if !(self.children.0).validate(result.1) {
@@ -352,7 +359,7 @@ where
                     continue;
                 }
                 if let Some(child_ref) = child_ptr.as_ref() {
-                    return child_ref.search(key, barrier);
+                    return child_ref.search(key_ref, barrier);
                 }
                 // `child_ptr` being null indicates that the node is bound to be freed.
                 return Err(SearchError::Retry);
@@ -364,7 +371,7 @@ where
                     // Data race resolution - see LeafNode::search.
                     continue;
                 }
-                return unbounded_ref.search(key, barrier);
+                return unbounded_ref.search(key_ref, barrier);
             }
             // `unbounded_ptr` being null indicates that the node is bound to be freed.
             debug_assert!(unbounded_ptr.tag() == Tag::First);
@@ -411,10 +418,10 @@ where
         barrier: &'b Barrier,
     ) -> Result<Scanner<'b, K, V>, SearchError> {
         loop {
-            let mut scanner = Scanner::max_less(&self.children.0, key);
+            let scanner = Scanner::max_less(&self.children.0, key);
             let metadata = scanner.metadata();
             let mut retry = false;
-            while let Some(child) = scanner.next() {
+            for child in scanner {
                 if child.0.cmp(key) == Ordering::Less {
                     continue;
                 }
@@ -472,7 +479,7 @@ where
                                 if !self.split_node(
                                     Some(child_key.clone()),
                                     child_ptr,
-                                    &child,
+                                    child,
                                     false,
                                     barrier,
                                 ) {
@@ -569,7 +576,9 @@ where
 
     /// Splits a full node.
     ///
-    /// Returns true if the node is successfully split or a conflict is detected, false otherwise.
+    /// Returns `true` if the node is successfully split or a conflict is detected, `false`
+    /// otherwise.
+    #[allow(clippy::too_many_lines)]
     fn split_node(
         &self,
         full_node_key: Option<K>,
@@ -580,7 +589,7 @@ where
     ) -> bool {
         let new_split_nodes_ptr;
         let full_node_ref = full_node_ptr.as_ref().unwrap();
-        match self.new_children.compare_exchange(
+        if let Ok((_, ptr)) = self.new_children.compare_exchange(
             Ptr::null(),
             (
                 Some(Arc::new(NewNodes {
@@ -595,11 +604,10 @@ where
             Acquire,
             Relaxed,
         ) {
-            Ok((_, ptr)) => new_split_nodes_ptr = ptr,
-            Err(_) => {
-                full_node_ref.rollback(barrier);
-                return true;
-            }
+            new_split_nodes_ptr = ptr;
+        } else {
+            full_node_ref.rollback(barrier);
+            return true;
         }
 
         // Checks if the node is ready for a child split.
@@ -616,6 +624,7 @@ where
 
         // Copies entries to the newly allocated leaves.
         let new_split_nodes_mut_ref = unsafe {
+            #[allow(clippy::cast_ref_to_mut)]
             &mut *(new_split_nodes_ptr.as_ref().unwrap() as *const NewNodes<K, V>
                 as *mut NewNodes<K, V>)
         };
@@ -651,8 +660,9 @@ where
                     };
 
                 // Builds a list of valid nodes.
-                let mut entry_array: [Option<(Option<&K>, AtomicArc<Node<K, V>>)>; ARRAY_SIZE + 2] =
-                    Default::default();
+                #[allow(clippy::type_complexity)]
+                let mut entry_array: [Option<(Option<&K>, AtomicArc<Node<K, V>>)>;
+                    ARRAY_SIZE + 2] = Default::default();
                 let mut num_entries = 0;
                 for entry in Scanner::new(&full_internal_node.children.0) {
                     if new_children_ref
@@ -831,7 +841,7 @@ where
 
         // Unlocks the node.
         if let Some(new_split_nodes) = self.new_children.swap((None, Tag::None), Release) {
-            barrier.reclaim(new_split_nodes)
+            barrier.reclaim(new_split_nodes);
         }
         true
     }
@@ -869,7 +879,7 @@ where
         // Keeps the internal node locked to prevent locking attempts.
         let unused_nodes = self.new_children.swap((None, Tag::First), Relaxed);
         if let Some(unused_node_ref) = unused_nodes.as_ref() {
-            let obsolete_node_ptr = unused_node_ref.origin_node.load(Relaxed, &barrier);
+            let obsolete_node_ptr = unused_node_ref.origin_node.load(Relaxed, barrier);
             if let Some(obsolete_node_ref) = obsolete_node_ptr.as_ref() {
                 obsolete_node_ref.unlink(barrier);
             };
@@ -946,6 +956,7 @@ where
         barrier: &Barrier,
     ) -> std::io::Result<()> {
         // Collects information.
+        #[allow(clippy::type_complexity)]
         let mut child_ref_array: [Option<(Option<&Node<K, V>>, Option<&K>, usize)>;
             ARRAY_SIZE + 1] = [None; ARRAY_SIZE + 1];
         let mut scanner = Scanner::new_including_removed(&self.children.0);
@@ -977,7 +988,8 @@ where
             depth,
             index + 1,
             ))?;
-        for child_info in child_ref_array.iter() {
+        #[allow(clippy::manual_flatten)]
+        for child_info in &child_ref_array {
             if let Some((child_ref, key_ref, index)) = child_info {
                 let font_color = if child_ref.is_some() { "black" } else { "red" };
                 if let Some(key_ref) = key_ref {
@@ -987,7 +999,7 @@ where
                     ))?;
                 } else {
                     output.write_fmt(format_args!(
-                        "<td port='p_{}'><font color='{}'>∞</font></td>",
+                        "<td port='p_{}'><font color='{}'>\u{221e}</font></td>",
                         index, font_color,
                     ))?;
                 }
@@ -996,7 +1008,8 @@ where
         output.write_fmt(format_args!("</tr>\n</table>\n>]\n"))?;
 
         // Prints the edges and children.
-        for child_info in child_ref_array.iter() {
+        #[allow(clippy::manual_flatten)]
+        for child_info in &child_ref_array {
             if let Some((Some(child_ref), _, index)) = child_info {
                 output.write_fmt(format_args!(
                     "{}:p_{} -> {}\n",
@@ -1115,7 +1128,7 @@ mod test {
                                 break;
                             }
                             Err(err) => match err {
-                                InsertError::Duplicated(_) => assert!(false),
+                                InsertError::Duplicated(_) => unreachable!(),
                                 InsertError::Retry(_) => {
                                     if full_copied.load(Relaxed) {
                                         break;
@@ -1135,7 +1148,7 @@ mod test {
                 }
                 let result = inserted_copied.lock();
                 let mut vector = result.unwrap();
-                for key in inserted_keys.iter() {
+                for key in &inserted_keys {
                     vector.push(*key);
                 }
             }));
@@ -1149,9 +1162,9 @@ mod test {
             node.rollback(&ebr_barrier);
         }
         let mut prev = 0;
-        if let Ok(mut scanner) = node.min(&ebr_barrier) {
+        if let Ok(scanner) = node.min(&ebr_barrier) {
             let mut iterated = 0;
-            while let Some(entry) = scanner.next() {
+            for entry in scanner {
                 println!("{} {}", entry.0, entry.1);
                 assert!(prev == 0 || prev < *entry.0);
                 assert_eq!(entry.0, entry.1);

@@ -452,7 +452,7 @@ mod test {
                     if let Some(str_ref) = ptr.as_ref() {
                         assert!(str_ref == "How are you?" || str_ref == "How can I help you?");
                     }
-                    let converted: Result<Arc<String>, ()> = ptr.clone().try_into();
+                    let converted: Result<Arc<String>, ()> = ptr.try_into();
                     if let Ok(arc) = converted {
                         assert!(*arc == "How are you?" || *arc == "How can I help you?");
                     }

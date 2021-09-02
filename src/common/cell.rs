@@ -822,7 +822,7 @@ mod test {
         const SIZE: usize = 32;
         let num_threads = (SIZE * 2) as usize;
         let barrier = sync::Arc::new(sync::Barrier::new(num_threads));
-        let cell: sync::Arc<Cell<usize, usize, SIZE, true>> = sync::Arc::new(Default::default());
+        let cell: sync::Arc<Cell<usize, usize, SIZE, true>> = sync::Arc::new(Cell::default());
         let mut data: [u64; 128] = [0; 128];
         let mut thread_handles = Vec::with_capacity(num_threads);
         for thread_id in 0..num_threads {
@@ -878,10 +878,7 @@ mod test {
         for handle in thread_handles {
             handle.join().unwrap();
         }
-        let mut sum: u64 = 0;
-        for j in 0..128 {
-            sum += data[j];
-        }
+        let sum: u64 = data.iter().sum();
         assert_eq!(sum % 256, 0);
         assert_eq!(cell.num_entries(), num_threads);
 
