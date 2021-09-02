@@ -1,16 +1,16 @@
 //! Scalable concurrent containers.
 //!
-//! # `scc::ebr`
+//! # [`ebr`]
 //!
 //! The [`ebr`] module implements epoch-based reclamation for [`HashMap`], [`HashIndex`], and [`TreeIndex`].
 //!
-//! # `scc::HashMap`
+//! # [`HashMap`]
 //! [`HashMap`] is a concurrent hash map that dynamically grows and shrinks without blocking other operations.
 //!
-//! # `scc::HashIndex`
+//! # [`HashIndex`]
 //! [`HashIndex`] is a read-optimized concurrent hash index that is similar to [`HashMap`].
 //!
-//! # `scc::TreeIndex`
+//! # [`TreeIndex`]
 //! [`TreeIndex`] is a read-optimized concurrent B+ tree index.
 
 pub mod ebr;

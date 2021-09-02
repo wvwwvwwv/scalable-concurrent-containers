@@ -4,8 +4,8 @@ A collection of concurrent data structures and building blocks for concurrent pr
 
 - [scc::ebr](#EBR) implements epoch-based reclamation.
 - [scc::HashMap](#HashMap) is a concurrent hash map.
-- [scc::HashIndex](#hashindex) is a concurrent hash index allowing lock-free read and scan.
-- [scc::TreeIndex](#treeindex) is a concurrent B+ tree allowing lock-free read and scan.
+- [scc::HashIndex](#HashIndex) is a concurrent hash index allowing lock-free read and scan.
+- [scc::TreeIndex](#TreeIndex) is a concurrent B+ tree allowing lock-free read and scan.
 
 ## EBR
 
@@ -221,9 +221,9 @@ assert_eq!(treeindex.range(4..8, &barrier).count(), 4);
 assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 ```
 
-### Performance
+## Performance
 
-#### Test setup
+### Test setup
 - OS: SUSE Linux Enterprise Server 15 SP1
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
 - RAM: 1TB
@@ -233,13 +233,13 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 - HashIndex<usize, usize, RandomState> = Default::default()
 - TreeIndex<usize, usize> = Default::default()
 
-#### Test data
+### Test data
 
 - Each thread is assigned a disjoint range of `usize` integers.
 - The performance test code asserts the expected outcome of each operation, and the post state of the container.
 - The number of records in the test data dedicated to a thread for [`HashMap`](#HashMap) tests is 128M, and 4M for [`HashIndex`](#HashIndex) and [`TreeIndex`](#TreeIndex) tests.
 
-#### Test workload: local
+### Test workload: local
 
 - Each test is run twice in a single process in order to minimize the effect of page faults as the overhead is unpredictable.
 - Insert: each thread inserts its own records.
@@ -248,49 +248,49 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 - Remove: each thread removes its own records from the container.
 - The read/scan/remove data is populated by the insert test.
 
-#### Test workload: local-remote
+### Test workload: local-remote
 
 - Insert, remove: each thread additionally tries to perform operations using records belonging to other threads.
 - Mixed: each thread performs insert-local -> insert-remote -> read-local -> read-remote -> remove-local -> remove-remote.
 - The target remote thread is randomly chosen.
 
-#### Test Results
+### Test Results
 
 - [`HashMap`](#HashMap)
 
-|         | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
-|---------|----------------|----------------|----------------|----------------|
-| InsertL | 134.519639194s | 165.001678899s | 231.081117542s | 351.286311763s |
-| ReadL   |  92.83194805s  | 104.560364479s | 114.468443191s | 124.8641862s   |
-| ScanL   |  42.086156353s | 108.655462554s | 229.909702447s | 474.113480956s |
-| RemoveL | 109.926310571s | 123.499814546s | 139.1093042s   | 154.684509984s |
-| InsertR | 249.260816589s | 301.757140479s | 399.315496693s | 598.363026383s |
-| MixedR  | 310.705241166s | 337.750491321s | 363.707265976s | 410.698464196s |
-| RemoveR | 208.355622788s | 226.59800359s  | 251.086396624s | 266.482387949s |
+|         | 11 threads     | 22 threads     | 44 threads     |
+|---------|----------------|----------------|----------------|
+| InsertL | 134.519639194s | 165.001678899s | 231.081117542s |
+| ReadL   |  92.83194805s  | 104.560364479s | 114.468443191s |
+| ScanL   |  42.086156353s | 108.655462554s | 229.909702447s |
+| RemoveL | 109.926310571s | 123.499814546s | 139.1093042s   |
+| InsertR | 249.260816589s | 301.757140479s | 399.315496693s |
+| MixedR  | 310.705241166s | 337.750491321s | 363.707265976s |
+| RemoveR | 208.355622788s | 226.59800359s  | 251.086396624s |
 
 - [`HashIndex`](#HashIndex)
 
-|         | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
-|---------|----------------|----------------|----------------|----------------|
-| InsertL | 134.519639194s | 165.001678899s | 231.081117542s | 351.286311763s |
-| ReadL   |  92.83194805s  | 104.560364479s | 114.468443191s | 124.8641862s   |
-| ScanL   |  42.086156353s | 108.655462554s | 229.909702447s | 474.113480956s |
-| RemoveL | 109.926310571s | 123.499814546s | 139.1093042s   | 154.684509984s |
-| InsertR | 249.260816589s | 301.757140479s | 399.315496693s | 598.363026383s |
-| MixedR  | 310.705241166s | 337.750491321s | 363.707265976s | 410.698464196s |
-| RemoveR | 208.355622788s | 226.59800359s  | 251.086396624s | 266.482387949s |
+|         | 11 threads     | 22 threads     | 44 threads     |
+|---------|----------------|----------------|----------------|
+| InsertL | 134.519639194s | 165.001678899s | 231.081117542s |
+| ReadL   |  92.83194805s  | 104.560364479s | 114.468443191s |
+| ScanL   |  42.086156353s | 108.655462554s | 229.909702447s |
+| RemoveL | 109.926310571s | 123.499814546s | 139.1093042s   |
+| InsertR | 249.260816589s | 301.757140479s | 399.315496693s |
+| MixedR  | 310.705241166s | 337.750491321s | 363.707265976s |
+| RemoveR | 208.355622788s | 226.59800359s  | 251.086396624s |
 
 - [`TreeIndex`](#TreeIndex)
 
-|         | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
-|---------|----------------|----------------|----------------|----------------|
-| InsertL | 134.519639194s | 165.001678899s | 231.081117542s | 351.286311763s |
-| ReadL   |  92.83194805s  | 104.560364479s | 114.468443191s | 124.8641862s   |
-| ScanL   |  42.086156353s | 108.655462554s | 229.909702447s | 474.113480956s |
-| RemoveL | 109.926310571s | 123.499814546s | 139.1093042s   | 154.684509984s |
-| InsertR | 249.260816589s | 301.757140479s | 399.315496693s | 598.363026383s |
-| MixedR  | 310.705241166s | 337.750491321s | 363.707265976s | 410.698464196s |
-| RemoveR | 208.355622788s | 226.59800359s  | 251.086396624s | 266.482387949s |
+|         | 11 threads     | 22 threads     | 44 threads     |
+|---------|----------------|----------------|----------------|
+| InsertL | 134.519639194s | 165.001678899s | 231.081117542s |
+| ReadL   |  92.83194805s  | 104.560364479s | 114.468443191s |
+| ScanL   |  42.086156353s | 108.655462554s | 229.909702447s |
+| RemoveL | 109.926310571s | 123.499814546s | 139.1093042s   |
+| InsertR | 249.260816589s | 301.757140479s | 399.315496693s |
+| MixedR  | 310.705241166s | 337.750491321s | 363.707265976s |
+| RemoveR | 208.355622788s | 226.59800359s  | 251.086396624s |
 
 ## Changelog
 

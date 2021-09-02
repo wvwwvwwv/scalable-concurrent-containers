@@ -17,9 +17,9 @@ const DEFAULT_CAPACITY: usize = 64;
 /// [`HashMap`] is a concurrent hash map data structure that is targeted at a highly concurrent
 /// workload. The use of an epoch-based reclamation technique enables the data structure to
 /// implement non-blocking resizing and fine-granular locking. It has a single array of entry
-/// metadata, and each entry, called [`Cell`], manages a fixed size entry array.
-/// Each [`Cell`] has a customized 8-byte read-write mutex to protect the data structure, and a
-/// linked list for a hash collision resolution.
+/// metadata, and each entry, called `Cell`, manages a fixed size entry array. Each `Cell` has
+/// a customized 8-byte read-write mutex to protect the data structure, and a linked list for a
+/// hash collision resolution.
 ///
 /// ## The key features of [`HashMap`]
 /// * Non-sharded: the data is managed by a single entry metadata array.
@@ -28,15 +28,14 @@ const DEFAULT_CAPACITY: usize = 64;
 /// * Incremental resizing: each access to the data structure is mandated to rehash a fixed
 ///   number of key-value pairs.
 /// * Optimized resizing: key-value pairs managed by a single cell are guaranteed to be
-///   relocated to consecutive [`Cell`](crate::common::cell::Cell) instances.
+///   relocated to consecutive `Cell` instances.
 /// * No busy waiting: the customized mutex never spins.
 ///
 /// ## The key statistics for [`HashMap`]
 /// * The expected size of metadata for a single key-value pair: 2-byte.
 /// * The expected number of atomic operations required for an operation on a single key: 2.
 /// * The expected number of atomic variables accessed during a single key operation: 1.
-/// * The number of entries managed by a single metadata [`Cell`](crate::common::cell::Cell)
-///   without a linked list: 32.
+/// * The number of entries managed by a single metadata `Cell` without a linked list: 32.
 /// * The number of entries a single linked list entry manages: 8.
 /// * The expected maximum linked list length when resize is triggered: log(capacity) / 8.
 pub struct HashMap<K, V, H = RandomState>
