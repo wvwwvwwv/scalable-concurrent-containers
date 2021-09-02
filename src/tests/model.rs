@@ -45,8 +45,8 @@ mod ebr_model {
                     2 => 4,
                     _ => 0,
                 };
-                epoch.store(new, Relaxed);
                 fence(SeqCst);
+                epoch.store(new, Relaxed);
                 self.announcement.store(new, Relaxed);
                 self.epoch_updated(ptr);
             }

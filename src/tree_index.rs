@@ -53,7 +53,7 @@ where
     ///
     /// let treeindex: TreeIndex<u64, u32> = Default::default();
     ///
-    /// assert!(treeindex.read(&1, |key, value| *value).is_none());
+    /// assert!(treeindex.read(&1, |_, v| *v).is_none());
     /// ```
     fn default() -> Self {
         TreeIndex::new()
@@ -74,7 +74,7 @@ where
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
-    /// assert!(treeindex.read(&1, |key, value| *value).is_none());
+    /// assert!(treeindex.read(&1, |_, v| *v).is_none());
     /// ```
     pub fn new() -> TreeIndex<K, V> {
         TreeIndex {
@@ -93,7 +93,7 @@ where
     ///
     /// assert!(treeindex.insert(1, 10).is_ok());
     /// assert_eq!(treeindex.insert(1, 11).err().unwrap(), (1, 11));
-    /// assert_eq!(treeindex.read(&1, |key, value| *value).unwrap(), 10);
+    /// assert_eq!(treeindex.read(&1, |k, v| *v).unwrap(), 10);
     /// ```
     #[inline]
     pub fn insert(&self, mut key: K, mut value: V) -> Result<(), (K, V)> {
@@ -186,9 +186,9 @@ where
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
-    /// assert!(treeindex.read(&1, |key, value| *value).is_none());
+    /// assert!(treeindex.read(&1, |k, v| *v).is_none());
     /// assert!(treeindex.insert(1, 10).is_ok());
-    /// assert_eq!(treeindex.read(&1, |key, value| *value).unwrap(), 10);
+    /// assert_eq!(treeindex.read(&1, |k, v| *v).unwrap(), 10);
     /// ```
     #[inline]
     pub fn read<Q, R, F: FnOnce(&Q, &V) -> R>(&self, key_ref: &Q, f: F) -> Option<R>

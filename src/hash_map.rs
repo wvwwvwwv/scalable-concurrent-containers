@@ -455,7 +455,7 @@ where
     /// assert!(hashmap.insert(2, 1).is_ok());
     /// assert!(hashmap.insert(3, 2).is_ok());
     ///
-    /// assert_eq!(hashmap.retain(|key, value| *key == 1 && *value == 0), (1, 2));
+    /// assert_eq!(hashmap.retain(|k, v| *k == 1 && *v == 0), (1, 2));
     /// ```
     pub fn retain<F: FnMut(&K, &mut V) -> bool>(&self, mut filter: F) -> (usize, usize) {
         let mut retained_entries = 0;

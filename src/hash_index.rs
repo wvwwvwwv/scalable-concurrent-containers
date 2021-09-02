@@ -294,8 +294,8 @@ where
         while let Some(current_array_ref) = current_array_ptr.as_ref() {
             if !current_array_ref.old_array(&barrier).is_null() {
                 while !current_array_ref.partial_rehash(
-                    |key| self.hash(key),
-                    |key, value| Some((key.clone(), value.clone())),
+                    |k| self.hash(k),
+                    |k, v| Some((k.clone(), v.clone())),
                     &barrier,
                 ) {
                     current_array_ptr = self.array.load(Acquire, &barrier);

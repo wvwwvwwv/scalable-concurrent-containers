@@ -1,3 +1,8 @@
+<p align="center">
+    <img src="https://img.shields.io/crates/v/scc?style=for-the-badge">
+    <img src="https://img.shields.io/github/workflow/status/wvwwvwwv/scalable-concurrent-containers/SCC?style=for-the-badge">
+</p>
+
 # Scalable Concurrent Containers
 
 A collection of concurrent data structures and building blocks for concurrent programming.
@@ -66,7 +71,7 @@ assert_eq!(*ptr.as_ref().unwrap(), 17);
 
 ## HashMap
 
-`HashMap` is a scalable in-memory unique key-value store that is targeted at highly concurrent heavy workloads. It applies [`EBR`](#EBR) to its entry array management, thus allowing it to reduce the number of locks and avoid data sharding.
+[`HashMap`](#HashMap) is a scalable in-memory unique key-value store that is targeted at highly concurrent heavy workloads. It applies [`EBR`](#EBR) to its entry array management, thus allowing it to reduce the number of locks and avoid data sharding.
 
 ### Examples
 
@@ -123,7 +128,7 @@ assert_eq!(hashmap.retain(|key, value| *key == 1 && *value == 0), (1, 2));
 
 ## HashIndex
 
-`HashIndex` is a read-optimized version of [`HashMap`](#HashMap). It applies [`EBR`](#EBR) to its entry management as well, enabling it to perform read operations without acquiring locks.
+[`HashIndex`](#HashIndex) is a read-optimized version of [`HashMap`](#HashMap). It applies [`EBR`](#EBR) to its entry management as well, enabling it to perform read operations without acquiring locks.
 
 ### Examples
 
@@ -138,7 +143,7 @@ assert!(hashindex.insert(1, 0).is_ok());
 assert_eq!(hashindex.read(&1, |_, v| *v).unwrap(), 0);
 ```
 
-An `Iterator` is implemented for `HashIndex`, because entry references can survive as long as the supplied `ebr::Barrier` survives.
+An [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is implemented for [`HashIndex`](#HashIndex), because entry references can survive as long as the supplied `ebr::Barrier` survives.
 
 ```rust
 use scc::ebr::Barrier;
@@ -165,7 +170,7 @@ assert_eq!(entry_ref, (&1, &0));
 
 ## TreeIndex
 
-`TreeIndex` is a B+ tree variant optimized for read operations. The `ebr` module enables it to implement lock-free read and scan methods.
+[`TreeIndex`](#TreeIndex) is a B+ tree variant optimized for read operations. The `ebr` module enables it to implement lock-free read and scan methods.
 
 ### Examples
 
