@@ -258,9 +258,9 @@ mod benchmark {
         T: 'static + ConvertFromUsize + Clone + Eq + Hash + Ord + Send + Sync + Unpin,
     >(
         workload_size: usize,
+        num_threads: Vec<usize>,
     ) {
-        let num_threads_vector = vec![1, 4, 16];
-        for num_threads in num_threads_vector {
+        for num_threads in num_threads {
             let hashmap: Arc<HashMap<usize, usize, RandomState>> = Arc::new(Default::default());
 
             // 1. insert-local
@@ -404,9 +404,9 @@ mod benchmark {
         T: 'static + ConvertFromUsize + Clone + Eq + Hash + Ord + Send + Sync + Unpin,
     >(
         workload_size: usize,
+        num_threads: Vec<usize>,
     ) {
-        let num_threads_vector = vec![1, 4, 16];
-        for num_threads in num_threads_vector {
+        for num_threads in num_threads {
             let hashindex: Arc<HashIndex<T, T, RandomState>> = Arc::new(Default::default());
 
             // 1. insert-local
@@ -550,9 +550,9 @@ mod benchmark {
         T: 'static + ConvertFromUsize + Clone + Hash + Ord + Send + Sync + Unpin,
     >(
         workload_size: usize,
+        num_threads: Vec<usize>,
     ) {
-        let num_threads_vector = vec![1, 4, 16];
-        for num_threads in num_threads_vector {
+        for num_threads in num_threads {
             let treeindex: Arc<TreeIndex<T, T>> = Arc::new(Default::default());
 
             // 1. insert-local
@@ -695,32 +695,20 @@ mod benchmark {
     }
 
     #[test]
-    fn hashmap_benchmark_string() {
-        hashmap_benchmark::<String>(16384);
-    }
-
-    #[test]
-    fn hashmap_benchmark_usize() {
-        hashmap_benchmark::<usize>(65536);
+    fn hashmap_benchmarks() {
+        hashmap_benchmark::<String>(16384, vec![1, 2, 4]);
+        hashmap_benchmark::<usize>(65536, vec![1, 2, 4]);
     }
 
     #[test]
     fn hashindex_benchmark_string() {
-        hashindex_benchmark::<String>(16384);
-    }
-
-    #[test]
-    fn hashindex_benchmark_usize() {
-        hashindex_benchmark::<usize>(65536);
+        hashindex_benchmark::<String>(16384, vec![1, 2, 4]);
+        hashindex_benchmark::<usize>(65536, vec![1, 2, 4]);
     }
 
     #[test]
     fn treeindex_benchmark_string() {
-        treeindex_benchmark::<String>(16384);
-    }
-
-    #[test]
-    fn treeindex_benchmark_usize() {
-        treeindex_benchmark::<usize>(65536);
+        treeindex_benchmark::<String>(16384, vec![1, 2, 4]);
+        treeindex_benchmark::<usize>(65536, vec![1, 2, 4]);
     }
 }

@@ -395,6 +395,7 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'b, K, V
     }
 
     /// Inserts a new key-value pair into the [`Cell`] without a uniqueness check.
+    #[inline]
     pub fn insert(&'b self, key: K, value: V, partial_hash: u8, barrier: &'b Barrier) {
         debug_assert!(!self.killed);
 
@@ -422,7 +423,7 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> CellLocker<'b, K, V
             data_array_ptr = data_array_ref.link.load(Relaxed, barrier);
         }
 
-        if free_index < SIZE {
+        if free_index != SIZE {
             let data_array_ref = data_array_ptr.as_ref().unwrap();
             unsafe {
                 let data_array_mut_ref = &mut *(data_array_ref as *const DataArray<K, V, SIZE>

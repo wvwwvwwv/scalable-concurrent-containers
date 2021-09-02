@@ -26,6 +26,16 @@ where
         let mut h = self.hasher().build_hasher();
         key.hash(&mut h);
         let hash = h.finish();
+
+        /*
+            // Bitmix: https://mostlymangling.blogspot.com/2019/01/better-stronger-mixer-and-test-procedure.html
+            hash = hash ^ (hash.rotate_right(25) ^ hash.rotate_right(50));
+            hash = hash.overflowing_mul(0xA24BAED4963EE407u64).0;
+            hash = hash ^ (hash.rotate_right(24) ^ hash.rotate_right(49));
+            hash = hash.overflowing_mul(0x9FB21C651E98DF25u64).0;
+            hash = hash ^ (hash >> 28);
+        */
+
         (hash, (hash & ((1 << 8) - 1)).try_into().unwrap())
     }
 
@@ -81,6 +91,7 @@ where
     }
 
     /// Inserts an entry into the [`HashTable`].
+    #[inline]
     fn insert_entry(&self, key: K, val: V) -> Result<(), (K, V)> {
         let (hash, partial_hash) = self.hash(&key);
         let barrier = Barrier::new();

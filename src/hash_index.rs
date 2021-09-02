@@ -266,6 +266,7 @@ where
     /// assert!(hashindex.insert(1, 0).is_ok());
     /// assert!(hashindex.contains(&1));
     /// ```
+    #[inline]
     pub fn contains<Q>(&self, key: &Q) -> bool
     where
         K: Borrow<Q>,
@@ -334,6 +335,7 @@ where
     /// assert!(hashindex.insert(1, 0).is_ok());
     /// assert_eq!(hashindex.len(), 1);
     /// ```
+    #[inline]
     pub fn len(&self) -> usize {
         self.num_entries(&Barrier::new())
     }
@@ -348,6 +350,7 @@ where
     /// let hashindex: HashIndex<u64, u32, RandomState> = HashIndex::new(1000000, RandomState::new());
     /// assert_eq!(hashindex.capacity(), 1048576);
     /// ```
+    #[inline]
     pub fn capacity(&self) -> usize {
         self.num_slots(&Barrier::new())
     }

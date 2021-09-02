@@ -9,7 +9,7 @@ A collection of concurrent data structures and building blocks for concurrent pr
 
 ## EBR
 
-The `ebr` module implements epoch-based reclamation and various types of auxiliary data structures to make use of it. Its epoch-based reclamation algorithm is similar to [crossbeam_epoch](https://docs.rs/crossbeam-epoch/), however users may find it easier to use as the lifetime of an instance is automatically managed. For instance, `ebr::AtomicArc` and `ebr::Arc` hold a strong reference to the underlying instance, and the instance is passed to the garbage collector when the reference count drops to zero.
+The `ebr` module implements epoch-based reclamation and various types of auxiliary data structures to make use of it. Its epoch-based reclamation algorithm is similar to that implemented in [crossbeam_epoch](https://docs.rs/crossbeam-epoch/), however users may find it easier to use as the lifetime of an instance is automatically managed. For instance, `ebr::AtomicArc` and `ebr::Arc` hold a strong reference to the underlying instance, and the instance is passed to the garbage collector when the reference count drops to zero.
 
 ### Examples
 
@@ -96,7 +96,7 @@ hashmap.upsert(1, || 2, |_, v| *v = 3);
 assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 3);
 ```
 
-Iteration over all the key-value pairs in a `HashMap` requires an `ebr::Barrier`, and all the references derived from it cannot outlive the `ebr::Barrier`, therefore `Iterator` is not implemented. Instead, it provides two methods that enable it to iterate over entries.
+There is no method to confine the lifetime of references derived from an [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) to the [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html), and it is illegal for them to live as long as the [`HashMap`](#HashMap) due to the lack of global lock inside it. Therefore [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, it provides two methods that enable a [`HashMap`](#HashMap) to iterate over its entries: `for_each`, and `retain`.
 
 ```rust
 use scc::HashMap;
@@ -111,7 +111,7 @@ let mut acc = 0;
 hashmap.for_each(|k, v_mut| { acc += *k; *v_mut = 2; });
 assert_eq!(acc, 3);
 
-// `for_each` can modify the value field of an entry.
+// `for_each` can modify the entries.
 assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
 assert_eq!(hashmap.read(&2, |_, v| *v).unwrap(), 2);
 

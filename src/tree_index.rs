@@ -95,6 +95,7 @@ where
     /// assert_eq!(treeindex.insert(1, 11).err().unwrap(), (1, 11));
     /// assert_eq!(treeindex.read(&1, |key, value| *value).unwrap(), 10);
     /// ```
+    #[inline]
     pub fn insert(&self, mut key: K, mut value: V) -> Result<(), (K, V)> {
         let barrier = Barrier::new();
         let mut root_ptr = self.root.load(Acquire, &barrier);
@@ -142,6 +143,7 @@ where
     /// assert!(treeindex.insert(1, 10).is_ok());
     /// assert!(treeindex.remove(&1));
     /// ```
+    #[inline]
     pub fn remove<Q>(&self, key_ref: &Q) -> bool
     where
         K: Borrow<Q>,
@@ -188,6 +190,7 @@ where
     /// assert!(treeindex.insert(1, 10).is_ok());
     /// assert_eq!(treeindex.read(&1, |key, value| *value).unwrap(), 10);
     /// ```
+    #[inline]
     pub fn read<Q, R, F: FnOnce(&Q, &V) -> R>(&self, key_ref: &Q, f: F) -> Option<R>
     where
         K: Borrow<Q>,
@@ -234,6 +237,7 @@ where
     ///
     /// assert_eq!(treeindex.len(), 0);
     /// ```
+    #[inline]
     pub fn clear(&self) {
         Node::remove_root(&self.root, false, &Barrier::new());
     }
@@ -255,6 +259,7 @@ where
     ///
     /// assert_eq!(treeindex.len(), 16);
     /// ```
+    #[inline]
     pub fn len(&self) -> usize {
         let barrier = Barrier::new();
         self.iter(&barrier).count()
@@ -276,6 +281,7 @@ where
     ///
     /// assert_eq!(treeindex.depth(), 1);
     /// ```
+    #[inline]
     pub fn depth(&self) -> usize {
         let barrier = Barrier::new();
         if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
@@ -309,6 +315,7 @@ where
     /// assert_eq!(scanner.next().unwrap(), (&3, &13));
     /// assert!(scanner.next().is_none());
     /// ```
+    #[inline]
     pub fn iter<'t, 'b>(&'t self, barrier: &'b Barrier) -> Scanner<'t, 'b, K, V> {
         Scanner::new(self, barrier)
     }
@@ -333,6 +340,7 @@ where
     /// assert_eq!(treeindex.range(4..8, &barrier).count(), 4);
     /// assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
     /// ```
+    #[inline]
     pub fn range<'t, 'b, R: RangeBounds<K>>(
         &'t self,
         range: R,
