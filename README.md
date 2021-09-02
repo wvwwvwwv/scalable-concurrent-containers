@@ -121,48 +121,6 @@ assert!(hashmap.insert(3, 2).is_ok());
 assert_eq!(hashmap.retain(|key, value| *key == 1 && *value == 0), (1, 2));
 ```
 
-### Performance
-
-#### Test setup
-- OS: SUSE Linux Enterprise Server 15 SP1
-- CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
-- RAM: 1TB
-- Rust: 1.50.0
-- SCC: 0.4.11
-- HashMap<usize, usize, RandomState> = Default::default()
-
-#### Test data
-- Each thread is assigned a disjoint range of u64 integers.
-- The entropy of the test input is low, however it does not undermine the test result as scc::HashMap shuffles the hash value to maximize entropy.
-- The performance test code asserts the expected outcome of each operation, and the post state of the hash map instance.
-
-#### Test workload: local
-- Each test is run twice in a single process in order to minimize the effect of page faults as the overhead is unpredictable.
-- Insert: each thread inserts 128M records.
-- Read: each thread reads 128M records.
-- Scan: each thread scans the entire hash map once.
-- Remove: each thread removes 128M records.
-- The read/scan/remove data is populated by the insert test.
-
-|        | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
-|--------|----------------|----------------|----------------|----------------|
-| Insert | 134.519639194s | 165.001678899s | 231.081117542s | 351.286311763s |
-| Read   |  92.83194805s  | 104.560364479s | 114.468443191s | 124.8641862s   |
-| Scan   |  42.086156353s | 108.655462554s | 229.909702447s | 474.113480956s |
-| Remove | 109.926310571s | 123.499814546s | 139.1093042s   | 154.684509984s |
-
-#### Test workload: local-remote
-- Insert, remove: each thread additionally tries to perform operations using keys belonging to other threads.
-- Mixed: each thread performs 128M insert-local -> insert-remote -> read-local -> read-remote -> remove-local -> remove-remote.
-- The data for mixed/remove tests is populated by the insert test.
-- The target remote thread is randomly chosen.
-
-|        | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
-|--------|----------------|----------------|----------------|----------------|
-| Insert | 249.260816589s | 301.757140479s | 399.315496693s | 598.363026383s |
-| Mixed  | 310.705241166s | 337.750491321s | 363.707265976s | 410.698464196s |
-| Remove | 208.355622788s | 226.59800359s  | 251.086396624s | 266.482387949s |
-
 ## HashIndex
 
 `HashIndex` is a read-optimized version of [`HashMap`](#HashMap). It applies [`EBR`](#EBR) to its entry management as well, enabling it to perform read operations without acquiring locks.
@@ -204,35 +162,6 @@ drop(hashindex);
 // The entry can be read after `hashindex` is dropped.
 assert_eq!(entry_ref, (&1, &0));
 ```
-
-### Performance
-
-#### Test setup
-- OS: SUSE Linux Enterprise Server 15 SP1
-- CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
-- RAM: 1TB
-- Rust: 1.50.0
-- SCC: 0.4.11
-- HashIndex<String, String, RandomState> = Default::default()
-
-#### Test data
-- Each thread is assigned a disjoint range of u64 integers, and each u64 integer is converted into a String.
-- The performance test code asserts the expected outcome of each operation, and the post state of the hash index instance.
-
-#### Test workload
-- Each test is run twice in a single process in order to minimize the effect of page faults as the overhead is unpredictable.
-- Insert: each thread inserts 16M records.
-- Read: each thread reads 16M records.
-- Scan: each thread scans the entire hash index once.
-- Remove: each thread removes 16M records.
-- The read/scan/remove data is populated by the insert test.
-
-|        | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
-|--------|----------------|----------------|----------------|----------------|
-| Insert |  89.015914443s | 116.402345094s | 143.86420979s  | 223.296876115s |
-| Read   |  18.975302649s |  19.858082662s |  20.862552983s |  22.646245396s |
-| Scan   |   3.640621149s |   7.327157641s |  15.847438364s |  31.771622377s |
-| Remove |  69.259331734s |  82.053630018s |  98.725056905s | 109.829727509s |
 
 ## TreeIndex
 
@@ -298,29 +227,70 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 - OS: SUSE Linux Enterprise Server 15 SP1
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
 - RAM: 1TB
-- Rust: 1.51.0
-- SCC: 0.4.12
-- TreeIndex<String, String> = Default::default()
+- Rust: 1.54.0
+- SCC: 0.5.0
+- HashMap<usize, usize, RandomState> = Default::default()
+- HashIndex<usize, usize, RandomState> = Default::default()
+- TreeIndex<usize, usize> = Default::default()
 
 #### Test data
 
-- Each thread is assigned a disjoint range of u64 integers, and each u64 integer is converted into a String.
-- The performance test code asserts the expected outcome of each operation, and the post state of the tree index instance.
+- Each thread is assigned a disjoint range of `usize` integers.
+- The performance test code asserts the expected outcome of each operation, and the post state of the container.
+- The number of records in the test data dedicated to a thread for [`HashMap`](#HashMap) tests is 128M, and 4M for [`HashIndex`](#HashIndex) and [`TreeIndex`](#TreeIndex) tests.
 
-#### Test workload
+#### Test workload: local
+
 - Each test is run twice in a single process in order to minimize the effect of page faults as the overhead is unpredictable.
-- Insert: each thread inserts 16M records.
-- Read: each thread reads 16M records.
-- Scan: each thread scans the entire tree index once.
-- Remove: each thread removes 16M records.
+- Insert: each thread inserts its own records.
+- Read: each thread reads its own records in the container.
+- Scan: each thread scans the entire container once.
+- Remove: each thread removes its own records from the container.
 - The read/scan/remove data is populated by the insert test.
 
-|        | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
-|--------|----------------|----------------|----------------|----------------|
-| Insert |  75.312037299s |  75.9613236s   |  73.590353581s |  79.835608473s |
-| Read   |  26.027856123s |  28.522993002s |  32.284400279s |  33.907327607s |
-| Scan   |  17.745212214s |  34.334674985s |  67.668828349s | 135.802180234s |
-| Remove |  82.458748986s | 112.610040412s | 164.552950283s | 135.285141432s |
+#### Test workload: local-remote
+
+- Insert, remove: each thread additionally tries to perform operations using records belonging to other threads.
+- Mixed: each thread performs insert-local -> insert-remote -> read-local -> read-remote -> remove-local -> remove-remote.
+- The target remote thread is randomly chosen.
+
+#### Test Results
+
+- [`HashMap`](#HashMap)
+
+|         | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
+|---------|----------------|----------------|----------------|----------------|
+| InsertL | 134.519639194s | 165.001678899s | 231.081117542s | 351.286311763s |
+| ReadL   |  92.83194805s  | 104.560364479s | 114.468443191s | 124.8641862s   |
+| ScanL   |  42.086156353s | 108.655462554s | 229.909702447s | 474.113480956s |
+| RemoveL | 109.926310571s | 123.499814546s | 139.1093042s   | 154.684509984s |
+| InsertR | 249.260816589s | 301.757140479s | 399.315496693s | 598.363026383s |
+| MixedR  | 310.705241166s | 337.750491321s | 363.707265976s | 410.698464196s |
+| RemoveR | 208.355622788s | 226.59800359s  | 251.086396624s | 266.482387949s |
+
+- [`HashIndex`](#HashIndex)
+
+|         | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
+|---------|----------------|----------------|----------------|----------------|
+| InsertL | 134.519639194s | 165.001678899s | 231.081117542s | 351.286311763s |
+| ReadL   |  92.83194805s  | 104.560364479s | 114.468443191s | 124.8641862s   |
+| ScanL   |  42.086156353s | 108.655462554s | 229.909702447s | 474.113480956s |
+| RemoveL | 109.926310571s | 123.499814546s | 139.1093042s   | 154.684509984s |
+| InsertR | 249.260816589s | 301.757140479s | 399.315496693s | 598.363026383s |
+| MixedR  | 310.705241166s | 337.750491321s | 363.707265976s | 410.698464196s |
+| RemoveR | 208.355622788s | 226.59800359s  | 251.086396624s | 266.482387949s |
+
+- [`TreeIndex`](#TreeIndex)
+
+|         | 11 threads     | 22 threads     | 44 threads     | 88 threads     |
+|---------|----------------|----------------|----------------|----------------|
+| InsertL | 134.519639194s | 165.001678899s | 231.081117542s | 351.286311763s |
+| ReadL   |  92.83194805s  | 104.560364479s | 114.468443191s | 124.8641862s   |
+| ScanL   |  42.086156353s | 108.655462554s | 229.909702447s | 474.113480956s |
+| RemoveL | 109.926310571s | 123.499814546s | 139.1093042s   | 154.684509984s |
+| InsertR | 249.260816589s | 301.757140479s | 399.315496693s | 598.363026383s |
+| MixedR  | 310.705241166s | 337.750491321s | 363.707265976s | 410.698464196s |
+| RemoveR | 208.355622788s | 226.59800359s  | 251.086396624s | 266.482387949s |
 
 ## Changelog
 
