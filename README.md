@@ -13,6 +13,8 @@ The `ebr` module implements epoch-based reclamation and various types of auxilia
 
 ### Examples
 
+The `ebr` module can be used without relying on `unsafe` blocks.
+
 ```rust
 use scc::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 use std::sync::atomic::Ordering::Relaxed;
@@ -234,13 +236,14 @@ assert_eq!(entry_ref, (&1, &0));
 
 ## TreeIndex
 
-`TreeIndex` is an order-8 B+ tree variant optimized for read operations. The `ebr` module enables it to implement lock-free read and scan methods.
+`TreeIndex` is an order-12 B+ tree variant optimized for read operations. The `ebr` module enables it to implement lock-free read and scan methods.
 
 ### Examples
 
 ```rust
 use scc::ebr::Barrier;
 use scc::TreeIndex;
+
 let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
 for i in 0..10 {
     let result = treeindex.insert(i, 10);
@@ -296,13 +299,8 @@ assert_eq!(scanned, 5);
 
 ## Changelog
 
-#### 0.4.15
-API and code cleanup
-#### 0.4.14
-API enhancement: #41, HashMap::book -> HashMap::reserve
-#### 0.4.13
-API enhancement: #40
+#### 0.5.0
 
-## Milestones <a name="milestones"></a>
+* Own EBR implementation.
+* API changes.
 
-[Milestones](https://github.com/wvwwvwwv/scalable-concurrent-containers/milestones)
