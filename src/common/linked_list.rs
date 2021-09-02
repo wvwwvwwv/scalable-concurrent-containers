@@ -111,11 +111,12 @@ pub trait LinkedList: 'static + Sized {
                 ),
                 Release,
             );
+            self.backward_link().swap((None, Tag::First), Relaxed);
         } else if let Some(next_entry_locker) = lockers.0.as_mut() {
             next_entry_locker
                 .entry
                 .backward_link()
-                .swap((prev_entry_ptr.try_into_arc(), Tag::First), Relaxed);
+                .swap((None, Tag::First), Relaxed);
         }
     }
 }
@@ -131,8 +132,8 @@ impl<'b, T: LinkedList> LinkedListLocker<'b, T> {
         let mut current_ptr = entry.backward_link().load(Relaxed, barrier);
         loop {
             if current_ptr.tag() == Tag::First {
-                current_ptr = entry.backward_link().load(Relaxed, barrier);
                 std::thread::yield_now();
+                current_ptr = entry.backward_link().load(Relaxed, barrier);
                 continue;
             }
             if let Err((_, actual)) = entry.backward_link().compare_exchange(
@@ -181,8 +182,8 @@ impl<'b, T: LinkedList> LinkedListLocker<'b, T> {
             loop {
                 if current_ptr.tag() == Tag::First {
                     // Currently, locked.
-                    current_ptr = entry.backward_link().load(Acquire, barrier);
                     std::thread::yield_now();
+                    current_ptr = entry.backward_link().load(Acquire, barrier);
                     continue;
                 }
                 if next_entry_ptr != entry.forward_link().load(Relaxed, barrier) {
