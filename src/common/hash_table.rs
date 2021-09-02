@@ -1,4 +1,4 @@
-use super::cell::{CellIterator, CellLocker, CellReader};
+use super::cell::{Reader, EntryIterator, Locker};
 use super::cell_array::CellArray;
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
@@ -126,14 +126,13 @@ where
                     if let Some(entry) = cell_ref.search(key_ref, partial_hash, &barrier) {
                         return Some(reader(&entry.0, &entry.1));
                     }
-                } else {
-                    if let Some(locker) = CellReader::lock(old_array_ref.cell(cell_index), &barrier)
+                } else if let Some(locker) =
+                    Reader::lock(old_array_ref.cell(cell_index), &barrier)
+                {
+                    if let Some((key, value)) =
+                        locker.cell_ref().search(key_ref, partial_hash, &barrier)
                     {
-                        if let Some((key, value)) =
-                            locker.cell_ref().search(key_ref, partial_hash, &barrier)
-                        {
-                            return Some(reader(&key, value));
-                        }
+                        return Some(reader(key, value));
                     }
                 }
             }
@@ -143,14 +142,13 @@ where
                 if let Some(entry) = cell_ref.search(key_ref, partial_hash, &barrier) {
                     return Some(reader(&entry.0, &entry.1));
                 }
-            } else {
-                if let Some(locker) = CellReader::lock(current_array_ref.cell(cell_index), &barrier)
+            } else if let Some(locker) =
+                Reader::lock(current_array_ref.cell(cell_index), &barrier)
+            {
+                if let Some((key, value)) =
+                    locker.cell_ref().search(key_ref, partial_hash, &barrier)
                 {
-                    if let Some((key, value)) =
-                        locker.cell_ref().search(key_ref, partial_hash, &barrier)
-                    {
-                        return Some(reader(&key, value));
-                    }
+                    return Some(reader(key, value));
                 }
             }
             let new_current_array_ptr = self.cell_array().load(Acquire, &barrier);
@@ -163,10 +161,10 @@ where
         None
     }
 
-    /// Acquires a [`CellLocker`] and [`CellIterator`].
+    /// Acquires a [`Locker`] and [`EntryIterator`].
     ///
-    /// In case it successfully found the key, it returns a [`CellIterator`]. Not returning a
-    /// [`CellIterator`] means that the key does not exist.
+    /// In case it successfully found the key, it returns a [`EntryIterator`]. Not returning a
+    /// [`EntryIterator`] means that the key does not exist.
     fn acquire<'h, 'b, Q>(
         &'h self,
         key_ref: &Q,
@@ -175,8 +173,8 @@ where
         barrier: &'b Barrier,
     ) -> (
         usize,
-        CellLocker<'b, K, V, CELL_SIZE, LOCK_FREE>,
-        Option<CellIterator<'b, K, V, CELL_SIZE, LOCK_FREE>>,
+        Locker<'b, K, V, CELL_SIZE, LOCK_FREE>,
+        Option<EntryIterator<'b, K, V, CELL_SIZE, LOCK_FREE>>,
     )
     where
         K: Borrow<Q>,
@@ -198,16 +196,15 @@ where
         //    If the array is deprecated while inserting the key, it falls into case 1.
         loop {
             // An acquire fence is required to correctly load the contents of the array.
-            let current_array_ptr = self.cell_array().load(Acquire, &barrier);
+            let current_array_ptr = self.cell_array().load(Acquire, barrier);
             let current_array_ref = current_array_ptr.as_ref().unwrap();
-            let old_array_ptr = current_array_ref.old_array(&barrier);
+            let old_array_ptr = current_array_ref.old_array(barrier);
             if let Some(old_array_ref) = old_array_ptr.as_ref() {
-                if current_array_ref.partial_rehash(|key| self.hash(key), &Self::copier, &barrier) {
+                if current_array_ref.partial_rehash(|key| self.hash(key), &Self::copier, barrier) {
                     continue;
                 }
                 let cell_index = old_array_ref.calculate_cell_index(hash);
-                if let Some(mut locker) = CellLocker::lock(old_array_ref.cell(cell_index), barrier)
-                {
+                if let Some(mut locker) = Locker::lock(old_array_ref.cell(cell_index), barrier) {
                     if let Some(iterator) = locker.cell_ref().get(key_ref, partial_hash, barrier) {
                         return (cell_index, locker, Some(iterator));
                     }
@@ -218,7 +215,7 @@ where
                         cell_index,
                         &|key| self.hash(key),
                         &Self::copier,
-                        &barrier,
+                        barrier,
                     );
                 }
             }
@@ -245,7 +242,7 @@ where
                 continue;
             }
 
-            if let Some(locker) = CellLocker::lock(current_array_ref.cell(cell_index), barrier) {
+            if let Some(locker) = Locker::lock(current_array_ref.cell(cell_index), barrier) {
                 if let Some(iterator) = locker.cell_ref().get(key_ref, partial_hash, barrier) {
                     return (cell_index, locker, Some(iterator));
                 }
@@ -261,7 +258,7 @@ where
         // Initial rough size estimation using a small number of cells.
         let current_array_ptr = self.cell_array().load(Acquire, barrier);
         let current_array_ref = current_array_ptr.as_ref().unwrap();
-        let old_array = current_array_ref.old_array(&barrier);
+        let old_array = current_array_ref.old_array(barrier);
         if !old_array.is_null() {
             // With a deprecated array present, it cannot be resized.
             return;
@@ -284,7 +281,7 @@ where
             let num_cells_to_sample = (num_cells / 8).max(2).min(4096);
             let estimated_num_entries = Self::estimate(current_array_ref, num_cells_to_sample);
             let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
-                let max_capacity = 1usize << (std::mem::size_of::<usize>() * 8 - 1);
+                let max_capacity = 1_usize << (std::mem::size_of::<usize>() * 8 - 1);
                 if capacity == max_capacity {
                     // Do not resize if the capacity cannot be increased.
                     capacity

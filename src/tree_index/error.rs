@@ -1,4 +1,6 @@
-/// InsertError types.
+#![allow(clippy::module_name_repetitions)]
+
+/// [`InsertError`] types.
 pub enum InsertError<K, V>
 where
     K: Clone + Ord + Send + Sync,
@@ -12,7 +14,7 @@ where
     Retry((K, V)),
 }
 
-/// RemoveError types.
+/// [`RemoveError`] types.
 ///
 /// The boolean value tagged to the error code indicates that the target entry has been removed.
 pub enum RemoveError {
@@ -22,7 +24,7 @@ pub enum RemoveError {
     Retry(bool),
 }
 
-/// SearchError types.
+/// [`SearchError`] types.
 pub enum SearchError {
     /// Empty: the tree, node, or leaf is empty.
     Empty,

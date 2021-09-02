@@ -1,4 +1,6 @@
-use crate::common::cell::{CellIterator, CellLocker};
+//! [`HashIndex`] implementation.
+
+use crate::common::cell::{Locker, EntryIterator};
 use crate::common::cell_array::CellArray;
 use crate::common::hash_table::HashTable;
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
@@ -50,7 +52,7 @@ where
 {
     /// Creates a [`HashIndex`] with the default parameters.
     ///
-    /// The default hash builder is RandomState, and the default capacity is `64`.
+    /// The default hash builder is [`RandomState`], and the default capacity is `64`.
     ///
     /// # Panics
     ///
@@ -193,7 +195,7 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let (hash, partial_hash) = self.hash(&key_ref);
+        let (hash, partial_hash) = self.hash(key_ref);
         let barrier = Barrier::new();
         let (cell_index, locker, iterator) = self.acquire(key_ref, hash, partial_hash, &barrier);
         if let Some(iterator) = iterator {
@@ -202,30 +204,30 @@ where
             } else {
                 false
             };
-            if remove {
-                if locker.mark_removed(key_ref, partial_hash, &barrier) {
-                    if cell_index < CELL_SIZE && locker.cell_ref().num_entries() < CELL_SIZE / 16 {
-                        drop(locker);
-                        let current_array_ptr = self.array.load(Acquire, &barrier);
-                        if let Some(current_array_ref) = current_array_ptr.as_ref() {
-                            if current_array_ref.old_array(&barrier).is_null()
-                                && current_array_ref.num_cell_entries() > self.minimum_capacity()
-                            {
-                                let sample_size = current_array_ref.sample_size();
-                                let mut num_entries = 0;
-                                for i in 0..sample_size {
-                                    num_entries += current_array_ref.cell(i).num_entries();
-                                    if num_entries >= sample_size * CELL_SIZE / 16 {
-                                        return true;
-                                    }
-                                }
-                                self.resize(&barrier);
+            if remove
+                && locker.mark_removed(key_ref, partial_hash, &barrier)
+                && cell_index < CELL_SIZE
+                && locker.cell_ref().num_entries() < CELL_SIZE / 16
+            {
+                drop(locker);
+                let current_array_ptr = self.array.load(Acquire, &barrier);
+                if let Some(current_array_ref) = current_array_ptr.as_ref() {
+                    if current_array_ref.old_array(&barrier).is_null()
+                        && current_array_ref.num_cell_entries() > self.minimum_capacity()
+                    {
+                        let sample_size = current_array_ref.sample_size();
+                        let mut num_entries = 0;
+                        for i in 0..sample_size {
+                            num_entries += current_array_ref.cell(i).num_entries();
+                            if num_entries >= sample_size * CELL_SIZE / 16 {
+                                return true;
                             }
                         }
+                        self.resize(&barrier);
                     }
-                    return true;
                 }
             }
+            return remove;
         }
         false
     }
@@ -303,11 +305,11 @@ where
                 }
             }
             for index in 0..current_array_ref.array_size() {
-                if let Some(mut cell_locker) =
-                    CellLocker::lock(current_array_ref.cell(index), &barrier)
+                if let Some(mut locker) =
+                    Locker::lock(current_array_ref.cell(index), &barrier)
                 {
-                    num_removed += cell_locker.cell_ref().num_entries();
-                    cell_locker.purge(&barrier);
+                    num_removed += locker.cell_ref().num_entries();
+                    locker.purge(&barrier);
                 }
             }
             let new_current_array_ptr = self.array.load(Acquire, &barrier);
@@ -338,6 +340,25 @@ where
     #[inline]
     pub fn len(&self) -> usize {
         self.num_entries(&Barrier::new())
+    }
+
+    /// Returns `true` if the [`HashIndex`] is empty.
+    ///
+    /// It scans the entire array to calculate the number of valid entries, making its time
+    /// complexity `O(N)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = Default::default();
+    ///
+    /// assert!(hashindex.is_empty());
+    /// ```
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Returns the capacity of the [`HashIndex`].
@@ -392,7 +413,7 @@ where
             hash_index: self,
             current_array_ptr: Ptr::null(),
             current_index: 0,
-            current_cell_iterator: None,
+            current_entry_iterator: None,
             barrier_ref: barrier,
         }
     }
@@ -440,7 +461,7 @@ where
     }
 }
 
-/// Visitor traverses all the key-value pairs in the HashIndex.
+/// Visitor traverses all the key-value pairs in the [`HashIndex`].
 ///
 /// It is guaranteed to visit all the key-value pairs that outlive the Visitor.
 /// However, the same key-value pair can be visited more than once.
@@ -453,7 +474,7 @@ where
     hash_index: &'h HashIndex<K, V, H>,
     current_array_ptr: Ptr<'b, CellArray<K, V, CELL_SIZE, true>>,
     current_index: usize,
-    current_cell_iterator: Option<CellIterator<'b, K, V, CELL_SIZE, true>>,
+    current_entry_iterator: Option<EntryIterator<'b, K, V, CELL_SIZE, true>>,
     barrier_ref: &'b Barrier,
 }
 
@@ -470,17 +491,17 @@ where
             let current_array_ptr = self.hash_index.array.load(Acquire, self.barrier_ref);
             let current_array_ref = current_array_ptr.as_ref().unwrap();
             let old_array_ptr = current_array_ref.old_array(self.barrier_ref);
-            self.current_array_ptr = if !old_array_ptr.is_null() {
-                old_array_ptr
-            } else {
+            self.current_array_ptr = if old_array_ptr.is_null() {
                 current_array_ptr
+            } else {
+                old_array_ptr
             };
             let cell_ref = self.current_array_ptr.as_ref().unwrap().cell(0);
-            self.current_cell_iterator
-                .replace(CellIterator::new(cell_ref, self.barrier_ref));
+            self.current_entry_iterator
+                .replace(EntryIterator::new(cell_ref, self.barrier_ref));
         }
         loop {
-            if let Some(iterator) = self.current_cell_iterator.as_mut() {
+            if let Some(iterator) = self.current_entry_iterator.as_mut() {
                 // Proceeds to the next entry in the Cell.
                 if let Some(entry) = iterator.next() {
                     return Some((&entry.0 .0, &entry.0 .1));
@@ -501,30 +522,29 @@ where
                     // Starts scanning the current array.
                     self.current_array_ptr = current_array_ptr;
                     self.current_index = 0;
-                    self.current_cell_iterator.replace(CellIterator::new(
+                    self.current_entry_iterator.replace(EntryIterator::new(
                         current_array_ref.cell(0),
                         self.barrier_ref,
                     ));
                     continue;
                 }
                 // Starts from the very beginning.
-                self.current_array_ptr = if !old_array_ptr.is_null() {
-                    old_array_ptr
-                } else {
+                self.current_array_ptr = if old_array_ptr.is_null() {
                     current_array_ptr
+                } else {
+                    old_array_ptr
                 };
                 self.current_index = 0;
-                self.current_cell_iterator.replace(CellIterator::new(
+                self.current_entry_iterator.replace(EntryIterator::new(
                     self.current_array_ptr.as_ref().unwrap().cell(0),
                     self.barrier_ref,
                 ));
                 continue;
-            } else {
-                self.current_cell_iterator.replace(CellIterator::new(
-                    array_ref.cell(self.current_index),
-                    self.barrier_ref,
-                ));
             }
+            self.current_entry_iterator.replace(EntryIterator::new(
+                array_ref.cell(self.current_index),
+                self.barrier_ref,
+            ));
         }
         None
     }

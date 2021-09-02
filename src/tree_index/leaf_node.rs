@@ -386,7 +386,12 @@ where
         //  - Inserts the new leaves into the linked list, and removes the full leaf from it.
         let low_key_leaf_ptr = new_leaves_ref.low_key_leaf.load(Relaxed, barrier);
         let high_key_leaf_ptr = new_leaves_ref.high_key_leaf.load(Relaxed, barrier);
-        let unused_leaf = if !high_key_leaf_ptr.is_null() {
+        let unused_leaf = if high_key_leaf_ptr.is_null() {
+            // From here, Scanners can reach the new leaf.
+            full_leaf_ref.push_back(full_leaf_ptr, &[low_key_leaf_ptr], Tag::First, barrier);
+            // Replaces the full leaf with the low-key leaf.
+            full_leaf.swap((low_key_leaf_ptr.try_into_arc(), Tag::None), Release)
+        } else {
             // From here, Scanners can reach the new leaves.
             //
             // Immediately unlinking the full leaf causes the current scanners reading the full leaf
@@ -420,19 +425,14 @@ where
 
             // Replaces the full leaf with the high-key leaf.
             full_leaf.swap((high_key_leaf_ptr.try_into_arc(), Tag::None), Release)
-        } else {
-            // From here, Scanners can reach the new leaf.
-            full_leaf_ref.push_back(full_leaf_ptr, &[low_key_leaf_ptr], Tag::First, barrier);
-            // Replaces the full leaf with the low-key leaf.
-            full_leaf.swap((low_key_leaf_ptr.try_into_arc(), Tag::None), Release)
         };
 
         // Drops the deprecated leaf.
-        unused_leaf.map(|u| {
-            debug_assert!(u.full());
-            u.pop_self(Tag::None, barrier);
-            barrier.reclaim(u);
-        });
+        if let Some(unused_leaf) = unused_leaf {
+            debug_assert!(unused_leaf.full());
+            unused_leaf.pop_self(Tag::None, barrier);
+            barrier.reclaim(unused_leaf);
+        }
 
         // Unlocks the leaf node.
         self.new_leaves.swap((None, Tag::None), Release);
@@ -583,10 +583,10 @@ where
         } else {
             self.leaves.1.load(Relaxed, barrier)
         };
-        if leaf_current_ptr != leaf_ptr {
-            Err(RemoveError::Retry(removed))
-        } else {
+        if leaf_current_ptr == leaf_ptr {
             Ok(removed)
+        } else {
+            Err(RemoveError::Retry(removed))
         }
     }
 
@@ -711,11 +711,11 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
         let mut scanner = LeafScanner::new_including_removed(&self.leaves.0);
         let mut index = 0;
         while let Some(entry) = scanner.next() {
-            if !scanner.removed() {
+            if scanner.removed() {
+                leaf_ref_array[index].replace((None, Some(entry.0), index));
+            } else {
                 let leaf_ptr = entry.1.load(Relaxed, &barrier);
                 leaf_ref_array[index].replace((leaf_ptr.as_ref(), Some(entry.0), index));
-            } else {
-                leaf_ref_array[index].replace((None, Some(entry.0), index));
             }
             index += 1;
         }
@@ -768,11 +768,11 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
                 let mut leaf_scanner = LeafScanner::new_including_removed(leaf_ref);
                 let mut rank = 0;
                 while let Some(entry) = leaf_scanner.next() {
-                    let (entry_rank, font_color) = if !leaf_scanner.removed() {
+                    let (entry_rank, font_color) = if leaf_scanner.removed() {
+                        (0, "red")
+                    } else {
                         rank += 1;
                         (rank, "black")
-                    } else {
-                        (0, "red")
                     };
                     output.write_fmt(format_args!(
                         "<tr><td><font color=\"{}\">{}</font></td><td>{}</td><td>{}</td></tr>\n",

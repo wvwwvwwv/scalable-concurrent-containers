@@ -40,6 +40,7 @@ impl<T: 'static> Arc<T> {
     /// let ptr = arc.ptr(&barrier);
     /// assert_eq!(*ptr.as_ref().unwrap(), 37);
     /// ```
+    #[must_use]
     #[inline]
     pub fn ptr<'b>(&self, _barrier: &'b Barrier) -> Ptr<'b, T> {
         Ptr::from(self.instance_ptr.as_ptr())
@@ -107,7 +108,7 @@ impl<T: 'static> Clone for Arc<T> {
         );
         self.underlying().add_ref();
         Self {
-            instance_ptr: self.instance_ptr.clone(),
+            instance_ptr: self.instance_ptr,
         }
     }
 }
@@ -117,7 +118,7 @@ impl<T: 'static> Deref for Arc<T> {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        self.underlying().deref()
+        &**self.underlying()
     }
 }
 

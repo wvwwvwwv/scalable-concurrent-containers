@@ -1,9 +1,8 @@
-<p align="center">
-    <img src="https://img.shields.io/crates/v/scc?style=for-the-badge">
-    <img src="https://img.shields.io/github/workflow/status/wvwwvwwv/scalable-concurrent-containers/SCC?style=for-the-badge">
-</p>
-
 # Scalable Concurrent Containers
+
+![Crates.io](https://img.shields.io/crates/v/scc?style=for-the-badge)
+![Crates.io](https://img.shields.io/crates/l/scc?style=for-the-badge)
+![GitHub Workflow Status](https://img.shields.io/github/workflow/status/wvwwvwwv/scalable-concurrent-containers/SCC?style=for-the-badge)
 
 A collection of concurrent data structures and building blocks for concurrent programming.
 
@@ -255,23 +254,22 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 
 ### Test workload: local-remote
 
-- Insert, remove: each thread additionally tries to perform operations using records belonging to other threads.
+- Insert, remove: each thread additionally tries to perform operations using records belonging to a randomly chosen remote thread.
 - Mixed: each thread performs insert-local -> insert-remote -> read-local -> read-remote -> remove-local -> remove-remote.
-- The target remote thread is randomly chosen.
 
 ### Test Results
 
 - [`HashMap`](#HashMap)
 
-|         | 11 threads     | 22 threads     | 44 threads     |
-|---------|----------------|----------------|----------------|
-| InsertL | 134.519639194s | 165.001678899s | 231.081117542s |
-| ReadL   |  92.83194805s  | 104.560364479s | 114.468443191s |
-| ScanL   |  42.086156353s | 108.655462554s | 229.909702447s |
-| RemoveL | 109.926310571s | 123.499814546s | 139.1093042s   |
-| InsertR | 249.260816589s | 301.757140479s | 399.315496693s |
-| MixedR  | 310.705241166s | 337.750491321s | 363.707265976s |
-| RemoveR | 208.355622788s | 226.59800359s  | 251.086396624s |
+|         | 11 threads | 22 threads | 44 threads     |
+|---------|------------|------------|----------------|
+| InsertL | 186.564s   | 192.279s   | 383.752s !!    |
+| ReadL   | 102.086s   | 108.321s   | 114.468443191s |
+| ScanL   |  35.874s   | 63.281s    | 229.909702447s |
+| RemoveL | 118.931s   | 127.682s   | 139.1093042s   |
+| InsertR | 334.535s   | 342.914s   | 399.315496693s |
+| MixedR  | 363.165s   | 384.775s   | 363.707265976s |
+| RemoveR | 260.543s   | 277.702s   | 251.086396624s |
 
 - [`HashIndex`](#HashIndex)
 
@@ -302,5 +300,5 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 #### 0.5.0
 
 * Own EBR implementation.
-* API changes.
+* Substantial API changes.
 

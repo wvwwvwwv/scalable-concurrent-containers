@@ -22,6 +22,7 @@ impl<'b, T> Ptr<'b, T> {
     ///
     /// let ptr: Ptr<usize> = Ptr::null();
     /// ```
+    #[must_use]
     #[inline]
     pub fn null() -> Ptr<'b, T> {
         Ptr {
@@ -40,6 +41,7 @@ impl<'b, T> Ptr<'b, T> {
     /// let ptr: Ptr<usize> = Ptr::null();
     /// assert!(ptr.is_null());
     /// ```
+    #[must_use]
     #[inline]
     pub fn is_null(&self) -> bool {
         Tag::unset_tag(self.instance_ptr).is_null()
@@ -58,13 +60,10 @@ impl<'b, T> Ptr<'b, T> {
     /// let ptr = atomic_arc.load(Relaxed, &barrier);
     /// assert_eq!(*ptr.as_ref().unwrap(), 21);
     /// ```
+    #[must_use]
     #[inline]
     pub fn as_ref(&self) -> Option<&'b T> {
-        unsafe {
-            Tag::unset_tag(self.instance_ptr)
-                .as_ref()
-                .map(|u| u.deref())
-        }
+        unsafe { Tag::unset_tag(self.instance_ptr).as_ref().map(Deref::deref) }
     }
 
     /// Returns a raw pointer to the instance.
@@ -80,12 +79,13 @@ impl<'b, T> Ptr<'b, T> {
     /// let ptr = arc.ptr(&barrier);
     /// assert_eq!(unsafe { *ptr.as_raw() }, 29);
     /// ```
+    #[must_use]
     #[inline]
     pub fn as_raw(&self) -> *const T {
         unsafe {
             Tag::unset_tag(self.instance_ptr)
                 .as_ref()
-                .map_or_else(ptr::null, |u| u.deref() as *const T)
+                .map_or_else(ptr::null, |u| &**u as *const T)
         }
     }
 
@@ -99,6 +99,7 @@ impl<'b, T> Ptr<'b, T> {
     /// let ptr: Ptr<usize> = Ptr::null();
     /// assert_eq!(ptr.tag(), Tag::None);
     /// ```
+    #[must_use]
     #[inline]
     pub fn tag(&self) -> Tag {
         Tag::into_tag(self.instance_ptr)
@@ -133,6 +134,7 @@ impl<'b, T> Ptr<'b, T> {
     /// let converted_arc = ptr.try_into_arc().unwrap();
     /// assert_eq!(*converted_arc, 83);
     /// ```
+    #[must_use]
     #[inline]
     pub fn try_into_arc(self) -> Option<Arc<T>> {
         unsafe {
@@ -155,7 +157,7 @@ impl<'b, T> Ptr<'b, T> {
     }
 
     /// Returns its pointer value.
-    pub(super) fn raw_ptr(&self) -> *const Underlying<T> {
+    pub(super) fn raw_ptr(self) -> *const Underlying<T> {
         self.instance_ptr
     }
 }
@@ -163,7 +165,7 @@ impl<'b, T> Ptr<'b, T> {
 impl<'b, T> Clone for Ptr<'b, T> {
     fn clone(&self) -> Self {
         Self {
-            instance_ptr: self.instance_ptr.clone(),
+            instance_ptr: self.instance_ptr,
             _phantom: std::marker::PhantomData,
         }
     }

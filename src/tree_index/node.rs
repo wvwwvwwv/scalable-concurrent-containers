@@ -467,7 +467,7 @@ where
                     match child_ref.insert(key, value, barrier) {
                         Ok(_) => return Ok(()),
                         Err(err) => match err {
-                            InsertError::Duplicated(_) => return Err(err),
+                            InsertError::Duplicated(_) | InsertError::Retry(_) => return Err(err),
                             InsertError::Full(entry) => {
                                 if !self.split_node(
                                     Some(child_key.clone()),
@@ -480,13 +480,11 @@ where
                                 }
                                 return Err(InsertError::Retry(entry));
                             }
-                            InsertError::Retry(_) => return Err(err),
                         },
                     }
-                } else {
-                    // `child_ptr` being null indicates that the node is bound to be freed.
-                    return Err(InsertError::Retry((key, value)));
                 }
+                // `child_ptr` being null indicates that the node is bound to be freed.
+                return Err(InsertError::Retry((key, value)));
             }
 
             let unbounded_ptr = self.children.1.load(Relaxed, barrier);
@@ -500,7 +498,7 @@ where
                 match unbounded_ref.insert(key, value, barrier) {
                     Ok(_) => return Ok(()),
                     Err(err) => match err {
-                        InsertError::Duplicated(_) => return Err(err),
+                        InsertError::Duplicated(_) | InsertError::Retry(_) => return Err(err),
                         InsertError::Full(entry) => {
                             if !self.split_node(
                                 None,
@@ -513,7 +511,6 @@ where
                             }
                             return Err(InsertError::Retry(entry));
                         }
-                        InsertError::Retry(_) => return Err(err),
                     },
                 };
             }
@@ -530,7 +527,7 @@ where
         Q: Ord + ?Sized,
     {
         loop {
-            let result = (self.children.0).min_greater_equal(&key);
+            let result = (self.children.0).min_greater_equal(key);
             if let Some((_, child)) = result.0 {
                 let child_ptr = child.load(Acquire, barrier);
                 if !(self.children.0).validate(result.1) {
@@ -954,19 +951,19 @@ where
         let mut scanner = LeafScanner::new_including_removed(&self.children.0);
         let mut index = 0;
         while let Some(entry) = scanner.next() {
-            if !scanner.removed() {
-                let child_share_ptr = entry.1.load(Relaxed, &barrier);
+            if scanner.removed() {
+                child_ref_array[index].replace((None, Some(entry.0), index));
+            } else {
+                let child_share_ptr = entry.1.load(Relaxed, barrier);
                 child_ref_array[index].replace((
                     Some(child_share_ptr.as_ref().unwrap()),
                     Some(entry.0),
                     index,
                 ));
-            } else {
-                child_ref_array[index].replace((None, Some(entry.0), index));
             }
             index += 1;
         }
-        let unbounded_ptr = self.children.1.load(Relaxed, &barrier);
+        let unbounded_ptr = self.children.1.load(Relaxed, barrier);
         if let Some(unbounded_ref) = unbounded_ptr.as_ref() {
             child_ref_array[index].replace((Some(unbounded_ref), None, index));
         }

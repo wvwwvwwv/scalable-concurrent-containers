@@ -17,7 +17,7 @@ pub enum Tag {
 
 impl Tag {
     /// Interpret the [`Tag`] as an integer.
-    pub(super) fn value(&self) -> usize {
+    pub(super) fn value(self) -> usize {
         match self {
             Self::None => 0,
             Self::First => 1,

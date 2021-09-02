@@ -42,6 +42,7 @@ impl<T: 'static> AtomicArc<T> {
     /// let arc: Arc<usize> = Arc::new(10);
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::from(arc);
     /// ```
+    #[must_use]
     #[inline]
     pub fn from(arc: Arc<T>) -> AtomicArc<T> {
         let ptr = arc.raw_ptr();
@@ -60,6 +61,7 @@ impl<T: 'static> AtomicArc<T> {
     ///
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::null();
     /// ```
+    #[must_use]
     #[inline]
     pub fn null() -> AtomicArc<T> {
         AtomicArc {
@@ -122,16 +124,12 @@ impl<T: 'static> AtomicArc<T> {
     #[inline]
     pub fn swap(&self, new: (Option<Arc<T>>, Tag), order: Ordering) -> Option<Arc<T>> {
         let desired = Tag::update_tag(
-            new.0.as_ref().map_or_else(ptr::null_mut, |a| a.raw_ptr()),
+            new.0.as_ref().map_or_else(ptr::null_mut, Arc::raw_ptr),
             new.1,
         ) as *mut Underlying<T>;
         let prev = Tag::unset_tag(self.instance_ptr.swap(desired, order)) as *mut Underlying<T>;
         forget(new);
-        if let Some(ptr) = NonNull::new(prev) {
-            Some(Arc::from(ptr))
-        } else {
-            None
-        }
+        NonNull::new(prev).map(Arc::from)
     }
 
     /// Returns its [`Tag`].
@@ -181,8 +179,11 @@ impl<T: 'static> AtomicArc<T> {
     /// Performs CAS on the [`AtomicArc`].
     ///
     /// It returns `Ok` with the previously held [`Arc`] and the updated [`Ptr`] upon a
-    /// successful operation, or it returns `Err` with the supplied [`Arc`] and the current
-    /// [`Ptr`].
+    /// successful operation.
+    ///
+    /// # Errors
+    ///
+    /// It returns `Err` with the supplied [`Arc`] and the current [`Ptr`].
     ///
     /// # Examples
     ///
@@ -210,6 +211,7 @@ impl<T: 'static> AtomicArc<T> {
     ///     ptr, (Some(Arc::new(19)), Tag::None), Relaxed, Relaxed).is_err());
     /// assert_eq!(*ptr.as_ref().unwrap(), 17);
     /// ```
+    #[allow(clippy::type_complexity)]
     #[inline]
     pub fn compare_exchange<'b>(
         &self,
@@ -219,7 +221,7 @@ impl<T: 'static> AtomicArc<T> {
         failure: Ordering,
     ) -> Result<(Option<Arc<T>>, Ptr<'b, T>), (Option<Arc<T>>, Ptr<'b, T>)> {
         let desired = Tag::update_tag(
-            new.0.as_ref().map_or_else(ptr::null_mut, |a| a.raw_ptr()),
+            new.0.as_ref().map_or_else(ptr::null_mut, Arc::raw_ptr),
             new.1,
         ) as *mut Underlying<T>;
         match self.instance_ptr.compare_exchange(
@@ -230,11 +232,7 @@ impl<T: 'static> AtomicArc<T> {
         ) {
             Ok(prev) => {
                 let prev_arc =
-                    if let Some(ptr) = NonNull::new(Tag::unset_tag(prev) as *mut Underlying<T>) {
-                        Some(Arc::from(ptr))
-                    } else {
-                        None
-                    };
+                    NonNull::new(Tag::unset_tag(prev) as *mut Underlying<T>).map(Arc::from);
                 forget(new);
                 Ok((prev_arc, Ptr::from(desired)))
             }
@@ -257,7 +255,7 @@ impl<T: 'static> AtomicArc<T> {
     /// assert_eq!(*ptr.as_ref().unwrap(), 59);
     /// ```
     #[inline]
-    pub fn clone<'b>(&self, order: Ordering, _barrier: &'b Barrier) -> AtomicArc<T> {
+    pub fn clone(&self, order: Ordering, _barrier: &Barrier) -> AtomicArc<T> {
         unsafe {
             let ptr = self.instance_ptr.load(order);
             if let Some(underlying_ref) = (Tag::unset_tag(ptr)).as_ref() {

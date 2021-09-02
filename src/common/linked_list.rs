@@ -9,7 +9,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 pub trait LinkedList: 'static + Sized {
     /// Returns a reference to the forward link.
     ///
-    /// The pointer value may be tagged if the caller of push_back or remove has given a tag.
+    /// The pointer value may be tagged if the caller of `push_back` or `remove` passes a tag.
     /// The tag is reset as soon as the pointer is replaced with a new one.
     fn forward_link(&self) -> &AtomicArc<Self>;
 
@@ -162,6 +162,7 @@ impl<'b, T: LinkedList> LinkedListLocker<'b, T> {
                 next_entry_locker.replace(LinkedListLocker::lock(next_entry_ref, barrier));
             }
 
+            #[allow(clippy::blocks_in_if_conditions)]
             if next_entry_locker.as_ref().map_or_else(
                 || false,
                 |locker| {

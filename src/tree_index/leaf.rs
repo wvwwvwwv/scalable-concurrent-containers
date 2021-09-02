@@ -30,12 +30,12 @@ const OBSOLETE_MASK: u32 = (RETIRED << 28)
     | (RETIRED << 4)
     | RETIRED;
 
-/// Each entry in an EntryArray is never dropped until the Leaf is dropped once constructed.
+/// Each constructed entry in an `EntryArray` is never dropped until the `Leaf` is dropped.
 pub type EntryArray<K, V> = [MaybeUninit<(K, V)>; ARRAY_SIZE];
 
 /// [`Leaf`] is an ordered array of key-value pairs.
 ///
-/// A constructed key-value pair entry is never dropped until the entire [`Leaf`] instance is
+/// A constructed key-value pair entry is never dropped until the entire `Leaf` instance is
 /// dropped.
 pub struct Leaf<K, V>
 where
@@ -388,8 +388,8 @@ where
             let entry_array_ptr = &self.entry_array as *const EntryArray<K, V>;
             let entry_array_mut_ptr = entry_array_ptr as *mut EntryArray<K, V>;
             let entry_array_mut_ref = &mut (*entry_array_mut_ptr);
-            entry_array_mut_ref[index].as_mut_ptr().write((key, value))
-        };
+            entry_array_mut_ref[index].as_mut_ptr().write((key, value));
+        }
     }
 
     pub fn next(&self, index: usize, metadata: u32) -> (usize, *const (K, V)) {
@@ -578,14 +578,14 @@ where
                 let current_rank = Leaf::<K, V>::rank(i, result);
                 let expected_rank = Leaf::<K, V>::rank(i, self.metadata);
                 if current_rank != expected_rank {
-                    if current_rank != LOCKED {
-                        // The rank map has been updated.
-                        self.metadata = result;
-                        return false;
-                    } else {
+                    if current_rank == LOCKED {
                         // Never modifies the state.
                         new_metadata = (new_metadata & (!Leaf::<K, V>::rank_mask(i)))
                             | Leaf::<K, V>::rank_bits(i, LOCKED);
+                    } else {
+                        // The rank map has been updated.
+                        self.metadata = result;
+                        return false;
                     }
                 }
             }
@@ -622,7 +622,7 @@ where
     }
 }
 
-/// InsertBlocker locks all the vacant slots.
+/// `InsertBlocker` locks all the vacant slots.
 struct InsertBlocker<'l, K, V>
 where
     K: 'static + Clone + Ord + Sync,
@@ -748,7 +748,7 @@ where
     }
 }
 
-/// LinkedList implementation for Leaf.
+/// `LinkedList` implementation for `Leaf`.
 impl<K, V> LinkedList for Leaf<K, V>
 where
     K: 'static + Clone + Ord + Sync,
@@ -792,15 +792,15 @@ where
     pub fn max_less(leaf: &'l Leaf<K, V>, key: &K) -> LeafScanner<'l, K, V> {
         let metadata = leaf.metadata.load(Acquire);
         let (index, ptr) = leaf.max_less(metadata, key);
-        if !ptr.is_null() {
+        if ptr.is_null() {
+            LeafScanner::new(leaf)
+        } else {
             LeafScanner {
                 leaf,
                 metadata,
                 entry_index: index,
                 entry_ptr: ptr,
             }
-        } else {
-            LeafScanner::new(leaf)
         }
     }
 

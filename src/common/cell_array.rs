@@ -1,4 +1,4 @@
-use super::cell::{Cell, CellLocker};
+use super::cell::{Cell, Locker};
 
 use crate::ebr::{AtomicArc, Barrier, Ptr, Tag};
 
@@ -28,27 +28,28 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
 {
     /// Creates a new Array of given capacity.
     ///
-    /// total_cell_capacity is the desired number of cell entries that the CellArray can accommodate.
-    /// The given array instance is attached to the newly created Array instance.
+    /// `total_cell_capacity` is the desired number of cell entries that the `CellArray `can
+    /// accommodate. The given array instance is attached to the newly created Array instance.
     pub fn new(
         total_cell_capacity: usize,
         old_array: AtomicArc<CellArray<K, V, SIZE, LOCK_FREE>>,
     ) -> CellArray<K, V, SIZE, LOCK_FREE> {
         let lb_capacity = Self::calculate_lb_array_size(total_cell_capacity);
-        let array_capacity = 1usize << lb_capacity;
+        let array_capacity = 1_usize << lb_capacity;
         let (array, array_ptr_offset) = unsafe {
             let size_of_cell = std::mem::size_of::<Cell<K, V, SIZE, LOCK_FREE>>();
             let allocation_size = (array_capacity + 1) * size_of_cell;
             let ptr = alloc_zeroed(Layout::from_size_align_unchecked(allocation_size, 1));
             if ptr.is_null() {
                 // Memory allocation failure: panic.
-                panic!("memory allocation failure: {} bytes", allocation_size)
+                panic!("memory allocation failure: {} bytes", allocation_size);
             }
             let mut offset = ptr.align_offset(size_of_cell.next_power_of_two());
             if offset == usize::MAX {
                 offset = 0;
             }
-            let array_ptr = ptr.add(offset) as *mut Cell<K, V, SIZE, LOCK_FREE>;
+            #[allow(clippy::cast_ptr_alignment)]
+            let array_ptr = ptr.add(offset).cast::<Cell<K, V, SIZE, LOCK_FREE>>();
             (Some(Box::from_raw(array_ptr)), offset)
         };
         CellArray {
@@ -73,7 +74,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
         (self.lb_capacity as usize).next_power_of_two()
     }
 
-    /// Returns the size of the CellArray.
+    /// Returns the size of the `CellArray`.
     pub fn array_size(&self) -> usize {
         self.array_capacity
     }
@@ -85,7 +86,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
 
     /// Returns a shared pointer to the old array.
     pub fn old_array<'b>(&self, barrier: &'b Barrier) -> Ptr<'b, CellArray<K, V, SIZE, LOCK_FREE>> {
-        self.old_array.load(Relaxed, &barrier)
+        self.old_array.load(Relaxed, barrier)
     }
 
     /// Calculates the cell index for the hash value.
@@ -103,7 +104,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
     /// Kills the Cell.
     pub fn kill_cell<Q, F: Fn(&Q) -> (u64, u8), C: Fn(&K, &V) -> Option<(K, V)>>(
         &self,
-        cell_locker: &mut CellLocker<K, V, SIZE, LOCK_FREE>,
+        cell_locker: &mut Locker<K, V, SIZE, LOCK_FREE>,
         old_array: &CellArray<K, V, SIZE, LOCK_FREE>,
         old_cell_index: usize,
         hasher: &F,
@@ -133,26 +134,26 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
         };
         debug_assert!(ratio <= 32);
 
-        let mut target_cells: [Option<CellLocker<K, V, SIZE, LOCK_FREE>>; 32] = Default::default();
+        let mut target_cells: [Option<Locker<K, V, SIZE, LOCK_FREE>>; 32] = Default::default();
         let mut max_index = 0;
         let mut iter = cell_locker.cell_ref().iter(barrier);
         while let Some(entry) = iter.next() {
-            let (new_cell_index, partial_hash) = if !shrink {
-                let (hash, partial_hash) = hasher(entry.0 .0.borrow());
-                let new_cell_index = self.calculate_cell_index(hash);
-                debug_assert!((new_cell_index - target_cell_index) < ratio);
-                (new_cell_index, partial_hash)
-            } else {
+            let (new_cell_index, partial_hash) = if shrink {
                 debug_assert!(
                     self.calculate_cell_index(hasher(entry.0 .0.borrow()).0) == target_cell_index
                 );
                 (target_cell_index, entry.1)
+            } else {
+                let (hash, partial_hash) = hasher(entry.0 .0.borrow());
+                let new_cell_index = self.calculate_cell_index(hash);
+                debug_assert!((new_cell_index - target_cell_index) < ratio);
+                (new_cell_index, partial_hash)
             };
 
             let cell_index = new_cell_index - target_cell_index;
             while max_index <= cell_index {
                 target_cells[max_index].replace(
-                    CellLocker::lock(self.cell(max_index + target_cell_index), barrier).unwrap(),
+                    Locker::lock(self.cell(max_index + target_cell_index), barrier).unwrap(),
                 );
                 max_index += 1;
             }
@@ -213,7 +214,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
             if old_cell_ref.killed() {
                 continue;
             }
-            if let Some(mut locker) = CellLocker::lock(old_cell_ref, barrier) {
+            if let Some(mut locker) = Locker::lock(old_cell_ref, barrier) {
                 self.kill_cell(
                     &mut locker,
                     old_array_ref,
@@ -233,7 +234,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
         false
     }
 
-    /// Calculates log_2 of the array size from the given cell capacity.
+    /// Calculates `log_2` of the array size from the given cell capacity.
     fn calculate_lb_array_size(total_cell_capacity: usize) -> u8 {
         let adjusted_total_cell_capacity = total_cell_capacity.min((usize::MAX / 2) - (SIZE - 1));
         let required_cells = ((adjusted_total_cell_capacity + SIZE - 1) / SIZE).next_power_of_two();
@@ -244,7 +245,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
         // 2^lb_capacity * C::cell_size() >= capacity
         debug_assert!(lb_capacity > 0);
         debug_assert!(lb_capacity < (std::mem::size_of::<usize>() * 8));
-        debug_assert!((1usize << lb_capacity) * SIZE >= adjusted_total_cell_capacity);
+        debug_assert!((1_usize << lb_capacity) * SIZE >= adjusted_total_cell_capacity);
         lb_capacity.try_into().unwrap()
     }
 }
@@ -255,9 +256,9 @@ impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Drop for CellArray<K, V
         unsafe {
             let array = self.array.take().unwrap();
             dealloc(
-                (Box::into_raw(array) as *mut u8).sub(self.array_ptr_offset),
+                Box::into_raw(array).cast::<u8>().sub(self.array_ptr_offset),
                 Layout::from_size_align_unchecked((self.array_capacity + 1) * size_of_cell, 1),
-            )
+            );
         }
     }
 }

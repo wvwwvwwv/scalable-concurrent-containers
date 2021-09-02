@@ -22,10 +22,13 @@ impl Barrier {
     ///
     /// let barrier = Barrier::new();
     /// ```
+    #[must_use]
     #[inline]
     pub fn new() -> Barrier {
         let collector_ptr = Collector::current();
-        unsafe { (*collector_ptr).new_barrier() };
+        unsafe {
+            (*collector_ptr).new_barrier();
+        }
         Barrier { collector_ptr }
     }
 
@@ -49,12 +52,22 @@ impl Barrier {
 
     /// Reclaims the underlying instance of an [`Arc`] or [`AtomicArc`](super::AtomicArc).
     pub(super) fn reclaim_underlying<T: 'static>(&self, underlying: *mut Underlying<T>) {
-        unsafe { (*self.collector_ptr).reclaim(underlying) };
+        unsafe {
+            (*self.collector_ptr).reclaim(underlying);
+        }
+    }
+}
+
+impl Default for Barrier {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 impl Drop for Barrier {
     fn drop(&mut self) {
-        unsafe { (*self.collector_ptr).end_barrier() };
+        unsafe {
+            (*self.collector_ptr).end_barrier();
+        }
     }
 }

@@ -1,3 +1,5 @@
+#![deny(missing_docs, warnings, clippy::all, clippy::pedantic)]
+
 //! Scalable concurrent containers.
 //!
 //! # [`ebr`]

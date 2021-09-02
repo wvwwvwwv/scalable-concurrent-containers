@@ -701,13 +701,13 @@ mod benchmark {
     }
 
     #[test]
-    fn hashindex_benchmark_string() {
+    fn hashindex_benchmarks() {
         hashindex_benchmark::<String>(16384, vec![1, 2, 4]);
         hashindex_benchmark::<usize>(65536, vec![1, 2, 4]);
     }
 
     #[test]
-    fn treeindex_benchmark_string() {
+    fn treeindex_benchmarks() {
         treeindex_benchmark::<String>(16384, vec![1, 2, 4]);
         treeindex_benchmark::<usize>(65536, vec![1, 2, 4]);
     }

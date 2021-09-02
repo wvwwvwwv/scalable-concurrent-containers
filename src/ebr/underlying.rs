@@ -47,15 +47,11 @@ impl<T> Underlying<T> {
         if current > usize::MAX - 2 {
             panic!("reference count overflow");
         }
-        loop {
-            if let Err(actual) =
-                self.ref_cnt()
-                    .compare_exchange(current, current + 2, Relaxed, Relaxed)
-            {
-                current = actual;
-            } else {
-                break;
-            }
+        while let Err(actual) =
+            self.ref_cnt()
+                .compare_exchange(current, current + 2, Relaxed, Relaxed)
+        {
+            current = actual;
         }
     }
 

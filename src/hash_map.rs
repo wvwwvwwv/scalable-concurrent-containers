@@ -1,4 +1,6 @@
-use crate::common::cell::CellLocker;
+//! [`HashMap`] implementation.
+
+use crate::common::cell::Locker;
 use crate::common::cell_array::CellArray;
 use crate::common::hash_table::HashTable;
 use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
@@ -133,7 +135,7 @@ where
         }
     }
 
-    /// Temporarily increases the minimum capacity of the HashMap.
+    /// Temporarily increases the minimum capacity of the [`HashMap`].
     ///
     /// The reserved space is not exclusively owned by the [`Ticket`], thus can be overtaken.
     /// Unused space is immediately reclaimed when the [`Ticket`] is dropped.
@@ -228,23 +230,21 @@ where
     /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
     /// ```
     #[inline]
-    pub fn update<'h, 'b, Q, F, R>(&'h self, key_ref: &Q, updater: F) -> Option<R>
+    pub fn update<Q, F, R>(&self, key_ref: &Q, updater: F) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
         F: FnOnce(&K, &mut V) -> R,
     {
-        let (hash, partial_hash) = self.hash(&key_ref);
+        let (hash, partial_hash) = self.hash(key_ref);
         let barrier = Barrier::new();
-        let (_, locker, iterator) = self.acquire(key_ref, hash, partial_hash, &barrier);
-        let pair_ref = if let Some(iterator) = iterator {
-            iterator.get()
-        } else {
-            locker.cell_ref().search(key_ref, partial_hash, &barrier)
-        };
-        if let Some((k, v)) = pair_ref {
-            // The presence of `locker` prevents the entry from being modified outside it.
-            return Some(updater(&k, unsafe { &mut *(v as *const V as *mut V) }));
+        let (_, _, iterator) = self.acquire(key_ref, hash, partial_hash, &barrier);
+        if let Some(iterator) = iterator {
+            if let Some((k, v)) = iterator.get() {
+                // The presence of `locker` prevents the entry from being modified outside it.
+                #[allow(clippy::cast_ref_to_mut)]
+                return Some(updater(k, unsafe { &mut *(v as *const V as *mut V) }));
+            }
         }
         None
     }
@@ -269,8 +269,8 @@ where
     /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 3);
     /// ```
     #[inline]
-    pub fn upsert<'h, 'b, FI: FnOnce() -> V, FU: FnOnce(&K, &mut V)>(
-        &'h self,
+    pub fn upsert<FI: FnOnce() -> V, FU: FnOnce(&K, &mut V)>(
+        &self,
         key: K,
         constructor: FI,
         updater: FU,
@@ -278,17 +278,15 @@ where
         let (hash, partial_hash) = self.hash(&key);
         let barrier = Barrier::new();
         let (_, locker, iterator) = self.acquire(&key, hash, partial_hash, &barrier);
-        let pair_ref = if let Some(iterator) = iterator {
-            iterator.get()
-        } else {
-            locker.cell_ref().search(&key, partial_hash, &barrier)
-        };
-        if let Some((k, v)) = pair_ref {
-            // The presence of `locker` prevents the entry from being modified outside it.
-            updater(&k, unsafe { &mut *(v as *const V as *mut V) });
-        } else {
-            locker.insert(key, constructor(), partial_hash, &barrier);
+        if let Some(iterator) = iterator {
+            if let Some((k, v)) = iterator.get() {
+                // The presence of `locker` prevents the entry from being modified outside it.
+                #[allow(clippy::cast_ref_to_mut)]
+                updater(k, unsafe { &mut *(v as *const V as *mut V) });
+                return;
+            }
         }
+        locker.insert(key, constructor(), partial_hash, &barrier);
     }
 
     /// Removes a key-value pair and returns the key-value-pair if the key exists.
@@ -333,7 +331,7 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let (hash, partial_hash) = self.hash(&key_ref);
+        let (hash, partial_hash) = self.hash(key_ref);
         let barrier = Barrier::new();
         let (cell_index, locker, iterator) = self.acquire(key_ref, hash, partial_hash, &barrier);
         if let Some(mut iterator) = iterator {
@@ -473,20 +471,20 @@ where
             }
 
             for cell_index in 0..current_array_ref.array_size() {
-                if let Some(locker) = CellLocker::lock(current_array_ref.cell(cell_index), &barrier)
-                {
+                if let Some(locker) = Locker::lock(current_array_ref.cell(cell_index), &barrier) {
                     let mut iterator = locker.cell_ref().iter(&barrier);
                     while iterator.next().is_some() {
                         let retain = if let Some((k, v)) = iterator.get() {
+                            #[allow(clippy::cast_ref_to_mut)]
                             filter(k, unsafe { &mut *(v as *const V as *mut V) })
                         } else {
                             true
                         };
-                        if !retain {
+                        if retain {
+                            retained_entries += 1;
+                        } else {
                             locker.erase(&mut iterator);
                             removed_entries += 1;
-                        } else {
-                            retained_entries += 1;
                         }
                         if retained_entries == usize::MAX || removed_entries == usize::MAX {
                             // Gives up iteration on an integer overflow.
@@ -546,6 +544,25 @@ where
     #[inline]
     pub fn len(&self) -> usize {
         self.num_entries(&Barrier::new())
+    }
+
+    /// Returns `true` if the [`HashMap`] is empty.
+    ///
+    /// It scans the entire array to calculate the number of valid entries, making its time
+    /// complexity `O(N)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = Default::default();
+    ///
+    /// assert!(hashmap.is_empty());
+    /// ```
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Returns the capacity of the [`HashMap`].

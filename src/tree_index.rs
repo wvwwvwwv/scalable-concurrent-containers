@@ -1,7 +1,9 @@
-pub mod error;
-pub mod leaf;
-pub mod leaf_node;
-pub mod node;
+//! [`TreeIndex`] implementation.
+
+mod error;
+mod leaf;
+mod leaf_node;
+mod node;
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
 
@@ -30,7 +32,7 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire};
 /// * The maximum number of key-value pairs that a leaf can store: 8.
 /// * The maximum number of leaves or child nodes that a node can point to: 9.
 /// * The size of metadata per key-value pair in a leaf: 3-byte.
-/// * The size of metadata per leaf or node in a node: size_of(K) + 4.
+/// * The size of metadata per leaf or node in a node: `size_of(K)` + 4.
 pub struct TreeIndex<K, V>
 where
     K: 'static + Clone + Ord + Send + Sync,
@@ -76,6 +78,7 @@ where
     ///
     /// assert!(treeindex.read(&1, |_, v| *v).is_none());
     /// ```
+    #[must_use]
     pub fn new() -> TreeIndex<K, V> {
         TreeIndex {
             root: AtomicArc::null(),
@@ -83,6 +86,10 @@ where
     }
 
     /// Inserts a key-value pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error along with the supplied key-value pair if the key exists.
     ///
     /// # Examples
     ///
@@ -203,9 +210,8 @@ where
                 Ok(result) => {
                     if let Some(value) = result {
                         return Some(f(key_ref, value));
-                    } else {
-                        return None;
                     }
+                    return None;
                 }
                 Err(err) => match err {
                     SearchError::Empty => return None,
@@ -265,6 +271,24 @@ where
         self.iter(&barrier).count()
     }
 
+    /// Returns `true` if the [`TreeIndex`] is empty.
+    ///
+    /// It internally scans all the leaf nodes, and therefore the time complexity is O(N).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::TreeIndex;
+    ///
+    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    ///
+    /// assert!(treeindex.is_empty());
+    /// ```
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Returns the depth of the [`TreeIndex`].
     ///
     /// # Examples
@@ -284,11 +308,10 @@ where
     #[inline]
     pub fn depth(&self) -> usize {
         let barrier = Barrier::new();
-        if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
-            root_ref.depth(1, &barrier)
-        } else {
-            0
-        }
+        self.root
+            .load(Acquire, &barrier)
+            .as_ref()
+            .map_or(0, |root_ref| root_ref.depth(1, &barrier))
     }
 
     /// Returns a [`Scanner`].
@@ -355,7 +378,11 @@ where
     K: 'static + Clone + fmt::Display + Ord + Send + Sync,
     V: 'static + Clone + fmt::Display + Send + Sync,
 {
-    /// Prints the TreeIndex contents to the given output in the DOT language.
+    /// Prints the [`TreeIndex`] contents to the given output in the DOT language.
+    ///
+    /// # Errors
+    ///
+    /// An [`io::Error`](std::io::Error) can be returned.
     ///
     /// # Examples
     ///
@@ -425,14 +452,12 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         // Starts scanning.
         if self.leaf_scanner.is_none() {
-            loop {
-                let root_ptr = self.tree.root.load(Acquire, self.barrier);
-                if let Some(root_ref) = root_ptr.as_ref() {
-                    if let Ok(leaf_scanner) = root_ref.min(self.barrier) {
-                        self.leaf_scanner.replace(leaf_scanner);
-                        break;
-                    }
+            let root_ptr = self.tree.root.load(Acquire, self.barrier);
+            if let Some(root_ref) = root_ptr.as_ref() {
+                if let Ok(leaf_scanner) = root_ref.min(self.barrier) {
+                    self.leaf_scanner.replace(leaf_scanner);
                 }
+            } else {
                 return None;
             }
         }
@@ -504,8 +529,7 @@ where
                 let root_ptr = self.tree.root.load(Acquire, self.barrier);
                 if let Some(root_ref) = root_ptr.as_ref() {
                     let min_allowed_key = match self.range.start_bound() {
-                        Excluded(key) => Some(key),
-                        Included(key) => Some(key),
+                        Excluded(key) | Included(key) => Some(key),
                         Unbounded => {
                             self.check_lower_bound = false;
                             None
