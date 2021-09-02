@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicPtr, AtomicU8};
 /// when they are globally unreachable.
 pub(super) struct Collector {
     announcement: u8,
+    x86_announcement: AtomicU8,
     next_epoch_update: usize,
     num_readers: usize,
     num_instances: usize,
@@ -40,6 +41,7 @@ impl Collector {
         let null_ptr: *const Collector = ptr::null();
         let boxed = Box::new(Collector {
             announcement: Self::INACTIVE,
+            x86_announcement: AtomicU8::new(0),
             next_epoch_update: Self::CADENCE,
             num_readers: 0,
             num_instances: 0,
@@ -77,8 +79,18 @@ impl Collector {
             let new_epoch = EPOCH.load(Relaxed);
             self.announcement = new_epoch;
 
-            // What will happen after the fence strictly happens after the fence.
-            fence(SeqCst);
+            if cfg!(any(target_arch = "x86", target_arch = "x86_64")) {
+                // This special optimization is excerpted from
+                // [`crossbeam_epoch`](https://docs.rs/crossbeam-epoch/).
+                //
+                // The rationale behind the code is, it compiles to `lock xchg` that
+                // practically acts as a full memory barrier on `X86`, and is much faster than
+                // `mfence`.
+                self.x86_announcement.swap(new_epoch, SeqCst);
+            } else {
+                // What will happen after the fence strictly happens after the fence.
+                fence(SeqCst);
+            }
 
             if known_epoch != new_epoch {
                 self.epoch_updated();

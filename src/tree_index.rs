@@ -373,7 +373,6 @@ where
     ///     scanned += 1;
     /// }
     /// assert_eq!(scanned, 5);
-
     /// ```
     pub fn range<'t, 'b, R: RangeBounds<K>>(
         &'t self,
