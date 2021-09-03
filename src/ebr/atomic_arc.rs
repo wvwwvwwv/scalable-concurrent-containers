@@ -78,7 +78,7 @@ impl<T: 'static> AtomicArc<T> {
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::null();
-    /// atomic_arc.set_tag(Tag::Both, Relaxed);
+    /// atomic_arc.update_tag_if(Tag::Both, |t| t == Tag::None, Relaxed);
     /// assert!(atomic_arc.is_null(Relaxed));
     /// ```
     #[inline]
@@ -148,7 +148,9 @@ impl<T: 'static> AtomicArc<T> {
         Tag::into_tag(self.instance_ptr.load(order))
     }
 
-    /// Sets a [`Tag`], overwriting any existing tag.
+    /// Sets a new [`Tag`] if the given condition is met.
+    ///
+    /// It returns the previous tag.
     ///
     /// # Examples
     ///
@@ -157,13 +159,13 @@ impl<T: 'static> AtomicArc<T> {
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::null();
-    /// atomic_arc.set_tag(Tag::Both, Relaxed);
+    /// assert!(atomic_arc.update_tag_if(Tag::Both, |t| t == Tag::None, Relaxed));
     /// assert_eq!(atomic_arc.tag(Relaxed), Tag::Both);
     /// ```
     #[inline]
-    pub fn set_tag(&self, tag: Tag, order: Ordering) {
+    pub fn update_tag_if<F: FnMut(Tag) -> bool>(&self, tag: Tag, mut condition: F, order: Ordering) -> bool {
         let mut current = self.instance_ptr.load(Relaxed);
-        loop {
+        while condition(Tag::into_tag(current)) {
             let desired = Tag::update_tag(current, tag) as *mut Underlying<T>;
             if let Err(actual) = self
                 .instance_ptr
@@ -171,9 +173,10 @@ impl<T: 'static> AtomicArc<T> {
             {
                 current = actual;
             } else {
-                break;
+                return true;
             }
         }
+        false
     }
 
     /// Performs CAS on the [`AtomicArc`].
@@ -197,7 +200,7 @@ impl<T: 'static> AtomicArc<T> {
     /// let mut ptr = atomic_arc.load(Relaxed, &barrier);
     /// assert_eq!(*ptr.as_ref().unwrap(), 17);
     ///
-    /// atomic_arc.set_tag(Tag::Both, Relaxed);
+    /// atomic_arc.update_tag_if(Tag::Both, |_| true, Relaxed);
     /// assert!(atomic_arc.compare_exchange(
     ///     ptr, (Some(Arc::new(18)), Tag::First), Relaxed, Relaxed).is_err());
     ///
@@ -379,7 +382,7 @@ mod test {
         drop(atomic_arc);
         assert!(!DESTROYED.load(Relaxed));
 
-        atomic_arc_cloned.set_tag(Tag::Second, Relaxed);
+        atomic_arc_cloned.update_tag_if(Tag::Second, |_| true,Relaxed);
 
         drop(atomic_arc_cloned);
         drop(barrier);
@@ -476,7 +479,7 @@ mod test {
                     }
                     drop(barrier);
 
-                    atomic_arc.set_tag(Tag::None, Relaxed);
+                    atomic_arc.update_tag_if(Tag::None, |_| true, Relaxed);
 
                     let barrier = Barrier::new();
                     ptr = atomic_arc.load(Acquire, &barrier);

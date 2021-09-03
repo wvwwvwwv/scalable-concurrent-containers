@@ -2,8 +2,8 @@ use super::leaf::{Scanner, ARRAY_SIZE};
 use super::Leaf;
 use super::{InsertError, RemoveError, SearchError};
 
-use crate::common::linked_list::LinkedList;
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
+use crate::LinkedList;
 
 use std::borrow::Borrow;
 use std::cmp::Ordering;
@@ -389,26 +389,30 @@ where
         let high_key_leaf_ptr = new_leaves_ref.high_key_leaf.load(Relaxed, barrier);
         let unused_leaf = if high_key_leaf_ptr.is_null() {
             // From here, Scanners can reach the new leaf.
-            full_leaf_ref.push_back(full_leaf_ptr, &[low_key_leaf_ptr], Tag::First, barrier);
+            let result =
+                full_leaf_ref.push_back(low_key_leaf_ptr.try_into_arc().unwrap(), true, barrier);
+            debug_assert!(result.is_ok());
             // Replaces the full leaf with the low-key leaf.
             full_leaf.swap((low_key_leaf_ptr.try_into_arc(), Tag::None), Release)
         } else {
             // From here, Scanners can reach the new leaves.
             //
-            // Immediately unlinking the full leaf causes the current scanners reading the full leaf
+            // Immediately unlinking the full leaf causes active scanners reading the full leaf
             // to omit a number of leaves.
             //  - Leaf: l, insert: i, split: s, rollback: r.
             //  - Insert 1-2: i1(l1)|                   |i2(l2)|s(l2)|l12:l2:l21:l22|l12:l21:l22|
             //  - Insert 0  : i0(l1)|s(l1)|l1:l11:l12:l2|                                       |r|l1:l12...
-            // In this scenario, without keeping l1, l2 in the linked list, l1 would point to l2,
-            // and therefore a range scanner would start from l1, and cannot traverse l21 and l22,
-            // missing newly inserted entries in l21 and l22 before starting the range scanner.
-            full_leaf_ref.push_back(
-                full_leaf_ptr,
-                &[low_key_leaf_ptr, high_key_leaf_ptr],
-                Tag::First,
-                barrier,
-            );
+            // In this scenario, without keeping l1, l2 in the linked list, l1 would point to
+            // l2, and therefore a range scanner would start from l1, and cannot traverse l21
+            // and l22, missing newly inserted entries in l21 and l22 before starting the
+            // range scanner.
+            let result =
+                full_leaf_ref.push_back(high_key_leaf_ptr.try_into_arc().unwrap(), true, barrier);
+            debug_assert!(result.is_ok());
+            let result =
+                full_leaf_ref.push_back(low_key_leaf_ptr.try_into_arc().unwrap(), true, barrier);
+            debug_assert!(result.is_ok());
+
             // Takes the max key value stored in the low key leaf as the leaf key.
             let max_key = low_key_leaf_ptr.as_ref().unwrap().max().unwrap().0;
             if self
@@ -431,7 +435,8 @@ where
         // Drops the deprecated leaf.
         if let Some(unused_leaf) = unused_leaf {
             debug_assert!(unused_leaf.full());
-            unused_leaf.pop_self(Tag::None, barrier);
+            let deleted = unused_leaf.delete_self(Relaxed);
+            debug_assert!(deleted);
             barrier.reclaim(unused_leaf);
         }
 
@@ -606,7 +611,8 @@ where
             let leaf_ref = leaf_ptr.as_ref().unwrap();
             if leaf_ref.obsolete() {
                 // Data race resolution - see LeafScanner::jump.
-                leaf_ref.pop_self(Tag::None, barrier);
+                let deleted = leaf_ref.delete_self(Relaxed);
+                debug_assert!(deleted);
                 empty = self.leaves.0.remove(entry.0).2;
                 // Data race resolution - see LeafNode::search.
                 if let Some(leaf) = entry.1.swap((None, Tag::None), Release) {
@@ -628,7 +634,8 @@ where
             if let Some(unbounded_ref) = unbounded_ptr.as_ref() {
                 if unbounded_ref.obsolete() {
                     // Data race resolution - see LeafScanner::jump.
-                    unbounded_ref.pop_self(Tag::None, barrier);
+                    let deleted = unbounded_ref.delete_self(Relaxed);
+                    debug_assert!(deleted);
                     if let Some(obsolete_leaf) = self.leaves.1.swap((None, Tag::First), Release) {
                         barrier.reclaim(obsolete_leaf);
                     }
@@ -661,12 +668,27 @@ where
 
             // Rolls back the linked list state.
             //
-            // In order to keep the forward_link flag of the origin leaf,
-            // high_key_leaf must be opted out first.
-            if let Some(leaf_ref) = high_key_leaf_ptr
-                .as_ref() { leaf_ref.pop_self(Tag::None, barrier); }
-            if let Some(leaf_ref) = low_key_leaf_ptr
-                .as_ref() { leaf_ref.pop_self(Tag::None, barrier); }
+            // `high_key_leaf` must be deleted first in order for scanners not to omit entries.
+            if let Some(leaf_ref) = high_key_leaf_ptr.as_ref() {
+                let deleted = leaf_ref.delete_self(Relaxed);
+                debug_assert!(deleted);
+            }
+            if let Some(leaf_ref) = low_key_leaf_ptr.as_ref() {
+                let deleted = leaf_ref.delete_self(Release);
+                debug_assert!(deleted);
+            }
+
+            if let Some(origin_leaf) = new_leaves_ref
+                .origin_leaf_ptr
+                .swap((None, Tag::None), Relaxed)
+            {
+                // Remove marks from the full leaf node.
+                //
+                // This unmarking has to be a release-store, otherwise it can be re-ordered
+                // before previous `delete_self` calls.
+                let unmarked = origin_leaf.unmark(Release);
+                debug_assert!(unmarked);
+            }
 
             // Unlocks the leaf node.
             if let Some(new_leaves) = self.new_leaves.swap((None, Tag::None), Release) {
@@ -692,7 +714,8 @@ where
                 .swap((None, Tag::None), Relaxed)
             {
                 // Makes the leaf unreachable before dropping it.
-                obsolete_leaf.pop_self(Tag::None, barrier);
+                let deleted = obsolete_leaf.delete_self(Relaxed);
+                debug_assert!(deleted);
                 barrier.reclaim(obsolete_leaf);
             }
         }
@@ -708,8 +731,8 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
     ) -> std::io::Result<()> {
         // Collects information.
         #[allow(clippy::type_complexity)]
-        let mut leaf_ref_array: [Option<(Option<&Leaf<K, V>>, Option<&K>, usize)>; ARRAY_SIZE + 1] =
-            [None; ARRAY_SIZE + 1];
+        let mut leaf_ref_array: [Option<(Option<&Leaf<K, V>>, Option<&K>, usize)>;
+            ARRAY_SIZE + 1] = [None; ARRAY_SIZE + 1];
         let mut scanner = Scanner::new_including_removed(&self.leaves.0);
         let mut index = 0;
         while let Some(entry) = scanner.next() {
@@ -784,14 +807,6 @@ impl<K: Clone + Display + Ord + Send + Sync, V: Clone + Display + Send + Sync> L
                     ))?;
                 }
                 output.write_fmt(format_args!("</table>\n>]\n"))?;
-                let prev_ptr = leaf_ref.backward_link().load(Acquire, barrier);
-                if let Some(prev_ref) = prev_ptr.as_ref() {
-                    output.write_fmt(format_args!("{} -> {}\n", leaf_ref.id(), prev_ref.id()))?;
-                }
-                let next_ptr = leaf_ref.forward_link().load(Acquire, barrier);
-                if let Some(next_ref) = next_ptr.as_ref() {
-                    output.write_fmt(format_args!("{} -> {}\n", leaf_ref.id(), next_ref.id()))?;
-                }
             }
         }
 
@@ -842,7 +857,10 @@ where
 {
     fn drop(&mut self) {
         if !self.deprecate {
-            self.lock.set_tag(Tag::None, Release);
+            let unlocked = self
+                .lock
+                .update_tag_if(Tag::None, |t| t == Tag::First, Release);
+            debug_assert!(unlocked);
         }
     }
 }

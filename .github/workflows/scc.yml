@@ -25,3 +25,5 @@ jobs:
         run: cargo test --release --verbose
       - name: Bench - Run benchmarks
         run: cargo bench
+      - name: Document - Generate documentation
+        run: cargo doc

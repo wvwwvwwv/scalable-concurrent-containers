@@ -1,7 +1,7 @@
 use std::cmp::PartialEq;
 use std::mem::transmute;
 
-/// [`Tag`] is a four-state enumerator that can be embedded in a pointer as the two least
+/// [`Tag`] is a four-state `Enum` that can be embedded in a pointer as the two least
 /// significant bits of the pointer value.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Tag {
@@ -16,7 +16,7 @@ pub enum Tag {
 }
 
 impl Tag {
-    /// Interpret the [`Tag`] as an integer.
+    /// Interprets the [`Tag`] as an integer.
     pub(super) fn value(self) -> usize {
         match self {
             Self::None => 0,

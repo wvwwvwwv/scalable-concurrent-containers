@@ -1,5 +1,5 @@
-use crate::common::linked_list::LinkedList;
-use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
+use crate::ebr::{Arc, AtomicArc, Barrier};
+use crate::LinkedList;
 
 use std::borrow::Borrow;
 use std::cmp::Ordering;
@@ -46,14 +46,7 @@ where
     entry_array: EntryArray<K, V>,
 
     /// A pointer that points to the next adjacent leaf.
-    ///
-    /// forward_link being tagged 1 means that the next leaf may contain smaller keys.
-    forward_link: AtomicArc<Leaf<K, V>>,
-
-    /// A pointer that points to the previous adjacent leaf.
-    ///
-    /// backward_link being tagged 1 means the leaf is locked.
-    backward_link: AtomicArc<Leaf<K, V>>,
+    link: AtomicArc<Leaf<K, V>>,
 
     /// The metadata that manages the contents.
     metadata: AtomicU32,
@@ -68,8 +61,7 @@ where
     pub fn new() -> Leaf<K, V> {
         Leaf {
             entry_array: unsafe { MaybeUninit::uninit().assume_init() },
-            forward_link: AtomicArc::null(),
-            backward_link: AtomicArc::null(),
+            link: AtomicArc::null(),
             metadata: AtomicU32::new(0),
         }
     }
@@ -747,18 +739,14 @@ where
     }
 }
 
-/// `LinkedList` implementation for `Leaf`.
+/// [`LinkedList`] implementation for [`Leaf`].
 impl<K, V> LinkedList for Leaf<K, V>
 where
     K: 'static + Clone + Ord + Sync,
     V: 'static + Clone + Sync,
 {
-    fn forward_link(&self) -> &AtomicArc<Leaf<K, V>> {
-        &self.forward_link
-    }
-
-    fn backward_link(&self) -> &AtomicArc<Leaf<K, V>> {
-        &self.backward_link
+    fn link_ref(&self) -> &AtomicArc<Leaf<K, V>> {
+        &self.link
     }
 }
 
@@ -864,34 +852,17 @@ where
         min_allowed_key: Option<&K>,
         barrier: &'b Barrier,
     ) -> Option<Scanner<'b, K, V>> {
-        let mut next_ptr = self.leaf.forward_link().load(Acquire, barrier);
-        let mut being_split = next_ptr.tag() == Tag::First;
-        while let Some(next_ref) = next_ptr.as_ref() {
-            let mut leaf_scanner = Scanner::new(next_ref);
-            if let Some(key) = min_allowed_key.as_ref() {
-                if being_split
-                    || leaf_scanner
-                        .leaf
-                        .backward_link()
-                        .load(Acquire, barrier)
-                        .as_raw()
-                        != self.leaf as *const _
-                {
-                    // Data race resolution: compare keys if the current leaf has been unlinked.
+        let mut next_leaf_ptr = self.leaf.next_ptr(barrier);
+        while let Some(next_leaf_ref) = next_leaf_ptr.as_ref() {
+            let mut leaf_scanner = Scanner::new(next_leaf_ref);
+            if let Some(key) = min_allowed_key {
+                if self.leaf.is_deleted(Relaxed) || self.leaf.is_marked(Relaxed) {
+                    // Data race resolution: compare keys if the current leaf has been deleted.
                     //
-                    // There is a chance that the current leaf has been unlinked,
-                    // and smaller keys have been inserted into the next leaf.
-                    //  - Next leaf = nl, current leaf = l, leaf node = ln, unlink = u.
-                    //  - Remove: u_back(nl)|u_forward(l)|release|update(ln)|
-                    //  - Insert:           |                               |insert(nl)|
-                    //  - Scan:   load(nl)  |                               |          |load(nl)
-                    // Therefore, it reads the backward link of the next leaf if it points to the current leaf.
-                    // If not, it compares keys in order not to return keys smaller than the current one.
-                    //  - Remove: u_back(nl)|u_forward(l)|release|update(ln)|
-                    //  - Insert:           |                               |insert(nl)|
-                    //  - Scan:   load(nl)  |                               |          |load(nl)|acquire|validate(nl->l)
+                    // There is a chance that the current leaf has been deleted, and smaller
+                    // keys have been inserted into the next leaf.
                     while let Some(entry) = leaf_scanner.next() {
-                        if key.cmp(&entry.0) == Ordering::Less {
+                        if key.cmp(entry.0) == Ordering::Less {
                             return Some(leaf_scanner);
                         }
                     }
@@ -900,8 +871,7 @@ where
             if leaf_scanner.next().is_some() {
                 return Some(leaf_scanner);
             }
-            next_ptr = leaf_scanner.leaf.forward_link().load(Acquire, barrier);
-            being_split = being_split || next_ptr.tag() == Tag::First;
+            next_leaf_ptr = next_leaf_ref.next_ptr(barrier);
         }
         None
     }

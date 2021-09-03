@@ -107,18 +107,41 @@ impl<'b, T> Ptr<'b, T> {
 
     /// Sets a [`Tag`], overwriting any existing tag.
     ///
+    /// It returns the previous tag.
+    ///
     /// # Examples
     ///
     /// ```
     /// use scc::ebr::{Ptr, Tag};
     ///
     /// let mut ptr: Ptr<usize> = Ptr::null();
-    /// ptr.set_tag(Tag::Both);
+    /// assert_eq!(ptr.set_tag(Tag::Both), Tag::None);
     /// assert_eq!(ptr.tag(), Tag::Both);
     /// ```
     #[inline]
-    pub fn set_tag(&mut self, tag: Tag) {
+    pub fn set_tag(&mut self, tag: Tag) -> Tag {
+        let old_tag = Tag::into_tag(self.instance_ptr);
         self.instance_ptr = Tag::update_tag(self.instance_ptr, tag);
+        old_tag
+    }
+
+    /// Returns a copy of `self` with tags erased.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::{Ptr, Tag};
+    ///
+    /// let mut ptr: Ptr<usize> = Ptr::null();
+    /// ptr.set_tag(Tag::Second);
+    /// assert_eq!(ptr.tag(), Tag::Second);
+    ///
+    /// let ptr_without_tag = ptr.without_tag();
+    /// assert_eq!(ptr_without_tag.tag(), Tag::None);
+    /// ```
+    #[must_use]
+    pub fn without_tag(self) -> Ptr<'b, T> {
+        Ptr::from(Tag::unset_tag(self.instance_ptr))
     }
 
     /// Tries to convert itself into an [`Arc`].

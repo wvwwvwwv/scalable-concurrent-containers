@@ -7,6 +7,7 @@
 A collection of concurrent data structures and building blocks for concurrent programming.
 
 - [scc::ebr](#EBR) implements epoch-based reclamation.
+- [scc::LinkedList](#LinkedList) is a type trait that implements basic wait-free concurrent singly linked list operations.
 - [scc::HashMap](#HashMap) is a concurrent hash map.
 - [scc::HashIndex](#HashIndex) is a concurrent hash index allowing lock-free read and scan.
 - [scc::TreeIndex](#TreeIndex) is a concurrent B+ tree allowing lock-free read and scan.
@@ -34,7 +35,7 @@ let mut ptr: Ptr<usize> = atomic_arc.load(Relaxed, &barrier);
 assert_eq!(*ptr.as_ref().unwrap(), 17);
 
 // `atomic_arc` can be tagged.
-atomic_arc.set_tag(Tag::First, Relaxed);
+atomic_arc.update_tag_if(Tag::First, |t| t == Tag::None, Relaxed);
 
 // `ptr` is not tagged, so CAS fails.
 assert!(atomic_arc.compare_exchange(
@@ -66,6 +67,47 @@ drop(arc);
 
 // `17` is still valid as `barrier` keeps the garbage collector from dropping it.
 assert_eq!(*ptr.as_ref().unwrap(), 17);
+```
+
+## LinkedList
+
+[`LinkedList`](#LinkedList) is a type trait that implements basic wait-free concurrent singly linked list operations, backed by [`EBR`](#EBR). It additionally provides support for marking an entry of a linked list to indicate that the entry is in a user-defined special state.
+
+### Examples
+
+```rust
+use scc::ebr::{Arc, AtomicArc, Barrier};
+use scc::LinkedList;
+use std::sync::atomic::Ordering::Relaxed;
+
+#[derive(Default)]
+struct L(AtomicArc<L>, usize);
+impl LinkedList for L {
+    fn link_ref(&self) -> &AtomicArc<L> {
+        &self.0
+    }
+}
+
+let barrier = Barrier::new();
+
+let head: L = L::default();
+let tail: Arc<L> = Arc::new(L(AtomicArc::null(), 1));
+
+// A new entry is pushed.
+assert!(head.push_back(tail.clone(), false, &barrier).is_ok());
+assert!(!head.is_marked(Relaxed));
+
+// Users can mark a flag on an entry.
+head.mark(Relaxed);
+assert!(head.is_marked(Relaxed));
+
+// `next_ptr` traverses the linked list.
+let next_ptr = head.next_ptr(&barrier);
+assert_eq!(next_ptr.as_ref().unwrap().1, 1);
+
+// Once `tail` is deleted, it becomes invisible.
+tail.delete_self(Relaxed);
+assert!(head.next_ptr(&barrier).is_null());
 ```
 
 ## HashMap
@@ -287,6 +329,11 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 | RemoveR |   8.726s   |   9.357s   |  10.94s    |
 
 ## Changelog
+
+#### 0.5.1
+
+* Add [`LinkedList`](#LinkedList).
+* Fix [`TreeIndex`](#TreeIndex) issues.
 
 #### 0.5.0
 
