@@ -150,7 +150,7 @@ impl<T: 'static> AtomicArc<T> {
 
     /// Sets a new [`Tag`] if the given condition is met.
     ///
-    /// It returns the previous tag.
+    /// It returns `true` if the condition is met.
     ///
     /// # Examples
     ///

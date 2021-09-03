@@ -149,7 +149,7 @@ impl<'b, T> Ptr<'b, T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Arc, Barrier, Ptr};
+    /// use scc::ebr::{Arc, Barrier};
     ///
     /// let arc: Arc<usize> = Arc::new(83);
     /// let barrier = Barrier::new();
