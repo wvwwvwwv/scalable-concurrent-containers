@@ -389,8 +389,12 @@ where
         let high_key_leaf_ptr = new_leaves_ref.high_key_leaf.load(Relaxed, barrier);
         let unused_leaf = if high_key_leaf_ptr.is_null() {
             // From here, Scanners can reach the new leaf.
-            let result =
-                full_leaf_ref.push_back(low_key_leaf_ptr.try_into_arc().unwrap(), true, barrier);
+            let result = full_leaf_ref.push_back(
+                low_key_leaf_ptr.try_into_arc().unwrap(),
+                true,
+                Release,
+                barrier,
+            );
             debug_assert!(result.is_ok());
             // Replaces the full leaf with the low-key leaf.
             full_leaf.swap((low_key_leaf_ptr.try_into_arc(), Tag::None), Release)
@@ -406,11 +410,19 @@ where
             // l2, and therefore a range scanner would start from l1, and cannot traverse l21
             // and l22, missing newly inserted entries in l21 and l22 before starting the
             // range scanner.
-            let result =
-                full_leaf_ref.push_back(high_key_leaf_ptr.try_into_arc().unwrap(), true, barrier);
+            let result = full_leaf_ref.push_back(
+                high_key_leaf_ptr.try_into_arc().unwrap(),
+                true,
+                Release,
+                barrier,
+            );
             debug_assert!(result.is_ok());
-            let result =
-                full_leaf_ref.push_back(low_key_leaf_ptr.try_into_arc().unwrap(), true, barrier);
+            let result = full_leaf_ref.push_back(
+                low_key_leaf_ptr.try_into_arc().unwrap(),
+                true,
+                Release,
+                barrier,
+            );
             debug_assert!(result.is_ok());
 
             // Takes the max key value stored in the low key leaf as the leaf key.
@@ -435,7 +447,7 @@ where
         // Drops the deprecated leaf.
         if let Some(unused_leaf) = unused_leaf {
             debug_assert!(unused_leaf.full());
-            let deleted = unused_leaf.delete_self(Relaxed);
+            let deleted = unused_leaf.delete_self(Release);
             debug_assert!(deleted);
             barrier.reclaim(unused_leaf);
         }

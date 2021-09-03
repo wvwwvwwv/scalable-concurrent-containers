@@ -469,7 +469,7 @@ mod treeindex_test {
                 assert!(prev == 0 || prev < current);
                 prev = current;
             }
-            if i % 64 == 0 {
+            if i % 256 == 0 {
                 println!("{} {}", i, found_markers);
             }
             assert!(found_0);
@@ -518,42 +518,50 @@ mod treeindex_test {
         let data_size = 4096;
         for _ in 0..64 {
             let tree: Arc<TreeIndex<usize, u64>> = Arc::new(TreeIndex::default());
-            let tree_copied = tree.clone();
-            let barrier = Arc::new(Barrier::new(2));
-            let barrier_copied = barrier.clone();
+            let barrier = Arc::new(Barrier::new(3));
             let inserted = Arc::new(AtomicUsize::new(0));
-            let inserted_copied = inserted.clone();
             let removed = Arc::new(AtomicUsize::new(data_size));
-            let removed_copied = removed.clone();
-            let thread_handle = thread::spawn(move || {
-                // test insert
-                for _ in 0..2 {
-                    barrier_copied.wait();
-                    let max = inserted_copied.load(Acquire);
-                    let mut prev = 0;
-                    let mut iterated = 0;
-                    let ebr_barrier = ebr::Barrier::new();
-                    for iter in tree_copied.iter(&ebr_barrier) {
-                        assert!(prev == 0 || prev + 1 == *iter.0);
-                        prev = *iter.0;
-                        iterated += 1;
+            let mut thread_handles = Vec::new();
+            for _ in 0..2 {
+                let tree_copied = tree.clone();
+                let barrier_copied = barrier.clone();
+                let inserted_copied = inserted.clone();
+                let removed_copied = removed.clone();
+                let thread_handle = thread::spawn(move || {
+                    // test insert
+                    for _ in 0..2 {
+                        barrier_copied.wait();
+                        let max = inserted_copied.load(Acquire);
+                        let mut prev = 0;
+                        let mut iterated = 0;
+                        let ebr_barrier = ebr::Barrier::new();
+                        for iter in tree_copied.iter(&ebr_barrier) {
+                            assert!(
+                                prev == 0
+                                    || (*iter.0 <= max && prev + 1 == *iter.0)
+                                    || *iter.0 > prev
+                            );
+                            prev = *iter.0;
+                            iterated += 1;
+                        }
+                        assert!(iterated >= max);
                     }
-                    assert!(iterated >= max);
-                }
-                // test remove
-                for _ in 0..2 {
-                    barrier_copied.wait();
-                    let mut prev = 0;
-                    let max = removed_copied.load(Acquire);
-                    let ebr_barrier = ebr::Barrier::new();
-                    for iter in tree_copied.iter(&ebr_barrier) {
-                        let current = *iter.0;
-                        assert!(current < max);
-                        assert!(prev + 1 == current || prev == 0);
-                        prev = current;
+                    // test remove
+                    for _ in 0..2 {
+                        barrier_copied.wait();
+                        let mut prev = 0;
+                        let max = removed_copied.load(Acquire);
+                        let ebr_barrier = ebr::Barrier::new();
+                        for iter in tree_copied.iter(&ebr_barrier) {
+                            let current = *iter.0;
+                            assert!(current < max);
+                            assert!(prev + 1 == current || prev == 0);
+                            prev = current;
+                        }
                     }
-                }
-            });
+                });
+                thread_handles.push(thread_handle);
+            }
             // insert
             barrier.wait();
             for i in 0..data_size {
@@ -572,7 +580,7 @@ mod treeindex_test {
                 assert!(tree.remove(&i));
                 removed.store(i, Release);
             }
-            thread_handle.join().unwrap();
+            thread_handles.into_iter().for_each(|t| t.join().unwrap());
         }
     }
 }

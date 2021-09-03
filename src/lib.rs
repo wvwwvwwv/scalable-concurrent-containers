@@ -8,7 +8,7 @@
 //! [`HashIndex`], and [`TreeIndex`].
 //!
 //! # [`LinkedList`]
-//! [`LinkedList`] is a type-trait that implements wait-free list modification operations for
+//! [`LinkedList`] is a type trait that implements wait-free list modification operations for
 //! a generic concurrent list.
 //!
 //! # [`HashMap`]

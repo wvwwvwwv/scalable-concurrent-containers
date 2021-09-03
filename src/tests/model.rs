@@ -4,12 +4,13 @@ mod ebr_model {
     use loom::sync::atomic::{AtomicBool, AtomicU8};
 
     use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering::{Relaxed, Release, SeqCst};
+    use std::sync::atomic::Ordering::{Relaxed, SeqCst};
     use std::sync::Arc;
 
     struct ModelCollector {
         announcement: AtomicU8,
         epoch_witnessed: AtomicUsize,
+        num_collected: AtomicUsize,
         collected: [AtomicUsize; 3],
     }
 
@@ -34,23 +35,25 @@ mod ebr_model {
 
         fn collect(&self) {
             self.collected[self.epoch_witnessed.load(Relaxed) % 3].fetch_add(1, Relaxed);
+            self.num_collected.fetch_add(1, Relaxed);
         }
 
         fn end_barrier(&self, epoch: &AtomicU8, ptr: &ModelPointer, other: &ModelCollector) {
             let known_epoch = self.announcement.load(Relaxed);
-            let other_epoch = other.announcement.load(Relaxed);
-            if other_epoch % 2 == 1 || other_epoch == known_epoch {
-                let new = match known_epoch {
-                    0 => 2,
-                    2 => 4,
-                    _ => 0,
-                };
-                fence(SeqCst);
-                epoch.store(new, Relaxed);
-                self.announcement.store(new, Relaxed);
-                self.epoch_updated(ptr);
+            if self.num_collected.load(Relaxed) > 0 {
+                let other_epoch = other.announcement.load(Relaxed);
+                if other_epoch % 2 == 1 || other_epoch == known_epoch {
+                    let new = match known_epoch {
+                        0 => 2,
+                        2 => 4,
+                        _ => 0,
+                    };
+                    fence(SeqCst);
+                    epoch.store(new, Relaxed);
+                    self.announcement.store(new, Relaxed);
+                    self.epoch_updated(ptr);
+                }
             }
-            fence(Release);
             self.announcement.store(known_epoch + 1, Relaxed);
         }
     }
@@ -60,6 +63,7 @@ mod ebr_model {
             ModelCollector {
                 announcement: AtomicU8::new(1),
                 epoch_witnessed: AtomicUsize::new(0),
+                num_collected: AtomicUsize::new(0),
                 collected: Default::default(),
             }
         }

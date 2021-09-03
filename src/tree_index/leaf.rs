@@ -852,11 +852,11 @@ where
         min_allowed_key: Option<&K>,
         barrier: &'b Barrier,
     ) -> Option<Scanner<'b, K, V>> {
-        let mut next_leaf_ptr = self.leaf.next_ptr(barrier);
+        let mut next_leaf_ptr = self.leaf.next_ptr(Acquire, barrier);
         while let Some(next_leaf_ref) = next_leaf_ptr.as_ref() {
             let mut leaf_scanner = Scanner::new(next_leaf_ref);
             if let Some(key) = min_allowed_key {
-                if self.leaf.is_deleted(Relaxed) || self.leaf.is_marked(Relaxed) {
+                if !self.leaf.is_clear(Relaxed) {
                     // Data race resolution: compare keys if the current leaf has been deleted.
                     //
                     // There is a chance that the current leaf has been deleted, and smaller
@@ -866,12 +866,14 @@ where
                             return Some(leaf_scanner);
                         }
                     }
+                    next_leaf_ptr = next_leaf_ref.next_ptr(Acquire, barrier);
+                    continue;
                 }
             }
             if leaf_scanner.next().is_some() {
                 return Some(leaf_scanner);
             }
-            next_leaf_ptr = next_leaf_ref.next_ptr(barrier);
+            next_leaf_ptr = next_leaf_ref.next_ptr(Acquire, barrier);
         }
         None
     }

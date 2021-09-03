@@ -7,7 +7,7 @@
 A collection of concurrent data structures and building blocks for concurrent programming.
 
 - [scc::ebr](#EBR) implements epoch-based reclamation.
-- [scc::LinkedList](#LinkedList) is a type trait that implements basic wait-free concurrent singly linked list operations.
+- [scc::LinkedList](#LinkedList) is a type trait implementing a wait-free concurrent singly linked list.
 - [scc::HashMap](#HashMap) is a concurrent hash map.
 - [scc::HashIndex](#HashIndex) is a concurrent hash index allowing lock-free read and scan.
 - [scc::TreeIndex](#TreeIndex) is a concurrent B+ tree allowing lock-free read and scan.
@@ -71,7 +71,7 @@ assert_eq!(*ptr.as_ref().unwrap(), 17);
 
 ## LinkedList
 
-[`LinkedList`](#LinkedList) is a type trait that implements basic wait-free concurrent singly linked list operations, backed by [`EBR`](#EBR). It additionally provides support for marking an entry of a linked list to indicate that the entry is in a user-defined special state.
+[`LinkedList`](#LinkedList) is a type trait that implements wait-free concurrent singly linked list operations, backed by [`EBR`](#EBR). It additionally provides support for marking an entry of a linked list to indicate that the entry is in a user-defined special state.
 
 ### Examples
 
@@ -94,7 +94,7 @@ let head: L = L::default();
 let tail: Arc<L> = Arc::new(L(AtomicArc::null(), 1));
 
 // A new entry is pushed.
-assert!(head.push_back(tail.clone(), false, &barrier).is_ok());
+assert!(head.push_back(tail.clone(), false, Relaxed, &barrier).is_ok());
 assert!(!head.is_marked(Relaxed));
 
 // Users can mark a flag on an entry.
@@ -102,12 +102,12 @@ head.mark(Relaxed);
 assert!(head.is_marked(Relaxed));
 
 // `next_ptr` traverses the linked list.
-let next_ptr = head.next_ptr(&barrier);
+let next_ptr = head.next_ptr(Relaxed, &barrier);
 assert_eq!(next_ptr.as_ref().unwrap().1, 1);
 
 // Once `tail` is deleted, it becomes invisible.
 tail.delete_self(Relaxed);
-assert!(head.next_ptr(&barrier).is_null());
+assert!(head.next_ptr(Relaxed, &barrier).is_null());
 ```
 
 ## HashMap
@@ -277,7 +277,7 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
 - RAM: 1TB
 - Rust: 1.54.0
-- SCC: 0.5.0
+- SCC: 0.5.0 (HashMap, and HashIndex), 0.5.1 (TreeIndex)
 - HashMap<usize, usize, RandomState> = Default::default()
 - HashIndex<usize, usize, RandomState> = Default::default()
 - TreeIndex<usize, usize> = Default::default()
@@ -328,14 +328,26 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 | MixedR  |  12.343s   |  13.367s   |  15.063s   |
 | RemoveR |   8.726s   |   9.357s   |  10.94s    |
 
+- [`TreeIndex`](#TreeIndex)
+
+|         | 11 threads | 22 threads | 44 threads |
+|---------|------------|------------|------------|
+| InsertL |   6.433s   |  11.117s   |  16.817s   |
+| ReadL   |   1.045s   |   1.106s   |   1.737s   |
+| ScanL   |  11.779s   |  26.093s   |  57.284s   |
+| RemoveL |   5.221s   |   9.460s   |  18.489s   |
+| InsertR |  16.531s   |  17.092s   |  24.066s   |
+| MixedR  |  20.575s   |  20.187s   |  23.871s   |
+| RemoveR |   6.016s   |   6.422s   |   7.34s    |
+
 ## Changelog
 
-#### 0.5.1
+0.5.1
 
 * Add [`LinkedList`](#LinkedList).
 * Fix [`TreeIndex`](#TreeIndex) issues.
 
-#### 0.5.0
+0.5.0
 
-* Own EBR implementation.
+* Own [`EBR`](#EBR) implementation.
 * Substantial API changes.
