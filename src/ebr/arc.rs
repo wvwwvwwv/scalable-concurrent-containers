@@ -141,15 +141,17 @@ mod test {
     use std::sync::atomic::Ordering::Relaxed;
     use std::sync::atomic::{AtomicBool, AtomicUsize};
 
+    struct A(AtomicUsize, usize, &'static AtomicBool);
+    impl Drop for A {
+        fn drop(&mut self) {
+            self.2.swap(true, Relaxed);
+        }
+    }
+
     #[test]
     fn arc() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
-        struct A(AtomicUsize, usize, &'static AtomicBool);
-        impl Drop for A {
-            fn drop(&mut self) {
-                self.2.swap(true, Relaxed);
-            }
-        }
+
         let mut arc = Arc::new(A(AtomicUsize::new(10), 10, &DESTROYED));
         if let Some(mut_ref) = arc.get_mut() {
             mut_ref.1 += 1;
@@ -181,5 +183,18 @@ mod test {
         while !DESTROYED.load(Relaxed) {
             drop(Barrier::new());
         }
+    }
+
+    #[test]
+    fn arc_send() {
+        static DESTROYED: AtomicBool = AtomicBool::new(false);
+
+        let arc = Arc::new(A(AtomicUsize::new(14), 14, &DESTROYED));
+        let arc_cloned = arc.clone();
+        let thread = std::thread::spawn(move || {
+            assert_eq!(arc_cloned.0.load(Relaxed), arc_cloned.1);
+        });
+        assert!(thread.join().is_ok());
+        assert_eq!(arc.0.load(Relaxed), arc.1);
     }
 }

@@ -163,7 +163,12 @@ impl<T: 'static> AtomicArc<T> {
     /// assert_eq!(atomic_arc.tag(Relaxed), Tag::Both);
     /// ```
     #[inline]
-    pub fn update_tag_if<F: FnMut(Tag) -> bool>(&self, tag: Tag, mut condition: F, order: Ordering) -> bool {
+    pub fn update_tag_if<F: FnMut(Tag) -> bool>(
+        &self,
+        tag: Tag,
+        mut condition: F,
+        order: Ordering,
+    ) -> bool {
         let mut current = self.instance_ptr.load(Relaxed);
         while condition(Tag::into_tag(current)) {
             let desired = Tag::update_tag(current, tag) as *mut Underlying<T>;
@@ -382,7 +387,7 @@ mod test {
         drop(atomic_arc);
         assert!(!DESTROYED.load(Relaxed));
 
-        atomic_arc_cloned.update_tag_if(Tag::Second, |_| true,Relaxed);
+        atomic_arc_cloned.update_tag_if(Tag::Second, |_| true, Relaxed);
 
         drop(atomic_arc_cloned);
         drop(barrier);
@@ -390,6 +395,20 @@ mod test {
         while !DESTROYED.load(Relaxed) {
             drop(Barrier::new());
         }
+    }
+
+    #[test]
+    fn atomic_arc_send() {
+        static DESTROYED: AtomicBool = AtomicBool::new(false);
+
+        let atomic_arc = AtomicArc::new(A(AtomicU8::new(14), 14, &DESTROYED));
+        let atomic_arc_cloned = atomic_arc.clone(Relaxed, &Barrier::new());
+        let thread = std::thread::spawn(move || {
+            let barrier = Barrier::new();
+            let ptr = atomic_arc_cloned.load(Relaxed, &barrier);
+            assert_eq!(ptr.as_ref().unwrap().0.load(Relaxed), 14);
+        });
+        assert!(thread.join().is_ok());
     }
 
     #[test]
