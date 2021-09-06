@@ -1,6 +1,6 @@
 [package]
 name = "scc"
-description = "A collection of concurrent data structures and building blocks for concurrent programming."
+description = "A collection of building blocks for concurrent programming."
 version = "0.5.2"
 authors = ["wvwwvwwv <wvwwvwwv@me.com>"]
 edition = "2018"

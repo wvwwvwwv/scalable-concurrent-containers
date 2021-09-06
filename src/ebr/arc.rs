@@ -132,7 +132,8 @@ impl<T: 'static> Drop for Arc<T> {
     }
 }
 
-unsafe impl<T: 'static> Send for Arc<T> {}
+unsafe impl<T: 'static + Send> Send for Arc<T> {}
+unsafe impl<T: 'static + Sync> Sync for Arc<T> {}
 
 #[cfg(test)]
 mod test {
@@ -196,5 +197,18 @@ mod test {
         });
         assert!(thread.join().is_ok());
         assert_eq!(arc.0.load(Relaxed), arc.1);
+    }
+
+    #[test]
+    fn arc_arc_send() {
+        static DESTROYED: AtomicBool = AtomicBool::new(false);
+
+        let arc_arc = std::sync::Arc::new(Arc::new(A(AtomicUsize::new(14), 14, &DESTROYED)));
+        let arc_arc_cloned = arc_arc.clone();
+        let thread = std::thread::spawn(move || {
+            assert_eq!(arc_arc_cloned.0.load(Relaxed), 14);
+        });
+        assert!(thread.join().is_ok());
+        assert_eq!(arc_arc.0.load(Relaxed), 14);
     }
 }

@@ -342,6 +342,10 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 
 ## Changelog
 
+0.5.2
+
+* Fix `ebr::Arc`.
+
 0.5.1
 
 * Add [`LinkedList`](#LinkedList).
