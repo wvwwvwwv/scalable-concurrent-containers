@@ -156,7 +156,7 @@ where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        self.remove_if(key_ref, |_, _| true)
+        self.remove_if(key_ref, |_| true)
     }
 
     /// Removes a key-value pair if the given condition is met.
@@ -169,11 +169,11 @@ where
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
     /// assert!(treeindex.insert(1, 10).is_ok());
-    /// assert!(!treeindex.remove_if(&1, |_, v| *v == 0));
-    /// assert!(treeindex.remove_if(&1, |_, v| *v == 10));
+    /// assert!(!treeindex.remove_if(&1, |v| *v == 0));
+    /// assert!(treeindex.remove_if(&1, |v| *v == 10));
     /// ```
     #[inline]
-    pub fn remove_if<Q, F: FnMut(&K, &V) -> bool>(&self, key_ref: &Q, mut condition: F) -> bool
+    pub fn remove_if<Q, F: FnMut(&V) -> bool>(&self, key_ref: &Q, mut condition: F) -> bool
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,

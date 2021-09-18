@@ -181,7 +181,7 @@ where
     /// The first boolean value returned from the function indicates that an entry has been removed.
     /// The second boolean value indicates that the leaf is full.
     /// The third boolean value indicates that the leaf is empty.
-    pub fn remove_if<Q, F: FnMut(&K, &V) -> bool>(
+    pub fn remove_if<Q, F: FnMut(&V) -> bool>(
         &self,
         key: &Q,
         condition: &mut F,
@@ -212,15 +212,13 @@ where
                     }
                     Ordering::Equal => {
                         loop {
-                            let new_metadata =
-                                (metadata & (!Self::rank_mask(i))) | Self::rank_bits(i, REMOVED);
-
-                            let (k, v) = self.read(i);
-                            if !condition(k, v) {
+                            if !condition(self.read(i).1) {
                                 // The given condition is not met.
                                 break;
                             }
 
+                            let new_metadata =
+                                (metadata & (!Self::rank_mask(i))) | Self::rank_bits(i, REMOVED);
                             match self.metadata.compare_exchange(
                                 metadata,
                                 new_metadata,
@@ -926,17 +924,14 @@ mod test {
         assert_eq!(leaf.max(), Some((&50, &51)));
         assert!(leaf.insert(60, 61).is_none());
         assert!(leaf.insert(70, 71).is_none());
-        assert!(leaf.remove_if(&60, &mut |_, v| *v == 61).0);
+        assert!(leaf.remove_if(&60, &mut |v| *v == 61).0);
         assert!(leaf.insert(60, 61).is_none());
-        assert_eq!(
-            leaf.remove_if(&60, &mut |_, v| *v == 61),
-            (true, false, false)
-        );
+        assert_eq!(leaf.remove_if(&60, &mut |v| *v == 61), (true, false, false));
         assert!(!leaf.full());
         assert!(leaf.insert(40, 40).is_none());
         assert!(leaf.insert(30, 31).is_none());
         assert!(!leaf.full());
-        assert_eq!(leaf.remove_if(&40, &mut |_, _| true), (true, false, false));
+        assert_eq!(leaf.remove_if(&40, &mut |_| true), (true, false, false));
         assert!(leaf.insert(40, 41).is_none());
         assert_eq!(leaf.insert(30, 33), Some(((30, 33), true)));
         assert!(leaf.insert(10, 11).is_none());
@@ -1018,28 +1013,16 @@ mod test {
         assert!(leaf.insert(13, 14).is_none());
         assert_eq!(*leaf.search(&13).unwrap(), 14);
         assert_eq!(leaf.insert(13, 14), Some(((13, 14), true)));
-        assert_eq!(
-            leaf.remove_if(&10, &mut |_, v| *v == 11),
-            (true, false, false)
-        );
-        assert_eq!(
-            leaf.remove_if(&11, &mut |_, v| *v == 0),
-            (false, false, false)
-        );
-        assert_eq!(
-            leaf.remove_if(&11, &mut |_, v| *v == 12),
-            (true, false, false)
-        );
-        assert_eq!(
-            leaf.remove_if(&12, &mut |_, v| *v == 13),
-            (true, false, false)
-        );
+        assert_eq!(leaf.remove_if(&10, &mut |v| *v == 11), (true, false, false));
+        assert_eq!(leaf.remove_if(&11, &mut |v| *v == 0), (false, false, false));
+        assert_eq!(leaf.remove_if(&11, &mut |v| *v == 12), (true, false, false));
+        assert_eq!(leaf.remove_if(&12, &mut |v| *v == 13), (true, false, false));
         assert!(!leaf.full());
-        assert!(leaf.remove_if(&20, &mut |_, _| true).0);
+        assert!(leaf.remove_if(&20, &mut |_| true).0);
         assert!(leaf.insert(20, 21).is_none());
         assert!(leaf.search(&11).is_none());
-        assert_eq!(leaf.remove_if(&10, &mut |_, _| true), (false, true, false));
-        assert_eq!(leaf.remove_if(&11, &mut |_, _| true), (false, true, false));
+        assert_eq!(leaf.remove_if(&10, &mut |_| true), (false, true, false));
+        assert_eq!(leaf.remove_if(&11, &mut |_| true), (false, true, false));
         assert_eq!(*leaf.search(&20).unwrap(), 21);
         assert_eq!(leaf.max(), Some((&20, &21)));
         assert!(leaf.full());
@@ -1078,12 +1061,12 @@ mod test {
             assert!(leaf.insert(i, i).is_none());
         }
         for i in 0..ARRAY_SIZE - 1 {
-            assert_eq!(leaf.remove_if(&i, &mut |_, v| *v == i), (true, true, false));
+            assert_eq!(leaf.remove_if(&i, &mut |v| *v == i), (true, true, false));
         }
         assert!(leaf.full());
         assert!(!leaf.obsolete());
         assert_eq!(
-            leaf.remove_if(&(ARRAY_SIZE - 1), &mut |_, _| true),
+            leaf.remove_if(&(ARRAY_SIZE - 1), &mut |_| true),
             (true, true, true)
         );
         assert_eq!(
@@ -1110,7 +1093,7 @@ mod test {
             assert!(leaf1.insert(i, i).is_none());
             assert!(leaf2.insert(i + 4, i + 4).is_none());
             assert_eq!(
-                leaf2.remove_if(&(i + 4), &mut |_, _| true),
+                leaf2.remove_if(&(i + 4), &mut |_| true),
                 (true, false, true)
             );
         }
@@ -1146,7 +1129,7 @@ mod test {
                     if result.is_none() {
                         assert_eq!(*leaf_copied.search(&tid).unwrap(), 1);
                         if tid % 2 != 0 {
-                            assert!(leaf_copied.remove_if(&tid, &mut |_, v| *v == 1).0);
+                            assert!(leaf_copied.remove_if(&tid, &mut |v| *v == 1).0);
                         }
                     }
                     let mut scanner = Scanner::new(&leaf_copied);

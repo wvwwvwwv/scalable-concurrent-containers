@@ -121,7 +121,7 @@ where
     }
 
     /// Removes an entry associated with the given key.
-    pub fn remove<Q, F: FnMut(&K, &V) -> bool>(
+    pub fn remove<Q, F: FnMut(&V) -> bool>(
         &self,
         key: &Q,
         condition: &mut F,
@@ -533,7 +533,7 @@ where
     }
 
     /// Removes an entry associated with the given key.
-    fn remove<Q, F: FnMut(&K, &V) -> bool>(
+    fn remove<Q, F: FnMut(&V) -> bool>(
         &self,
         key: &Q,
         condition: &mut F,
@@ -907,7 +907,7 @@ where
             let node_ptr = entry.1.load(Relaxed, barrier);
             let node_ref = node_ptr.as_ref().unwrap();
             if node_ref.obsolete(barrier) {
-                self.children.0.remove_if(entry.0, &mut |_, _| true);
+                self.children.0.remove_if(entry.0, &mut |_| true);
                 // Once the key is removed, it is safe to deallocate the node as the validation
                 // loop ensures the absence of readers.
                 if let Some(node) = entry.1.swap((None, Tag::None), Release) {
@@ -928,7 +928,7 @@ where
                         Release,
                     );
                     // Then, removes the node from the children list.
-                    if self.children.0.remove_if(max_entry.0, &mut |_, _| true).2 {
+                    if self.children.0.remove_if(max_entry.0, &mut |_| true).2 {
                         // Retires the children if it was the last child.
                         let result = self.children.0.retire();
                         debug_assert!(result);

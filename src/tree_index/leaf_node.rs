@@ -261,7 +261,7 @@ where
     }
 
     /// Removes an entry associated with the given key.
-    pub fn remove<Q, F: FnMut(&K, &V) -> bool>(
+    pub fn remove<Q, F: FnMut(&V) -> bool>(
         &self,
         key_ref: &Q,
         condition: &mut F,
@@ -630,7 +630,7 @@ where
                 // Data race resolution - see LeafScanner::jump.
                 let deleted = leaf_ref.delete_self(Relaxed);
                 debug_assert!(deleted);
-                empty = self.leaves.0.remove_if(entry.0, &mut |_, _| true).2;
+                empty = self.leaves.0.remove_if(entry.0, &mut |_| true).2;
                 // Data race resolution - see LeafNode::search.
                 if let Some(leaf) = entry.1.swap((None, Tag::None), Release) {
                     barrier.reclaim(leaf);
