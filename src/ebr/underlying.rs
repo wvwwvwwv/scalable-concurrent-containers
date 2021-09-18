@@ -104,7 +104,7 @@ impl<T> Link for Underlying<T> {
     }
 }
 
-/// The [`Link`]` trait defines necessary methods for an instance to be reclaimed by the EBR
+/// The [`Link`] trait defines necessary methods for an instance to be reclaimed by the EBR
 /// garbage collector.
 pub(super) trait Link {
     /// Sets the next [`Link`] instance.
