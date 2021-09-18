@@ -54,7 +54,9 @@ impl Collector {
         let ptr = Box::into_raw(boxed);
         let mut current = ANCHOR.load(Relaxed);
         loop {
-            unsafe { (*ptr).next_collector = Tag::unset_tag(current) as *mut Collector; }
+            unsafe {
+                (*ptr).next_collector = Tag::unset_tag(current) as *mut Collector;
+            }
             let new = if let Tag::First = Tag::into_tag(current) {
                 // It keeps the tag intact.
                 Tag::update_tag(ptr, Tag::First) as *mut Collector
@@ -172,24 +174,29 @@ impl Collector {
                         break;
                     } else if (other_collector_ref.announcement & Self::INVALID) != 0 {
                         // The collector is obsolete.
-                        let reclaimable = unsafe { prev_collector_ptr.as_mut() }.map_or_else(|| ANCHOR
-                                .fetch_update(Release, Relaxed, |p| {
-                                    debug_assert!(Tag::into_tag(p) == Tag::First);
-                                    if ptr::eq(Tag::unset_tag(p), collector_ptr) {
-                                        Some(Tag::update_tag(
-                                            other_collector_ref.next_collector,
-                                            Tag::First,
-                                        )
-                                            as *mut Collector)
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .is_ok(), |prev_collector_ref| {
-                            (*prev_collector_ref).next_collector =
-                                other_collector_ref.next_collector;
-                            true
-                        });
+                        let reclaimable = unsafe { prev_collector_ptr.as_mut() }.map_or_else(
+                            || {
+                                ANCHOR
+                                    .fetch_update(Release, Relaxed, |p| {
+                                        debug_assert!(Tag::into_tag(p) == Tag::First);
+                                        if ptr::eq(Tag::unset_tag(p), collector_ptr) {
+                                            Some(Tag::update_tag(
+                                                other_collector_ref.next_collector,
+                                                Tag::First,
+                                            )
+                                                as *mut Collector)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .is_ok()
+                            },
+                            |prev_collector_ref| {
+                                (*prev_collector_ref).next_collector =
+                                    other_collector_ref.next_collector;
+                                true
+                            },
+                        );
                         if reclaimable {
                             collector_ptr = other_collector_ref.next_collector;
                             let ptr = other_collector_ref as *const Collector as *mut Collector;

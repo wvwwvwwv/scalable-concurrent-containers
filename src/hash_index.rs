@@ -1,6 +1,6 @@
 //! [`HashIndex`] implementation.
 
-use crate::common::cell::{Locker, EntryIterator};
+use crate::common::cell::{EntryIterator, Locker};
 use crate::common::cell_array::CellArray;
 use crate::common::hash_table::HashTable;
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
@@ -305,9 +305,7 @@ where
                 }
             }
             for index in 0..current_array_ref.array_size() {
-                if let Some(mut locker) =
-                    Locker::lock(current_array_ref.cell(index), &barrier)
-                {
+                if let Some(mut locker) = Locker::lock(current_array_ref.cell(index), &barrier) {
                     num_removed += locker.cell_ref().num_entries();
                     locker.purge(&barrier);
                 }

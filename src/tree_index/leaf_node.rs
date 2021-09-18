@@ -261,7 +261,12 @@ where
     }
 
     /// Removes an entry associated with the given key.
-    pub fn remove<Q>(&self, key_ref: &Q, barrier: &Barrier) -> Result<bool, RemoveError>
+    pub fn remove<Q, F: FnMut(&K, &V) -> bool>(
+        &self,
+        key_ref: &Q,
+        condition: &mut F,
+        barrier: &Barrier,
+    ) -> Result<bool, RemoveError>
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
@@ -275,7 +280,7 @@ where
                     continue;
                 }
                 if let Some(child_ref) = child_ptr.as_ref() {
-                    let (removed, full, empty) = child_ref.remove(key_ref);
+                    let (removed, full, empty) = child_ref.remove_if(key_ref, condition);
                     if !full && !empty {
                         return Ok(removed);
                     } else if !empty {
@@ -302,7 +307,7 @@ where
                     // Data race resolution - see LeafNode::search.
                     continue;
                 }
-                let (removed, full, empty) = unbounded_ref.remove(key_ref);
+                let (removed, full, empty) = unbounded_ref.remove_if(key_ref, condition);
                 if !full && !empty {
                     return Ok(removed);
                 } else if !empty {
@@ -625,7 +630,7 @@ where
                 // Data race resolution - see LeafScanner::jump.
                 let deleted = leaf_ref.delete_self(Relaxed);
                 debug_assert!(deleted);
-                empty = self.leaves.0.remove(entry.0).2;
+                empty = self.leaves.0.remove_if(entry.0, &mut |_, _| true).2;
                 // Data race resolution - see LeafNode::search.
                 if let Some(leaf) = entry.1.swap((None, Tag::None), Release) {
                     barrier.reclaim(leaf);

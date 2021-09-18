@@ -1,4 +1,4 @@
-use super::cell::{Reader, EntryIterator, Locker};
+use super::cell::{EntryIterator, Locker, Reader};
 use super::cell_array::CellArray;
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
@@ -126,8 +126,7 @@ where
                     if let Some(entry) = cell_ref.search(key_ref, partial_hash, &barrier) {
                         return Some(reader(&entry.0, &entry.1));
                     }
-                } else if let Some(locker) =
-                    Reader::lock(old_array_ref.cell(cell_index), &barrier)
+                } else if let Some(locker) = Reader::lock(old_array_ref.cell(cell_index), &barrier)
                 {
                     if let Some((key, value)) =
                         locker.cell_ref().search(key_ref, partial_hash, &barrier)
@@ -142,8 +141,7 @@ where
                 if let Some(entry) = cell_ref.search(key_ref, partial_hash, &barrier) {
                     return Some(reader(&entry.0, &entry.1));
                 }
-            } else if let Some(locker) =
-                Reader::lock(current_array_ref.cell(cell_index), &barrier)
+            } else if let Some(locker) = Reader::lock(current_array_ref.cell(cell_index), &barrier)
             {
                 if let Some((key, value)) =
                     locker.cell_ref().search(key_ref, partial_hash, &barrier)

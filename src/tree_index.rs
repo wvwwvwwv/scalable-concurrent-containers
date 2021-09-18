@@ -169,11 +169,11 @@ where
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
     /// assert!(treeindex.insert(1, 10).is_ok());
-    /// // assert!(!treeindex.remove_if(&1, |_, v| *v == 0));
+    /// assert!(!treeindex.remove_if(&1, |_, v| *v == 0));
     /// assert!(treeindex.remove_if(&1, |_, v| *v == 10));
     /// ```
     #[inline]
-    pub fn remove_if<Q, F: FnMut(&K, &V) -> bool>(&self, key_ref: &Q, _condition: F) -> bool
+    pub fn remove_if<Q, F: FnMut(&K, &V) -> bool>(&self, key_ref: &Q, mut condition: F) -> bool
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
@@ -182,7 +182,7 @@ where
         let barrier = Barrier::new();
         let mut root_ptr = self.root.load(Acquire, &barrier);
         while let Some(root_ref) = root_ptr.as_ref() {
-            match root_ref.remove(key_ref, &barrier) {
+            match root_ref.remove(key_ref, &mut condition, &barrier) {
                 Ok(removed) => return removed || has_been_removed,
                 Err(remove_error) => match remove_error {
                     RemoveError::Empty(removed) => {

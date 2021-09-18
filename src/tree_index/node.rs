@@ -121,14 +121,19 @@ where
     }
 
     /// Removes an entry associated with the given key.
-    pub fn remove<Q>(&self, key: &Q, barrier: &Barrier) -> Result<bool, RemoveError>
+    pub fn remove<Q, F: FnMut(&K, &V) -> bool>(
+        &self,
+        key: &Q,
+        condition: &mut F,
+        barrier: &Barrier,
+    ) -> Result<bool, RemoveError>
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
         match &self.entry {
-            NodeType::Internal(internal_node) => internal_node.remove(key, barrier),
-            NodeType::Leaf(leaf_node) => leaf_node.remove(key, barrier),
+            NodeType::Internal(internal_node) => internal_node.remove(key, condition, barrier),
+            NodeType::Leaf(leaf_node) => leaf_node.remove(key, condition, barrier),
         }
     }
 
@@ -528,7 +533,12 @@ where
     }
 
     /// Removes an entry associated with the given key.
-    fn remove<Q>(&self, key: &Q, barrier: &Barrier) -> Result<bool, RemoveError>
+    fn remove<Q, F: FnMut(&K, &V) -> bool>(
+        &self,
+        key: &Q,
+        condition: &mut F,
+        barrier: &Barrier,
+    ) -> Result<bool, RemoveError>
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
@@ -542,7 +552,7 @@ where
                     continue;
                 }
                 if let Some(child_ref) = child_ptr.as_ref() {
-                    return match child_ref.remove(key, barrier) {
+                    return match child_ref.remove(key, condition, barrier) {
                         Ok(removed) => Ok(removed),
                         Err(remove_error) => match remove_error {
                             RemoveError::Empty(removed) => self.coalesce(removed, barrier),
@@ -560,7 +570,7 @@ where
                     // Data race resolution - see LeafNode::search.
                     continue;
                 }
-                return match unbounded_ref.remove(key, barrier) {
+                return match unbounded_ref.remove(key, condition, barrier) {
                     Ok(removed) => Ok(removed),
                     Err(remove_error) => match remove_error {
                         RemoveError::Empty(removed) => self.coalesce(removed, barrier),
@@ -897,7 +907,7 @@ where
             let node_ptr = entry.1.load(Relaxed, barrier);
             let node_ref = node_ptr.as_ref().unwrap();
             if node_ref.obsolete(barrier) {
-                self.children.0.remove(entry.0);
+                self.children.0.remove_if(entry.0, &mut |_, _| true);
                 // Once the key is removed, it is safe to deallocate the node as the validation
                 // loop ensures the absence of readers.
                 if let Some(node) = entry.1.swap((None, Tag::None), Release) {
@@ -918,7 +928,7 @@ where
                         Release,
                     );
                     // Then, removes the node from the children list.
-                    if self.children.0.remove(max_entry.0).2 {
+                    if self.children.0.remove_if(max_entry.0, &mut |_, _| true).2 {
                         // Retires the children if it was the last child.
                         let result = self.children.0.retire();
                         debug_assert!(result);
