@@ -186,6 +186,15 @@ where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
+        self.remove_if(key, &mut |_, _| true)
+    }
+
+    /// Removes the key if the condition is met.
+    pub fn remove_if<Q, F: FnMut(&K, &V) -> bool>(&self, key: &Q, condition: &mut F) -> (bool, bool, bool)
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         let mut removed = false;
         let mut full = true;
         let mut empty = true;
@@ -210,6 +219,13 @@ where
                         loop {
                             let new_metadata =
                                 (metadata & (!Self::rank_mask(i))) | Self::rank_bits(i, REMOVED);
+
+                            let (k, v) = self.read(i);
+                            if !condition(k, v) {
+                                // The given condition is not met.
+                                break;
+                            }
+
                             match self.metadata.compare_exchange(
                                 metadata,
                                 new_metadata,

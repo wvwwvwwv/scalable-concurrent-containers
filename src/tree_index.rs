@@ -156,6 +156,28 @@ where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
+        self.remove_if(key_ref, |_, _| true)
+    }
+
+    /// Removes a key-value pair if the given condition is met.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::TreeIndex;
+    ///
+    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    ///
+    /// assert!(treeindex.insert(1, 10).is_ok());
+    /// // assert!(!treeindex.remove_if(&1, |_, v| *v == 0));
+    /// assert!(treeindex.remove_if(&1, |_, v| *v == 10));
+    /// ```
+    #[inline]
+    pub fn remove_if<Q, F: FnMut(&K, &V) -> bool>(&self, key_ref: &Q, _condition: F) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         let mut has_been_removed = false;
         let barrier = Barrier::new();
         let mut root_ptr = self.root.load(Acquire, &barrier);
