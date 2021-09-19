@@ -182,7 +182,7 @@ where
         let barrier = Barrier::new();
         let mut root_ptr = self.root.load(Acquire, &barrier);
         while let Some(root_ref) = root_ptr.as_ref() {
-            match root_ref.remove(key_ref, &mut condition, &barrier) {
+            match root_ref.remove_if(key_ref, &mut condition, &barrier) {
                 Ok(removed) => return removed || has_been_removed,
                 Err(remove_error) => match remove_error {
                     RemoveError::Empty(removed) => {

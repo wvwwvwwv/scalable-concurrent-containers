@@ -261,7 +261,7 @@ where
     }
 
     /// Removes an entry associated with the given key.
-    pub fn remove<Q, F: FnMut(&V) -> bool>(
+    pub fn remove_if<Q, F: FnMut(&V) -> bool>(
         &self,
         key_ref: &Q,
         condition: &mut F,
@@ -281,9 +281,7 @@ where
                 }
                 if let Some(child_ref) = child_ptr.as_ref() {
                     let (removed, full, empty) = child_ref.remove_if(key_ref, condition);
-                    if !full && !empty {
-                        return Ok(removed);
-                    } else if !empty {
+                    if full && !self.check_full_leaf(key_ref, child_ptr, barrier) {
                         // Data race resolution.
                         //  - Insert: start to insert into a full leaf
                         //  - Remove: start removing an entry from the leaf after pointer validation
@@ -291,10 +289,13 @@ where
                         //  - Remove: find the leaf full, and the leaf node is not locked, returning 'Ok(true)'
                         // Consequently, the key remains.
                         // In order to resolve this, check the pointer again.
-                        return self.check_full_leaf(removed, key_ref, child_ptr, barrier);
+                        return Err(RemoveError::Retry(removed));
                     }
-                    child_ref.retire();
-                    return self.coalesce(removed, barrier);
+                    if empty {
+                        child_ref.retire();
+                        return self.coalesce(removed, barrier);
+                    }
+                    return Ok(removed);
                 }
 
                 // `child_ptr` being null indicates that the leaf node is bound to be freed.
@@ -308,14 +309,15 @@ where
                     continue;
                 }
                 let (removed, full, empty) = unbounded_ref.remove_if(key_ref, condition);
-                if !full && !empty {
-                    return Ok(removed);
-                } else if !empty {
+                if full && !self.check_full_leaf(key_ref, unbounded_ptr, barrier) {
                     // Data race resolution - see above.
-                    return self.check_full_leaf(removed, key_ref, unbounded_ptr, barrier);
+                    return Err(RemoveError::Retry(removed));
                 }
-                unbounded_ref.retire();
-                return self.coalesce(removed, barrier);
+                if empty {
+                    unbounded_ref.retire();
+                    return self.coalesce(removed, barrier);
+                }
+                return Ok(removed);
             }
             if unbounded_ptr.tag() == Tag::First {
                 // The leaf node has become obsolete.
@@ -577,13 +579,7 @@ where
     }
 
     /// Checks the given full leaf whether it is being split.
-    fn check_full_leaf<Q>(
-        &self,
-        removed: bool,
-        key_ref: &Q,
-        leaf_ptr: Ptr<Leaf<K, V>>,
-        barrier: &Barrier,
-    ) -> Result<bool, RemoveError>
+    fn check_full_leaf<Q>(&self, key_ref: &Q, leaf_ptr: Ptr<Leaf<K, V>>, barrier: &Barrier) -> bool
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
@@ -600,7 +596,7 @@ where
             .compare_exchange(Ptr::null(), (None, Tag::None), AcqRel, Relaxed)
             .is_err()
         {
-            return Err(RemoveError::Retry(removed));
+            return false;
         }
         let result = (self.leaves.0).min_greater_equal(key_ref);
         let leaf_current_ptr = if let Some((_, child)) = result.0 {
@@ -608,11 +604,7 @@ where
         } else {
             self.leaves.1.load(Relaxed, barrier)
         };
-        if leaf_current_ptr == leaf_ptr {
-            Ok(removed)
-        } else {
-            Err(RemoveError::Retry(removed))
-        }
+        leaf_current_ptr == leaf_ptr
     }
 
     /// Tries to coalesce empty or obsolete leaves.

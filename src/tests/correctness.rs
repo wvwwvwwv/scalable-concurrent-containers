@@ -486,6 +486,7 @@ mod treeindex_test {
     fn remove() {
         let num_threads = 16;
         let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::new());
+        let _result = tree.insert(1000, 0);
         let barrier = Arc::new(Barrier::new(num_threads));
         let mut thread_handles = Vec::with_capacity(num_threads);
         for thread_id in 0..num_threads {
@@ -494,22 +495,31 @@ mod treeindex_test {
             thread_handles.push(thread::spawn(move || {
                 barrier_copied.wait();
                 for _ in 0..4096 {
-                    let _inserted = (0..num_threads)
+                    let range = 0..32;
+                    let inserted = range
+                        .clone()
                         .filter(|i| tree_copied.insert(*i, thread_id).is_ok())
                         .count();
-                    let _found = (0..num_threads)
-                        .filter(|i| tree_copied.read(i, |_, v| *v == thread_id).map_or(false, |t| t))
+                    let found = range
+                        .clone()
+                        .filter(|i| {
+                            tree_copied
+                                .read(i, |_, v| *v == thread_id)
+                                .map_or(false, |t| t)
+                        })
                         .count();
-                    let _removed = (0..num_threads)
+                    let removed = range
+                        .clone()
                         .filter(|i| tree_copied.remove_if(i, |v| *v == thread_id))
                         .count();
-                    let _removed_again = (0..num_threads)
+                    let removed_again = range
+                        .clone()
                         .filter(|i| tree_copied.remove_if(i, |v| *v == thread_id))
                         .count();
-                    //assert_eq!(removed_again, 0);
-                    //assert_eq!(found, removed);
-                    //assert_eq!(inserted, found);
-                    //assert_eq!(inserted, removed);
+                    assert_eq!(removed_again, 0);
+                    assert_eq!(found, removed);
+                    assert_eq!(inserted, found);
+                    assert_eq!(inserted, removed);
                 }
             }));
         }

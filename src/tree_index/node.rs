@@ -121,7 +121,7 @@ where
     }
 
     /// Removes an entry associated with the given key.
-    pub fn remove<Q, F: FnMut(&V) -> bool>(
+    pub fn remove_if<Q, F: FnMut(&V) -> bool>(
         &self,
         key: &Q,
         condition: &mut F,
@@ -132,8 +132,8 @@ where
         Q: Ord + ?Sized,
     {
         match &self.entry {
-            NodeType::Internal(internal_node) => internal_node.remove(key, condition, barrier),
-            NodeType::Leaf(leaf_node) => leaf_node.remove(key, condition, barrier),
+            NodeType::Internal(internal_node) => internal_node.remove_if(key, condition, barrier),
+            NodeType::Leaf(leaf_node) => leaf_node.remove_if(key, condition, barrier),
         }
     }
 
@@ -533,7 +533,7 @@ where
     }
 
     /// Removes an entry associated with the given key.
-    fn remove<Q, F: FnMut(&V) -> bool>(
+    fn remove_if<Q, F: FnMut(&V) -> bool>(
         &self,
         key: &Q,
         condition: &mut F,
@@ -552,7 +552,7 @@ where
                     continue;
                 }
                 if let Some(child_ref) = child_ptr.as_ref() {
-                    return match child_ref.remove(key, condition, barrier) {
+                    return match child_ref.remove_if(key, condition, barrier) {
                         Ok(removed) => Ok(removed),
                         Err(remove_error) => match remove_error {
                             RemoveError::Empty(removed) => self.coalesce(removed, barrier),
@@ -570,7 +570,7 @@ where
                     // Data race resolution - see LeafNode::search.
                     continue;
                 }
-                return match unbounded_ref.remove(key, condition, barrier) {
+                return match unbounded_ref.remove_if(key, condition, barrier) {
                     Ok(removed) => Ok(removed),
                     Err(remove_error) => match remove_error {
                         RemoveError::Empty(removed) => self.coalesce(removed, barrier),
