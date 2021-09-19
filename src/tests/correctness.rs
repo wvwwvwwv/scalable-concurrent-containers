@@ -390,7 +390,7 @@ mod treeindex_test {
         let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::new());
         for t in 0..num_threads {
             // insert markers
-            tree.insert(t * range, t * range).unwrap();
+            assert!(tree.insert(t * range, t * range).is_ok());
         }
         let stopped: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
         let barrier = Arc::new(Barrier::new(num_threads + 1));

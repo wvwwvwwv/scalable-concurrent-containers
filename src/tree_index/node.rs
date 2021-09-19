@@ -495,7 +495,7 @@ where
                 return Err(InsertError::Retry((key, value)));
             }
 
-            let unbounded_ptr = self.children.1.load(Relaxed, barrier);
+            let unbounded_ptr = self.children.1.load(Acquire, barrier);
             if let Some(unbounded_ref) = unbounded_ptr.as_ref() {
                 debug_assert!(unbounded_ptr.tag() == Tag::None);
                 if !(self.children.0).validate(result.1) {

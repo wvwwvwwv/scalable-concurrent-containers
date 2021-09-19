@@ -86,7 +86,7 @@ where
                 // `child_ptr` being null indicates that the leaf node is bound to be freed.
                 return Err(SearchError::Retry);
             }
-            let unbounded_ptr = (self.leaves.1).load(Relaxed, barrier);
+            let unbounded_ptr = (self.leaves.1).load(Acquire, barrier);
             if let Some(unbounded_ref) = unbounded_ptr.as_ref() {
                 debug_assert!(unbounded_ptr.tag() == Tag::None);
                 if !(self.leaves.0).validate(result.1) {
@@ -121,7 +121,7 @@ where
                 // `child_ptr` being null indicates that the leaf node is bound to be freed.
                 return Err(SearchError::Retry);
             }
-            let unbounded_ptr = (self.leaves.1).load(Relaxed, barrier);
+            let unbounded_ptr = (self.leaves.1).load(Acquire, barrier);
             if let Some(unbounded_ref) = unbounded_ptr.as_ref() {
                 debug_assert!(unbounded_ptr.tag() == Tag::None);
                 if !(self.leaves.0).validate(metadata) {
@@ -160,7 +160,7 @@ where
                 // `child_ptr` being null indicates that the leaf node is bound to be freed.
                 return Err(SearchError::Retry);
             }
-            let unbounded_ptr = (self.leaves.1).load(Relaxed, barrier);
+            let unbounded_ptr = (self.leaves.1).load(Acquire, barrier);
             if let Some(unbounded_ref) = unbounded_ptr.as_ref() {
                 debug_assert!(unbounded_ptr.tag() == Tag::None);
                 if !(self.leaves.0).validate(metadata) {
@@ -208,7 +208,7 @@ where
                 return Err(InsertError::Retry((key, value)));
             }
 
-            let mut unbounded_ptr = self.leaves.1.load(Relaxed, barrier);
+            let mut unbounded_ptr = self.leaves.1.load(Acquire, barrier);
             while unbounded_ptr.is_null() {
                 if unbounded_ptr.tag() == Tag::First {
                     // The leaf node has become obsolete.
@@ -220,8 +220,8 @@ where
                 match self.leaves.1.compare_exchange(
                     unbounded_ptr,
                     (Some(Arc::new(Leaf::new())), Tag::None),
-                    Release,
-                    Relaxed,
+                    AcqRel,
+                    Acquire,
                 ) {
                     Ok((_, ptr)) => {
                         unbounded_ptr = ptr;
@@ -303,7 +303,7 @@ where
                 // `child_ptr` being null indicates that the leaf node is bound to be freed.
                 return Err(RemoveError::Retry(false));
             }
-            let unbounded_ptr = (self.leaves.1).load(Relaxed, barrier);
+            let unbounded_ptr = (self.leaves.1).load(Acquire, barrier);
             if let Some(unbounded_ref) = unbounded_ptr.as_ref() {
                 debug_assert!(unbounded_ptr.tag() == Tag::None);
                 if !(self.leaves.0).validate(result.1) {

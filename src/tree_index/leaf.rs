@@ -378,8 +378,7 @@ where
 
     /// Compares the given metadata value with the current one.
     pub fn validate(&self, metadata: u32) -> bool {
-        // The acquire fence ensures that a reader having read the latest state must read the updated metadata.
-        std::sync::atomic::fence(Acquire);
+        // `Relaxed` is sufficient as long as the caller has read-acquired its contents.
         self.metadata.load(Relaxed) == metadata
     }
 

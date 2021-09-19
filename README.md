@@ -340,6 +340,10 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 
 ## Changelog
 
+0.5.4
+
+* Fix [`TreeIndex`](#TreeIndex) issue [#60](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/60).
+
 0.5.3
 
 * Add `TreeIndex::remove_if`.
