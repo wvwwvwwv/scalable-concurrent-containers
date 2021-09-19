@@ -292,7 +292,9 @@ where
                         return Err(RemoveError::Retry(removed));
                     }
                     if empty {
-                        child_ref.retire();
+                        if !child_ref.retire() {
+                            return Err(RemoveError::Retry(removed));
+                        }
                         return self.coalesce(removed, barrier);
                     }
                     return Ok(removed);
@@ -314,7 +316,9 @@ where
                     return Err(RemoveError::Retry(removed));
                 }
                 if empty {
-                    unbounded_ref.retire();
+                    if !unbounded_ref.retire() {
+                        return Err(RemoveError::Retry(removed));
+                    }
                     return self.coalesce(removed, barrier);
                 }
                 return Ok(removed);
@@ -614,7 +618,7 @@ where
             return Err(RemoveError::Retry(removed));
         }
 
-        let mut empty = false;
+        let mut num_valid_leaves = 0;
         for entry in Scanner::new(&self.leaves.0) {
             let leaf_ptr = entry.1.load(Relaxed, barrier);
             let leaf_ref = leaf_ptr.as_ref().unwrap();
@@ -622,16 +626,18 @@ where
                 // Data race resolution - see LeafScanner::jump.
                 let deleted = leaf_ref.delete_self(Relaxed);
                 debug_assert!(deleted);
-                empty = self.leaves.0.remove_if(entry.0, &mut |_| true).2;
+                self.leaves.0.remove_if(entry.0, &mut |_| true);
                 // Data race resolution - see LeafNode::search.
                 if let Some(leaf) = entry.1.swap((None, Tag::None), Release) {
                     barrier.reclaim(leaf);
                 }
+            } else {
+                num_valid_leaves += 1;
             }
         }
 
         // Checks the unbounded leaf only when all the other leaves have become obsolete.
-        let check_unbounded = if empty && self.leaves.0.retire() {
+        let check_unbounded = if num_valid_leaves == 0 && self.leaves.0.retire() {
             true
         } else {
             self.leaves.0.obsolete()

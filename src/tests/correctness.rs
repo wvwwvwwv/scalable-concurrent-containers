@@ -486,7 +486,6 @@ mod treeindex_test {
     fn remove() {
         let num_threads = 16;
         let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::new());
-        let _result = tree.insert(1000, 0);
         let barrier = Arc::new(Barrier::new(num_threads));
         let mut thread_handles = Vec::with_capacity(num_threads);
         for thread_id in 0..num_threads {
@@ -517,15 +516,16 @@ mod treeindex_test {
                         .filter(|i| tree_copied.remove_if(i, |v| *v == thread_id))
                         .count();
                     assert_eq!(removed_again, 0);
-                    assert_eq!(found, removed);
-                    assert_eq!(inserted, found);
-                    assert_eq!(inserted, removed);
+                    assert_eq!(found, removed, "{} {} {}", inserted, found, removed);
+                    assert_eq!(inserted, found, "{} {} {}", inserted, found, removed);
                 }
             }));
         }
         for handle in thread_handles {
             handle.join().unwrap();
         }
+        assert_eq!(tree.len(), 0);
+        assert_eq!(tree.depth(), 0);
     }
 
     #[test]

@@ -16,7 +16,7 @@ use std::fmt;
 use std::iter::FusedIterator;
 use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::ops::RangeBounds;
-use std::sync::atomic::Ordering::{AcqRel, Acquire};
+use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 
 /// A scalable concurrent B+ tree.
 ///
@@ -189,7 +189,7 @@ where
                         if removed && !has_been_removed {
                             has_been_removed = true;
                         }
-                        if Node::remove_root(&self.root, true, &barrier) {
+                        if Node::remove_root(&self.root, &barrier) {
                             return has_been_removed;
                         }
                     }
@@ -203,7 +203,7 @@ where
             };
             root_ptr = self.root.load(Acquire, &barrier);
         }
-        false
+        has_been_removed
     }
 
     /// Reads a key-value pair.
@@ -267,7 +267,7 @@ where
     /// ```
     #[inline]
     pub fn clear(&self) {
-        Node::remove_root(&self.root, false, &Barrier::new());
+        self.root.swap((None, Tag::None), Relaxed);
     }
 
     /// Returns the size of the [`TreeIndex`].
@@ -424,16 +424,6 @@ where
             root_ref.print(output, 1, &barrier)?;
         }
         output.write_fmt(format_args!("}}"))
-    }
-}
-
-impl<K, V> Drop for TreeIndex<K, V>
-where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
-{
-    fn drop(&mut self) {
-        Node::remove_root(&self.root, false, &Barrier::new());
     }
 }
 

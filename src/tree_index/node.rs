@@ -195,11 +195,7 @@ where
     }
 
     /// Removes the current root node.
-    pub fn remove_root(
-        root: &AtomicArc<Node<K, V>>,
-        do_not_remove_valid_root: bool,
-        barrier: &Barrier,
-    ) -> bool {
+    pub fn remove_root(root: &AtomicArc<Node<K, V>>, barrier: &Barrier) -> bool {
         let mut root_ptr = root.load(Acquire, barrier);
         loop {
             if let Some(root_ref) = root_ptr.as_ref() {
@@ -222,10 +218,10 @@ where
                     root_ptr = root.load(Acquire, barrier);
                     continue;
                 }
-                if do_not_remove_valid_root && !root_ref.obsolete(barrier) {
+                if !root_ref.obsolete(barrier) {
                     break;
                 }
-                match root.compare_exchange(root_ptr, (None, Tag::None), Release, Relaxed) {
+                match root.compare_exchange(root_ptr, (None, Tag::None), Acquire, Acquire) {
                     Ok((old_root, _)) => {
                         // It is important to keep the locked state until the node is dropped
                         // in order for all the on-going structural changes being made to its
