@@ -47,7 +47,7 @@ assert!(atomic_arc.compare_exchange(
 // `ptr` can be tagged.
 ptr.set_tag(Tag::First);
 
-// The result of CAS is a handle to the instance that `atomic_arc` previously owned.
+// The return value of CAS is a handle to the instance that `atomic_arc` previously owned.
 let prev: Arc<usize> = atomic_arc.compare_exchange(
     ptr,
     (Some(Arc::new(18)), Tag::Second),
@@ -116,7 +116,7 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 ### Examples
 
-A unique key can be inserted along with its corresponding value, then it can be updated, read, and removed.
+A unique key can be inserted along with its corresponding value, and then it can be updated, read, and removed.
 
 ```rust
 use scc::HashMap;
@@ -152,7 +152,7 @@ let hashmap: HashMap<u64, u32> = Default::default();
 assert!(hashmap.insert(1, 0).is_ok());
 assert!(hashmap.insert(2, 1).is_ok());
 
-// Inside `for_each`, a `ebr::Barrier` protects the entry array.
+// Inside `for_each`, an `ebr::Barrier` protects the entry array.
 let mut acc = 0;
 hashmap.for_each(|k, v_mut| { acc += *k; *v_mut = 2; });
 assert_eq!(acc, 3);
@@ -184,7 +184,7 @@ assert!(hashindex.insert(1, 0).is_ok());
 assert_eq!(hashindex.read(&1, |_, v| *v).unwrap(), 0);
 ```
 
-An [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is implemented for [`HashIndex`](#HashIndex), because entry derived references can survive as long as the supplied `ebr::Barrier` survives.
+An [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is implemented for [`HashIndex`](#HashIndex), because entry derived references can survive as long as the associated `ebr::Barrier` survives.
 
 ```rust
 use scc::ebr::Barrier;
@@ -196,7 +196,7 @@ assert!(hashindex.insert(1, 0).is_ok());
 
 let barrier = Barrier::new();
 
-// An `ebr::Barrier` has to be given to `iter`.
+// An `ebr::Barrier` has to be supplied to `iter`.
 let mut iter = hashindex.iter(&barrier);
 
 // The derived reference can live as long as `barrier`.
@@ -212,8 +212,6 @@ assert_eq!(entry_ref, (&1, &0));
 ## TreeIndex
 
 [`TreeIndex`](#TreeIndex) is a B+ tree variant optimized for read operations. The `ebr` module enables it to implement lock-free read and scan methods.
-
-* [`TreeIndex`](#TreeIndex) has known [issues](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues).
 
 ### Examples
 
@@ -341,6 +339,11 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 | RemoveR |   6.016s   |   6.422s   |   7.34s    |
 
 ## Changelog
+
+0.5.3
+
+* Add `TreeIndex::remove_if`.
+* Fix [`TreeIndex`](#TreeIndex) issues.
 
 0.5.2
 
