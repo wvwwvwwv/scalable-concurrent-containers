@@ -208,6 +208,8 @@ where
 
     /// Reads a key-value pair.
     ///
+    /// It returns `None` if the key does not exist.
+    ///
     /// # Examples
     ///
     /// ```
@@ -220,18 +222,51 @@ where
     /// assert_eq!(treeindex.read(&1, |k, v| *v).unwrap(), 10);
     /// ```
     #[inline]
-    pub fn read<Q, R, F: FnOnce(&Q, &V) -> R>(&self, key_ref: &Q, f: F) -> Option<R>
+    pub fn read<Q, R, F: FnOnce(&Q, &V) -> R>(&self, key_ref: &Q, reader: F) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
         let barrier = Barrier::new();
-        let mut root_ptr = self.root.load(Acquire, &barrier);
+        self.read_with(key_ref, reader, &barrier)
+    }
+
+    /// Reads a key-value pair using the supplied [`Barrier`].
+    ///
+    /// It enables the caller to use the value reference outside the method. It returns `None`
+    /// if the key does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::Barrier;
+    /// use scc::TreeIndex;
+    ///
+    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    ///
+    /// assert!(treeindex.insert(1, 10).is_ok());
+    ///
+    /// let barrier = Barrier::new();
+    /// let value_ref = treeindex.read_with(&1, |k, v| v, &barrier).unwrap();
+    /// assert_eq!(*value_ref, 10);
+    /// ```
+    #[inline]
+    pub fn read_with<'b, Q, R, F: FnOnce(&Q, &'b V) -> R>(
+        &self,
+        key_ref: &Q,
+        reader: F,
+        barrier: &'b Barrier,
+    ) -> Option<R>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        let mut root_ptr = self.root.load(Acquire, barrier);
         while let Some(root_ref) = root_ptr.as_ref() {
-            match root_ref.search(key_ref, &barrier) {
+            match root_ref.search(key_ref, barrier) {
                 Ok(result) => {
                     if let Some(value) = result {
-                        return Some(f(key_ref, value));
+                        return Some(reader(key_ref, value));
                     }
                     return None;
                 }
@@ -239,7 +274,7 @@ where
                     SearchError::Empty => return None,
                     SearchError::Retry => {
                         std::thread::yield_now();
-                        root_ptr = self.root.load(Acquire, &barrier);
+                        root_ptr = self.root.load(Acquire, barrier);
                         continue;
                     }
                 },

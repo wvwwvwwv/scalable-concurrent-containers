@@ -105,9 +105,9 @@ impl<'b, T> Ptr<'b, T> {
         Tag::into_tag(self.instance_ptr)
     }
 
-    /// Sets a [`Tag`], overwriting any existing tag.
+    /// Sets a [`Tag`], overwriting its existing [`Tag`].
     ///
-    /// It returns the previous tag.
+    /// It returns the previous tag value.
     ///
     /// # Examples
     ///
@@ -125,7 +125,44 @@ impl<'b, T> Ptr<'b, T> {
         old_tag
     }
 
-    /// Returns a copy of `self` with tags erased.
+    /// Clears its [`Tag`].
+    ///
+    /// It returns the previous tag value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::{Ptr, Tag};
+    ///
+    /// let mut ptr: Ptr<usize> = Ptr::null().with_tag(Tag::Both);
+    /// assert_eq!(ptr.unset_tag(), Tag::Both);
+    /// ```
+    #[inline]
+    pub fn unset_tag(&mut self) -> Tag {
+        let old_tag = Tag::into_tag(self.instance_ptr);
+        self.instance_ptr = Tag::unset_tag(self.instance_ptr);
+        old_tag
+    }
+
+    /// Returns a copy of `self` with a [`Tag`] set.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::{Ptr, Tag};
+    ///
+    /// let mut ptr: Ptr<usize> = Ptr::null();
+    /// assert_eq!(ptr.tag(), Tag::None);
+    ///
+    /// let ptr_with_tag = ptr.with_tag(Tag::First);
+    /// assert_eq!(ptr_with_tag.tag(), Tag::First);
+    /// ```
+    #[must_use]
+    pub fn with_tag(self, tag: Tag) -> Ptr<'b, T> {
+        Ptr::from(Tag::update_tag(self.instance_ptr, tag))
+    }
+
+    /// Returns a copy of `self` with its [`Tag`] erased.
     ///
     /// # Examples
     ///

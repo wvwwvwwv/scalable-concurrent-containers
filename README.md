@@ -340,6 +340,11 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 
 ## Changelog
 
+0.5.5
+
+* Minor performance improvement in [`EBR`](#EBR).
+* API improvement.
+
 0.5.4
 
 * Fix [`TreeIndex`](#TreeIndex) issue [#60](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/60).

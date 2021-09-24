@@ -243,8 +243,9 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = Default::default();
     ///
-    /// assert!(hashindex.insert(1, 0).is_ok());
-    /// assert_eq!(hashindex.read(&1, |_, v| *v).unwrap(), 0);
+    /// assert!(hashindex.read(&1, |_, v| *v).is_none());
+    /// assert!(hashindex.insert(1, 10).is_ok());
+    /// assert_eq!(hashindex.read(&1, |_, v| *v).unwrap(), 10);
     /// ```
     #[inline]
     pub fn read<Q, R, F: FnOnce(&K, &V) -> R>(&self, key_ref: &Q, reader: F) -> Option<R>
@@ -252,7 +253,41 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.read_entry(key_ref, reader)
+        let barrier = Barrier::new();
+        self.read_with(key_ref, reader, &barrier)
+    }
+
+    /// Reads a key-value pair using the supplied [`Barrier`].
+    ///
+    /// It enables the caller to use the value reference outside the method. It returns `None`
+    /// if the key does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::Barrier;
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = Default::default();
+    ///
+    /// assert!(hashindex.insert(1, 10).is_ok());
+    ///
+    /// let barrier = Barrier::new();
+    /// let value_ref = hashindex.read_with(&1, |k, v| v, &barrier).unwrap();
+    /// assert_eq!(*value_ref, 10);
+    /// ```
+    #[inline]
+    pub fn read_with<'b, Q, R, F: FnOnce(&'b K, &'b V) -> R>(
+        &self,
+        key_ref: &Q,
+        reader: F,
+        barrier: &'b Barrier,
+    ) -> Option<R>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.read_entry(key_ref, reader, barrier)
     }
 
     /// Checks if the key exists.

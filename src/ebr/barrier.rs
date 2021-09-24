@@ -59,12 +59,14 @@ impl Barrier {
 }
 
 impl Default for Barrier {
+    #[inline]
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl Drop for Barrier {
+    #[inline]
     fn drop(&mut self) {
         unsafe {
             (*self.collector_ptr).end_barrier();

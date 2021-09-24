@@ -53,43 +53,6 @@ where
     build_hasher: H,
 }
 
-impl<K, V> Default for HashMap<K, V, RandomState>
-where
-    K: 'static + Eq + Hash + Sync,
-    V: 'static + Sync,
-{
-    /// Creates a [`HashMap`] with the default parameters.
-    ///
-    /// The default hash builder is [`RandomState`], and the default capacity is `64`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if memory allocation fails.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashMap;
-    ///
-    /// let hashmap: HashMap<u64, u32> = Default::default();
-    ///
-    /// let result = hashmap.capacity();
-    /// assert_eq!(result, 64);
-    /// ```
-    fn default() -> Self {
-        HashMap {
-            array: AtomicArc::new(CellArray::<K, V, CELL_SIZE, false>::new(
-                DEFAULT_CAPACITY,
-                AtomicArc::null(),
-            )),
-            minimum_capacity: DEFAULT_CAPACITY,
-            additional_capacity: AtomicUsize::new(0),
-            resizing_flag: AtomicBool::new(false),
-            build_hasher: RandomState::new(),
-        }
-    }
-}
-
 impl<K, V, H> HashMap<K, V, H>
 where
     K: 'static + Eq + Hash + Sync,
@@ -369,7 +332,7 @@ where
 
     /// Reads a key-value pair.
     ///
-    /// Returns `None` if the key does not exist.
+    /// It returns `None` if the key does not exist.
     ///
     /// # Examples
     ///
@@ -378,8 +341,9 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = Default::default();
     ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 0);
+    /// assert!(hashmap.read(&1, |_, v| *v).is_none());
+    /// assert!(hashmap.insert(1, 10).is_ok());
+    /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 10);
     /// ```
     #[inline]
     pub fn read<Q, R, F: FnOnce(&K, &V) -> R>(&self, key_ref: &Q, reader: F) -> Option<R>
@@ -387,7 +351,41 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.read_entry(key_ref, reader)
+        let barrier = Barrier::new();
+        self.read_with(key_ref, reader, &barrier)
+    }
+
+    /// Reads a key-value pair using the supplied [`Barrier`].
+    ///
+    /// It enables the caller to use the value reference outside the method. It returns `None`
+    /// if the key does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::Barrier;
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = Default::default();
+    ///
+    /// assert!(hashmap.insert(1, 10).is_ok());
+    ///
+    /// let barrier = Barrier::new();
+    /// let value_ref = hashmap.read_with(&1, |k, v| v, &barrier).unwrap();
+    /// assert_eq!(*value_ref, 10);
+    /// ```
+    #[inline]
+    pub fn read_with<'b, Q, R, F: FnOnce(&'b K, &'b V) -> R>(
+        &self,
+        key_ref: &Q,
+        reader: F,
+        barrier: &'b Barrier,
+    ) -> Option<R>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.read_entry(key_ref, reader, barrier)
     }
 
     /// Checks if the key exists.
@@ -579,6 +577,43 @@ where
     #[inline]
     pub fn capacity(&self) -> usize {
         self.num_slots(&Barrier::new())
+    }
+}
+
+impl<K, V> Default for HashMap<K, V, RandomState>
+where
+    K: 'static + Eq + Hash + Sync,
+    V: 'static + Sync,
+{
+    /// Creates a [`HashMap`] with the default parameters.
+    ///
+    /// The default hash builder is [`RandomState`], and the default capacity is `64`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if memory allocation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = Default::default();
+    ///
+    /// let result = hashmap.capacity();
+    /// assert_eq!(result, 64);
+    /// ```
+    fn default() -> Self {
+        HashMap {
+            array: AtomicArc::new(CellArray::<K, V, CELL_SIZE, false>::new(
+                DEFAULT_CAPACITY,
+                AtomicArc::null(),
+            )),
+            minimum_capacity: DEFAULT_CAPACITY,
+            additional_capacity: AtomicUsize::new(0),
+            resizing_flag: AtomicBool::new(false),
+            build_hasher: RandomState::new(),
+        }
     }
 }
 

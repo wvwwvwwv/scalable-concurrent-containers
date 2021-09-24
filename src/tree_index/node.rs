@@ -75,11 +75,7 @@ where
     }
 
     /// Searches for an entry associated with the given key.
-    pub fn search<'b, Q>(
-        &self,
-        key: &'b Q,
-        barrier: &'b Barrier,
-    ) -> Result<Option<&'b V>, SearchError>
+    pub fn search<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> Result<Option<&'b V>, SearchError>
     where
         K: 'b + Borrow<Q>,
         Q: Ord + ?Sized,
@@ -342,11 +338,7 @@ where
     }
 
     /// Searches for an entry associated with the given key.
-    fn search<'b, Q>(
-        &self,
-        key_ref: &'b Q,
-        barrier: &'b Barrier,
-    ) -> Result<Option<&'b V>, SearchError>
+    fn search<'b, Q>(&self, key_ref: &Q, barrier: &'b Barrier) -> Result<Option<&'b V>, SearchError>
     where
         K: 'b + Borrow<Q>,
         Q: Ord + ?Sized,
