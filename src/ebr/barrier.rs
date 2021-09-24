@@ -2,7 +2,7 @@ use super::collector::Collector;
 use super::underlying::Underlying;
 use super::Arc;
 
-/// [`Barrier`] allows the user to read [`AtomicArc`](super::AtomicArc), and keeps the
+/// [`Barrier`] allows the user to read [`AtomicArc`](super::AtomicArc) and keeps the
 /// underlying instance pinned to the thread.
 ///
 /// [`Barrier`] internally prevents the global epoch value from passing through the value

@@ -158,8 +158,8 @@ where
     ///
     /// # Panics
     ///
-    /// Panics if memory allocation fails, or the number of entries in the target cell is
-    /// reached `u32::MAX`.
+    /// Panics if memory allocation fails, or the number of entries in the target cell reaches
+    /// `u32::MAX`.
     ///
     /// # Examples
     ///
@@ -178,7 +178,7 @@ where
 
     /// Updates an existing key-value pair.
     ///
-    /// Returns `None` if the key does not exist.
+    /// It returns `None` if the key does not exist.
     ///
     /// # Examples
     ///
@@ -275,7 +275,7 @@ where
     }
 
     /// Removes a key-value pair and returns the key-value-pair if the key exists and the given
-    /// condition meets.
+    /// condition is met.
     ///
     /// # Examples
     ///
@@ -410,7 +410,7 @@ where
         self.read(key, |_, _| ()).is_some()
     }
 
-    /// It iterates over all the entries in the [`HashMap`].
+    /// Iterates over all the entries in the [`HashMap`].
     ///
     /// # Examples
     ///

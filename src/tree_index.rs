@@ -41,27 +41,6 @@ where
     root: AtomicArc<Node<K, V>>,
 }
 
-impl<K, V> Default for TreeIndex<K, V>
-where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
-{
-    /// Creates a [`TreeIndex`] with the default parameters.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::TreeIndex;
-    ///
-    /// let treeindex: TreeIndex<u64, u32> = Default::default();
-    ///
-    /// assert!(treeindex.read(&1, |_, v| *v).is_none());
-    /// ```
-    fn default() -> Self {
-        TreeIndex::new()
-    }
-}
-
 impl<K, V> TreeIndex<K, V>
 where
     K: 'static + Clone + Ord + Send + Sync,
@@ -459,6 +438,27 @@ where
             root_ref.print(output, 1, &barrier)?;
         }
         output.write_fmt(format_args!("}}"))
+    }
+}
+
+impl<K, V> Default for TreeIndex<K, V>
+where
+    K: 'static + Clone + Ord + Send + Sync,
+    V: 'static + Clone + Send + Sync,
+{
+    /// Creates a [`TreeIndex`] with the default parameters.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::TreeIndex;
+    ///
+    /// let treeindex: TreeIndex<u64, u32> = Default::default();
+    ///
+    /// assert!(treeindex.read(&1, |_, v| *v).is_none());
+    /// ```
+    fn default() -> Self {
+        TreeIndex::new()
     }
 }
 

@@ -45,39 +45,6 @@ where
     build_hasher: H,
 }
 
-impl<K, V> Default for HashIndex<K, V, RandomState>
-where
-    K: 'static + Clone + Eq + Hash + Sync,
-    V: 'static + Clone + Sync,
-{
-    /// Creates a [`HashIndex`] with the default parameters.
-    ///
-    /// The default hash builder is [`RandomState`], and the default capacity is `64`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if memory allocation fails.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashIndex;
-    ///
-    /// let hashindex: HashIndex<u64, u32, _> = Default::default();
-    /// ```
-    fn default() -> Self {
-        HashIndex {
-            array: AtomicArc::from(Arc::new(CellArray::<K, V, CELL_SIZE, true>::new(
-                DEFAULT_CAPACITY,
-                AtomicArc::null(),
-            ))),
-            minimum_capacity: DEFAULT_CAPACITY,
-            resizing_flag: AtomicBool::new(false),
-            build_hasher: RandomState::new(),
-        }
-    }
-}
-
 impl<K, V, H> HashIndex<K, V, H>
 where
     K: 'static + Clone + Eq + Hash + Sync,
@@ -129,8 +96,8 @@ where
     ///
     /// # Panics
     ///
-    /// Panics if memory allocation fails, or the number of entries in the target cell is
-    /// reached `u32::MAX`.
+    /// Panics if memory allocation fails, or the number of entries in the target cell reaches
+    /// `u32::MAX`.
     ///
     /// # Examples
     ///
@@ -149,8 +116,7 @@ where
 
     /// Removes a key-value pair and returns the key-value-pair if the key exists.
     ///
-    /// This methods only marks the entry unreachable, and the instances will be reclaimed
-    /// later.
+    /// This method only marks the entry unreachable, and the memory will be reclaimed later.
     ///
     /// # Examples
     ///
@@ -173,10 +139,9 @@ where
     }
 
     /// Removes a key-value pair and returns the key-value-pair if the key exists and the given
-    /// condition meets.
+    /// condition is met.
     ///
-    /// This methods only marks the entry unreachable, and the instances will be reclaimed
-    /// later.
+    /// This method only marks the entry unreachable, and the memory will be reclaimed later.
     ///
     /// # Examples
     ///
@@ -234,7 +199,7 @@ where
 
     /// Reads a key-value pair.
     ///
-    /// Returns `None` if the key does not exist.
+    /// It returns `None` if the key does not exist.
     ///
     /// # Examples
     ///
@@ -397,6 +362,7 @@ where
     /// Returns the capacity of the [`HashIndex`].
     ///
     /// # Examples
+    ///
     /// ```
     /// use scc::HashIndex;
     /// use std::collections::hash_map::RandomState;
@@ -448,6 +414,39 @@ where
             current_index: 0,
             current_entry_iterator: None,
             barrier_ref: barrier,
+        }
+    }
+}
+
+impl<K, V> Default for HashIndex<K, V, RandomState>
+where
+    K: 'static + Clone + Eq + Hash + Sync,
+    V: 'static + Clone + Sync,
+{
+    /// Creates a [`HashIndex`] with the default parameters.
+    ///
+    /// The default hash builder is [`RandomState`], and the default capacity is `64`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if memory allocation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32, _> = Default::default();
+    /// ```
+    fn default() -> Self {
+        HashIndex {
+            array: AtomicArc::from(Arc::new(CellArray::<K, V, CELL_SIZE, true>::new(
+                DEFAULT_CAPACITY,
+                AtomicArc::null(),
+            ))),
+            minimum_capacity: DEFAULT_CAPACITY,
+            resizing_flag: AtomicBool::new(false),
+            build_hasher: RandomState::new(),
         }
     }
 }

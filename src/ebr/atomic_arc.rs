@@ -104,7 +104,7 @@ impl<T: 'static> AtomicArc<T> {
         Ptr::from(self.instance_ptr.load(order))
     }
 
-    /// Stores the given value into the [`AtomicArc`], and returns the original value.
+    /// Stores the given value into the [`AtomicArc`] and returns the original value.
     ///
     /// # Examples
     ///
@@ -248,7 +248,7 @@ impl<T: 'static> AtomicArc<T> {
         }
     }
 
-    /// Clones itself.
+    /// Clones `self`.
     ///
     /// # Examples
     ///

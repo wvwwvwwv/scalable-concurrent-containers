@@ -6,10 +6,11 @@ use std::sync::atomic::Ordering::{self, Relaxed, Release};
 pub trait LinkedList: 'static + Sized {
     /// Returns a reference to the forward link.
     ///
-    /// The pointer value may be tagged if the entry is no longer a member of the linked list.
+    /// The pointer value may be tagged if [`Self::mark`] or [`Self::delete_self`] has been
+    /// invoked.
     fn link_ref(&self) -> &AtomicArc<Self>;
 
-    /// Returns `true` if `self` is reachable, and not marked.
+    /// Returns `true` if `self` is reachable and not marked.
     ///
     /// # Examples
     ///
@@ -39,7 +40,7 @@ pub trait LinkedList: 'static + Sized {
 
     /// Marks `self` with an internal flag to denote that `self` is in a special state.
     ///
-    /// It returns `false` if nothing is marked on `self`.
+    /// It returns `false` if a flag has already been marked on `self`.
     ///
     /// # Examples
     ///
@@ -66,7 +67,7 @@ pub trait LinkedList: 'static + Sized {
 
     /// Removes marks from `self`.
     ///
-    /// It returns `false` if nothing is marked on `self`.
+    /// It returns `false` if no flag has been marked on `self`.
     ///
     /// # Examples
     ///
@@ -179,7 +180,7 @@ pub trait LinkedList: 'static + Sized {
         self.link_ref().tag(order) == Tag::Second
     }
 
-    /// Appends the given entry after `self`, and returns a pointer to the entry.
+    /// Appends the given entry after `self` and returns a pointer to the entry.
     ///
     /// If `mark` is given `true`, it atomically marks an internal flag on `self` when updating
     /// the linked list, otherwise it removes marks.
