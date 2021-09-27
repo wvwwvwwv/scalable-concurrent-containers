@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicPtr, AtomicU8};
 pub(super) struct Collector {
     announcement: u8,
     x86_announcement: AtomicU8,
-    next_epoch_update: usize,
+    next_epoch_update: u8,
     num_readers: usize,
     num_instances: usize,
     previous_instance_link: Option<NonNull<dyn Link>>,
@@ -24,7 +24,7 @@ pub(super) struct Collector {
 
 impl Collector {
     /// The cadence of an epoch update.
-    const CADENCE: usize = 256;
+    const CADENCE: u8 = u8::MAX;
 
     /// Bits representing an epoch.
     const EPOCH_BITS: u8 = (1_u8 << 2) - 1;
@@ -227,18 +227,16 @@ impl Collector {
     fn epoch_updated(&mut self) {
         debug_assert_eq!(self.announcement & Self::INACTIVE, 0);
 
-        let mut num_reclaimed = 0;
         let mut garbage_link = self.next_instance_link.take();
         self.next_instance_link = self.previous_instance_link.take();
         self.previous_instance_link = self.current_instance_link.take();
         while let Some(mut instance_ptr) = garbage_link.take() {
             let next = unsafe { instance_ptr.as_mut().free() };
-            num_reclaimed += 1;
+            self.num_instances -= 1;
             if let Some(ptr) = NonNull::new(next) {
                 garbage_link.replace(ptr);
             }
         }
-        self.num_instances -= num_reclaimed;
     }
 
     /// Returns the [`Collector`] attached to the current thread.
@@ -253,6 +251,7 @@ impl Drop for Collector {
         self.epoch_updated();
         self.epoch_updated();
         self.epoch_updated();
+        debug_assert_eq!(self.num_instances, 0);
     }
 }
 
