@@ -7,8 +7,10 @@ mod ebr_model {
     use std::sync::atomic::Ordering::{Relaxed, SeqCst};
     use std::sync::Arc;
 
+    const INACTIVE: u8 = 1_u8 << 7;
+
     struct ModelCollector {
-        announcement: AtomicU8,
+        state: AtomicU8,
         epoch_witnessed: AtomicUsize,
         num_collected: AtomicUsize,
         collected: [AtomicUsize; 3],
@@ -16,11 +18,11 @@ mod ebr_model {
 
     impl ModelCollector {
         fn new_barrier(&self, epoch: &AtomicU8, ptr: &ModelPointer) {
-            let known_epoch = self.announcement.load(Relaxed) - 1;
-            let epoch = epoch.load(Relaxed);
-            self.announcement.store(epoch, Relaxed);
+            let global_epoch = epoch.load(Relaxed);
+            let known_epoch = self.state.load(Relaxed) & (!INACTIVE);
+            self.state.store(global_epoch, Relaxed);
             fence(SeqCst);
-            if epoch != known_epoch {
+            if global_epoch != known_epoch {
                 self.epoch_updated(ptr);
             }
         }
@@ -39,29 +41,28 @@ mod ebr_model {
         }
 
         fn end_barrier(&self, epoch: &AtomicU8, ptr: &ModelPointer, other: &ModelCollector) {
-            let known_epoch = self.announcement.load(Relaxed);
-            if self.num_collected.load(Relaxed) > 0 {
-                let other_epoch = other.announcement.load(Relaxed);
-                if other_epoch % 2 == 1 || other_epoch == known_epoch {
-                    let new = match known_epoch {
-                        0 => 2,
-                        2 => 4,
-                        _ => 0,
-                    };
-                    fence(SeqCst);
-                    epoch.store(new, Relaxed);
-                    self.announcement.store(new, Relaxed);
-                    self.epoch_updated(ptr);
-                }
+            let mut known_epoch = self.state.load(Relaxed);
+            let other_epoch = other.state.load(Relaxed);
+            if (other_epoch & INACTIVE) == INACTIVE || other_epoch == known_epoch {
+                let new = match known_epoch {
+                    0 => 1,
+                    1 => 2,
+                    _ => 0,
+                };
+                fence(SeqCst);
+                epoch.store(new, Relaxed);
+                self.state.store(new, Relaxed);
+                known_epoch = new;
+                self.epoch_updated(ptr);
             }
-            self.announcement.store(known_epoch + 1, Relaxed);
+            self.state.store(known_epoch | INACTIVE, Relaxed);
         }
     }
 
     impl Default for ModelCollector {
         fn default() -> Self {
             ModelCollector {
-                announcement: AtomicU8::new(1),
+                state: AtomicU8::new(1),
                 epoch_witnessed: AtomicUsize::new(0),
                 num_collected: AtomicUsize::new(0),
                 collected: Default::default(),
@@ -80,6 +81,8 @@ mod ebr_model {
     #[ignore]
     fn ebr() {
         let mut model = loom::model::Builder::new();
+        let reclaimed = Arc::new(AtomicUsize::new(0));
+        let reclaimed_cloned = reclaimed.clone();
         model.max_threads = 2;
         model.check(move || {
             let epoch: Arc<AtomicU8> = Arc::default();
@@ -94,7 +97,7 @@ mod ebr_model {
                     let ptr_ref = ptr.as_ref();
 
                     collector_ref.new_barrier(epoch_ref, ptr_ref);
-                    ptr_ref.unreachable.swap(true, Relaxed);
+                    assert!(!ptr_ref.unreachable.swap(true, Relaxed));
                     collector_ref.collect();
                     collector_ref.end_barrier(epoch_ref, ptr_ref, &collectors.1);
 
@@ -113,7 +116,12 @@ mod ebr_model {
             assert!(ptr_ref.unreachable.load(Relaxed) || !ptr_ref.reclaimed.load(Relaxed));
             collector_ref.end_barrier(epoch_ref, ptr_ref, &collectors.0);
 
+            if ptr_ref.reclaimed.load(Relaxed) {
+                reclaimed_cloned.fetch_add(1, Relaxed);
+            }
+
             drop(thread.join());
         });
+        assert!(reclaimed.load(Relaxed) > 0);
     }
 }

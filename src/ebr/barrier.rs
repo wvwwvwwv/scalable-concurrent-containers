@@ -15,6 +15,11 @@ pub struct Barrier {
 impl Barrier {
     /// Creates a new [`Barrier`].
     ///
+    /// # Panics
+    ///
+    /// The maximum number of [`Barrier`] instances in a thread is limited to `u32::MAX`; a
+    /// thread panics when the number of [`Barrier`] instances in the thread exceeds the limit.
+    ///
     /// # Examples
     ///
     /// ```

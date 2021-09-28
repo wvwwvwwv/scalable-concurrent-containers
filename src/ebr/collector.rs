@@ -1,6 +1,7 @@
 use super::tag::Tag;
 use super::underlying::Link;
 
+use core::panic;
 use std::ptr;
 use std::ptr::NonNull;
 use std::sync::atomic::fence;
@@ -10,10 +11,10 @@ use std::sync::atomic::{AtomicPtr, AtomicU8};
 /// [`Collector`] is a garbage collector that reclaims thread-locally unreachable instances
 /// when they are globally unreachable.
 pub(super) struct Collector {
+    state: AtomicU8,
     announcement: u8,
-    x86_announcement: AtomicU8,
     next_epoch_update: u8,
-    num_readers: usize,
+    num_readers: u32,
     num_instances: usize,
     previous_instance_link: Option<NonNull<dyn Link>>,
     current_instance_link: Option<NonNull<dyn Link>>,
@@ -26,9 +27,6 @@ impl Collector {
     /// The cadence of an epoch update.
     const CADENCE: u8 = u8::MAX;
 
-    /// Bits representing an epoch.
-    const EPOCH_BITS: u8 = (1_u8 << 2) - 1;
-
     /// A bit field representing a thread state where the thread does not have a
     /// [`Barrier`](super::Barrier).
     const INACTIVE: u8 = 1_u8 << 2;
@@ -40,8 +38,8 @@ impl Collector {
     fn alloc() -> *mut Collector {
         let null_ptr: *const Collector = ptr::null();
         let boxed = Box::new(Collector {
-            announcement: Self::INACTIVE,
-            x86_announcement: AtomicU8::new(0),
+            state: AtomicU8::new(Self::INACTIVE),
+            announcement: 0,
             next_epoch_update: Self::CADENCE,
             num_readers: 0,
             num_instances: 0,
@@ -73,14 +71,15 @@ impl Collector {
     }
 
     /// Acknowledges a new [`Barrier`] being instantiated.
+    ///
+    /// # Panics
+    ///
+    /// The method may panic if the number of readers has reached `u32::MAX`.
     #[inline]
     pub(super) fn new_barrier(&mut self) {
-        self.num_readers += 1;
-        if self.num_readers == 1 {
-            let known_epoch = self.announcement & Self::EPOCH_BITS;
+        if self.num_readers == 0 {
+            self.num_readers = 1;
             let new_epoch = EPOCH.load(Relaxed);
-            self.announcement = new_epoch;
-
             if cfg!(any(target_arch = "x86", target_arch = "x86_64")) {
                 // This special optimization is excerpted from
                 // [`crossbeam_epoch`](https://docs.rs/crossbeam-epoch/).
@@ -88,22 +87,28 @@ impl Collector {
                 // The rationale behind the code is, it compiles to `lock xchg` that
                 // practically acts as a full memory barrier on `X86`, and is much faster than
                 // `mfence`.
-                self.x86_announcement.swap(new_epoch, SeqCst);
+                self.state.swap(new_epoch, SeqCst);
             } else {
                 // What will happen after the fence strictly happens after the fence.
+                self.state.store(new_epoch, Relaxed);
                 fence(SeqCst);
             }
-
-            if known_epoch != new_epoch {
+            if self.announcement != new_epoch {
+                self.announcement = new_epoch;
                 self.epoch_updated();
             }
+        } else if self.num_readers == u32::MAX {
+            panic!("Too many EBR barriers");
+        } else {
+            self.num_readers += 1;
         }
     }
 
     /// Acknowledges an existing [`Barrier`] being dropped.
     #[inline]
     pub(super) fn end_barrier(&mut self) {
-        debug_assert_eq!(self.announcement & Self::INACTIVE, 0);
+        debug_assert_eq!(self.state.load(Relaxed) & Self::INACTIVE, 0);
+        debug_assert_eq!(self.state.load(Relaxed), self.announcement);
 
         if self.num_readers == 1 {
             if self.next_epoch_update == 0 {
@@ -116,15 +121,16 @@ impl Collector {
             }
 
             // What has happened cannot happen after the thread setting itself inactive.
-            fence(Release);
-            self.announcement |= Self::INACTIVE;
+            self.state
+                .store(self.announcement | Self::INACTIVE, Release);
         }
         self.num_readers -= 1;
     }
 
     /// Reclaims garbage instances.
     pub(super) fn reclaim(&mut self, instance_ptr: *mut dyn Link) {
-        debug_assert_eq!(self.announcement & Self::INACTIVE, 0);
+        debug_assert_eq!(self.state.load(Relaxed) & Self::INACTIVE, 0);
+        debug_assert_eq!(self.state.load(Relaxed), self.announcement);
 
         if let Some(mut ptr) = NonNull::new(instance_ptr) {
             unsafe {
@@ -139,7 +145,8 @@ impl Collector {
 
     /// Tries to scan the [`Collector`] instances to update the global epoch.
     fn try_scan(&mut self) {
-        debug_assert_eq!(self.announcement & Self::INACTIVE, 0);
+        debug_assert_eq!(self.state.load(Relaxed) & Self::INACTIVE, 0);
+        debug_assert_eq!(self.state.load(Relaxed), self.announcement);
 
         // Only one thread that acquires the anchor lock is allowed to scan the thread-local
         // collectors.
@@ -161,18 +168,13 @@ impl Collector {
                 {}
             });
 
-            let known_epoch = self.announcement;
+            let known_epoch = self.state.load(Relaxed);
             let mut update_global_epoch = true;
             let mut prev_collector_ptr: *mut Collector = ptr::null_mut();
             while let Some(other_collector_ref) = unsafe { collector_ptr.as_ref() } {
                 if !ptr::eq(self, other_collector_ref) {
-                    if (other_collector_ref.announcement & Self::INACTIVE) == 0
-                        && other_collector_ref.announcement != known_epoch
-                    {
-                        // Not ready for an epoch update.
-                        update_global_epoch = false;
-                        break;
-                    } else if (other_collector_ref.announcement & Self::INVALID) != 0 {
+                    let other_state = other_collector_ref.state.load(Relaxed);
+                    if (other_state & Self::INVALID) != 0 {
                         // The collector is obsolete.
                         let reclaimable = unsafe { prev_collector_ptr.as_mut() }.map_or_else(
                             || {
@@ -204,7 +206,13 @@ impl Collector {
                             continue;
                         }
                     }
+                    if (other_state & Self::INACTIVE) == 0 && other_state != known_epoch {
+                        // Not ready for an epoch update.
+                        update_global_epoch = false;
+                        break;
+                    }
                 }
+
                 prev_collector_ptr = collector_ptr;
                 collector_ptr = other_collector_ref.next_collector;
             }
@@ -217,6 +225,7 @@ impl Collector {
                     _ => 0,
                 };
                 EPOCH.store(next_epoch, Relaxed);
+                self.state.store(next_epoch, Relaxed);
                 self.announcement = next_epoch;
                 self.epoch_updated();
             }
@@ -225,7 +234,8 @@ impl Collector {
 
     /// Acknowledges a new global epoch.
     fn epoch_updated(&mut self) {
-        debug_assert_eq!(self.announcement & Self::INACTIVE, 0);
+        debug_assert_eq!(self.state.load(Relaxed) & Self::INACTIVE, 0);
+        debug_assert_eq!(self.state.load(Relaxed), self.announcement);
 
         let mut garbage_link = self.next_instance_link.take();
         self.next_instance_link = self.previous_instance_link.take();
@@ -247,6 +257,7 @@ impl Collector {
 
 impl Drop for Collector {
     fn drop(&mut self) {
+        self.state.store(0, Relaxed);
         self.announcement = 0;
         self.epoch_updated();
         self.epoch_updated();
@@ -283,7 +294,7 @@ struct ThreadLocal {
 impl Drop for ThreadLocal {
     fn drop(&mut self) {
         if let Some(collector_ref) = unsafe { self.collector_ptr.as_mut() } {
-            collector_ref.announcement |= Collector::INVALID;
+            collector_ref.state.fetch_or(Collector::INVALID, Release);
         }
     }
 }

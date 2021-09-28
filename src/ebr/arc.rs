@@ -221,7 +221,7 @@ mod test {
         let nested_arc = Arc::new(Nest(Arc::new(A(AtomicUsize::new(10), 10, &DESTROYED))));
         assert!(!DESTROYED.load(Relaxed));
         drop(nested_arc);
-        
+
         while !DESTROYED.load(Relaxed) {
             drop(Barrier::new());
         }

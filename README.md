@@ -12,6 +12,7 @@ A collection of concurrent data structures and building blocks for concurrent pr
 - [scc::HashIndex](#HashIndex) is a concurrent hash index allowing lock-free read and scan.
 - [scc::TreeIndex](#TreeIndex) is a concurrent B+ tree allowing lock-free read and scan.
 
+
 ## EBR
 
 The `ebr` module implements epoch-based reclamation and various types of auxiliary data structures to make use of it. Its epoch-based reclamation algorithm is similar to that implemented in [crossbeam_epoch](https://docs.rs/crossbeam-epoch/), however users may find it easier to use as the lifetime of an instance is automatically managed. For instance, `ebr::AtomicArc` and `ebr::Arc` hold a strong reference to the underlying instance, and the instance is passed to the garbage collector when the reference count drops to zero.
@@ -68,6 +69,7 @@ drop(arc);
 // `17` is still valid as `barrier` keeps the garbage collector from dropping it.
 assert_eq!(*ptr.as_ref().unwrap(), 17);
 ```
+
 
 ## LinkedList
 
@@ -167,6 +169,7 @@ assert!(hashmap.insert(3, 2).is_ok());
 assert_eq!(hashmap.retain(|key, value| *key == 1 && *value == 0), (1, 2));
 ```
 
+
 ## HashIndex
 
 [`HashIndex`](#HashIndex) is a read-optimized version of [`HashMap`](#HashMap). It applies [`EBR`](#EBR) to its entry management as well, enabling it to perform read operations without acquiring locks.
@@ -208,6 +211,7 @@ drop(hashindex);
 // The entry can be read after `hashindex` is dropped.
 assert_eq!(entry_ref, (&1, &0));
 ```
+
 
 ## TreeIndex
 
@@ -266,6 +270,7 @@ assert_eq!(treeindex.range(1..1, &barrier).count(), 0);
 assert_eq!(treeindex.range(4..8, &barrier).count(), 4);
 assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 ```
+
 
 ## Performance
 
@@ -338,7 +343,13 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 | MixedR  |  20.575s   |  20.187s   |  23.871s   |
 | RemoveR |   6.016s   |   6.422s   |   7.34s    |
 
+
 ## Changelog
+
+0.5.6
+
+* Fix a problem with [`EBR`](#EBR).
+* Use the master branch of [`loom`](https://github.com/tokio-rs/loom) to test `SeqCst` memory barriers.
 
 0.5.5
 
