@@ -78,6 +78,7 @@ impl Collector {
     #[inline]
     pub(super) fn new_barrier(&mut self) {
         if self.num_readers == 0 {
+            debug_assert_eq!(self.state.load(Relaxed) & Self::INACTIVE, Self::INACTIVE);
             self.num_readers = 1;
             let new_epoch = EPOCH.load(Relaxed);
             if cfg!(any(target_arch = "x86", target_arch = "x86_64")) {
@@ -100,6 +101,7 @@ impl Collector {
         } else if self.num_readers == u32::MAX {
             panic!("Too many EBR barriers");
         } else {
+            debug_assert_eq!(self.state.load(Relaxed) & Self::INACTIVE, 0);
             self.num_readers += 1;
         }
     }
@@ -123,8 +125,10 @@ impl Collector {
             // What has happened cannot happen after the thread setting itself inactive.
             self.state
                 .store(self.announcement | Self::INACTIVE, Release);
+            self.num_readers = 0;
+        } else {
+            self.num_readers -= 1;
         }
-        self.num_readers -= 1;
     }
 
     /// Reclaims garbage instances.
@@ -205,14 +209,12 @@ impl Collector {
                             self.reclaim(ptr);
                             continue;
                         }
-                    }
-                    if (other_state & Self::INACTIVE) == 0 && other_state != known_epoch {
+                    } else if (other_state & Self::INACTIVE) == 0 && other_state != known_epoch {
                         // Not ready for an epoch update.
                         update_global_epoch = false;
                         break;
                     }
                 }
-
                 prev_collector_ptr = collector_ptr;
                 collector_ptr = other_collector_ref.next_collector;
             }
@@ -243,9 +245,7 @@ impl Collector {
         while let Some(mut instance_ptr) = garbage_link.take() {
             let next = unsafe { instance_ptr.as_mut().free() };
             self.num_instances -= 1;
-            if let Some(ptr) = NonNull::new(next) {
-                garbage_link.replace(ptr);
-            }
+            garbage_link = NonNull::new(next);
         }
     }
 
