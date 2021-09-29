@@ -60,6 +60,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
     }
 
     /// Searches for an entry associated with the given key.
+    #[inline]
     pub fn search<'b, Q>(
         &self,
         key_ref: &Q,
@@ -88,6 +89,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
     }
 
     /// Gets a [`CellIterator`] pointing to an entry associated with the given key.
+    #[inline]
     pub fn get<'b, Q>(
         &'b self,
         key_ref: &Q,
@@ -123,6 +125,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
     }
 
     /// Searches the given [`DataArray`] for an entry matching the key.
+    #[inline]
     fn search_array<'b, Q>(
         data_array_ref: &'b DataArray<K, V, SIZE>,
         key_ref: &Q,
@@ -225,12 +228,12 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
         }
 
         // Marks that there is a waiting thread.
-        self.state.fetch_or(WAITING, Relaxed);
+        self.state.fetch_or(WAITING, Release);
 
         // Tries to lock again once the entry is inserted into the wait queue.
         let locked = f();
         if locked.is_some() {
-            self.wakeup();
+            self.signal();
         }
 
         // Locking failed.
@@ -238,23 +241,13 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
         locked
     }
 
-    /// Wakes up the threads in the wait queue.
-    fn wakeup(&self) {
-        let mut current = self.wait_queue.load(Acquire);
-        while let Err(actual) =
-            self.wait_queue
-                .compare_exchange(current, ptr::null_mut(), Acquire, Relaxed)
-        {
-            if actual.is_null() {
-                return;
-            }
-            current = actual;
-        }
-
+    /// Signals the threads in the wait queue.
+    fn signal(&self) {
+        let mut current = self.wait_queue.swap(ptr::null_mut(), Acquire);
         while let Some(entry_ref) = unsafe { current.as_ref() } {
             let next_ptr = entry_ref.next_ptr;
             entry_ref.signal();
-            current = next_ptr as *mut WaitQueueEntry;
+            current = next_ptr;
         }
     }
 }
@@ -343,20 +336,15 @@ pub struct Locker<'b, K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK
 
 impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Locker<'b, K, V, SIZE, LOCK_FREE> {
     /// Locks the given [`Cell`].
+    #[inline]
     pub fn lock(
         cell: &'b Cell<K, V, SIZE, LOCK_FREE>,
         barrier: &'b Barrier,
     ) -> Option<Locker<'b, K, V, SIZE, LOCK_FREE>> {
         loop {
-            for _ in 0..SIZE {
-                if let Some(locker) = Self::try_lock(cell, barrier) {
-                    if locker.killed {
-                        return None;
-                    }
-                    return Some(locker);
-                }
-            }
-            if let Some(locker) = cell.wait(|| Self::try_lock(cell, barrier)) {
+            if let Some(locker) = Self::try_lock(cell, barrier)
+                .map_or_else(|| cell.wait(|| Self::try_lock(cell, barrier)), Some)
+            {
                 if locker.killed {
                     return None;
                 }
@@ -369,25 +357,24 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Locker<'b, K, V, SI
     }
 
     /// Tries to lock the [`Cell`].
+    #[inline]
     fn try_lock(
         cell: &'b Cell<K, V, SIZE, LOCK_FREE>,
         _barrier: &'b Barrier,
     ) -> Option<Locker<'b, K, V, SIZE, LOCK_FREE>> {
-        let current = cell.state.load(Relaxed);
-        if (current & LOCK_MASK) != 0 {
-            return None;
-        }
+        let current = cell.state.load(Relaxed) & (!LOCK_MASK);
         if cell
             .state
             .compare_exchange(current, current | LOCK, Acquire, Relaxed)
             .is_ok()
         {
-            return Some(Locker {
+            Some(Locker {
                 cell_ref: cell,
                 killed: (current & KILLED) == KILLED,
-            });
+            })
+        } else {
+            None
         }
-        None
     }
 
     /// Returns a reference to the [`Cell`].
@@ -635,6 +622,7 @@ impl<'b, K: 'static + Clone + Eq, V: 'static + Clone, const SIZE: usize>
 impl<'b, K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool> Drop
     for Locker<'b, K, V, SIZE, LOCK_FREE>
 {
+    #[inline]
     fn drop(&mut self) {
         let mut current = self.cell_ref.state.load(Relaxed);
         loop {
@@ -651,7 +639,7 @@ impl<'b, K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool> 
             {
                 Ok(_) => {
                     if wakeup {
-                        self.cell_ref.wakeup();
+                        self.cell_ref.signal();
                     }
                     break;
                 }
@@ -668,20 +656,15 @@ pub struct Reader<'b, K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK
 
 impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Reader<'b, K, V, SIZE, LOCK_FREE> {
     /// Locks the given [`Cell`].
+    #[inline]
     pub fn lock(
         cell: &'b Cell<K, V, SIZE, LOCK_FREE>,
         barrier: &'b Barrier,
     ) -> Option<Reader<'b, K, V, SIZE, LOCK_FREE>> {
         loop {
-            for _ in 0..SIZE {
-                if let Some(reader) = Self::try_lock(cell, barrier) {
-                    if reader.killed {
-                        return None;
-                    }
-                    return Some(reader);
-                }
-            }
-            if let Some(reader) = cell.wait(|| Self::try_lock(cell, barrier)) {
+            if let Some(reader) = Self::try_lock(cell, barrier)
+                .map_or_else(|| cell.wait(|| Self::try_lock(cell, barrier)), Some)
+            {
                 if reader.killed {
                     return None;
                 }
@@ -694,6 +677,7 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Reader<'b, K, V, SI
     }
 
     /// Tries to lock the [`Cell`].
+    #[inline]
     fn try_lock(
         cell: &'b Cell<K, V, SIZE, LOCK_FREE>,
         _barrier: &'b Barrier,
@@ -716,6 +700,7 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Reader<'b, K, V, SI
     }
 
     /// Returns a reference to the [`Cell`].
+    #[inline]
     pub fn cell_ref(&self) -> &Cell<K, V, SIZE, LOCK_FREE> {
         self.cell_ref
     }
@@ -724,6 +709,7 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Reader<'b, K, V, SI
 impl<'b, K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool> Drop
     for Reader<'b, K, V, SIZE, LOCK_FREE>
 {
+    #[inline]
     fn drop(&mut self) {
         let mut current = self.cell_ref.state.load(Relaxed);
         loop {
@@ -736,7 +722,7 @@ impl<'b, K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool> 
             {
                 Ok(_) => {
                     if wakeup {
-                        self.cell_ref.wakeup();
+                        self.cell_ref.signal();
                     }
                     break;
                 }
@@ -784,11 +770,11 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize> Drop for DataArray<K, V, SI
 struct WaitQueueEntry {
     mutex: Mutex<u8>,
     condvar: Condvar,
-    next_ptr: *const WaitQueueEntry,
+    next_ptr: *mut WaitQueueEntry,
 }
 
 impl WaitQueueEntry {
-    fn new(next_ptr: *const WaitQueueEntry) -> WaitQueueEntry {
+    fn new(next_ptr: *mut WaitQueueEntry) -> WaitQueueEntry {
         WaitQueueEntry {
             mutex: Mutex::new(0_u8),
             condvar: Condvar::new(),

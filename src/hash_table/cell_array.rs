@@ -6,6 +6,7 @@ use std::alloc::{alloc_zeroed, dealloc, Layout};
 use std::borrow::Borrow;
 use std::convert::TryInto;
 use std::hash::Hash;
+use std::mem::size_of;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
@@ -14,7 +15,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 /// It is a special purpose array since it does not construct instances, instead only does it
 /// allocate a large chunk of zeroed heap memory.
 pub struct CellArray<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool> {
-    array: Option<Box<Cell<K, V, SIZE, LOCK_FREE>>>,
+    array_ptr: *const Cell<K, V, SIZE, LOCK_FREE>,
     array_ptr_offset: usize,
     array_capacity: usize,
     lb_capacity: u8,
@@ -36,37 +37,38 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
     ) -> CellArray<K, V, SIZE, LOCK_FREE> {
         let lb_capacity = Self::calculate_lb_array_size(total_cell_capacity);
         let array_capacity = 1_usize << lb_capacity;
-        let (array, array_ptr_offset) = unsafe {
-            let size_of_cell = std::mem::size_of::<Cell<K, V, SIZE, LOCK_FREE>>();
+        unsafe {
+            let size_of_cell = size_of::<Cell<K, V, SIZE, LOCK_FREE>>();
             let allocation_size = (array_capacity + 1) * size_of_cell;
             let ptr = alloc_zeroed(Layout::from_size_align_unchecked(allocation_size, 1));
             if ptr.is_null() {
                 // Memory allocation failure: panic.
                 panic!("memory allocation failure: {} bytes", allocation_size);
             }
-            let mut offset = ptr.align_offset(size_of_cell.next_power_of_two());
-            if offset == usize::MAX {
-                offset = 0;
+            let mut array_ptr_offset = ptr.align_offset(size_of_cell.next_power_of_two());
+            if array_ptr_offset == usize::MAX {
+                array_ptr_offset = 0;
             }
             #[allow(clippy::cast_ptr_alignment)]
-            let array_ptr = ptr.add(offset).cast::<Cell<K, V, SIZE, LOCK_FREE>>();
-            (Some(Box::from_raw(array_ptr)), offset)
-        };
-        CellArray {
-            array,
-            array_ptr_offset,
-            array_capacity,
-            lb_capacity,
-            old_array,
-            rehashing: AtomicUsize::new(0),
-            rehashed: AtomicUsize::new(0),
+            let array_ptr = ptr
+                .add(array_ptr_offset)
+                .cast::<Cell<K, V, SIZE, LOCK_FREE>>();
+            CellArray {
+                array_ptr,
+                array_ptr_offset,
+                array_capacity,
+                lb_capacity,
+                old_array,
+                rehashing: AtomicUsize::new(0),
+                rehashed: AtomicUsize::new(0),
+            }
         }
     }
 
-    /// Returns a reference to a Cell at the given position.
+    /// Returns a reference to a [`Cell`] at the given position.
+    #[inline]
     pub fn cell(&self, index: usize) -> &Cell<K, V, SIZE, LOCK_FREE> {
-        let array_ptr = &(**self.array.as_ref().unwrap()) as *const Cell<K, V, SIZE, LOCK_FREE>;
-        unsafe { &(*(array_ptr.add(index))) }
+        unsafe { &(*(self.array_ptr.add(index))) }
     }
 
     /// Returns the recommended sampling size.
@@ -85,6 +87,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
     }
 
     /// Returns a shared pointer to the old array.
+    #[inline]
     pub fn old_array<'b>(&self, barrier: &'b Barrier) -> Ptr<'b, CellArray<K, V, SIZE, LOCK_FREE>> {
         self.old_array.load(Relaxed, barrier)
     }
@@ -239,8 +242,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
         let adjusted_total_cell_capacity = total_cell_capacity.min((usize::MAX / 2) - (SIZE - 1));
         let required_cells = ((adjusted_total_cell_capacity + SIZE - 1) / SIZE).next_power_of_two();
         let lb_capacity =
-            ((std::mem::size_of::<usize>() * 8) - (required_cells.leading_zeros() as usize) - 1)
-                .max(1);
+            ((size_of::<usize>() * 8) - (required_cells.leading_zeros() as usize) - 1).max(1);
 
         // 2^lb_capacity * C::cell_size() >= capacity
         debug_assert!(lb_capacity > 0);
@@ -252,11 +254,12 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
 
 impl<K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Drop for CellArray<K, V, SIZE, LOCK_FREE> {
     fn drop(&mut self) {
-        let size_of_cell = std::mem::size_of::<Cell<K, V, SIZE, LOCK_FREE>>();
+        let size_of_cell = size_of::<Cell<K, V, SIZE, LOCK_FREE>>();
         unsafe {
-            let array = self.array.take().unwrap();
             dealloc(
-                Box::into_raw(array).cast::<u8>().sub(self.array_ptr_offset),
+                (self.array_ptr as *mut Cell<K, V, SIZE, LOCK_FREE>)
+                    .cast::<u8>()
+                    .sub(self.array_ptr_offset),
                 Layout::from_size_align_unchecked((self.array_capacity + 1) * size_of_cell, 1),
             );
         }

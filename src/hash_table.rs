@@ -1,5 +1,8 @@
-use super::cell::{EntryIterator, Locker, Reader};
-use super::cell_array::CellArray;
+pub mod cell;
+pub mod cell_array;
+
+use cell::{EntryIterator, Locker, Reader};
+use cell_array::CellArray;
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
 
@@ -17,6 +20,7 @@ where
     H: BuildHasher,
 {
     /// Returns the hash value of the given key.
+    #[inline]
     fn hash<Q>(&self, key: &Q) -> (u64, u8)
     where
         K: Borrow<Q>,

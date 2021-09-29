@@ -234,6 +234,7 @@ impl<'b, T> Clone for Ptr<'b, T> {
 impl<'b, T> Copy for Ptr<'b, T> {}
 
 impl<'b, T> Default for Ptr<'b, T> {
+    #[inline]
     fn default() -> Self {
         Ptr::null()
     }

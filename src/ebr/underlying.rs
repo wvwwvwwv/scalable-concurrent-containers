@@ -11,6 +11,7 @@ pub(super) struct Underlying<T> {
 
 impl<T> Underlying<T> {
     // Creates a new underlying instance.
+    #[inline]
     pub(super) fn new(t: T) -> Underlying<T> {
         Underlying {
             next_or_refcnt: LinkOrRefCnt::default(),
@@ -19,6 +20,7 @@ impl<T> Underlying<T> {
     }
 
     /// Tries to add a strong reference to the underlying instance.
+    #[inline]
     pub(super) fn try_add_ref(&self) -> bool {
         self.ref_cnt()
             .fetch_update(Relaxed, Relaxed, |r| {
@@ -32,6 +34,7 @@ impl<T> Underlying<T> {
     }
 
     /// Returns a mutable reference to the instance if it is owned exclusively.
+    #[inline]
     pub(super) fn get_mut(&mut self) -> Option<&mut T> {
         if self.ref_cnt().load(Relaxed) == 1 {
             Some(&mut self.instance)
@@ -41,6 +44,7 @@ impl<T> Underlying<T> {
     }
 
     /// Adds a strong reference to the underlying instance.
+    #[inline]
     pub(super) fn add_ref(&self) {
         let mut current = self.ref_cnt().load(Relaxed);
         debug_assert_eq!(current % 2, 1);
@@ -58,6 +62,7 @@ impl<T> Underlying<T> {
     /// Drops a strong reference to the underlying instance.
     ///
     /// It returns `true` if it the last reference was dropped.
+    #[inline]
     pub(super) fn drop_ref(&self) -> bool {
         // It does not have to be a load-acquire as everything's synchronized via the global
         // epoch. In addition to that, it also does not have to be read-modify-write as a
@@ -80,6 +85,7 @@ impl<T> Underlying<T> {
     }
 
     /// Returns a reference to its reference count.
+    #[inline]
     pub(super) fn ref_cnt(&self) -> &AtomicUsize {
         unsafe { &self.next_or_refcnt.refcnt.0 }
     }
@@ -88,6 +94,7 @@ impl<T> Underlying<T> {
 impl<T> Deref for Underlying<T> {
     type Target = T;
 
+    #[inline]
     fn deref(&self) -> &Self::Target {
         &self.instance
     }
@@ -121,6 +128,7 @@ pub(super) union LinkOrRefCnt {
 }
 
 impl Default for LinkOrRefCnt {
+    #[inline]
     fn default() -> Self {
         LinkOrRefCnt {
             refcnt: ManuallyDrop::new((AtomicUsize::new(1), 0)),

@@ -1,9 +1,9 @@
 //! [`HashMap`] implementation.
 
-use crate::common::cell::Locker;
-use crate::common::cell_array::CellArray;
-use crate::common::hash_table::HashTable;
-use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
+use super::ebr::{Arc, AtomicArc, Barrier, Tag};
+use super::hash_table::cell::Locker;
+use super::hash_table::cell_array::CellArray;
+use super::hash_table::HashTable;
 
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;

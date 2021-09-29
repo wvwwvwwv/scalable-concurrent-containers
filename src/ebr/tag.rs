@@ -17,6 +17,7 @@ pub enum Tag {
 
 impl Tag {
     /// Interprets the [`Tag`] as an integer.
+    #[inline]
     pub(super) fn value(self) -> usize {
         match self {
             Self::None => 0,
@@ -27,6 +28,7 @@ impl Tag {
     }
 
     /// Returns the tag embedded in the pointer.
+    #[inline]
     pub(super) fn into_tag<P>(ptr: *const P) -> Tag {
         match ((ptr as usize & 1) == 1, (ptr as usize & 2) == 2) {
             (false, false) => Tag::None,
@@ -37,11 +39,13 @@ impl Tag {
     }
 
     /// Sets a tag, overwriting any existing tag in the pointer.
+    #[inline]
     pub(super) fn update_tag<P>(ptr: *const P, tag: Tag) -> *const P {
         unsafe { transmute(((ptr as usize) & (!3)) | tag.value()) }
     }
 
     /// Returns the pointer with the tag bits erased.
+    #[inline]
     pub(super) fn unset_tag<P>(ptr: *const P) -> *const P {
         unsafe { transmute((ptr as usize) & (!3)) }
     }

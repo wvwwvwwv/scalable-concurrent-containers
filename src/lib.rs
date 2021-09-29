@@ -35,6 +35,6 @@ pub use hash_index::HashIndex;
 pub mod tree_index;
 pub use tree_index::TreeIndex;
 
-mod common;
+mod hash_table;
 
 mod tests;
