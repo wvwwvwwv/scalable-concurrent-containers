@@ -12,7 +12,7 @@ use std::iter::FusedIterator;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
-const CELL_SIZE: usize = 32;
+const CELL_SIZE: usize = 16;
 const DEFAULT_CAPACITY: usize = 64;
 
 /// A scalable concurrent hash index data structure.

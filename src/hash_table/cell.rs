@@ -106,20 +106,23 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
 
         // In order to read the linked list correctly, a load-acquire is required.
         let read_order = if LOCK_FREE { Acquire } else { Relaxed };
-        let mut data_array_ptr = self.data.load(read_order, barrier);
+        let mut current_array_ptr = self.data.load(read_order, barrier);
+        let mut prev_array_ptr = Ptr::null();
         let preferred_index = partial_hash as usize % SIZE;
-        while let Some(data_array_ref) = data_array_ptr.as_ref() {
+        while let Some(data_array_ref) = current_array_ptr.as_ref() {
             if let Some((index, _)) =
                 Self::search_array(data_array_ref, key_ref, preferred_index, partial_hash)
             {
                 return Some(EntryIterator {
                     cell_ref: Some(self),
-                    current_array_ptr: data_array_ptr,
+                    current_array_ptr,
+                    prev_array_ptr,
                     current_index: index,
                     barrier_ref: barrier,
                 });
             }
-            data_array_ptr = data_array_ref.link.load(read_order, barrier);
+            prev_array_ptr = current_array_ptr;
+            current_array_ptr = data_array_ref.link.load(read_order, barrier);
         }
         None
     }
@@ -265,6 +268,7 @@ pub struct EntryIterator<'b, K: 'static + Eq, V: 'static, const SIZE: usize, con
 {
     cell_ref: Option<&'b Cell<K, V, SIZE, LOCK_FREE>>,
     current_array_ptr: Ptr<'b, DataArray<K, V, SIZE>>,
+    prev_array_ptr: Ptr<'b, DataArray<K, V, SIZE>>,
     current_index: usize,
     barrier_ref: &'b Barrier,
 }
@@ -279,6 +283,7 @@ impl<'b, K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
         EntryIterator {
             cell_ref: Some(cell),
             current_array_ptr: Ptr::null(),
+            prev_array_ptr: Ptr::null(),
             current_index: usize::MAX,
             barrier_ref: barrier,
         }
@@ -457,13 +462,7 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Locker<'b, K, V, SI
 
     /// Removes a new key-value pair being pointed by the given [`CellIterator`].
     pub fn erase(&self, iterator: &mut EntryIterator<K, V, SIZE, LOCK_FREE>) -> Option<(K, V)> {
-        if self.killed {
-            // The Cell has been killed.
-            return None;
-        }
-
-        if iterator.current_array_ptr.is_null() || iterator.current_index == usize::MAX {
-            // The iterator is fused.
+        if self.killed || iterator.current_index == usize::MAX {
             return None;
         }
 
@@ -476,7 +475,6 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Locker<'b, K, V, SI
                 return None;
             }
 
-            debug_assert!(self.cell_ref.num_entries > 0);
             #[allow(clippy::cast_ref_to_mut)]
             let cell_mut_ref =
                 unsafe { &mut *(self.cell_ref as *const _ as *mut Cell<K, V, SIZE, LOCK_FREE>) };
@@ -492,7 +490,25 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Locker<'b, K, V, SI
             }
             data_array_mut_ref.occupied &= !(1_u32 << iterator.current_index);
             #[allow(clippy::uninit_assumed_init)]
-            return Some(unsafe { ptr::replace(entry_ptr, MaybeUninit::uninit().assume_init()) });
+            let result =
+                Some(unsafe { ptr::replace(entry_ptr, MaybeUninit::uninit().assume_init()) });
+
+            if data_array_mut_ref.occupied == 0 {
+                let next_data_array = data_array_mut_ref
+                    .link
+                    .get_arc(Relaxed, iterator.barrier_ref);
+                if let Some(upper_data_array_ref) = iterator.prev_array_ptr.as_ref() {
+                    upper_data_array_ref
+                        .link
+                        .swap((next_data_array, Tag::None), Relaxed);
+                } else {
+                    self.cell_ref
+                        .data
+                        .swap((next_data_array, Tag::None), Relaxed);
+                }
+            }
+
+            return result;
         }
         None
     }

@@ -21,3 +21,15 @@ proptest = "^1.0.0"
 [[bench]]
 name = "ebr"
 harness = false
+
+[[bench]]
+name = "hash_map"
+harness = false
+
+[[bench]]
+name = "hash_index"
+harness = false
+
+[[bench]]
+name = "tree_index"
+harness = false

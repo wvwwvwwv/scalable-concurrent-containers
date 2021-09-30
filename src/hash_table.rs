@@ -13,7 +13,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 /// `HashTable` define common functions for `HashIndex` and `HashMap`.
-pub trait HashTable<K, V, H, const CELL_SIZE: usize, const LOCK_FREE: bool>
+pub(super) trait HashTable<K, V, H, const CELL_SIZE: usize, const LOCK_FREE: bool>
 where
     K: 'static + Eq + Hash + Sync,
     V: 'static + Sync,
@@ -183,7 +183,7 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        let mut resize_tried = false;
+        let mut check_resize = true;
 
         // It is guaranteed that the thread reads a consistent snapshot of the current and old
         // array pair by a release memory barrier in the resize function, hence the following
@@ -201,11 +201,11 @@ where
             // An acquire fence is required to correctly load the contents of the array.
             let current_array_ptr = self.cell_array().load(Acquire, barrier);
             let current_array_ref = current_array_ptr.as_ref().unwrap();
-            let old_array_ptr = current_array_ref.old_array(barrier);
-            if let Some(old_array_ref) = old_array_ptr.as_ref() {
+            if let Some(old_array_ref) = current_array_ref.old_array(barrier).as_ref() {
                 if current_array_ref.partial_rehash(|key| self.hash(key), &Self::copier, barrier) {
                     continue;
                 }
+                check_resize = false;
                 let cell_index = old_array_ref.calculate_cell_index(hash);
                 if let Some(mut locker) = Locker::lock(old_array_ref.cell(cell_index), barrier) {
                     if let Some(iterator) = locker.cell_ref().get(key_ref, partial_hash, barrier) {
@@ -225,13 +225,12 @@ where
             let cell_index = current_array_ref.calculate_cell_index(hash);
 
             // Tries to resize the array.
-            if !resize_tried
-                && old_array_ptr.is_null()
+            if check_resize
                 && cell_index < CELL_SIZE
                 && current_array_ref.cell(cell_index).num_entries() >= CELL_SIZE
             {
                 // Triggers resize if the estimated load factor is greater than 7/8.
-                resize_tried = true;
+                check_resize = false;
                 let sample_size = current_array_ref.sample_size();
                 let threshold = sample_size * (CELL_SIZE / 8) * 7;
                 let mut num_entries = 0;
