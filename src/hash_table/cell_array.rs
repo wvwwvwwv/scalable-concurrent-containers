@@ -76,13 +76,13 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
         (self.lb_capacity as usize).next_power_of_two()
     }
 
-    /// Returns the size of the `CellArray`.
-    pub fn array_size(&self) -> usize {
+    /// Returns the number of `Cell` in the `CellArray`.
+    pub fn num_cells(&self) -> usize {
         self.array_capacity
     }
 
     /// Returns the number of total cell entries.
-    pub fn num_cell_entries(&self) -> usize {
+    pub fn num_entries(&self) -> usize {
         self.array_capacity * SIZE
     }
 
@@ -124,11 +124,11 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
             return;
         }
 
-        let shrink = old_array.array_size() > self.array_size();
+        let shrink = old_array.num_cells() > self.num_cells();
         let ratio = if shrink {
-            old_array.array_size() / self.array_size()
+            old_array.num_cells() / self.num_cells()
         } else {
-            self.array_size() / old_array.array_size()
+            self.num_cells() / old_array.num_cells()
         };
         let target_cell_index = if shrink {
             old_cell_index / ratio
@@ -197,7 +197,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
         }
 
         let old_array_ref = old_array_ptr.as_ref().unwrap();
-        let old_array_size = old_array_ref.array_size();
+        let old_array_size = old_array_ref.num_cells();
         let mut current = self.rehashing.load(Relaxed);
         loop {
             if current >= old_array_size {

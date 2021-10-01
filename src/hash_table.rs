@@ -63,12 +63,12 @@ where
         let current_array_ptr = self.cell_array().load(Acquire, barrier);
         let current_array_ref = current_array_ptr.as_ref().unwrap();
         let mut num_entries = 0;
-        for i in 0..current_array_ref.array_size() {
+        for i in 0..current_array_ref.num_cells() {
             num_entries += current_array_ref.cell(i).num_entries();
         }
         let old_array_ptr = current_array_ref.old_array(barrier);
         if let Some(old_array_ref) = old_array_ptr.as_ref() {
-            for i in 0..old_array_ref.array_size() {
+            for i in 0..old_array_ref.num_cells() {
                 num_entries += old_array_ref.cell(i).num_entries();
             }
         }
@@ -79,7 +79,7 @@ where
     fn num_slots(&self, barrier: &Barrier) -> usize {
         let current_array_ptr = self.cell_array().load(Acquire, barrier);
         let current_array_ref = current_array_ptr.as_ref().unwrap();
-        current_array_ref.num_cell_entries()
+        current_array_ref.num_entries()
     }
 
     /// Estimates the number of entries using the given number of cells.
@@ -91,7 +91,7 @@ where
         for i in 0..num_cells_to_sample {
             num_entries += array_ref.cell(i).num_entries();
         }
-        num_entries * (array_ref.array_size() / num_cells_to_sample)
+        num_entries * (array_ref.num_cells() / num_cells_to_sample)
     }
 
     /// Inserts an entry into the [`HashTable`].
@@ -108,6 +108,7 @@ where
     }
 
     /// Reads an entry from the [`HashTable`].
+    #[inline]
     fn read_entry<'b, Q, R, F: FnOnce(&'b K, &'b V) -> R>(
         &self,
         key_ref: &Q,
@@ -168,6 +169,7 @@ where
     ///
     /// In case it successfully found the key, it returns a [`EntryIterator`]. Not returning a
     /// [`EntryIterator`] means that the key does not exist.
+    #[inline]
     fn acquire<'h, 'b, Q>(
         &'h self,
         key_ref: &Q,
@@ -225,22 +227,11 @@ where
             let cell_index = current_array_ref.calculate_cell_index(hash);
 
             // Tries to resize the array.
-            if check_resize
-                && cell_index < CELL_SIZE
-                && current_array_ref.cell(cell_index).num_entries() >= CELL_SIZE
-            {
+            let num_entries = current_array_ref.cell(cell_index).num_entries();
+            if check_resize && num_entries >= CELL_SIZE {
                 // Triggers resize if the estimated load factor is greater than 7/8.
                 check_resize = false;
-                let sample_size = current_array_ref.sample_size();
-                let threshold = sample_size * (CELL_SIZE / 8) * 7;
-                let mut num_entries = 0;
-                for i in 0..sample_size {
-                    num_entries += current_array_ref.cell(i).num_entries();
-                    if num_entries > threshold {
-                        self.resize(barrier);
-                        break;
-                    }
-                }
+                self.try_enlarge(current_array_ref, cell_index, num_entries, barrier);
                 continue;
             }
 
@@ -252,6 +243,48 @@ where
             }
 
             // Reaching here means that `self.array` is updated.
+        }
+    }
+
+    /// Tries to enlarge the array.
+    fn try_enlarge(
+        &self,
+        array_ref: &CellArray<K, V, CELL_SIZE, LOCK_FREE>,
+        cell_index: usize,
+        mut num_entries: usize,
+        barrier: &Barrier,
+    ) {
+        let sample_size = array_ref.sample_size();
+        let array_size = array_ref.num_cells();
+        let threshold = sample_size * (CELL_SIZE / 8) * 7;
+        if num_entries > threshold
+            || (1..sample_size).any(|i| {
+                num_entries += array_ref.cell((cell_index + i) % array_size).num_entries();
+                num_entries > threshold
+            })
+        {
+            self.resize(barrier);
+        }
+    }
+
+    /// Tries to shrink the array.
+    fn try_shrink(
+        &self,
+        array_ref: &CellArray<K, V, CELL_SIZE, LOCK_FREE>,
+        cell_index: usize,
+        barrier: &Barrier,
+    ) {
+        if array_ref.num_entries() > self.minimum_capacity() {
+            let sample_size = array_ref.sample_size();
+            let array_size = array_ref.num_cells();
+            let threshold = sample_size * CELL_SIZE / 16;
+            let mut num_entries = 0;
+            if !(1..sample_size).any(|i| {
+                num_entries += array_ref.cell((cell_index + i) % array_size).num_entries();
+                num_entries >= threshold
+            }) {
+                self.resize(barrier);
+            }
         }
     }
 
@@ -278,8 +311,8 @@ where
             // The resizing policies are as follows.
             //  - The load factor reaches 7/8, then the array grows up to 64x.
             //  - The load factor reaches 1/16, then the array shrinks to fit.
-            let capacity = current_array_ref.num_cell_entries();
-            let num_cells = current_array_ref.array_size();
+            let capacity = current_array_ref.num_entries();
+            let num_cells = current_array_ref.num_cells();
             let num_cells_to_sample = (num_cells / 8).max(2).min(4096);
             let estimated_num_entries = Self::estimate(current_array_ref, num_cells_to_sample);
             let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {

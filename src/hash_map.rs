@@ -88,7 +88,7 @@ where
             initial_capacity,
             AtomicArc::null(),
         ));
-        let current_capacity = array.num_cell_entries();
+        let current_capacity = array.num_entries();
         HashMap {
             array: AtomicArc::from(array),
             minimum_capacity: current_capacity,
@@ -307,20 +307,9 @@ where
                 let result = locker.erase(&mut iterator);
                 if cell_index < CELL_SIZE && locker.cell_ref().num_entries() < CELL_SIZE / 16 {
                     drop(locker);
-                    let current_array_ptr = self.array.load(Acquire, &barrier);
-                    if let Some(current_array_ref) = current_array_ptr.as_ref() {
-                        if current_array_ref.old_array(&barrier).is_null()
-                            && current_array_ref.num_cell_entries() > self.minimum_capacity()
-                        {
-                            let sample_size = current_array_ref.sample_size();
-                            let mut num_entries = 0;
-                            for i in 0..sample_size {
-                                num_entries += current_array_ref.cell(i).num_entries();
-                                if num_entries >= sample_size * CELL_SIZE / 16 {
-                                    return result;
-                                }
-                            }
-                            self.resize(&barrier);
+                    if let Some(current_array_ref) = self.array.load(Acquire, &barrier).as_ref() {
+                        if current_array_ref.old_array(&barrier).is_null() {
+                            self.try_shrink(current_array_ref, cell_index, &barrier);
                         }
                     }
                 }
@@ -468,7 +457,7 @@ where
                 continue;
             }
 
-            for cell_index in 0..current_array_ref.array_size() {
+            for cell_index in 0..current_array_ref.num_cells() {
                 if let Some(locker) = Locker::lock(current_array_ref.cell(cell_index), &barrier) {
                     let mut iterator = locker.cell_ref().iter(&barrier);
                     while iterator.next().is_some() {

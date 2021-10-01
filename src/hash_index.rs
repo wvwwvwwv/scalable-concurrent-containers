@@ -171,24 +171,12 @@ where
             };
             if remove
                 && locker.mark_removed(key_ref, partial_hash, &barrier)
-                && cell_index < CELL_SIZE
-                && locker.cell_ref().num_entries() < CELL_SIZE / 16
+                && locker.cell_ref().num_entries() == 0
             {
                 drop(locker);
-                let current_array_ptr = self.array.load(Acquire, &barrier);
-                if let Some(current_array_ref) = current_array_ptr.as_ref() {
-                    if current_array_ref.old_array(&barrier).is_null()
-                        && current_array_ref.num_cell_entries() > self.minimum_capacity()
-                    {
-                        let sample_size = current_array_ref.sample_size();
-                        let mut num_entries = 0;
-                        for i in 0..sample_size {
-                            num_entries += current_array_ref.cell(i).num_entries();
-                            if num_entries >= sample_size * CELL_SIZE / 16 {
-                                return true;
-                            }
-                        }
-                        self.resize(&barrier);
+                if let Some(current_array_ref) = self.array.load(Acquire, &barrier).as_ref() {
+                    if current_array_ref.old_array(&barrier).is_null() {
+                        self.try_shrink(current_array_ref, cell_index, &barrier);
                     }
                 }
             }
@@ -304,7 +292,7 @@ where
                     continue;
                 }
             }
-            for index in 0..current_array_ref.array_size() {
+            for index in 0..current_array_ref.num_cells() {
                 if let Some(mut locker) = Locker::lock(current_array_ref.cell(index), &barrier) {
                     num_removed += locker.cell_ref().num_entries();
                     locker.purge(&barrier);
@@ -542,7 +530,7 @@ where
             // Proceeds to the next Cell.
             let array_ref = self.current_array_ptr.as_ref().unwrap();
             self.current_index += 1;
-            if self.current_index == array_ref.array_size() {
+            if self.current_index == array_ref.num_cells() {
                 let current_array_ptr = self.hash_index.array.load(Acquire, self.barrier_ref);
                 if self.current_array_ptr == current_array_ptr {
                     // Finished scanning the entire array.
