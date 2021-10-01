@@ -383,6 +383,7 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Locker<'b, K, V, SI
     }
 
     /// Returns a reference to the [`Cell`].
+    #[inline]
     pub fn cell_ref(&self) -> &'b Cell<K, V, SIZE, LOCK_FREE> {
         self.cell_ref
     }

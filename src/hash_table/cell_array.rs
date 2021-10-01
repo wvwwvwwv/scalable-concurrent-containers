@@ -72,16 +72,19 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
     }
 
     /// Returns the recommended sampling size.
+    #[inline]
     pub fn sample_size(&self) -> usize {
         (self.lb_capacity as usize).next_power_of_two()
     }
 
     /// Returns the number of `Cell` in the `CellArray`.
+    #[inline]
     pub fn num_cells(&self) -> usize {
         self.array_capacity
     }
 
     /// Returns the number of total cell entries.
+    #[inline]
     pub fn num_entries(&self) -> usize {
         self.array_capacity * SIZE
     }
@@ -93,6 +96,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
     }
 
     /// Calculates the cell index for the hash value.
+    #[inline]
     pub fn calculate_cell_index(&self, hash: u64) -> usize {
         (hash >> (64 - self.lb_capacity)).try_into().unwrap()
     }
