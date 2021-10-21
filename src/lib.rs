@@ -32,6 +32,9 @@ pub use hash_map::HashMap;
 pub mod hash_index;
 pub use hash_index::HashIndex;
 
+pub mod hash_set;
+pub use hash_set::HashSet;
+
 pub mod tree_index;
 pub use tree_index::TreeIndex;
 

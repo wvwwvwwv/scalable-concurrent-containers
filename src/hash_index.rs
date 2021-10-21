@@ -1,4 +1,4 @@
-//! [`HashIndex`] implementation.
+//! The module implements [`HashIndex`].
 
 use super::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 use super::hash_table::cell::{EntryIterator, Locker};
@@ -71,7 +71,7 @@ where
     /// assert_eq!(result, 1024);
     ///
     ///
-    /// let hashindex: HashIndex<u64, u32, _> = Default::default();
+    /// let hashindex: HashIndex<u64, u32, _> = HashIndex::default();
     /// let result = hashindex.capacity();
     /// assert_eq!(result, 64);
     /// ```
@@ -104,7 +104,7 @@ where
     /// ```
     /// use scc::HashIndex;
     ///
-    /// let hashindex: HashIndex<u64, u32> = Default::default();
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
     /// assert!(hashindex.insert(1, 0).is_ok());
     /// assert_eq!(hashindex.insert(1, 1).unwrap_err(), (1, 1));
@@ -123,7 +123,7 @@ where
     /// ```
     /// use scc::HashIndex;
     ///
-    /// let hashindex: HashIndex<u64, u32> = Default::default();
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
     /// assert!(!hashindex.remove(&1));
     /// assert!(hashindex.insert(1, 0).is_ok());
@@ -148,7 +148,7 @@ where
     /// ```
     /// use scc::HashIndex;
     ///
-    /// let hashindex: HashIndex<u64, u32> = Default::default();
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
     /// assert!(hashindex.insert(1, 0).is_ok());
     /// assert!(!hashindex.remove_if(&1, |v| *v == 1));
@@ -194,7 +194,7 @@ where
     /// ```
     /// use scc::HashIndex;
     ///
-    /// let hashindex: HashIndex<u64, u32> = Default::default();
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
     /// assert!(hashindex.read(&1, |_, v| *v).is_none());
     /// assert!(hashindex.insert(1, 10).is_ok());
@@ -221,7 +221,7 @@ where
     /// use scc::ebr::Barrier;
     /// use scc::HashIndex;
     ///
-    /// let hashindex: HashIndex<u64, u32> = Default::default();
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
     /// assert!(hashindex.insert(1, 10).is_ok());
     ///
@@ -250,7 +250,7 @@ where
     /// ```
     /// use scc::HashIndex;
     ///
-    /// let hashindex: HashIndex<u64, u32> = Default::default();
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
     /// assert!(!hashindex.contains(&1));
     /// assert!(hashindex.insert(1, 0).is_ok());
@@ -272,7 +272,7 @@ where
     /// ```
     /// use scc::HashIndex;
     ///
-    /// let hashindex: HashIndex<u64, u32> = Default::default();
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
     /// assert!(hashindex.insert(1, 0).is_ok());
     /// assert_eq!(hashindex.clear(), 1);
@@ -318,7 +318,7 @@ where
     /// ```
     /// use scc::HashIndex;
     ///
-    /// let hashindex: HashIndex<u64, u32> = Default::default();
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
     /// assert!(hashindex.insert(1, 0).is_ok());
     /// assert_eq!(hashindex.len(), 1);
@@ -338,7 +338,7 @@ where
     /// ```
     /// use scc::HashIndex;
     ///
-    /// let hashindex: HashIndex<u64, u32> = Default::default();
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
     /// assert!(hashindex.is_empty());
     /// ```
@@ -377,7 +377,7 @@ where
     /// use scc::ebr::Barrier;
     /// use scc::HashIndex;
     ///
-    /// let hashindex: HashIndex<u64, u32> = Default::default();
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
     /// assert!(hashindex.insert(1, 0).is_ok());
     ///
@@ -424,7 +424,7 @@ where
     /// ```
     /// use scc::HashIndex;
     ///
-    /// let hashindex: HashIndex<u64, u32, _> = Default::default();
+    /// let hashindex: HashIndex<u64, u32, _> = HashIndex::default();
     /// ```
     fn default() -> Self {
         HashIndex {

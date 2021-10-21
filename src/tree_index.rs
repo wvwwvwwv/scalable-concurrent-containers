@@ -1,4 +1,4 @@
-//! [`TreeIndex`] implementation.
+//! The module implements [`TreeIndex`].
 
 mod error;
 mod leaf;
@@ -116,7 +116,7 @@ where
         }
     }
 
-    /// Removes a key-value pair.
+    /// Tries to removes a key-value pair.
     ///
     /// # Examples
     ///
@@ -138,7 +138,7 @@ where
         self.remove_if(key_ref, |_| true)
     }
 
-    /// Removes a key-value pair if the given condition is met.
+    /// Tries to removes a key-value pair if the given condition is met.
     ///
     /// # Examples
     ///
@@ -453,7 +453,7 @@ where
     /// ```
     /// use scc::TreeIndex;
     ///
-    /// let treeindex: TreeIndex<u64, u32> = Default::default();
+    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::default();
     ///
     /// assert!(treeindex.read(&1, |_, v| *v).is_none());
     /// ```

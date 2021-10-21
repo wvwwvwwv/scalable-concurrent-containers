@@ -1,4 +1,4 @@
-//! [`HashMap`] implementation.
+//! The module implements [`HashMap`].
 
 use super::ebr::{Arc, AtomicArc, Barrier, Tag};
 use super::hash_table::cell::Locker;
@@ -78,7 +78,7 @@ where
     /// let result = hashmap.capacity();
     /// assert_eq!(result, 1024);
     ///
-    /// let hashmap: HashMap<u64, u32> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
     /// let result = hashmap.capacity();
     /// assert_eq!(result, 64);
     /// ```
@@ -150,6 +150,7 @@ where
             }
         }
     }
+
     /// Inserts a key-value pair into the [`HashMap`].
     ///
     /// # Errors
@@ -166,7 +167,7 @@ where
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// assert!(hashmap.insert(1, 0).is_ok());
     /// assert_eq!(hashmap.insert(1, 1).unwrap_err(), (1, 1));
@@ -185,7 +186,7 @@ where
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// assert!(hashmap.update(&1, |_, _| true).is_none());
     /// assert!(hashmap.insert(1, 0).is_ok());
@@ -224,7 +225,7 @@ where
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// hashmap.upsert(1, || 2, |_, v| *v = 2);
     /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
@@ -252,14 +253,14 @@ where
         locker.insert(key, constructor(), partial_hash, &barrier);
     }
 
-    /// Removes a key-value pair and returns the key-value-pair if the key exists.
+    /// Tries to remove a key-value pair, then returns the key-value-pair if the key exists.
     ///
     /// # Examples
     ///
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// assert!(hashmap.remove(&1).is_none());
     /// assert!(hashmap.insert(1, 0).is_ok());
@@ -274,15 +275,15 @@ where
         self.remove_if(key_ref, |_| true)
     }
 
-    /// Removes a key-value pair and returns the key-value-pair if the key exists and the given
-    /// condition is met.
+    /// Tries to remove a key-value pair, then returns the key-value-pair if the key exists and
+    /// the given condition is met.
     ///
     /// # Examples
     ///
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// assert!(hashmap.insert(1, 0).is_ok());
     /// assert!(hashmap.remove_if(&1, |v| *v == 1).is_none());
@@ -328,7 +329,7 @@ where
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// assert!(hashmap.read(&1, |_, v| *v).is_none());
     /// assert!(hashmap.insert(1, 10).is_ok());
@@ -355,7 +356,7 @@ where
     /// use scc::ebr::Barrier;
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// assert!(hashmap.insert(1, 10).is_ok());
     ///
@@ -384,7 +385,7 @@ where
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// assert!(!hashmap.contains(&1));
     /// assert!(hashmap.insert(1, 0).is_ok());
@@ -406,7 +407,7 @@ where
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// assert!(hashmap.insert(1, 0).is_ok());
     /// assert!(hashmap.insert(2, 1).is_ok());
@@ -425,7 +426,7 @@ where
         });
     }
 
-    /// Retains the key-value pairs that satisfy the given predicate.
+    /// Retains key-value pairs that satisfy the given predicate.
     ///
     /// It returns the number of entries remaining and removed.
     ///
@@ -434,7 +435,7 @@ where
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// assert!(hashmap.insert(1, 0).is_ok());
     /// assert!(hashmap.insert(2, 1).is_ok());
@@ -503,7 +504,7 @@ where
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// assert!(hashmap.insert(1, 0).is_ok());
     /// assert_eq!(hashmap.clear(), 1);
@@ -523,7 +524,7 @@ where
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// assert!(hashmap.insert(1, 0).is_ok());
     /// assert_eq!(hashmap.len(), 1);
@@ -543,7 +544,7 @@ where
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// assert!(hashmap.is_empty());
     /// ```
@@ -587,7 +588,7 @@ where
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32> = Default::default();
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// let result = hashmap.capacity();
     /// assert_eq!(result, 64);
