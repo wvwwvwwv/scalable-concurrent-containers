@@ -9,6 +9,7 @@ A collection of concurrent data structures and building blocks for concurrent pr
 - [scc::ebr](#EBR) implements epoch-based reclamation.
 - [scc::LinkedList](#LinkedList) is a type trait implementing a wait-free concurrent singly linked list.
 - [scc::HashMap](#HashMap) is a concurrent hash map.
+- [scc::HashSet](#HashSet) is a concurrent hash set based on [scc::HashMap](#HashMap).
 - [scc::HashIndex](#HashIndex) is a concurrent hash index allowing lock-free read and scan.
 - [scc::TreeIndex](#TreeIndex) is a concurrent B+ tree allowing lock-free read and scan.
 
@@ -168,6 +169,11 @@ assert!(hashmap.insert(3, 2).is_ok());
 // Inside `retain`, a `ebr::Barrier` protects the entry array.
 assert_eq!(hashmap.retain(|key, value| *key == 1 && *value == 0), (1, 2));
 ```
+
+
+## HashSet
+
+[`HashSet`](#HashSet) is a specialized version of [`HashMap`](#HashMap). 
 
 
 ## HashIndex
@@ -345,6 +351,10 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 
 
 ## Changelog
+
+0.5.6
+
+* Add [`HashSet`](#HashSet).
 
 0.5.6
 

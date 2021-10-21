@@ -1,7 +1,7 @@
 [package]
 name = "scc"
 description = "A collection of building blocks for concurrent programming."
-version = "0.5.6"
+version = "0.5.7"
 authors = ["wvwwvwwv <wvwwvwwv@me.com>"]
 edition = "2018"
 readme = "README.md"
@@ -11,12 +11,12 @@ categories = ["concurrency", "data-structures"]
 keywords = ["concurrent", "ebr", "hashmap", "map", "tree"]
 
 [dependencies]
-scopeguard = "^1.1.0"
+scopeguard = "^1.1"
 
 [dev-dependencies]
-criterion = "^0.3.5"
-loom = { git = "https://github.com/tokio-rs/loom" }
-proptest = "^1.0.0"
+criterion = "^0.3"
+loom = "^0.5"
+proptest = "^1.0"
 
 [[bench]]
 name = "ebr"
