@@ -18,11 +18,11 @@ jobs:
       - name: Debug - Build
         run: cargo build --verbose
       - name: Debug -Run tests
-        run: cargo test --verbose
+        run: cargo test --verbose -- --nocapture
       - name: Release - Build
         run: cargo build --release --verbose
       - name: Release - Run tests
-        run: cargo test --release --verbose
+        run: cargo test --release --verbose -- --nocapture
       - name: Bench - Run benchmarks
         run: cargo bench
       - name: Document - Generate documentation

@@ -196,49 +196,48 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
         Q: Eq + Hash + ?Sized,
     {
         let old_array_ptr = self.old_array(barrier);
-        if old_array_ptr.is_null() {
-            return true;
-        }
+        if let Some(old_array_ref) = old_array_ptr.as_ref() {
+            let old_array_ref = old_array_ptr.as_ref().unwrap();
+            let old_array_size = old_array_ref.num_cells();
+            let mut current = self.rehashing.load(Relaxed);
+            loop {
+                if current >= old_array_size {
+                    return false;
+                }
+                match self
+                    .rehashing
+                    .compare_exchange(current, current + SIZE, Relaxed, Relaxed)
+                {
+                    Ok(_) => break,
+                    Err(result) => current = result,
+                }
+            }
 
-        let old_array_ref = old_array_ptr.as_ref().unwrap();
-        let old_array_size = old_array_ref.num_cells();
-        let mut current = self.rehashing.load(Relaxed);
-        loop {
-            if current >= old_array_size {
-                return false;
+            for old_cell_index in current..(current + SIZE).min(old_array_size) {
+                let old_cell_ref = old_array_ref.cell(old_cell_index);
+                if old_cell_ref.killed() {
+                    continue;
+                }
+                if let Some(mut locker) = Locker::lock(old_cell_ref, barrier) {
+                    self.kill_cell(
+                        &mut locker,
+                        old_array_ref,
+                        old_cell_index,
+                        &hasher,
+                        &copier,
+                        barrier,
+                    );
+                }
             }
-            match self
-                .rehashing
-                .compare_exchange(current, current + SIZE, Acquire, Relaxed)
-            {
-                Ok(_) => break,
-                Err(result) => current = result,
-            }
-        }
 
-        for old_cell_index in current..(current + SIZE).min(old_array_size) {
-            let old_cell_ref = old_array_ref.cell(old_cell_index);
-            if old_cell_ref.killed() {
-                continue;
+            if old_array_size <= self.rehashed.fetch_add(SIZE, Release) + SIZE {
+                self.drop_old_array(barrier);
+                return true;
             }
-            if let Some(mut locker) = Locker::lock(old_cell_ref, barrier) {
-                self.kill_cell(
-                    &mut locker,
-                    old_array_ref,
-                    old_cell_index,
-                    &hasher,
-                    &copier,
-                    barrier,
-                );
-            }
+            false
+        } else {
+            true
         }
-
-        let completed = self.rehashed.fetch_add(SIZE, Release) + SIZE;
-        if old_array_size <= completed {
-            self.drop_old_array(barrier);
-            return true;
-        }
-        false
     }
 
     /// Calculates `log_2` of the array size from the given cell capacity.

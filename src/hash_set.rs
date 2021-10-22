@@ -10,7 +10,7 @@ use std::hash::{BuildHasher, Hash};
 /// A scalable concurrent hash set data structure.
 ///
 /// [`HashSet`] is a concurrent hash set based on [`HashMap`]. It internally uses a [`HashMap`]
-/// as the key container, thus sharing all the characteristics of [`HashMap`].
+/// as its key container, thus sharing all the characteristics of [`HashMap`].
 pub struct HashSet<K, H = RandomState>
 where
     K: 'static + Eq + Hash + Sync,
@@ -362,6 +362,6 @@ impl<K: 'static + Eq + Hash + Sync> Default for HashSet<K, RandomState> {
 
 /// [`Ticket`] keeps the increased minimum capacity of the [`HashSet`] during its lifetime.
 ///
-/// The minimum capacity is lowered when the Ticket is dropped, thereby allowing unused space
-/// to be reclaimed.
+/// The minimum capacity is lowered when the [`Ticket`] is dropped, thereby allowing unused
+/// memory to be reclaimed.
 pub type Ticket<'h, K, H> = super::hash_map::Ticket<'h, K, (), H>;

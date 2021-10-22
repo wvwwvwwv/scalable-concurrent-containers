@@ -124,7 +124,7 @@ A unique key can be inserted along with its corresponding value, and then it can
 ```rust
 use scc::HashMap;
 
-let hashmap: HashMap<u64, u32> = Default::default();
+let hashmap: HashMap<u64, u32> = HashMap::default();
 
 assert!(hashmap.insert(1, 0).is_ok());
 assert_eq!(hashmap.update(&1, |v| { *v = 2; *v }).unwrap(), 2);
@@ -137,7 +137,7 @@ It supports `upsert` as in database management software; it tries to insert the 
 ```rust
 use scc::HashMap;
 
-let hashmap: HashMap<u64, u32> = Default::default();
+let hashmap: HashMap<u64, u32> = HashMap::default();
 
 hashmap.upsert(1, || 2, |_, v| *v = 2);
 assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
@@ -150,7 +150,7 @@ There is no method to confine the lifetime of references derived from an [`Itera
 ```rust
 use scc::HashMap;
 
-let hashmap: HashMap<u64, u32> = Default::default();
+let hashmap: HashMap<u64, u32> = HashMap::default();
 
 assert!(hashmap.insert(1, 0).is_ok());
 assert!(hashmap.insert(2, 1).is_ok());
@@ -173,7 +173,31 @@ assert_eq!(hashmap.retain(|key, value| *key == 1 && *value == 0), (1, 2));
 
 ## HashSet
 
-[`HashSet`](#HashSet) is a specialized version of [`HashMap`](#HashMap). 
+[`HashSet`](#HashSet) is a version of [`HashMap`](#HashMap) where the value type is fixed `()`.
+
+### Examples
+
+All the [`HashSet`](#HashSet) methods do not receive a value argument.
+
+```rust
+use scc::HashSet;
+
+let hashset: HashSet<u64> = HashSet::default();
+
+assert!(hashset.read(&1, |_| true).is_none());
+assert!(hashset.insert(1).is_ok());
+assert!(hashset.read(&1, |_| true).unwrap());
+```
+
+The capacity of a [`HashSet`](#HashSet) can be specified.
+
+```rust
+use scc::HashSet;
+use std::collections::hash_map::RandomState;
+
+let hashset: HashSet<u64, RandomState> = HashSet::new(1000000, RandomState::new());
+assert_eq!(hashset.capacity(), 1048576);
+```
 
 
 ## HashIndex
@@ -187,7 +211,7 @@ Its `read` methods does not modify any shared data.
 ```rust
 use scc::HashIndex;
 
-let hashindex: HashIndex<u64, u32> = Default::default();
+let hashindex: HashIndex<u64, u32> = HashIndex::default();
 
 assert!(hashindex.insert(1, 0).is_ok());
 assert_eq!(hashindex.read(&1, |_, v| *v).unwrap(), 0);
@@ -199,7 +223,7 @@ An [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is imple
 use scc::ebr::Barrier;
 use scc::HashIndex;
 
-let hashindex: HashIndex<u64, u32> = Default::default();
+let hashindex: HashIndex<u64, u32> = HashIndex::default();
 
 assert!(hashindex.insert(1, 0).is_ok());
 
@@ -287,9 +311,9 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 - RAM: 1TB
 - Rust: 1.54.0
 - SCC: 0.5.0 (HashMap, and HashIndex), 0.5.1 (TreeIndex)
-- HashMap<usize, usize, RandomState> = Default::default()
-- HashIndex<usize, usize, RandomState> = Default::default()
-- TreeIndex<usize, usize> = Default::default()
+- HashMap<usize, usize, RandomState> = HashMap::default()
+- HashIndex<usize, usize, RandomState> = HashIndex::default()
+- TreeIndex<usize, usize> = TreeIndex::default()
 
 ### Test data
 

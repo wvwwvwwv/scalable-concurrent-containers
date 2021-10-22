@@ -651,8 +651,8 @@ where
 
 /// [`Ticket`] keeps the increased minimum capacity of the [`HashMap`] during its lifetime.
 ///
-/// The minimum capacity is lowered when the Ticket is dropped, thereby allowing unused space
-/// to be reclaimed.
+/// The minimum capacity is lowered when the [`Ticket`] is dropped, thereby allowing unused
+/// memory to be reclaimed.
 pub struct Ticket<'h, K, V, H>
 where
     K: 'static + Eq + Hash + Sync,
