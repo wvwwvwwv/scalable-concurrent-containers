@@ -8,7 +8,7 @@ use std::convert::TryInto;
 use std::hash::Hash;
 use std::mem::size_of;
 use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use std::sync::atomic::Ordering::{Relaxed, Release};
 
 /// [`CellArray`] is used by [`HashIndex`](crate::HashIndex) and [`HashMap`](crate::HashMap).
 ///
@@ -197,7 +197,6 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
     {
         let old_array_ptr = self.old_array(barrier);
         if let Some(old_array_ref) = old_array_ptr.as_ref() {
-            let old_array_ref = old_array_ptr.as_ref().unwrap();
             let old_array_size = old_array_ref.num_cells();
             let mut current = self.rehashing.load(Relaxed);
             loop {
