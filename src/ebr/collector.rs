@@ -154,13 +154,15 @@ impl Collector {
 
         // Only one thread that acquires the anchor lock is allowed to scan the thread-local
         // collectors.
-        if let Ok(mut collector_ptr) = ANCHOR.fetch_update(Acquire, Acquire, |p| {
+        let lock_result = ANCHOR.fetch_update(Acquire, Acquire, |p| {
             if Tag::into_tag(p) == Tag::First {
                 None
             } else {
                 Some(Tag::update_tag(p, Tag::First) as *mut Collector)
             }
-        }) {
+        });
+        if let Ok(mut collector_ptr) = lock_result {
+            #[allow(clippy::blocks_in_if_conditions)]
             let _scope = scopeguard::guard(&ANCHOR, |a| {
                 // Unlocks the anchor.
                 while a

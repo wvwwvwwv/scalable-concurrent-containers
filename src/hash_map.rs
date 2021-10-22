@@ -9,7 +9,7 @@ use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash};
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
-use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::atomic::{AtomicU8, AtomicUsize};
 
 const CELL_SIZE: usize = 32;
 const DEFAULT_CAPACITY: usize = 64;
@@ -49,7 +49,7 @@ where
     array: AtomicArc<CellArray<K, V, CELL_SIZE, false>>,
     minimum_capacity: usize,
     additional_capacity: AtomicUsize,
-    resizing_flag: AtomicBool,
+    resize_mutex: AtomicU8,
     build_hasher: H,
 }
 
@@ -93,7 +93,7 @@ where
             array: AtomicArc::from(array),
             minimum_capacity: current_capacity,
             additional_capacity: AtomicUsize::new(0),
-            resizing_flag: AtomicBool::new(false),
+            resize_mutex: AtomicU8::new(0),
             build_hasher,
         }
     }
@@ -601,7 +601,7 @@ where
             )),
             minimum_capacity: DEFAULT_CAPACITY,
             additional_capacity: AtomicUsize::new(0),
-            resizing_flag: AtomicBool::new(false),
+            resize_mutex: AtomicU8::new(0),
             build_hasher: RandomState::new(),
         }
     }
@@ -644,8 +644,8 @@ where
     fn minimum_capacity(&self) -> usize {
         self.minimum_capacity + self.additional_capacity.load(Relaxed)
     }
-    fn resizing_flag_ref(&self) -> &AtomicBool {
-        &self.resizing_flag
+    fn resize_mutex_ref(&self) -> &AtomicU8 {
+        &self.resize_mutex
     }
 }
 

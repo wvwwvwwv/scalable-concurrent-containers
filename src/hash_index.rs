@@ -9,7 +9,7 @@ use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash};
 use std::iter::FusedIterator;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
 const CELL_SIZE: usize = 32;
@@ -41,7 +41,7 @@ where
 {
     array: AtomicArc<CellArray<K, V, CELL_SIZE, true>>,
     minimum_capacity: usize,
-    resizing_flag: AtomicBool,
+    resize_mutex: AtomicU8,
     build_hasher: H,
 }
 
@@ -83,7 +83,7 @@ where
                 AtomicArc::null(),
             ))),
             minimum_capacity: initial_capacity,
-            resizing_flag: AtomicBool::new(false),
+            resize_mutex: AtomicU8::new(0),
             build_hasher,
         }
     }
@@ -433,7 +433,7 @@ where
                 AtomicArc::null(),
             ))),
             minimum_capacity: DEFAULT_CAPACITY,
-            resizing_flag: AtomicBool::new(false),
+            resize_mutex: AtomicU8::new(0),
             build_hasher: RandomState::new(),
         }
     }
@@ -476,8 +476,8 @@ where
     fn minimum_capacity(&self) -> usize {
         self.minimum_capacity
     }
-    fn resizing_flag_ref(&self) -> &AtomicBool {
-        &self.resizing_flag
+    fn resize_mutex_ref(&self) -> &AtomicU8 {
+        &self.resize_mutex
     }
 }
 

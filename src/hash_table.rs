@@ -9,7 +9,7 @@ use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
 use std::borrow::Borrow;
 use std::convert::TryInto;
 use std::hash::{BuildHasher, Hash, Hasher};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 /// `HashTable` define common functions for `HashIndex` and `HashMap`.
@@ -55,8 +55,8 @@ where
     /// Returns the minimum allowed capacity.
     fn minimum_capacity(&self) -> usize;
 
-    /// Returns a reference to the resizing flag.
-    fn resizing_flag_ref(&self) -> &AtomicBool;
+    /// Returns a reference to the resizing mutex.
+    fn resize_mutex_ref(&self) -> &AtomicU8;
 
     /// Returns the number of entries.
     fn num_entries(&self, barrier: &Barrier) -> usize {
@@ -290,22 +290,47 @@ where
 
     /// Resizes the array.
     fn resize(&self, barrier: &Barrier) {
-        // Initial rough size estimation using a small number of cells.
-        let current_array_ptr = self.cell_array().load(Acquire, barrier);
-        let current_array_ref = current_array_ptr.as_ref().unwrap();
-        let old_array = current_array_ref.old_array(barrier);
-        if !old_array.is_null() {
-            // With a deprecated array present, it cannot be resized.
-            return;
+        let mut mutex_state = self.resize_mutex_ref().load(Acquire);
+        loop {
+            if mutex_state == 2_u8 {
+                // Another thread is resizing the table, and will retry.
+                return;
+            }
+            let new_state = if mutex_state == 1_u8 {
+                // Another thread is resizing the table, and needs to retry.
+                2_u8
+            } else {
+                // This thread will acquire the mutex.
+                1_u8
+            };
+            match self
+                .resize_mutex_ref()
+                .compare_exchange(mutex_state, new_state, Acquire, Acquire)
+            {
+                Ok(_) => {
+                    if new_state == 2_u8 {
+                        // Retry requested.
+                        return;
+                    }
+                    // Lock acquired.
+                    break;
+                }
+                Err(actual) => mutex_state = actual,
+            }
         }
 
-        if !self.resizing_flag_ref().swap(true, Acquire) {
-            let memory_ordering = Relaxed;
-            let mut mutex_guard = scopeguard::guard(memory_ordering, |memory_ordering| {
-                self.resizing_flag_ref().store(false, memory_ordering);
+        let mut resize = true;
+        while resize {
+            let _mutex_guard = scopeguard::guard(&mut resize, |resize| {
+                *resize = self.resize_mutex_ref().fetch_sub(1, Release) == 2_u8;
             });
-            if current_array_ptr != self.cell_array().load(Acquire, barrier) {
-                return;
+
+            let current_array_ptr = self.cell_array().load(Acquire, barrier);
+            let current_array_ref = current_array_ptr.as_ref().unwrap();
+            let old_array = current_array_ref.old_array(barrier);
+            if !old_array.is_null() {
+                // With a deprecated array present, it cannot be resized.
+                continue;
             }
 
             // The resizing policies are as follows.
@@ -355,8 +380,6 @@ where
                     ),
                     Release,
                 );
-                // The release fence assures that future calls to the function see the latest state.
-                *mutex_guard = Release;
             }
         }
     }
