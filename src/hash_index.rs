@@ -22,16 +22,17 @@ const DEFAULT_CAPACITY: usize = 64;
 /// [`HashMap`](crate::HashMap).
 ///
 /// ## The key differences between [`HashIndex`] and [`HashMap`](crate::HashMap).
-/// * Lock-free-read: read and scan operations do not entail shared data modification.
+///
+/// * Lock-free-read: read and scan operations do not modify shared data.
 /// * Immutability: the data in the container is treated immutable until it becomes
 ///   unreachable.
 ///
 /// ## The key statistics for [`HashIndex`]
+///
 /// * The expected size of metadata for a single key-value pair: 2-byte.
 /// * The expected number of atomic operations required for an operation on a single key: 2.
 /// * The expected number of atomic variables accessed during a single key operation: 1.
 /// * The number of entries managed by a single metadata cell without a linked list: 32.
-/// * The number of entries a single linked list entry manages: 32.
 /// * The expected maximum linked list length when resize is triggered: log(capacity) / 8.
 pub struct HashIndex<K, V, H = RandomState>
 where
@@ -114,7 +115,7 @@ where
         self.insert_entry(key, val)
     }
 
-    /// Remove a key-value pair if the key exists.
+    /// Removes a key-value pair if the key exists.
     ///
     /// This method only marks the entry unreachable, and the memory will be reclaimed later.
     ///
@@ -138,7 +139,7 @@ where
         self.remove_if(key_ref, |_| true)
     }
 
-    /// Remove a key-value pair if the key exists and the given condition is met.
+    /// Removes a key-value pair if the key exists and the given condition is met.
     ///
     /// This method only marks the entry unreachable, and the memory will be reclaimed later.
     ///

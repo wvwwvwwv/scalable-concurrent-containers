@@ -396,7 +396,6 @@ mod benchmark {
                 num_threads, duration, total_num_operations
             );
             assert_eq!(hashmap.len(), 0);
-            // assert_eq!(hashmap.capacity(), 64);
         }
     }
 

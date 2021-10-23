@@ -114,7 +114,7 @@ where
         Ok(())
     }
 
-    /// Remove a key-value pair if the key exists.
+    /// Removes a key-value pair if the key exists.
     ///
     /// # Examples
     ///
@@ -134,6 +134,30 @@ where
         Q: Eq + Hash + ?Sized,
     {
         self.map.remove(key_ref).map(|(k, _)| k)
+    }
+
+    /// Removes a key-value pair if the key exists and the given condition is met.
+    ///
+    /// The key is locked while evaluating the condition.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    ///
+    /// let hashset: HashSet<u64> = HashSet::default();
+    ///
+    /// assert!(hashset.insert(1).is_ok());
+    /// assert!(hashset.remove_if(&1, || false).is_none());
+    /// assert_eq!(hashset.remove_if(&1, || true).unwrap(), 1);
+    /// ```
+    #[inline]
+    pub fn remove_if<Q, F: FnOnce() -> bool>(&self, key_ref: &Q, condition: F) -> Option<K>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.map.remove_if(key_ref, |_| condition()).map(|(k, _)| k)
     }
 
     /// Reads a key.

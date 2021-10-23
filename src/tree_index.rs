@@ -25,10 +25,12 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 /// such as insert, remove, do not block if they do not entail structural changes to the tree.
 ///
 /// ## The key features of [`TreeIndex`]
+///
 /// * Write-free read: read operations never modify the shared data.
 /// * Near lock-free write: write operations do not block unless a structural change is needed.
 ///
 /// ## The key statistics for [`TreeIndex`]
+///
 /// * The maximum number of key-value pairs that a leaf can store: 8.
 /// * The maximum number of leaves or child nodes that a node can point to: 9.
 /// * The size of metadata per key-value pair in a leaf: 3-byte.
@@ -116,7 +118,7 @@ where
         }
     }
 
-    /// Tries to removes a key-value pair.
+    /// Removes a key-value pair.
     ///
     /// # Examples
     ///
@@ -138,7 +140,7 @@ where
         self.remove_if(key_ref, |_| true)
     }
 
-    /// Tries to removes a key-value pair if the given condition is met.
+    /// Removes a key-value pair if the given condition is met.
     ///
     /// # Examples
     ///

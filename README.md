@@ -16,7 +16,7 @@ A collection of concurrent data structures and building blocks for concurrent pr
 
 ## EBR
 
-The `ebr` module implements epoch-based reclamation and various types of auxiliary data structures to make use of it. Its epoch-based reclamation algorithm is similar to that implemented in [crossbeam_epoch](https://docs.rs/crossbeam-epoch/), however users may find it easier to use as the lifetime of an instance is automatically managed. For instance, `ebr::AtomicArc` and `ebr::Arc` hold a strong reference to the underlying instance, and the instance is passed to the garbage collector when the reference count drops to zero.
+The `ebr` module implements epoch-based reclamation and various types of auxiliary data structures to make use of it. Its epoch-based reclamation algorithm is similar to that implemented in [crossbeam_epoch](https://docs.rs/crossbeam-epoch/), however users may find it easier to use as the lifetime of an instance is safely managed. For instance, `ebr::AtomicArc` and `ebr::Arc` hold a strong reference to the underlying instance, and the instance is automatically passed to the garbage collector when the reference count drops to zero.
 
 ### Examples
 
@@ -74,7 +74,7 @@ assert_eq!(*ptr.as_ref().unwrap(), 17);
 
 ## LinkedList
 
-[`LinkedList`](#LinkedList) is a type trait that implements wait-free concurrent singly linked list operations, backed by [`EBR`](#EBR). It additionally provides support for marking an entry of a linked list to indicate that the entry is in a user-defined special state.
+[`LinkedList`](#LinkedList) is a type trait that implements wait-free concurrent singly linked list operations, backed by [`EBR`](#EBR). It additionally provides support for marking an entry of a linked list to indicate that the entry is in a user-defined state.
 
 ### Examples
 
@@ -115,7 +115,7 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 ## HashMap
 
-[`HashMap`](#HashMap) is a scalable in-memory unique key-value store that is targeted at highly concurrent heavy workloads. It applies [`EBR`](#EBR) to its entry array management, thus allowing it to reduce the number of locks and avoid data sharding.
+[`HashMap`](#HashMap) is a scalable in-memory unique key-value container that is targeted at highly concurrent heavy workloads. It applies [`EBR`](#EBR) to its entry array management, thus enabling it to avoid container-level locking and data sharding.
 
 ### Examples
 
@@ -132,7 +132,7 @@ assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
 assert_eq!(hashmap.remove(&1).unwrap(), (1, 2));
 ```
 
-It supports `upsert` as in database management software; it tries to insert the given key-value pair, and if it fails, it updates the value field of an existing entry corresponding to the key.
+It supports `upsert` as in database management software; it tries to insert the given key-value pair, and if it fails, it updates the value field with the supplied closure.
 
 ```rust
 use scc::HashMap;
@@ -145,7 +145,7 @@ hashmap.upsert(1, || 2, |_, v| *v = 3);
 assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 3);
 ```
 
-There is no method to confine the lifetime of references derived from an [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) to the [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html), and it is illegal for them to live as long as the [`HashMap`](#HashMap) due to the lack of global lock inside it. Therefore [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, it provides two methods that enable a [`HashMap`](#HashMap) to iterate over its entries: `for_each`, and `retain`.
+There is no method to confine the lifetime of references derived from an [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) to the [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html), and it is illegal to let them live as long as the [`HashMap`](#HashMap) stays valid due to the lack of a global lock. Therefore [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, it provides two methods that allow a [`HashMap`](#HashMap) to iterate over its entries: `for_each`, and `retain`.
 
 ```rust
 use scc::HashMap;
@@ -173,7 +173,7 @@ assert_eq!(hashmap.retain(|key, value| *key == 1 && *value == 0), (1, 2));
 
 ## HashSet
 
-[`HashSet`](#HashSet) is a version of [`HashMap`](#HashMap) where the value type is fixed `()`.
+[`HashSet`](#HashSet) is a variant of [`HashMap`](#HashMap) where the value type is fixed `()`.
 
 ### Examples
 
@@ -206,7 +206,7 @@ assert_eq!(hashset.capacity(), 1048576);
 
 ### Examples
 
-Its `read` methods does not modify any shared data.
+Its `read` method does not modify any shared data.
 
 ```rust
 use scc::HashIndex;
@@ -217,7 +217,7 @@ assert!(hashindex.insert(1, 0).is_ok());
 assert_eq!(hashindex.read(&1, |_, v| *v).unwrap(), 0);
 ```
 
-An [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is implemented for [`HashIndex`](#HashIndex), because entry derived references can survive as long as the associated `ebr::Barrier` survives.
+An [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is implemented for [`HashIndex`](#HashIndex), because derived references can survive as long as the associated `ebr::Barrier` lives.
 
 ```rust
 use scc::ebr::Barrier;
