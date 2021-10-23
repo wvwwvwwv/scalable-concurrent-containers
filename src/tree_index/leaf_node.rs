@@ -364,6 +364,12 @@ where
             return true;
         }
 
+        // Checks if the leaf node has already been deprecated.
+        if self.leaves.1.load(Relaxed, barrier).tag() == Tag::First {
+            drop(self.new_leaves.swap((None, Tag::None), Relaxed));
+            return true;
+        }
+
         let full_leaf_ref = full_leaf_ptr.as_ref().unwrap();
         debug_assert!(full_leaf_ref.full());
 
@@ -725,8 +731,7 @@ where
                 .swap((None, Tag::None), Relaxed)
             {
                 // Makes the leaf unreachable before dropping it.
-                let deleted = obsolete_leaf.delete_self(Relaxed);
-                debug_assert!(deleted);
+                obsolete_leaf.delete_self(Relaxed);
                 barrier.reclaim(obsolete_leaf);
             }
         }

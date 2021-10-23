@@ -376,8 +376,7 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 
 ## Changelog
 
-0.6.0
+0.5.7
 
-* Bump to Rust 2021
 * Add [`HashSet`](#HashSet).
 

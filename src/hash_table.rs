@@ -12,7 +12,7 @@ use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-/// `HashTable` define common functions for `HashIndex` and `HashMap`.
+/// `HashTable` defines common functions for `HashIndex`, `HashMap`, and `HashSet`.
 pub(super) trait HashTable<K, V, H, const CELL_SIZE: usize, const LOCK_FREE: bool>
 where
     K: 'static + Eq + Hash + Sync,
@@ -371,7 +371,7 @@ where
             }
 
             // The resizing policies are as follows.
-            //  - The load factor reaches 7/8, then the array grows up to 64x.
+            //  - The load factor reaches 7/8, then the array grows up to 32x.
             //  - The load factor reaches 1/16, then the array shrinks to fit.
             let capacity = current_array_ref.num_entries();
             let num_cells = current_array_ref.num_cells();
@@ -389,7 +389,7 @@ where
                         if new_capacity == max_capacity {
                             break;
                         }
-                        if new_capacity / capacity >= 32 {
+                        if new_capacity / capacity == 32 {
                             break;
                         }
                         new_capacity *= 2;

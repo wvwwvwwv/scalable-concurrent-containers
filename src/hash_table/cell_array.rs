@@ -137,9 +137,9 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
         let target_cell_index = if shrink {
             old_cell_index / ratio
         } else {
+            debug_assert!(ratio <= 32);
             old_cell_index * ratio
         };
-        debug_assert!(ratio <= 32);
 
         let mut target_cells: [Option<Locker<K, V, SIZE, LOCK_FREE>>; 32] = Default::default();
         let mut max_index = 0;
