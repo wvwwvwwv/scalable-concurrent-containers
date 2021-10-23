@@ -114,7 +114,7 @@ where
         Ok(())
     }
 
-    /// Tries to remove a key-value pair, then returns the key-value-pair if the key exists.
+    /// Remove a key-value pair if the key exists.
     ///
     /// # Examples
     ///

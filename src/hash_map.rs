@@ -253,7 +253,7 @@ where
         locker.insert(key, constructor(), partial_hash, &barrier);
     }
 
-    /// Tries to remove a key-value pair, then returns the key-value-pair if the key exists.
+    /// Remove a key-value pair if the key exists.
     ///
     /// # Examples
     ///
@@ -275,8 +275,7 @@ where
         self.remove_if(key_ref, |_| true)
     }
 
-    /// Tries to remove a key-value pair, then returns the key-value-pair if the key exists and
-    /// the given condition is met.
+    /// Remove a key-value pair if the key exists and the given condition is met.
     ///
     /// # Examples
     ///
@@ -295,29 +294,7 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let (hash, partial_hash) = self.hash(key_ref);
-        let barrier = Barrier::new();
-        let (cell_index, locker, iterator) = self.acquire(key_ref, hash, partial_hash, &barrier);
-        if let Some(mut iterator) = iterator {
-            let remove = if let Some((_, v)) = iterator.get() {
-                condition(v)
-            } else {
-                false
-            };
-            if remove {
-                let result = locker.erase(&mut iterator);
-                if cell_index < CELL_SIZE && locker.cell_ref().num_entries() < CELL_SIZE / 16 {
-                    drop(locker);
-                    if let Some(current_array_ref) = self.array.load(Acquire, &barrier).as_ref() {
-                        if current_array_ref.old_array(&barrier).is_null() {
-                            self.try_shrink(current_array_ref, cell_index, &barrier);
-                        }
-                    }
-                }
-                return result;
-            }
-        }
-        None
+        self.remove_entry(key_ref, condition).0
     }
 
     /// Reads a key-value pair.
@@ -644,7 +621,7 @@ where
     fn minimum_capacity(&self) -> usize {
         self.minimum_capacity + self.additional_capacity.load(Relaxed)
     }
-    fn resize_mutex_ref(&self) -> &AtomicU8 {
+    fn resize_mutex(&self) -> &AtomicU8 {
         &self.resize_mutex
     }
 }

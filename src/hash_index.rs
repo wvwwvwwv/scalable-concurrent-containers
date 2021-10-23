@@ -114,7 +114,7 @@ where
         self.insert_entry(key, val)
     }
 
-    /// Removes a key-value pair and returns the key-value-pair if the key exists.
+    /// Remove a key-value pair if the key exists.
     ///
     /// This method only marks the entry unreachable, and the memory will be reclaimed later.
     ///
@@ -138,8 +138,7 @@ where
         self.remove_if(key_ref, |_| true)
     }
 
-    /// Removes a key-value pair and returns the key-value-pair if the key exists and the given
-    /// condition is met.
+    /// Remove a key-value pair if the key exists and the given condition is met.
     ///
     /// This method only marks the entry unreachable, and the memory will be reclaimed later.
     ///
@@ -160,29 +159,7 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let (hash, partial_hash) = self.hash(key_ref);
-        let barrier = Barrier::new();
-        let (cell_index, locker, iterator) = self.acquire(key_ref, hash, partial_hash, &barrier);
-        if let Some(iterator) = iterator {
-            let remove = if let Some((_, v)) = iterator.get() {
-                condition(v)
-            } else {
-                false
-            };
-            if remove
-                && locker.mark_removed(key_ref, partial_hash, &barrier)
-                && locker.cell_ref().num_entries() == 0
-            {
-                drop(locker);
-                if let Some(current_array_ref) = self.array.load(Acquire, &barrier).as_ref() {
-                    if current_array_ref.old_array(&barrier).is_null() {
-                        self.try_shrink(current_array_ref, cell_index, &barrier);
-                    }
-                }
-            }
-            return remove;
-        }
-        false
+        self.remove_entry(key_ref, condition).1
     }
 
     /// Reads a key-value pair.
@@ -476,7 +453,7 @@ where
     fn minimum_capacity(&self) -> usize {
         self.minimum_capacity
     }
-    fn resize_mutex_ref(&self) -> &AtomicU8 {
+    fn resize_mutex(&self) -> &AtomicU8 {
         &self.resize_mutex
     }
 }

@@ -18,7 +18,7 @@ pub struct CellArray<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_
     array_ptr: *const Cell<K, V, SIZE, LOCK_FREE>,
     array_ptr_offset: usize,
     array_capacity: usize,
-    lb_capacity: u8,
+    log2_capacity: u8,
     old_array: AtomicArc<CellArray<K, V, SIZE, LOCK_FREE>>,
     rehashing: AtomicUsize,
     rehashed: AtomicUsize,
@@ -57,7 +57,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
                 array_ptr,
                 array_ptr_offset,
                 array_capacity,
-                lb_capacity,
+                log2_capacity: lb_capacity,
                 old_array,
                 rehashing: AtomicUsize::new(0),
                 rehashed: AtomicUsize::new(0),
@@ -74,7 +74,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
     /// Returns the recommended sampling size.
     #[inline]
     pub fn sample_size(&self) -> usize {
-        (self.lb_capacity as usize).next_power_of_two()
+        (self.log2_capacity as usize).next_power_of_two()
     }
 
     /// Returns the number of `Cell` in the `CellArray`.
@@ -98,7 +98,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
     /// Calculates the cell index for the hash value.
     #[inline]
     pub fn calculate_cell_index(&self, hash: u64) -> usize {
-        (hash >> (64 - self.lb_capacity)).try_into().unwrap()
+        (hash >> (64 - self.log2_capacity)).try_into().unwrap()
     }
 
     /// Drops the old array.

@@ -56,7 +56,7 @@ where
     fn minimum_capacity(&self) -> usize;
 
     /// Returns a reference to the resizing mutex.
-    fn resize_mutex_ref(&self) -> &AtomicU8;
+    fn resize_mutex(&self) -> &AtomicU8;
 
     /// Returns the number of entries.
     fn num_entries(&self, barrier: &Barrier) -> usize {
@@ -165,6 +165,45 @@ where
         None
     }
 
+    #[inline]
+    fn remove_entry<Q, F: FnOnce(&V) -> bool>(
+        &self,
+        key_ref: &Q,
+        condition: F,
+    ) -> (Option<(K, V)>, bool)
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        let (hash, partial_hash) = self.hash(key_ref);
+        let barrier = Barrier::new();
+        let (cell_index, locker, iterator) = self.acquire(key_ref, hash, partial_hash, &barrier);
+        if let Some(mut iterator) = iterator {
+            let remove = if let Some((_, v)) = iterator.get() {
+                condition(v)
+            } else {
+                false
+            };
+            if remove {
+                let result = locker.erase(&mut iterator);
+                if cell_index < CELL_SIZE && locker.cell_ref().num_entries() < CELL_SIZE / 16 {
+                    drop(locker);
+                    if let Some(current_array_ref) =
+                        self.cell_array().load(Acquire, &barrier).as_ref()
+                    {
+                        if current_array_ref.old_array(&barrier).is_null()
+                            && current_array_ref.num_entries() > self.minimum_capacity()
+                        {
+                            self.try_shrink(current_array_ref, cell_index, &barrier);
+                        }
+                    }
+                }
+                return (result, true);
+            }
+        }
+        (None, false)
+    }
+
     /// Acquires a [`Locker`] and [`EntryIterator`].
     ///
     /// In case it successfully found the key, it returns a [`EntryIterator`]. Not returning a
@@ -247,6 +286,7 @@ where
     }
 
     /// Tries to enlarge the array.
+    #[inline]
     fn try_enlarge(
         &self,
         array_ref: &CellArray<K, V, CELL_SIZE, LOCK_FREE>,
@@ -268,29 +308,28 @@ where
     }
 
     /// Tries to shrink the array.
+    #[inline]
     fn try_shrink(
         &self,
         array_ref: &CellArray<K, V, CELL_SIZE, LOCK_FREE>,
         cell_index: usize,
         barrier: &Barrier,
     ) {
-        if array_ref.num_entries() > self.minimum_capacity() {
-            let sample_size = array_ref.sample_size();
-            let array_size = array_ref.num_cells();
-            let threshold = sample_size * CELL_SIZE / 16;
-            let mut num_entries = 0;
-            if !(1..sample_size).any(|i| {
-                num_entries += array_ref.cell((cell_index + i) % array_size).num_entries();
-                num_entries >= threshold
-            }) {
-                self.resize(barrier);
-            }
+        let sample_size = array_ref.sample_size();
+        let array_size = array_ref.num_cells();
+        let threshold = sample_size * CELL_SIZE / 16;
+        let mut num_entries = 0;
+        if !(1..sample_size).any(|i| {
+            num_entries += array_ref.cell((cell_index + i) % array_size).num_entries();
+            num_entries >= threshold
+        }) {
+            self.resize(barrier);
         }
     }
 
     /// Resizes the array.
     fn resize(&self, barrier: &Barrier) {
-        let mut mutex_state = self.resize_mutex_ref().load(Acquire);
+        let mut mutex_state = self.resize_mutex().load(Acquire);
         loop {
             if mutex_state == 2_u8 {
                 // Another thread is resizing the table, and will retry.
@@ -304,7 +343,7 @@ where
                 1_u8
             };
             match self
-                .resize_mutex_ref()
+                .resize_mutex()
                 .compare_exchange(mutex_state, new_state, Acquire, Acquire)
             {
                 Ok(_) => {
@@ -322,13 +361,11 @@ where
         let mut resize = true;
         while resize {
             let _mutex_guard = scopeguard::guard(&mut resize, |resize| {
-                *resize = self.resize_mutex_ref().fetch_sub(1, Release) == 2_u8;
+                *resize = self.resize_mutex().fetch_sub(1, Release) == 2_u8;
             });
 
-            let current_array_ptr = self.cell_array().load(Acquire, barrier);
-            let current_array_ref = current_array_ptr.as_ref().unwrap();
-            let old_array = current_array_ref.old_array(barrier);
-            if !old_array.is_null() {
+            let current_array_ref = self.cell_array().load(Acquire, barrier).as_ref().unwrap();
+            if !current_array_ref.old_array(barrier).is_null() {
                 // With a deprecated array present, it cannot be resized.
                 continue;
             }

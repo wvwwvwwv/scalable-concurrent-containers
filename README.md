@@ -376,39 +376,8 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 
 ## Changelog
 
-0.5.6
+0.6.0
 
+* Bump to Rust 2021
 * Add [`HashSet`](#HashSet).
 
-0.5.6
-
-* Fix a problem with [`EBR`](#EBR).
-* Use the master branch of [`loom`](https://github.com/tokio-rs/loom) to test `SeqCst` memory barriers.
-
-0.5.5
-
-* Minor performance improvement in [`EBR`](#EBR).
-* API improvement.
-
-0.5.4
-
-* Fix [`TreeIndex`](#TreeIndex) issue [#60](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/60).
-
-0.5.3
-
-* Add `TreeIndex::remove_if`.
-* Fix [`TreeIndex`](#TreeIndex) issues.
-
-0.5.2
-
-* Fix `ebr::Arc`.
-
-0.5.1
-
-* Add [`LinkedList`](#LinkedList).
-* Fix [`TreeIndex`](#TreeIndex) issues.
-
-0.5.0
-
-* Own [`EBR`](#EBR) implementation.
-* Substantial API changes.

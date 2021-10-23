@@ -88,7 +88,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
         None
     }
 
-    /// Gets a [`CellIterator`] pointing to an entry associated with the given key.
+    /// Gets a [`EntryIterator`] pointing to an entry associated with the given key.
     #[inline]
     pub fn get<'b, Q>(
         &'b self,
@@ -461,7 +461,7 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Locker<'b, K, V, SI
         cell_mut_ref.num_entries += 1;
     }
 
-    /// Removes a new key-value pair being pointed by the given [`CellIterator`].
+    /// Removes a new key-value pair being pointed by the given [`EntryIterator`].
     pub fn erase(&self, iterator: &mut EntryIterator<K, V, SIZE, LOCK_FREE>) -> Option<(K, V)> {
         if self.killed || iterator.current_index == usize::MAX {
             return None;
@@ -472,7 +472,7 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Locker<'b, K, V, SI
                 return None;
             }
 
-            if LOCK_FREE && data_array_ref.removed & (1_u32 << iterator.current_index) == 0 {
+            if LOCK_FREE && data_array_ref.removed & (1_u32 << iterator.current_index) != 0 {
                 return None;
             }
 
@@ -484,17 +484,18 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Locker<'b, K, V, SI
             let data_array_mut_ref = unsafe {
                 &mut *(data_array_ref as *const DataArray<K, V, SIZE> as *mut DataArray<K, V, SIZE>)
             };
-            let entry_ptr = data_array_mut_ref.data[iterator.current_index].as_mut_ptr();
-            if LOCK_FREE {
+            let result = if LOCK_FREE {
                 data_array_mut_ref.removed |= 1_u32 << iterator.current_index;
-                return None;
-            }
-            data_array_mut_ref.occupied &= !(1_u32 << iterator.current_index);
-            #[allow(clippy::uninit_assumed_init)]
-            let result =
-                Some(unsafe { ptr::replace(entry_ptr, MaybeUninit::uninit().assume_init()) });
-
-            if data_array_mut_ref.occupied == 0 {
+                None
+            } else {
+                data_array_mut_ref.occupied &= !(1_u32 << iterator.current_index);
+                let entry_ptr = data_array_mut_ref.data[iterator.current_index].as_mut_ptr();
+                #[allow(clippy::uninit_assumed_init)]
+                Some(unsafe { ptr::replace(entry_ptr, MaybeUninit::uninit().assume_init()) })
+            };
+            if LOCK_FREE && (data_array_mut_ref.occupied & (!data_array_mut_ref.removed)) == 0
+                || (!LOCK_FREE && data_array_mut_ref.occupied == 0)
+            {
                 let next_data_array = data_array_mut_ref
                     .link
                     .get_arc(Relaxed, iterator.barrier_ref);
@@ -527,112 +528,6 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Locker<'b, K, V, SI
             unsafe { &mut *(self.cell_ref as *const _ as *mut Cell<K, V, SIZE, LOCK_FREE>) };
         cell_mut_ref.num_entries = 0;
         num_entries as usize
-    }
-}
-
-impl<'b, K: 'static + Clone + Eq, V: 'static + Clone, const SIZE: usize>
-    Locker<'b, K, V, SIZE, true>
-{
-    /// Removes a new key-value pair associated with the given key with the instances kept
-    /// intact.
-    pub fn mark_removed<Q>(&self, key_ref: &Q, partial_hash: u8, barrier: &Barrier) -> bool
-    where
-        K: Borrow<Q>,
-        Q: Eq + ?Sized,
-    {
-        if self.killed {
-            // The Cell has been killed.
-            return false;
-        }
-
-        // Starts Searching the entry at the preferred index first.
-        let mut data_array_ptr = self.cell_ref.data.load(Relaxed, barrier);
-        let preferred_index = partial_hash as usize % SIZE;
-        while let Some(data_array_ref) = data_array_ptr.as_ref() {
-            if let Some((index, _)) = Cell::<K, V, SIZE, true>::search_array(
-                data_array_ref,
-                key_ref,
-                preferred_index,
-                partial_hash,
-            ) {
-                debug_assert!(self.cell_ref.num_entries > 0);
-                debug_assert!((data_array_ref.removed & (1_u32 << index)) == 0);
-
-                unsafe {
-                    #[allow(clippy::cast_ref_to_mut)]
-                    let data_array_mut_ref = &mut *(data_array_ref as *const DataArray<K, V, SIZE>
-                        as *mut DataArray<K, V, SIZE>);
-                    data_array_mut_ref.removed |= 1_u32 << index;
-                    #[allow(clippy::cast_ref_to_mut)]
-                    let cell_mut_ref =
-                        &mut *(self.cell_ref as *const _ as *mut Cell<K, V, SIZE, true>);
-                    cell_mut_ref.num_entries -= 1;
-                    if cell_mut_ref.num_entries == 0 {
-                        if let Some(data_array) =
-                            self.cell_ref.data.swap((None, Tag::None), Relaxed)
-                        {
-                            barrier.reclaim(data_array);
-                        }
-                    } else if (cell_mut_ref.num_entries as usize) <= SIZE / 4 {
-                        self.optimize(self.cell_ref.num_entries, barrier);
-                    }
-                    return true;
-                }
-            }
-            data_array_ptr = data_array_ref.link.load(Relaxed, barrier);
-        }
-        false
-    }
-
-    /// Optimizes the linked list.
-    fn optimize(&self, num_entries: u32, barrier: &Barrier) {
-        let head_data_array_ptr = self.cell_ref.data.load(Relaxed, barrier);
-        let head_data_array_link_ptr = head_data_array_ptr
-            .as_ref()
-            .unwrap()
-            .link
-            .load(Relaxed, barrier);
-
-        if head_data_array_link_ptr.is_null() {
-            // No linked list attached to the head.
-            return;
-        }
-
-        // Replaces the head with a new `DataArray`.
-        let mut new_data_array = Arc::new(DataArray::new());
-        let mut new_array_index = 0;
-        let mut data_array_ptr = head_data_array_ptr;
-        while let Some(data_array_ref) = data_array_ptr.as_ref() {
-            let mut occupied = data_array_ref.occupied & (!data_array_ref.removed);
-            let mut index = occupied.trailing_zeros();
-            while (index as usize) < SIZE {
-                let entry_ptr = data_array_ref.data[index as usize].as_ptr();
-                unsafe {
-                    let entry_ref = &(*entry_ptr);
-                    new_data_array.get_mut().unwrap().data[new_array_index]
-                        .as_mut_ptr()
-                        .write(entry_ref.clone());
-                    new_data_array.get_mut().unwrap().partial_hash_array[new_array_index] =
-                        data_array_ref.partial_hash_array[index as usize];
-                    new_data_array.get_mut().unwrap().occupied |= 1_u32 << new_array_index;
-                }
-                new_array_index += 1;
-
-                occupied &= !(1_u32 << index);
-                index = occupied.trailing_zeros();
-            }
-            if new_array_index == num_entries as usize {
-                break;
-            }
-            data_array_ptr = data_array_ref.link.load(Relaxed, barrier);
-        }
-        if let Some(old_array) = self
-            .cell_ref
-            .data
-            .swap((Some(new_data_array), Tag::None), Release)
-        {
-            barrier.reclaim(old_array);
-        }
     }
 }
 
@@ -903,16 +798,6 @@ mod test {
             iterated += 1;
         }
         assert_eq!(cell.num_entries(), iterated);
-
-        for thread_id in 0..SIZE {
-            let xlocker = Locker::lock(&*cell, &epoch_barrier).unwrap();
-            assert!(xlocker.mark_removed(
-                &thread_id,
-                (thread_id % SIZE).try_into().unwrap(),
-                &epoch_barrier
-            ));
-        }
-        assert_eq!(cell.num_entries(), SIZE);
 
         let mut xlocker = Locker::lock(&*cell, &epoch_barrier).unwrap();
         xlocker.purge(&epoch_barrier);
