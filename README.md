@@ -378,5 +378,6 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 
 0.5.7
 
+* Fix [`#63`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/63).
 * Add [`HashSet`](#HashSet).
 

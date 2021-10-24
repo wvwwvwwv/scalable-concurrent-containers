@@ -106,7 +106,7 @@ where
     ///
     /// # Errors
     ///
-    /// Returns [`None`] if a too large number is given.
+    /// Returns `None` if a too large number is given.
     ///
     /// # Examples
     ///
