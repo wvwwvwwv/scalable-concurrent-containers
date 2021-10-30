@@ -185,7 +185,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
             } else {
                 // HashMap.
                 debug_assert!(!LOCK_FREE);
-                iter.extract()
+                cell_locker.extract(&mut iter)
             };
             target_cell.insert(new_entry.0, new_entry.1, partial_hash, barrier);
         }

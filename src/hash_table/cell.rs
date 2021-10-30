@@ -20,10 +20,13 @@ const LOCK_MASK: u32 = LOCK | SLOCK_MAX;
 pub struct Cell<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool> {
     /// `wait_queue` additionally stores the state of the [`Cell`]: locked or killed.
     wait_queue: AtomicPtr<WaitQueueEntry>,
+
     /// The state of the [`Cell`].
     state: AtomicU32,
+
     /// The number of valid entries in the [`Cell`].
     num_entries: u32,
+
     /// DataArray stores key-value pairs with their metadata.
     data: AtomicArc<DataArray<K, V, SIZE>>,
 }
@@ -291,6 +294,7 @@ impl<'b, K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
     }
 
     /// Gets a reference to the key-value pair.
+    #[inline]
     pub fn get(&self) -> Option<&'b (K, V)> {
         if let Some(data_array_ref) = self.current_array_ptr.as_ref() {
             let entry_ptr = data_array_ref.data[self.current_index].as_ptr();
@@ -299,21 +303,31 @@ impl<'b, K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
         None
     }
 
-    /// Extracts the key-value pair being pointed by `self`.
-    pub fn extract(&mut self) -> (K, V) {
-        let data_array_ref = self.current_array_ptr.as_ref().unwrap();
-        debug_assert!(!LOCK_FREE);
-        debug_assert_ne!(data_array_ref.occupied & (1_u32 << self.current_index), 0);
-
-        #[allow(clippy::cast_ref_to_mut)]
-        let data_array_mut_ref = unsafe {
-            &mut *(data_array_ref as *const DataArray<K, V, SIZE> as *mut DataArray<K, V, SIZE>)
+    /// Tries to remove the current data array from the linked list.
+    ///
+    /// It should only be invoked when the caller is holding a [`Locker`] on the [`Cell`].
+    #[inline]
+    fn unlink_data_array(&mut self, data_array_ref: &DataArray<K, V, SIZE>) {
+        let next_data_array = if LOCK_FREE {
+            data_array_ref.link.get_arc(Relaxed, self.barrier_ref)
+        } else {
+            data_array_ref.link.swap((None, Tag::None), Relaxed)
         };
-        data_array_mut_ref.occupied &= !(1_u32 << self.current_index);
-        let entry_ptr = data_array_mut_ref.data[self.current_index].as_mut_ptr();
-        #[allow(clippy::uninit_assumed_init)]
-        unsafe {
-            ptr::replace(entry_ptr, MaybeUninit::uninit().assume_init())
+        self.current_array_ptr = next_data_array
+            .as_ref()
+            .map_or_else(Ptr::null, |n| n.ptr(self.barrier_ref));
+        if let Some(prev_data_array_ref) = self.prev_array_ptr.as_ref() {
+            prev_data_array_ref
+                .link
+                .swap((next_data_array, Tag::None), Relaxed);
+        } else if let Some(cell_ref) = self.cell_ref.as_ref() {
+            debug_assert!(!cell_ref.data.load(Relaxed, self.barrier_ref).is_null());
+            cell_ref.data.swap((next_data_array, Tag::None), Relaxed);
+        }
+        if self.current_array_ptr.is_null() {
+            self.cell_ref.take();
+        } else {
+            self.current_index = usize::MAX;
         }
     }
 }
@@ -507,26 +521,39 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Locker<'b, K, V, SI
                 #[allow(clippy::uninit_assumed_init)]
                 Some(unsafe { ptr::replace(entry_ptr, MaybeUninit::uninit().assume_init()) })
             };
-            if LOCK_FREE && (data_array_mut_ref.occupied & (!data_array_mut_ref.removed)) == 0
-                || (!LOCK_FREE && data_array_mut_ref.occupied == 0)
+            if LOCK_FREE && (data_array_ref.occupied & (!data_array_ref.removed)) == 0
+                || (!LOCK_FREE && data_array_ref.occupied == 0)
             {
-                let next_data_array = data_array_mut_ref
-                    .link
-                    .get_arc(Relaxed, iterator.barrier_ref);
-                if let Some(upper_data_array_ref) = iterator.prev_array_ptr.as_ref() {
-                    upper_data_array_ref
-                        .link
-                        .swap((next_data_array, Tag::None), Relaxed);
-                } else {
-                    self.cell_ref
-                        .data
-                        .swap((next_data_array, Tag::None), Relaxed);
-                }
+                iterator.unlink_data_array(data_array_ref);
             }
-
             return result;
         }
         None
+    }
+
+    /// Extracts the key-value pair being pointed by `self`.
+    #[allow(clippy::unused_self)]
+    pub fn extract(&self, iterator: &mut EntryIterator<K, V, SIZE, LOCK_FREE>) -> (K, V) {
+        let data_array_ref = iterator.current_array_ptr.as_ref().unwrap();
+        debug_assert!(!LOCK_FREE);
+        debug_assert_ne!(
+            data_array_ref.occupied & (1_u32 << iterator.current_index),
+            0
+        );
+
+        #[allow(clippy::cast_ref_to_mut)]
+        let data_array_mut_ref = unsafe {
+            &mut *(data_array_ref as *const DataArray<K, V, SIZE> as *mut DataArray<K, V, SIZE>)
+        };
+        data_array_mut_ref.occupied &= !(1_u32 << iterator.current_index);
+        let entry_ptr = data_array_mut_ref.data[iterator.current_index].as_mut_ptr();
+        if data_array_mut_ref.occupied == 0 {
+            iterator.unlink_data_array(data_array_ref);
+        }
+        #[allow(clippy::uninit_assumed_init)]
+        unsafe {
+            ptr::replace(entry_ptr, MaybeUninit::uninit().assume_init())
+        }
     }
 
     /// Tries to inherit the data array from the other [`Cell`].
