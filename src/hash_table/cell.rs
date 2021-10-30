@@ -276,6 +276,7 @@ pub struct EntryIterator<'b, K: 'static + Eq, V: 'static, const SIZE: usize, con
 impl<'b, K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
     EntryIterator<'b, K, V, SIZE, LOCK_FREE>
 {
+    /// Creates a new [`EntryIterator`].
     pub fn new(
         cell: &'b Cell<K, V, SIZE, LOCK_FREE>,
         barrier: &'b Barrier,
@@ -289,12 +290,31 @@ impl<'b, K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
         }
     }
 
+    /// Gets a reference to the key-value pair.
     pub fn get(&self) -> Option<&'b (K, V)> {
         if let Some(data_array_ref) = self.current_array_ptr.as_ref() {
             let entry_ptr = data_array_ref.data[self.current_index].as_ptr();
             return Some(unsafe { &(*entry_ptr) });
         }
         None
+    }
+
+    /// Extracts the key-value pair being pointed by `self`.
+    pub fn extract(&mut self) -> (K, V) {
+        let data_array_ref = self.current_array_ptr.as_ref().unwrap();
+        debug_assert!(!LOCK_FREE);
+        debug_assert_ne!(data_array_ref.occupied & (1_u32 << self.current_index), 0);
+
+        #[allow(clippy::cast_ref_to_mut)]
+        let data_array_mut_ref = unsafe {
+            &mut *(data_array_ref as *const DataArray<K, V, SIZE> as *mut DataArray<K, V, SIZE>)
+        };
+        data_array_mut_ref.occupied &= !(1_u32 << self.current_index);
+        let entry_ptr = data_array_mut_ref.data[self.current_index].as_mut_ptr();
+        #[allow(clippy::uninit_assumed_init)]
+        unsafe {
+            ptr::replace(entry_ptr, MaybeUninit::uninit().assume_init())
+        }
     }
 }
 
@@ -324,6 +344,7 @@ impl<'b, K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool> 
                 }
 
                 // Proceeds to the next DataArray.
+                self.prev_array_ptr = self.current_array_ptr;
                 self.current_array_ptr = data_array_ref.link.load(read_order, self.barrier_ref);
                 self.current_index = usize::MAX;
             }
@@ -397,9 +418,6 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Locker<'b, K, V, SI
             panic!("array overflow");
         }
 
-        #[allow(clippy::cast_ref_to_mut)]
-        let cell_mut_ref =
-            unsafe { &mut *(self.cell_ref as *const _ as *mut Cell<K, V, SIZE, LOCK_FREE>) };
         let mut data_array_ptr = self.cell_ref.data.load(Relaxed, barrier);
         let data_array_head_ptr = data_array_ptr;
         let preferred_index = partial_hash as usize % SIZE;
@@ -458,10 +476,10 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Locker<'b, K, V, SI
                 data_array_mut_ref.occupied |= 1_u32 << free_index;
             };
         }
-        cell_mut_ref.num_entries += 1;
+        self.num_entries_updated(self.cell_ref.num_entries + 1);
     }
 
-    /// Removes a new key-value pair being pointed by the given [`EntryIterator`].
+    /// Removes a key-value pair being pointed by the given [`EntryIterator`].
     pub fn erase(&self, iterator: &mut EntryIterator<K, V, SIZE, LOCK_FREE>) -> Option<(K, V)> {
         if self.killed || iterator.current_index == usize::MAX {
             return None;
@@ -475,11 +493,7 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Locker<'b, K, V, SI
             if LOCK_FREE && data_array_ref.removed & (1_u32 << iterator.current_index) != 0 {
                 return None;
             }
-
-            #[allow(clippy::cast_ref_to_mut)]
-            let cell_mut_ref =
-                unsafe { &mut *(self.cell_ref as *const _ as *mut Cell<K, V, SIZE, LOCK_FREE>) };
-            cell_mut_ref.num_entries -= 1;
+            self.num_entries_updated(self.cell_ref.num_entries - 1);
             #[allow(clippy::cast_ref_to_mut)]
             let data_array_mut_ref = unsafe {
                 &mut *(data_array_ref as *const DataArray<K, V, SIZE> as *mut DataArray<K, V, SIZE>)
@@ -515,19 +529,53 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Locker<'b, K, V, SI
         None
     }
 
+    /// Tries to inherit the data array from the other [`Cell`].
+    #[inline]
+    pub fn try_inherit(&self, other: &Locker<K, V, SIZE, LOCK_FREE>, barrier: &Barrier) -> bool {
+        if !other.cell_ref.data.load(Relaxed, barrier).is_null()
+            && self.cell_ref.data.load(Relaxed, barrier).is_null()
+        {
+            self.cell_ref.data.swap(
+                (
+                    other.cell_ref.data.swap((None, Tag::None), Relaxed),
+                    Tag::None,
+                ),
+                Relaxed,
+            );
+            debug_assert!(other.cell_ref.data.load(Relaxed, barrier).is_null());
+            debug_assert!(!self.cell_ref.data.load(Relaxed, barrier).is_null());
+            debug_assert_eq!(self.cell_ref.num_entries, 0);
+            self.num_entries_updated(1);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Notifies the [`Cell`] that an entry has been implicitly inherited.
+    #[inline]
+    pub fn entry_inherited(&self) {
+        debug_assert_ne!(self.cell_ref.num_entries, 0);
+        self.num_entries_updated(self.cell_ref.num_entries + 1);
+    }
+
     /// Purges all the data.
-    pub fn purge(&mut self, barrier: &Barrier) -> usize {
-        if let Some(data_array) = self.cell_ref.data.swap((None, Tag::None), Relaxed) {
-            barrier.reclaim(data_array);
+    pub fn purge(&mut self, barrier: &Barrier) {
+        if !self.cell_ref.data.load(Relaxed, barrier).is_null() {
+            if let Some(data_array) = self.cell_ref.data.swap((None, Tag::None), Relaxed) {
+                barrier.reclaim(data_array);
+            }
         }
         self.killed = true;
+        self.num_entries_updated(0);
+    }
 
-        let num_entries = self.cell_ref.num_entries;
+    /// Updates the number of entries.
+    fn num_entries_updated(&self, num: u32) {
         #[allow(clippy::cast_ref_to_mut)]
         let cell_mut_ref =
             unsafe { &mut *(self.cell_ref as *const _ as *mut Cell<K, V, SIZE, LOCK_FREE>) };
-        cell_mut_ref.num_entries = 0;
-        num_entries as usize
+        cell_mut_ref.num_entries = num;
     }
 }
 

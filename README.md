@@ -376,6 +376,11 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 
 ## Changelog
 
+0.5.8
+
+* Optimize [`HashMap`](#HashMap).
+* Fix a problem with [`HashMap`](#HashMap) and [`HashIndex`](#HashIndex) remove methods.
+
 0.5.7
 
 * Fix [`#63`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/63).

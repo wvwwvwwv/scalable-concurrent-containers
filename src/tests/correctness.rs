@@ -177,6 +177,9 @@ mod hashmap_test {
             assert_eq!(found_keys, range);
             assert_eq!(checker.load(Relaxed), range * 2);
             for d in key..(key + range) {
+                assert!(hashmap.contains(&Data::new(d, checker.clone())));
+            }
+            for d in key..(key + range) {
                 assert!(hashmap.remove(&Data::new(d, checker.clone())).is_some());
             }
             assert_eq!(checker.load(Relaxed), 0);

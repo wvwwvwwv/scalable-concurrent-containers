@@ -142,6 +142,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
         };
 
         let mut target_cells: [Option<Locker<K, V, SIZE, LOCK_FREE>>; 32] = Default::default();
+        let mut inherited = usize::MAX;
         let mut max_index = 0;
         let mut iter = cell_locker.cell_ref().iter(barrier);
         while let Some(entry) = iter.next() {
@@ -157,12 +158,24 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
                 (new_cell_index, partial_hash)
             };
 
-            let cell_index = new_cell_index - target_cell_index;
-            while max_index <= cell_index {
+            let offset = new_cell_index - target_cell_index;
+            while max_index <= offset {
                 target_cells[max_index].replace(
                     Locker::lock(self.cell(max_index + target_cell_index), barrier).unwrap(),
                 );
                 max_index += 1;
+            }
+
+            let target_cell = target_cells[offset].as_ref().unwrap();
+            if !LOCK_FREE && inherited == usize::MAX {
+                // Tries to move the entire data array of the old `Cell` to the new one.
+                if target_cell.try_inherit(cell_locker, barrier) {
+                    inherited = offset;
+                    continue;
+                }
+            } else if inherited == offset {
+                target_cell.entry_inherited();
+                continue;
             }
 
             let new_entry = if let Some(entry) = copier(&entry.0 .0, &entry.0 .1) {
@@ -172,14 +185,9 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
             } else {
                 // HashMap.
                 debug_assert!(!LOCK_FREE);
-                cell_locker.erase(&mut iter).unwrap()
+                iter.extract()
             };
-            target_cells[cell_index].as_ref().unwrap().insert(
-                new_entry.0,
-                new_entry.1,
-                partial_hash,
-                barrier,
-            );
+            target_cell.insert(new_entry.0, new_entry.1, partial_hash, barrier);
         }
         cell_locker.purge(barrier);
     }
