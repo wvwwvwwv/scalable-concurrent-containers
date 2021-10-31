@@ -317,7 +317,7 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 
 ### Test data
 
-- A disjoint range of `usize` integers is assigned to each thread: 128M for [`HashMap`](#HashMap) and 4M for others.
+- A disjoint range of `usize` integers is assigned to each thread: 128M integers for [`HashMap`](#HashMap) and 4M for others.
 - The performance test code asserts the expected outcome of each operation and the post state of the container.
 
 ### Test workload: local
@@ -331,7 +331,7 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 
 ### Test workload: local-remote
 
-- Insert, remove: each thread additionally tries to perform operations using keys belonging to a randomly chosen remote thread.
+- Insert, remove: each thread additionally operates using keys belonging to a randomly chosen remote thread.
 - Mixed: each thread performs insert-local -> insert-remote -> read-local -> read-remote -> remove-local -> remove-remote.
 
 ### Test Results
@@ -340,37 +340,37 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 
 |         | 11 threads | 22 threads | 44 threads |
 |---------|------------|------------|------------|
-| InsertL | 186.564s   | 192.279s   | 258.713s   |
-| ReadL   | 102.086s   | 108.321s   | 117.399s   |
-| ScanL   |  35.874s   | 63.281s    | 134.607s   |
-| RemoveL | 118.931s   | 127.682s   | 135.774s   |
-| InsertR | 334.535s   | 342.914s   | 359.023s   |
-| MixedR  | 363.165s   | 384.775s   | 396.604s   |
-| RemoveR | 260.543s   | 277.702s   | 302.858s   |
+| InsertL | 169.888s   | 182.077s   | 208.961s   |
+| ReadL   | 104.574s   | 112.154s   | 118.647s   |
+| ScanL   |  29.299s   |  60.656s   | 125.701s   |
+| RemoveL | 127.436s   | 135.593s   | 145.353s   |
+| InsertR | 324.540s   | 341.395s   | 365.969s   |
+| MixedR  | 376.788s   | 396.557s   | 412.073s   |
+| RemoveR | 260.364s   | 277.673s   | 295.6s     |
 
 - [`HashIndex`](#HashIndex)
 
 |         | 11 threads | 22 threads | 44 threads |
 |---------|------------|------------|------------|
-| InsertL |   4.172s   |   4.693s   |   5.947s   |
-| ReadL   |   2.291s   |   2.337s   |   2.647s   |
-| ScanL   |   0.703s   |   1.459s   |   3.04s    |
-| RemoveL |   2.719s   |   2.877s   |   3.706s   |
-| InsertR |   7.201s   |   7.853s   |   9.105s   |
-| MixedR  |  12.343s   |  13.367s   |  15.063s   |
-| RemoveR |   8.726s   |   9.357s   |  10.94s    |
+| InsertL |   4.574s   |   4.871s   |   6.692s   |
+| ReadL   |   2.313s   |   2.397s   |   2.693s   |
+| ScanL   |   0.757s   |   1.548s   |   3.094s   |
+| RemoveL |   2.858s   |   2.927s   |   3.603s   |
+| InsertR |   7.554s   |   8.434s   |  10.151s   |
+| MixedR  |  11.321s   |  11.697s   |  13.955s   |
+| RemoveR |   5.813s   |   5.92s    |   7.623s   |
 
 - [`TreeIndex`](#TreeIndex)
 
 |         | 11 threads | 22 threads | 44 threads |
 |---------|------------|------------|------------|
-| InsertL |   6.433s   |  11.117s   |  16.817s   |
-| ReadL   |   1.045s   |   1.106s   |   1.737s   |
-| ScanL   |  11.779s   |  26.093s   |  57.284s   |
-| RemoveL |   5.221s   |   9.460s   |  18.489s   |
-| InsertR |  16.531s   |  17.092s   |  24.066s   |
-| MixedR  |  20.575s   |  20.187s   |  23.871s   |
-| RemoveR |   6.016s   |   6.422s   |   7.34s    |
+| InsertL |   5.887s   |  10.731s   |  15.248s   |
+| ReadL   |   1.069s   |   1.128s   |   1.24s    |
+| ScanL   |  11.834s   |  26.22s    |  56.101s   |
+| RemoveL |   5.06s    |   8.964s   |  17.051s   |
+| InsertR |  16.986s   |  14.763s   |  23.677s   |
+| MixedR  | 101.077s   | 128.350s   | 158.627s   |
+| RemoveR |   6.771s   |   6.768s   |   8.102s   |
 
 
 ## Changelog
