@@ -1,4 +1,4 @@
-use super::underlying::Underlying;
+use super::underlying::{Link, Underlying};
 use super::{Barrier, Ptr};
 
 use std::ops::Deref;
@@ -61,6 +61,45 @@ impl<T: 'static> Arc<T> {
     #[inline]
     pub fn get_mut(&mut self) -> Option<&mut T> {
         unsafe { self.instance_ptr.as_mut().get_mut() }
+    }
+
+    /// Drops the underlying instance if the last reference is dropped.
+    ///
+    /// The instance is not passed to the garbage collector when the last reference is dropped,
+    /// instead the method drops the instance immediately. The semantics is the same as that of
+    /// [`std::sync::Arc`].
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that there is no [`Ptr`] pointing to the instance.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::Arc;
+    /// use std::sync::atomic::AtomicBool;
+    /// use std::sync::atomic::Ordering::Relaxed;
+    ///
+    /// static DROPPED: AtomicBool = AtomicBool::new(false);
+    /// struct T(&'static AtomicBool);
+    /// impl Drop for T {
+    ///     fn drop(&mut self) {
+    ///         self.0.store(true, Relaxed);
+    ///     }
+    /// }
+    ///
+    /// let arc: Arc<T> = Arc::new(T(&DROPPED));
+    ///
+    /// unsafe {
+    ///     arc.drop_as_arc();
+    /// }
+    /// assert!(DROPPED.load(Relaxed));
+    /// ```
+    pub unsafe fn drop_as_arc(mut self) {
+        if self.underlying().drop_ref() {
+            self.instance_ptr.as_mut().free();
+            std::mem::forget(self);
+        }
     }
 
     /// Creates a new [`Arc`] from the given pointer.
@@ -203,13 +242,18 @@ mod test {
     fn arc_arc_send() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
 
-        let arc_arc = std::sync::Arc::new(Arc::new(A(AtomicUsize::new(14), 14, &DESTROYED)));
+        let arc_arc = Arc::new(A(AtomicUsize::new(14), 14, &DESTROYED));
         let arc_arc_cloned = arc_arc.clone();
         let thread = std::thread::spawn(move || {
             assert_eq!(arc_arc_cloned.0.load(Relaxed), 14);
         });
         assert!(thread.join().is_ok());
         assert_eq!(arc_arc.0.load(Relaxed), 14);
+
+        unsafe {
+            arc_arc.drop_as_arc();
+        }
+        assert!(DESTROYED.load(Relaxed));
     }
 
     #[test]

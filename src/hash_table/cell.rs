@@ -316,13 +316,24 @@ impl<'b, K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
         self.current_array_ptr = next_data_array
             .as_ref()
             .map_or_else(Ptr::null, |n| n.ptr(self.barrier_ref));
-        if let Some(prev_data_array_ref) = self.prev_array_ptr.as_ref() {
+        let old_data_array = if let Some(prev_data_array_ref) = self.prev_array_ptr.as_ref() {
             prev_data_array_ref
                 .link
-                .swap((next_data_array, Tag::None), Relaxed);
+                .swap((next_data_array, Tag::None), Relaxed)
         } else if let Some(cell_ref) = self.cell_ref.as_ref() {
             debug_assert!(!cell_ref.data.load(Relaxed, self.barrier_ref).is_null());
-            cell_ref.data.swap((next_data_array, Tag::None), Relaxed);
+            cell_ref.data.swap((next_data_array, Tag::None), Relaxed)
+        } else {
+            None
+        };
+        if let Some(data_array) = old_data_array {
+            if LOCK_FREE {
+                self.barrier_ref.reclaim(data_array);
+            } else {
+                unsafe {
+                    data_array.drop_as_arc();
+                }
+            }
         }
         if self.current_array_ptr.is_null() {
             self.cell_ref.take();
@@ -547,13 +558,12 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Locker<'b, K, V, SI
         };
         data_array_mut_ref.occupied &= !(1_u32 << iterator.current_index);
         let entry_ptr = data_array_mut_ref.data[iterator.current_index].as_mut_ptr();
+        #[allow(clippy::uninit_assumed_init)]
+        let result = unsafe { ptr::replace(entry_ptr, MaybeUninit::uninit().assume_init()) };
         if data_array_mut_ref.occupied == 0 {
             iterator.unlink_data_array(data_array_ref);
         }
-        #[allow(clippy::uninit_assumed_init)]
-        unsafe {
-            ptr::replace(entry_ptr, MaybeUninit::uninit().assume_init())
-        }
+        result
     }
 
     /// Tries to inherit the data array from the other [`Cell`].
@@ -590,7 +600,13 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Locker<'b, K, V, SI
     pub fn purge(&mut self, barrier: &Barrier) {
         if !self.cell_ref.data.load(Relaxed, barrier).is_null() {
             if let Some(data_array) = self.cell_ref.data.swap((None, Tag::None), Relaxed) {
-                barrier.reclaim(data_array);
+                if LOCK_FREE {
+                    barrier.reclaim(data_array);
+                } else {
+                    unsafe {
+                        data_array.drop_as_arc();
+                    }
+                }
             }
         }
         self.killed = true;

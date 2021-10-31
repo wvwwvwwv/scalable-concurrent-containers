@@ -378,8 +378,8 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 
 0.5.8
 
-* Optimize [`HashMap`](#HashMap).
-* Fix a problem with [`HashMap`](#HashMap) and [`HashIndex`](#HashIndex) remove methods.
+* Optimize [`HashMap`](#HashMap) and [`HashSet`](#HashSet).
+* Fix a problem with `retain` methods erasing some entries satisfying the given predicate.
 
 0.5.7
 
