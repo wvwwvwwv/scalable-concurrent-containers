@@ -309,17 +309,16 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 - OS: SUSE Linux Enterprise Server 15 SP1
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
 - RAM: 1TB
-- Rust: 1.54.0
-- SCC: 0.5.0 (HashMap, and HashIndex), 0.5.1 (TreeIndex)
+- Rust: 1.56.0
+- SCC: 0.5.8
 - HashMap<usize, usize, RandomState> = HashMap::default()
 - HashIndex<usize, usize, RandomState> = HashIndex::default()
 - TreeIndex<usize, usize> = TreeIndex::default()
 
 ### Test data
 
-- Each thread is assigned a disjoint range of `usize` integers.
-- The performance test code asserts the expected outcome of each operation, and the post state of the container.
-- The number of records in the test data dedicated to a thread for [`HashMap`](#HashMap) tests is 128M, and 4M for [`HashIndex`](#HashIndex) and [`TreeIndex`](#TreeIndex) tests.
+- A disjoint range of `usize` integers is assigned to each thread: 128M for [`HashMap`](#HashMap) and 4M for others.
+- The performance test code asserts the expected outcome of each operation and the post state of the container.
 
 ### Test workload: local
 
@@ -332,7 +331,7 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 
 ### Test workload: local-remote
 
-- Insert, remove: each thread additionally tries to perform operations using records belonging to a randomly chosen remote thread.
+- Insert, remove: each thread additionally tries to perform operations using keys belonging to a randomly chosen remote thread.
 - Mixed: each thread performs insert-local -> insert-remote -> read-local -> read-remote -> remove-local -> remove-remote.
 
 ### Test Results
@@ -379,7 +378,7 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 0.5.8
 
 * Optimize [`HashMap`](#HashMap) and [`HashSet`](#HashSet).
-* Fix a problem with `retain` methods erasing some entries satisfying the given predicate.
+* Fix a problem with the `retain` method erasing some entries satisfying the given predicate.
 
 0.5.7
 

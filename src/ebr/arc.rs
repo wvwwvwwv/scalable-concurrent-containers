@@ -91,11 +91,11 @@ impl<T: 'static> Arc<T> {
     /// let arc: Arc<T> = Arc::new(T(&DROPPED));
     ///
     /// unsafe {
-    ///     arc.drop_as_arc();
+    ///     arc.drop_in_place();
     /// }
     /// assert!(DROPPED.load(Relaxed));
     /// ```
-    pub unsafe fn drop_as_arc(mut self) {
+    pub unsafe fn drop_in_place(mut self) {
         if self.underlying().drop_ref() {
             self.instance_ptr.as_mut().free();
             std::mem::forget(self);
@@ -251,7 +251,7 @@ mod test {
         assert_eq!(arc_arc.0.load(Relaxed), 14);
 
         unsafe {
-            arc_arc.drop_as_arc();
+            arc_arc.drop_in_place();
         }
         assert!(DESTROYED.load(Relaxed));
     }

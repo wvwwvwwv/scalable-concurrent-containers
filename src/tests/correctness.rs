@@ -151,7 +151,7 @@ mod hashmap_test {
     proptest! {
         #[test]
         fn insert(key in 0_usize..16) {
-            let range = 1024;
+            let range = 4096;
             let checker = Arc::new(AtomicUsize::new(0));
             let hashmap: HashMap<Data, Data> = HashMap::default();
             for d in key..(key + range) {

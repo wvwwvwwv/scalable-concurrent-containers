@@ -327,13 +327,7 @@ impl<'b, K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
             None
         };
         if let Some(data_array) = old_data_array {
-            if LOCK_FREE {
-                self.barrier_ref.reclaim(data_array);
-            } else {
-                unsafe {
-                    data_array.drop_as_arc();
-                }
-            }
+            self.barrier_ref.reclaim(data_array);
         }
         if self.current_array_ptr.is_null() {
             self.cell_ref.take();
@@ -569,24 +563,27 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Locker<'b, K, V, SI
     /// Tries to inherit the data array from the other [`Cell`].
     #[inline]
     pub fn try_inherit(&self, other: &Locker<K, V, SIZE, LOCK_FREE>, barrier: &Barrier) -> bool {
-        if !other.cell_ref.data.load(Relaxed, barrier).is_null()
-            && self.cell_ref.data.load(Relaxed, barrier).is_null()
-        {
-            self.cell_ref.data.swap(
-                (
-                    other.cell_ref.data.swap((None, Tag::None), Relaxed),
-                    Tag::None,
-                ),
-                Relaxed,
-            );
-            debug_assert!(other.cell_ref.data.load(Relaxed, barrier).is_null());
-            debug_assert!(!self.cell_ref.data.load(Relaxed, barrier).is_null());
-            debug_assert_eq!(self.cell_ref.num_entries, 0);
-            self.num_entries_updated(1);
-            true
-        } else {
-            false
+        if self.cell_ref.data.load(Relaxed, barrier).is_null() {
+            let other_data_array_ptr = other.cell_ref.data.load(Relaxed, barrier);
+            if let Some(other_data_array_ref) = other_data_array_ptr.as_ref() {
+                if other_data_array_ref.link.load(Relaxed, barrier).is_null() {
+                    // The conditions are, `self` has none and `other` has a single data array.
+                    self.cell_ref.data.swap(
+                        (
+                            other.cell_ref.data.swap((None, Tag::None), Relaxed),
+                            Tag::None,
+                        ),
+                        Relaxed,
+                    );
+                    debug_assert!(other.cell_ref.data.load(Relaxed, barrier).is_null());
+                    debug_assert!(!self.cell_ref.data.load(Relaxed, barrier).is_null());
+                    debug_assert_eq!(self.cell_ref.num_entries, 0);
+                    self.num_entries_updated(1);
+                    return true;
+                }
+            }
         }
+        false
     }
 
     /// Notifies the [`Cell`] that an entry has been implicitly inherited.
@@ -600,13 +597,7 @@ impl<'b, K: Eq, V, const SIZE: usize, const LOCK_FREE: bool> Locker<'b, K, V, SI
     pub fn purge(&mut self, barrier: &Barrier) {
         if !self.cell_ref.data.load(Relaxed, barrier).is_null() {
             if let Some(data_array) = self.cell_ref.data.swap((None, Tag::None), Relaxed) {
-                if LOCK_FREE {
-                    barrier.reclaim(data_array);
-                } else {
-                    unsafe {
-                        data_array.drop_as_arc();
-                    }
-                }
+                barrier.reclaim(data_array);
             }
         }
         self.killed = true;
