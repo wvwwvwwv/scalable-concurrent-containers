@@ -107,9 +107,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
             return None;
         }
 
-        // In order to read the linked list correctly, a load-acquire is required.
-        let read_order = if LOCK_FREE { Acquire } else { Relaxed };
-        let mut current_array_ptr = self.data.load(read_order, barrier);
+        let mut current_array_ptr = self.data.load(Relaxed, barrier);
         let mut prev_array_ptr = Ptr::null();
         let preferred_index = partial_hash as usize % SIZE;
         while let Some(data_array_ref) = current_array_ptr.as_ref() {
@@ -125,7 +123,7 @@ impl<K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool>
                 });
             }
             prev_array_ptr = current_array_ptr;
-            current_array_ptr = data_array_ref.link.load(read_order, barrier);
+            current_array_ptr = data_array_ref.link.load(Relaxed, barrier);
         }
         None
     }
@@ -343,10 +341,9 @@ impl<'b, K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool> 
     type Item = (&'b (K, V), u8);
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(&cell_ref) = self.cell_ref.as_ref() {
-            let read_order = if LOCK_FREE { Acquire } else { Relaxed };
             if self.current_array_ptr.is_null() {
                 // Starts scanning from the beginning.
-                self.current_array_ptr = cell_ref.data.load(read_order, self.barrier_ref);
+                self.current_array_ptr = cell_ref.data.load(Relaxed, self.barrier_ref);
             }
             while let Some(data_array_ref) = self.current_array_ptr.as_ref() {
                 // Searches for the next valid entry.
@@ -364,7 +361,7 @@ impl<'b, K: 'static + Eq, V: 'static, const SIZE: usize, const LOCK_FREE: bool> 
 
                 // Proceeds to the next DataArray.
                 self.prev_array_ptr = self.current_array_ptr;
-                self.current_array_ptr = data_array_ref.link.load(read_order, self.barrier_ref);
+                self.current_array_ptr = data_array_ref.link.load(Relaxed, self.barrier_ref);
                 self.current_index = usize::MAX;
             }
             // Fuses itself.
