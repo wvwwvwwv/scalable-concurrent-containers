@@ -1,7 +1,7 @@
 pub mod cell;
 pub mod cell_array;
 
-use cell::{EntryIterator, Locker, Reader};
+use cell::{EntryIterator, Locker, Reader, ARRAY_SIZE};
 use cell_array::CellArray;
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
@@ -13,12 +13,18 @@ use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 /// `HashTable` defines common functions for `HashIndex`, `HashMap`, and `HashSet`.
-pub(super) trait HashTable<K, V, H, const CELL_SIZE: usize, const LOCK_FREE: bool>
+pub(super) trait HashTable<K, V, H, const LOCK_FREE: bool>
 where
     K: 'static + Eq + Hash + Sync,
     V: 'static + Sync,
     H: BuildHasher,
 {
+    /// Returns the default capacity.
+    #[inline]
+    fn default_capacity() -> usize {
+        ARRAY_SIZE * 2
+    }
+
     /// Returns the hash value of the given key.
     #[inline]
     fn hash<Q>(&self, key: &Q) -> (u64, u8)
@@ -30,16 +36,6 @@ where
         let mut h = self.hasher().build_hasher();
         key.hash(&mut h);
         let hash = h.finish();
-
-        /*
-            // Bitmix: https://mostlymangling.blogspot.com/2019/01/better-stronger-mixer-and-test-procedure.html
-            hash = hash ^ (hash.rotate_right(25) ^ hash.rotate_right(50));
-            hash = hash.overflowing_mul(0xA24BAED4963EE407u64).0;
-            hash = hash ^ (hash.rotate_right(24) ^ hash.rotate_right(49));
-            hash = hash.overflowing_mul(0x9FB21C651E98DF25u64).0;
-            hash = hash ^ (hash >> 28);
-        */
-
         (hash, (hash & ((1 << 8) - 1)).try_into().unwrap())
     }
 
@@ -50,7 +46,7 @@ where
     fn copier(key: &K, val: &V) -> Option<(K, V)>;
 
     /// Returns a reference to the `CellArray` pointer.
-    fn cell_array(&self) -> &AtomicArc<CellArray<K, V, CELL_SIZE, LOCK_FREE>>;
+    fn cell_array(&self) -> &AtomicArc<CellArray<K, V, LOCK_FREE>>;
 
     /// Returns the minimum allowed capacity.
     fn minimum_capacity(&self) -> usize;
@@ -83,10 +79,7 @@ where
     }
 
     /// Estimates the number of entries using the given number of cells.
-    fn estimate(
-        array_ref: &CellArray<K, V, CELL_SIZE, LOCK_FREE>,
-        num_cells_to_sample: usize,
-    ) -> usize {
+    fn estimate(array_ref: &CellArray<K, V, LOCK_FREE>, num_cells_to_sample: usize) -> usize {
         let mut num_entries = 0;
         for i in 0..num_cells_to_sample {
             num_entries += array_ref.cell(i).num_entries();
@@ -186,7 +179,7 @@ where
             };
             if remove {
                 let result = locker.erase(&mut iterator);
-                if cell_index < CELL_SIZE && locker.cell_ref().num_entries() < CELL_SIZE / 16 {
+                if cell_index < ARRAY_SIZE && locker.cell_ref().num_entries() < ARRAY_SIZE / 16 {
                     drop(locker);
                     if let Some(current_array_ref) =
                         self.cell_array().load(Acquire, &barrier).as_ref()
@@ -217,8 +210,8 @@ where
         barrier: &'b Barrier,
     ) -> (
         usize,
-        Locker<'b, K, V, CELL_SIZE, LOCK_FREE>,
-        Option<EntryIterator<'b, K, V, CELL_SIZE, LOCK_FREE>>,
+        Locker<'b, K, V, LOCK_FREE>,
+        Option<EntryIterator<'b, K, V, LOCK_FREE>>,
     )
     where
         K: Borrow<Q>,
@@ -267,7 +260,7 @@ where
 
             // Tries to resize the array.
             let num_entries = current_array_ref.cell(cell_index).num_entries();
-            if check_resize && num_entries >= CELL_SIZE {
+            if check_resize && num_entries >= ARRAY_SIZE {
                 // Triggers resize if the estimated load factor is greater than 7/8.
                 check_resize = false;
                 self.try_enlarge(current_array_ref, cell_index, num_entries, barrier);
@@ -289,14 +282,14 @@ where
     #[inline]
     fn try_enlarge(
         &self,
-        array_ref: &CellArray<K, V, CELL_SIZE, LOCK_FREE>,
+        array_ref: &CellArray<K, V, LOCK_FREE>,
         cell_index: usize,
         mut num_entries: usize,
         barrier: &Barrier,
     ) {
         let sample_size = array_ref.sample_size();
         let array_size = array_ref.num_cells();
-        let threshold = sample_size * (CELL_SIZE / 8) * 7;
+        let threshold = sample_size * (ARRAY_SIZE / 8) * 7;
         if num_entries > threshold
             || (1..sample_size).any(|i| {
                 num_entries += array_ref.cell((cell_index + i) % array_size).num_entries();
@@ -311,13 +304,13 @@ where
     #[inline]
     fn try_shrink(
         &self,
-        array_ref: &CellArray<K, V, CELL_SIZE, LOCK_FREE>,
+        array_ref: &CellArray<K, V, LOCK_FREE>,
         cell_index: usize,
         barrier: &Barrier,
     ) {
         let sample_size = array_ref.sample_size();
         let array_size = array_ref.num_cells();
-        let threshold = sample_size * CELL_SIZE / 16;
+        let threshold = sample_size * ARRAY_SIZE / 16;
         let mut num_entries = 0;
         if !(1..sample_size).any(|i| {
             num_entries += array_ref.cell((cell_index + i) % array_size).num_entries();
@@ -409,7 +402,7 @@ where
             if new_capacity != capacity {
                 self.cell_array().swap(
                     (
-                        Some(Arc::new(CellArray::<K, V, CELL_SIZE, LOCK_FREE>::new(
+                        Some(Arc::new(CellArray::<K, V, LOCK_FREE>::new(
                             new_capacity,
                             self.cell_array().clone(Relaxed, barrier),
                         ))),

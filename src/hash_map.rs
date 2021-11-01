@@ -11,9 +11,6 @@ use std::hash::{BuildHasher, Hash};
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 use std::sync::atomic::{AtomicU8, AtomicUsize};
 
-const CELL_SIZE: usize = 32;
-const DEFAULT_CAPACITY: usize = 64;
-
 /// A scalable concurrent hash map data structure.
 ///
 /// [`HashMap`] is a concurrent hash map data structure that is targeted at a highly concurrent
@@ -47,7 +44,7 @@ where
     V: 'static + Sync,
     H: BuildHasher,
 {
-    array: AtomicArc<CellArray<K, V, CELL_SIZE, false>>,
+    array: AtomicArc<CellArray<K, V, false>>,
     minimum_capacity: usize,
     additional_capacity: AtomicUsize,
     resize_mutex: AtomicU8,
@@ -84,8 +81,8 @@ where
     /// assert_eq!(result, 64);
     /// ```
     pub fn new(capacity: usize, build_hasher: H) -> HashMap<K, V, H> {
-        let initial_capacity = capacity.max(DEFAULT_CAPACITY);
-        let array = Arc::new(CellArray::<K, V, CELL_SIZE, false>::new(
+        let initial_capacity = capacity.max(Self::default_capacity());
+        let array = Arc::new(CellArray::<K, V, false>::new(
             initial_capacity,
             AtomicArc::null(),
         ));
@@ -573,11 +570,11 @@ where
     /// ```
     fn default() -> Self {
         HashMap {
-            array: AtomicArc::new(CellArray::<K, V, CELL_SIZE, false>::new(
-                DEFAULT_CAPACITY,
+            array: AtomicArc::new(CellArray::<K, V, false>::new(
+                Self::default_capacity(),
                 AtomicArc::null(),
             )),
-            minimum_capacity: DEFAULT_CAPACITY,
+            minimum_capacity: Self::default_capacity(),
             additional_capacity: AtomicUsize::new(0),
             resize_mutex: AtomicU8::new(0),
             build_hasher: RandomState::new(),
@@ -604,7 +601,7 @@ where
     }
 }
 
-impl<K, V, H> HashTable<K, V, H, CELL_SIZE, false> for HashMap<K, V, H>
+impl<K, V, H> HashTable<K, V, H, false> for HashMap<K, V, H>
 where
     K: 'static + Eq + Hash + Sync,
     V: 'static + Sync,
@@ -616,7 +613,7 @@ where
     fn copier(_: &K, _: &V) -> Option<(K, V)> {
         None
     }
-    fn cell_array(&self) -> &AtomicArc<CellArray<K, V, CELL_SIZE, false>> {
+    fn cell_array(&self) -> &AtomicArc<CellArray<K, V, false>> {
         &self.array
     }
     fn minimum_capacity(&self) -> usize {

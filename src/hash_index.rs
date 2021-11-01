@@ -12,9 +12,6 @@ use std::iter::FusedIterator;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
-const CELL_SIZE: usize = 32;
-const DEFAULT_CAPACITY: usize = 64;
-
 /// A scalable concurrent hash index data structure.
 ///
 /// [`HashIndex`] is a concurrent hash index data structure that is optimized for read
@@ -40,7 +37,7 @@ where
     V: 'static + Clone + Sync,
     H: BuildHasher,
 {
-    array: AtomicArc<CellArray<K, V, CELL_SIZE, true>>,
+    array: AtomicArc<CellArray<K, V, true>>,
     minimum_capacity: usize,
     resize_mutex: AtomicU8,
     build_hasher: H,
@@ -77,9 +74,9 @@ where
     /// assert_eq!(result, 64);
     /// ```
     pub fn new(capacity: usize, build_hasher: H) -> HashIndex<K, V, H> {
-        let initial_capacity = capacity.max(DEFAULT_CAPACITY);
+        let initial_capacity = capacity.max(Self::default_capacity());
         HashIndex {
-            array: AtomicArc::from(Arc::new(CellArray::<K, V, CELL_SIZE, true>::new(
+            array: AtomicArc::from(Arc::new(CellArray::<K, V, true>::new(
                 initial_capacity,
                 AtomicArc::null(),
             ))),
@@ -406,11 +403,11 @@ where
     /// ```
     fn default() -> Self {
         HashIndex {
-            array: AtomicArc::from(Arc::new(CellArray::<K, V, CELL_SIZE, true>::new(
-                DEFAULT_CAPACITY,
+            array: AtomicArc::from(Arc::new(CellArray::<K, V, true>::new(
+                Self::default_capacity(),
                 AtomicArc::null(),
             ))),
-            minimum_capacity: DEFAULT_CAPACITY,
+            minimum_capacity: Self::default_capacity(),
             resize_mutex: AtomicU8::new(0),
             build_hasher: RandomState::new(),
         }
@@ -436,7 +433,7 @@ where
     }
 }
 
-impl<K, V, H> HashTable<K, V, H, CELL_SIZE, true> for HashIndex<K, V, H>
+impl<K, V, H> HashTable<K, V, H, true> for HashIndex<K, V, H>
 where
     K: 'static + Clone + Eq + Hash + Sync,
     V: 'static + Clone + Sync,
@@ -448,7 +445,7 @@ where
     fn copier(key: &K, val: &V) -> Option<(K, V)> {
         Some((key.clone(), val.clone()))
     }
-    fn cell_array(&self) -> &AtomicArc<CellArray<K, V, CELL_SIZE, true>> {
+    fn cell_array(&self) -> &AtomicArc<CellArray<K, V, true>> {
         &self.array
     }
     fn minimum_capacity(&self) -> usize {
@@ -470,9 +467,9 @@ where
     H: BuildHasher,
 {
     hash_index: &'h HashIndex<K, V, H>,
-    current_array_ptr: Ptr<'b, CellArray<K, V, CELL_SIZE, true>>,
+    current_array_ptr: Ptr<'b, CellArray<K, V, true>>,
     current_index: usize,
-    current_entry_iterator: Option<EntryIterator<'b, K, V, CELL_SIZE, true>>,
+    current_entry_iterator: Option<EntryIterator<'b, K, V, true>>,
     barrier_ref: &'b Barrier,
 }
 
