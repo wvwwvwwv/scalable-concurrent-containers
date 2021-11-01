@@ -1,3 +1,5 @@
+use super::wait_queue::WaitQueue;
+
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 
 use std::borrow::Borrow;
@@ -6,7 +8,6 @@ use std::ptr;
 use std::sync::atomic::fence;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicPtr, AtomicU32};
-use std::sync::{Condvar, Mutex};
 
 /// The fixed size of [`DataArray`].
 ///
@@ -23,8 +24,8 @@ const LOCK_MASK: u32 = LOCK | SLOCK_MAX;
 /// [`Cell`] is a small fixed-size hash table that resolves hash conflicts using a linked list
 /// of entry arrays.
 pub struct Cell<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
-    /// The wait queue of the [`Cell`].
-    wait_queue: AtomicPtr<WaitQueueEntry>,
+    /// An array of key-value pairs and their metadata.
+    data_array: AtomicArc<DataArray<K, V>>,
 
     /// The state of the [`Cell`].
     state: AtomicU32,
@@ -32,17 +33,17 @@ pub struct Cell<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
     /// The number of valid entries in the [`Cell`].
     num_entries: u32,
 
-    /// The array of key-value pairs and their metadata.
-    data_array: AtomicArc<DataArray<K, V>>,
+    /// The wait queue of the [`Cell`].
+    wait_queue: AtomicPtr<WaitQueue>,
 }
 
 impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Default for Cell<K, V, LOCK_FREE> {
     fn default() -> Self {
         Cell::<K, V, LOCK_FREE> {
-            wait_queue: AtomicPtr::default(),
+            data_array: AtomicArc::null(),
             state: AtomicU32::new(0),
             num_entries: 0,
-            data_array: AtomicArc::null(),
+            wait_queue: AtomicPtr::default(),
         }
     }
 }
@@ -92,7 +93,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         None
     }
 
-    /// Gets a [`EntryIterator`] pointing to an entry associated with the given key.
+    /// Gets an [`EntryIterator`] pointing to an entry associated with the given key.
     #[inline]
     pub fn get<'b, Q>(
         &'b self,
@@ -220,11 +221,11 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
     fn wait<T, F: FnOnce() -> Option<T>>(&self, f: F) -> Option<T> {
         // Inserts the condvar into the wait queue.
         let mut current = self.wait_queue.load(Relaxed);
-        let mut entry = WaitQueueEntry::new(current);
+        let mut entry = WaitQueue::new(current);
 
         while let Err(actual) = self.wait_queue.compare_exchange(
             current,
-            &mut entry as *mut WaitQueueEntry,
+            &mut entry as *mut WaitQueue,
             Release,
             Relaxed,
         ) {
@@ -751,35 +752,6 @@ impl<K: 'static + Eq, V: 'static> Drop for DataArray<K, V> {
             occupied &= !(1_u32 << index);
             index = occupied.trailing_zeros();
         }
-    }
-}
-
-struct WaitQueueEntry {
-    mutex: Mutex<u8>,
-    condvar: Condvar,
-    next_ptr: *mut WaitQueueEntry,
-}
-
-impl WaitQueueEntry {
-    fn new(next_ptr: *mut WaitQueueEntry) -> WaitQueueEntry {
-        WaitQueueEntry {
-            mutex: Mutex::new(0_u8),
-            condvar: Condvar::new(),
-            next_ptr,
-        }
-    }
-
-    fn wait(&self) {
-        let mut completed = self.mutex.lock().unwrap();
-        while *completed == 0_u8 {
-            completed = self.condvar.wait(completed).unwrap();
-        }
-    }
-
-    fn signal(&self) {
-        let mut completed = self.mutex.lock().unwrap();
-        *completed = 1_u8;
-        self.condvar.notify_one();
     }
 }
 
