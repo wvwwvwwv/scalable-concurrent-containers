@@ -6,8 +6,8 @@ use std::borrow::Borrow;
 use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::atomic::fence;
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
-use std::sync::atomic::{AtomicPtr, AtomicU32};
 
 /// The fixed size of [`DataArray`].
 ///
@@ -34,7 +34,7 @@ pub struct Cell<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
     num_entries: u32,
 
     /// The wait queue of the [`Cell`].
-    wait_queue: AtomicPtr<WaitQueue>,
+    wait_queue: WaitQueue,
 }
 
 impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Default for Cell<K, V, LOCK_FREE> {
@@ -43,7 +43,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Default for Cell<K, V, 
             data_array: AtomicArc::null(),
             state: AtomicU32::new(0),
             num_entries: 0,
-            wait_queue: AtomicPtr::default(),
+            wait_queue: WaitQueue::default(),
         }
     }
 }
@@ -216,46 +216,6 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
 
         None
     }
-
-    /// Waits for the owner thread to release the [`Cell`].
-    fn wait<T, F: FnOnce() -> Option<T>>(&self, f: F) -> Option<T> {
-        // Inserts the condvar into the wait queue.
-        let mut current = self.wait_queue.load(Relaxed);
-        let mut entry = WaitQueue::new(current);
-
-        while let Err(actual) = self.wait_queue.compare_exchange(
-            current,
-            &mut entry as *mut WaitQueue,
-            Release,
-            Relaxed,
-        ) {
-            current = actual;
-            entry.next_ptr = current;
-        }
-
-        // Marks that there is a waiting thread.
-        self.state.fetch_or(WAITING, Release);
-
-        // Tries to lock again once the entry is inserted into the wait queue.
-        let locked = f();
-        if locked.is_some() {
-            self.signal();
-        }
-
-        // Locking failed.
-        entry.wait();
-        locked
-    }
-
-    /// Signals the threads in the wait queue.
-    fn signal(&self) {
-        let mut current = self.wait_queue.swap(ptr::null_mut(), Acquire);
-        while let Some(entry_ref) = unsafe { current.as_ref() } {
-            let next_ptr = entry_ref.next_ptr;
-            entry_ref.signal();
-            current = next_ptr;
-        }
-    }
 }
 
 impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Cell<K, V, LOCK_FREE> {
@@ -386,9 +346,16 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         barrier: &'b Barrier,
     ) -> Option<Locker<'b, K, V, LOCK_FREE>> {
         loop {
-            if let Some(locker) = Self::try_lock(cell, barrier)
-                .map_or_else(|| cell.wait(|| Self::try_lock(cell, barrier)), Some)
-            {
+            if let Some(locker) = Self::try_lock(cell, barrier).map_or_else(
+                || {
+                    cell.wait_queue.wait(|| {
+                        // Marks that there is a waiting thread.
+                        cell.state.fetch_or(WAITING, Release);
+                        Self::try_lock(cell, barrier)
+                    })
+                },
+                Some,
+            ) {
                 if locker.killed {
                     return None;
                 }
@@ -628,7 +595,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Locker<'b,
             {
                 Ok(_) => {
                     if wakeup {
-                        self.cell_ref.signal();
+                        self.cell_ref.wait_queue.signal();
                     }
                     break;
                 }
@@ -651,9 +618,16 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
         barrier: &'b Barrier,
     ) -> Option<Reader<'b, K, V, LOCK_FREE>> {
         loop {
-            if let Some(reader) = Self::try_lock(cell, barrier)
-                .map_or_else(|| cell.wait(|| Self::try_lock(cell, barrier)), Some)
-            {
+            if let Some(reader) = Self::try_lock(cell, barrier).map_or_else(
+                || {
+                    cell.wait_queue.wait(|| {
+                        // Marks that there is a waiting thread.
+                        cell.state.fetch_or(WAITING, Release);
+                        Self::try_lock(cell, barrier)
+                    })
+                },
+                Some,
+            ) {
                 if reader.killed {
                     return None;
                 }
@@ -709,7 +683,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Reader<'b,
             {
                 Ok(_) => {
                     if wakeup {
-                        self.cell_ref.signal();
+                        self.cell_ref.wait_queue.signal();
                     }
                     break;
                 }
