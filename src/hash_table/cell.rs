@@ -805,7 +805,7 @@ mod test {
         assert_eq!(cell.num_entries(), num_threads);
 
         let epoch_barrier = Barrier::new();
-        for thread_id in 0..ARRAY_SIZE {
+        for thread_id in 0..num_threads {
             assert_eq!(
                 cell.search(
                     &thread_id,
