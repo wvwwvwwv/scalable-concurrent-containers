@@ -5,8 +5,8 @@ use std::sync::atomic::Ordering::Relaxed;
 
 /// [`Underlying`] stores an instance of type `T`, and a link to the next [`Underlying`].
 pub(super) struct Underlying<T> {
-    next_or_refcnt: LinkOrRefCnt,
     instance: T,
+    next_or_refcnt: LinkOrRefCnt,
 }
 
 impl<T> Underlying<T> {
@@ -14,8 +14,8 @@ impl<T> Underlying<T> {
     #[inline]
     pub(super) fn new(t: T) -> Underlying<T> {
         Underlying {
-            next_or_refcnt: LinkOrRefCnt::default(),
             instance: t,
+            next_or_refcnt: LinkOrRefCnt::default(),
         }
     }
 
@@ -48,9 +48,7 @@ impl<T> Underlying<T> {
     pub(super) fn add_ref(&self) {
         let mut current = self.ref_cnt().load(Relaxed);
         debug_assert_eq!(current % 2, 1);
-        if current > usize::MAX - 2 {
-            panic!("reference count overflow");
-        }
+        debug_assert!(current <= usize::MAX - 2, "reference count overflow");
         while let Err(actual) =
             self.ref_cnt()
                 .compare_exchange(current, current + 2, Relaxed, Relaxed)

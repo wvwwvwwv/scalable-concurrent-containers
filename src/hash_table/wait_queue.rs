@@ -5,6 +5,7 @@ use std::sync::{Condvar, Mutex};
 /// [`WaitQueue`] implements an unfair wait queue.
 ///
 /// The sole purpose of the data structure is to avoid busy-waiting.
+#[derive(Default)]
 pub struct WaitQueue {
     /// The wait queue of the [`Cell`].
     wait_queue: AtomicPtr<Entry>,
@@ -43,14 +44,6 @@ impl WaitQueue {
             let next_ptr = entry_ref.next_ptr;
             entry_ref.signal();
             current = next_ptr;
-        }
-    }
-}
-
-impl Default for WaitQueue {
-    fn default() -> Self {
-        Self {
-            wait_queue: AtomicPtr::default(),
         }
     }
 }
