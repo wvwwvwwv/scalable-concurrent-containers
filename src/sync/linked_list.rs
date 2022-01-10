@@ -16,7 +16,7 @@ pub trait LinkedList: 'static + Sized {
     ///
     /// ```
     /// use scc::ebr::{AtomicArc, Tag};
-    /// use scc::LinkedList;
+    /// use scc::sync::LinkedList;
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
@@ -46,7 +46,7 @@ pub trait LinkedList: 'static + Sized {
     ///
     /// ```
     /// use scc::ebr::AtomicArc;
-    /// use scc::LinkedList;
+    /// use scc::sync::LinkedList;
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
@@ -73,7 +73,7 @@ pub trait LinkedList: 'static + Sized {
     ///
     /// ```
     /// use scc::ebr::AtomicArc;
-    /// use scc::LinkedList;
+    /// use scc::sync::LinkedList;
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
@@ -101,7 +101,7 @@ pub trait LinkedList: 'static + Sized {
     ///
     /// ```
     /// use scc::ebr::AtomicArc;
-    /// use scc::LinkedList;
+    /// use scc::sync::LinkedList;
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
@@ -129,7 +129,7 @@ pub trait LinkedList: 'static + Sized {
     ///
     /// ```
     /// use scc::ebr::{Arc, AtomicArc, Barrier};
-    /// use scc::LinkedList;
+    /// use scc::sync::LinkedList;
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
@@ -160,7 +160,7 @@ pub trait LinkedList: 'static + Sized {
     ///
     /// ```
     /// use scc::ebr::AtomicArc;
-    /// use scc::LinkedList;
+    /// use scc::sync::LinkedList;
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
@@ -193,7 +193,7 @@ pub trait LinkedList: 'static + Sized {
     ///
     /// ```
     /// use scc::ebr::{Arc, AtomicArc, Barrier};
-    /// use scc::LinkedList;
+    /// use scc::sync::LinkedList;
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
@@ -255,7 +255,7 @@ pub trait LinkedList: 'static + Sized {
     ///
     /// ```
     /// use scc::ebr::{Arc, AtomicArc, Barrier};
-    /// use scc::LinkedList;
+    /// use scc::sync::LinkedList;
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]

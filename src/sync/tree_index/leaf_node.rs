@@ -3,7 +3,7 @@ use super::Leaf;
 use super::{InsertError, RemoveError, SearchError};
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
-use crate::LinkedList;
+use crate::sync::LinkedList;
 
 use std::borrow::Borrow;
 use std::cmp::Ordering;

@@ -7,11 +7,11 @@
 A collection of concurrent data structures and building blocks for concurrent programming.
 
 - [scc::ebr](#EBR) implements epoch-based reclamation.
-- [scc::LinkedList](#LinkedList) is a type trait implementing a wait-free concurrent singly linked list.
-- [scc::HashMap](#HashMap) is a concurrent hash map.
-- [scc::HashSet](#HashSet) is a concurrent hash set based on [scc::HashMap](#HashMap).
-- [scc::HashIndex](#HashIndex) is a concurrent hash index allowing lock-free read and scan.
-- [scc::TreeIndex](#TreeIndex) is a concurrent B+ tree allowing lock-free read and scan.
+- [scc::sync::LinkedList](#LinkedList) is a type trait implementing a wait-free concurrent singly linked list.
+- [scc::sync::HashMap](#HashMap) is a concurrent hash map.
+- [scc::sync::HashSet](#HashSet) is a concurrent hash set based on [scc::sync::HashMap](#HashMap).
+- [scc::sync::HashIndex](#HashIndex) is a concurrent hash index allowing lock-free read and scan.
+- [scc::sync::TreeIndex](#TreeIndex) is a concurrent B+ tree allowing lock-free read and scan.
 
 
 ## EBR
@@ -80,7 +80,7 @@ assert_eq!(*ptr.as_ref().unwrap(), 17);
 
 ```rust
 use scc::ebr::{Arc, AtomicArc, Barrier};
-use scc::LinkedList;
+use scc::sync::LinkedList;
 use std::sync::atomic::Ordering::Relaxed;
 
 #[derive(Default)]
@@ -122,7 +122,7 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 A unique key can be inserted along with its corresponding value, and then it can be updated, read, and removed.
 
 ```rust
-use scc::HashMap;
+use scc::sync::HashMap;
 
 let hashmap: HashMap<u64, u32> = HashMap::default();
 
@@ -135,7 +135,7 @@ assert_eq!(hashmap.remove(&1).unwrap(), (1, 2));
 It supports `upsert` as in database management software; it tries to insert the given key-value pair, and if it fails, it updates the value field with the supplied closure.
 
 ```rust
-use scc::HashMap;
+use scc::sync::HashMap;
 
 let hashmap: HashMap<u64, u32> = HashMap::default();
 
@@ -148,7 +148,7 @@ assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 3);
 There is no method to confine the lifetime of references derived from an [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) to the [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html), and it is illegal to let them live as long as the [`HashMap`](#HashMap) stays valid due to the lack of a global lock. Therefore [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, it provides two methods that allow a [`HashMap`](#HashMap) to iterate over its entries: `for_each`, and `retain`.
 
 ```rust
-use scc::HashMap;
+use scc::sync::HashMap;
 
 let hashmap: HashMap<u64, u32> = HashMap::default();
 
@@ -180,7 +180,7 @@ assert_eq!(hashmap.retain(|key, value| *key == 1 && *value == 0), (1, 2));
 All the [`HashSet`](#HashSet) methods do not receive a value argument.
 
 ```rust
-use scc::HashSet;
+use scc::sync::HashSet;
 
 let hashset: HashSet<u64> = HashSet::default();
 
@@ -192,7 +192,7 @@ assert!(hashset.read(&1, |_| true).unwrap());
 The capacity of a [`HashSet`](#HashSet) can be specified.
 
 ```rust
-use scc::HashSet;
+use scc::sync::HashSet;
 use std::collections::hash_map::RandomState;
 
 let hashset: HashSet<u64, RandomState> = HashSet::new(1000000, RandomState::new());
@@ -209,7 +209,7 @@ assert_eq!(hashset.capacity(), 1048576);
 Its `read` method does not modify any shared data.
 
 ```rust
-use scc::HashIndex;
+use scc::sync::HashIndex;
 
 let hashindex: HashIndex<u64, u32> = HashIndex::default();
 
@@ -221,7 +221,7 @@ An [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is imple
 
 ```rust
 use scc::ebr::Barrier;
-use scc::HashIndex;
+use scc::sync::HashIndex;
 
 let hashindex: HashIndex<u64, u32> = HashIndex::default();
 
@@ -252,7 +252,7 @@ assert_eq!(entry_ref, (&1, &0));
 Key-value pairs can be inserted, read, and removed.
 
 ```rust
-use scc::TreeIndex;
+use scc::sync::TreeIndex;
 
 let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
 
@@ -265,7 +265,7 @@ Key-value pairs can be scanned.
 
 ```rust
 use scc::ebr::Barrier;
-use scc::TreeIndex;
+use scc::sync::TreeIndex;
 
 let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
 
@@ -286,7 +286,7 @@ Key-value pairs in a specific range can be scanned.
 
 ```rust
 use scc::ebr::Barrier;
-use scc::TreeIndex;
+use scc::sync::TreeIndex;
 
 let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
 
@@ -384,4 +384,3 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 
 * Fix [`#63`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/63).
 * Add [`HashSet`](#HashSet).
-

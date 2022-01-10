@@ -1,9 +1,10 @@
 //! The module implements [`HashIndex`].
 
-use super::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 use super::hash_table::cell::{EntryIterator, Locker};
 use super::hash_table::cell_array::CellArray;
 use super::hash_table::HashTable;
+
+use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
@@ -16,7 +17,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 ///
 /// [`HashIndex`] is a concurrent hash index data structure that is optimized for read
 /// operations. The key characteristics of [`HashIndex`] are similar to that of
-/// [`HashMap`](crate::HashMap).
+/// [`HashMap`](super::HashMap).
 ///
 /// ## The key differences between [`HashIndex`] and [`HashMap`](crate::HashMap).
 ///
@@ -60,7 +61,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::HashIndex;
+    /// use scc::sync::HashIndex;
     /// use std::collections::hash_map::RandomState;
     ///
     /// let hashindex: HashIndex<u64, u32, RandomState> = HashIndex::new(1000, RandomState::new());
@@ -100,7 +101,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::HashIndex;
+    /// use scc::sync::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -119,7 +120,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::HashIndex;
+    /// use scc::sync::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -143,7 +144,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::HashIndex;
+    /// use scc::sync::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -167,7 +168,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::HashIndex;
+    /// use scc::sync::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -194,7 +195,7 @@ where
     ///
     /// ```
     /// use scc::ebr::Barrier;
-    /// use scc::HashIndex;
+    /// use scc::sync::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -223,7 +224,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::HashIndex;
+    /// use scc::sync::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -245,7 +246,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::HashIndex;
+    /// use scc::sync::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -291,7 +292,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::HashIndex;
+    /// use scc::sync::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -311,7 +312,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::HashIndex;
+    /// use scc::sync::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -327,7 +328,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::HashIndex;
+    /// use scc::sync::HashIndex;
     /// use std::collections::hash_map::RandomState;
     ///
     /// let hashindex: HashIndex<u64, u32, RandomState> = HashIndex::new(1000000, RandomState::new());
@@ -350,7 +351,7 @@ where
     ///
     /// ```
     /// use scc::ebr::Barrier;
-    /// use scc::HashIndex;
+    /// use scc::sync::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -397,7 +398,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::HashIndex;
+    /// use scc::sync::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32, _> = HashIndex::default();
     /// ```

@@ -4,40 +4,19 @@
 //!
 //! # [`EBR`](ebr)
 //!
-//! The [`ebr`] module implements epoch-based reclamation for [`LinkedList`], [`HashMap`],
-//! [`HashIndex`], and [`TreeIndex`].
+//! The [`ebr`] module implements epoch-based reclamation for container types in this crate.
 //!
-//! # [`LinkedList`]
-//! [`LinkedList`] is a type trait that implements wait-free list modification operations for
-//! a generic concurrent list.
+//! # [Synchronous concurrent containers](sync)
 //!
-//! # [`HashMap`]
-//! [`HashMap`] is a concurrent hash map that dynamically grows and shrinks without blocking
-//! other operations.
+//! Synchronous concurrent containers, such as [`HashMap`](sync::HashMap),
+//! [`HashIndex`](sync::HashIndex), and [`TreeIndex`](sync::TreeIndex) are implemented.
 //!
-//! # [`HashIndex`]
-//! [`HashIndex`] is a read-optimized concurrent hash index that is similar to [`HashMap`].
+//! # [Asynchronous concurrent containers](async)
 //!
-//! # [`TreeIndex`]
-//! [`TreeIndex`] is a read-optimized concurrent B+ tree index.
+//! Asynchronous concurrent containers are implemented.
 
+pub mod r#async;
 pub mod ebr;
-
-mod linked_list;
-pub use linked_list::LinkedList;
-
-pub mod hash_map;
-pub use hash_map::HashMap;
-
-pub mod hash_index;
-pub use hash_index::HashIndex;
-
-pub mod hash_set;
-pub use hash_set::HashSet;
-
-pub mod tree_index;
-pub use tree_index::TreeIndex;
-
-mod hash_table;
+pub mod sync;
 
 mod tests;

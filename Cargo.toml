@@ -1,22 +1,24 @@
 [package]
 name = "scc"
 description = "A collection of building blocks for concurrent programming."
-version = "0.5.9"
+version = "0.6.0"
 authors = ["wvwwvwwv <wvwwvwwv@me.com>"]
 edition = "2021"
 readme = "README.md"
 repository = "https://github.com/wvwwvwwv/scalable-concurrent-containers/"
 license = "Apache-2.0"
 categories = ["concurrency", "data-structures"]
-keywords = ["concurrent", "ebr", "hashmap", "map", "tree"]
+keywords = ["concurrent", "asynchronous", "ebr", "hashmap", "tree"]
 
 [dependencies]
 scopeguard = "^1.1"
 
 [dev-dependencies]
 criterion = "^0.3"
+futures = "^0.3"
 loom = "^0.5"
 proptest = "^1.0"
+tokio = { version = "^1.15.0", features = ["full"] }
 
 [[bench]]
 name = "ebr"

@@ -4,7 +4,7 @@
 #[cfg(test)]
 mod benchmark {
     use crate::ebr;
-    use crate::{HashIndex, HashMap, TreeIndex};
+    use crate::sync::{HashIndex, HashMap, TreeIndex};
 
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hash};

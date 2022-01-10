@@ -1,5 +1,5 @@
 use crate::ebr::{Arc, AtomicArc, Barrier};
-use crate::LinkedList;
+use crate::sync::LinkedList;
 
 use std::borrow::Borrow;
 use std::cmp::Ordering;
