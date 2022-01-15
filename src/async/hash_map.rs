@@ -5,6 +5,7 @@
 
 use super::async_yield::async_yield;
 use super::hash_table::cell_array::CellArray;
+use super::hash_table::HashTable;
 
 use crate::ebr::{AtomicArc, Barrier};
 
@@ -40,5 +41,32 @@ where
             drop(barrier);
             async_yield().await;
         }
+    }
+}
+
+impl<K, V, H> HashTable<K, V, H, false> for HashMap<K, V, H>
+where
+    K: 'static + Eq + Hash + Sync,
+    V: 'static + Sync,
+    H: BuildHasher,
+{
+    fn hasher(&self) -> &H {
+        &self.build_hasher
+    }
+
+    fn copier(_key: &K, _val: &V) -> Option<(K, V)> {
+        None
+    }
+
+    fn cell_array(&self) -> &AtomicArc<CellArray<K, V, false>> {
+        &self.array
+    }
+
+    fn minimum_capacity(&self) -> usize {
+        self.minimum_capacity
+    }
+
+    fn resize_mutex(&self) -> &AtomicU8 {
+        &self.resize_mutex
     }
 }

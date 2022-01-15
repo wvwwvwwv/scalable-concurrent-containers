@@ -398,10 +398,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     #[inline]
     pub fn insert(&'b self, key: K, value: V, partial_hash: u8, barrier: &'b Barrier) {
         debug_assert!(!self.killed);
-
-        if self.cell_ref.num_entries == u32::MAX {
-            panic!("array overflow");
-        }
+        assert!(self.cell_ref.num_entries != u32::MAX, "array overflow");
 
         let mut data_array_ptr = self.cell_ref.data_array.load(Relaxed, barrier);
         let data_array_head_ptr = data_array_ptr;
