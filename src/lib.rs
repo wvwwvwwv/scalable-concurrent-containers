@@ -15,7 +15,7 @@
 //!
 //! Asynchronous concurrent containers are implemented.
 
-pub mod r#async;
+pub mod awaitable;
 pub mod ebr;
 pub mod sync;
 

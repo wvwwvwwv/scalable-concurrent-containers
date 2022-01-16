@@ -159,6 +159,7 @@ where
         None
     }
 
+    /// Removes an entry if the condition is met.
     #[inline]
     fn remove_entry<Q, F: FnOnce(&V) -> bool>(
         &self,

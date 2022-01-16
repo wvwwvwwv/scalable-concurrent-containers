@@ -3,7 +3,7 @@
 pub mod cell;
 pub mod cell_array;
 
-use cell::{EntryIterator, Locker, ARRAY_SIZE};
+use cell::{EntryIterator, Locker, Reader, ARRAY_SIZE};
 use cell_array::CellArray;
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
@@ -86,6 +86,121 @@ where
             num_entries += array_ref.cell(i).num_entries();
         }
         num_entries * (array_ref.num_cells() / num_cells_to_sample)
+    }
+
+    /// Inserts an entry into the [`HashTable`].
+    #[inline]
+    fn insert_entry(&self, key: K, val: V, barrier: &Barrier) -> Result<(), (K, V)> {
+        let (hash, partial_hash) = self.hash(&key);
+        match self.acquire(&key, hash, partial_hash, barrier) {
+            Ok((_, locker, iterator)) => {
+                if iterator.is_some() {
+                    return Err((key, val));
+                }
+                locker.insert(key, val, partial_hash, barrier);
+                Ok(())
+            }
+            Err(_) => Err((key, val)),
+        }
+    }
+
+    /// Reads an entry from the [`HashTable`].
+    #[inline]
+    fn read_entry<'b, Q, R, F: FnMut(&'b K, &'b V) -> R>(
+        &self,
+        key_ref: &Q,
+        reader: &mut F,
+        barrier: &'b Barrier,
+    ) -> Result<Option<R>, ()>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        let (hash, partial_hash) = self.hash(key_ref);
+
+        // An acquire fence is required to correctly load the contents of the array.
+        let mut current_array_ptr = self.cell_array().load(Acquire, barrier);
+        while let Some(current_array_ref) = current_array_ptr.as_ref() {
+            if let Some(old_array_ref) = current_array_ref.old_array(barrier).as_ref() {
+                if current_array_ref.partial_rehash(|key| self.hash(key), &Self::copier, barrier)? {
+                    current_array_ptr = self.cell_array().load(Acquire, barrier);
+                    continue;
+                }
+                let cell_index = old_array_ref.calculate_cell_index(hash);
+                if LOCK_FREE {
+                    let cell_ref = old_array_ref.cell(cell_index);
+                    if let Some(entry) = cell_ref.search(key_ref, partial_hash, barrier) {
+                        return Ok(Some(reader(&entry.0, &entry.1)));
+                    }
+                } else {
+                    let locker = Reader::try_lock(old_array_ref.cell(cell_index), barrier)?;
+                    if let Some((key, value)) = locker.cell().search(key_ref, partial_hash, barrier)
+                    {
+                        return Ok(Some(reader(key, value)));
+                    }
+                }
+            }
+            let cell_index = current_array_ref.calculate_cell_index(hash);
+            if LOCK_FREE {
+                let cell_ref = current_array_ref.cell(cell_index);
+                if let Some(entry) = cell_ref.search(key_ref, partial_hash, barrier) {
+                    return Ok(Some(reader(&entry.0, &entry.1)));
+                }
+            } else {
+                let locker = Reader::try_lock(current_array_ref.cell(cell_index), barrier)?;
+                if let Some((key, value)) = locker.cell().search(key_ref, partial_hash, barrier)
+                {
+                    return Ok(Some(reader(key, value)));
+                }
+            }
+            let new_current_array_ptr = self.cell_array().load(Acquire, barrier);
+            if new_current_array_ptr == current_array_ptr {
+                break;
+            }
+            // The pointer value has changed.
+            current_array_ptr = new_current_array_ptr;
+        }
+        Ok(None)
+    }
+
+    /// Removes an entry if the condition is met.
+    #[inline]
+    fn remove_entry<Q, F: FnMut(&V) -> bool>(
+        &self,
+        key_ref: &Q,
+        condition: &mut F,
+        barrier: &Barrier,
+    ) -> Result<(Option<(K, V)>, bool), ()>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        let (hash, partial_hash) = self.hash(key_ref);
+        let (cell_index, locker, iterator) = self.acquire(key_ref, hash, partial_hash, barrier)?;
+        if let Some(mut iterator) = iterator {
+            let remove = if let Some((_, v)) = iterator.get() {
+                condition(v)
+            } else {
+                false
+            };
+            if remove {
+                let result = locker.erase(&mut iterator);
+                if cell_index < ARRAY_SIZE && locker.cell().num_entries() < ARRAY_SIZE / 16 {
+                    drop(locker);
+                    if let Some(current_array_ref) =
+                        self.cell_array().load(Acquire, barrier).as_ref()
+                    {
+                        if current_array_ref.old_array(barrier).is_null()
+                            && current_array_ref.num_entries() > self.minimum_capacity()
+                        {
+                            self.try_shrink(current_array_ref, cell_index, barrier);
+                        }
+                    }
+                }
+                return Ok((result, true));
+            }
+        }
+        Ok((None, false))
     }
 
     /// Acquires a [`Locker`] and [`EntryIterator`].
