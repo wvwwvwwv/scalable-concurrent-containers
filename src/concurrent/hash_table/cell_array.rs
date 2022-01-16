@@ -39,7 +39,11 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             let size_of_cell = size_of::<Cell<K, V, LOCK_FREE>>();
             let allocation_size = (array_capacity + 1) * size_of_cell;
             let ptr = alloc_zeroed(Layout::from_size_align_unchecked(allocation_size, 1));
-            assert!(!ptr.is_null(), "memory allocation failure: {} bytes", allocation_size);
+            assert!(
+                !ptr.is_null(),
+                "memory allocation failure: {} bytes",
+                allocation_size
+            );
             let mut array_ptr_offset = ptr.align_offset(size_of_cell.next_power_of_two());
             if array_ptr_offset == usize::MAX {
                 array_ptr_offset = 0;

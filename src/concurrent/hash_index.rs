@@ -61,7 +61,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashIndex;
+    /// use scc::concurrent::HashIndex;
     /// use std::collections::hash_map::RandomState;
     ///
     /// let hashindex: HashIndex<u64, u32, RandomState> = HashIndex::new(1000, RandomState::new());
@@ -101,7 +101,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashIndex;
+    /// use scc::concurrent::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -120,7 +120,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashIndex;
+    /// use scc::concurrent::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -144,7 +144,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashIndex;
+    /// use scc::concurrent::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -168,7 +168,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashIndex;
+    /// use scc::concurrent::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -194,8 +194,8 @@ where
     /// # Examples
     ///
     /// ```
+    /// use scc::concurrent::HashIndex;
     /// use scc::ebr::Barrier;
-    /// use scc::sync::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -224,7 +224,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashIndex;
+    /// use scc::concurrent::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -246,7 +246,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashIndex;
+    /// use scc::concurrent::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -292,7 +292,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashIndex;
+    /// use scc::concurrent::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -312,7 +312,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashIndex;
+    /// use scc::concurrent::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -328,7 +328,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashIndex;
+    /// use scc::concurrent::HashIndex;
     /// use std::collections::hash_map::RandomState;
     ///
     /// let hashindex: HashIndex<u64, u32, RandomState> = HashIndex::new(1000000, RandomState::new());
@@ -350,8 +350,8 @@ where
     /// # Examples
     ///
     /// ```
+    /// use scc::concurrent::HashIndex;
     /// use scc::ebr::Barrier;
-    /// use scc::sync::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -398,7 +398,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashIndex;
+    /// use scc::concurrent::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32, _> = HashIndex::default();
     /// ```

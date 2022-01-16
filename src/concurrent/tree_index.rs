@@ -10,6 +10,7 @@ use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
 use error::{InsertError, RemoveError, SearchError};
 use leaf::{Leaf, Scanner};
 use node::Node;
+
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::fmt;
@@ -53,7 +54,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::TreeIndex;
+    /// use scc::concurrent::TreeIndex;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
@@ -75,7 +76,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::TreeIndex;
+    /// use scc::concurrent::TreeIndex;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
@@ -123,7 +124,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::TreeIndex;
+    /// use scc::concurrent::TreeIndex;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
@@ -145,7 +146,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::TreeIndex;
+    /// use scc::concurrent::TreeIndex;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
@@ -194,7 +195,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::TreeIndex;
+    /// use scc::concurrent::TreeIndex;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
@@ -220,8 +221,8 @@ where
     /// # Examples
     ///
     /// ```
+    /// use scc::concurrent::TreeIndex;
     /// use scc::ebr::Barrier;
-    /// use scc::sync::TreeIndex;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
@@ -269,7 +270,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::TreeIndex;
+    /// use scc::concurrent::TreeIndex;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
@@ -293,7 +294,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::TreeIndex;
+    /// use scc::concurrent::TreeIndex;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
@@ -316,7 +317,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::TreeIndex;
+    /// use scc::concurrent::TreeIndex;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
@@ -332,7 +333,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::TreeIndex;
+    /// use scc::concurrent::TreeIndex;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
@@ -359,8 +360,8 @@ where
     /// # Examples
     ///
     /// ```
+    /// use scc::concurrent::TreeIndex;
     /// use scc::ebr::Barrier;
-    /// use scc::sync::TreeIndex;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
@@ -386,8 +387,8 @@ where
     /// # Examples
     ///
     /// ```
+    /// use scc::concurrent::TreeIndex;
     /// use scc::ebr::Barrier;
-    /// use scc::sync::TreeIndex;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
@@ -425,7 +426,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::TreeIndex;
+    /// use scc::concurrent::TreeIndex;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
@@ -453,7 +454,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::TreeIndex;
+    /// use scc::concurrent::TreeIndex;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::default();
     ///

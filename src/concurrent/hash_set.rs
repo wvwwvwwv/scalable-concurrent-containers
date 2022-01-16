@@ -36,7 +36,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashSet;
+    /// use scc::concurrent::HashSet;
     /// use std::collections::hash_map::RandomState;
     ///
     /// let hashset: HashSet<u64, RandomState> = HashSet::new(1000, RandomState::new());
@@ -66,7 +66,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashSet;
+    /// use scc::concurrent::HashSet;
     /// use std::collections::hash_map::RandomState;
     ///
     /// let hashset: HashSet<usize, RandomState> = HashSet::new(1000, RandomState::new());
@@ -100,7 +100,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashSet;
+    /// use scc::concurrent::HashSet;
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
@@ -120,7 +120,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashSet;
+    /// use scc::concurrent::HashSet;
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
@@ -144,7 +144,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashSet;
+    /// use scc::concurrent::HashSet;
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
@@ -168,7 +168,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashSet;
+    /// use scc::concurrent::HashSet;
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
@@ -195,7 +195,7 @@ where
     ///
     /// ```
     /// use scc::ebr::Barrier;
-    /// use scc::sync::HashSet;
+    /// use scc::concurrent::HashSet;
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
@@ -224,7 +224,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashSet;
+    /// use scc::concurrent::HashSet;
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
@@ -246,7 +246,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashSet;
+    /// use scc::concurrent::HashSet;
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
@@ -272,7 +272,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashSet;
+    /// use scc::concurrent::HashSet;
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
@@ -291,7 +291,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashSet;
+    /// use scc::concurrent::HashSet;
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
@@ -311,7 +311,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashSet;
+    /// use scc::concurrent::HashSet;
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
@@ -331,7 +331,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashSet;
+    /// use scc::concurrent::HashSet;
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
@@ -347,7 +347,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashSet;
+    /// use scc::concurrent::HashSet;
     /// use std::collections::hash_map::RandomState;
     ///
     /// let hashset: HashSet<u64, RandomState> = HashSet::new(1000000, RandomState::new());
@@ -371,7 +371,7 @@ impl<K: 'static + Eq + Hash + Sync> Default for HashSet<K, RandomState> {
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashSet;
+    /// use scc::concurrent::HashSet;
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///

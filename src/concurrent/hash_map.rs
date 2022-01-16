@@ -69,7 +69,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashMap;
+    /// use scc::concurrent::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
     /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(1000, RandomState::new());
@@ -109,7 +109,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashMap;
+    /// use scc::concurrent::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
     /// let hashmap: HashMap<usize, usize, RandomState> = HashMap::new(1000, RandomState::new());
@@ -164,7 +164,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashMap;
+    /// use scc::concurrent::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
@@ -183,7 +183,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashMap;
+    /// use scc::concurrent::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
@@ -222,7 +222,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashMap;
+    /// use scc::concurrent::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
@@ -257,7 +257,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashMap;
+    /// use scc::concurrent::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
@@ -279,7 +279,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashMap;
+    /// use scc::concurrent::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
@@ -303,7 +303,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashMap;
+    /// use scc::concurrent::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
@@ -329,8 +329,8 @@ where
     /// # Examples
     ///
     /// ```
+    /// use scc::concurrent::HashMap;
     /// use scc::ebr::Barrier;
-    /// use scc::sync::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
@@ -359,7 +359,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashMap;
+    /// use scc::concurrent::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
@@ -381,7 +381,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashMap;
+    /// use scc::concurrent::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
@@ -409,7 +409,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashMap;
+    /// use scc::concurrent::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
@@ -478,7 +478,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashMap;
+    /// use scc::concurrent::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
@@ -498,7 +498,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashMap;
+    /// use scc::concurrent::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
@@ -518,7 +518,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashMap;
+    /// use scc::concurrent::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
@@ -534,7 +534,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashMap;
+    /// use scc::concurrent::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
     /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(1000000, RandomState::new());
@@ -562,7 +562,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::sync::HashMap;
+    /// use scc::concurrent::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///

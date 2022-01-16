@@ -2,8 +2,8 @@ use super::leaf::{Scanner, ARRAY_SIZE};
 use super::Leaf;
 use super::{InsertError, RemoveError, SearchError};
 
+use crate::concurrent::LinkedList;
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
-use crate::sync::LinkedList;
 
 use std::borrow::Borrow;
 use std::cmp::Ordering;

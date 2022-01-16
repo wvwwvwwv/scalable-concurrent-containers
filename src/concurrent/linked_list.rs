@@ -15,8 +15,8 @@ pub trait LinkedList: 'static + Sized {
     /// # Examples
     ///
     /// ```
+    /// use scc::concurrent::LinkedList;
     /// use scc::ebr::{AtomicArc, Tag};
-    /// use scc::sync::LinkedList;
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
@@ -45,8 +45,8 @@ pub trait LinkedList: 'static + Sized {
     /// # Examples
     ///
     /// ```
+    /// use scc::concurrent::LinkedList;
     /// use scc::ebr::AtomicArc;
-    /// use scc::sync::LinkedList;
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
@@ -72,8 +72,8 @@ pub trait LinkedList: 'static + Sized {
     /// # Examples
     ///
     /// ```
+    /// use scc::concurrent::LinkedList;
     /// use scc::ebr::AtomicArc;
-    /// use scc::sync::LinkedList;
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
@@ -100,8 +100,8 @@ pub trait LinkedList: 'static + Sized {
     /// # Examples
     ///
     /// ```
+    /// use scc::concurrent::LinkedList;
     /// use scc::ebr::AtomicArc;
-    /// use scc::sync::LinkedList;
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
@@ -128,8 +128,8 @@ pub trait LinkedList: 'static + Sized {
     /// # Examples
     ///
     /// ```
+    /// use scc::concurrent::LinkedList;
     /// use scc::ebr::{Arc, AtomicArc, Barrier};
-    /// use scc::sync::LinkedList;
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
@@ -159,8 +159,8 @@ pub trait LinkedList: 'static + Sized {
     /// # Examples
     ///
     /// ```
+    /// use scc::concurrent::LinkedList;
     /// use scc::ebr::AtomicArc;
-    /// use scc::sync::LinkedList;
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
@@ -192,8 +192,8 @@ pub trait LinkedList: 'static + Sized {
     /// # Examples
     ///
     /// ```
+    /// use scc::concurrent::LinkedList;
     /// use scc::ebr::{Arc, AtomicArc, Barrier};
-    /// use scc::sync::LinkedList;
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
@@ -254,8 +254,8 @@ pub trait LinkedList: 'static + Sized {
     /// # Examples
     ///
     /// ```
+    /// use scc::concurrent::LinkedList;
     /// use scc::ebr::{Arc, AtomicArc, Barrier};
-    /// use scc::sync::LinkedList;
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]

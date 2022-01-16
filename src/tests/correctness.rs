@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod hashmap_test {
-    use crate::sync::HashMap;
+    use crate::concurrent::HashMap;
 
     use proptest::prelude::*;
     use proptest::strategy::{Strategy, ValueTree};
@@ -205,8 +205,8 @@ mod hashmap_test {
 
 #[cfg(test)]
 mod hashindex_test {
+    use crate::concurrent::HashIndex;
     use crate::ebr;
-    use crate::sync::HashIndex;
 
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
@@ -314,7 +314,7 @@ mod hashindex_test {
 
 #[cfg(test)]
 mod treeindex_test {
-    use crate::sync::TreeIndex;
+    use crate::concurrent::TreeIndex;
 
     use crate::ebr;
 
@@ -642,14 +642,13 @@ mod hashmap_test_async {
 
     use tokio::sync::Barrier;
 
-    #[ignore]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn integer_key() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
 
-        let num_tasks = 1;
+        let num_tasks = 16;
         let mut task_handles = Vec::with_capacity(num_tasks);
-        let barrier = Arc::new(Barrier::new(num_tasks + 1));
+        let barrier = Arc::new(Barrier::new(num_tasks));
         for task_id in 0..num_tasks {
             let barrier_cloned = barrier.clone();
             let hashmap_cloned = hashmap.clone();

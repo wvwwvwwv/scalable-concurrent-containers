@@ -1,6 +1,6 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 
-use scc::sync::HashIndex;
+use scc::concurrent::HashIndex;
 
 fn read(c: &mut Criterion) {
     let hashindex: HashIndex<usize, usize> = HashIndex::default();

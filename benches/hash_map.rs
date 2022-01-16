@@ -1,6 +1,6 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 
-use scc::sync::HashMap;
+use scc::concurrent::HashMap;
 
 use std::convert::TryInto;
 use std::time::Instant;

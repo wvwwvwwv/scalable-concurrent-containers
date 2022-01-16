@@ -148,8 +148,7 @@ where
                 }
             } else {
                 let locker = Reader::try_lock(current_array_ref.cell(cell_index), barrier)?;
-                if let Some((key, value)) = locker.cell().search(key_ref, partial_hash, barrier)
-                {
+                if let Some((key, value)) = locker.cell().search(key_ref, partial_hash, barrier) {
                     return Ok(Some(reader(key, value)));
                 }
             }
