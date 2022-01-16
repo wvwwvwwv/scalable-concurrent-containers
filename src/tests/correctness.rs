@@ -263,11 +263,9 @@ mod hashindex_test {
                 // test insert
                 for _ in 0..2 {
                     barrier_copied.wait();
-                    let mut scanned = 0;
                     let mut checker = BTreeSet::new();
                     let max = inserted_copied.load(Acquire);
                     for iter in hashindex_copied.iter(&ebr::Barrier::new()) {
-                        scanned += 1;
                         checker.insert(*iter.0);
                     }
                     for key in 0..max {
@@ -277,10 +275,8 @@ mod hashindex_test {
                 // test remove
                 for _ in 0..2 {
                     barrier_copied.wait();
-                    let mut scanned = 0;
                     let max = removed_copied.load(Acquire);
                     for iter in hashindex_copied.iter(&ebr::Barrier::new()) {
-                        scanned += 1;
                         assert!(*iter.0 < max);
                     }
                 }
@@ -447,7 +443,7 @@ mod treeindex_test {
             }));
         }
         barrier.wait();
-        for i in 0..512 {
+        for _ in 0..512 {
             let mut found_0 = false;
             let mut found_markers = 0;
             let mut prev_marker = 0;
