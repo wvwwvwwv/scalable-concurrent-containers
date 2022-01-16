@@ -71,7 +71,6 @@ mod hashmap_test {
                         scanned += 1;
                         checker.insert(*k);
                     });
-                    println!("scanned: {}, max: {}", scanned, max);
                     for key in 0..max {
                         assert!(checker.contains(&key));
                     }
@@ -85,7 +84,6 @@ mod hashmap_test {
                         scanned += 1;
                         assert!(*k < max);
                     });
-                    println!("scanned: {}, max: {}", scanned, max);
                 }
             });
             // insert
@@ -272,7 +270,6 @@ mod hashindex_test {
                         scanned += 1;
                         checker.insert(*iter.0);
                     }
-                    println!("scanned: {}, max: {}", scanned, max);
                     for key in 0..max {
                         assert!(checker.contains(&key));
                     }
@@ -286,7 +283,6 @@ mod hashindex_test {
                         scanned += 1;
                         assert!(*iter.0 < max);
                     }
-                    println!("scanned: {}, max: {}", scanned, max);
                 }
             });
             // insert
@@ -472,9 +468,6 @@ mod treeindex_test {
                 assert!(prev == 0 || prev < current);
                 prev = current;
             }
-            if i % 256 == 0 {
-                println!("{} {}", i, found_markers);
-            }
             assert!(found_0);
             assert_eq!(found_markers, num_threads);
         }
@@ -646,7 +639,8 @@ mod hashmap_test_async {
     async fn integer_key() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
 
-        let num_tasks = 16;
+        let num_tasks = 8;
+        let workload_size = 256;
         let mut task_handles = Vec::with_capacity(num_tasks);
         let barrier = Arc::new(Barrier::new(num_tasks));
         for task_id in 0..num_tasks {
@@ -654,15 +648,16 @@ mod hashmap_test_async {
             let hashmap_cloned = hashmap.clone();
             task_handles.push(tokio::task::spawn(async move {
                 barrier_cloned.wait().await;
-                for id in (task_id * 1024)..((task_id + 1) * 1024) {
+                let range = (task_id * workload_size)..((task_id + 1) * workload_size);
+                for id in range.clone() {
                     let result = hashmap_cloned.insert(id, id).await;
                     assert!(result.is_ok());
                 }
-                for id in (task_id * 1024)..((task_id + 1) * 1024) {
+                for id in range.clone() {
                     let result = hashmap_cloned.read(&id, |_, v| *v).await;
                     assert_eq!(result, Some(id));
                 }
-                for id in (task_id * 1024)..((task_id + 1) * 1024) {
+                for id in range {
                     let result = hashmap_cloned.remove_if(&id, |v| *v == id).await;
                     assert_eq!(result, Some((id, id)));
                 }
