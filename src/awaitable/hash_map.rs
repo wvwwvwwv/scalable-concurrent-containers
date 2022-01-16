@@ -51,14 +51,14 @@ where
     #[inline]
     pub async fn insert(&self, mut key: K, mut val: V) -> Result<(), (K, V)> {
         loop {
-            let barrier = Barrier::new();
-            if let Err(err) = self.insert_entry(key, val, &barrier) {
-                key = err.0;
-                val = err.1;
-                async_yield().await;
-                continue;
+            match self.insert_entry(key, val, &Barrier::new()) {
+                Err(err) => {
+                    key = err.0;
+                    val = err.1;
+                }
+                _ => return Ok(()),
             }
-            return Ok(());
+            async_yield().await;
         }
     }
 
@@ -82,8 +82,7 @@ where
         Q: Eq + Hash + ?Sized,
     {
         loop {
-            let barrier = Barrier::new();
-            if let Ok(result) = self.read_entry(key_ref, &mut reader, &barrier) {
+            if let Ok(result) = self.read_entry(key_ref, &mut reader, &Barrier::new()) {
                 return result;
             }
             async_yield().await;
@@ -132,8 +131,7 @@ where
         Q: Eq + Hash + ?Sized,
     {
         loop {
-            let barrier = Barrier::new();
-            if let Ok(result) = self.remove_entry(key_ref, &mut condition, &barrier) {
+            if let Ok(result) = self.remove_entry(key_ref, &mut condition, &Barrier::new()) {
                 return result.0;
             }
             async_yield().await;

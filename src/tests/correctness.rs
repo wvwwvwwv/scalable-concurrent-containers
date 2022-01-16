@@ -633,3 +633,45 @@ mod treeindex_test {
         }
     }
 }
+
+#[cfg(test)]
+mod hashmap_test_async {
+    use crate::awaitable::HashMap;
+
+    use std::sync::Arc;
+
+    use tokio::sync::Barrier;
+
+    #[ignore]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    async fn integer_key() {
+        let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
+
+        let num_tasks = 1;
+        let mut task_handles = Vec::with_capacity(num_tasks);
+        let barrier = Arc::new(Barrier::new(num_tasks + 1));
+        for task_id in 0..num_tasks {
+            let barrier_cloned = barrier.clone();
+            let hashmap_cloned = hashmap.clone();
+            task_handles.push(tokio::task::spawn(async move {
+                barrier_cloned.wait().await;
+                for id in (task_id * 1024)..((task_id + 1) * 1024) {
+                    let result = hashmap_cloned.insert(id, id).await;
+                    assert!(result.is_ok());
+                }
+                for id in (task_id * 1024)..((task_id + 1) * 1024) {
+                    let result = hashmap_cloned.read(&id, |_, v| *v).await;
+                    assert_eq!(result, Some(id));
+                }
+                for id in (task_id * 1024)..((task_id + 1) * 1024) {
+                    let result = hashmap_cloned.remove_if(&id, |v| *v == id).await;
+                    assert_eq!(result, Some((id, id)));
+                }
+            }));
+        }
+
+        for r in futures::future::join_all(task_handles).await {
+            assert!(r.is_ok());
+        }
+    }
+}
