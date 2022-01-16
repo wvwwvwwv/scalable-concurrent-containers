@@ -631,6 +631,7 @@ mod hashmap_test_async {
 
     use tokio::sync::Barrier;
 
+    #[ignore]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn integer_key() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
