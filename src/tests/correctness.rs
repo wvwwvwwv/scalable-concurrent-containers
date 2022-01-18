@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod hashmap_test {
-    use crate::concurrent::HashMap;
+    use crate::HashMap;
 
     use proptest::prelude::*;
     use proptest::strategy::{Strategy, ValueTree};
@@ -203,8 +203,8 @@ mod hashmap_test {
 
 #[cfg(test)]
 mod hashindex_test {
-    use crate::concurrent::HashIndex;
     use crate::ebr;
+    use crate::HashIndex;
 
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
@@ -306,9 +306,8 @@ mod hashindex_test {
 
 #[cfg(test)]
 mod treeindex_test {
-    use crate::concurrent::TreeIndex;
-
     use crate::ebr;
+    use crate::TreeIndex;
 
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;

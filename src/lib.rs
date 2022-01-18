@@ -2,29 +2,40 @@
 
 //! Scalable concurrent containers.
 //!
-//! # [`EBR`](ebr)
-//!
-//! The [`ebr`] module implements epoch-based reclamation for container types in this crate.
+//! * [`LinkedList`](LinkedList).
+//! * [`HashMap`](HashMap).
+//! * [`HashIndex`](HashIndex).
+//! * [`TreeIndex`](TreeIndex).
 //!
 //! # [Awaitable concurrent containers](awaitable)
 //!
-//! Awaitable concurrent containers that can be used in an asynchronous task are implemented. An
-//! awaitable container simply yields execution back to the asynchronous runtime when a conflict is
-//! detected without causing a CPU stall or holding an executor thread.
+//! The concurrent container types in `awaitable` are meant for asynchronous code blocks as their
+//! key operations are implemented in asynchronous methods where execution can be suspended on a
+//! conflict over resources among threads.
 //!
 //! * [`HashMap`](awaitable::HashMap).
 //!
-//! # [Concurrent containers](concurrent)
+//! # [`EBR`](ebr)
 //!
-//! Highly efficient and scalable concurrent containers.
-//!
-//! * [`LinkedList`](concurrent::LinkedList).
-//! * [`HashMap`](concurrent::HashMap).
-//! * [`HashIndex`](concurrent::HashIndex).
-//! * [`TreeIndex`](concurrent::TreeIndex).
+//! The [`ebr`] module implements epoch-based reclamation for every container type in this crate.
+
+mod linked_list;
+pub use linked_list::LinkedList;
+
+pub mod hash_map;
+pub use hash_map::HashMap;
+
+pub mod hash_index;
+pub use hash_index::HashIndex;
+
+pub mod hash_set;
+pub use hash_set::HashSet;
+
+pub mod tree_index;
+pub use tree_index::TreeIndex;
 
 pub mod awaitable;
-pub mod concurrent;
 pub mod ebr;
 
+mod hash_table;
 mod tests;

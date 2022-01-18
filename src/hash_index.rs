@@ -1,10 +1,9 @@
 //! The module implements [`HashIndex`].
 
+use super::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 use super::hash_table::cell::{EntryIterator, Locker};
 use super::hash_table::cell_array::CellArray;
 use super::hash_table::HashTable;
-
-use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
@@ -61,7 +60,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::concurrent::HashIndex;
+    /// use scc::HashIndex;
     /// use std::collections::hash_map::RandomState;
     ///
     /// let hashindex: HashIndex<u64, u32, RandomState> = HashIndex::new(1000, RandomState::new());
@@ -101,7 +100,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::concurrent::HashIndex;
+    /// use scc::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -120,7 +119,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::concurrent::HashIndex;
+    /// use scc::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -144,7 +143,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::concurrent::HashIndex;
+    /// use scc::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -168,7 +167,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::concurrent::HashIndex;
+    /// use scc::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -194,8 +193,8 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::concurrent::HashIndex;
     /// use scc::ebr::Barrier;
+    /// use scc::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -224,7 +223,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::concurrent::HashIndex;
+    /// use scc::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -246,7 +245,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::concurrent::HashIndex;
+    /// use scc::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -292,7 +291,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::concurrent::HashIndex;
+    /// use scc::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -312,7 +311,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::concurrent::HashIndex;
+    /// use scc::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -328,7 +327,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::concurrent::HashIndex;
+    /// use scc::HashIndex;
     /// use std::collections::hash_map::RandomState;
     ///
     /// let hashindex: HashIndex<u64, u32, RandomState> = HashIndex::new(1000000, RandomState::new());
@@ -350,8 +349,8 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::concurrent::HashIndex;
     /// use scc::ebr::Barrier;
+    /// use scc::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -398,7 +397,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::concurrent::HashIndex;
+    /// use scc::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32, _> = HashIndex::default();
     /// ```

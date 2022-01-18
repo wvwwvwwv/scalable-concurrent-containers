@@ -1,8 +1,7 @@
 //! The module implements [`HashSet`].
 
+use super::ebr::Barrier;
 use super::HashMap;
-
-use crate::ebr::Barrier;
 
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
@@ -36,7 +35,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::concurrent::HashSet;
+    /// use scc::HashSet;
     /// use std::collections::hash_map::RandomState;
     ///
     /// let hashset: HashSet<u64, RandomState> = HashSet::new(1000, RandomState::new());
@@ -66,7 +65,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::concurrent::HashSet;
+    /// use scc::HashSet;
     /// use std::collections::hash_map::RandomState;
     ///
     /// let hashset: HashSet<usize, RandomState> = HashSet::new(1000, RandomState::new());
@@ -100,7 +99,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::concurrent::HashSet;
+    /// use scc::HashSet;
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
@@ -120,7 +119,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::concurrent::HashSet;
+    /// use scc::HashSet;
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
@@ -144,7 +143,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::concurrent::HashSet;
+    /// use scc::HashSet;
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
@@ -168,7 +167,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::concurrent::HashSet;
+    /// use scc::HashSet;
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
@@ -195,7 +194,7 @@ where
     ///
     /// ```
     /// use scc::ebr::Barrier;
-    /// use scc::concurrent::HashSet;
+    /// use scc::HashSet;
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
@@ -224,7 +223,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::concurrent::HashSet;
+    /// use scc::HashSet;
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
@@ -246,7 +245,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::concurrent::HashSet;
+    /// use scc::HashSet;
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
@@ -272,7 +271,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::concurrent::HashSet;
+    /// use scc::HashSet;
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
@@ -291,7 +290,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::concurrent::HashSet;
+    /// use scc::HashSet;
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
@@ -311,7 +310,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::concurrent::HashSet;
+    /// use scc::HashSet;
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
@@ -331,7 +330,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::concurrent::HashSet;
+    /// use scc::HashSet;
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
@@ -347,7 +346,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::concurrent::HashSet;
+    /// use scc::HashSet;
     /// use std::collections::hash_map::RandomState;
     ///
     /// let hashset: HashSet<u64, RandomState> = HashSet::new(1000000, RandomState::new());
@@ -371,7 +370,7 @@ impl<K: 'static + Eq + Hash + Sync> Default for HashSet<K, RandomState> {
     /// # Examples
     ///
     /// ```
-    /// use scc::concurrent::HashSet;
+    /// use scc::HashSet;
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
