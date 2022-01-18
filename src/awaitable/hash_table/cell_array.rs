@@ -32,19 +32,18 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         let log2_capacity = Self::calculate_log2_array_size(total_cell_capacity);
         let array_capacity = 1_usize << log2_capacity;
         unsafe {
-            let size_of_cell = size_of::<Cell<K, V, LOCK_FREE>>();
-            let aligned_size = size_of_cell.next_power_of_two();
-            let allocation_size = aligned_size + (array_capacity * (size_of_cell - 1));
-            let ptr = alloc_zeroed(Layout::from_size_align_unchecked(allocation_size, 1));
+            let (cell_size, allocation_size, layout) = Self::calculate_layout(array_capacity);
+            let ptr = alloc_zeroed(layout);
             assert!(
                 !ptr.is_null(),
                 "memory allocation failure: {} bytes",
                 allocation_size
             );
-            let mut array_ptr_offset = ptr.align_offset(size_of_cell.next_power_of_two());
+            let mut array_ptr_offset = ptr.align_offset(cell_size.next_power_of_two());
             if array_ptr_offset == usize::MAX {
                 array_ptr_offset = 0;
             }
+            assert!(array_ptr_offset + cell_size * array_capacity <= allocation_size,);
             #[allow(clippy::cast_ptr_alignment)]
             let array_ptr = ptr.add(array_ptr_offset).cast::<Cell<K, V, LOCK_FREE>>();
             CellArray {
@@ -251,19 +250,26 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         debug_assert!((1_usize << log2_capacity) * ARRAY_SIZE >= adjusted_total_cell_capacity);
         log2_capacity.try_into().unwrap()
     }
+
+    /// Calculates the layout of the memory block.
+    fn calculate_layout(array_capacity: usize) -> (usize, usize, Layout) {
+        let size_of_cell = size_of::<Cell<K, V, LOCK_FREE>>();
+        let aligned_size = size_of_cell.next_power_of_two();
+        let allocation_size = aligned_size + array_capacity * size_of_cell;
+        (size_of_cell, allocation_size, unsafe {
+            Layout::from_size_align_unchecked(allocation_size, 1)
+        })
+    }
 }
 
 impl<K: Eq, V, const LOCK_FREE: bool> Drop for CellArray<K, V, LOCK_FREE> {
     fn drop(&mut self) {
-        let size_of_cell = size_of::<Cell<K, V, LOCK_FREE>>();
-        let aligned_size = size_of_cell.next_power_of_two();
-        let allocation_size = aligned_size + (self.array_capacity * (size_of_cell - 1));
         unsafe {
             dealloc(
                 (self.array_ptr as *mut Cell<K, V, LOCK_FREE>)
                     .cast::<u8>()
                     .sub(self.array_ptr_offset),
-                Layout::from_size_align_unchecked(allocation_size, 1),
+                Self::calculate_layout(self.array_capacity).2,
             );
         }
     }
