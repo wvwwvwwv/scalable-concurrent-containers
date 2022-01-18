@@ -125,6 +125,17 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         None
     }
 
+    /// Kills the [`Cell`] for dropping it.
+    pub unsafe fn kill_and_drop(&self, barrier: &Barrier) {
+        if !self.data_array.link.load(Relaxed, barrier).is_null() {
+            if let Some(data_array) = self.data_array.link.swap((None, Tag::None), Relaxed) {
+                barrier.reclaim(data_array);
+            }
+        }
+        self.state.store(KILLED, Relaxed);
+        ptr::read(self);
+    }
+
     /// Searches the given [`DataArray`] for an entry matching the key.
     #[inline]
     fn search_array<'b, Q>(

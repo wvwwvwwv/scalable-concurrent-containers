@@ -7,8 +7,8 @@ use std::borrow::Borrow;
 use std::convert::TryInto;
 use std::hash::Hash;
 use std::mem::size_of;
-use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Relaxed, Release};
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 /// [`CellArray`] is a special purpose array being initialized by zero.
 pub struct CellArray<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
@@ -16,6 +16,7 @@ pub struct CellArray<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
     array_ptr_offset: usize,
     array_capacity: usize,
     log2_capacity: u8,
+    cleared: AtomicBool,
     old_array: AtomicArc<CellArray<K, V, LOCK_FREE>>,
     rehashing: AtomicUsize,
 }
@@ -51,6 +52,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                 array_ptr_offset,
                 array_capacity,
                 log2_capacity,
+                cleared: AtomicBool::new(false),
                 old_array,
                 rehashing: AtomicUsize::new(0),
             }
@@ -92,13 +94,6 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     #[inline]
     pub fn calculate_cell_index(&self, hash: u64) -> usize {
         (hash >> (64 - self.log2_capacity)).try_into().unwrap()
-    }
-
-    /// Drops the old array.
-    pub fn drop_old_array(&self, barrier: &Barrier) {
-        if let Some(old_array) = self.old_array.swap((None, Tag::None), Relaxed) {
-            barrier.reclaim(old_array);
-        }
     }
 
     /// Kills the [`Cell`].
@@ -226,7 +221,10 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             }
             (*rehashing_guard) += UNIT_SIZE;
             if *rehashing_guard >= old_array_size {
-                self.drop_old_array(barrier);
+                if let Some(old_array) = self.old_array.swap((None, Tag::None), Relaxed) {
+                    old_array.cleared.store(true, Release);
+                    barrier.reclaim(old_array);
+                }
                 return Ok(true);
             }
             Ok(false)
@@ -264,6 +262,18 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
 
 impl<K: Eq, V, const LOCK_FREE: bool> Drop for CellArray<K, V, LOCK_FREE> {
     fn drop(&mut self) {
+        if !self.cleared.load(Relaxed) {
+            let barrier = Barrier::new();
+            for index in 0..self.num_cells() {
+                let cell_ref = self.cell(index);
+                if cell_ref.killed() {
+                    continue;
+                }
+                unsafe {
+                    cell_ref.kill_and_drop(&barrier);
+                }
+            }
+        }
         unsafe {
             dealloc(
                 (self.array_ptr as *mut Cell<K, V, LOCK_FREE>)

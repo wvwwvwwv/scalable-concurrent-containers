@@ -626,9 +626,43 @@ mod treeindex_test {
 mod hashmap_test_async {
     use crate::awaitable::HashMap;
 
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering::Relaxed;
     use std::sync::Arc;
 
     use tokio::sync::Barrier;
+
+    struct R(&'static AtomicUsize);
+    impl R {
+        fn new(cnt: &'static AtomicUsize) -> R {
+            cnt.fetch_add(1, Relaxed);
+            R(cnt)
+        }
+    }
+    impl Drop for R {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Relaxed);
+        }
+    }
+
+    #[tokio::test]
+    async fn insert_drop() {
+        static CNT: AtomicUsize = AtomicUsize::new(0);
+        let hashmap: HashMap<usize, R> = HashMap::default();
+
+        let workload_size = 1024;
+        for k in 0..workload_size {
+            assert!(hashmap.insert(k, R::new(&CNT)).await.is_ok());
+        }
+        assert_eq!(CNT.load(Relaxed), workload_size);
+        assert_eq!(hashmap.len(), workload_size);
+        drop(hashmap);
+
+        while CNT.load(Relaxed) != 0 {
+            drop(crate::ebr::Barrier::new());
+            tokio::task::yield_now().await;
+        }
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn integer_key() {

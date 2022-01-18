@@ -1,6 +1,6 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 
-use scc::concurrent::TreeIndex;
+use scc::TreeIndex;
 
 fn read(c: &mut Criterion) {
     let treeindex: TreeIndex<usize, usize> = TreeIndex::default();

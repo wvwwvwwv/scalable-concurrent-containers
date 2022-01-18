@@ -1,18 +1,15 @@
-#![allow(dead_code)]
-#![allow(unused_variables)]
-
 //! The module implements [`HashMap`].
 
 use super::async_yield::async_yield;
 use super::hash_table::cell_array::CellArray;
 use super::hash_table::HashTable;
 
-use crate::ebr::{AtomicArc, Barrier};
+use crate::ebr::{Arc, AtomicArc, Barrier};
 
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash};
-use std::sync::atomic::{AtomicU8, AtomicUsize};
+use std::sync::atomic::AtomicU8;
 
 /// [`HashMap`].
 pub struct HashMap<K, V, H = RandomState>
@@ -23,7 +20,6 @@ where
 {
     array: AtomicArc<CellArray<K, V, false>>,
     minimum_capacity: usize,
-    additional_capacity: AtomicUsize,
     resize_mutex: AtomicU8,
     build_hasher: H,
 }
@@ -34,6 +30,40 @@ where
     V: 'static + Sync,
     H: BuildHasher,
 {
+    /// Creates an empty [`HashMap`] with the given capacity and [`BuildHasher`].
+    ///
+    /// The actual capacity is equal to or greater than the given capacity.
+    ///
+    /// # Panics
+    ///
+    /// Panics if memory allocation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::awaitable::HashMap;
+    /// use std::collections::hash_map::RandomState;
+    ///
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(1000, RandomState::new());
+    ///
+    /// let result = hashmap.capacity();
+    /// assert_eq!(result, 1024);
+    /// ```
+    pub fn new(capacity: usize, build_hasher: H) -> HashMap<K, V, H> {
+        let initial_capacity = capacity.max(Self::default_capacity());
+        let array = Arc::new(CellArray::<K, V, false>::new(
+            initial_capacity,
+            AtomicArc::null(),
+        ));
+        let current_capacity = array.num_entries();
+        HashMap {
+            array: AtomicArc::from(array),
+            minimum_capacity: current_capacity,
+            resize_mutex: AtomicU8::new(0),
+            build_hasher,
+        }
+    }
+
     /// Inserts a key-value pair into the [`HashMap`].
     ///
     /// # Errors
@@ -137,6 +167,60 @@ where
             async_yield().await;
         }
     }
+
+    /// Returns the number of entries in the [`HashMap`].
+    ///
+    /// It scans the entire array to calculate the number of valid entries, making its time
+    /// complexity `O(N)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::awaitable::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// assert_eq!(hashmap.len(), 0);
+    /// ```
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.num_entries(&Barrier::new())
+    }
+
+    /// Returns `true` if the [`HashMap`] is empty.
+    ///
+    /// It scans the entire array to calculate the number of valid entries, making its time
+    /// complexity `O(N)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::awaitable::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// assert!(hashmap.is_empty());
+    /// ```
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Returns the capacity of the [`HashMap`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::awaitable::HashMap;
+    /// use std::collections::hash_map::RandomState;
+    ///
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(1000000, RandomState::new());
+    /// assert_eq!(hashmap.capacity(), 1048576);
+    /// ```
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.num_slots(&Barrier::new())
+    }
 }
 
 impl<K, V> Default for HashMap<K, V, RandomState>
@@ -166,7 +250,6 @@ where
                 AtomicArc::null(),
             )),
             minimum_capacity: Self::default_capacity(),
-            additional_capacity: AtomicUsize::new(0),
             resize_mutex: AtomicU8::new(0),
             build_hasher: RandomState::new(),
         }

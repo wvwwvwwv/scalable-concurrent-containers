@@ -1,4 +1,4 @@
-//! Asynchronous concurrent containers.
+//! Awaitable concurrent containers.
 
 mod async_yield;
 mod hash_table;
