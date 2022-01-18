@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use super::cell::{Cell, Locker, ARRAY_SIZE};
 
 use crate::ebr::{AtomicArc, Barrier, Ptr, Tag};
@@ -10,7 +8,7 @@ use std::convert::TryInto;
 use std::hash::Hash;
 use std::mem::size_of;
 use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::Ordering::{Relaxed, Release};
 
 /// [`CellArray`] is a special purpose array being initialized by zero.
 pub struct CellArray<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
@@ -35,7 +33,8 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         let array_capacity = 1_usize << log2_capacity;
         unsafe {
             let size_of_cell = size_of::<Cell<K, V, LOCK_FREE>>();
-            let allocation_size = (array_capacity + 1) * size_of_cell;
+            let aligned_size = size_of_cell.next_power_of_two();
+            let allocation_size = aligned_size + (array_capacity * (size_of_cell - 1));
             let ptr = alloc_zeroed(Layout::from_size_align_unchecked(allocation_size, 1));
             assert!(
                 !ptr.is_null(),
@@ -62,6 +61,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     /// Returns a reference to a [`Cell`] at the given position.
     #[inline]
     pub fn cell(&self, index: usize) -> &Cell<K, V, LOCK_FREE> {
+        debug_assert!(index < self.num_cells());
         unsafe { &(*(self.array_ptr.add(index))) }
     }
 
@@ -138,7 +138,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             old_cell_index * ratio
         };
 
-        let mut target_cells: [Option<Locker<K, V, LOCK_FREE>>; std::mem::size_of::<usize>() * 4] =
+        let mut target_cells: [Option<Locker<K, V, LOCK_FREE>>; size_of::<usize>() * 4] =
             Default::default();
         let mut max_index = 0;
         let mut iter = cell_locker.cell().iter(barrier);
@@ -189,7 +189,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let unit_size = ARRAY_SIZE;
+        const UNIT_SIZE: usize = ARRAY_SIZE;
         let old_array_ptr = self.old_array(barrier);
         if let Some(old_array_ref) = old_array_ptr.as_ref() {
             let old_array_size = old_array_ref.num_cells();
@@ -206,8 +206,11 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                     Err(result) => current = result,
                 }
             }
+            let mut rehashing_guard = scopeguard::guard(current, |current| {
+                self.rehashing.store(current, Release);
+            });
 
-            for old_cell_index in current..(current + unit_size).min(old_array_size) {
+            for old_cell_index in current..(current + UNIT_SIZE).min(old_array_size) {
                 let old_cell_ref = old_array_ref.cell(old_cell_index);
                 if old_cell_ref.killed() {
                     continue;
@@ -221,14 +224,9 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                     &copier,
                     barrier,
                 )?;
-
-                // Locking failure.
-                self.rehashing.store(current, Relaxed);
-                return Ok(false);
             }
-
-            self.rehashing.store(current + unit_size, Relaxed);
-            if current + unit_size >= old_array_size {
+            (*rehashing_guard) += UNIT_SIZE;
+            if *rehashing_guard >= old_array_size {
                 self.drop_old_array(barrier);
                 return Ok(true);
             }
@@ -258,12 +256,14 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
 impl<K: Eq, V, const LOCK_FREE: bool> Drop for CellArray<K, V, LOCK_FREE> {
     fn drop(&mut self) {
         let size_of_cell = size_of::<Cell<K, V, LOCK_FREE>>();
+        let aligned_size = size_of_cell.next_power_of_two();
+        let allocation_size = aligned_size + (self.array_capacity * (size_of_cell - 1));
         unsafe {
             dealloc(
                 (self.array_ptr as *mut Cell<K, V, LOCK_FREE>)
                     .cast::<u8>()
                     .sub(self.array_ptr_offset),
-                Layout::from_size_align_unchecked((self.array_capacity + 1) * size_of_cell, 1),
+                Layout::from_size_align_unchecked(allocation_size, 1),
             );
         }
     }

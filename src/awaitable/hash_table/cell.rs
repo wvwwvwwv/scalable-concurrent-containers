@@ -484,8 +484,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         self.num_entries_updated(self.cell.num_entries - 1);
         data_array_mut_ref.occupied &= !(1_u32 << iterator.current_index);
         let entry_ptr = data_array_mut_ref.data[iterator.current_index].as_mut_ptr();
-        #[allow(clippy::uninit_assumed_init)]
-        let result = unsafe { ptr::replace(entry_ptr, MaybeUninit::uninit().assume_init()) };
+        let result = unsafe { ptr::read(entry_ptr) };
         if data_array_mut_ref.occupied == 0 {
             iterator.unlink_data_array(data_array_mut_ref);
         }
@@ -639,9 +638,9 @@ mod test {
 
     use tokio::sync;
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn queue() {
-        let num_tasks = 8;
+        let num_tasks = ARRAY_SIZE + 2;
         let barrier = Arc::new(sync::Barrier::new(num_tasks));
         let cell: Arc<Cell<usize, usize, true>> = Arc::new(Cell::default());
         let mut data: [u64; 128] = [0; 128];
@@ -653,7 +652,7 @@ mod test {
             task_handles.push(tokio::spawn(async move {
                 barrier_copied.wait().await;
                 let barrier = Barrier::new();
-                for i in 0..4096 {
+                for i in 0..2048 {
                     let exclusive_locker = loop {
                         if let Ok(locker) = Locker::try_lock(&*cell_copied, &barrier) {
                             break locker;
