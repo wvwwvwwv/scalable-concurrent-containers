@@ -285,6 +285,20 @@ impl<K: Eq, V, const LOCK_FREE: bool> Drop for CellArray<K, V, LOCK_FREE> {
     }
 }
 
+unsafe impl<K, V, const LOCK_FREE: bool> Send for CellArray<K, V, LOCK_FREE>
+where
+    K: 'static + Eq + Send,
+    V: 'static + Send,
+{
+}
+
+unsafe impl<K, V, const LOCK_FREE: bool> Sync for CellArray<K, V, LOCK_FREE>
+where
+    K: 'static + Eq + Sync,
+    V: 'static + Sync,
+{
+}
+
 #[cfg(test)]
 mod test {
     use super::*;

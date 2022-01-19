@@ -216,8 +216,8 @@ impl<'b, T> Ptr<'b, T> {
         }
     }
 
-    /// Returns its pointer value.
-    pub(super) fn raw_ptr(self) -> *const Underlying<T> {
+    /// Provides a raw pointer to its [`Underlying`].
+    pub(super) fn as_underlying_ptr(self) -> *const Underlying<T> {
         self.instance_ptr
     }
 }

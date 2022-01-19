@@ -55,8 +55,8 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
     }
 
     /// Iterates the contents of the [`Cell`].
-    pub fn iter<'b>(&'b self, guard: &'b Barrier) -> EntryIterator<'b, K, V, LOCK_FREE> {
-        EntryIterator::new(self, guard)
+    pub fn iter<'b>(&'b self, barrier: &'b Barrier) -> EntryIterator<'b, K, V, LOCK_FREE> {
+        EntryIterator::new(self, barrier)
     }
 
     /// Searches for an entry associated with the given key.

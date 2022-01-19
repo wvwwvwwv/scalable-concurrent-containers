@@ -63,6 +63,27 @@ impl<T: 'static> Arc<T> {
         unsafe { self.instance_ptr.as_mut().get_mut() }
     }
 
+    /// Provides a raw pointer to the underlying instance.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::Arc;
+    /// use std::sync::atomic::AtomicBool;
+    /// use std::sync::atomic::Ordering::Relaxed;
+    ///
+    /// let arc: Arc<usize> = Arc::new(10);
+    /// let arc_cloned: Arc<usize> = arc.clone();
+    ///
+    /// assert_eq!(arc.as_ptr(), arc_cloned.as_ptr());
+    /// assert_eq!(unsafe { *arc.as_ptr() }, unsafe { *arc_cloned.as_ptr() });
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn as_ptr(&self) -> *const T {
+        &**self.underlying() as *const T
+    }
+
     /// Drops the underlying instance if the last reference is dropped.
     ///
     /// The instance is not passed to the garbage collector when the last reference is dropped,
@@ -102,6 +123,11 @@ impl<T: 'static> Arc<T> {
         }
     }
 
+    /// Provides a raw pointer to its [`Underlying`].
+    pub(super) fn as_underlying_ptr(&self) -> *mut Underlying<T> {
+        self.instance_ptr.as_ptr()
+    }
+
     /// Creates a new [`Arc`] from the given pointer.
     pub(super) fn from(ptr: NonNull<Underlying<T>>) -> Arc<T> {
         debug_assert_ne!(
@@ -113,11 +139,6 @@ impl<T: 'static> Arc<T> {
             0
         );
         Arc { instance_ptr: ptr }
-    }
-
-    /// Returns its underlying pointer.
-    pub(super) fn raw_ptr(&self) -> *mut Underlying<T> {
-        self.instance_ptr.as_ptr()
     }
 
     /// Drops the reference, and returns the underlying pointer if the last reference was

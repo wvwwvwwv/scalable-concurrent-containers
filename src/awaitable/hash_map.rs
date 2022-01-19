@@ -1,6 +1,7 @@
 //! The module implements [`HashMap`].
 
 use super::async_yield::async_yield;
+use super::hash_table::cell::Locker;
 use super::hash_table::cell_array::CellArray;
 use super::hash_table::HashTable;
 
@@ -10,6 +11,7 @@ use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash};
 use std::sync::atomic::AtomicU8;
+use std::sync::atomic::Ordering::Acquire;
 
 /// [`HashMap`].
 pub struct HashMap<K, V, H = RandomState>
@@ -166,6 +168,86 @@ where
             }
             async_yield().await;
         }
+    }
+
+    /// Retains key-value pairs that satisfy the given predicate.
+    ///
+    /// It returns the number of entries remaining and removed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::awaitable::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// let future_insert = hashmap.insert(1, 0);
+    /// let future_retain = hashmap.retain(|k, v| *k == 1);
+    /// ```
+    pub async fn retain<F: FnMut(&K, &mut V) -> bool>(&self, mut filter: F) -> (usize, usize) {
+        let mut retained_entries = 0;
+        let mut removed_entries = 0;
+
+        // An acquire fence is required to correctly load the contents of the array.
+        let mut current_array_holder = self.array.get_arc(Acquire, &Barrier::new());
+        while let Some(current_array) = current_array_holder.take() {
+            while !current_array.old_array(&Barrier::new()).is_null() {
+                if current_array
+                    .partial_rehash(|key| self.hash(key), |_, _| None, &Barrier::new())
+                    .is_ok()
+                {
+                    continue;
+                }
+                async_yield().await;
+            }
+
+            for cell_index in 0..current_array.num_cells() {
+                loop {
+                    if let Ok(locker) =
+                        Locker::try_lock(current_array.cell(cell_index), &Barrier::new())
+                    {
+                        let barrier = Barrier::new();
+                        let mut iterator = locker.cell().iter(&barrier);
+                        while iterator.next().is_some() {
+                            let retain = if let Some((k, v)) = iterator.get() {
+                                #[allow(clippy::cast_ref_to_mut)]
+                                filter(k, unsafe { &mut *(v as *const V as *mut V) })
+                            } else {
+                                true
+                            };
+                            if retain {
+                                retained_entries += 1;
+                            } else {
+                                locker.erase(&mut iterator);
+                                removed_entries += 1;
+                            }
+                            if retained_entries == usize::MAX || removed_entries == usize::MAX {
+                                // Gives up iteration on an integer overflow.
+                                return (retained_entries, removed_entries);
+                            }
+                        }
+                        break;
+                    }
+                    async_yield().await;
+                }
+            }
+
+            if let Some(new_current_array) = self.array.get_arc(Acquire, &Barrier::new()) {
+                if new_current_array.as_ptr() == current_array.as_ptr() {
+                    break;
+                }
+                retained_entries = 0;
+                current_array_holder.replace(new_current_array);
+                continue;
+            }
+            break;
+        }
+
+        if removed_entries >= retained_entries {
+            self.resize(&Barrier::new());
+        }
+
+        (retained_entries, removed_entries)
     }
 
     /// Returns the number of entries in the [`HashMap`].

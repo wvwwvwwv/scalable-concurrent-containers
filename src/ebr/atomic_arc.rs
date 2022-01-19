@@ -45,7 +45,7 @@ impl<T: 'static> AtomicArc<T> {
     #[must_use]
     #[inline]
     pub fn from(arc: Arc<T>) -> AtomicArc<T> {
-        let ptr = arc.raw_ptr();
+        let ptr = arc.as_underlying_ptr();
         forget(arc);
         AtomicArc {
             instance_ptr: AtomicPtr::new(ptr),
@@ -124,7 +124,9 @@ impl<T: 'static> AtomicArc<T> {
     #[inline]
     pub fn swap(&self, new: (Option<Arc<T>>, Tag), order: Ordering) -> Option<Arc<T>> {
         let desired = Tag::update_tag(
-            new.0.as_ref().map_or_else(ptr::null_mut, Arc::raw_ptr),
+            new.0
+                .as_ref()
+                .map_or_else(ptr::null_mut, Arc::as_underlying_ptr),
             new.1,
         ) as *mut Underlying<T>;
         let prev = Tag::unset_tag(self.instance_ptr.swap(desired, order)) as *mut Underlying<T>;
@@ -229,11 +231,13 @@ impl<T: 'static> AtomicArc<T> {
         failure: Ordering,
     ) -> Result<(Option<Arc<T>>, Ptr<'b, T>), (Option<Arc<T>>, Ptr<'b, T>)> {
         let desired = Tag::update_tag(
-            new.0.as_ref().map_or_else(ptr::null_mut, Arc::raw_ptr),
+            new.0
+                .as_ref()
+                .map_or_else(ptr::null_mut, Arc::as_underlying_ptr),
             new.1,
         ) as *mut Underlying<T>;
         match self.instance_ptr.compare_exchange(
-            current.raw_ptr() as *mut _,
+            current.as_underlying_ptr() as *mut _,
             desired,
             success,
             failure,

@@ -696,5 +696,37 @@ mod hashmap_test_async {
         for r in futures::future::join_all(task_handles).await {
             assert!(r.is_ok());
         }
+
+        assert_eq!(hashmap.len(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    async fn retain() {
+        let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
+
+        let num_tasks = 4;
+        let workload_size = 256;
+        let mut task_handles = Vec::with_capacity(num_tasks);
+        let barrier = Arc::new(Barrier::new(num_tasks));
+        for task_id in 0..num_tasks {
+            let barrier_cloned = barrier.clone();
+            let hashmap_cloned = hashmap.clone();
+            task_handles.push(tokio::task::spawn(async move {
+                barrier_cloned.wait().await;
+                let range = (task_id * workload_size)..((task_id + 1) * workload_size);
+                for id in range.clone() {
+                    let result = hashmap_cloned.insert(id, id).await;
+                    assert!(result.is_ok());
+                }
+                let (_, removed) = hashmap_cloned.retain(|k, _| !range.contains(k)).await;
+                assert_eq!(removed, workload_size);
+            }));
+        }
+
+        for r in futures::future::join_all(task_handles).await {
+            assert!(r.is_ok());
+        }
+
+        assert_eq!(hashmap.len(), 0);
     }
 }
