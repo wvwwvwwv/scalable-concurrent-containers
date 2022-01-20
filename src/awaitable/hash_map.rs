@@ -1,6 +1,6 @@
 //! The module implements [`HashMap`].
 
-use super::async_yield::async_yield;
+use super::async_yield::{async_yield, AwaitableBarrier};
 use super::hash_table::cell::Locker;
 use super::hash_table::cell_array::CellArray;
 use super::hash_table::HashTable;
@@ -170,6 +170,27 @@ where
         }
     }
 
+    /// Iterates over all the entries in the [`HashMap`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::awaitable::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// let future_insert = hashmap.insert(1, 0);
+    /// let future_for_each = hashmap.for_each(|k, v| println!("{} {}", k, v));
+    /// ```
+    #[inline]
+    pub async fn for_each<F: FnMut(&K, &mut V)>(&self, mut f: F) {
+        self.retain(|k, v| {
+            f(k, v);
+            true
+        })
+        .await;
+    }
+
     /// Retains key-value pairs that satisfy the given predicate.
     ///
     /// It returns the number of entries remaining and removed.
@@ -189,50 +210,63 @@ where
         let mut removed_entries = 0;
 
         // An acquire fence is required to correctly load the contents of the array.
-        let mut current_array_holder = self.array.get_arc(Acquire, &Barrier::new());
+        let mut awaitable_barrier = AwaitableBarrier::default();
+        let mut current_array_holder = self.array.get_arc(Acquire, awaitable_barrier.barrier());
         while let Some(current_array) = current_array_holder.take() {
-            while !current_array.old_array(&Barrier::new()).is_null() {
+            while !current_array
+                .old_array(awaitable_barrier.barrier())
+                .is_null()
+            {
                 if current_array
-                    .partial_rehash(|key| self.hash(key), |_, _| None, &Barrier::new())
+                    .partial_rehash(
+                        |key| self.hash(key),
+                        |_, _| None,
+                        awaitable_barrier.barrier(),
+                    )
                     .is_ok()
                 {
                     continue;
                 }
-                async_yield().await;
+                awaitable_barrier.drop_barrier_and_yield().await;
             }
 
             for cell_index in 0..current_array.num_cells() {
                 loop {
-                    if let Ok(locker) =
-                        Locker::try_lock(current_array.cell(cell_index), &Barrier::new())
                     {
-                        let barrier = Barrier::new();
-                        let mut iterator = locker.cell().iter(&barrier);
-                        while iterator.next().is_some() {
-                            let retain = if let Some((k, v)) = iterator.get() {
-                                #[allow(clippy::cast_ref_to_mut)]
-                                filter(k, unsafe { &mut *(v as *const V as *mut V) })
-                            } else {
-                                true
-                            };
-                            if retain {
-                                retained_entries += 1;
-                            } else {
-                                locker.erase(&mut iterator);
-                                removed_entries += 1;
+                        // Limits the scope of `barrier`.
+                        let barrier = awaitable_barrier.barrier();
+                        if let Ok(locker) =
+                            Locker::try_lock(current_array.cell(cell_index), barrier)
+                        {
+                            let mut iterator = locker.cell().iter(barrier);
+                            while iterator.next().is_some() {
+                                let retain = if let Some((k, v)) = iterator.get() {
+                                    #[allow(clippy::cast_ref_to_mut)]
+                                    filter(k, unsafe { &mut *(v as *const V as *mut V) })
+                                } else {
+                                    true
+                                };
+                                if retain {
+                                    retained_entries += 1;
+                                } else {
+                                    locker.erase(&mut iterator);
+                                    removed_entries += 1;
+                                }
+                                if retained_entries == usize::MAX || removed_entries == usize::MAX {
+                                    // Gives up iteration on an integer overflow.
+                                    return (retained_entries, removed_entries);
+                                }
                             }
-                            if retained_entries == usize::MAX || removed_entries == usize::MAX {
-                                // Gives up iteration on an integer overflow.
-                                return (retained_entries, removed_entries);
-                            }
+                            break;
                         }
-                        break;
                     }
-                    async_yield().await;
+                    awaitable_barrier.drop_barrier_and_yield().await;
                 }
             }
 
-            if let Some(new_current_array) = self.array.get_arc(Acquire, &Barrier::new()) {
+            if let Some(new_current_array) =
+                self.array.get_arc(Acquire, awaitable_barrier.barrier())
+            {
                 if new_current_array.as_ptr() == current_array.as_ptr() {
                     break;
                 }
@@ -248,6 +282,23 @@ where
         }
 
         (retained_entries, removed_entries)
+    }
+
+    /// Clears all the key-value pairs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::awaitable::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// let future_insert = hashmap.insert(1, 0);
+    /// let future_clear = hashmap.clear();
+    /// ```
+    #[inline]
+    pub async fn clear(&self) -> usize {
+        self.retain(|_, _| false).await.1
     }
 
     /// Returns the number of entries in the [`HashMap`].

@@ -664,6 +664,25 @@ mod hashmap_test_async {
         }
     }
 
+    #[tokio::test]
+    async fn clear() {
+        static CNT: AtomicUsize = AtomicUsize::new(0);
+        let hashmap: HashMap<usize, R> = HashMap::default();
+
+        let workload_size = 1024;
+        for k in 0..workload_size {
+            assert!(hashmap.insert(k, R::new(&CNT)).await.is_ok());
+        }
+        assert_eq!(CNT.load(Relaxed), workload_size);
+        assert_eq!(hashmap.len(), workload_size);
+        assert_eq!(hashmap.clear().await, workload_size);
+
+        while CNT.load(Relaxed) != 0 {
+            drop(crate::ebr::Barrier::new());
+            tokio::task::yield_now().await;
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn integer_key() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
@@ -701,7 +720,7 @@ mod hashmap_test_async {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
-    async fn retain() {
+    async fn retain_for_each() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
 
         let num_tasks = 4;
@@ -718,6 +737,17 @@ mod hashmap_test_async {
                     let result = hashmap_cloned.insert(id, id).await;
                     assert!(result.is_ok());
                 }
+
+                let mut iterated = 0;
+                hashmap_cloned
+                    .for_each(|k, _| {
+                        if range.contains(k) {
+                            iterated += 1;
+                        }
+                    })
+                    .await;
+                assert_eq!(iterated, workload_size);
+
                 let (_, removed) = hashmap_cloned.retain(|k, _| !range.contains(k)).await;
                 assert_eq!(removed, workload_size);
             }));
