@@ -84,11 +84,12 @@ where
     pub async fn insert(&self, mut key: K, mut val: V) -> Result<(), (K, V)> {
         loop {
             match self.insert_entry(key, val, &Barrier::new()) {
-                Err(err) => {
-                    key = err.0;
-                    val = err.1;
+                Ok(Some(returned)) => return Err(returned),
+                Ok(None) => return Ok(()),
+                Err(returned) => {
+                    key = returned.0;
+                    val = returned.1;
                 }
-                _ => return Ok(()),
             }
             async_yield().await;
         }

@@ -90,15 +90,15 @@ where
 
     /// Inserts an entry into the [`HashTable`].
     #[inline]
-    fn insert_entry(&self, key: K, val: V, barrier: &Barrier) -> Result<(), (K, V)> {
+    fn insert_entry(&self, key: K, val: V, barrier: &Barrier) -> Result<Option<(K, V)>, (K, V)> {
         let (hash, partial_hash) = self.hash(&key);
         match self.acquire(&key, hash, partial_hash, barrier) {
             Ok((_, locker, iterator)) => {
                 if iterator.is_some() {
-                    return Err((key, val));
+                    return Ok(Some((key, val)));
                 }
                 locker.insert(key, val, partial_hash, barrier);
-                Ok(())
+                Ok(None)
             }
             Err(_) => Err((key, val)),
         }

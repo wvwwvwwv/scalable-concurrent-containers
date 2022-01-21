@@ -1009,9 +1009,9 @@ mod benchmark_async {
         }
     }
 
-    #[ignore]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn hashmap_benchmarks() {
+        hashmap_benchmark(16384, vec![1, 2, 4]).await;
         hashmap_benchmark(65536, vec![1, 2, 4]).await;
     }
 }

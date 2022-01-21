@@ -705,9 +705,13 @@ mod hashmap_test_async {
                     let result = hashmap_cloned.read(&id, |_, v| *v).await;
                     assert_eq!(result, Some(id));
                 }
-                for id in range {
+                for id in range.clone() {
                     let result = hashmap_cloned.remove_if(&id, |v| *v == id).await;
                     assert_eq!(result, Some((id, id)));
+                }
+                for id in range {
+                    let result = hashmap_cloned.remove_if(&id, |v| *v == id).await;
+                    assert_eq!(result, None);
                 }
             }));
         }
@@ -737,7 +741,10 @@ mod hashmap_test_async {
                     let result = hashmap_cloned.insert(id, id).await;
                     assert!(result.is_ok());
                 }
-
+                for id in range.clone() {
+                    let result = hashmap_cloned.insert(id, id).await;
+                    assert_eq!(result, Err((id, id)));
+                }
                 let mut iterated = 0;
                 hashmap_cloned
                     .for_each(|k, _| {
