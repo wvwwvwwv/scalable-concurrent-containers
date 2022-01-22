@@ -201,7 +201,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let unit_size = ARRAY_SIZE;
+        const UNIT_SIZE: usize = ARRAY_SIZE;
         let old_array_ptr = self.old_array(barrier);
         if let Some(old_array_ref) = old_array_ptr.as_ref() {
             let old_array_size = old_array_ref.num_cells();
@@ -212,7 +212,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                 }
                 match self.rehashing.compare_exchange(
                     current,
-                    current + unit_size,
+                    current + UNIT_SIZE,
                     Relaxed,
                     Relaxed,
                 ) {
@@ -221,7 +221,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                 }
             }
 
-            for old_cell_index in current..(current + unit_size).min(old_array_size) {
+            for old_cell_index in current..(current + UNIT_SIZE).min(old_array_size) {
                 let old_cell_ref = old_array_ref.cell(old_cell_index);
                 if old_cell_ref.killed() {
                     continue;
@@ -238,7 +238,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                 }
             }
 
-            if old_array_size <= self.rehashed.fetch_add(unit_size, Release) + unit_size {
+            if old_array_size <= self.rehashed.fetch_add(UNIT_SIZE, Release) + UNIT_SIZE {
                 self.drop_old_array(barrier);
                 return true;
             }

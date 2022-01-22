@@ -22,6 +22,9 @@ pub struct CellArray<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
 }
 
 impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FREE> {
+    /// The number of `Cells` a task has to relocate on a single call to `partial_rehash`.
+    const UNIT_SIZE: usize = ARRAY_SIZE;
+
     /// Creates a new Array of given capacity.
     ///
     /// `total_cell_capacity` is the desired number entries, not the number of [`Cell`]
@@ -172,7 +175,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         Ok(())
     }
 
-    /// Relocates a fixed number of Cells from the old array to the current array.
+    /// Relocates a fixed number of `Cells` from the old array to the current array.
     pub fn partial_rehash<Q, F: Fn(&Q) -> (u64, u8), C: Fn(&K, &V) -> Option<(K, V)>>(
         &self,
         hasher: F,
@@ -183,28 +186,64 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        const UNIT_SIZE: usize = ARRAY_SIZE;
         let old_array_ptr = self.old_array(barrier);
         if let Some(old_array_ref) = old_array_ptr.as_ref() {
+            // Assigns itself a range of `Cells` to rehash.
+            //
+            // Aside from the range, it increments the implicit reference counting field in
+            // `self.rehashing` representing the number of tasks rehashing `Cells`.
             let old_array_size = old_array_ref.num_cells();
             let mut current = self.rehashing.load(Relaxed);
             loop {
-                if current >= old_array_size {
+                if (current & (Self::UNIT_SIZE - 1)) == Self::UNIT_SIZE - 1 {
+                    // Only `UNIT_SIZE - 1` tasks are allowed to rehash `Cells` at a moment.
                     return Ok(false);
                 }
-                match self
-                    .rehashing
-                    .compare_exchange(current, usize::MAX, Relaxed, Relaxed)
-                {
-                    Ok(_) => break,
+                if current >= old_array_size {
+                    // No available `Cell` range for the task.
+                    return Ok(self.try_drop_old_array(old_array_size, barrier));
+                }
+                match self.rehashing.compare_exchange(
+                    current,
+                    current + Self::UNIT_SIZE + 1,
+                    Relaxed,
+                    Relaxed,
+                ) {
+                    Ok(_) => {
+                        current &= !(Self::UNIT_SIZE - 1);
+                        break;
+                    }
                     Err(result) => current = result,
                 }
             }
-            let mut rehashing_guard = scopeguard::guard(current, |current| {
-                self.rehashing.store(current, Release);
+
+            // The guard ensures dropping one reference in `self.rehashing`.
+            let mut rehashing_guard = scopeguard::guard((current, false), |(prev, success)| {
+                if success {
+                    // Keeps the index as it is.
+                    self.rehashing.fetch_sub(1, Relaxed);
+                } else {
+                    // On failure, `rehashing` reverts to its previous state.
+                    let mut current = self.rehashing.load(Relaxed);
+                    loop {
+                        let new = if current <= prev {
+                            current - 1
+                        } else {
+                            let ref_cnt = current & (Self::UNIT_SIZE - 1);
+                            prev | (ref_cnt - 1)
+                        };
+                        match self
+                            .rehashing
+                            .compare_exchange(current, new, Relaxed, Relaxed)
+                        {
+                            Ok(_) => break,
+                            Err(actual) => current = actual,
+                        }
+                    }
+                }
             });
 
-            for old_cell_index in current..(current + UNIT_SIZE).min(old_array_size) {
+            for old_cell_index in current..(current + Self::UNIT_SIZE).min(old_array_size) {
                 let old_cell_ref = old_array_ref.cell(old_cell_index);
                 if old_cell_ref.killed() {
                     continue;
@@ -219,18 +258,48 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                     barrier,
                 )?;
             }
-            (*rehashing_guard) += UNIT_SIZE;
-            if *rehashing_guard >= old_array_size {
-                if let Some(old_array) = self.old_array.swap((None, Tag::None), Relaxed) {
-                    old_array.cleared.store(true, Release);
-                    barrier.reclaim(old_array);
-                }
-                return Ok(true);
+
+            // Successfully rehashed all the `Cells` in the range.
+            (*rehashing_guard).1 = true;
+
+            if current + Self::UNIT_SIZE >= old_array_size {
+                // The last `Cell` in the old array has been relocated.
+                drop(rehashing_guard);
+                return Ok(self.try_drop_old_array(old_array_size, barrier));
             }
             Ok(false)
         } else {
             Ok(true)
         }
+    }
+
+    /// Tries to drop `old_array`.
+    fn try_drop_old_array(&self, old_array_size: usize, barrier: &Barrier) -> bool {
+        let mut current = self.rehashing.load(Relaxed);
+        loop {
+            if (current & (Self::UNIT_SIZE - 1)) != 0 {
+                // There is a task rehashing `Cells`.
+                return false;
+            }
+            if current < old_array_size {
+                // There are `Cells` to rehash.
+                return false;
+            }
+            match self.rehashing.compare_exchange(
+                current,
+                current + Self::UNIT_SIZE - 1,
+                Relaxed,
+                Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(result) => current = result,
+            }
+        }
+        if let Some(old_array) = self.old_array.swap((None, Tag::None), Relaxed) {
+            old_array.cleared.store(true, Release);
+            barrier.reclaim(old_array);
+        }
+        true
     }
 
     /// Calculates `log_2` of the array size from the given cell capacity.
