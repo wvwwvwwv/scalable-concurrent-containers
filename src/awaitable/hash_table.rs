@@ -122,21 +122,24 @@ where
         let mut current_array_ptr = self.cell_array().load(Acquire, barrier);
         while let Some(current_array_ref) = current_array_ptr.as_ref() {
             if let Some(old_array_ref) = current_array_ref.old_array(barrier).as_ref() {
-                if current_array_ref.partial_rehash(|key| self.hash(key), &Self::copier, barrier)? {
-                    current_array_ptr = self.cell_array().load(Acquire, barrier);
-                    continue;
-                }
-                let cell_index = old_array_ref.calculate_cell_index(hash);
-                if LOCK_FREE {
-                    let cell_ref = old_array_ref.cell(cell_index);
-                    if let Some(entry) = cell_ref.search(key_ref, partial_hash, barrier) {
-                        return Ok(Some(reader(&entry.0, &entry.1)));
-                    }
-                } else {
-                    let locker = Reader::try_lock(old_array_ref.cell(cell_index), barrier)?;
-                    if let Some((key, value)) = locker.cell().search(key_ref, partial_hash, barrier)
-                    {
-                        return Ok(Some(reader(key, value)));
+                if !current_array_ref.partial_rehash(
+                    |key| self.hash(key),
+                    &Self::copier,
+                    barrier,
+                )? {
+                    let cell_index = old_array_ref.calculate_cell_index(hash);
+                    if LOCK_FREE {
+                        let cell_ref = old_array_ref.cell(cell_index);
+                        if let Some(entry) = cell_ref.search(key_ref, partial_hash, barrier) {
+                            return Ok(Some(reader(&entry.0, &entry.1)));
+                        }
+                    } else {
+                        let locker = Reader::try_lock(old_array_ref.cell(cell_index), barrier)?;
+                        if let Some((key, value)) =
+                            locker.cell().search(key_ref, partial_hash, barrier)
+                        {
+                            return Ok(Some(reader(key, value)));
+                        }
                     }
                 }
             }
@@ -245,22 +248,27 @@ where
             let current_array_ptr = self.cell_array().load(Acquire, barrier);
             let current_array_ref = current_array_ptr.as_ref().unwrap();
             if let Some(old_array_ref) = current_array_ref.old_array(barrier).as_ref() {
-                current_array_ref.partial_rehash(|key| self.hash(key), &Self::copier, barrier)?;
-                check_resize = false;
-                let cell_index = old_array_ref.calculate_cell_index(hash);
-                let mut locker = Locker::try_lock(old_array_ref.cell(cell_index), barrier)?;
-                if let Some(iterator) = locker.cell().get(key_ref, partial_hash, barrier) {
-                    return Ok((cell_index, locker, Some(iterator)));
-                }
-                // Kills the Cell.
-                current_array_ref.kill_cell(
-                    &mut locker,
-                    old_array_ref,
-                    cell_index,
-                    &|key| self.hash(key),
+                if !current_array_ref.partial_rehash(
+                    |key| self.hash(key),
                     &Self::copier,
                     barrier,
-                )?;
+                )? {
+                    check_resize = false;
+                    let cell_index = old_array_ref.calculate_cell_index(hash);
+                    let mut locker = Locker::try_lock(old_array_ref.cell(cell_index), barrier)?;
+                    if let Some(iterator) = locker.cell().get(key_ref, partial_hash, barrier) {
+                        return Ok((cell_index, locker, Some(iterator)));
+                    }
+                    // Kills the Cell.
+                    current_array_ref.kill_cell(
+                        &mut locker,
+                        old_array_ref,
+                        cell_index,
+                        &|key| self.hash(key),
+                        &Self::copier,
+                        barrier,
+                    )?;
+                }
             }
             let cell_index = current_array_ref.calculate_cell_index(hash);
 

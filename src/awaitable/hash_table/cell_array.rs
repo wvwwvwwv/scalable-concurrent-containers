@@ -195,13 +195,13 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             let old_array_size = old_array_ref.num_cells();
             let mut current = self.rehashing.load(Relaxed);
             loop {
-                if (current & (Self::UNIT_SIZE - 1)) == Self::UNIT_SIZE - 1 {
-                    // Only `UNIT_SIZE - 1` tasks are allowed to rehash `Cells` at a moment.
-                    return Ok(false);
-                }
                 if current >= old_array_size {
                     // No available `Cell` range for the task.
                     return Ok(self.try_drop_old_array(old_array_size, barrier));
+                }
+                if (current & (Self::UNIT_SIZE - 1)) == Self::UNIT_SIZE - 1 {
+                    // Only `UNIT_SIZE - 1` tasks are allowed to rehash `Cells` at a moment.
+                    return Ok(false);
                 }
                 match self.rehashing.compare_exchange(
                     current,
