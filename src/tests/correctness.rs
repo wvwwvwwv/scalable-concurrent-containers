@@ -723,11 +723,11 @@ mod hashmap_test_async {
         assert_eq!(hashmap.len(), 0);
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn retain_for_each() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
 
-        let num_tasks = 4;
+        let num_tasks = 8;
         let workload_size = 256;
         let mut task_handles = Vec::with_capacity(num_tasks);
         let barrier = Arc::new(Barrier::new(num_tasks));
@@ -753,7 +753,7 @@ mod hashmap_test_async {
                         }
                     })
                     .await;
-                assert_eq!(iterated, workload_size);
+                assert!(iterated >= workload_size);
 
                 let (_, removed) = hashmap_cloned.retain(|k, _| !range.contains(k)).await;
                 assert_eq!(removed, workload_size);

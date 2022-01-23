@@ -187,24 +187,23 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let old_array_ptr = self.old_array(barrier);
-        if let Some(old_array_ref) = old_array_ptr.as_ref() {
+        if let Some(old_array_ref) = self.old_array(barrier).as_ref() {
             // Assigns itself a range of `Cells` to rehash.
             //
             // Aside from the range, it increments the implicit reference counting field in
-            // `self.rehashing` representing the number of tasks rehashing `Cells`.
+            // `old_array_ref.rehashing` representing the number of tasks rehashing `Cells`.
             let old_array_size = old_array_ref.num_cells();
-            let mut current = self.rehashing.load(Relaxed);
+            let mut current = old_array_ref.rehashing.load(Relaxed);
             loop {
                 if current >= old_array_size {
                     // No available `Cell` range for the task.
-                    return Ok(self.try_drop_old_array(old_array_size, barrier));
+                    return Ok(self.try_drop_old_array(old_array_ref, old_array_size, barrier));
                 }
                 if (current & (Self::UNIT_SIZE - 1)) == Self::UNIT_SIZE - 1 {
                     // Only `UNIT_SIZE - 1` tasks are allowed to rehash `Cells` at a moment.
                     return Ok(self.old_array.is_null(Relaxed));
                 }
-                match self.rehashing.compare_exchange(
+                match old_array_ref.rehashing.compare_exchange(
                     current,
                     current + Self::UNIT_SIZE + 1,
                     Relaxed,
@@ -218,14 +217,14 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                 }
             }
 
-            // The guard ensures dropping one reference in `self.rehashing`.
+            // The guard ensures dropping one reference in `old_array_ref.rehashing`.
             let mut rehashing_guard = scopeguard::guard((current, false), |(prev, success)| {
                 if success {
                     // Keeps the index as it is.
-                    self.rehashing.fetch_sub(1, Relaxed);
+                    old_array_ref.rehashing.fetch_sub(1, Relaxed);
                 } else {
                     // On failure, `rehashing` reverts to its previous state.
-                    let mut current = self.rehashing.load(Relaxed);
+                    let mut current = old_array_ref.rehashing.load(Relaxed);
                     loop {
                         let new = if current <= prev {
                             current - 1
@@ -233,7 +232,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                             let ref_cnt = current & (Self::UNIT_SIZE - 1);
                             prev | (ref_cnt - 1)
                         };
-                        match self
+                        match old_array_ref
                             .rehashing
                             .compare_exchange(current, new, Relaxed, Relaxed)
                         {
@@ -264,7 +263,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             if current + Self::UNIT_SIZE >= old_array_size {
                 // The last `Cell` in the old array has been relocated.
                 drop(rehashing_guard);
-                return Ok(self.try_drop_old_array(old_array_size, barrier));
+                return Ok(self.try_drop_old_array(old_array_ref, old_array_size, barrier));
             }
             Ok(false)
         } else {
@@ -273,8 +272,13 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     }
 
     /// Tries to drop `old_array`.
-    fn try_drop_old_array(&self, old_array_size: usize, barrier: &Barrier) -> bool {
-        let mut current = self.rehashing.load(Relaxed);
+    fn try_drop_old_array(
+        &self,
+        old_array_ref: &CellArray<K, V, LOCK_FREE>,
+        old_array_size: usize,
+        barrier: &Barrier,
+    ) -> bool {
+        let mut current = old_array_ref.rehashing.load(Relaxed);
         loop {
             if (current & (Self::UNIT_SIZE - 1)) != 0 {
                 // There is a task rehashing `Cells`.
@@ -284,7 +288,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                 // There are `Cells` to rehash.
                 return self.old_array.is_null(Relaxed);
             }
-            match self.rehashing.compare_exchange(
+            match old_array_ref.rehashing.compare_exchange(
                 current,
                 current | (Self::UNIT_SIZE - 1),
                 Relaxed,

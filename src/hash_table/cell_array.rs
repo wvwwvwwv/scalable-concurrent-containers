@@ -202,12 +202,12 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         let old_array_ptr = self.old_array(barrier);
         if let Some(old_array_ref) = old_array_ptr.as_ref() {
             let old_array_size = old_array_ref.num_cells();
-            let mut current = self.rehashing.load(Relaxed);
+            let mut current = old_array_ref.rehashing.load(Relaxed);
             loop {
                 if current >= old_array_size {
                     return false;
                 }
-                match self.rehashing.compare_exchange(
+                match old_array_ref.rehashing.compare_exchange(
                     current,
                     current + UNIT_SIZE,
                     Relaxed,
@@ -232,7 +232,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                 }
             }
 
-            if old_array_size <= self.rehashed.fetch_add(UNIT_SIZE, Release) + UNIT_SIZE {
+            if old_array_size <= old_array_ref.rehashed.fetch_add(UNIT_SIZE, Release) + UNIT_SIZE {
                 self.drop_old_array(barrier);
                 return true;
             }
