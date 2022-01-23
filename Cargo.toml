@@ -21,6 +21,10 @@ proptest = "^1.0"
 tokio = { version = "^1.15.0", features = ["full"] }
 
 [[bench]]
+name = "allocation"
+harness = false
+
+[[bench]]
 name = "ebr"
 harness = false
 

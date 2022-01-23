@@ -246,17 +246,15 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
 
             for old_cell_index in current..(current + Self::UNIT_SIZE).min(old_array_size) {
                 let old_cell_ref = old_array_ref.cell(old_cell_index);
-                if !old_cell_ref.killed() {
-                    if let Some(mut locker) = Locker::try_lock(old_cell_ref, barrier)? {
-                        self.kill_cell(
-                            &mut locker,
-                            old_array_ref,
-                            old_cell_index,
-                            &hasher,
-                            &copier,
-                            barrier,
-                        )?;
-                    }
+                if let Some(mut locker) = Locker::try_lock(old_cell_ref, barrier)? {
+                    self.kill_cell(
+                        &mut locker,
+                        old_array_ref,
+                        old_cell_index,
+                        &hasher,
+                        &copier,
+                        barrier,
+                    )?;
                 }
             }
 
