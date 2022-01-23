@@ -335,7 +335,6 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Iterator
 
 pub struct Locker<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
     cell_ref: &'b Cell<K, V, LOCK_FREE>,
-    killed: bool,
 }
 
 impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
@@ -346,23 +345,15 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         barrier: &'b Barrier,
     ) -> Option<Locker<'b, K, V, LOCK_FREE>> {
         loop {
-            if let Some(locker) = Self::try_lock(cell, barrier).map_or_else(
-                || {
-                    cell.wait_queue.wait(|| {
-                        // Marks that there is a waiting thread.
-                        cell.state.fetch_or(WAITING, Release);
-                        Self::try_lock(cell, barrier)
-                    })
-                },
-                Some,
-            ) {
-                if locker.killed {
-                    return None;
-                }
-                return Some(locker);
+            if let Ok(locker) = Self::try_lock(cell, barrier) {
+                return locker;
             }
-            if cell.killed() {
-                return None;
+            if let Ok(locker) = cell.wait_queue.wait(|| {
+                // Marks that there is a waiting thread.
+                cell.state.fetch_or(WAITING, Release);
+                Self::try_lock(cell, barrier)
+            }) {
+                return locker;
             }
         }
     }
@@ -372,19 +363,19 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     fn try_lock(
         cell: &'b Cell<K, V, LOCK_FREE>,
         _barrier: &'b Barrier,
-    ) -> Option<Locker<'b, K, V, LOCK_FREE>> {
+    ) -> Result<Option<Locker<'b, K, V, LOCK_FREE>>, ()> {
         let current = cell.state.load(Relaxed) & (!LOCK_MASK);
+        if (current & KILLED) == KILLED {
+            return Ok(None);
+        }
         if cell
             .state
             .compare_exchange(current, current | LOCK, Acquire, Relaxed)
             .is_ok()
         {
-            Some(Locker {
-                cell_ref: cell,
-                killed: (current & KILLED) == KILLED,
-            })
+            Ok(Some(Locker { cell_ref: cell }))
         } else {
-            None
+            Err(())
         }
     }
 
@@ -397,7 +388,6 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     /// Inserts a new key-value pair into the [`Cell`] without a uniqueness check.
     #[inline]
     pub fn insert(&'b self, key: K, value: V, partial_hash: u8, barrier: &'b Barrier) {
-        debug_assert!(!self.killed);
         assert!(self.cell_ref.num_entries != u32::MAX, "array overflow");
 
         let mut data_array_ptr = self.cell_ref.data_array.load(Relaxed, barrier);
@@ -463,7 +453,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
 
     /// Removes a key-value pair being pointed by the given [`EntryIterator`].
     pub fn erase(&self, iterator: &mut EntryIterator<K, V, LOCK_FREE>) -> Option<(K, V)> {
-        if self.killed || iterator.current_index == usize::MAX {
+        if iterator.current_index == usize::MAX {
             return None;
         }
 
@@ -556,13 +546,13 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
 
     /// Purges all the data.
     pub fn purge(&mut self, barrier: &Barrier) {
+        self.cell_ref.state.fetch_or(KILLED, Release);
+        self.num_entries_updated(0);
         if !self.cell_ref.data_array.load(Relaxed, barrier).is_null() {
             if let Some(data_array) = self.cell_ref.data_array.swap((None, Tag::None), Relaxed) {
                 barrier.reclaim(data_array);
             }
         }
-        self.killed = true;
-        self.num_entries_updated(0);
     }
 
     /// Updates the number of entries.
@@ -580,16 +570,12 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Locker<'b,
         let mut current = self.cell_ref.state.load(Relaxed);
         loop {
             let wakeup = (current & WAITING) == WAITING;
-            let next = if self.killed {
-                KILLED | (current & (!(WAITING | LOCK)))
-            } else {
-                current & (!(WAITING | LOCK))
-            };
-            match self
-                .cell_ref
-                .state
-                .compare_exchange(current, next, Release, Relaxed)
-            {
+            match self.cell_ref.state.compare_exchange(
+                current,
+                current & (!(WAITING | LOCK)),
+                Release,
+                Relaxed,
+            ) {
                 Ok(_) => {
                     if wakeup {
                         self.cell_ref.wait_queue.signal();
@@ -604,7 +590,6 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Locker<'b,
 
 pub struct Reader<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
     cell_ref: &'b Cell<K, V, LOCK_FREE>,
-    killed: bool,
 }
 
 impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
@@ -615,23 +600,15 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
         barrier: &'b Barrier,
     ) -> Option<Reader<'b, K, V, LOCK_FREE>> {
         loop {
-            if let Some(reader) = Self::try_lock(cell, barrier).map_or_else(
-                || {
-                    cell.wait_queue.wait(|| {
-                        // Marks that there is a waiting thread.
-                        cell.state.fetch_or(WAITING, Release);
-                        Self::try_lock(cell, barrier)
-                    })
-                },
-                Some,
-            ) {
-                if reader.killed {
-                    return None;
-                }
-                return Some(reader);
+            if let Ok(reader) = Self::try_lock(cell, barrier) {
+                return reader;
             }
-            if cell.killed() {
-                return None;
+            if let Ok(reader) = cell.wait_queue.wait(|| {
+                // Marks that there is a waiting thread.
+                cell.state.fetch_or(WAITING, Release);
+                Self::try_lock(cell, barrier)
+            }) {
+                return reader;
             }
         }
     }
@@ -641,22 +618,23 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
     fn try_lock(
         cell: &'b Cell<K, V, LOCK_FREE>,
         _barrier: &'b Barrier,
-    ) -> Option<Reader<'b, K, V, LOCK_FREE>> {
+    ) -> Result<Option<Reader<'b, K, V, LOCK_FREE>>, ()> {
         let current = cell.state.load(Relaxed);
         if (current & LOCK_MASK) >= SLOCK_MAX {
-            return None;
+            return Err(());
+        }
+        if (current & KILLED) == KILLED {
+            return Ok(None);
         }
         if cell
             .state
             .compare_exchange(current, current + 1, Acquire, Relaxed)
             .is_ok()
         {
-            return Some(Reader {
-                cell_ref: cell,
-                killed: (current & KILLED) == KILLED,
-            });
+            Ok(Some(Reader { cell_ref: cell }))
+        } else {
+            Err(())
         }
-        None
     }
 
     /// Returns a reference to the [`Cell`].

@@ -713,15 +713,17 @@ mod benchmark {
         treeindex_benchmark::<usize>(65536, vec![1, 2, 4]);
     }
 
-    #[test]
     #[ignore]
-    fn full_scale_benchmarks() {
+    #[test]
+    fn sync_full_scale_benchmarks() {
         hashmap_benchmark::<usize>(1024 * 1024 * 128, vec![11, 11, 11, 22, 22, 22, 44, 44, 44]);
         println!("----");
+        /*
         hashindex_benchmark::<usize>(1024 * 1024 * 4, vec![11, 11, 11, 22, 22, 22, 44, 44, 44]);
         println!("----");
         treeindex_benchmark::<usize>(1024 * 1024 * 4, vec![11, 11, 11, 22, 22, 22, 44, 44, 44]);
         println!("----");
+        */
     }
 }
 
@@ -1013,5 +1015,11 @@ mod benchmark_async {
     async fn hashmap_benchmarks() {
         hashmap_benchmark(16384, vec![1, 2, 4]).await;
         hashmap_benchmark(65536, vec![1, 2, 4]).await;
+    }
+
+    #[ignore]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 88)]
+    async fn async_full_scale_benchmarks() {
+        hashmap_benchmark(1024 * 1024 * 128, vec![11, 11, 11, 22, 22, 22, 44, 44, 44]).await;
     }
 }

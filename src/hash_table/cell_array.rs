@@ -2,11 +2,11 @@ use super::cell::{Cell, Locker, ARRAY_SIZE};
 
 use crate::ebr::{AtomicArc, Barrier, Ptr, Tag};
 
-use std::alloc::{alloc_zeroed, dealloc, Layout};
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::borrow::Borrow;
 use std::convert::TryInto;
 use std::hash::Hash;
-use std::mem::size_of;
+use std::mem::{align_of, size_of};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Relaxed, Release};
 
@@ -16,7 +16,6 @@ use std::sync::atomic::Ordering::{Relaxed, Release};
 /// allocate a large chunk of zeroed heap memory.
 pub struct CellArray<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
     array_ptr: *const Cell<K, V, LOCK_FREE>,
-    array_ptr_offset: usize,
     array_capacity: usize,
     log2_capacity: u8,
     old_array: AtomicArc<CellArray<K, V, LOCK_FREE>>,
@@ -37,22 +36,20 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         let array_capacity = 1_usize << log2_capacity;
         unsafe {
             let size_of_cell = size_of::<Cell<K, V, LOCK_FREE>>();
-            let allocation_size = (array_capacity + 1) * size_of_cell;
-            let ptr = alloc_zeroed(Layout::from_size_align_unchecked(allocation_size, 1));
+            let allocation_size = array_capacity * size_of_cell;
+            let ptr = System.alloc_zeroed(Layout::from_size_align_unchecked(
+                allocation_size,
+                align_of::<[Cell<K, V, LOCK_FREE>; 0]>(),
+            ));
             assert!(
                 !ptr.is_null(),
                 "memory allocation failure: {} bytes",
                 allocation_size
             );
-            let mut array_ptr_offset = ptr.align_offset(size_of_cell.next_power_of_two());
-            if array_ptr_offset == usize::MAX {
-                array_ptr_offset = 0;
-            }
             #[allow(clippy::cast_ptr_alignment)]
-            let array_ptr = ptr.add(array_ptr_offset).cast::<Cell<K, V, LOCK_FREE>>();
+            let array_ptr = ptr.cast::<Cell<K, V, LOCK_FREE>>();
             CellArray {
                 array_ptr,
-                array_ptr_offset,
                 array_capacity,
                 log2_capacity,
                 old_array,
@@ -223,9 +220,6 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
 
             for old_cell_index in current..(current + UNIT_SIZE).min(old_array_size) {
                 let old_cell_ref = old_array_ref.cell(old_cell_index);
-                if old_cell_ref.killed() {
-                    continue;
-                }
                 if let Some(mut locker) = Locker::lock(old_cell_ref, barrier) {
                     self.kill_cell(
                         &mut locker,
@@ -269,11 +263,12 @@ impl<K: Eq, V, const LOCK_FREE: bool> Drop for CellArray<K, V, LOCK_FREE> {
     fn drop(&mut self) {
         let size_of_cell = size_of::<Cell<K, V, LOCK_FREE>>();
         unsafe {
-            dealloc(
-                (self.array_ptr as *mut Cell<K, V, LOCK_FREE>)
-                    .cast::<u8>()
-                    .sub(self.array_ptr_offset),
-                Layout::from_size_align_unchecked((self.array_capacity + 1) * size_of_cell, 1),
+            System.dealloc(
+                (self.array_ptr as *mut Cell<K, V, LOCK_FREE>).cast::<u8>(),
+                Layout::from_size_align_unchecked(
+                    self.array_capacity * size_of_cell,
+                    align_of::<[Cell<K, V, LOCK_FREE>; 0]>(),
+                ),
             );
         }
     }

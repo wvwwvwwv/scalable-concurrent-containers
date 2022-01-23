@@ -14,7 +14,7 @@ pub struct WaitQueue {
 impl WaitQueue {
     /// Waits for the condition to be met or signalled.
     #[inline]
-    pub fn wait<T, F: FnOnce() -> Option<T>>(&self, f: F) -> Option<T> {
+    pub fn wait<T, F: FnOnce() -> Result<Option<T>, ()>>(&self, f: F) -> Result<Option<T>, ()> {
         // Inserts the thread into the wait queue.
         let mut current = self.wait_queue.load(Relaxed);
         let mut entry = Entry::new(current);
@@ -29,7 +29,7 @@ impl WaitQueue {
 
         // Executes the closure.
         let result = f();
-        if result.is_some() {
+        if result.is_ok() {
             self.signal();
         }
         entry.wait();

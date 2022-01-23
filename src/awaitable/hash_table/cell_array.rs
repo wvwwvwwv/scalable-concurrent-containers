@@ -2,7 +2,7 @@ use super::cell::{Cell, Locker, ARRAY_SIZE};
 
 use crate::ebr::{AtomicArc, Barrier, Ptr, Tag};
 
-use std::alloc::{alloc_zeroed, dealloc, Layout};
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::borrow::Borrow;
 use std::convert::TryInto;
 use std::hash::Hash;
@@ -37,7 +37,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         let array_capacity = 1_usize << log2_capacity;
         unsafe {
             let (cell_size, allocation_size, layout) = Self::calculate_layout(array_capacity);
-            let ptr = alloc_zeroed(layout);
+            let ptr = System.alloc_zeroed(layout);
             assert!(
                 !ptr.is_null(),
                 "memory allocation failure: {} bytes",
@@ -342,7 +342,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> Drop for CellArray<K, V, LOCK_FREE> {
             }
         }
         unsafe {
-            dealloc(
+            System.dealloc(
                 (self.array_ptr as *mut Cell<K, V, LOCK_FREE>)
                     .cast::<u8>()
                     .sub(self.array_ptr_offset),
