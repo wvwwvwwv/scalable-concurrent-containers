@@ -236,26 +236,30 @@ where
                     {
                         // Limits the scope of `barrier`.
                         let barrier = awaitable_barrier.barrier();
-                        if let Ok(locker) =
+                        if let Ok(result) =
                             Locker::try_lock(current_array.cell(cell_index), barrier)
                         {
-                            let mut iterator = locker.cell().iter(barrier);
-                            while iterator.next().is_some() {
-                                let retain = if let Some((k, v)) = iterator.get() {
-                                    #[allow(clippy::cast_ref_to_mut)]
-                                    filter(k, unsafe { &mut *(v as *const V as *mut V) })
-                                } else {
-                                    true
-                                };
-                                if retain {
-                                    retained_entries += 1;
-                                } else {
-                                    locker.erase(&mut iterator);
-                                    removed_entries += 1;
-                                }
-                                if retained_entries == usize::MAX || removed_entries == usize::MAX {
-                                    // Gives up iteration on an integer overflow.
-                                    return (retained_entries, removed_entries);
+                            if let Some(locker) = result {
+                                let mut iterator = locker.cell().iter(barrier);
+                                while iterator.next().is_some() {
+                                    let retain = if let Some((k, v)) = iterator.get() {
+                                        #[allow(clippy::cast_ref_to_mut)]
+                                        filter(k, unsafe { &mut *(v as *const V as *mut V) })
+                                    } else {
+                                        true
+                                    };
+                                    if retain {
+                                        retained_entries += 1;
+                                    } else {
+                                        locker.erase(&mut iterator);
+                                        removed_entries += 1;
+                                    }
+                                    if retained_entries == usize::MAX
+                                        || removed_entries == usize::MAX
+                                    {
+                                        // Gives up iteration on an integer overflow.
+                                        return (retained_entries, removed_entries);
+                                    }
                                 }
                             }
                             break;

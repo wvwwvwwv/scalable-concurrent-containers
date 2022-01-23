@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
 
 use std::borrow::Borrow;
@@ -339,7 +337,6 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Iterator
 
 pub struct Locker<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
     cell: &'b Cell<K, V, LOCK_FREE>,
-    killed: bool,
 }
 
 impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
@@ -348,17 +345,17 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     pub fn try_lock(
         cell: &'b Cell<K, V, LOCK_FREE>,
         _barrier: &'b Barrier,
-    ) -> Result<Locker<'b, K, V, LOCK_FREE>, ()> {
+    ) -> Result<Option<Locker<'b, K, V, LOCK_FREE>>, ()> {
         let current = cell.state.load(Relaxed) & (!LOCK_MASK);
+        if (current & KILLED) == KILLED {
+            return Ok(None);
+        }
         if cell
             .state
             .compare_exchange(current, current | LOCK, Acquire, Relaxed)
             .is_ok()
         {
-            Ok(Locker {
-                cell,
-                killed: (current & KILLED) == KILLED,
-            })
+            Ok(Some(Locker { cell }))
         } else {
             Err(())
         }
@@ -370,16 +367,9 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         self.cell
     }
 
-    /// Returns `true` if the [`Cell`] has been killed.
-    #[inline]
-    pub fn killed(&self) -> bool {
-        self.killed
-    }
-
     /// Inserts a new key-value pair into the [`Cell`] without a uniqueness check.
     #[inline]
     pub fn insert(&'b self, key: K, value: V, partial_hash: u8, barrier: &'b Barrier) {
-        debug_assert!(!self.killed);
         assert!(self.cell.num_entries != u32::MAX, "array overflow");
 
         let mut data_array_ptr = &self.cell.data_array as *const DataArray<K, V>;
@@ -446,7 +436,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
 
     /// Removes a key-value pair being pointed by the given [`EntryIterator`].
     pub fn erase(&self, iterator: &mut EntryIterator<K, V, LOCK_FREE>) -> Option<(K, V)> {
-        if self.killed || iterator.current_index == usize::MAX {
+        if iterator.current_index == usize::MAX {
             return None;
         }
 
@@ -504,13 +494,13 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
 
     /// Purges all the data.
     pub fn purge(&mut self, barrier: &Barrier) {
+        self.cell.state.fetch_or(KILLED, Release);
+        self.num_entries_updated(0);
         if !self.cell.data_array.link.load(Relaxed, barrier).is_null() {
             if let Some(data_array) = self.cell.data_array.link.swap((None, Tag::None), Relaxed) {
                 barrier.reclaim(data_array);
             }
         }
-        self.killed = true;
-        self.num_entries_updated(0);
     }
 
     /// Updates the number of entries.
@@ -526,15 +516,10 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Locker<'b,
     fn drop(&mut self) {
         let mut current = self.cell.state.load(Relaxed);
         loop {
-            let next = if self.killed {
-                KILLED | (current & (!LOCK))
-            } else {
-                current & (!LOCK)
-            };
             match self
                 .cell
                 .state
-                .compare_exchange(current, next, Release, Relaxed)
+                .compare_exchange(current, current & (!LOCK), Release, Relaxed)
             {
                 Ok(_) => break,
                 Err(result) => current = result,
@@ -545,7 +530,6 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Locker<'b,
 
 pub struct Reader<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
     cell: &'b Cell<K, V, LOCK_FREE>,
-    killed: bool,
 }
 
 impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
@@ -554,20 +538,20 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
     pub fn try_lock(
         cell: &'b Cell<K, V, LOCK_FREE>,
         _barrier: &'b Barrier,
-    ) -> Result<Reader<'b, K, V, LOCK_FREE>, ()> {
+    ) -> Result<Option<Reader<'b, K, V, LOCK_FREE>>, ()> {
         let current = cell.state.load(Relaxed);
         if (current & LOCK_MASK) >= SLOCK_MAX {
             return Err(());
+        }
+        if (current & KILLED) >= KILLED {
+            return Ok(None);
         }
         if cell
             .state
             .compare_exchange(current, current + 1, Acquire, Relaxed)
             .is_ok()
         {
-            Ok(Reader {
-                cell,
-                killed: (current & KILLED) == KILLED,
-            })
+            Ok(Some(Reader { cell }))
         } else {
             Err(())
         }
@@ -577,12 +561,6 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
     #[inline]
     pub fn cell(&self) -> &Cell<K, V, LOCK_FREE> {
         self.cell
-    }
-
-    /// Returns `true` if the [`Cell`] has been killed.
-    #[inline]
-    pub fn killed(&self) -> bool {
-        self.killed
     }
 }
 
@@ -665,7 +643,7 @@ mod test {
                 let barrier = Barrier::new();
                 for i in 0..2048 {
                     let exclusive_locker = loop {
-                        if let Ok(locker) = Locker::try_lock(&*cell_copied, &barrier) {
+                        if let Ok(Some(locker)) = Locker::try_lock(&*cell_copied, &barrier) {
                             break locker;
                         }
                     };
@@ -701,7 +679,7 @@ mod test {
                     drop(exclusive_locker);
 
                     let read_locker = loop {
-                        if let Ok(locker) = Reader::try_lock(&*cell_copied, &barrier) {
+                        if let Ok(Some(locker)) = Reader::try_lock(&*cell_copied, &barrier) {
                             break locker;
                         }
                     };
@@ -746,13 +724,15 @@ mod test {
         }
         assert_eq!(cell.num_entries(), iterated);
 
-        let mut xlocker = Locker::try_lock(&*cell, &epoch_barrier).unwrap();
+        let mut xlocker = Locker::try_lock(&*cell, &epoch_barrier).unwrap().unwrap();
         xlocker.purge(&epoch_barrier);
         drop(xlocker);
 
         assert!(cell.killed());
         assert_eq!(cell.num_entries(), 0);
-
-        assert!(Locker::try_lock(&*cell, &epoch_barrier).unwrap().killed());
+        assert!(Locker::try_lock(&*cell, &epoch_barrier)
+            .ok()
+            .unwrap()
+            .is_none());
     }
 }

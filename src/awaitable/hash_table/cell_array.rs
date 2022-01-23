@@ -7,7 +7,7 @@ use std::borrow::Borrow;
 use std::convert::TryInto;
 use std::hash::Hash;
 use std::mem::size_of;
-use std::sync::atomic::Ordering::{Relaxed, Release};
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 /// [`CellArray`] is a special purpose array being initialized by zero.
@@ -154,7 +154,8 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
 
             let offset = new_cell_index - target_cell_index;
             while max_index <= offset {
-                let locker = Locker::try_lock(self.cell(max_index + target_cell_index), barrier)?;
+                let locker =
+                    Locker::try_lock(self.cell(max_index + target_cell_index), barrier)?.unwrap();
                 target_cells[max_index].replace(locker);
                 max_index += 1;
             }
@@ -201,7 +202,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                 }
                 if (current & (Self::UNIT_SIZE - 1)) == Self::UNIT_SIZE - 1 {
                     // Only `UNIT_SIZE - 1` tasks are allowed to rehash `Cells` at a moment.
-                    return Ok(false);
+                    return Ok(self.old_array.is_null(Relaxed));
                 }
                 match self.rehashing.compare_exchange(
                     current,
@@ -245,18 +246,18 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
 
             for old_cell_index in current..(current + Self::UNIT_SIZE).min(old_array_size) {
                 let old_cell_ref = old_array_ref.cell(old_cell_index);
-                if old_cell_ref.killed() {
-                    continue;
+                if !old_cell_ref.killed() {
+                    if let Some(mut locker) = Locker::try_lock(old_cell_ref, barrier)? {
+                        self.kill_cell(
+                            &mut locker,
+                            old_array_ref,
+                            old_cell_index,
+                            &hasher,
+                            &copier,
+                            barrier,
+                        )?;
+                    }
                 }
-                let mut locker = Locker::try_lock(old_cell_ref, barrier)?;
-                self.kill_cell(
-                    &mut locker,
-                    old_array_ref,
-                    old_cell_index,
-                    &hasher,
-                    &copier,
-                    barrier,
-                )?;
             }
 
             // Successfully rehashed all the `Cells` in the range.
@@ -279,15 +280,15 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         loop {
             if (current & (Self::UNIT_SIZE - 1)) != 0 {
                 // There is a task rehashing `Cells`.
-                return false;
+                return self.old_array.is_null(Relaxed);
             }
             if current < old_array_size {
                 // There are `Cells` to rehash.
-                return false;
+                return self.old_array.is_null(Relaxed);
             }
             match self.rehashing.compare_exchange(
                 current,
-                current + Self::UNIT_SIZE - 1,
+                current | (Self::UNIT_SIZE - 1),
                 Relaxed,
                 Relaxed,
             ) {
@@ -296,7 +297,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             }
         }
         if let Some(old_array) = self.old_array.swap((None, Tag::None), Relaxed) {
-            old_array.cleared.store(true, Release);
+            old_array.cleared.store(true, Relaxed);
             barrier.reclaim(old_array);
         }
         true
@@ -335,11 +336,10 @@ impl<K: Eq, V, const LOCK_FREE: bool> Drop for CellArray<K, V, LOCK_FREE> {
             let barrier = Barrier::new();
             for index in 0..self.num_cells() {
                 let cell_ref = self.cell(index);
-                if cell_ref.killed() {
-                    continue;
-                }
-                unsafe {
-                    cell_ref.kill_and_drop(&barrier);
+                if !cell_ref.killed() {
+                    unsafe {
+                        cell_ref.kill_and_drop(&barrier);
+                    }
                 }
             }
         }

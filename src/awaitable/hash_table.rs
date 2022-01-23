@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 pub mod cell;
 pub mod cell_array;
 
@@ -133,8 +131,9 @@ where
                         if let Some(entry) = cell_ref.search(key_ref, partial_hash, barrier) {
                             return Ok(Some(reader(&entry.0, &entry.1)));
                         }
-                    } else {
-                        let locker = Reader::try_lock(old_array_ref.cell(cell_index), barrier)?;
+                    } else if let Some(locker) =
+                        Reader::try_lock(old_array_ref.cell(cell_index), barrier)?
+                    {
                         if let Some((key, value)) =
                             locker.cell().search(key_ref, partial_hash, barrier)
                         {
@@ -149,8 +148,9 @@ where
                 if let Some(entry) = cell_ref.search(key_ref, partial_hash, barrier) {
                     return Ok(Some(reader(&entry.0, &entry.1)));
                 }
-            } else {
-                let locker = Reader::try_lock(current_array_ref.cell(cell_index), barrier)?;
+            } else if let Some(locker) =
+                Reader::try_lock(current_array_ref.cell(cell_index), barrier)?
+            {
                 if let Some((key, value)) = locker.cell().search(key_ref, partial_hash, barrier) {
                     return Ok(Some(reader(key, value)));
                 }
@@ -255,19 +255,22 @@ where
                 )? {
                     check_resize = false;
                     let cell_index = old_array_ref.calculate_cell_index(hash);
-                    let mut locker = Locker::try_lock(old_array_ref.cell(cell_index), barrier)?;
-                    if let Some(iterator) = locker.cell().get(key_ref, partial_hash, barrier) {
-                        return Ok((cell_index, locker, Some(iterator)));
+                    if let Some(mut locker) =
+                        Locker::try_lock(old_array_ref.cell(cell_index), barrier)?
+                    {
+                        if let Some(iterator) = locker.cell().get(key_ref, partial_hash, barrier) {
+                            return Ok((cell_index, locker, Some(iterator)));
+                        }
+                        // Kills the Cell.
+                        current_array_ref.kill_cell(
+                            &mut locker,
+                            old_array_ref,
+                            cell_index,
+                            &|key| self.hash(key),
+                            &Self::copier,
+                            barrier,
+                        )?;
                     }
-                    // Kills the Cell.
-                    current_array_ref.kill_cell(
-                        &mut locker,
-                        old_array_ref,
-                        cell_index,
-                        &|key| self.hash(key),
-                        &Self::copier,
-                        barrier,
-                    )?;
                 }
             }
             let cell_index = current_array_ref.calculate_cell_index(hash);
@@ -281,8 +284,7 @@ where
                 continue;
             }
 
-            let locker = Locker::try_lock(current_array_ref.cell(cell_index), barrier)?;
-            if !locker.killed() {
+            if let Some(locker) = Locker::try_lock(current_array_ref.cell(cell_index), barrier)? {
                 if let Some(iterator) = locker.cell().get(key_ref, partial_hash, barrier) {
                     return Ok((cell_index, locker, Some(iterator)));
                 }
