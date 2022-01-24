@@ -2,7 +2,7 @@ use super::cell::{Cell, Locker, ARRAY_SIZE};
 
 use crate::ebr::{AtomicArc, Barrier, Ptr, Tag};
 
-use std::alloc::{GlobalAlloc, Layout, System};
+use std::alloc::{alloc_zeroed, dealloc, Layout};
 use std::borrow::Borrow;
 use std::convert::TryInto;
 use std::hash::Hash;
@@ -37,7 +37,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         let array_capacity = 1_usize << log2_capacity;
         unsafe {
             let (cell_size, allocation_size, layout) = Self::calculate_layout(array_capacity);
-            let ptr = System.alloc_zeroed(layout);
+            let ptr = alloc_zeroed(layout);
             assert!(
                 !ptr.is_null(),
                 "memory allocation failure: {} bytes",
@@ -177,12 +177,14 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     }
 
     /// Relocates a fixed number of `Cells` from the old array to the current array.
+    ///
+    /// Returns `true` if `old_array` is null.
     pub fn partial_rehash<Q, F: Fn(&Q) -> (u64, u8), C: Fn(&K, &V) -> Option<(K, V)>>(
         &self,
         hasher: F,
         copier: C,
         barrier: &Barrier,
-    ) -> Result<bool, ()>
+    ) -> bool
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
@@ -191,17 +193,17 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             // Assigns itself a range of `Cells` to rehash.
             //
             // Aside from the range, it increments the implicit reference counting field in
-            // `old_array_ref.rehashing` representing the number of tasks rehashing `Cells`.
+            // `old_array_ref.rehashing`.
             let old_array_size = old_array_ref.num_cells();
             let mut current = old_array_ref.rehashing.load(Relaxed);
             loop {
                 if current >= old_array_size {
                     // No available `Cell` range for the task.
-                    return Ok(self.try_drop_old_array(old_array_ref, old_array_size, barrier));
+                    return self.try_drop_old_array(old_array_ref, old_array_size, barrier);
                 }
                 if (current & (Self::UNIT_SIZE - 1)) == Self::UNIT_SIZE - 1 {
                     // Only `UNIT_SIZE - 1` tasks are allowed to rehash `Cells` at a moment.
-                    return Ok(self.old_array.is_null(Relaxed));
+                    return self.old_array.is_null(Relaxed);
                 }
                 match old_array_ref.rehashing.compare_exchange(
                     current,
@@ -245,15 +247,25 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
 
             for old_cell_index in current..(current + Self::UNIT_SIZE).min(old_array_size) {
                 let old_cell_ref = old_array_ref.cell(old_cell_index);
-                if let Some(mut locker) = Locker::try_lock(old_cell_ref, barrier)? {
-                    self.kill_cell(
-                        &mut locker,
-                        old_array_ref,
-                        old_cell_index,
-                        &hasher,
-                        &copier,
-                        barrier,
-                    )?;
+                match Locker::try_lock(old_cell_ref, barrier) {
+                    Ok(locker) => {
+                        if let Some(mut locker) = locker {
+                            if self
+                                .kill_cell(
+                                    &mut locker,
+                                    old_array_ref,
+                                    old_cell_index,
+                                    &hasher,
+                                    &copier,
+                                    barrier,
+                                )
+                                .is_err()
+                            {
+                                return false;
+                            }
+                        }
+                    }
+                    Err(_) => return false,
                 }
             }
 
@@ -263,11 +275,11 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             if current + Self::UNIT_SIZE >= old_array_size {
                 // The last `Cell` in the old array has been relocated.
                 drop(rehashing_guard);
-                return Ok(self.try_drop_old_array(old_array_ref, old_array_size, barrier));
+                return self.try_drop_old_array(old_array_ref, old_array_size, barrier);
             }
-            Ok(false)
+            false
         } else {
-            Ok(true)
+            true
         }
     }
 
@@ -346,7 +358,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> Drop for CellArray<K, V, LOCK_FREE> {
             }
         }
         unsafe {
-            System.dealloc(
+            dealloc(
                 (self.array_ptr as *mut Cell<K, V, LOCK_FREE>)
                     .cast::<u8>()
                     .sub(self.array_ptr_offset),

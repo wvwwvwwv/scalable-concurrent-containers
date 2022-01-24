@@ -120,11 +120,7 @@ where
         let mut current_array_ptr = self.cell_array().load(Acquire, barrier);
         while let Some(current_array_ref) = current_array_ptr.as_ref() {
             if let Some(old_array_ref) = current_array_ref.old_array(barrier).as_ref() {
-                if !current_array_ref.partial_rehash(
-                    |key| self.hash(key),
-                    &Self::copier,
-                    barrier,
-                )? {
+                if !current_array_ref.partial_rehash(|key| self.hash(key), &Self::copier, barrier) {
                     let cell_index = old_array_ref.calculate_cell_index(hash);
                     if LOCK_FREE {
                         let cell_ref = old_array_ref.cell(cell_index);
@@ -248,11 +244,7 @@ where
             let current_array_ptr = self.cell_array().load(Acquire, barrier);
             let current_array_ref = current_array_ptr.as_ref().unwrap();
             if let Some(old_array_ref) = current_array_ref.old_array(barrier).as_ref() {
-                if !current_array_ref.partial_rehash(
-                    |key| self.hash(key),
-                    &Self::copier,
-                    barrier,
-                )? {
+                if !current_array_ref.partial_rehash(|key| self.hash(key), &Self::copier, barrier) {
                     check_resize = false;
                     let cell_index = old_array_ref.calculate_cell_index(hash);
                     if let Some(mut locker) =

@@ -218,14 +218,11 @@ where
                 .old_array(awaitable_barrier.barrier())
                 .is_null()
             {
-                if current_array
-                    .partial_rehash(
-                        |key| self.hash(key),
-                        |_, _| None,
-                        awaitable_barrier.barrier(),
-                    )
-                    .is_ok()
-                {
+                if current_array.partial_rehash(
+                    |key| self.hash(key),
+                    |_, _| None,
+                    awaitable_barrier.barrier(),
+                ) {
                     continue;
                 }
                 awaitable_barrier.drop_barrier_and_yield().await;

@@ -2,7 +2,7 @@ use super::cell::{Cell, Locker, ARRAY_SIZE};
 
 use crate::ebr::{AtomicArc, Barrier, Ptr, Tag};
 
-use std::alloc::{GlobalAlloc, Layout, System};
+use std::alloc::{alloc_zeroed, dealloc, Layout};
 use std::borrow::Borrow;
 use std::convert::TryInto;
 use std::hash::Hash;
@@ -37,7 +37,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         unsafe {
             let size_of_cell = size_of::<Cell<K, V, LOCK_FREE>>();
             let allocation_size = array_capacity * size_of_cell;
-            let ptr = System.alloc_zeroed(Layout::from_size_align_unchecked(
+            let ptr = alloc_zeroed(Layout::from_size_align_unchecked(
                 allocation_size,
                 align_of::<[Cell<K, V, LOCK_FREE>; 0]>(),
             ));
@@ -263,7 +263,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> Drop for CellArray<K, V, LOCK_FREE> {
     fn drop(&mut self) {
         let size_of_cell = size_of::<Cell<K, V, LOCK_FREE>>();
         unsafe {
-            System.dealloc(
+            dealloc(
                 (self.array_ptr as *mut Cell<K, V, LOCK_FREE>).cast::<u8>(),
                 Layout::from_size_align_unchecked(
                     self.array_capacity * size_of_cell,
