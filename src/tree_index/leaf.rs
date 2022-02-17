@@ -294,7 +294,7 @@ where
 
     /// Retires all the vacant slots.
     ///
-    /// Returns true if the leaf has become obsolete.
+    /// Returns `true` if the leaf has become obsolete.
     pub fn retire(&self) -> bool {
         InsertBlocker::new(self).map_or(false, |self_locker| {
             let metadata = self_locker.retire();

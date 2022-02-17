@@ -6,23 +6,13 @@
 
 A collection of concurrent data structures and building blocks for concurrent programming.
 
-- [scc::awaitable::HashMap](#Awaitable-HashMap) is a non-blocking awaitable concurrent hash map.
 - [scc::ebr](#EBR) implements epoch-based reclamation.
 - [scc::LinkedList](#LinkedList) is a type trait implementing a wait-free concurrent singly linked list.
 - [scc::HashMap](#HashMap) is a concurrent hash map.
+- [scc::awaitable::HashMap](#Awaitable-HashMap) is a non-blocking awaitable concurrent hash map.
 - [scc::HashSet](#HashSet) is a concurrent hash set based on [scc::HashMap](#HashMap).
 - [scc::HashIndex](#HashIndex) is a concurrent hash index allowing lock-free read and scan.
 - [scc::TreeIndex](#TreeIndex) is a concurrent B+ tree allowing lock-free read and scan.
-
-
-## Awaitable HashMap
-
-```rust
-use scc::awaitable::HashMap;
-
-let hashmap: HashMap<u64, u32> = HashMap::default();
-let future_insert = hashmap.insert(11, 17);
-```
 
 
 ## EBR
@@ -181,6 +171,22 @@ assert!(hashmap.insert(3, 2).is_ok());
 
 // Inside `retain`, a `ebr::Barrier` protects the entry array.
 assert_eq!(hashmap.retain(|key, value| *key == 1 && *value == 0), (1, 2));
+```
+
+
+## Awaitable HashMap
+
+[`awaitable::HashMap`](#Awaitable-HashMap) is a variant of [`HashMap`](#HashMap) tailored to asynchronous code. Methods that access the data do not return the result immediately, instead a [`future`](https://doc.rust-lang.org/std/future/trait.Future.html) is returned; in order to get the result, the caller has to *await* it.
+
+
+### Examples
+
+```rust
+use scc::awaitable::HashMap;
+
+let hashmap: HashMap<u64, u32> = HashMap::default();
+let future_insert = hashmap.insert(11, 17);
+let result = future_insert.await;
 ```
 
 
@@ -387,6 +393,10 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 
 
 ## Changelog
+
+0.6.0
+
+* Asynchronous [`HashMap`](#Awaitable-HashMap).
 
 0.5.8
 

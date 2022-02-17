@@ -228,7 +228,7 @@ pub trait LinkedList: 'static + Sized {
         while next_ptr.tag() != Tag::Second {
             entry
                 .link_ref()
-                .swap((next_ptr.try_into_arc(), Tag::None), Relaxed);
+                .swap((next_ptr.get_arc(), Tag::None), Relaxed);
             match self
                 .link_ref()
                 .compare_exchange(next_ptr, (Some(entry), new_tag), order, Relaxed)
@@ -300,7 +300,7 @@ pub trait LinkedList: 'static + Sized {
         if update_self && self_tag != Tag::Second {
             let _result = self.link_ref().compare_exchange(
                 self_next_ptr,
-                (next_valid_ptr.try_into_arc(), self_tag),
+                (next_valid_ptr.get_arc(), self_tag),
                 Release,
                 Relaxed,
             );

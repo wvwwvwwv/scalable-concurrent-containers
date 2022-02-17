@@ -403,14 +403,14 @@ where
         let unused_leaf = if high_key_leaf_ptr.is_null() {
             // From here, Scanners can reach the new leaf.
             let result = full_leaf_ref.push_back(
-                low_key_leaf_ptr.try_into_arc().unwrap(),
+                low_key_leaf_ptr.get_arc().unwrap(),
                 true,
                 Release,
                 barrier,
             );
             debug_assert!(result.is_ok());
             // Replaces the full leaf with the low-key leaf.
-            full_leaf.swap((low_key_leaf_ptr.try_into_arc(), Tag::None), Release)
+            full_leaf.swap((low_key_leaf_ptr.get_arc(), Tag::None), Release)
         } else {
             // From here, Scanners can reach the new leaves.
             //
@@ -424,14 +424,14 @@ where
             // and l22, missing newly inserted entries in l21 and l22 before starting the
             // range scanner.
             let result = full_leaf_ref.push_back(
-                high_key_leaf_ptr.try_into_arc().unwrap(),
+                high_key_leaf_ptr.get_arc().unwrap(),
                 true,
                 Release,
                 barrier,
             );
             debug_assert!(result.is_ok());
             let result = full_leaf_ref.push_back(
-                low_key_leaf_ptr.try_into_arc().unwrap(),
+                low_key_leaf_ptr.get_arc().unwrap(),
                 true,
                 Release,
                 barrier,
@@ -454,7 +454,7 @@ where
             }
 
             // Replaces the full leaf with the high-key leaf.
-            full_leaf.swap((high_key_leaf_ptr.try_into_arc(), Tag::None), Release)
+            full_leaf.swap((high_key_leaf_ptr.get_arc(), Tag::None), Release)
         };
 
         // Drops the deprecated leaf.

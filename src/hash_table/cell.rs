@@ -426,7 +426,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
 
             new_data_array
                 .link
-                .swap((data_array_head_ptr.try_into_arc(), Tag::None), Relaxed);
+                .swap((data_array_head_ptr.get_arc(), Tag::None), Relaxed);
             self.cell_ref
                 .data_array
                 .swap((Some(new_data_array), Tag::None), Release);

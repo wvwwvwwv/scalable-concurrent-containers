@@ -912,7 +912,7 @@ where
                 if let Some(max_entry) = self.children.0.max() {
                     // Firstly, replaces the unbounded node with the max entry.
                     self.children.1.swap(
-                        (max_entry.1.load(Relaxed, barrier).try_into_arc(), Tag::None),
+                        (max_entry.1.load(Relaxed, barrier).get_arc(), Tag::None),
                         Release,
                     );
                     // Then, removes the node from the children list.

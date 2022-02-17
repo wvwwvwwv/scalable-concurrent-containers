@@ -40,8 +40,8 @@ impl<T: 'static> Arc<T> {
     /// let ptr = arc.ptr(&barrier);
     /// assert_eq!(*ptr.as_ref().unwrap(), 37);
     /// ```
-    #[must_use]
     #[inline]
+    #[must_use]
     pub fn ptr<'b>(&self, _barrier: &'b Barrier) -> Ptr<'b, T> {
         Ptr::from(self.instance_ptr.as_ptr())
     }
@@ -188,6 +188,18 @@ impl<T: 'static> Drop for Arc<T> {
         if self.underlying().drop_ref() {
             let barrier = Barrier::new();
             barrier.reclaim_underlying(self.instance_ptr.as_ptr());
+        }
+    }
+}
+
+impl<'b, T: 'static> TryFrom<Ptr<'b, T>> for Arc<T> {
+    type Error = Ptr<'b, T>;
+
+    fn try_from(ptr: Ptr<'b, T>) -> Result<Self, Self::Error> {
+        if let Some(arc) = ptr.get_arc() {
+            Ok(arc)
+        } else {
+            Err(ptr)
         }
     }
 }

@@ -1,7 +1,6 @@
 use super::underlying::Underlying;
 use super::{Arc, Tag};
 
-use std::convert::TryInto;
 use std::marker::PhantomData;
 use std::{ops::Deref, ptr, ptr::NonNull};
 
@@ -191,12 +190,17 @@ impl<'b, T> Ptr<'b, T> {
     /// let arc: Arc<usize> = Arc::new(83);
     /// let barrier = Barrier::new();
     /// let ptr = arc.ptr(&barrier);
-    /// let converted_arc = ptr.try_into_arc().unwrap();
+    /// let converted_arc = ptr.get_arc().unwrap();
     /// assert_eq!(*converted_arc, 83);
+    ///
+    /// drop(arc);
+    /// drop(converted_arc);
+    ///
+    /// assert!(ptr.get_arc().is_none());
     /// ```
     #[must_use]
     #[inline]
-    pub fn try_into_arc(self) -> Option<Arc<T>> {
+    pub fn get_arc(self) -> Option<Arc<T>> {
         unsafe {
             if let Some(ptr) = NonNull::new(Tag::unset_tag(self.instance_ptr) as *mut Underlying<T>)
             {
@@ -245,17 +249,5 @@ impl<'b, T> Eq for Ptr<'b, T> {}
 impl<'b, T> PartialEq for Ptr<'b, T> {
     fn eq(&self, other: &Self) -> bool {
         self.instance_ptr == other.instance_ptr
-    }
-}
-
-impl<'b, T> TryInto<Arc<T>> for Ptr<'b, T> {
-    type Error = ();
-
-    #[inline]
-    fn try_into(self) -> Result<Arc<T>, Self::Error> {
-        if let Some(arc) = self.try_into_arc() {
-            return Ok(arc);
-        }
-        Err(())
     }
 }
