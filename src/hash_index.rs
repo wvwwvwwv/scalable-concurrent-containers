@@ -12,7 +12,7 @@ use std::iter::FusedIterator;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
-/// A scalable concurrent hash index data structure.
+/// Scalable concurrent hash index data structure.
 ///
 /// [`HashIndex`] is a concurrent hash index data structure that is optimized for read
 /// operations. The key characteristics of [`HashIndex`] are similar to that of

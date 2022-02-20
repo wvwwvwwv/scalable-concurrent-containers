@@ -13,7 +13,7 @@ use std::hash::{BuildHasher, Hash};
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering::Acquire;
 
-/// A scalable concurrent hash map data structure for asynchronous code.
+/// Scalable concurrent hash map data structure for asynchronous code.
 ///
 /// The data structure is almost identical to [`HashMap`](crate::HashMap) except that most methods
 /// return [`future`](std::future::Future) thereby allowing the data structures to be used in

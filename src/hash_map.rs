@@ -11,7 +11,7 @@ use std::hash::{BuildHasher, Hash};
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 use std::sync::atomic::{AtomicU8, AtomicUsize};
 
-/// A scalable concurrent hash map data structure.
+/// Scalable concurrent hash map data structure.
 ///
 /// [`HashMap`] is a concurrent hash map data structure that is targeted at a highly concurrent
 /// workload. The use of an epoch-based reclamation technique enables the data structure to
