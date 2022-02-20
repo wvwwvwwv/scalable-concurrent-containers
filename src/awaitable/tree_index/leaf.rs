@@ -1,37 +1,85 @@
+#![allow(dead_code)]
+#![allow(clippy::needless_pass_by_value)]
+
 use crate::ebr::{Arc, AtomicArc, Barrier};
 use crate::LinkedList;
 
 use std::borrow::Borrow;
 use std::cmp::Ordering;
-use std::convert::TryInto;
-use std::mem::MaybeUninit;
-use std::sync::atomic::AtomicU32;
+use std::mem::{size_of, MaybeUninit};
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-pub const ARRAY_SIZE: usize = 8;
+/// The number of entries and number of state bits per entry.
+pub struct Dimension {
+    num_entries: usize,
+    num_bits_per_entry: usize,
+}
 
-/// Entry state.
-///  - 0: vacant.
-///  - 1-ARRAY_SIZE: valid.
-///  - 13: locked.
-///  - 14: retired, final state.
-///  - 15: removed, final state.
-const LOCKED: u32 = 13;
-const RETIRED: u32 = 14;
-const REMOVED: u32 = 15;
+impl Dimension {
+    /// Checks if the [`Leaf`] is retired.
+    fn retired(metadata: usize) -> bool {
+        metadata & (1_usize << (size_of::<usize>() * 8 - 1)) != 0
+    }
 
-/// All the slots are removed or retired.
-const OBSOLETE_MASK: u32 = (RETIRED << 28)
-    | (RETIRED << 24)
-    | (RETIRED << 20)
-    | (RETIRED << 16)
-    | (RETIRED << 12)
-    | (RETIRED << 8)
-    | (RETIRED << 4)
-    | RETIRED;
+    /// Returns a bit mask for an entry.
+    fn state_mask(&self, index: usize) -> usize {
+        ((1_usize << self.num_bits_per_entry) - 1) << (index * self.num_bits_per_entry)
+    }
+
+    /// Returns the state of an entry.
+    fn state(&self, metadata: usize, index: usize) -> usize {
+        (metadata & self.state_mask(index)) >> (index * self.num_bits_per_entry)
+    }
+
+    /// Returns an uninitialized state of an entry.
+    fn uninit_state(&self) -> usize {
+        0
+    }
+
+    /// Returns a removed state of an entry.
+    fn removed_state(&self) -> usize {
+        (1_usize << self.num_bits_per_entry) - 1
+    }
+}
+
+/// The maximum number of entries and the number of metadata bits per entry in a [`Leaf`].
+///
+/// * M = The maximum number of entries.
+/// * B = The minimum number of bits to express the state of an entry.
+/// * 2 = The number of special states of an entry: uninit, removed.
+/// * 1 = The number of special states of a [`Leaf`]: retired.
+/// * U = `size_of::<usize>() * 8`.
+/// * Eq1 = M + 2 <= 2^B: B bits represent at least M + 2 states.
+/// * Eq2 = B * M + 1 <= U: M entries + 1 special state.
+/// * Eq3 = Ceil(Log2(M + 2)) * M + 1 <= U: derived from Eq1 and Eq2.
+///
+/// Therefore, when U = 64 => M = 14 / B = 4, and U = 32 => M = 7 / B = 4.
+pub const DIMENSION: Dimension = match size_of::<usize>() {
+    1 => Dimension {
+        num_entries: 2,
+        num_bits_per_entry: 2,
+    },
+    2 => Dimension {
+        num_entries: 5,
+        num_bits_per_entry: 3,
+    },
+    4 => Dimension {
+        num_entries: 7,
+        num_bits_per_entry: 4,
+    },
+    8 => Dimension {
+        num_entries: 14,
+        num_bits_per_entry: 4,
+    },
+    _ => Dimension {
+        num_entries: 25,
+        num_bits_per_entry: 5,
+    },
+};
 
 /// Each constructed entry in an `EntryArray` is never dropped until the `Leaf` is dropped.
-pub type EntryArray<K, V> = [MaybeUninit<(K, V)>; ARRAY_SIZE];
+pub type EntryArray<K, V> = [MaybeUninit<(K, V)>; DIMENSION.num_entries];
 
 /// [`Leaf`] is an ordered array of key-value pairs.
 ///
@@ -49,7 +97,15 @@ where
     link: AtomicArc<Leaf<K, V>>,
 
     /// The metadata that manages the contents.
-    metadata: AtomicU32,
+    ///
+    /// The state of each entry is as follows.
+    /// * 0: uninit.
+    /// * 1-ARRAY_SIZE: rank.
+    /// * ARRAY_SIZE + 1: removed.
+    ///
+    /// The entry state transitions as follows.
+    /// * Uninit -> removed -> rank -> removed.
+    metadata: AtomicUsize,
 }
 
 impl<K, V> Leaf<K, V>
@@ -62,39 +118,23 @@ where
         Leaf {
             entry_array: unsafe { MaybeUninit::uninit().assume_init() },
             link: AtomicArc::null(),
-            metadata: AtomicU32::new(0),
+            metadata: AtomicUsize::new(0),
         }
     }
 
-    /// Takes the memory address of the instance as an identifier.
-    pub fn id(&self) -> usize {
-        self as *const _ as usize
-    }
-
-    /// Returns true if the [`Leaf`] is full.
-    pub fn full(&self) -> bool {
-        let metadata = self.metadata.load(Relaxed);
-        for i in 0..ARRAY_SIZE {
-            if Self::rank(i, metadata) == 0 {
-                return false;
-            }
-        }
-        true
-    }
-
-    /// Returns `true` if the [`Leaf`] is obsolete.
-    pub fn obsolete(&self) -> bool {
-        (self.metadata.load(Relaxed) & OBSOLETE_MASK) == OBSOLETE_MASK
+    /// Returns `true` if the [`Leaf`] is retired.
+    pub fn retired(&self) -> bool {
+        Dimension::retired(self.metadata.load(Relaxed))
     }
 
     /// Returns a reference to the max key.
     pub fn max(&self) -> Option<(&K, &V)> {
         let metadata = self.metadata.load(Acquire);
         let mut max_rank = 0;
-        let mut max_index = ARRAY_SIZE;
-        for i in 0..ARRAY_SIZE {
-            let rank = Self::rank(i, metadata);
-            if rank > max_rank && rank <= ARRAY_SIZE.try_into().unwrap() {
+        let mut max_index = DIMENSION.num_entries;
+        for i in 0..DIMENSION.num_entries {
+            let rank = DIMENSION.state(metadata, i);
+            if rank > max_rank && rank != DIMENSION.removed_state() {
                 max_rank = rank;
                 max_index = i;
             }
@@ -109,71 +149,8 @@ where
     ///
     /// It returns the passed key value pair on failure.
     /// The second returned value being true indicates that the same key exists.
-    pub fn insert(&self, key: K, value: V) -> Option<((K, V), bool)> {
-        if let Some(mut inserter) = Inserter::new(self) {
-            // Inserts the key value.
-            self.write(inserter.index, key, value);
-            let entry_ref = self.read(inserter.index);
-
-            // Calculates the rank and updates the metadata.
-            loop {
-                let mut max_min_rank = 0;
-                let mut min_max_rank = (ARRAY_SIZE + 1).try_into().unwrap();
-                let mut updated_rank_map = inserter.metadata;
-                for i in 0..ARRAY_SIZE {
-                    if i == inserter.index {
-                        continue;
-                    }
-                    let rank = Self::rank(i, updated_rank_map);
-                    if rank == 0 || rank < max_min_rank || rank > ARRAY_SIZE.try_into().unwrap() {
-                        continue;
-                    }
-                    if rank > min_max_rank {
-                        // Updates the rank.
-                        let rank_bits = Self::rank_bits(i, rank + 1);
-                        updated_rank_map = (updated_rank_map & (!Self::rank_mask(i))) | rank_bits;
-                        continue;
-                    }
-                    match self.compare(i, entry_ref.0) {
-                        Ordering::Less => {
-                            if max_min_rank < rank {
-                                max_min_rank = rank;
-                            }
-                        }
-                        Ordering::Greater => {
-                            if min_max_rank > rank {
-                                min_max_rank = rank;
-                            }
-                            // Updates the rank.
-                            let rank_bits = Self::rank_bits(i, rank + 1);
-                            updated_rank_map =
-                                (updated_rank_map & (!Self::rank_mask(i))) | rank_bits;
-                        }
-                        Ordering::Equal => {
-                            // Uniqueness check failed.
-                            return Some((self.take(inserter.index), true));
-                        }
-                    }
-                }
-                let final_rank = max_min_rank + 1;
-                debug_assert!(
-                    min_max_rank as usize == ARRAY_SIZE + 1 || final_rank <= min_max_rank
-                );
-
-                // Updates its own rank.
-                let rank_bits = Self::rank_bits(inserter.index, final_rank);
-                updated_rank_map =
-                    (updated_rank_map & (!Self::rank_mask(inserter.index))) | rank_bits;
-                if inserter.commit(updated_rank_map) {
-                    return None;
-                }
-            }
-        } else {
-            // Full.
-            debug_assert!(self.full());
-            let duplicate_key = self.search(&key).is_some();
-            Some(((key, value), duplicate_key))
-        }
+    pub fn insert(&self, _key: K, _value: V) -> Option<((K, V), bool)> {
+        None
     }
 
     /// Removes the key if the condition is met.
@@ -195,9 +172,9 @@ where
         let mut empty = true;
         let mut metadata = self.metadata.load(Acquire);
         let mut max_min_rank = 0;
-        let mut min_max_rank = (ARRAY_SIZE + 1).try_into().unwrap();
-        for i in 0..ARRAY_SIZE {
-            let rank = Self::rank(i, metadata);
+        let mut min_max_rank = DIMENSION.removed_state();
+        for i in 0..DIMENSION.num_entries {
+            let rank = DIMENSION.state(metadata, i);
             if rank > max_min_rank && rank < min_max_rank {
                 match self.compare(i, key) {
                     Ordering::Less => {
@@ -217,8 +194,7 @@ where
                                 break;
                             }
 
-                            let new_metadata =
-                                (metadata & (!Self::rank_mask(i))) | Self::rank_bits(i, REMOVED);
+                            let new_metadata = metadata | DIMENSION.state_mask(i);
                             match self.metadata.compare_exchange(
                                 metadata,
                                 new_metadata,
@@ -232,7 +208,7 @@ where
                                 }
                                 Err(result) => {
                                     metadata = result;
-                                    if Self::rank(i, metadata) == REMOVED {
+                                    if DIMENSION.state(metadata, i) == DIMENSION.removed_state() {
                                         // Removed by another thread.
                                         break;
                                     }
@@ -244,12 +220,12 @@ where
             }
         }
 
-        for i in 0..ARRAY_SIZE {
-            let rank = Self::rank(i, metadata);
+        for i in 0..DIMENSION.num_entries {
+            let rank = DIMENSION.state(metadata, i);
             if full && rank == 0 {
                 full = false;
             }
-            if empty && rank != 0 && rank <= ARRAY_SIZE.try_into().unwrap() {
+            if empty && rank != 0 && rank != DIMENSION.removed_state() {
                 empty = false;
             }
             if !full && !empty {
@@ -268,9 +244,9 @@ where
     {
         let metadata = self.metadata.load(Acquire);
         let mut max_min_rank = 0;
-        let mut min_max_rank = (ARRAY_SIZE + 1).try_into().unwrap();
-        for i in 0..ARRAY_SIZE {
-            let rank = Self::rank(i, metadata);
+        let mut min_max_rank = DIMENSION.removed_state();
+        for i in 0..DIMENSION.num_entries {
+            let rank = DIMENSION.state(metadata, i);
             if rank > max_min_rank && rank < min_max_rank {
                 match self.compare(i, key) {
                     Ordering::Less => {
@@ -292,23 +268,13 @@ where
         None
     }
 
-    /// Retires all the vacant slots.
-    ///
-    /// Returns `true` if the leaf has become obsolete.
-    pub fn retire(&self) -> bool {
-        InsertBlocker::new(self).map_or(false, |self_locker| {
-            let metadata = self_locker.retire();
-            (metadata & OBSOLETE_MASK) == OBSOLETE_MASK
-        })
-    }
-
     /// Returns the index and a pointer to the key-value pair that is smaller than the given key.
-    pub fn max_less(&self, metadata: u32, key: &K) -> (usize, *const (K, V)) {
+    pub fn max_less(&self, metadata: usize, key: &K) -> (usize, *const (K, V)) {
         let mut max_min_rank = 0;
-        let mut max_min_index = ARRAY_SIZE;
-        let mut min_max_rank = (ARRAY_SIZE + 1).try_into().unwrap();
-        for i in 0..ARRAY_SIZE {
-            let rank = Self::rank(i, metadata);
+        let mut max_min_index = DIMENSION.num_entries;
+        let mut min_max_rank = DIMENSION.removed_state();
+        for i in 0..DIMENSION.num_entries {
+            let rank = DIMENSION.state(metadata, i);
             if rank > max_min_rank && rank < min_max_rank {
                 match self.compare(i, key) {
                     Ordering::Less => {
@@ -328,7 +294,7 @@ where
                 }
             }
         }
-        if max_min_index < ARRAY_SIZE {
+        if max_min_index != DIMENSION.num_entries {
             return (max_min_index, unsafe {
                 &*self.entry_array[max_min_index].as_ptr()
             });
@@ -340,17 +306,17 @@ where
     ///
     /// It additionally returns the current version of its metadata in order for the caller to
     /// validate the sanity of the result.
-    pub fn min_greater_equal<Q>(&self, key: &Q) -> (Option<(&K, &V)>, u32)
+    pub fn min_greater_equal<Q>(&self, key: &Q) -> (Option<(&K, &V)>, usize)
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
         let metadata = self.metadata.load(Acquire);
         let mut max_min_rank = 0;
-        let mut min_max_rank = (ARRAY_SIZE + 1).try_into().unwrap();
-        let mut min_max_index = ARRAY_SIZE;
-        for i in 0..ARRAY_SIZE {
-            let rank = Self::rank(i, metadata);
+        let mut min_max_index = DIMENSION.num_entries;
+        let mut min_max_rank = DIMENSION.removed_state();
+        for i in 0..DIMENSION.num_entries {
+            let rank = DIMENSION.state(metadata, i);
             if rank > max_min_rank && rank < min_max_rank {
                 match self.compare(i, key) {
                     Ordering::Less => {
@@ -370,14 +336,14 @@ where
                 }
             }
         }
-        if min_max_rank <= ARRAY_SIZE.try_into().unwrap() {
+        if min_max_rank != DIMENSION.removed_state() {
             return (Some(self.read(min_max_index)), metadata);
         }
         (None, metadata)
     }
 
     /// Compares the given metadata value with the current one.
-    pub fn validate(&self, metadata: u32) -> bool {
+    pub fn validate(&self, metadata: usize) -> bool {
         // `Relaxed` is sufficient as long as the caller has read-acquired its contents.
         self.metadata.load(Relaxed) == metadata
     }
@@ -391,19 +357,19 @@ where
         }
     }
 
-    pub fn next(&self, index: usize, metadata: u32) -> (usize, *const (K, V)) {
+    pub fn next(&self, index: usize, metadata: usize) -> (usize, *const (K, V)) {
         if index != usize::MAX {
-            let current_entry_rank = if index < ARRAY_SIZE {
-                Self::rank(index, metadata)
+            let current_entry_rank = if index < DIMENSION.num_entries {
+                DIMENSION.state(metadata, index)
             } else {
                 0
             };
-            if current_entry_rank < ARRAY_SIZE.try_into().unwrap() {
-                let mut next_rank = (ARRAY_SIZE + 1).try_into().unwrap();
-                let mut next_index = ARRAY_SIZE;
-                for i in 0..ARRAY_SIZE {
-                    let rank = Self::rank(i, metadata);
-                    if rank == 0 || rank == REMOVED {
+            if current_entry_rank < DIMENSION.num_entries {
+                let mut next_rank = DIMENSION.removed_state();
+                let mut next_index = DIMENSION.num_entries;
+                for i in 0..DIMENSION.num_entries {
+                    let rank = DIMENSION.state(metadata, i);
+                    if rank == DIMENSION.uninit_state() || rank == DIMENSION.removed_state() {
                         continue;
                     }
                     if current_entry_rank < rank && rank < next_rank {
@@ -411,7 +377,7 @@ where
                         next_index = i;
                     }
                 }
-                if next_rank <= ARRAY_SIZE.try_into().unwrap() {
+                if next_rank != DIMENSION.removed_state() {
                     return (next_index, unsafe {
                         &*self.entry_array[next_index].as_ptr()
                     });
@@ -428,7 +394,7 @@ where
     ) {
         let mut iterated = 0;
         for entry in Scanner::new(self) {
-            if iterated < ARRAY_SIZE / 2 {
+            if iterated < DIMENSION.num_entries / 2 {
                 if low_key_leaf.is_none() {
                     low_key_leaf.replace(Arc::new(Leaf::new()));
                 }
@@ -447,18 +413,6 @@ where
                     .insert(entry.0.clone(), entry.1.clone());
             }
         }
-    }
-
-    fn rank(index: usize, metadata: u32) -> u32 {
-        (metadata & (REMOVED << (index * 4))) >> (index * 4)
-    }
-
-    fn rank_bits(index: usize, rank: u32) -> u32 {
-        rank << (index * 4)
-    }
-
-    fn rank_mask(index: usize) -> u32 {
-        REMOVED << (index * 4)
     }
 
     fn compare<Q>(&self, index: usize, key: &Q) -> std::cmp::Ordering
@@ -492,256 +446,11 @@ where
     V: 'static + Clone + Sync,
 {
     fn drop(&mut self) {
-        let metadata = self.metadata.swap(0, Acquire);
-        for i in 0..ARRAY_SIZE {
-            let rank = Self::rank(i, metadata);
-            if rank != 0 && rank != RETIRED {
+        let metadata = self.metadata.load(Acquire);
+        for i in 0..DIMENSION.num_entries {
+            let rank = DIMENSION.state(metadata, i);
+            if rank != DIMENSION.uninit_state() {
                 self.take(i);
-            }
-        }
-    }
-}
-
-struct Inserter<'l, K, V>
-where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
-{
-    leaf: &'l Leaf<K, V>,
-    metadata: u32,
-    index: usize,
-    committed: bool,
-}
-
-/// Inserter locks a single vacant slot.
-impl<'l, K, V> Inserter<'l, K, V>
-where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
-{
-    /// Returns Some if there is a vacant slot.
-    fn new(leaf: &'l Leaf<K, V>) -> Option<Inserter<'l, K, V>> {
-        let mut current = leaf.metadata.load(Relaxed);
-        loop {
-            let mut full = true;
-            let mut position = ARRAY_SIZE;
-            for i in 0..ARRAY_SIZE {
-                let rank = Leaf::<K, V>::rank(i, current);
-                if rank == 0 {
-                    full = false;
-                    position = i;
-                    break;
-                } else if rank == LOCKED {
-                    full = false;
-                }
-            }
-
-            if full {
-                return None;
-            } else if position == ARRAY_SIZE {
-                // Another thread is inserting data into the last remaining slot.
-                current = leaf.metadata.load(Relaxed);
-                continue;
-            }
-
-            // Found an empty position.
-            let new_metadata = current | Leaf::<K, V>::rank_bits(position, LOCKED);
-            match leaf
-                .metadata
-                .compare_exchange(current, new_metadata, Acquire, Relaxed)
-            {
-                Ok(_) => {
-                    return Some(Inserter {
-                        leaf,
-                        metadata: new_metadata,
-                        index: position,
-                        committed: false,
-                    });
-                }
-                Err(result) => current = result,
-            }
-        }
-    }
-
-    fn commit(&mut self, updated_rank_map: u32) -> bool {
-        let mut new_metadata = updated_rank_map;
-        while let Err(result) =
-            self.leaf
-                .metadata
-                .compare_exchange(self.metadata, new_metadata, Release, Relaxed)
-        {
-            for i in 0..ARRAY_SIZE {
-                if i == self.index {
-                    continue;
-                }
-                let current_rank = Leaf::<K, V>::rank(i, result);
-                let expected_rank = Leaf::<K, V>::rank(i, self.metadata);
-                if current_rank != expected_rank {
-                    if current_rank == LOCKED {
-                        // Never modifies the state.
-                        new_metadata = (new_metadata & (!Leaf::<K, V>::rank_mask(i)))
-                            | Leaf::<K, V>::rank_bits(i, LOCKED);
-                    } else {
-                        // The rank map has been updated.
-                        self.metadata = result;
-                        return false;
-                    }
-                }
-            }
-            self.metadata = result;
-        }
-
-        self.committed = true;
-        true
-    }
-}
-
-impl<'l, K, V> Drop for Inserter<'l, K, V>
-where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
-{
-    fn drop(&mut self) {
-        if !self.committed {
-            // Rolls back metadata changes if not committed.
-            let mut current = self.metadata;
-            loop {
-                if let Err(result) = self.leaf.metadata.compare_exchange(
-                    current,
-                    current & (!Leaf::<K, V>::rank_bits(self.index, LOCKED)),
-                    Release,
-                    Relaxed,
-                ) {
-                    current = result;
-                    continue;
-                }
-                break;
-            }
-        }
-    }
-}
-
-/// `InsertBlocker` locks all the vacant slots.
-struct InsertBlocker<'l, K, V>
-where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
-{
-    leaf: &'l Leaf<K, V>,
-    metadata: u32,
-    retired: bool,
-}
-
-impl<'l, K, V> InsertBlocker<'l, K, V>
-where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
-{
-    /// Returns None if there is a locked slot.
-    fn new(leaf: &'l Leaf<K, V>) -> Option<InsertBlocker<'l, K, V>> {
-        let mut current = leaf.metadata.load(Relaxed);
-        loop {
-            let mut new_metadata = current;
-            for i in 0..ARRAY_SIZE {
-                let rank = Leaf::<K, V>::rank(i, current);
-                if rank == 0 {
-                    new_metadata |= Leaf::<K, V>::rank_bits(i, LOCKED);
-                } else if rank == LOCKED {
-                    return None;
-                }
-            }
-            match leaf
-                .metadata
-                .compare_exchange(current, new_metadata, Acquire, Relaxed)
-            {
-                Ok(_) => {
-                    return Some(InsertBlocker {
-                        leaf,
-                        metadata: new_metadata,
-                        retired: false,
-                    });
-                }
-                Err(result) => current = result,
-            }
-        }
-    }
-
-    fn retire(mut self) -> u32 {
-        let mut current = self.leaf.metadata.load(Relaxed);
-        loop {
-            let mut new_metadata = self.metadata;
-            for i in 0..ARRAY_SIZE {
-                let rank = Leaf::<K, V>::rank(i, current);
-                let new_rank = Leaf::<K, V>::rank(i, new_metadata);
-                match (rank, new_rank) {
-                    (_, LOCKED) => {
-                        // Marks retired.
-                        debug_assert_eq!(rank, LOCKED);
-                        new_metadata = (new_metadata & (!Leaf::<K, V>::rank_mask(i)))
-                            | Leaf::<K, V>::rank_bits(i, RETIRED);
-                    }
-                    (_, _) => {
-                        if rank != new_rank {
-                            new_metadata = (new_metadata & (!Leaf::<K, V>::rank_mask(i)))
-                                | Leaf::<K, V>::rank_bits(i, rank);
-                        }
-                    }
-                };
-            }
-            if let Err(result) =
-                self.leaf
-                    .metadata
-                    .compare_exchange(current, new_metadata, Release, Relaxed)
-            {
-                current = result;
-                continue;
-            }
-
-            current = new_metadata;
-            break;
-        }
-        self.retired = true;
-        current
-    }
-}
-
-impl<'l, K, V> Drop for InsertBlocker<'l, K, V>
-where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
-{
-    fn drop(&mut self) {
-        if !self.retired {
-            // Gracefully unlocks all the vacant entries.
-            let mut current = self.leaf.metadata.load(Relaxed);
-            loop {
-                let mut new_metadata = self.metadata;
-                for i in 0..ARRAY_SIZE {
-                    let rank = Leaf::<K, V>::rank(i, current);
-                    let new_rank = Leaf::<K, V>::rank(i, new_metadata);
-                    match (rank, new_rank) {
-                        (_, LOCKED) => {
-                            // Needs to unlock the vacant slot.
-                            debug_assert_eq!(rank, LOCKED);
-                            new_metadata &= !Leaf::<K, V>::rank_mask(i);
-                        }
-                        (_, _) => {
-                            if rank != new_rank {
-                                new_metadata = (new_metadata & (!Leaf::<K, V>::rank_mask(i)))
-                                    | Leaf::<K, V>::rank_bits(i, rank);
-                            }
-                        }
-                    };
-                }
-                if let Err(result) =
-                    self.leaf
-                        .metadata
-                        .compare_exchange(current, new_metadata, Release, Relaxed)
-                {
-                    current = result;
-                    continue;
-                }
-                break;
             }
         }
     }
@@ -765,7 +474,7 @@ where
     V: 'static + Clone + Sync,
 {
     leaf: &'l Leaf<K, V>,
-    metadata: u32,
+    metadata: usize,
     entry_index: usize,
     entry_ptr: *const (K, V),
 }
@@ -779,7 +488,7 @@ where
         Scanner {
             leaf,
             metadata: leaf.metadata.load(Acquire),
-            entry_index: ARRAY_SIZE,
+            entry_index: DIMENSION.num_entries,
             entry_ptr: std::ptr::null(),
         }
     }
@@ -799,43 +508,7 @@ where
         }
     }
 
-    pub fn new_including_removed(leaf: &'l Leaf<K, V>) -> Scanner<'l, K, V> {
-        let mut metadata = leaf.metadata.load(Acquire);
-        let mut unused_ranks = 0;
-        let mut current_unused_ranks_index = 0;
-        for rank in 1..=ARRAY_SIZE.try_into().unwrap() {
-            let mut found = false;
-            for i in 0..ARRAY_SIZE {
-                if Leaf::<K, V>::rank(i, metadata) == rank {
-                    found = true;
-                    break;
-                }
-            }
-            if !found {
-                unused_ranks |= Leaf::<K, V>::rank_bits(current_unused_ranks_index, rank);
-                current_unused_ranks_index += 1;
-            }
-        }
-
-        for i in 0..ARRAY_SIZE {
-            let rank = Leaf::<K, V>::rank(i, metadata);
-            if rank == REMOVED {
-                let new_rank = Leaf::<K, V>::rank(current_unused_ranks_index - 1, unused_ranks);
-                current_unused_ranks_index -= 1;
-                debug_assert!(new_rank > 0 && new_rank <= ARRAY_SIZE.try_into().unwrap());
-                metadata = (metadata & (!Leaf::<K, V>::rank_bits(i, REMOVED)))
-                    | Leaf::<K, V>::rank_bits(i, new_rank);
-            }
-        }
-        Scanner {
-            leaf,
-            metadata,
-            entry_index: ARRAY_SIZE,
-            entry_ptr: std::ptr::null(),
-        }
-    }
-
-    pub fn metadata(&self) -> u32 {
+    pub fn metadata(&self) -> usize {
         self.metadata
     }
 
@@ -852,7 +525,8 @@ where
     }
 
     pub fn removed(&self) -> bool {
-        Leaf::<K, V>::rank(self.entry_index, self.leaf.metadata.load(Relaxed)) == REMOVED
+        DIMENSION.state(self.leaf.metadata.load(Relaxed), self.entry_index)
+            == DIMENSION.removed_state()
     }
 
     pub fn jump<'b>(
@@ -912,245 +586,35 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::sync::{Arc, Barrier};
-    use std::thread;
+
+    use tokio::sync;
 
     #[test]
-    #[allow(clippy::too_many_lines)]
-    fn basic() {
-        let leaf = Leaf::new();
-        assert!(leaf.insert(50, 51).is_none());
-        assert_eq!(leaf.max(), Some((&50, &51)));
-        assert!(leaf.insert(60, 61).is_none());
-        assert!(leaf.insert(70, 71).is_none());
-        assert!(leaf.remove_if(&60, &mut |v| *v == 61).0);
-        assert!(leaf.insert(60, 61).is_none());
-        assert_eq!(leaf.remove_if(&60, &mut |v| *v == 61), (true, false, false));
-        assert!(!leaf.full());
-        assert!(leaf.insert(40, 40).is_none());
-        assert!(leaf.insert(30, 31).is_none());
-        assert!(!leaf.full());
-        assert_eq!(leaf.remove_if(&40, &mut |_| true), (true, false, false));
-        assert!(leaf.insert(40, 41).is_none());
-        assert_eq!(leaf.insert(30, 33), Some(((30, 33), true)));
-        assert!(leaf.insert(10, 11).is_none());
-        assert_eq!(leaf.max(), Some((&70, &71)));
-        assert!(leaf.full());
-
-        let mut scanner = Scanner::new(&leaf);
-        let mut prev_key = 0;
-        while let Some(entry) = scanner.next() {
-            assert_eq!(scanner.get(), Some(entry));
-            assert!(prev_key < *entry.0);
-            assert_eq!(*entry.0 + 1, *entry.1);
-            prev_key = *entry.0;
-        }
-        drop(scanner);
-
-        let mut scanner = Scanner::new_including_removed(&leaf);
-        let mut found_40_40 = false;
-        let mut found_60_61 = false;
-        prev_key = 0;
-        while let Some(entry) = scanner.next() {
-            assert_eq!(scanner.get(), Some(entry));
-            if *entry.0 == 60 {
-                assert!(prev_key <= *entry.0);
-                assert!(scanner.removed());
-                if *entry.1 == 61 {
-                    found_60_61 = true;
-                }
-            } else if *entry.0 == 40 && *entry.1 == 40 {
-                assert!(prev_key <= *entry.0);
-                assert!(scanner.removed());
-                found_40_40 = true;
-            } else {
-                assert!(prev_key < *entry.0);
-                assert_eq!(*entry.0 + 1, *entry.1);
-                assert!(!scanner.removed());
-                prev_key = *entry.0;
-            }
-        }
-        assert!(found_40_40);
-        assert!(found_60_61);
-        drop(scanner);
-
-        let mut scanner = Scanner::max_less(&leaf, &50);
-        assert_eq!(scanner.get().unwrap(), (&40, &41));
-        let mut iterated = 0;
-        prev_key = 40;
-        while let Some(entry) = scanner.next() {
-            assert_eq!(scanner.get(), Some(entry));
-            assert!(prev_key < *entry.0);
-            assert_eq!(*entry.0 + 1, *entry.1);
-            prev_key = *entry.0;
-            iterated += 1;
-        }
-        assert_eq!(iterated, 2);
-        drop(scanner);
-
-        let leaf = Leaf::new();
-        assert!(leaf.insert(20, 21).is_none());
-        assert!(leaf.insert(10, 11).is_none());
-        assert_eq!(*leaf.search(&10).unwrap(), 11);
-        assert!(leaf.insert(11, 12).is_none());
-        assert_eq!(leaf.max(), Some((&20, &21)));
-        assert_eq!(leaf.insert(11, 12), Some(((11, 12), true)));
-        assert_eq!(*leaf.search(&11).unwrap(), 12);
-        assert!(leaf.insert(12, 13).is_none());
-        assert_eq!(*leaf.search(&12).unwrap(), 13);
-        assert_eq!(leaf.min_greater_equal(&21).0, None);
-        assert_eq!(leaf.min_greater_equal(&20).0, Some((&20, &21)));
-        assert_eq!(leaf.min_greater_equal(&19).0, Some((&20, &21)));
-        assert_eq!(leaf.min_greater_equal(&0).0, Some((&10, &11)));
-        assert!(leaf.insert(2, 3).is_none());
-        assert_eq!(*leaf.search(&2).unwrap(), 3);
-        assert_eq!(leaf.insert(2, 3), Some(((2, 3), true)));
-        assert_eq!(leaf.min_greater_equal(&8).0, Some((&10, &11)));
-        assert_eq!(*leaf.search(&2).unwrap(), 3);
-        assert!(leaf.insert(1, 2).is_none());
-        assert_eq!(*leaf.search(&1).unwrap(), 2);
-        assert!(leaf.insert(13, 14).is_none());
-        assert_eq!(*leaf.search(&13).unwrap(), 14);
-        assert_eq!(leaf.insert(13, 14), Some(((13, 14), true)));
-        assert_eq!(leaf.remove_if(&10, &mut |v| *v == 11), (true, false, false));
-        assert_eq!(leaf.remove_if(&11, &mut |v| *v == 0), (false, false, false));
-        assert_eq!(leaf.remove_if(&11, &mut |v| *v == 12), (true, false, false));
-        assert_eq!(leaf.remove_if(&12, &mut |v| *v == 13), (true, false, false));
-        assert!(!leaf.full());
-        assert!(leaf.remove_if(&20, &mut |_| true).0);
-        assert!(leaf.insert(20, 21).is_none());
-        assert!(leaf.search(&11).is_none());
-        assert_eq!(leaf.remove_if(&10, &mut |_| true), (false, true, false));
-        assert_eq!(leaf.remove_if(&11, &mut |_| true), (false, true, false));
-        assert_eq!(*leaf.search(&20).unwrap(), 21);
-        assert_eq!(leaf.max(), Some((&20, &21)));
-        assert!(leaf.full());
-
-        let mut scanner = Scanner::new(&leaf);
-        prev_key = 0;
-        while let Some(entry) = scanner.next() {
-            assert_eq!(scanner.get(), Some(entry));
-            assert!(prev_key < *entry.0);
-            assert_eq!(*entry.0 + 1, *entry.1);
-            prev_key = *entry.0;
-        }
-        drop(scanner);
-
-        let mut leaves_boxed = (None, None);
-        leaf.distribute(&mut leaves_boxed.0, &mut leaves_boxed.1);
-        let mut iterated_low = 0;
-        let mut scanner_low = Scanner::new(leaves_boxed.0.as_ref().unwrap());
-        prev_key = 0;
-        while let Some(entry) = scanner_low.next() {
-            assert_eq!(scanner_low.get(), Some(entry));
-            assert!(prev_key < *entry.0);
-            assert_eq!(*entry.0 + 1, *entry.1);
-            prev_key = *entry.0;
-            iterated_low += 1;
-        }
-        assert_eq!(iterated_low, 4);
-        drop(scanner_low);
-        assert!(leaves_boxed.1.is_none());
-    }
+    fn basic() {}
 
     #[test]
-    fn complex() {
-        let leaf = Leaf::new();
-        for i in 0..ARRAY_SIZE {
-            assert!(leaf.insert(i, i).is_none());
-        }
-        for i in 0..ARRAY_SIZE - 1 {
-            assert_eq!(leaf.remove_if(&i, &mut |v| *v == i), (true, true, false));
-        }
-        assert!(leaf.full());
-        assert!(!leaf.obsolete());
-        assert_eq!(
-            leaf.remove_if(&(ARRAY_SIZE - 1), &mut |_| true),
-            (true, true, true)
-        );
-        assert_eq!(
-            leaf.insert(ARRAY_SIZE, ARRAY_SIZE),
-            Some(((ARRAY_SIZE, ARRAY_SIZE), false))
-        );
-
-        let mut scanner = Scanner::new_including_removed(&leaf);
-        let mut expected = 0;
-        while let Some(_) = scanner.next() {
-            assert!(scanner.removed());
-            expected += 1;
-        }
-        assert_eq!(expected, ARRAY_SIZE);
-    }
+    fn complex() {}
 
     #[test]
-    fn retire() {
-        // Retire.
-        let leaf1 = Leaf::new();
-        let leaf2 = Leaf::new();
+    fn retire() {}
 
-        for i in 0..ARRAY_SIZE - 2 {
-            assert!(leaf1.insert(i, i).is_none());
-            assert!(leaf2.insert(i + 4, i + 4).is_none());
-            assert_eq!(
-                leaf2.remove_if(&(i + 4), &mut |_| true),
-                (true, false, true)
-            );
-        }
-        assert!(!leaf1.retire());
-        assert!(!leaf1.obsolete());
-        assert!(leaf2.retire());
-        assert!(leaf2.obsolete());
-        assert_eq!(
-            leaf1.insert(ARRAY_SIZE, ARRAY_SIZE),
-            Some(((ARRAY_SIZE, ARRAY_SIZE), false))
-        );
-        assert_eq!(leaf2.insert(5, 5), Some(((5, 5), false)));
-    }
-
-    #[test]
-    fn update() {
-        let num_threads = (ARRAY_SIZE + 1) as usize;
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    async fn update() {
+        let num_tasks = (DIMENSION.num_entries + 1) as usize;
         for _ in 0..256 {
-            let barrier = Arc::new(Barrier::new(num_threads));
-            let leaf = Arc::new(Leaf::new());
-            leaf.insert(num_threads * 2, 1);
-            let mut thread_handles = Vec::with_capacity(num_threads);
-            for tid in 0..num_threads {
-                let barrier_copied = barrier.clone();
-                let leaf_copied = leaf.clone();
-                thread_handles.push(thread::spawn(move || {
-                    barrier_copied.wait();
-                    assert_eq!(
-                        leaf_copied.insert(num_threads * 2, num_threads),
-                        Some(((num_threads * 2, num_threads), true))
-                    );
-                    let result = leaf_copied.insert(tid, 1);
-                    if result.is_none() {
-                        assert_eq!(*leaf_copied.search(&tid).unwrap(), 1);
-                        if tid % 2 != 0 {
-                            assert!(leaf_copied.remove_if(&tid, &mut |v| *v == 1).0);
-                        }
-                    }
-                    let mut scanner = Scanner::new(&leaf_copied);
-                    let mut prev_key = 0;
-                    while let Some(entry) = scanner.next() {
-                        assert_eq!(scanner.get(), Some(entry));
-                        assert_eq!(entry.1, &1);
-                        assert!((prev_key == 0 && *entry.0 == 0) || prev_key < *entry.0);
-                        prev_key = *entry.0;
-                    }
+            let barrier = Arc::new(sync::Barrier::new(num_tasks));
+            let leaf: Arc<Leaf<String, String>> = Arc::new(Leaf::new());
+            let mut task_handles = Vec::with_capacity(num_tasks);
+            for _ in 0..num_tasks {
+                let barrier_clone = barrier.clone();
+                let leaf_clone = leaf.clone();
+                task_handles.push(tokio::spawn(async move {
+                    barrier_clone.wait().await;
+                    drop(leaf_clone);
                 }));
             }
-            for handle in thread_handles {
-                handle.join().unwrap();
-            }
-            let scanner = Scanner::new(&leaf);
-            let mut prev_key = 0;
-            for entry in scanner {
-                assert_eq!(entry.1, &1);
-                assert!((prev_key == 0 && *entry.0 == 0) || prev_key < *entry.0);
-                assert!(entry.0 % 2 == 0);
-                prev_key = *entry.0;
+            for r in futures::future::join_all(task_handles).await {
+                assert!(r.is_ok());
             }
         }
     }

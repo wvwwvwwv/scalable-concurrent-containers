@@ -13,6 +13,7 @@ A collection of concurrent data structures and building blocks for concurrent pr
 - [scc::HashSet](#HashSet) is a concurrent hash set based on [scc::HashMap](#HashMap).
 - [scc::HashIndex](#HashIndex) is a concurrent hash index allowing lock-free read and scan.
 - [scc::TreeIndex](#TreeIndex) is a concurrent B+ tree allowing lock-free read and scan.
+- [scc::awaitable::TreeIndex](#Awaitable-TreeIndex) is a non-blocking awaitable concurrent B+ tree.
 
 
 ## EBR
@@ -318,6 +319,24 @@ let barrier = Barrier::new();
 assert_eq!(treeindex.range(1..1, &barrier).count(), 0);
 assert_eq!(treeindex.range(4..8, &barrier).count(), 4);
 assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
+```
+
+
+## Awaitable TreeIndex
+
+*WORK-IN-PROGRESS*
+
+[`awaitable::TreeIndex`](#Awaitable-TreeIndex) is a variant of [`TreeIndex`](#TreeIndex) tailored to asynchronous code. Methods that modify the data do not return the result immediately, instead a [`future`](https://doc.rust-lang.org/std/future/trait.Future.html) is returned; in order to get the result, the caller has to *await* it.
+
+
+### Examples
+
+```rust
+use scc::awaitable::TreeIndex;
+
+let treeindex: TreeIndex<u64, u32> = TreeIndex::default();
+let future_insert = treeindex.insert(11, 17);
+let result = future_insert.await;
 ```
 
 
