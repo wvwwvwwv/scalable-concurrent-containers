@@ -10,6 +10,21 @@ use std::mem::{size_of, MaybeUninit};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
+/// The result of insertion.
+pub enum InsertResult<K, V> {
+    /// Insert succeeded.
+    Success,
+
+    /// Duplicate key found.
+    Duplicate(K, V),
+
+    /// The [`Leaf`] is full.
+    Full(K, V),
+
+    /// The [`Leaf`] has retired.
+    Retired(K, V),
+}
+
 /// The number of entries and number of state bits per entry.
 pub struct Dimension {
     num_entries: usize,
@@ -40,6 +55,12 @@ impl Dimension {
     /// Returns a removed state of an entry.
     fn removed_state(&self) -> usize {
         (1_usize << self.num_bits_per_entry) - 1
+    }
+
+    /// Augments the state to the given metadata.
+    fn augment(&self, metadata: usize, index: usize, state: usize) -> usize {
+        debug_assert_eq!(state & ((1_usize << self.num_bits_per_entry) - 1), state);
+        (metadata & (!self.state_mask(index))) | (state << (index * self.num_bits_per_entry))
     }
 }
 
@@ -78,12 +99,12 @@ pub const DIMENSION: Dimension = match size_of::<usize>() {
     },
 };
 
-/// Each constructed entry in an `EntryArray` is never dropped until the `Leaf` is dropped.
+/// Each constructed entry in an `EntryArray` is never dropped until the [`Leaf`] is dropped.
 pub type EntryArray<K, V> = [MaybeUninit<(K, V)>; DIMENSION.num_entries];
 
 /// [`Leaf`] is an ordered array of key-value pairs.
 ///
-/// A constructed key-value pair entry is never dropped until the entire `Leaf` instance is
+/// A constructed key-value pair entry is never dropped until the entire [`Leaf`] instance is
 /// dropped.
 pub struct Leaf<K, V>
 where
@@ -93,7 +114,7 @@ where
     /// The array of key-value pairs.
     entry_array: EntryArray<K, V>,
 
-    /// A pointer that points to the next adjacent leaf.
+    /// A pointer that points to the next adjacent [`Leaf`].
     link: AtomicArc<Leaf<K, V>>,
 
     /// The metadata that manages the contents.
@@ -122,7 +143,7 @@ where
         }
     }
 
-    /// Returns `true` if the [`Leaf`] is retired.
+    /// Returns `true` if the [`Leaf`] has retired.
     pub fn retired(&self) -> bool {
         Dimension::retired(self.metadata.load(Relaxed))
     }
@@ -146,11 +167,85 @@ where
     }
 
     /// Inserts a key value pair.
-    ///
-    /// It returns the passed key value pair on failure.
-    /// The second returned value being true indicates that the same key exists.
-    pub fn insert(&self, _key: K, _value: V) -> Option<((K, V), bool)> {
-        None
+    pub fn insert(&self, mut key: K, mut value: V) -> InsertResult<K, V> {
+        let mut metadata = self.metadata.load(Acquire);
+        while !Dimension::retired(metadata) {
+            let mut new_metadata = 0;
+            let mut max_min_rank = 0;
+            let mut min_max_rank = DIMENSION.removed_state();
+            let mut free_slot_index = DIMENSION.num_entries;
+            for i in 0..DIMENSION.num_entries {
+                let rank = DIMENSION.state(metadata, i);
+                if free_slot_index == DIMENSION.num_entries && rank == 0 {
+                    // Found a free slot.
+                    free_slot_index = i;
+                    new_metadata = DIMENSION.augment(new_metadata, i, DIMENSION.removed_state());
+                } else if rank > max_min_rank && rank < min_max_rank {
+                    match self.compare(i, &key) {
+                        Ordering::Less => {
+                            if max_min_rank < rank {
+                                max_min_rank = rank;
+                            }
+                            metadata = DIMENSION.augment(new_metadata, i, rank);
+                        }
+                        Ordering::Greater => {
+                            if min_max_rank > rank {
+                                min_max_rank = rank;
+                            }
+                            metadata = DIMENSION.augment(new_metadata, i, rank + 1);
+                        }
+                        Ordering::Equal => {
+                            // Duplicate key.
+                            return InsertResult::Duplicate(key, value);
+                        }
+                    }
+                } else if rank <= max_min_rank {
+                    new_metadata = DIMENSION.augment(new_metadata, i, rank);
+                } else {
+                    new_metadata = DIMENSION.augment(new_metadata, i, rank + 1);
+                }
+            }
+
+            if free_slot_index == DIMENSION.num_entries {
+                // The `Leaf` is full.
+                return InsertResult::Full(key, value);
+            }
+
+            // Reserve the slot.
+            //
+            // It doesn't have to be a release-store.
+            if let Err(actual) =
+                self.metadata
+                    .compare_exchange(metadata, new_metadata, Acquire, Acquire)
+            {
+                metadata = actual;
+                continue;
+            }
+
+            // Write the key and value.
+            self.write(free_slot_index, key, value);
+
+            // Make the newly inserted value reachable.
+            let final_metadata = DIMENSION.augment(new_metadata, free_slot_index, max_min_rank + 1);
+            if self
+                .metadata
+                .compare_exchange(new_metadata, final_metadata, Release, Relaxed)
+                .is_err()
+            {
+                let took = self.take(free_slot_index);
+                key = took.0;
+                value = took.1;
+                metadata = self
+                    .metadata
+                    .fetch_and(!DIMENSION.state_mask(free_slot_index), Acquire)
+                    & (!DIMENSION.state_mask(free_slot_index));
+                continue;
+            }
+
+            return InsertResult::Success;
+        }
+
+        InsertResult::Retired(key, value)
     }
 
     /// Removes the key if the condition is met.
@@ -348,15 +443,6 @@ where
         self.metadata.load(Relaxed) == metadata
     }
 
-    fn write(&self, index: usize, key: K, value: V) {
-        unsafe {
-            let entry_array_ptr = &self.entry_array as *const EntryArray<K, V>;
-            let entry_array_mut_ptr = entry_array_ptr as *mut EntryArray<K, V>;
-            let entry_array_mut_ref = &mut (*entry_array_mut_ptr);
-            entry_array_mut_ref[index].as_mut_ptr().write((key, value));
-        }
-    }
-
     pub fn next(&self, index: usize, metadata: usize) -> (usize, *const (K, V)) {
         if index != usize::MAX {
             let current_entry_rank = if index < DIMENSION.num_entries {
@@ -429,8 +515,17 @@ where
             let entry_array_ptr = &self.entry_array as *const EntryArray<K, V>;
             let entry_array_mut_ptr = entry_array_ptr as *mut EntryArray<K, V>;
             let entry_array_mut_ref = &mut (*entry_array_mut_ptr);
-            let entry_ptr = &mut entry_array_mut_ref[index] as *mut MaybeUninit<(K, V)>;
-            std::ptr::replace(entry_ptr, MaybeUninit::uninit()).assume_init()
+            let entry_ptr = entry_array_mut_ref[index].as_mut_ptr();
+            std::ptr::read(entry_ptr)
+        }
+    }
+
+    fn write(&self, index: usize, key: K, value: V) {
+        unsafe {
+            let entry_array_ptr = &self.entry_array as *const EntryArray<K, V>;
+            let entry_array_mut_ptr = entry_array_ptr as *mut EntryArray<K, V>;
+            let entry_array_mut_ref = &mut (*entry_array_mut_ptr);
+            entry_array_mut_ref[index].as_mut_ptr().write((key, value));
         }
     }
 
@@ -590,7 +685,14 @@ mod test {
     use tokio::sync;
 
     #[test]
-    fn basic() {}
+    fn basic() {
+        let leaf: Leaf<String, String> = Leaf::new();
+        assert!(matches!(
+            leaf.insert("MY GOODNESS!".to_owned(), "OH MY GOD!!".to_owned()),
+            InsertResult::Success
+        ));
+        assert_eq!(leaf.search("MY GOODNESS!").unwrap(), "OH MY GOD!!");
+    }
 
     #[test]
     fn complex() {}
