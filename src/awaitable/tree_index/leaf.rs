@@ -25,6 +25,18 @@ pub enum InsertResult<K, V> {
     Retired(K, V),
 }
 
+/// The result of removal.
+pub enum RemoveResult {
+    /// Remove succeeded.
+    Success,
+
+    /// Remove failed.
+    Fail,
+
+    /// The [`Leaf`] is retired after a successful removal.
+    Retired,
+}
+
 /// The number of entries and number of state bits per entry.
 pub struct Dimension {
     num_entries: usize,
@@ -37,6 +49,10 @@ impl Dimension {
         metadata & (1_usize << (size_of::<usize>() * 8 - 1)) != 0
     }
 
+    /// Makes the metadata represent a retired state.
+    fn retire(metadata: usize) -> usize {
+        metadata | (1_usize << (size_of::<usize>() * 8 - 1))
+    }
     /// Returns a bit mask for an entry.
     fn state_mask(&self, index: usize) -> usize {
         ((1_usize << self.num_bits_per_entry) - 1) << (index * self.num_bits_per_entry)
@@ -134,7 +150,7 @@ where
     K: 'static + Clone + Ord + Sync,
     V: 'static + Clone + Sync,
 {
-    /// Creates a new Leaf.
+    /// Creates a new [`Leaf`].
     pub fn new() -> Leaf<K, V> {
         Leaf {
             entry_array: unsafe { MaybeUninit::uninit().assume_init() },
@@ -170,39 +186,42 @@ where
     pub fn insert(&self, mut key: K, mut value: V) -> InsertResult<K, V> {
         let mut metadata = self.metadata.load(Acquire);
         while !Dimension::retired(metadata) {
-            let mut new_metadata = 0;
+            let mut interim_metadata = 0;
             let mut max_min_rank = 0;
             let mut min_max_rank = DIMENSION.removed_state();
             let mut free_slot_index = DIMENSION.num_entries;
             for i in 0..DIMENSION.num_entries {
                 let rank = DIMENSION.state(metadata, i);
-                if free_slot_index == DIMENSION.num_entries && rank == 0 {
-                    // Found a free slot.
-                    free_slot_index = i;
-                    new_metadata = DIMENSION.augment(new_metadata, i, DIMENSION.removed_state());
+                if rank == DIMENSION.uninit_state() {
+                    if free_slot_index == DIMENSION.num_entries {
+                        // Found a free slot.
+                        free_slot_index = i;
+                        interim_metadata =
+                            DIMENSION.augment(interim_metadata, i, DIMENSION.removed_state());
+                    }
                 } else if rank > max_min_rank && rank < min_max_rank {
                     match self.compare(i, &key) {
                         Ordering::Less => {
                             if max_min_rank < rank {
                                 max_min_rank = rank;
                             }
-                            metadata = DIMENSION.augment(new_metadata, i, rank);
+                            interim_metadata = DIMENSION.augment(interim_metadata, i, rank);
                         }
                         Ordering::Greater => {
                             if min_max_rank > rank {
                                 min_max_rank = rank;
                             }
-                            metadata = DIMENSION.augment(new_metadata, i, rank + 1);
+                            interim_metadata = DIMENSION.augment(interim_metadata, i, rank + 1);
                         }
                         Ordering::Equal => {
                             // Duplicate key.
                             return InsertResult::Duplicate(key, value);
                         }
                     }
-                } else if rank <= max_min_rank {
-                    new_metadata = DIMENSION.augment(new_metadata, i, rank);
+                } else if rank <= max_min_rank || rank == DIMENSION.removed_state() {
+                    interim_metadata = DIMENSION.augment(interim_metadata, i, rank);
                 } else {
-                    new_metadata = DIMENSION.augment(new_metadata, i, rank + 1);
+                    interim_metadata = DIMENSION.augment(interim_metadata, i, rank + 1);
                 }
             }
 
@@ -216,7 +235,7 @@ where
             // It doesn't have to be a release-store.
             if let Err(actual) =
                 self.metadata
-                    .compare_exchange(metadata, new_metadata, Acquire, Acquire)
+                    .compare_exchange(metadata, interim_metadata, Acquire, Acquire)
             {
                 metadata = actual;
                 continue;
@@ -226,10 +245,11 @@ where
             self.write(free_slot_index, key, value);
 
             // Make the newly inserted value reachable.
-            let final_metadata = DIMENSION.augment(new_metadata, free_slot_index, max_min_rank + 1);
+            let final_metadata =
+                DIMENSION.augment(interim_metadata, free_slot_index, max_min_rank + 1);
             if self
                 .metadata
-                .compare_exchange(new_metadata, final_metadata, Release, Relaxed)
+                .compare_exchange(interim_metadata, final_metadata, Release, Relaxed)
                 .is_err()
             {
                 let took = self.take(free_slot_index);
@@ -249,22 +269,11 @@ where
     }
 
     /// Removes the key if the condition is met.
-    ///
-    /// The first boolean value returned from the function indicates that an entry has been removed.
-    /// The second boolean value indicates that the leaf is full.
-    /// The third boolean value indicates that the leaf is empty.
-    pub fn remove_if<Q, F: FnMut(&V) -> bool>(
-        &self,
-        key: &Q,
-        condition: &mut F,
-    ) -> (bool, bool, bool)
+    pub fn remove_if<Q, F: FnMut(&V) -> bool>(&self, key: &Q, condition: &mut F) -> RemoveResult
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        let mut removed = false;
-        let mut full = true;
-        let mut empty = true;
         let mut metadata = self.metadata.load(Acquire);
         let mut max_min_rank = 0;
         let mut min_max_rank = DIMENSION.removed_state();
@@ -283,13 +292,31 @@ where
                         }
                     }
                     Ordering::Equal => {
+                        // Found the key.
                         loop {
                             if !condition(self.read(i).1) {
                                 // The given condition is not met.
-                                break;
+                                return RemoveResult::Fail;
+                            }
+                            let mut empty = true;
+                            for j in 0..DIMENSION.num_entries {
+                                // Check if other entries are all unreachable.
+                                if i == j {
+                                    continue;
+                                }
+                                let rank = DIMENSION.state(metadata, j);
+                                if rank != DIMENSION.uninit_state()
+                                    && rank != DIMENSION.removed_state()
+                                {
+                                    empty = false;
+                                    break;
+                                }
                             }
 
-                            let new_metadata = metadata | DIMENSION.state_mask(i);
+                            let mut new_metadata = metadata | DIMENSION.state_mask(i);
+                            if empty {
+                                new_metadata = Dimension::retire(new_metadata);
+                            }
                             match self.metadata.compare_exchange(
                                 metadata,
                                 new_metadata,
@@ -297,38 +324,25 @@ where
                                 Relaxed,
                             ) {
                                 Ok(_) => {
-                                    removed = true;
-                                    metadata = new_metadata;
-                                    break;
+                                    if empty {
+                                        return RemoveResult::Retired;
+                                    }
+                                    return RemoveResult::Success;
                                 }
-                                Err(result) => {
-                                    metadata = result;
+                                Err(actual) => {
+                                    metadata = actual;
                                     if DIMENSION.state(metadata, i) == DIMENSION.removed_state() {
-                                        // Removed by another thread.
-                                        break;
+                                        return RemoveResult::Fail;
                                     }
                                 }
                             }
                         }
                     }
-                }
+                };
             }
         }
 
-        for i in 0..DIMENSION.num_entries {
-            let rank = DIMENSION.state(metadata, i);
-            if full && rank == 0 {
-                full = false;
-            }
-            if empty && rank != 0 && rank != DIMENSION.removed_state() {
-                empty = false;
-            }
-            if !full && !empty {
-                break;
-            }
-        }
-
-        (removed, full, empty)
+        RemoveResult::Fail
     }
 
     /// Returns a value associated with the key.
@@ -682,6 +696,7 @@ where
 mod test {
     use super::*;
 
+    use proptest::prelude::*;
     use tokio::sync;
 
     #[test]
@@ -691,14 +706,46 @@ mod test {
             leaf.insert("MY GOODNESS!".to_owned(), "OH MY GOD!!".to_owned()),
             InsertResult::Success
         ));
+        assert!(matches!(
+            leaf.insert("GOOD DAY".to_owned(), "OH MY GOD!!".to_owned()),
+            InsertResult::Success
+        ));
         assert_eq!(leaf.search("MY GOODNESS!").unwrap(), "OH MY GOD!!");
+        assert_eq!(leaf.search("GOOD DAY").unwrap(), "OH MY GOD!!");
     }
 
-    #[test]
-    fn complex() {}
-
-    #[test]
-    fn retire() {}
+    proptest! {
+        #[test]
+        fn prop(insert in 0_usize..DIMENSION.num_entries, remove in 0_usize..DIMENSION.num_entries) {
+            let leaf: Leaf<usize, usize> = Leaf::new();
+            for i in 0..insert {
+                assert!(matches!(leaf.insert(i, i), InsertResult::Success));
+            }
+            for i in 0..insert {
+                assert!(matches!(leaf.insert(i, i), InsertResult::Duplicate(..)));
+            }
+            for i in 0..insert {
+                assert_eq!(*leaf.search(&i).unwrap(), i);
+            }
+            if insert == DIMENSION.num_entries {
+                assert!(matches!(leaf.insert(usize::MAX, usize::MAX), InsertResult::Full(..)));
+            }
+            for i in 0..remove {
+                if i < insert {
+                    if i == insert - 1 {
+                        assert!(matches!(leaf.remove_if(&i, &mut |_| true), RemoveResult::Retired));
+                        for i in 0..insert {
+                            assert!(matches!(leaf.insert(i, i), InsertResult::Retired(..)));
+                        }
+                    } else {
+                        assert!(matches!(leaf.remove_if(&i, &mut |_| true), RemoveResult::Success));
+                    }
+                } else {
+                    assert!(matches!(leaf.remove_if(&i, &mut |_| true), RemoveResult::Fail));
+                }
+            }
+        }
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn update() {
