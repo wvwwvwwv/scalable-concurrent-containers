@@ -26,6 +26,7 @@ pub enum InsertResult<K, V> {
 }
 
 /// The result of removal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RemoveResult {
     /// Remove succeeded.
     Success,
@@ -183,7 +184,7 @@ where
     }
 
     /// Inserts a key value pair.
-    pub fn insert(&self, mut key: K, mut value: V) -> InsertResult<K, V> {
+    pub fn insert(&self, key: K, value: V) -> InsertResult<K, V> {
         let mut metadata = self.metadata.load(Acquire);
         while !Dimension::retired(metadata) {
             let mut interim_metadata = 0;
@@ -220,6 +221,9 @@ where
                     }
                 } else if rank <= max_min_rank || rank == DIMENSION.removed_state() {
                     interim_metadata = DIMENSION.augment(interim_metadata, i, rank);
+                } else if rank == DIMENSION.num_entries {
+                    // The `Leaf` is full.
+                    return InsertResult::Full(key, value);
                 } else {
                     interim_metadata = DIMENSION.augment(interim_metadata, i, rank + 1);
                 }
@@ -245,21 +249,53 @@ where
             self.write(free_slot_index, key, value);
 
             // Make the newly inserted value reachable.
-            let final_metadata =
-                DIMENSION.augment(interim_metadata, free_slot_index, max_min_rank + 1);
-            if self
-                .metadata
-                .compare_exchange(interim_metadata, final_metadata, Release, Relaxed)
-                .is_err()
+            let free_slot_rank = max_min_rank + 1;
+            let mut final_metadata =
+                DIMENSION.augment(interim_metadata, free_slot_index, free_slot_rank);
+            while let Err(actual) =
+                self.metadata
+                    .compare_exchange(interim_metadata, final_metadata, Release, Relaxed)
             {
-                let took = self.take(free_slot_index);
-                key = took.0;
-                value = took.1;
-                metadata = self
-                    .metadata
-                    .fetch_and(!DIMENSION.state_mask(free_slot_index), Acquire)
-                    & (!DIMENSION.state_mask(free_slot_index));
-                continue;
+                if Dimension::retired(actual) {
+                    let (key, value) = self.take(free_slot_index);
+                    let result = self
+                        .metadata
+                        .fetch_and(!DIMENSION.state_mask(free_slot_index), Acquire)
+                        & (!DIMENSION.state_mask(free_slot_index));
+                    debug_assert!(Dimension::retired(result));
+                    return InsertResult::Retired(key, value);
+                }
+
+                interim_metadata = actual;
+
+                let mut new_free_slot_rank = free_slot_rank;
+                let mut i = 0;
+                while i < DIMENSION.num_entries {
+                    let rank = DIMENSION.state(actual, i);
+                    if rank == DIMENSION.uninit_state() || rank == DIMENSION.removed_state() {
+                        i += 1;
+                        continue;
+                    }
+                    if new_free_slot_rank == rank {
+                        // Another thread overtook the rank.
+                        if self.read(i).0.cmp(self.read(free_slot_index).0) == Ordering::Equal {
+                            // The overtaken entry happens to be of the same key.
+                            let (key, value) = self.take(free_slot_index);
+                            let result = self
+                                .metadata
+                                .fetch_and(!DIMENSION.state_mask(free_slot_index), Acquire)
+                                & (!DIMENSION.state_mask(free_slot_index));
+                            debug_assert!(Dimension::retired(result));
+                            return InsertResult::Retired(key, value);
+                        }
+                        new_free_slot_rank += 1;
+                        i = 0;
+                    }
+                    i += 1;
+                }
+
+                final_metadata =
+                    DIMENSION.augment(interim_metadata, free_slot_index, new_free_slot_rank);
             }
 
             return InsertResult::Success;
@@ -457,31 +493,33 @@ where
         self.metadata.load(Relaxed) == metadata
     }
 
+    /// Returns the index and a pointer to the corresponding entry of the next higher ranked entry.
     pub fn next(&self, index: usize, metadata: usize) -> (usize, *const (K, V)) {
-        if index != usize::MAX {
-            let current_entry_rank = if index < DIMENSION.num_entries {
-                DIMENSION.state(metadata, index)
-            } else {
-                0
-            };
-            if current_entry_rank < DIMENSION.num_entries {
-                let mut next_rank = DIMENSION.removed_state();
-                let mut next_index = DIMENSION.num_entries;
-                for i in 0..DIMENSION.num_entries {
-                    let rank = DIMENSION.state(metadata, i);
-                    if rank == DIMENSION.uninit_state() || rank == DIMENSION.removed_state() {
-                        continue;
-                    }
-                    if current_entry_rank < rank && rank < next_rank {
-                        next_rank = rank;
-                        next_index = i;
-                    }
+        let current_entry_rank = if index < DIMENSION.num_entries {
+            DIMENSION.state(metadata, index)
+        } else {
+            0
+        };
+        if current_entry_rank < DIMENSION.num_entries {
+            let mut next_rank = DIMENSION.removed_state();
+            let mut next_index = DIMENSION.num_entries;
+            for i in 0..DIMENSION.num_entries {
+                if i == index {
+                    continue;
                 }
-                if next_rank != DIMENSION.removed_state() {
-                    return (next_index, unsafe {
-                        &*self.entry_array[next_index].as_ptr()
-                    });
+                let rank = DIMENSION.state(metadata, i);
+                if rank == DIMENSION.uninit_state() || rank == DIMENSION.removed_state() {
+                    continue;
                 }
+                if current_entry_rank < rank && rank < next_rank {
+                    next_rank = rank;
+                    next_index = i;
+                }
+            }
+            if next_rank != DIMENSION.removed_state() {
+                return (next_index, unsafe {
+                    &*self.entry_array[next_index].as_ptr()
+                });
             }
         }
         (usize::MAX, std::ptr::null())
@@ -712,6 +750,67 @@ mod test {
         ));
         assert_eq!(leaf.search("MY GOODNESS!").unwrap(), "OH MY GOD!!");
         assert_eq!(leaf.search("GOOD DAY").unwrap(), "OH MY GOD!!");
+
+        for i in 0..DIMENSION.num_entries {
+            if let InsertResult::Full(k, v) = leaf.insert(i.to_string(), i.to_string()) {
+                assert_eq!(i + 2, DIMENSION.num_entries);
+                assert_eq!(k, i.to_string());
+                assert_eq!(v, i.to_string());
+                break;
+            }
+            assert_eq!(leaf.search(&i.to_string()).unwrap(), &i.to_string());
+        }
+
+        for i in 0..DIMENSION.num_entries {
+            let result = leaf.remove_if(&i.to_string(), &mut |_| i >= 10);
+            if i >= 10 && i + 2 < DIMENSION.num_entries {
+                assert_eq!(result, RemoveResult::Success);
+            } else {
+                assert_eq!(result, RemoveResult::Fail);
+            }
+        }
+
+        assert_eq!(
+            leaf.remove_if("GOOD DAY", &mut |v| v == "OH MY"),
+            RemoveResult::Fail
+        );
+        assert_eq!(
+            leaf.remove_if("GOOD DAY", &mut |v| v == "OH MY GOD!!"),
+            RemoveResult::Success
+        );
+        assert!(leaf.search("GOOD DAY").is_none());
+        assert_eq!(
+            leaf.remove_if("MY GOODNESS!", &mut |_| true),
+            RemoveResult::Success
+        );
+        assert!(leaf.search("MY GOODNESS!").is_none());
+        assert!(matches!(
+            leaf.insert("1".to_owned(), "1".to_owned()),
+            InsertResult::Duplicate(..)
+        ));
+        assert!(matches!(
+            leaf.insert("100".to_owned(), "100".to_owned()),
+            InsertResult::Full(..)
+        ));
+
+        let mut scanner = Scanner::new(&leaf);
+        for i in 0..DIMENSION.num_entries {
+            if let Some(e) = scanner.next() {
+                assert_eq!(e.0, &i.to_string());
+                assert_eq!(e.1, &i.to_string());
+                assert_ne!(
+                    leaf.remove_if(&i.to_string(), &mut |_| true),
+                    RemoveResult::Fail
+                );
+            } else {
+                break;
+            }
+        }
+
+        assert!(matches!(
+            leaf.insert("200".to_owned(), "200".to_owned()),
+            InsertResult::Retired(..)
+        ));
     }
 
     proptest! {
@@ -748,23 +847,60 @@ mod test {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    #[ignore]
     async fn update() {
-        let num_tasks = (DIMENSION.num_entries + 1) as usize;
+        let num_excess = 3;
+        let num_tasks = (DIMENSION.num_entries + num_excess) as usize;
         for _ in 0..256 {
             let barrier = Arc::new(sync::Barrier::new(num_tasks));
-            let leaf: Arc<Leaf<String, String>> = Arc::new(Leaf::new());
+            let leaf: Arc<Leaf<usize, usize>> = Arc::new(Leaf::new());
+            let full: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
             let mut task_handles = Vec::with_capacity(num_tasks);
-            for _ in 0..num_tasks {
+            for t in 1..=num_tasks {
                 let barrier_clone = barrier.clone();
                 let leaf_clone = leaf.clone();
+                let full_clone = full.clone();
                 task_handles.push(tokio::spawn(async move {
                     barrier_clone.wait().await;
-                    drop(leaf_clone);
+                    let inserted = match leaf_clone.insert(t, t) {
+                        InsertResult::Success => {
+                            assert_eq!(*leaf_clone.search(&t).unwrap(), t);
+                            true
+                        }
+                        InsertResult::Duplicate(_, _) | InsertResult::Retired(_, _) => {
+                            unreachable!();
+                        }
+                        InsertResult::Full(k, v) => {
+                            assert_eq!(k, v);
+                            assert_eq!(k, t);
+                            full_clone.fetch_add(1, Relaxed);
+                            false
+                        }
+                    };
+                    {
+                        let mut prev = 0;
+                        let mut scanner = Scanner::new(&leaf_clone);
+                        for e in scanner.by_ref() {
+                            assert_eq!(e.0, e.1);
+                            assert!(*e.0 > prev);
+                            prev = *e.0;
+                        }
+                    }
+
+                    barrier_clone.wait().await;
+                    if inserted {
+                        assert_eq!(*leaf_clone.search(&t).unwrap(), t);
+                    }
+                    {
+                        let scanner = Scanner::new(&leaf_clone);
+                        assert_eq!(scanner.count(), DIMENSION.num_entries);
+                    }
                 }));
             }
             for r in futures::future::join_all(task_handles).await {
                 assert!(r.is_ok());
             }
+            assert_eq!(full.load(Relaxed), num_excess);
         }
     }
 }
