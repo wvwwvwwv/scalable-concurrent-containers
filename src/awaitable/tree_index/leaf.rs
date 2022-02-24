@@ -79,6 +79,30 @@ impl Dimension {
         debug_assert_eq!(state & ((1_usize << self.num_bits_per_entry) - 1), state);
         (metadata & (!self.state_mask(index))) | (state << (index * self.num_bits_per_entry))
     }
+
+    /// Updates the rank of the entry recursively.
+    ///
+    /// If the desired rank is used by another entry, it recursively calls itself on the conflicted
+    /// entry.
+    fn update_rank_recursive(
+        &self,
+        mut metadata: usize,
+        index: usize,
+        desired_rank: usize,
+    ) -> usize {
+        debug_assert_ne!(desired_rank, self.removed_state());
+        for i in 0..self.num_entries {
+            if i == index {
+                continue;
+            }
+            let rank = self.state(metadata, i);
+            if rank == desired_rank {
+                metadata = self.update_rank_recursive(metadata, i, desired_rank + 1);
+                break;
+            }
+        }
+        self.augment(metadata, index, desired_rank)
+    }
 }
 
 /// The maximum number of entries and the number of metadata bits per entry in a [`Leaf`].
@@ -245,60 +269,14 @@ where
                 continue;
             }
 
-            // Write the key and value.
-            self.write(free_slot_index, key, value);
-
-            // Make the newly inserted value reachable.
-            let free_slot_rank = max_min_rank + 1;
-            let mut final_metadata =
-                DIMENSION.augment(interim_metadata, free_slot_index, free_slot_rank);
-            while let Err(actual) =
-                self.metadata
-                    .compare_exchange(interim_metadata, final_metadata, Release, Relaxed)
-            {
-                if Dimension::retired(actual) {
-                    let (key, value) = self.take(free_slot_index);
-                    let result = self
-                        .metadata
-                        .fetch_and(!DIMENSION.state_mask(free_slot_index), Acquire)
-                        & (!DIMENSION.state_mask(free_slot_index));
-                    debug_assert!(Dimension::retired(result));
-                    return InsertResult::Retired(key, value);
-                }
-
-                interim_metadata = actual;
-
-                let mut new_free_slot_rank = free_slot_rank;
-                let mut i = 0;
-                while i < DIMENSION.num_entries {
-                    let rank = DIMENSION.state(actual, i);
-                    if rank == DIMENSION.uninit_state() || rank == DIMENSION.removed_state() {
-                        i += 1;
-                        continue;
-                    }
-                    if new_free_slot_rank == rank {
-                        // Another thread overtook the rank.
-                        if self.read(i).0.cmp(self.read(free_slot_index).0) == Ordering::Equal {
-                            // The overtaken entry happens to be of the same key.
-                            let (key, value) = self.take(free_slot_index);
-                            let result = self
-                                .metadata
-                                .fetch_and(!DIMENSION.state_mask(free_slot_index), Acquire)
-                                & (!DIMENSION.state_mask(free_slot_index));
-                            debug_assert!(Dimension::retired(result));
-                            return InsertResult::Retired(key, value);
-                        }
-                        new_free_slot_rank += 1;
-                        i = 0;
-                    }
-                    i += 1;
-                }
-
-                final_metadata =
-                    DIMENSION.augment(interim_metadata, free_slot_index, new_free_slot_rank);
-            }
-
-            return InsertResult::Success;
+            // Now, there is no going-back.
+            return self.post_insert(
+                free_slot_index,
+                max_min_rank + 1,
+                interim_metadata,
+                key,
+                value,
+            );
         }
 
         InsertResult::Retired(key, value)
@@ -511,6 +489,7 @@ where
                 if rank == DIMENSION.uninit_state() || rank == DIMENSION.removed_state() {
                     continue;
                 }
+                debug_assert_ne!(rank, current_entry_rank);
                 if current_entry_rank < rank && rank < next_rank {
                     next_rank = rank;
                     next_index = i;
@@ -551,6 +530,95 @@ where
                     .insert(entry.0.clone(), entry.1.clone());
             }
         }
+    }
+
+    /// Post-processing after reserving a free slot.
+    fn post_insert(
+        &self,
+        free_slot_index: usize,
+        mut free_slot_rank: usize,
+        mut current_metadata: usize,
+        key: K,
+        value: V,
+    ) -> InsertResult<K, V> {
+        // Write the key and value.
+        self.write(free_slot_index, key, value);
+
+        // Make the newly inserted value reachable.
+        let mut final_metadata =
+            DIMENSION.augment(current_metadata, free_slot_index, free_slot_rank);
+        while let Err(actual) =
+            self.metadata
+                .compare_exchange(current_metadata, final_metadata, Release, Relaxed)
+        {
+            if Dimension::retired(actual) {
+                let (key, value) = self.take(free_slot_index);
+                let result = self
+                    .metadata
+                    .fetch_and(!DIMENSION.state_mask(free_slot_index), Relaxed)
+                    & (!DIMENSION.state_mask(free_slot_index));
+                debug_assert!(Dimension::retired(result));
+                return InsertResult::Retired(key, value);
+            }
+
+            let key_ref = self.read(free_slot_index).0;
+            final_metadata = DIMENSION.augment(actual, free_slot_index, free_slot_rank);
+
+            let mut i = 0;
+            let mut acquired = false;
+            while i < DIMENSION.num_entries {
+                if i == free_slot_index {
+                    i += 1;
+                    continue;
+                }
+                let rank = DIMENSION.state(final_metadata, i);
+                if free_slot_rank == rank {
+                    // Another thread overtook the rank.
+                    //
+                    // An acquire fence is required in order to read the entry.
+                    if !acquired {
+                        std::sync::atomic::fence(Acquire);
+                        acquired = true;
+                    }
+                    match self.read(i).0.cmp(key_ref) {
+                        Ordering::Less => {
+                            // The new entry is smaller.
+                            free_slot_rank += 1;
+                            debug_assert_ne!(free_slot_rank, DIMENSION.removed_state());
+                            final_metadata =
+                                DIMENSION.augment(final_metadata, free_slot_index, free_slot_rank);
+
+                            // The rank has changed, so need to re-iterate from the beginning.
+                            i = 0;
+                            continue;
+                        }
+                        Ordering::Equal => {
+                            // The overtaken entry happens to be of the same key.
+                            let (key, value) = self.take(free_slot_index);
+                            let result = self
+                                .metadata
+                                .fetch_and(!DIMENSION.state_mask(free_slot_index), Relaxed)
+                                & (!DIMENSION.state_mask(free_slot_index));
+                            debug_assert!(Dimension::retired(result));
+                            return InsertResult::Retired(key, value);
+                        }
+                        Ordering::Greater => {
+                            // The new entry is higher ranked.
+                            //
+                            // The algorithm is, if rank + 1 is vacant, return, if not, rank + 1
+                            // => rank + 2 if rank + 2 is vacant, and so on.
+                            final_metadata =
+                                DIMENSION.update_rank_recursive(final_metadata, i, rank + 1);
+                        }
+                    }
+                }
+                i += 1;
+            }
+
+            current_metadata = actual;
+        }
+
+        InsertResult::Success
     }
 
     fn compare<Q>(&self, index: usize, key: &Q) -> std::cmp::Ordering
@@ -847,7 +915,6 @@ mod test {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
-    #[ignore]
     async fn update() {
         let num_excess = 3;
         let num_tasks = (DIMENSION.num_entries + num_excess) as usize;
@@ -888,6 +955,7 @@ mod test {
                     }
 
                     barrier_clone.wait().await;
+                    assert_eq!(full_clone.load(Relaxed), num_excess);
                     if inserted {
                         assert_eq!(*leaf_clone.search(&t).unwrap(), t);
                     }
@@ -900,7 +968,6 @@ mod test {
             for r in futures::future::join_all(task_handles).await {
                 assert!(r.is_ok());
             }
-            assert_eq!(full.load(Relaxed), num_excess);
         }
     }
 }
