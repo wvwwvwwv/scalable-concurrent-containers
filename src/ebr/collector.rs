@@ -246,6 +246,7 @@ impl Collector {
         self.previous_instance_link = self.current_instance_link.take();
         while let Some(mut instance_ptr) = garbage_link.take() {
             let next = unsafe { instance_ptr.as_mut().free() };
+            std::sync::atomic::compiler_fence(Acquire);
             self.num_instances -= 1;
             garbage_link = NonNull::new(next);
         }

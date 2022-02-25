@@ -585,9 +585,8 @@ where
         root_node_split: bool,
         barrier: &Barrier,
     ) -> bool {
-        let new_split_nodes_ptr;
         let full_node_ref = full_node_ptr.as_ref().unwrap();
-        if let Ok((_, ptr)) = self.new_children.compare_exchange(
+        let new_split_nodes_ptr = if let Ok((_, ptr)) = self.new_children.compare_exchange(
             Ptr::null(),
             (
                 Some(Arc::new(NewNodes {
@@ -602,11 +601,11 @@ where
             Acquire,
             Relaxed,
         ) {
-            new_split_nodes_ptr = ptr;
+            ptr
         } else {
             full_node_ref.rollback(barrier);
             return true;
-        }
+        };
 
         // Checks if the node is ready for a child split.
         if full_node_ptr != full_node.load(Relaxed, barrier) {

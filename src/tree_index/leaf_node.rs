@@ -339,8 +339,7 @@ where
         full_leaf: &AtomicArc<Leaf<K, V>>,
         barrier: &Barrier,
     ) -> bool {
-        let new_leaves_ptr;
-        match self.new_leaves.compare_exchange(
+        let new_leaves_ptr = match self.new_leaves.compare_exchange(
             Ptr::null(),
             (
                 Some(Arc::new(NewLeaves {
@@ -354,9 +353,9 @@ where
             Acquire,
             Relaxed,
         ) {
-            Ok((_, ptr)) => new_leaves_ptr = ptr,
+            Ok((_, ptr)) => ptr,
             Err(_) => return true,
-        }
+        };
 
         // Checks the full leaf pointer and the leaf node state after locking the leaf node.
         if full_leaf_ptr != full_leaf.load(Relaxed, barrier) {

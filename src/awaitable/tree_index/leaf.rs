@@ -1,6 +1,3 @@
-#![allow(dead_code)]
-#![allow(clippy::needless_pass_by_value)]
-
 use crate::ebr::{Arc, AtomicArc, Barrier};
 use crate::LinkedList;
 
@@ -922,11 +919,13 @@ mod test {
             let barrier = Arc::new(sync::Barrier::new(num_tasks));
             let leaf: Arc<Leaf<usize, usize>> = Arc::new(Leaf::new());
             let full: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+            let retire: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
             let mut task_handles = Vec::with_capacity(num_tasks);
             for t in 1..=num_tasks {
                 let barrier_clone = barrier.clone();
                 let leaf_clone = leaf.clone();
                 let full_clone = full.clone();
+                let retire_clone = retire.clone();
                 task_handles.push(tokio::spawn(async move {
                     barrier_clone.wait().await;
                     let inserted = match leaf_clone.insert(t, t) {
@@ -963,6 +962,16 @@ mod test {
                         let scanner = Scanner::new(&leaf_clone);
                         assert_eq!(scanner.count(), DIMENSION.num_entries);
                     }
+
+                    barrier_clone.wait().await;
+                    match leaf_clone.remove_if(&t, &mut |_| true) {
+                        RemoveResult::Success => assert!(inserted),
+                        RemoveResult::Fail => assert!(!inserted),
+                        RemoveResult::Retired => {
+                            assert!(inserted);
+                            assert_eq!(retire_clone.swap(1, Relaxed), 0);
+                        }
+                    };
                 }));
             }
             for r in futures::future::join_all(task_handles).await {

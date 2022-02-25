@@ -267,6 +267,7 @@ impl<T: 'static> AtomicArc<T> {
     /// assert_eq!(*ptr.as_ref().unwrap(), 59);
     /// ```
     #[inline]
+    #[must_use]
     pub fn clone(&self, order: Ordering, _barrier: &Barrier) -> AtomicArc<T> {
         unsafe {
             let ptr = self.instance_ptr.load(order);
