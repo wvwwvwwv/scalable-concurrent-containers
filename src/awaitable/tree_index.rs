@@ -4,8 +4,10 @@
 //! The module implements [`TreeIndex`].
 
 mod leaf;
+mod leaf_node;
 
 use leaf::Leaf;
+use leaf_node::LeafNode;
 
 use crate::ebr::AtomicArc;
 
@@ -19,6 +21,7 @@ where
     V: 'static + Clone + Send + Sync,
 {
     root: AtomicArc<Leaf<K, V>>,
+    non_root: AtomicArc<LeafNode<K, V>>,
 }
 
 impl<K, V> TreeIndex<K, V>
@@ -39,6 +42,7 @@ where
     pub fn new() -> TreeIndex<K, V> {
         TreeIndex {
             root: AtomicArc::null(),
+            non_root: AtomicArc::null(),
         }
     }
 
