@@ -2,11 +2,14 @@ use super::leaf::{InsertResult, Scanner};
 use super::Leaf;
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
-//use crate::LinkedList;
+use crate::LinkedList;
 
 use std::borrow::Borrow;
 //use std::cmp::Ordering;
-use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
+use std::sync::atomic::Ordering::{self, AcqRel, Acquire, Relaxed, Release};
+
+/// [`Tag::First`] indicates the corresponding [`LeafNode`] has retired.
+const RETIRED: Tag = Tag::First;
 
 /// [`LeafNode`] contains a list of instances of `K, V` [`Leaf`].
 ///
@@ -41,6 +44,11 @@ where
             unbounded_child: AtomicArc::null(),
             latch: AtomicArc::null(),
         }
+    }
+
+    /// Returns if the [`LeafNode`] is obsolete.
+    pub fn obsolete(&self, mo: Ordering) -> bool {
+        self.unbounded_child.tag(mo) == RETIRED
     }
 
     /// Searches for an entry associated with the given key.
@@ -163,20 +171,29 @@ where
     ) -> Result<InsertResult<K, V>, (K, V)> {
         loop {
             let (child, metadata) = self.children.min_greater_equal(&key);
-            if let Some((_child_key, child)) = child {
+            if let Some((child_key, child)) = child {
                 let child_ptr = child.load(Acquire, barrier);
                 if !self.children.validate(metadata) {
                     // Data race resolution - see `LeafNode::search`.
                     continue;
                 }
                 if let Some(child_ref) = child_ptr.as_ref() {
-                    let result = child_ref.insert(key, value);
-                    /*
-                    if let InsertResult::Full(key, value) = result {
-                        return self.split_leaf(Some(child_key), child_ptr, child, barrier);
-                    }
-                    */
-                    return Ok(result);
+                    match child_ref.insert(key, value) {
+                        InsertResult::Success => return Ok(InsertResult::Success),
+                        InsertResult::Duplicate(key, value) => {
+                            return Ok(InsertResult::Duplicate(key, value));
+                        }
+                        InsertResult::Full(key, value) | InsertResult::Retired(key, value) => {
+                            return self.split_leaf(
+                                key,
+                                value,
+                                Some(child_key),
+                                child_ptr,
+                                child,
+                                barrier,
+                            );
+                        }
+                    };
                 }
                 // `child_ptr` being null indicates that the leaf is being removed.
                 return Err((key, value));
@@ -184,6 +201,9 @@ where
 
             let mut unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
             while unbounded_ptr.is_null() {
+                if unbounded_ptr.tag() == RETIRED {
+                    return Ok(InsertResult::Retired(key, value));
+                }
                 match self.unbounded_child.compare_exchange(
                     Ptr::null(),
                     (Some(Arc::new(Leaf::new())), Tag::None),
@@ -204,13 +224,23 @@ where
                 if !self.children.validate(metadata) {
                     continue;
                 }
-                let result = unbounded_ref.insert(key, value);
-                /*
-                if let InsertResult::Full(key, value) = result {
-                    return self.split_leaf(None, unbounded_ptr, &self.unbounded_child, barrier);
-                }
-                */
-                return Ok(result);
+
+                match unbounded_ref.insert(key, value) {
+                    InsertResult::Success => return Ok(InsertResult::Success),
+                    InsertResult::Duplicate(key, value) => {
+                        return Ok(InsertResult::Duplicate(key, value));
+                    }
+                    InsertResult::Full(key, value) | InsertResult::Retired(key, value) => {
+                        return self.split_leaf(
+                            key,
+                            value,
+                            None,
+                            unbounded_ptr,
+                            &self.unbounded_child,
+                            barrier,
+                        );
+                    }
+                };
             }
             return Err((key, value));
         }
@@ -289,24 +319,26 @@ where
         }
     */
 
-    /*
     /// Splits a full leaf.
     ///
-    /// Returns `true` if the leaf is successfully split or a conflict is detected, false
-    /// otherwise.
+    /// # Errors
+    ///
+    /// Returns an error if retry is required.
     fn split_leaf(
         &self,
+        key: K,
+        value: V,
         full_leaf_key: Option<&K>,
         full_leaf_ptr: Ptr<Leaf<K, V>>,
-        full_leaf: &AtomicArc<Leaf<K, V>>,
+        full_leaf_arc: &AtomicArc<Leaf<K, V>>,
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
-        let new_leaves_ptr = match self.latch.compare_exchange(
+        let new_leaves = match self.latch.compare_exchange(
             Ptr::null(),
             (
                 Some(Arc::new(StructuralChange {
                     origin_leaf_key: None, // TODO: fill it.
-                    origin_leaf_ptr: full_leaf.clone(Relaxed, barrier),
+                    origin_leaf_ptr: full_leaf_arc.clone(Relaxed, barrier),
                     low_key_leaf: AtomicArc::null(),
                     high_key_leaf: AtomicArc::null(),
                 })),
@@ -315,122 +347,121 @@ where
             Acquire,
             Relaxed,
         ) {
-            Ok((_, ptr)) => ptr,
-            Err(_) => return true,
+            Ok((_, ptr)) => {
+                if self.obsolete(Relaxed) || full_leaf_ptr != full_leaf_arc.load(Relaxed, barrier) {
+                    // `self` is now obsolete, or `full_leaf` has changed in the meantime.
+                    drop(self.latch.swap((None, Tag::None), Relaxed));
+                    return Err((key, value));
+                }
+                ptr.as_ref().unwrap()
+            }
+            Err(_) => return Err((key, value)),
+        };
+        if let Some(full_leaf_key) = full_leaf_key {
+            let ptr = &new_leaves.origin_leaf_key as *const Option<K> as *mut Option<K>;
+            unsafe {
+                ptr.write(Some(full_leaf_key.clone()));
+            }
+        }
+
+        let full_leaf = full_leaf_ptr.as_ref().unwrap();
+        let mut low_key_leaf_arc = None;
+        let mut high_key_leaf_arc = None;
+
+        // Distribute entries to two leaves.
+        full_leaf.distribute(&mut low_key_leaf_arc, &mut high_key_leaf_arc);
+
+        if let Some(low_key_leaf_boxed) = low_key_leaf_arc.take() {
+            new_leaves
+                .low_key_leaf
+                .swap((Some(low_key_leaf_boxed), Tag::None), Relaxed);
+            if let Some(high_key_leaf) = high_key_leaf_arc.take() {
+                new_leaves
+                    .high_key_leaf
+                    .swap((Some(high_key_leaf), Tag::None), Relaxed);
+            }
+        } else {
+            // No valid keys in the full leaf.
+            new_leaves
+                .low_key_leaf
+                .swap((Some(Arc::new(Leaf::new())), Tag::None), Relaxed);
+        }
+
+        // Insert the newly added leaves into the main array, and insert the new leaves into the
+        // linked list, and lastly, remove the full leaf from the linked list.
+        //
+        // When a new leaf is added to the linked list, the leaf is marked to let `Scanners`
+        // acknowledge that the newly added leaf may contain keys that are smaller than those
+        // having been `scanned`.
+        let low_key_leaf_ptr = new_leaves.low_key_leaf.load(Relaxed, barrier);
+        let high_key_leaf_ptr = new_leaves.high_key_leaf.load(Relaxed, barrier);
+        let unused_leaf = if high_key_leaf_ptr.is_null() {
+            // From here, `Scanners` can reach the new leaf.
+            let result =
+                full_leaf.push_back(low_key_leaf_ptr.get_arc().unwrap(), true, Release, barrier);
+            debug_assert!(result.is_ok());
+            full_leaf_arc.swap(
+                (
+                    new_leaves.low_key_leaf.swap((None, Tag::None), Relaxed),
+                    Tag::None,
+                ),
+                Release,
+            )
+        } else {
+            // From here, Scanners can reach the new leaves.
+            //
+            // Immediately unlinking the full leaf causes active scanners reading the full leaf
+            // to omit a number of leaves.
+            //  - Leaf: l, insert: i, split: s, rollback: r.
+            //  - Insert 1-2: i1(l1)|                   |i2(l2)|s(l2)|l12:l2:l21:l22|l12:l21:l22|
+            //  - Insert 0  : i0(l1)|s(l1)|l1:l11:l12:l2|                                       |r|l1:l12...
+            //
+            // In this scenario, without keeping l1, l2 in the linked list, l1 would point to l2,
+            // and therefore a range scanner would start from l1, and cannot traverse l21 and l22,
+            // missing newly inserted entries in l21 and l22 before starting the range scanner.
+            let result =
+                full_leaf.push_back(high_key_leaf_ptr.get_arc().unwrap(), true, Release, barrier);
+            debug_assert!(result.is_ok());
+            let result =
+                full_leaf.push_back(low_key_leaf_ptr.get_arc().unwrap(), true, Release, barrier);
+            debug_assert!(result.is_ok());
+
+            // Takes the max key value stored in the low key leaf as the leaf key.
+            let max_key = low_key_leaf_ptr.as_ref().unwrap().max().unwrap().0;
+            match self.children.insert(
+                max_key.clone(),
+                new_leaves.low_key_leaf.clone(Relaxed, barrier),
+            ) {
+                InsertResult::Success => (),
+                InsertResult::Duplicate(_, _) => debug_assert!(false, "unreachable"),
+                InsertResult::Full(_, _) | InsertResult::Retired(_, _) => {
+                    return Ok(InsertResult::Full(key, value))
+                }
+            };
+
+            // Replace the full leaf with the high-key leaf.
+            full_leaf_arc.swap(
+                (
+                    new_leaves.high_key_leaf.swap((None, Tag::None), Relaxed),
+                    Tag::None,
+                ),
+                Release,
+            )
         };
 
-                // Checks the full leaf pointer and the leaf node state after locking the leaf node.
-                if full_leaf_ptr != full_leaf.load(Relaxed, barrier) {
-                    drop(self.latch.swap((None, Tag::None), Relaxed));
-                    return true;
-                }
+        // Drops the deprecated leaf.
+        if let Some(unused_leaf) = unused_leaf {
+            let deleted = unused_leaf.delete_self(Release);
+            debug_assert!(deleted);
+            barrier.reclaim(unused_leaf);
+        }
 
-                // Checks if the leaf node has already been deprecated.
-                if self.children.1.load(Relaxed, barrier).tag() == Tag::First {
-                    drop(self.latch.swap((None, Tag::None), Relaxed));
-                    return true;
-                }
+        // Unlocks the leaf node.
+        self.latch.swap((None, Tag::None), Release);
 
-                let full_leaf_ref = full_leaf_ptr.as_ref().unwrap();
-                debug_assert!(full_leaf_ref.full());
-
-                // Copies entries to the newly allocated leaves.
-                let new_leaves_ref = new_leaves_ptr.as_ref().unwrap();
-                let mut low_key_leaf_arc = None;
-                let mut high_key_leaf_arc = None;
-                full_leaf_ref.distribute(&mut low_key_leaf_arc, &mut high_key_leaf_arc);
-
-                if let Some(low_key_leaf_boxed) = low_key_leaf_arc.take() {
-                    // The number of valid entries is small enough to fit into a single leaf.
-                    new_leaves_ref
-                        .low_key_leaf
-                        .swap((Some(low_key_leaf_boxed), Tag::None), Relaxed);
-                    if let Some(high_key_leaf) = high_key_leaf_arc.take() {
-                        new_leaves_ref
-                            .high_key_leaf
-                            .swap((Some(high_key_leaf), Tag::None), Relaxed);
-                    }
-                } else {
-                    // No valid keys in the full leaf.
-                    new_leaves_ref
-                        .low_key_leaf
-                        .swap((Some(Arc::new(Leaf::new())), Tag::None), Relaxed);
-                }
-
-                // Inserts the newly added leaves into the main array.
-                //  - Inserts the new leaves into the linked list, and removes the full leaf from it.
-                let low_key_leaf_ptr = new_leaves_ref.low_key_leaf.load(Relaxed, barrier);
-                let high_key_leaf_ptr = new_leaves_ref.high_key_leaf.load(Relaxed, barrier);
-                let unused_leaf = if high_key_leaf_ptr.is_null() {
-                    // From here, Scanners can reach the new leaf.
-                    let result = full_leaf_ref.push_back(
-                        low_key_leaf_ptr.get_arc().unwrap(),
-                        true,
-                        Release,
-                        barrier,
-                    );
-                    debug_assert!(result.is_ok());
-                    // Replaces the full leaf with the low-key leaf.
-                    full_leaf.swap((low_key_leaf_ptr.get_arc(), Tag::None), Release)
-                } else {
-                    // From here, Scanners can reach the new leaves.
-                    //
-                    // Immediately unlinking the full leaf causes active scanners reading the full leaf
-                    // to omit a number of leaves.
-                    //  - Leaf: l, insert: i, split: s, rollback: r.
-                    //  - Insert 1-2: i1(l1)|                   |i2(l2)|s(l2)|l12:l2:l21:l22|l12:l21:l22|
-                    //  - Insert 0  : i0(l1)|s(l1)|l1:l11:l12:l2|                                       |r|l1:l12...
-                    // In this scenario, without keeping l1, l2 in the linked list, l1 would point to
-                    // l2, and therefore a range scanner would start from l1, and cannot traverse l21
-                    // and l22, missing newly inserted entries in l21 and l22 before starting the
-                    // range scanner.
-                    let result = full_leaf_ref.push_back(
-                        high_key_leaf_ptr.get_arc().unwrap(),
-                        true,
-                        Release,
-                        barrier,
-                    );
-                    debug_assert!(result.is_ok());
-                    let result = full_leaf_ref.push_back(
-                        low_key_leaf_ptr.get_arc().unwrap(),
-                        true,
-                        Release,
-                        barrier,
-                    );
-                    debug_assert!(result.is_ok());
-
-                    // Takes the max key value stored in the low key leaf as the leaf key.
-                    let max_key = low_key_leaf_ptr.as_ref().unwrap().max().unwrap().0;
-                    if self
-                        .children
-                        .0
-                        .insert(
-                            max_key.clone(),
-                            new_leaves_ref.low_key_leaf.clone(Relaxed, barrier),
-                        )
-                        .is_some()
-                    {
-                        // Insertion failed: expects that the parent splits the leaf node.
-                        return false;
-                    }
-
-                    // Replaces the full leaf with the high-key leaf.
-                    full_leaf.swap((high_key_leaf_ptr.get_arc(), Tag::None), Release)
-                };
-
-                // Drops the deprecated leaf.
-                if let Some(unused_leaf) = unused_leaf {
-                    debug_assert!(unused_leaf.full());
-                    let deleted = unused_leaf.delete_self(Release);
-                    debug_assert!(deleted);
-                    barrier.reclaim(unused_leaf);
-                }
-
-                // Unlocks the leaf node.
-                self.latch.swap((None, Tag::None), Release);
-        true
+        // Since a new leaf has been inserted, the caller can retry.
+        Err((key, value))
     }
-        */
 
     /*
         /// Splits itself into the given leaf nodes, and returns the middle key value.

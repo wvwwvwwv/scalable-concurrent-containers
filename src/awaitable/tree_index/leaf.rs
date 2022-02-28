@@ -15,10 +15,10 @@ pub enum InsertResult<K, V> {
     /// Duplicate key found.
     Duplicate(K, V),
 
-    /// The [`Leaf`] is full.
+    /// No vacant slot for the key.
     Full(K, V),
 
-    /// The [`Leaf`] has retired.
+    /// Totally unusable.
     Retired(K, V),
 }
 
@@ -31,7 +31,7 @@ pub enum RemoveResult {
     /// Remove failed.
     Fail,
 
-    /// The [`Leaf`] is retired after a successful removal.
+    /// Remove succeeded and became unusable.
     Retired,
 }
 
