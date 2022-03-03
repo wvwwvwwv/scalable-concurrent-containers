@@ -318,6 +318,51 @@ mod treeindex_test {
     use std::thread;
 
     #[test]
+    fn reclaim() {
+        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+        struct R(usize);
+        impl R {
+            fn new() -> R {
+                R(INST_CNT.fetch_add(1, Relaxed))
+            }
+        }
+        impl Clone for R {
+            fn clone(&self) -> Self {
+                INST_CNT.fetch_add(1, Relaxed);
+                R(self.0)
+            }
+        }
+        impl Drop for R {
+            fn drop(&mut self) {
+                INST_CNT.fetch_sub(1, Relaxed);
+            }
+        }
+
+        let data_size = 16384; // 1048576;
+        let tree: TreeIndex<usize, R> = TreeIndex::new();
+        for k in 0..data_size {
+            assert!(tree.insert(k, R::new()).is_ok());
+        }
+        for k in 0..data_size {
+            assert!(tree.remove(&k));
+        }
+        while INST_CNT.load(Relaxed) > 0 {
+            let barrier = ebr::Barrier::new();
+            drop(barrier);
+        }
+
+        let tree: TreeIndex<usize, R> = TreeIndex::new();
+        for k in 0..data_size {
+            assert!(tree.insert(k, R::new()).is_ok());
+        }
+        tree.clear();
+        while INST_CNT.load(Relaxed) > 0 {
+            let barrier = ebr::Barrier::new();
+            drop(barrier);
+        }
+    }
+
+    #[test]
     fn basic() {
         let range = 4096;
         let num_threads = 16;
