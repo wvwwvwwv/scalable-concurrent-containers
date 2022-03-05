@@ -303,7 +303,11 @@ where
     }
 
     /// Returns the index and a pointer to the key-value pair that is smaller than the given key.
-    pub fn max_less(&self, metadata: u32, key: &K) -> (usize, *const (K, V)) {
+    pub fn max_less<Q>(&self, metadata: u32, key: &Q) -> (usize, *const (K, V))
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         let mut max_min_rank = 0;
         let mut max_min_index = ARRAY_SIZE;
         let mut min_max_rank = (ARRAY_SIZE + 1).try_into().unwrap();
@@ -784,7 +788,11 @@ where
         }
     }
 
-    pub fn max_less(leaf: &'l Leaf<K, V>, key: &K) -> Scanner<'l, K, V> {
+    pub fn max_less<Q>(leaf: &'l Leaf<K, V>, key: &Q) -> Scanner<'l, K, V>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         let metadata = leaf.metadata.load(Acquire);
         let (index, ptr) = leaf.max_less(metadata, key);
         if ptr.is_null() {

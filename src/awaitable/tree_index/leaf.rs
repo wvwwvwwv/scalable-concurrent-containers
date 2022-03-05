@@ -389,7 +389,11 @@ where
     }
 
     /// Returns the index and a pointer to the key-value pair that is smaller than the given key.
-    pub fn max_less(&self, metadata: usize, key: &K) -> (usize, *const (K, V)) {
+    pub fn max_less<Q>(&self, metadata: usize, key: &Q) -> (usize, *const (K, V))
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         let mut max_min_rank = 0;
         let mut max_min_index = DIMENSION.num_entries;
         let mut min_max_rank = DIMENSION.removed_state();
@@ -884,9 +888,15 @@ mod test {
             let leaf: Leaf<usize, usize> = Leaf::new();
             for i in 0..insert {
                 assert!(matches!(leaf.insert(i, i), InsertResult::Success));
+                if i != 0 {
+                    let result = leaf.max_less(leaf.metadata.load(Relaxed), &i);
+                    assert_eq!(unsafe { *result.1 }, (i - 1, i - 1));
+                }
             }
             for i in 0..insert {
                 assert!(matches!(leaf.insert(i, i), InsertResult::Duplicate(..)));
+                let result = leaf.min_greater_equal(&i);
+                assert_eq!(result.0, Some((&i, &i)));
             }
             for i in 0..insert {
                 assert_eq!(*leaf.search(&i).unwrap(), i);

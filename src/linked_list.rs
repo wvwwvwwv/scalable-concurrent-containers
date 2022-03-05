@@ -298,12 +298,14 @@ pub trait LinkedList: 'static + Sized {
 
         // Updates its link if an invalid entry has been found, and `self` is a valid one.
         if update_self && self_tag != Tag::Second {
-            let _result = self.link_ref().compare_exchange(
+            if let Ok((Some(prev), _)) = self.link_ref().compare_exchange(
                 self_next_ptr,
                 (next_valid_ptr.get_arc(), self_tag),
                 Release,
                 Relaxed,
-            );
+            ) {
+                barrier.reclaim(prev);
+            }
         }
 
         next_valid_ptr

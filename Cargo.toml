@@ -1,7 +1,7 @@
 [package]
 name = "scc"
-description = "A collection of building blocks for concurrent programming."
-version = "0.6.0"
+description = "Collection of building blocks for concurrent programming."
+version = "0.6.1"
 authors = ["wvwwvwwv <wvwwvwwv@me.com>"]
 edition = "2021"
 readme = "README.md"

@@ -117,6 +117,10 @@ impl Collector {
                 self.next_epoch_update = Self::CADENCE;
                 if self.num_instances != 0 && Tag::into_tag(ANCHOR.load(Relaxed)) != Tag::First {
                     self.try_scan();
+                    if self.num_instances != 0 {
+                        // If garbage instances remain, the cadence is reduced to a quarter.
+                        self.next_epoch_update /= 4;
+                    }
                 }
             } else {
                 self.next_epoch_update -= 1;
@@ -143,6 +147,9 @@ impl Collector {
                 }
                 self.current_instance_link.replace(ptr);
                 self.num_instances += 1;
+                if self.next_epoch_update != 0 {
+                    self.next_epoch_update -= 1;
+                }
             }
         }
     }

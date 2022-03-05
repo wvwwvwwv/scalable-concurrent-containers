@@ -413,6 +413,10 @@ let result = future_insert.await;
 
 ## Changelog
 
+0.6.1
+
+* Partially fix [`#66`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/66).
+
 0.6.0
 
 * Asynchronous [`HashMap`](#Awaitable-HashMap).

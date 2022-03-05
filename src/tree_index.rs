@@ -161,24 +161,38 @@ where
         Q: Ord + ?Sized,
     {
         let mut has_been_removed = false;
+        let mut has_leaf_been_removed = false;
         let barrier = Barrier::new();
         let mut root_ptr = self.root.load(Acquire, &barrier);
         while let Some(root_ref) = root_ptr.as_ref() {
             match root_ref.remove_if(key_ref, &mut condition, &barrier) {
-                Ok(removed) => return removed || has_been_removed,
+                Ok((removed, leaf_removed)) => {
+                    if leaf_removed || has_leaf_been_removed {
+                        if let Ok(leaf_scanner) = root_ref.max_less(key_ref, &barrier) {
+                            let _result = leaf_scanner.jump(None, &barrier);
+                        }
+                    }
+                    return removed || has_been_removed;
+                }
                 Err(remove_error) => match remove_error {
-                    RemoveError::Empty(removed) => {
-                        if removed && !has_been_removed {
+                    RemoveError::Empty((removed, leaf_removed)) => {
+                        if removed {
                             has_been_removed = true;
+                        }
+                        if leaf_removed {
+                            has_leaf_been_removed = true;
                         }
                         if Node::remove_root(&self.root, &barrier) {
                             return has_been_removed;
                         }
                     }
-                    RemoveError::Retry(removed) => {
+                    RemoveError::Retry((removed, leaf_removed)) => {
                         std::thread::yield_now();
-                        if removed && !has_been_removed {
+                        if removed {
                             has_been_removed = true;
+                        }
+                        if leaf_removed {
+                            has_leaf_been_removed = true;
                         }
                     }
                 },

@@ -338,7 +338,7 @@ mod treeindex_test {
             }
         }
 
-        let data_size = 16384; // 1048576;
+        let data_size = 65536; // 1_048_576;
         let tree: TreeIndex<usize, R> = TreeIndex::new();
         for k in 0..data_size {
             assert!(tree.insert(k, R::new()).is_ok());

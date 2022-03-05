@@ -19,9 +19,9 @@ where
 /// The boolean value tagged to the error code indicates that the target entry has been removed.
 pub enum RemoveError {
     /// Empty: the node is empty.
-    Empty(bool),
+    Empty((bool, bool)),
     /// Retry: the target node, or leaf is being modified.
-    Retry(bool),
+    Retry((bool, bool)),
 }
 
 /// [`SearchError`] types.

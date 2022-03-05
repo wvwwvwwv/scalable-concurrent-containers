@@ -95,11 +95,15 @@ where
     }
 
     /// Returns the maximum key entry less than the given key.
-    pub fn max_less<'b>(
+    pub fn max_less<'b, Q>(
         &self,
-        key: &K,
+        key: &Q,
         barrier: &'b Barrier,
-    ) -> Result<Scanner<'b, K, V>, SearchError> {
+    ) -> Result<Scanner<'b, K, V>, SearchError>
+    where
+        K: 'b + Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         match &self.entry {
             NodeType::Internal(internal_node) => internal_node.max_less(key, barrier),
             NodeType::Leaf(leaf_node) => leaf_node.max_less(key, barrier),
@@ -117,12 +121,15 @@ where
     }
 
     /// Removes an entry associated with the given key.
+    ///
+    /// The first return value indicates if the key has been removed, and the second return value
+    /// means that a leaf node has been deleted.
     pub fn remove_if<Q, F: FnMut(&V) -> bool>(
         &self,
         key: &Q,
         condition: &mut F,
         barrier: &Barrier,
-    ) -> Result<bool, RemoveError>
+    ) -> Result<(bool, bool), RemoveError>
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
@@ -405,17 +412,21 @@ where
     }
 
     /// Returns the maximum key entry less than the given key.
-    fn max_less<'b>(
+    fn max_less<'b, Q>(
         &self,
-        key: &K,
+        key_ref: &Q,
         barrier: &'b Barrier,
-    ) -> Result<Scanner<'b, K, V>, SearchError> {
+    ) -> Result<Scanner<'b, K, V>, SearchError>
+    where
+        K: 'b + Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         loop {
-            let scanner = Scanner::max_less(&self.children.0, key);
+            let scanner = Scanner::max_less(&self.children.0, key_ref);
             let metadata = scanner.metadata();
             let mut retry = false;
             for child in scanner {
-                if child.0.cmp(key) == Ordering::Less {
+                if child.0.borrow().cmp(key_ref) == Ordering::Less {
                     continue;
                 }
                 let child_ptr = child.1.load(Acquire, barrier);
@@ -425,7 +436,7 @@ where
                     break;
                 }
                 if let Some(child_ref) = child_ptr.as_ref() {
-                    return child_ref.max_less(key, barrier);
+                    return child_ref.max_less(key_ref, barrier);
                 }
                 // `child_ptr` being null indicates that the node is bound to be freed.
                 return Err(SearchError::Retry);
@@ -440,7 +451,7 @@ where
             }
             if let Some(unbounded_ref) = unbounded_ptr.as_ref() {
                 debug_assert!(unbounded_ptr.tag() == Tag::None);
-                return unbounded_ref.max_less(key, barrier);
+                return unbounded_ref.max_less(key_ref, barrier);
             }
             // `unbounded_ptr` being null indicates that the node is bound to be freed.
             debug_assert!(unbounded_ptr.tag() == Tag::First);
@@ -526,7 +537,7 @@ where
         key: &Q,
         condition: &mut F,
         barrier: &Barrier,
-    ) -> Result<bool, RemoveError>
+    ) -> Result<(bool, bool), RemoveError>
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
@@ -543,13 +554,15 @@ where
                     return match child_ref.remove_if(key, condition, barrier) {
                         Ok(removed) => Ok(removed),
                         Err(remove_error) => match remove_error {
-                            RemoveError::Empty(removed) => self.coalesce(removed, barrier),
+                            RemoveError::Empty((removed, leaf_removed)) => {
+                                self.coalesce(removed, leaf_removed, barrier)
+                            }
                             RemoveError::Retry(_) => Err(remove_error),
                         },
                     };
                 }
                 // `child_ptr` being null indicates that the node is bound to be freed.
-                return Err(RemoveError::Retry(false));
+                return Err(RemoveError::Retry((false, false)));
             }
             let unbounded_ptr = (self.children.1).load(Acquire, barrier);
             if let Some(unbounded_ref) = unbounded_ptr.as_ref() {
@@ -561,14 +574,16 @@ where
                 return match unbounded_ref.remove_if(key, condition, barrier) {
                     Ok(removed) => Ok(removed),
                     Err(remove_error) => match remove_error {
-                        RemoveError::Empty(removed) => self.coalesce(removed, barrier),
+                        RemoveError::Empty((removed, leaf_removed)) => {
+                            self.coalesce(removed, leaf_removed, barrier)
+                        }
                         RemoveError::Retry(_) => Err(remove_error),
                     },
                 };
             }
             // `unbounded_ptr` being null indicates that the node is bound to be freed.
             debug_assert!(unbounded_ptr.tag() == Tag::First);
-            return Err(RemoveError::Empty(false));
+            return Err(RemoveError::Empty((false, false)));
         }
     }
 
@@ -884,10 +899,15 @@ where
     }
 
     /// Tries to coalesce nodes.
-    fn coalesce(&self, removed: bool, barrier: &Barrier) -> Result<bool, RemoveError> {
+    fn coalesce(
+        &self,
+        removed: bool,
+        leaf_removed: bool,
+        barrier: &Barrier,
+    ) -> Result<(bool, bool), RemoveError> {
         let lock = InternalNodeLocker::try_lock(self);
         if lock.is_none() {
-            return Err(RemoveError::Retry(removed));
+            return Err(RemoveError::Retry((removed, leaf_removed)));
         }
 
         for entry in Scanner::new(&self.children.0) {
@@ -933,12 +953,12 @@ where
 
         if self.children.1.load(Relaxed, barrier).is_null() {
             debug_assert!(self.children.0.obsolete());
-            Err(RemoveError::Empty(removed))
+            Err(RemoveError::Empty((removed, leaf_removed)))
         } else if removed {
-            Ok(removed)
+            Ok((removed, leaf_removed))
         } else {
             // Retry is necessary as it may have not attempted removal.
-            Err(RemoveError::Retry(false))
+            Err(RemoveError::Retry((false, leaf_removed)))
         }
     }
 }
