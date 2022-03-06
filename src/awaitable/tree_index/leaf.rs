@@ -709,7 +709,11 @@ where
         }
     }
 
-    pub fn max_less(leaf: &'l Leaf<K, V>, key: &K) -> Scanner<'l, K, V> {
+    pub fn max_less<Q>(leaf: &'l Leaf<K, V>, key: &Q) -> Scanner<'l, K, V>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         let metadata = leaf.metadata.load(Acquire);
         let (index, ptr) = leaf.max_less(metadata, key);
         if ptr.is_null() {
@@ -745,11 +749,15 @@ where
             == DIMENSION.removed_state()
     }
 
-    pub fn jump<'b>(
+    pub fn jump<'b, Q>(
         &self,
-        min_allowed_key: Option<&K>,
+        min_allowed_key: Option<&Q>,
         barrier: &'b Barrier,
-    ) -> Option<Scanner<'b, K, V>> {
+    ) -> Option<Scanner<'b, K, V>>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         let mut next_leaf_ptr = self.leaf.next_ptr(Acquire, barrier);
         while let Some(next_leaf_ref) = next_leaf_ptr.as_ref() {
             let mut leaf_scanner = Scanner::new(next_leaf_ref);
@@ -760,7 +768,7 @@ where
                     // There is a chance that the current leaf has been deleted, and smaller
                     // keys have been inserted into the next leaf.
                     while let Some(entry) = leaf_scanner.next() {
-                        if key.cmp(entry.0) == Ordering::Less {
+                        if key.cmp(entry.0.borrow()) == Ordering::Less {
                             return Some(leaf_scanner);
                         }
                     }

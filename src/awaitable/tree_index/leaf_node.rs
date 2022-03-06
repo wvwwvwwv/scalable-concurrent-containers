@@ -1,4 +1,4 @@
-use super::leaf::{InsertResult, Scanner};
+use super::leaf::{InsertResult, RemoveResult, Scanner};
 use super::Leaf;
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
@@ -84,11 +84,11 @@ where
                 return Err(());
             }
             let unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
-            if let Some(unbounded_ref) = unbounded_ptr.as_ref() {
+            if let Some(unbounded) = unbounded_ptr.as_ref() {
                 if !self.children.validate(metadata) {
                     continue;
                 }
-                return Ok(unbounded_ref.search(key));
+                return Ok(unbounded.search(key));
             }
             return Err(());
         }
@@ -116,11 +116,11 @@ where
                 return Err(());
             }
             let unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
-            if let Some(unbounded_ref) = unbounded_ptr.as_ref() {
+            if let Some(unbounded) = unbounded_ptr.as_ref() {
                 if !self.children.validate(metadata) {
                     continue;
                 }
-                return Ok(Scanner::new(unbounded_ref));
+                return Ok(Scanner::new(unbounded));
             }
             return Err(());
         }
@@ -131,7 +131,11 @@ where
     /// # Errors
     ///
     /// Returns an error if retry is required.
-    pub fn max_less<'b>(&self, key: &K, barrier: &'b Barrier) -> Result<Scanner<'b, K, V>, ()> {
+    pub fn max_less<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> Result<Scanner<'b, K, V>, ()>
+    where
+        K: 'b + Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         loop {
             let mut scanner = Scanner::max_less(&self.children, key);
             let metadata = scanner.metadata();
@@ -148,11 +152,11 @@ where
                 return Err(());
             }
             let unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
-            if let Some(unbounded_ref) = unbounded_ptr.as_ref() {
+            if let Some(unbounded) = unbounded_ptr.as_ref() {
                 if !self.children.validate(metadata) {
                     continue;
                 }
-                return Ok(Scanner::max_less(unbounded_ref, key));
+                return Ok(Scanner::max_less(unbounded, key));
             }
             return Err(());
         }
@@ -162,7 +166,7 @@ where
     ///
     /// # Errors
     ///
-    /// Returns an error if retry is required.
+    /// Returns an error if a retry is required.
     pub fn insert(
         &self,
         key: K,
@@ -219,13 +223,13 @@ where
                     }
                 }
             }
-            if let Some(unbounded_ref) = unbounded_ptr.as_ref() {
+            if let Some(unbounded) = unbounded_ptr.as_ref() {
                 debug_assert!(unbounded_ptr.tag() == Tag::None);
                 if !self.children.validate(metadata) {
                     continue;
                 }
 
-                match unbounded_ref.insert(key, value) {
+                match unbounded.insert(key, value) {
                     InsertResult::Success => return Ok(InsertResult::Success),
                     InsertResult::Duplicate(key, value) => {
                         return Ok(InsertResult::Duplicate(key, value));
@@ -245,79 +249,61 @@ where
             return Err((key, value));
         }
     }
-    /*
-        /// Removes an entry associated with the given key.
-        pub fn remove_if<Q, F: FnMut(&V) -> bool>(
-            &self,
-            key_ref: &Q,
-            condition: &mut F,
-            barrier: &Barrier,
-        ) -> Result<bool, RemoveError>
-        where
-            K: Borrow<Q>,
-            Q: Ord + ?Sized,
-        {
-            loop {
-                let result = (self.children.0).min_greater_equal(key_ref);
-                if let Some((_, child)) = result.0 {
-                    let child_ptr = child.load(Acquire, barrier);
-                    if !(self.children.0).validate(result.1) {
-                        // Data race resolution - see LeafNode::search.
-                        continue;
-                    }
-                    if let Some(child_ref) = child_ptr.as_ref() {
-                        let (removed, full, empty) = child_ref.remove_if(key_ref, condition);
-                        if full && !self.check_full_leaf(key_ref, child_ptr, barrier) {
-                            // Data race resolution.
-                            //  - Insert: start to insert into a full leaf
-                            //  - Remove: start removing an entry from the leaf after pointer validation
-                            //  - Insert: find the leaf full, thus splitting and update
-                            //  - Remove: find the leaf full, and the leaf node is not locked, returning 'Ok(true)'
-                            // Consequently, the key remains.
-                            // In order to resolve this, check the pointer again.
-                            return Err(RemoveError::Retry(removed));
-                        }
-                        if empty {
-                            if !child_ref.retire() {
-                                return Err(RemoveError::Retry(removed));
-                            }
-                            return self.coalesce(removed, barrier);
-                        }
-                        return Ok(removed);
-                    }
-
-                    // `child_ptr` being null indicates that the leaf node is bound to be freed.
-                    return Err(RemoveError::Retry(false));
+    /// Removes an entry associated with the given key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a retry is required with a boolean flag indicating that an entry has been removed.
+    pub fn remove_if<Q, F: FnMut(&V) -> bool>(
+        &self,
+        key: &Q,
+        condition: &mut F,
+        barrier: &Barrier,
+    ) -> Result<RemoveResult, bool>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        loop {
+            let (child, metadata) = self.children.min_greater_equal(key);
+            if let Some((_, child)) = child {
+                let child_ptr = child.load(Acquire, barrier);
+                if !self.children.validate(metadata) {
+                    // Data race resolution - see `LeafNode::search`.
+                    continue;
                 }
-                let unbounded_ptr = (self.children.1).load(Acquire, barrier);
-                if let Some(unbounded_ref) = unbounded_ptr.as_ref() {
-                    debug_assert!(unbounded_ptr.tag() == Tag::None);
-                    if !(self.children.0).validate(result.1) {
-                        // Data race resolution - see LeafNode::search.
-                        continue;
+                if let Some(child_ref) = child_ptr.as_ref() {
+                    let result = child_ref.remove_if(key, condition);
+                    if result == RemoveResult::Fail {
+                        return Ok(RemoveResult::Fail);
                     }
-                    let (removed, full, empty) = unbounded_ref.remove_if(key_ref, condition);
-                    if full && !self.check_full_leaf(key_ref, unbounded_ptr, barrier) {
-                        // Data race resolution - see above.
-                        return Err(RemoveError::Retry(removed));
+                    if result == RemoveResult::Retired {
+                        return self.coalesce(barrier);
                     }
-                    if empty {
-                        if !unbounded_ref.retire() {
-                            return Err(RemoveError::Retry(removed));
-                        }
-                        return self.coalesce(removed, barrier);
-                    }
-                    return Ok(removed);
+                    return self.check_full_leaf(key, child_ptr, barrier);
                 }
-                if unbounded_ptr.tag() == Tag::First {
-                    // The leaf node has become obsolete.
-                    return Err(RemoveError::Empty(false));
-                }
-                // The `TreeIndex` is empty.
-                return Ok(false);
+                // `child_ptr` being null indicates that the leaf is being removed.
+                return Err(false);
             }
+            let unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
+            if let Some(unbounded) = unbounded_ptr.as_ref() {
+                debug_assert!(unbounded_ptr.tag() == Tag::None);
+                if !self.children.validate(metadata) {
+                    // Data race resolution - see `LeafNode::search`.
+                    continue;
+                }
+                let result = unbounded.remove_if(key, condition);
+                if result == RemoveResult::Fail {
+                    return Ok(RemoveResult::Fail);
+                }
+                if result == RemoveResult::Retired {
+                    return self.coalesce(barrier);
+                }
+                return self.check_full_leaf(key, unbounded_ptr, barrier);
+            }
+            return Err(false);
         }
-    */
+    }
 
     /// Splits a full leaf.
     ///
@@ -397,6 +383,9 @@ where
         let high_key_leaf_ptr = new_leaves.high_key_leaf.load(Relaxed, barrier);
         let unused_leaf = if high_key_leaf_ptr.is_null() {
             // From here, `Scanners` can reach the new leaf.
+            //
+            // The full leaf is marked so that readers know that the next leaves may contain
+            // smaller keys.
             let result =
                 full_leaf.push_back(low_key_leaf_ptr.get_arc().unwrap(), true, Release, barrier);
             debug_assert!(result.is_ok());
@@ -578,98 +567,98 @@ where
         }
     */
 
-    /*
-        /// Checks the given full leaf whether it is being split.
-        fn check_full_leaf<Q>(&self, key_ref: &Q, leaf_ptr: Ptr<Leaf<K, V>>, barrier: &Barrier) -> bool
-        where
-            K: Borrow<Q>,
-            Q: Ord + ?Sized,
-        {
-            // There is a chance that the target key value pair has been copied to new_leaves,
-            // and the following scenario cannot be prevented by memory fences.
-            //  - Remove: release(leaf)|load(mutex_old)|acquire|load(leaf_ptr_old)
-            //  - Insert: load(leaf)|store(mutex)|acquire|release|store(leaf_ptr)|release|store(mutex)
-            // Therefore, it performs CAS to check the freshness of the pointer value.
-            //  - Remove: release(leaf)|cas(mutex)|acquire|release|load(leaf_ptr)
-            //  - Insert: load(leaf)|store(mutex)|acquire|release|store(leaf_ptr)|release|store(mutex)
-            if self
-                .latch
-                .compare_exchange(Ptr::null(), (None, Tag::None), AcqRel, Relaxed)
-                .is_err()
-            {
-                return false;
-            }
-            let result = (self.children.0).min_greater_equal(key_ref);
-            let leaf_current_ptr = if let Some((_, child)) = result.0 {
-                child.load(Relaxed, barrier)
-            } else {
-                self.children.1.load(Relaxed, barrier)
-            };
-            leaf_current_ptr == leaf_ptr
+    /// Checks the given full leaf whether it is being split.
+    fn check_full_leaf<Q>(
+        &self,
+        key_ref: &Q,
+        leaf_ptr: Ptr<Leaf<K, V>>,
+        barrier: &Barrier,
+    ) -> Result<RemoveResult, bool>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        // Data race with insert.
+        //  - Insert: start to insert into a full leaf
+        //  - Remove: start removing an entry from the leaf after pointer validation
+        //  - Insert: find the leaf full, thus splitting and update
+        //  - Remove: find the leaf full, and the leaf node is not locked, returning 'Ok(true)'
+        // Consequently, the key remains.
+        //
+        // In order to resolve this, check the pointer again.
+        let latch = self.latch.load(Acquire, barrier);
+        if !latch.is_null() || latch.tag() != Tag::None {
+            // The `LeafNode` is being modified.
+            return Err(true);
+        }
+        let (child, _) = self.children.min_greater_equal(key_ref);
+        let current_leaf_ptr = if let Some((_, child)) = child {
+            child.load(Relaxed, barrier)
+        } else {
+            self.unbounded_child.load(Relaxed, barrier)
+        };
+        if current_leaf_ptr == leaf_ptr {
+            Ok(RemoveResult::Success)
+        } else {
+            Err(true)
+        }
+    }
+
+    /// Tries to coalesce empty or obsolete leaves after a successful removal of an entry.
+    fn coalesce(&self, barrier: &Barrier) -> Result<RemoveResult, bool> {
+        let lock = Locker::try_lock(self);
+        if lock.is_none() {
+            return Err(true);
         }
 
-        /// Tries to coalesce empty or obsolete leaves.
-        fn coalesce(&self, removed: bool, barrier: &Barrier) -> Result<bool, RemoveError> {
-            let lock = Locker::try_lock(self);
-            if lock.is_none() {
-                return Err(RemoveError::Retry(removed));
+        let mut num_valid_leaves = 0;
+        for entry in Scanner::new(&self.children) {
+            let leaf_ptr = entry.1.load(Relaxed, barrier);
+            let leaf_ref = leaf_ptr.as_ref().unwrap();
+            if leaf_ref.retired() {
+                let deleted = leaf_ref.delete_self(Relaxed);
+                debug_assert!(deleted);
+                self.children.remove_if(entry.0, &mut |_| true);
+                if let Some(leaf) = entry.1.swap((None, Tag::None), Release) {
+                    barrier.reclaim(leaf);
+                }
+            } else {
+                num_valid_leaves += 1;
             }
+        }
 
-            let mut num_valid_leaves = 0;
-            for entry in Scanner::new(&self.children.0) {
-                let leaf_ptr = entry.1.load(Relaxed, barrier);
-                let leaf_ref = leaf_ptr.as_ref().unwrap();
-                if leaf_ref.obsolete() {
-                    // Data race resolution - see LeafScanner::jump.
-                    let deleted = leaf_ref.delete_self(Relaxed);
+        // The unbounded leaf becomes unreachable after all the other leaves are gone.
+        let fully_empty = if num_valid_leaves == 0 {
+            let unbounded_ptr = self.unbounded_child.load(Relaxed, barrier);
+            if let Some(unbounded) = unbounded_ptr.as_ref() {
+                if unbounded.retired() {
+                    let deleted = unbounded.delete_self(Relaxed);
                     debug_assert!(deleted);
-                    self.children.0.remove_if(entry.0, &mut |_| true);
-                    // Data race resolution - see LeafNode::search.
-                    if let Some(leaf) = entry.1.swap((None, Tag::None), Release) {
-                        barrier.reclaim(leaf);
+                    // It has to mark the pointer in order to prevent `LeafNode::insert` from
+                    // replacing it with a new `Leaf`.
+                    if let Some(obsolete_leaf) =
+                        self.unbounded_child.swap((None, Tag::First), Release)
+                    {
+                        barrier.reclaim(obsolete_leaf);
                     }
-                } else {
-                    num_valid_leaves += 1;
-                }
-            }
-
-            // Checks the unbounded leaf only when all the other leaves have become obsolete.
-            let check_unbounded = if num_valid_leaves == 0 && self.children.0.retire() {
-                true
-            } else {
-                self.children.0.obsolete()
-            };
-
-            // The unbounded leaf becomes unreachable after all the other leaves are gone.
-            let fully_empty = if check_unbounded {
-                let unbounded_ptr = self.children.1.load(Relaxed, barrier);
-                if let Some(unbounded_ref) = unbounded_ptr.as_ref() {
-                    if unbounded_ref.obsolete() {
-                        // Data race resolution - see LeafScanner::jump.
-                        let deleted = unbounded_ref.delete_self(Relaxed);
-                        debug_assert!(deleted);
-                        if let Some(obsolete_leaf) = self.children.1.swap((None, Tag::First), Release) {
-                            barrier.reclaim(obsolete_leaf);
-                        }
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    debug_assert!(unbounded_ptr.tag() == Tag::First);
                     true
+                } else {
+                    false
                 }
             } else {
-                false
-            };
-
-            if fully_empty {
-                Err(RemoveError::Empty(removed))
-            } else {
-                Ok(removed)
+                debug_assert!(unbounded_ptr.tag() == Tag::First);
+                true
             }
+        } else {
+            false
+        };
+
+        if fully_empty {
+            Ok(RemoveResult::Retired)
+        } else {
+            Ok(RemoveResult::Success)
         }
-    */
+    }
 
     /*
         /// Rolls back the ongoing split operation recursively.
@@ -799,4 +788,82 @@ where
     origin_leaf_ptr: AtomicArc<Leaf<K, V>>,
     low_key_leaf: AtomicArc<Leaf<K, V>>,
     high_key_leaf: AtomicArc<Leaf<K, V>>,
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    use proptest::prelude::*;
+    use tokio::sync;
+
+    #[test]
+    fn basic() {
+        let barrier = Barrier::new();
+        let leaf_node: LeafNode<String, String> = LeafNode::new();
+        assert!(matches!(
+            leaf_node.insert(
+                "MY GOODNESS!".to_owned(),
+                "OH MY GOD!!".to_owned(),
+                &barrier
+            ),
+            Ok(InsertResult::Success)
+        ));
+        assert!(matches!(
+            leaf_node.insert("GOOD DAY".to_owned(), "OH MY GOD!!".to_owned(), &barrier),
+            Ok(InsertResult::Success)
+        ));
+        assert_eq!(
+            leaf_node.search("MY GOODNESS!", &barrier).unwrap().unwrap(),
+            "OH MY GOD!!"
+        );
+        assert_eq!(
+            leaf_node.search("GOOD DAY", &barrier).unwrap().unwrap(),
+            "OH MY GOD!!"
+        );
+        assert!(matches!(
+            leaf_node.remove_if("GOOD DAY", &mut |v| v == "OH MY", &barrier),
+            Ok(RemoveResult::Fail)
+        ));
+        assert!(matches!(
+            leaf_node.remove_if("GOOD DAY", &mut |v| v == "OH MY GOD!!", &barrier),
+            Ok(RemoveResult::Success)
+        ));
+        assert!(matches!(
+            leaf_node.remove_if("GOOD", &mut |v| v == "OH MY", &barrier),
+            Ok(RemoveResult::Fail)
+        ));
+        assert!(matches!(
+            leaf_node.remove_if("MY GOODNESS!", &mut |_| true, &barrier),
+            Ok(RemoveResult::Retired)
+        ));
+    }
+
+    proptest! {
+        #[test]
+        fn prop(_insert in 0_usize..256, _remove in 0_usize..256) {
+            let _leaf_node: LeafNode<usize, usize> = LeafNode::new();
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    async fn update() {
+        let num_tasks = 8_usize;
+        for _ in 0..256 {
+            let barrier = Arc::new(sync::Barrier::new(num_tasks));
+            let leaf_node: Arc<LeafNode<usize, usize>> = Arc::new(LeafNode::new());
+            let mut task_handles = Vec::with_capacity(num_tasks);
+            for _ in 0..num_tasks {
+                let barrier_clone = barrier.clone();
+                let leaf_node_clone = leaf_node.clone();
+                task_handles.push(tokio::spawn(async move {
+                    barrier_clone.wait().await;
+                    drop(leaf_node_clone);
+                }));
+            }
+            for r in futures::future::join_all(task_handles).await {
+                assert!(r.is_ok());
+            }
+        }
+    }
 }
