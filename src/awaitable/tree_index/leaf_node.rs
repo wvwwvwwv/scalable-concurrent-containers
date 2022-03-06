@@ -5,7 +5,6 @@ use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 use crate::LinkedList;
 
 use std::borrow::Borrow;
-//use std::cmp::Ordering;
 use std::sync::atomic::Ordering::{self, AcqRel, Acquire, Relaxed, Release};
 
 /// [`Tag::First`] indicates the corresponding [`LeafNode`] has retired.
@@ -28,7 +27,8 @@ where
     /// [`Leaf`].
     unbounded_child: AtomicArc<Leaf<K, V>>,
 
-    /// The latch of the [`LeafNode`] that also stores the information about a structural change.
+    /// `latch` acts as a mutex of the [`LeafNode`] that also stores the information about an
+    /// on-going structural change.
     latch: AtomicArc<StructuralChange<K, V>>,
 }
 
@@ -52,11 +52,7 @@ where
     }
 
     /// Searches for an entry associated with the given key.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if retry is required.
-    pub fn search<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> Result<Option<&'b V>, ()>
+    pub fn search<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> Option<&'b V>
     where
         K: 'b + Borrow<Q>,
         Q: Ord + ?Sized,
@@ -78,51 +74,48 @@ where
                     continue;
                 }
                 if let Some(child_ref) = child_ptr.as_ref() {
-                    return Ok(child_ref.search(key));
+                    return child_ref.search(key);
                 }
-                // `child_ptr` being null indicates that the leaf is being removed.
-                return Err(());
             }
             let unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
             if let Some(unbounded) = unbounded_ptr.as_ref() {
                 if !self.children.validate(metadata) {
                     continue;
                 }
-                return Ok(unbounded.search(key));
+                return unbounded.search(key);
             }
-            return Err(());
+            return None;
         }
     }
 
     /// Returns the minimum key entry.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if retry is required.
-    pub fn min<'b>(&self, barrier: &'b Barrier) -> Result<Scanner<'b, K, V>, ()> {
+    pub fn min<'b>(&self, barrier: &'b Barrier) -> Option<Scanner<'b, K, V>> {
         loop {
             let mut scanner = Scanner::new(&self.children);
             let metadata = scanner.metadata();
-            if let Some((_, child)) = scanner.next() {
-                let child_ptr = child.load(Acquire, barrier);
+            if let Some(child) =
+                scanner.find_map(|(_, child)| child.load(Acquire, barrier).as_ref())
+            {
+                // It is necessary to read the metadata of the child leaf prior to checking the
+                // `LeafNode` metadata, since, when a leaf is split, the low key leaf will be
+                // inserted into `self.children`, therefore the metadata shall change before the
+                // full leaf is being deprecated.
+                let leaf_scanner = Scanner::new(child);
                 if !self.children.validate(metadata) {
                     // Data race resolution - see `LeafNode::search`.
                     continue;
                 }
-                if let Some(child_ref) = child_ptr.as_ref() {
-                    return Ok(Scanner::new(child_ref));
-                }
-                // `child_ptr` being null indicates that the leaf is being removed.
-                return Err(());
+                return Some(leaf_scanner);
             }
             let unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
             if let Some(unbounded) = unbounded_ptr.as_ref() {
+                let leaf_scanner = Scanner::new(unbounded);
                 if !self.children.validate(metadata) {
                     continue;
                 }
-                return Ok(Scanner::new(unbounded));
+                return Some(leaf_scanner);
             }
-            return Err(());
+            return None;
         }
     }
 
@@ -130,7 +123,7 @@ where
     ///
     /// # Errors
     ///
-    /// Returns an error if retry is required.
+    /// Returns an error if retry is required: TODO - remove it.
     pub fn max_less<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> Result<Scanner<'b, K, V>, ()>
     where
         K: 'b + Borrow<Q>,
@@ -323,7 +316,7 @@ where
             Ptr::null(),
             (
                 Some(Arc::new(StructuralChange {
-                    origin_leaf_key: None, // TODO: fill it.
+                    origin_leaf_key: None,
                     origin_leaf_ptr: full_leaf_arc.clone(Relaxed, barrier),
                     low_key_leaf: AtomicArc::null(),
                     high_key_leaf: AtomicArc::null(),
@@ -618,7 +611,8 @@ where
             if leaf_ref.retired() {
                 let deleted = leaf_ref.delete_self(Relaxed);
                 debug_assert!(deleted);
-                self.children.remove_if(entry.0, &mut |_| true);
+                let result = self.children.remove_if(entry.0, &mut |_| true);
+                debug_assert_ne!(result, RemoveResult::Fail);
                 if let Some(leaf) = entry.1.swap((None, Tag::None), Release) {
                     barrier.reclaim(leaf);
                 }
@@ -794,6 +788,9 @@ where
 mod test {
     use super::*;
 
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering::Relaxed;
+
     use proptest::prelude::*;
     use tokio::sync;
 
@@ -814,11 +811,11 @@ mod test {
             Ok(InsertResult::Success)
         ));
         assert_eq!(
-            leaf_node.search("MY GOODNESS!", &barrier).unwrap().unwrap(),
+            leaf_node.search("MY GOODNESS!", &barrier).unwrap(),
             "OH MY GOD!!"
         );
         assert_eq!(
-            leaf_node.search("GOOD DAY", &barrier).unwrap().unwrap(),
+            leaf_node.search("GOOD DAY", &barrier).unwrap(),
             "OH MY GOD!!"
         );
         assert!(matches!(
@@ -837,6 +834,10 @@ mod test {
             leaf_node.remove_if("MY GOODNESS!", &mut |_| true, &barrier),
             Ok(RemoveResult::Retired)
         ));
+        assert!(matches!(
+            leaf_node.insert("HI".to_owned(), "HO".to_owned(), &barrier),
+            Ok(InsertResult::Retired(..))
+        ));
     }
 
     proptest! {
@@ -846,24 +847,59 @@ mod test {
         }
     }
 
+    #[ignore]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
-    async fn update() {
+    async fn durability() {
         let num_tasks = 8_usize;
-        for _ in 0..256 {
+        let workload_size = 256_usize;
+        for k in 0..workload_size {
             let barrier = Arc::new(sync::Barrier::new(num_tasks));
             let leaf_node: Arc<LeafNode<usize, usize>> = Arc::new(LeafNode::new());
+            let inserted: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
             let mut task_handles = Vec::with_capacity(num_tasks);
             for _ in 0..num_tasks {
                 let barrier_clone = barrier.clone();
                 let leaf_node_clone = leaf_node.clone();
+                let inserted_clone = inserted.clone();
                 task_handles.push(tokio::spawn(async move {
-                    barrier_clone.wait().await;
-                    drop(leaf_node_clone);
+                    {
+                        barrier_clone.wait().await;
+                        let barrier = Barrier::new();
+                        if let Ok(InsertResult::Success) = leaf_node_clone.insert(k, k, &barrier) {
+                            assert!(!inserted_clone.swap(true, Relaxed));
+                        }
+                    }
+                    {
+                        barrier_clone.wait().await;
+                        let barrier = Barrier::new();
+                        for i in 0..workload_size {
+                            if i != k {
+                                let _result = leaf_node_clone.insert(i, i, &barrier);
+                            }
+                            assert_eq!(leaf_node_clone.search(&k, &barrier).unwrap(), &k);
+                            // TODO: check.
+                        }
+                        for i in 0..workload_size {
+                            let mut scanner = leaf_node_clone.min(&barrier).unwrap();
+                            if let Some((k_ref, v_ref)) = scanner.next() {
+                                assert_eq!(*k_ref, *v_ref);
+                                assert!(*k_ref <= k);
+                            } else {
+                                let (k_ref, v_ref) =
+                                    scanner.jump(None, &barrier).unwrap().get().unwrap();
+                                assert_eq!(*k_ref, *v_ref);
+                                assert!(*k_ref <= k);
+                            }
+                            let _result = leaf_node_clone.remove_if(&i, &mut |v| *v != k, &barrier);
+                            assert_eq!(leaf_node_clone.search(&k, &barrier).unwrap(), &k);
+                        }
+                    }
                 }));
             }
             for r in futures::future::join_all(task_handles).await {
                 assert!(r.is_ok());
             }
+            assert!(inserted.load(Relaxed));
         }
     }
 }

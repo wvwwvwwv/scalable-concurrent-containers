@@ -310,6 +310,7 @@ where
                                 return RemoveResult::Fail;
                             }
                             let mut empty = true;
+                            // TODO: optimize it, e.g., bitwise-and 0xFFFFFFFF, etc.
                             for j in 0..DIMENSION.num_entries {
                                 // Check if other entries are all unreachable.
                                 if i == j {
@@ -600,8 +601,10 @@ where
                                 .metadata
                                 .fetch_and(!DIMENSION.state_mask(free_slot_index), Relaxed)
                                 & (!DIMENSION.state_mask(free_slot_index));
-                            debug_assert!(Dimension::retired(result));
-                            return InsertResult::Retired(key, value);
+                            if Dimension::retired(result) {
+                                return InsertResult::Retired(key, value);
+                            }
+                            return InsertResult::Duplicate(key, value);
                         }
                         Ordering::Greater => {
                             // The new entry is higher ranked.
