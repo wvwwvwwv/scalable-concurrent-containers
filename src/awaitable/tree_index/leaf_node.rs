@@ -76,6 +76,7 @@ where
                 if let Some(child_ref) = child_ptr.as_ref() {
                     return child_ref.search(key);
                 }
+                // TODO: check.
             }
             let unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
             if let Some(unbounded) = unbounded_ptr.as_ref() {
@@ -842,64 +843,86 @@ mod test {
 
     proptest! {
         #[test]
-        fn prop(_insert in 0_usize..256, _remove in 0_usize..256) {
-            let _leaf_node: LeafNode<usize, usize> = LeafNode::new();
+        fn prop(insert in 0_usize..256) {
+            let barrier = Barrier::new();
+            let leaf_node: LeafNode<usize, usize> = LeafNode::new();
+            for k in 0..insert {
+                let mut result = leaf_node.insert(k, k, &barrier);
+                if result.is_err() {
+                    result = leaf_node.insert(k, k, &barrier);
+                }
+                match result.unwrap() {
+                    InsertResult::Success => continue,
+                    InsertResult::Duplicate(..) | InsertResult::Retired(..) => unreachable!(),
+                    InsertResult::Full(_, _) => {
+                        leaf_node.latch.swap((None, Tag::None), Relaxed);
+                        for r in 0..(k - 1) {
+                            assert!(matches!(leaf_node.remove_if(&r, &mut |_| true, &barrier), Ok(RemoveResult::Success)));
+                        }
+                        assert!(matches!(leaf_node.remove_if(&(k - 1), &mut |_| true, &barrier), Ok(RemoveResult::Retired)));
+                        break;
+                    }
+                }
+            }
         }
     }
 
-    #[ignore]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn durability() {
-        let num_tasks = 8_usize;
-        let workload_size = 256_usize;
-        for k in 0..workload_size {
-            let barrier = Arc::new(sync::Barrier::new(num_tasks));
-            let leaf_node: Arc<LeafNode<usize, usize>> = Arc::new(LeafNode::new());
-            let inserted: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
-            let mut task_handles = Vec::with_capacity(num_tasks);
-            for _ in 0..num_tasks {
-                let barrier_clone = barrier.clone();
-                let leaf_node_clone = leaf_node.clone();
-                let inserted_clone = inserted.clone();
-                task_handles.push(tokio::spawn(async move {
-                    {
-                        barrier_clone.wait().await;
-                        let barrier = Barrier::new();
-                        if let Ok(InsertResult::Success) = leaf_node_clone.insert(k, k, &barrier) {
-                            assert!(!inserted_clone.swap(true, Relaxed));
-                        }
-                    }
-                    {
-                        barrier_clone.wait().await;
-                        let barrier = Barrier::new();
-                        for i in 0..workload_size {
-                            if i != k {
-                                let _result = leaf_node_clone.insert(i, i, &barrier);
+        let num_tasks = 16_usize;
+        let workload_size = 64_usize;
+        for _ in 0..8 {
+            for k in 0..=workload_size {
+                let barrier = Arc::new(sync::Barrier::new(num_tasks));
+                let leaf_node: Arc<LeafNode<usize, usize>> = Arc::new(LeafNode::new());
+                let inserted: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+                let mut task_handles = Vec::with_capacity(num_tasks);
+                for _ in 0..num_tasks {
+                    let barrier_clone = barrier.clone();
+                    let leaf_node_clone = leaf_node.clone();
+                    let inserted_clone = inserted.clone();
+                    task_handles.push(tokio::spawn(async move {
+                        {
+                            barrier_clone.wait().await;
+                            let barrier = Barrier::new();
+                            if let Ok(InsertResult::Success) =
+                                leaf_node_clone.insert(k, k, &barrier)
+                            {
+                                assert!(!inserted_clone.swap(true, Relaxed));
                             }
-                            assert_eq!(leaf_node_clone.search(&k, &barrier).unwrap(), &k);
-                            // TODO: check.
                         }
-                        for i in 0..workload_size {
-                            let mut scanner = leaf_node_clone.min(&barrier).unwrap();
-                            if let Some((k_ref, v_ref)) = scanner.next() {
-                                assert_eq!(*k_ref, *v_ref);
-                                assert!(*k_ref <= k);
-                            } else {
-                                let (k_ref, v_ref) =
-                                    scanner.jump(None, &barrier).unwrap().get().unwrap();
-                                assert_eq!(*k_ref, *v_ref);
-                                assert!(*k_ref <= k);
+                        {
+                            barrier_clone.wait().await;
+                            let barrier = Barrier::new();
+                            for i in 0..workload_size {
+                                if i != k {
+                                    let _result = leaf_node_clone.insert(i, i, &barrier);
+                                }
+                                assert_eq!(leaf_node_clone.search(&k, &barrier).unwrap(), &k);
                             }
-                            let _result = leaf_node_clone.remove_if(&i, &mut |v| *v != k, &barrier);
-                            assert_eq!(leaf_node_clone.search(&k, &barrier).unwrap(), &k);
+                            for i in 0..workload_size {
+                                let mut scanner = leaf_node_clone.min(&barrier).unwrap();
+                                if let Some((k_ref, v_ref)) = scanner.next() {
+                                    assert_eq!(*k_ref, *v_ref);
+                                    assert!(*k_ref <= k);
+                                } else {
+                                    let (k_ref, v_ref) =
+                                        scanner.jump(None, &barrier).unwrap().get().unwrap();
+                                    assert_eq!(*k_ref, *v_ref);
+                                    assert!(*k_ref <= k);
+                                }
+                                let _result =
+                                    leaf_node_clone.remove_if(&i, &mut |v| *v != k, &barrier);
+                                assert_eq!(leaf_node_clone.search(&k, &barrier).unwrap(), &k);
+                            }
                         }
-                    }
-                }));
+                    }));
+                }
+                for r in futures::future::join_all(task_handles).await {
+                    assert!(r.is_ok());
+                }
+                assert!(inserted.load(Relaxed));
             }
-            for r in futures::future::join_all(task_handles).await {
-                assert!(r.is_ok());
-            }
-            assert!(inserted.load(Relaxed));
         }
     }
 }
