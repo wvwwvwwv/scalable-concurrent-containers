@@ -209,27 +209,8 @@ where
             }
 
             if !has_free_slot {
-                let mut max_min_rank = 0;
-                let mut min_max_rank = DIMENSION.removed_state();
-                for i in 0..DIMENSION.num_entries {
-                    let rank = DIMENSION.state(metadata, i);
-                    if rank > max_min_rank && rank < min_max_rank {
-                        match self.compare(i, key.borrow()) {
-                            Ordering::Less => {
-                                if max_min_rank < rank {
-                                    max_min_rank = rank;
-                                }
-                            }
-                            Ordering::Greater => {
-                                if min_max_rank > rank {
-                                    min_max_rank = rank;
-                                }
-                            }
-                            Ordering::Equal => {
-                                return InsertResult::Duplicate(key, value);
-                            }
-                        }
-                    }
+                if self.search_slot(key.borrow(), metadata).is_some() {
+                    return InsertResult::Duplicate(key, value);
                 }
                 return InsertResult::Full(key, value);
             }
@@ -322,29 +303,7 @@ where
         Q: Ord + ?Sized,
     {
         let metadata = self.metadata.load(Acquire);
-        let mut max_min_rank = 0;
-        let mut min_max_rank = DIMENSION.removed_state();
-        for i in 0..DIMENSION.num_entries {
-            let rank = DIMENSION.state(metadata, i);
-            if rank > max_min_rank && rank < min_max_rank {
-                match self.compare(i, key) {
-                    Ordering::Less => {
-                        if max_min_rank < rank {
-                            max_min_rank = rank;
-                        }
-                    }
-                    Ordering::Greater => {
-                        if min_max_rank > rank {
-                            min_max_rank = rank;
-                        }
-                    }
-                    Ordering::Equal => {
-                        return Some(self.read(i).1);
-                    }
-                }
-            }
-        }
-        None
+        self.search_slot(key, metadata).map(|i| self.read(i).1)
     }
 
     /// Returns the index and a pointer to the key-value pair that is smaller than the given key.
@@ -492,6 +451,37 @@ where
         }
     }
 
+    /// Searches for a slot in which the key is stored.
+    fn search_slot<Q>(&self, key: &Q, metadata: usize) -> Option<usize>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        let mut max_min_rank = 0;
+        let mut min_max_rank = DIMENSION.removed_state();
+        for i in 0..DIMENSION.num_entries {
+            let rank = DIMENSION.state(metadata, i);
+            if rank > max_min_rank && rank < min_max_rank {
+                match self.compare(i, key) {
+                    Ordering::Less => {
+                        if max_min_rank < rank {
+                            max_min_rank = rank;
+                        }
+                    }
+                    Ordering::Greater => {
+                        if min_max_rank > rank {
+                            min_max_rank = rank;
+                        }
+                    }
+                    Ordering::Equal => {
+                        return Some(i);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Post-processing after reserving a free slot.
     fn post_insert(&self, free_slot_index: usize, mut metadata: usize) -> InsertResult<K, V> {
         let key_ref = self.read(free_slot_index).0;
@@ -635,6 +625,7 @@ where
     K: 'static + Clone + Ord + Sync,
     V: 'static + Clone + Sync,
 {
+    /// Creates a new [`Scanner`].
     pub fn new(leaf: &'l Leaf<K, V>) -> Scanner<'l, K, V> {
         Scanner {
             leaf,
@@ -644,6 +635,9 @@ where
         }
     }
 
+    /// Returns a [`Scanner`] pointing to the max-less entry if there is one.
+    ///
+    /// If there is no key that is smaller than the given key, it returns a default [`Scanner`].
     pub fn max_less<Q>(leaf: &'l Leaf<K, V>, key: &Q) -> Scanner<'l, K, V>
     where
         K: Borrow<Q>,
@@ -663,12 +657,9 @@ where
         }
     }
 
+    /// Returns the metadata that the [`Scanner`] is currently using.
     pub fn metadata(&self) -> usize {
         self.metadata
-    }
-
-    pub fn max_entry(&self) -> Option<(&'l K, &'l V)> {
-        self.leaf.max()
     }
 
     /// Returns a reference to the entry that the scanner is currently pointing to
@@ -679,11 +670,13 @@ where
         unsafe { Some((&(*self.entry_ptr).0, &(*self.entry_ptr).1)) }
     }
 
+    /// Checks if the entry that the [`Scanner`] is pointing to is now removed.
     pub fn removed(&self) -> bool {
         DIMENSION.state(self.leaf.metadata.load(Relaxed), self.entry_index)
             == DIMENSION.removed_state()
     }
 
+    /// Traverses the linked list.
     pub fn jump<'b, Q>(
         &self,
         min_allowed_key: Option<&Q>,

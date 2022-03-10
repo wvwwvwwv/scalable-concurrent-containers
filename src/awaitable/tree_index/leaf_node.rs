@@ -60,23 +60,26 @@ where
         loop {
             let (child, metadata) = self.children.min_greater_equal(key);
             if let Some((_, child)) = child {
-                let child_ptr = child.load(Acquire, barrier);
-                if !self.children.validate(metadata) {
-                    // Data race with split.
-                    //  - Writer: start to insert an intermediate low key leaf.
-                    //  - Reader: read the metadata not including the intermediate low key leaf.
-                    //  - Writer: insert the intermediate low key leaf.
-                    //  - Writer: replace the high key leaf pointer.
-                    //  - Reader: read the new high key leaf pointer
-                    // Consequently, the reader may miss keys in the low key leaf.
-                    //
-                    // Resolution: metadata validation.
-                    continue;
+                if let Some(child) = child.load(Acquire, barrier).as_ref() {
+                    if self.children.validate(metadata) {
+                        // Data race with split.
+                        //  - Writer: start to insert an intermediate low key leaf.
+                        //  - Reader: read the metadata not including the intermediate low key leaf.
+                        //  - Writer: insert the intermediate low key leaf.
+                        //  - Writer: replace the high key leaf pointer.
+                        //  - Reader: read the new high key leaf pointer
+                        // Consequently, the reader may miss keys in the low key leaf.
+                        //
+                        // Resolution: metadata validation.
+                        return child.search(key);
+                    }
                 }
-                if let Some(child_ref) = child_ptr.as_ref() {
-                    return child_ref.search(key);
-                }
-                // TODO: check.
+
+                // The child leaf must have been just removed.
+                //
+                // The `LeafNode` metadata is updated before a leaf is removed. This implies that
+                // the new `metadata` will be different from the current `metadata`.
+                continue;
             }
             let unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
             if let Some(unbounded) = unbounded_ptr.as_ref() {
@@ -94,19 +97,16 @@ where
         loop {
             let mut scanner = Scanner::new(&self.children);
             let metadata = scanner.metadata();
-            if let Some(child) =
-                scanner.find_map(|(_, child)| child.load(Acquire, barrier).as_ref())
-            {
-                // It is necessary to read the metadata of the child leaf prior to checking the
-                // `LeafNode` metadata, since, when a leaf is split, the low key leaf will be
-                // inserted into `self.children`, therefore the metadata shall change before the
-                // full leaf is being deprecated.
-                let leaf_scanner = Scanner::new(child);
-                if !self.children.validate(metadata) {
-                    // Data race resolution - see `LeafNode::search`.
-                    continue;
+            if let Some((_, child)) = scanner.next() {
+                let child_ptr = child.load(Acquire, barrier);
+                if let Some(child) = child_ptr.as_ref() {
+                    if self.children.validate(metadata) {
+                        // Data race resolution - see `LeafNode::search`.
+                        return Some(Scanner::new(child));
+                    }
                 }
-                return Some(leaf_scanner);
+                // It is not a hot loop - see `LeafNode::search`.
+                continue;
             }
             let unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
             if let Some(unbounded) = unbounded_ptr.as_ref() {
@@ -122,10 +122,9 @@ where
 
     /// Returns an entry with the maximum key among those keys smaller than the given key.
     ///
-    /// # Errors
-    ///
-    /// Returns an error if retry is required: TODO - remove it.
-    pub fn max_less<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> Result<Scanner<'b, K, V>, ()>
+    /// It returns a [`Scanner`] that points to an entry that is definitely smaller than the given
+    /// key, and close enough to the target key.
+    pub fn max_less_appr<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> Option<Scanner<'b, K, V>>
     where
         K: 'b + Borrow<Q>,
         Q: Ord + ?Sized,
@@ -133,26 +132,25 @@ where
         loop {
             let mut scanner = Scanner::max_less(&self.children, key);
             let metadata = scanner.metadata();
-            if let Some((_, child)) = scanner.next() {
-                let child_ptr = child.load(Acquire, barrier);
-                if !self.children.validate(metadata) {
-                    // Data race resolution - see `LeafNode::search`.
-                    continue;
+            if let Some((_, child)) = scanner.get() {
+                if let Some(child) = child.load(Acquire, barrier).as_ref() {
+                    if self.children.validate(metadata) {
+                        // Data race resolution - see `LeafNode::search`.
+                        return Some(Scanner::max_less(child, key));
+                    }
                 }
-                if let Some(child_ref) = child_ptr.as_ref() {
-                    return Ok(Scanner::max_less(child_ref, key));
+                // It is not a hot loop - see `LeafNode::search`.
+                continue;
+            } else if scanner.next().is_none() {
+                let unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
+                if let Some(unbounded) = unbounded_ptr.as_ref() {
+                    if !self.children.validate(metadata) {
+                        continue;
+                    }
+                    return Some(Scanner::max_less(unbounded, key));
                 }
-                // `child_ptr` being null indicates that the leaf is being removed.
-                return Err(());
             }
-            let unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
-            if let Some(unbounded) = unbounded_ptr.as_ref() {
-                if !self.children.validate(metadata) {
-                    continue;
-                }
-                return Ok(Scanner::max_less(unbounded, key));
-            }
-            return Err(());
+            return None;
         }
     }
 
@@ -171,30 +169,29 @@ where
             let (child, metadata) = self.children.min_greater_equal(&key);
             if let Some((child_key, child)) = child {
                 let child_ptr = child.load(Acquire, barrier);
-                if !self.children.validate(metadata) {
-                    // Data race resolution - see `LeafNode::search`.
-                    continue;
-                }
                 if let Some(child_ref) = child_ptr.as_ref() {
-                    match child_ref.insert(key, value) {
-                        InsertResult::Success => return Ok(InsertResult::Success),
-                        InsertResult::Duplicate(key, value) => {
-                            return Ok(InsertResult::Duplicate(key, value));
-                        }
-                        InsertResult::Full(key, value) | InsertResult::Retired(key, value) => {
-                            return self.split_leaf(
-                                key,
-                                value,
-                                Some(child_key),
-                                child_ptr,
-                                child,
-                                barrier,
-                            );
-                        }
-                    };
+                    if self.children.validate(metadata) {
+                        // Data race resolution - see `LeafNode::search`.
+                        match child_ref.insert(key, value) {
+                            InsertResult::Success => return Ok(InsertResult::Success),
+                            InsertResult::Duplicate(key, value) => {
+                                return Ok(InsertResult::Duplicate(key, value));
+                            }
+                            InsertResult::Full(key, value) | InsertResult::Retired(key, value) => {
+                                return self.split_leaf(
+                                    key,
+                                    value,
+                                    Some(child_key),
+                                    child_ptr,
+                                    child,
+                                    barrier,
+                                );
+                            }
+                        };
+                    }
                 }
-                // `child_ptr` being null indicates that the leaf is being removed.
-                return Err((key, value));
+                // It is not a hot loop - see `LeafNode::search`.
+                continue;
             }
 
             let mut unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
@@ -262,22 +259,21 @@ where
             let (child, metadata) = self.children.min_greater_equal(key);
             if let Some((_, child)) = child {
                 let child_ptr = child.load(Acquire, barrier);
-                if !self.children.validate(metadata) {
-                    // Data race resolution - see `LeafNode::search`.
-                    continue;
-                }
-                if let Some(child_ref) = child_ptr.as_ref() {
-                    let result = child_ref.remove_if(key, condition);
-                    if result == RemoveResult::Fail {
-                        return Ok(RemoveResult::Fail);
+                if let Some(child) = child_ptr.as_ref() {
+                    if self.children.validate(metadata) {
+                        // Data race resolution - see `LeafNode::search`.
+                        let result = child.remove_if(key, condition);
+                        if result == RemoveResult::Fail {
+                            return Ok(RemoveResult::Fail);
+                        }
+                        if result == RemoveResult::Retired {
+                            return self.coalesce(barrier);
+                        }
+                        return self.check_full_leaf(key, child_ptr, barrier);
                     }
-                    if result == RemoveResult::Retired {
-                        return self.coalesce(barrier);
-                    }
-                    return self.check_full_leaf(key, child_ptr, barrier);
                 }
-                // `child_ptr` being null indicates that the leaf is being removed.
-                return Err(false);
+                // It is not a hot loop - see `LeafNode::search`.
+                continue;
             }
             let unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
             if let Some(unbounded) = unbounded_ptr.as_ref() {
@@ -614,6 +610,9 @@ where
                 debug_assert!(deleted);
                 let result = self.children.remove_if(entry.0, &mut |_| true);
                 debug_assert_ne!(result, RemoveResult::Fail);
+
+                // The pointer is nullified after the metadata of `self.children` is updated so
+                // that readers are able to retry when they find it being `null`.
                 if let Some(leaf) = entry.1.swap((None, Tag::None), Release) {
                     barrier.reclaim(leaf);
                 }
