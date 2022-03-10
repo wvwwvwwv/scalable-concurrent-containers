@@ -46,7 +46,7 @@ where
         }
     }
 
-    /// Returns if the [`LeafNode`] is obsolete.
+    /// Returns `true` if the [`LeafNode`] is obsolete.
     pub fn obsolete(&self, mo: Ordering) -> bool {
         self.unbounded_child.tag(mo) == RETIRED
     }
@@ -120,10 +120,11 @@ where
         }
     }
 
-    /// Returns an entry with the maximum key among those keys smaller than the given key.
+    /// Returns a [`Scanner`] pointing to an entry that is close enough to the entry with the
+    /// maximum key among those keys smaller than the given key.
     ///
-    /// It returns a [`Scanner`] that points to an entry that is definitely smaller than the given
-    /// key, and close enough to the target key.
+    /// It returns `None` if all the keys in the [`LeafNode`] is equal to or greater than the given
+    /// key.
     pub fn max_less_appr<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> Option<Scanner<'b, K, V>>
     where
         K: 'b + Borrow<Q>,
