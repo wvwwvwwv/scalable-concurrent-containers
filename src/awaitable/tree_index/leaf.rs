@@ -638,7 +638,7 @@ where
     /// Returns a [`Scanner`] pointing to the max-less entry if there is one.
     ///
     /// If there is no key that is smaller than the given key, it returns a default [`Scanner`].
-    pub fn max_less<Q>(leaf: &'l Leaf<K, V>, key: &Q) -> Scanner<'l, K, V>
+    pub fn max_less<Q>(leaf: &'l Leaf<K, V>, key: &Q) -> Option<Scanner<'l, K, V>>
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
@@ -646,14 +646,14 @@ where
         let metadata = leaf.metadata.load(Acquire);
         let (index, ptr) = leaf.max_less(metadata, key);
         if ptr.is_null() {
-            Scanner::new(leaf)
+            None
         } else {
-            Scanner {
+            Some(Scanner {
                 leaf,
                 metadata,
                 entry_index: index,
                 entry_ptr: ptr,
-            }
+            })
         }
     }
 

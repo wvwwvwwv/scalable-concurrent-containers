@@ -131,28 +131,40 @@ where
         Q: Ord + ?Sized,
     {
         loop {
-            let mut scanner = Scanner::max_less(&self.children, key);
-            let metadata = scanner.metadata();
-            if let Some((_, child)) = scanner.get() {
-                if let Some(child) = child.load(Acquire, barrier).as_ref() {
-                    if self.children.validate(metadata) {
-                        // Data race resolution - see `LeafNode::search`.
-                        return Some(Scanner::max_less(child, key));
+            if let Some(scanner) = Scanner::max_less(&self.children, key) {
+                if let Some((_, child)) = scanner.get() {
+                    if let Some(child) = child.load(Acquire, barrier).as_ref() {
+                        if self.children.validate(scanner.metadata()) {
+                            // Data race resolution - see `LeafNode::search`.
+                            if let Some(scanner) = Scanner::max_less(child, key) {
+                                return Some(scanner);
+                            }
+                            // Fallback.
+                            break;
+                        }
                     }
-                }
-                // It is not a hot loop - see `LeafNode::search`.
-                continue;
-            } else if scanner.next().is_none() {
-                let unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
-                if let Some(unbounded) = unbounded_ptr.as_ref() {
-                    if !self.children.validate(metadata) {
-                        continue;
-                    }
-                    return Some(Scanner::max_less(unbounded, key));
+                    // It is not a hot loop - see `LeafNode::search`.
+                    continue;
                 }
             }
-            return None;
+            // Fallback.
+            break;
         }
+
+        // Starts scanning from the minimum key.
+        let mut min_scanner = self.min(barrier)?;
+        min_scanner.next();
+        loop {
+            if let Some((k, _)) = min_scanner.get() {
+                if k.borrow() < key {
+                    return Some(min_scanner);
+                }
+                break;
+            }
+            min_scanner = min_scanner.jump(None, barrier)?;
+        }
+
+        None
     }
 
     /// Inserts a key-value pair.
@@ -901,13 +913,16 @@ mod test {
                                 assert_eq!(leaf_node_clone.search(&k, &barrier).unwrap(), &k);
                             }
                             for i in 0..workload_size {
-                                let mut scanner = leaf_node_clone.min(&barrier).unwrap();
-                                if let Some((k_ref, v_ref)) = scanner.next() {
+                                let max_scanner =
+                                    leaf_node_clone.max_less_appr(&(k + 1), &barrier).unwrap();
+                                assert!(*max_scanner.get().unwrap().0 <= k);
+                                let mut min_scanner = leaf_node_clone.min(&barrier).unwrap();
+                                if let Some((k_ref, v_ref)) = min_scanner.next() {
                                     assert_eq!(*k_ref, *v_ref);
                                     assert!(*k_ref <= k);
                                 } else {
                                     let (k_ref, v_ref) =
-                                        scanner.jump(None, &barrier).unwrap().get().unwrap();
+                                        min_scanner.jump(None, &barrier).unwrap().get().unwrap();
                                     assert_eq!(*k_ref, *v_ref);
                                     assert!(*k_ref <= k);
                                 }
