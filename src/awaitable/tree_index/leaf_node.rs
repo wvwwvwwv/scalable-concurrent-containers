@@ -110,11 +110,10 @@ where
             }
             let unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
             if let Some(unbounded) = unbounded_ptr.as_ref() {
-                let leaf_scanner = Scanner::new(unbounded);
-                if !self.children.validate(metadata) {
-                    continue;
+                if self.children.validate(metadata) {
+                    return Some(Scanner::new(unbounded));
                 }
-                return Some(leaf_scanner);
+                continue;
             }
             return None;
         }
@@ -232,7 +231,6 @@ where
                 if !self.children.validate(metadata) {
                     continue;
                 }
-
                 match unbounded.insert(key, value) {
                     InsertResult::Success => return Ok(InsertResult::Success),
                     InsertResult::Duplicate(key, value) => {
@@ -253,6 +251,7 @@ where
             return Err((key, value));
         }
     }
+
     /// Removes an entry associated with the given key.
     ///
     /// # Errors
@@ -319,7 +318,7 @@ where
         value: V,
         full_leaf_key: Option<&K>,
         full_leaf_ptr: Ptr<Leaf<K, V>>,
-        full_leaf_arc: &AtomicArc<Leaf<K, V>>,
+        full_leaf: &AtomicArc<Leaf<K, V>>,
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
         let new_leaves = match self.latch.compare_exchange(
@@ -327,7 +326,7 @@ where
             (
                 Some(Arc::new(StructuralChange {
                     origin_leaf_key: None,
-                    origin_leaf_ptr: full_leaf_arc.clone(Relaxed, barrier),
+                    origin_leaf: full_leaf.clone(Relaxed, barrier),
                     low_key_leaf: AtomicArc::null(),
                     high_key_leaf: AtomicArc::null(),
                 })),
@@ -337,7 +336,7 @@ where
             Relaxed,
         ) {
             Ok((_, ptr)) => {
-                if self.obsolete(Relaxed) || full_leaf_ptr != full_leaf_arc.load(Relaxed, barrier) {
+                if self.obsolete(Relaxed) || full_leaf_ptr != full_leaf.load(Relaxed, barrier) {
                     // `self` is now obsolete, or `full_leaf` has changed in the meantime.
                     drop(self.latch.swap((None, Tag::None), Relaxed));
                     return Err((key, value));
@@ -353,12 +352,12 @@ where
             }
         }
 
-        let full_leaf = full_leaf_ptr.as_ref().unwrap();
+        let target = full_leaf_ptr.as_ref().unwrap();
         let mut low_key_leaf_arc = None;
         let mut high_key_leaf_arc = None;
 
         // Distribute entries to two leaves.
-        full_leaf.distribute(&mut low_key_leaf_arc, &mut high_key_leaf_arc);
+        target.distribute(&mut low_key_leaf_arc, &mut high_key_leaf_arc);
 
         if let Some(low_key_leaf_boxed) = low_key_leaf_arc.take() {
             new_leaves
@@ -376,9 +375,6 @@ where
                 .swap((Some(Arc::new(Leaf::new())), Tag::None), Relaxed);
         }
 
-        // Insert the newly added leaves into the main array, and insert the new leaves into the
-        // linked list, and lastly, remove the full leaf from the linked list.
-        //
         // When a new leaf is added to the linked list, the leaf is marked to let `Scanners`
         // acknowledge that the newly added leaf may contain keys that are smaller than those
         // having been `scanned`.
@@ -390,9 +386,9 @@ where
             // The full leaf is marked so that readers know that the next leaves may contain
             // smaller keys.
             let result =
-                full_leaf.push_back(low_key_leaf_ptr.get_arc().unwrap(), true, Release, barrier);
+                target.push_back(low_key_leaf_ptr.get_arc().unwrap(), true, Release, barrier);
             debug_assert!(result.is_ok());
-            full_leaf_arc.swap(
+            full_leaf.swap(
                 (
                     new_leaves.low_key_leaf.swap((None, Tag::None), Relaxed),
                     Tag::None,
@@ -400,22 +396,12 @@ where
                 Release,
             )
         } else {
-            // From here, Scanners can reach the new leaves.
-            //
-            // Immediately unlinking the full leaf causes active scanners reading the full leaf
-            // to omit a number of leaves.
-            //  - Leaf: l, insert: i, split: s, rollback: r.
-            //  - Insert 1-2: i1(l1)|                   |i2(l2)|s(l2)|l12:l2:l21:l22|l12:l21:l22|
-            //  - Insert 0  : i0(l1)|s(l1)|l1:l11:l12:l2|                                       |r|l1:l12...
-            //
-            // In this scenario, without keeping l1, l2 in the linked list, l1 would point to l2,
-            // and therefore a range scanner would start from l1, and cannot traverse l21 and l22,
-            // missing newly inserted entries in l21 and l22 before starting the range scanner.
+            // From here, `Scanners` can reach the new leaves.
             let result =
-                full_leaf.push_back(high_key_leaf_ptr.get_arc().unwrap(), true, Release, barrier);
+                target.push_back(high_key_leaf_ptr.get_arc().unwrap(), true, Release, barrier);
             debug_assert!(result.is_ok());
             let result =
-                full_leaf.push_back(low_key_leaf_ptr.get_arc().unwrap(), true, Release, barrier);
+                target.push_back(low_key_leaf_ptr.get_arc().unwrap(), true, Release, barrier);
             debug_assert!(result.is_ok());
 
             // Takes the max key value stored in the low key leaf as the leaf key.
@@ -432,7 +418,7 @@ where
             };
 
             // Replace the full leaf with the high-key leaf.
-            full_leaf_arc.swap(
+            full_leaf.swap(
                 (
                     new_leaves.high_key_leaf.swap((None, Tag::None), Relaxed),
                     Tag::None,
@@ -441,7 +427,6 @@ where
             )
         };
 
-        // Drops the deprecated leaf.
         if let Some(unused_leaf) = unused_leaf {
             let deleted = unused_leaf.delete_self(Release);
             debug_assert!(deleted);
@@ -667,81 +652,80 @@ where
         }
     }
 
-    /*
-        /// Rolls back the ongoing split operation recursively.
-        pub fn rollback(&self, barrier: &Barrier) {
-            let new_leaves_ptr = self.latch.load(Relaxed, barrier);
-            if let Some(new_leaves_ref) = new_leaves_ptr.as_ref() {
-                // Inserts the origin leaf into the linked list.
-                let low_key_leaf_ptr = new_leaves_ref.low_key_leaf.load(Relaxed, barrier);
-                let high_key_leaf_ptr = new_leaves_ref.high_key_leaf.load(Relaxed, barrier);
+    /// Rolls back the ongoing split operation recursively.
+    pub fn rollback(&self, _barrier: &Barrier) {
+        /*
+        let new_leaves_ptr = self.latch.load(Relaxed, barrier);
+        if let Some(new_leaves_ref) = new_leaves_ptr.as_ref() {
+            // Inserts the origin leaf into the linked list.
+            let low_key_leaf_ptr = new_leaves_ref.low_key_leaf.load(Relaxed, barrier);
+            let high_key_leaf_ptr = new_leaves_ref.high_key_leaf.load(Relaxed, barrier);
 
-                // Rolls back the linked list state.
+            // Rolls back the linked list state.
+            //
+            // `high_key_leaf` must be deleted first in order for scanners not to omit entries.
+            if let Some(leaf_ref) = high_key_leaf_ptr.as_ref() {
+                let deleted = leaf_ref.delete_self(Relaxed);
+                debug_assert!(deleted);
+            }
+            if let Some(leaf_ref) = low_key_leaf_ptr.as_ref() {
+                let deleted = leaf_ref.delete_self(Release);
+                debug_assert!(deleted);
+            }
+
+            if let Some(origin_leaf) = new_leaves_ref
+                .origin_leaf_ptr
+                .swap((None, Tag::None), Relaxed)
+            {
+                // Remove marks from the full leaf node.
                 //
-                // `high_key_leaf` must be deleted first in order for scanners not to omit entries.
-                if let Some(leaf_ref) = high_key_leaf_ptr.as_ref() {
-                    let deleted = leaf_ref.delete_self(Relaxed);
-                    debug_assert!(deleted);
-                }
-                if let Some(leaf_ref) = low_key_leaf_ptr.as_ref() {
-                    let deleted = leaf_ref.delete_self(Release);
-                    debug_assert!(deleted);
-                }
-
-                if let Some(origin_leaf) = new_leaves_ref
-                    .origin_leaf_ptr
-                    .swap((None, Tag::None), Relaxed)
-                {
-                    // Remove marks from the full leaf node.
-                    //
-                    // This unmarking has to be a release-store, otherwise it can be re-ordered
-                    // before previous `delete_self` calls.
-                    let unmarked = origin_leaf.unmark(Release);
-                    debug_assert!(unmarked);
-                }
-
-                // Unlocks the leaf node.
-                if let Some(new_leaves) = self.latch.swap((None, Tag::None), Release) {
-                    barrier.reclaim(new_leaves);
-                }
-            };
-        }
-    */
-
-    /*
-        /// Unlinks all the leaves.
-        ///
-        /// It is called only when the leaf node is a temporary one for split/merge,
-        /// or has become unreachable after split/merge/remove.
-        pub fn unlink(&self, barrier: &Barrier) {
-            for entry in Scanner::new(&self.children.0) {
-                entry.1.swap((None, Tag::None), Relaxed);
+                // This unmarking has to be a release-store, otherwise it can be re-ordered
+                // before previous `delete_self` calls.
+                let unmarked = origin_leaf.unmark(Release);
+                debug_assert!(unmarked);
             }
-            self.children.1.swap((None, Tag::First), Relaxed);
 
-            // Keeps the leaf node locked to prevent locking attempts.
-            if let Some(unused_leaves) = self.latch.swap((None, Tag::First), Relaxed) {
-                if let Some(obsolete_leaf) = unused_leaves
-                    .origin_leaf_ptr
-                    .swap((None, Tag::None), Relaxed)
-                {
-                    // Makes the leaf unreachable before dropping it.
-                    obsolete_leaf.delete_self(Relaxed);
-                    barrier.reclaim(obsolete_leaf);
-                }
+            // Unlocks the leaf node.
+            if let Some(new_leaves) = self.latch.swap((None, Tag::None), Release) {
+                barrier.reclaim(new_leaves);
+            }
+        };
+        */
+    }
+
+    /// Unlinks all the leaves.
+    ///
+    /// It is called only when the leaf node is a temporary one for split/merge,
+    /// or has become unreachable after split/merge/remove.
+    pub fn unlink(&self, _barrier: &Barrier) {
+        /*
+        for entry in Scanner::new(&self.children.0) {
+            entry.1.swap((None, Tag::None), Relaxed);
+        }
+        self.children.1.swap((None, Tag::First), Relaxed);
+
+        // Keeps the leaf node locked to prevent locking attempts.
+        if let Some(unused_leaves) = self.latch.swap((None, Tag::First), Relaxed) {
+            if let Some(obsolete_leaf) = unused_leaves
+                .origin_leaf_ptr
+                .swap((None, Tag::None), Relaxed)
+            {
+                // Makes the leaf unreachable before dropping it.
+                obsolete_leaf.delete_self(Relaxed);
+                barrier.reclaim(obsolete_leaf);
             }
         }
-    */
+        */
+    }
 }
 
-/// Leaf node locker.
+/// [`Locker`] holds exclusive access to a [`Leaf`].
 pub struct Locker<'n, K, V>
 where
     K: 'static + Clone + Ord + Send + Sync,
     V: 'static + Clone + Send + Sync,
 {
     lock: &'n AtomicArc<StructuralChange<K, V>>,
-    /// When the leaf node is bound to be dropped, the flag may be set true.
     deprecate: bool,
 }
 
@@ -792,7 +776,7 @@ where
     V: 'static + Clone + Send + Sync,
 {
     origin_leaf_key: Option<K>,
-    origin_leaf_ptr: AtomicArc<Leaf<K, V>>,
+    origin_leaf: AtomicArc<Leaf<K, V>>,
     low_key_leaf: AtomicArc<Leaf<K, V>>,
     high_key_leaf: AtomicArc<Leaf<K, V>>,
 }

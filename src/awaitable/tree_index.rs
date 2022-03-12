@@ -3,8 +3,10 @@
 
 //! The module implements [`TreeIndex`].
 
+mod internal_node;
 mod leaf;
 mod leaf_node;
+mod node;
 
 use leaf::Leaf;
 use leaf_node::LeafNode;
