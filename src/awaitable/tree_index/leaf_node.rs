@@ -8,8 +8,11 @@ use std::borrow::Borrow;
 use std::cmp::Ordering::{Equal, Greater, Less};
 use std::sync::atomic::Ordering::{self, AcqRel, Acquire, Relaxed, Release};
 
-/// [`Tag::First`] indicates the corresponding [`LeafNode`] has retired.
-const RETIRED: Tag = Tag::First;
+/// [`Tag::First`] indicates the corresponding node has retired.
+pub const RETIRED: Tag = Tag::First;
+
+/// [`Tag::Second`] indicates the corresponding node is locked.
+pub const LOCKED: Tag = Tag::Second;
 
 /// [`LeafNode`] contains a list of instances of `K, V` [`Leaf`].
 ///
@@ -47,8 +50,8 @@ where
         }
     }
 
-    /// Returns `true` if the [`LeafNode`] is obsolete.
-    pub fn obsolete(&self, mo: Ordering) -> bool {
+    /// Returns `true` if the [`LeafNode`] has retired.
+    pub fn retired(&self, mo: Ordering) -> bool {
         self.unbounded_child.tag(mo) == RETIRED
     }
 
@@ -337,7 +340,7 @@ where
             Relaxed,
         ) {
             Ok((_, ptr)) => {
-                if self.obsolete(Relaxed) || full_leaf_ptr != full_leaf.load(Relaxed, barrier) {
+                if self.retired(Relaxed) || full_leaf_ptr != full_leaf.load(Relaxed, barrier) {
                     // `self` is now obsolete, or `full_leaf` has changed in the meantime.
                     drop(self.latch.swap((None, Tag::None), Relaxed));
                     return Err((key, value));
@@ -555,6 +558,52 @@ where
         middle_key
     }
 
+    /// Commits an on-going structural change.
+    pub fn commit(&self, barrier: &Barrier) {
+        // Keeps the leaf node locked to prevent further locking attempts.
+        if let Some(change) = self.latch.swap((None, LOCKED), Relaxed) {
+            if let Some(obsolete_leaf) = change.origin_leaf.swap((None, Tag::None), Relaxed) {
+                // Makes the leaf unreachable before dropping it.
+                obsolete_leaf.delete_self(Relaxed);
+                barrier.reclaim(obsolete_leaf);
+            }
+        }
+    }
+
+    /// Rolls back the ongoing split operation recursively.
+    pub fn rollback(&self, barrier: &Barrier) {
+        if let Some(change) = self.latch.load(Relaxed, barrier).as_ref() {
+            let low_key_leaf_ptr = change.low_key_leaf.load(Relaxed, barrier);
+            let high_key_leaf_ptr = change.high_key_leaf.load(Relaxed, barrier);
+
+            // Roll back the linked list state.
+            //
+            // `high_key_leaf` must be deleted first in order for `Scanners` not to omit entries.
+            if let Some(leaf_ref) = high_key_leaf_ptr.as_ref() {
+                let deleted = leaf_ref.delete_self(Relaxed);
+                debug_assert!(deleted);
+            }
+            if let Some(leaf_ref) = low_key_leaf_ptr.as_ref() {
+                let deleted = leaf_ref.delete_self(Release);
+                debug_assert!(deleted);
+            }
+
+            if let Some(origin) = change.origin_leaf.swap((None, Tag::None), Relaxed) {
+                // Remove marks from the full leaf node.
+                //
+                // This unmarking has to be a release-store, otherwise it can be re-ordered
+                // before previous `delete_self` calls.
+                let unmarked = origin.unmark(Release);
+                debug_assert!(unmarked);
+            }
+        }
+
+        // Unlocks the leaf node.
+        if let Some(change) = self.latch.swap((None, Tag::None), Release) {
+            barrier.reclaim(change);
+        }
+    }
+
     /// Checks the given full leaf whether it is being split.
     fn check_full_leaf<Q>(
         &self,
@@ -628,8 +677,7 @@ where
                     debug_assert!(deleted);
                     // It has to mark the pointer in order to prevent `LeafNode::insert` from
                     // replacing it with a new `Leaf`.
-                    if let Some(obsolete_leaf) =
-                        self.unbounded_child.swap((None, Tag::First), Release)
+                    if let Some(obsolete_leaf) = self.unbounded_child.swap((None, RETIRED), Release)
                     {
                         barrier.reclaim(obsolete_leaf);
                     }
@@ -638,7 +686,7 @@ where
                     false
                 }
             } else {
-                debug_assert!(unbounded_ptr.tag() == Tag::First);
+                debug_assert!(unbounded_ptr.tag() == RETIRED);
                 true
             }
         } else {
@@ -650,59 +698,6 @@ where
         } else {
             Ok(RemoveResult::Success)
         }
-    }
-
-    /// Commits an on-going structural change.
-    pub fn commit(&self, barrier: &Barrier) {
-        // Keeps the leaf node locked to prevent further locking attempts.
-        if let Some(change) = self.latch.swap((None, Tag::First), Relaxed) {
-            if let Some(obsolete_leaf) = change.origin_leaf.swap((None, Tag::None), Relaxed) {
-                // Makes the leaf unreachable before dropping it.
-                obsolete_leaf.delete_self(Relaxed);
-                barrier.reclaim(obsolete_leaf);
-            }
-        }
-    }
-
-    /// Rolls back the ongoing split operation recursively.
-    pub fn rollback(&self, _barrier: &Barrier) {
-        /*
-        let new_leaves_ptr = self.latch.load(Relaxed, barrier);
-        if let Some(new_leaves_ref) = new_leaves_ptr.as_ref() {
-            // Inserts the origin leaf into the linked list.
-            let low_key_leaf_ptr = new_leaves_ref.low_key_leaf.load(Relaxed, barrier);
-            let high_key_leaf_ptr = new_leaves_ref.high_key_leaf.load(Relaxed, barrier);
-
-            // Rolls back the linked list state.
-            //
-            // `high_key_leaf` must be deleted first in order for scanners not to omit entries.
-            if let Some(leaf_ref) = high_key_leaf_ptr.as_ref() {
-                let deleted = leaf_ref.delete_self(Relaxed);
-                debug_assert!(deleted);
-            }
-            if let Some(leaf_ref) = low_key_leaf_ptr.as_ref() {
-                let deleted = leaf_ref.delete_self(Release);
-                debug_assert!(deleted);
-            }
-
-            if let Some(origin_leaf) = new_leaves_ref
-                .origin_leaf_ptr
-                .swap((None, Tag::None), Relaxed)
-            {
-                // Remove marks from the full leaf node.
-                //
-                // This unmarking has to be a release-store, otherwise it can be re-ordered
-                // before previous `delete_self` calls.
-                let unmarked = origin_leaf.unmark(Release);
-                debug_assert!(unmarked);
-            }
-
-            // Unlocks the leaf node.
-            if let Some(new_leaves) = self.latch.swap((None, Tag::None), Release) {
-                barrier.reclaim(new_leaves);
-            }
-        };
-        */
     }
 }
 
@@ -724,7 +719,7 @@ where
     pub fn try_lock(leaf_node: &'n LeafNode<K, V>) -> Option<Locker<'n, K, V>> {
         if leaf_node
             .latch
-            .compare_exchange(Ptr::null(), (None, Tag::First), Acquire, Relaxed)
+            .compare_exchange(Ptr::null(), (None, LOCKED), Acquire, Relaxed)
             .is_ok()
         {
             Some(Locker {
@@ -748,9 +743,7 @@ where
 {
     fn drop(&mut self) {
         if !self.deprecate {
-            let unlocked = self
-                .lock
-                .update_tag_if(Tag::None, |t| t == Tag::First, Release);
+            let unlocked = self.lock.update_tag_if(Tag::None, |t| t == LOCKED, Release);
             debug_assert!(unlocked);
         }
     }

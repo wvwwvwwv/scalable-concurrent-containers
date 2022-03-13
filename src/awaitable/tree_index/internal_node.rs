@@ -1,4 +1,5 @@
 use super::leaf::{InsertResult, Leaf, RemoveResult, Scanner, DIMENSION};
+use super::leaf_node::{LOCKED, RETIRED};
 use super::node::{Node, Type};
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
@@ -6,9 +7,6 @@ use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 use std::borrow::Borrow;
 use std::cmp::Ordering::{Equal, Greater, Less};
 use std::sync::atomic::Ordering::{self, Acquire, Relaxed, Release};
-
-/// [`Tag::First`] indicates the corresponding [`InternalNode`] has retired.
-const RETIRED: Tag = Tag::First;
 
 /// Internal node.
 ///
@@ -55,8 +53,8 @@ where
         depth
     }
 
-    /// Returns `true` if the [`LeafNode`] is obsolete.
-    pub fn obsolete(&self, mo: Ordering) -> bool {
+    /// Returns `true` if the [`InternalNode`] has retired.
+    pub fn retired(&self, mo: Ordering) -> bool {
         self.unbounded_child.tag(mo) == RETIRED
     }
 
@@ -316,7 +314,7 @@ where
             Relaxed,
         ) {
             Ok((_, ptr)) => {
-                if self.obsolete(Relaxed) || full_node_ptr != full_node.load(Relaxed, barrier) {
+                if self.retired(Relaxed) || full_node_ptr != full_node.load(Relaxed, barrier) {
                     // `self` is now obsolete, or `full_leaf` has changed in the meantime.
                     drop(self.latch.swap((None, Tag::None), Relaxed));
                     //full_node_ref.rollback(barrier);
@@ -548,7 +546,7 @@ where
     /// Commits an on-going structural change.
     pub fn commit(&self, barrier: &Barrier) {
         // Keeps the internal node locked to prevent further locking attempts.
-        if let Some(change) = self.latch.swap((None, Tag::First), Relaxed) {
+        if let Some(change) = self.latch.swap((None, LOCKED), Relaxed) {
             let obsolete_node_ptr = change.origin_node.load(Relaxed, barrier);
             if let Some(obsolete_node_ref) = obsolete_node_ptr.as_ref() {
                 obsolete_node_ref.commit(barrier);
@@ -557,85 +555,70 @@ where
     }
 
     /// Rolls back the ongoing split operation recursively.
-    pub fn rollback(&self, _barrier: &Barrier) {
-        /*
-        let new_children_ptr = self.new_children.load(Relaxed, barrier);
-        if let Some(new_children_ref) = new_children_ptr.as_ref() {
-            let origin_node_ptr = new_children_ref.origin_node.load(Relaxed, barrier);
-            origin_node_ptr.as_ref().unwrap().rollback(barrier);
-            let low_key_node_ptr = new_children_ref.low_key_node.load(Relaxed, barrier);
-            if let Some(low_key_node_ref) = low_key_node_ptr.as_ref() {
-                low_key_node_ref.unlink(barrier);
+    pub fn rollback(&self, barrier: &Barrier) {
+        if let Some(change) = self.latch.load(Relaxed, barrier).as_ref() {
+            if let Some(origin) = change.origin_node.swap((None, Tag::None), Relaxed) {
+                origin.rollback(barrier);
             }
-            let high_key_node_ptr = new_children_ref.high_key_node.load(Relaxed, barrier);
-            if let Some(high_key_node_ref) = high_key_node_ptr.as_ref() {
-                high_key_node_ref.unlink(barrier);
-            }
-            self.new_children.swap((None, Tag::None), Release);
-        };
-        */
+        }
+
+        // Unlocks the node after the origin node has been cleaned up.
+        if let Some(change) = self.latch.swap((None, Tag::None), Release) {
+            barrier.reclaim(change);
+        }
     }
 
     /// Tries to coalesce nodes.
-    fn coalesce(&self, _barrier: &Barrier) -> Result<RemoveResult, bool> {
+    fn coalesce(&self, barrier: &Barrier) -> Result<RemoveResult, bool> {
         let lock = Locker::try_lock(self);
         if lock.is_none() {
             return Err(true);
         }
-        Err(false)
 
-        /*
-        for entry in Scanner::new(&self.children.0) {
+        let mut num_valid_leaves = 0;
+        for entry in Scanner::new(&self.children) {
             let node_ptr = entry.1.load(Relaxed, barrier);
             let node_ref = node_ptr.as_ref().unwrap();
-            if node_ref.obsolete(barrier) {
-                self.children.0.remove_if(entry.0, &mut |_| true);
+            if node_ref.retired(Relaxed) {
+                let result = self.children.remove_if(entry.0, &mut |_| true);
+                debug_assert_ne!(result, RemoveResult::Fail);
+
                 // Once the key is removed, it is safe to deallocate the node as the validation
                 // loop ensures the absence of readers.
                 if let Some(node) = entry.1.swap((None, Tag::None), Release) {
                     barrier.reclaim(node);
                 }
+            } else {
+                num_valid_leaves += 1;
             }
         }
 
-        let unbounded_ptr = self.children.1.load(Relaxed, barrier);
-        if let Some(unbounded_ref) = unbounded_ptr.as_ref() {
-            if unbounded_ref.obsolete(barrier) {
-                // If the unbounded node has become obsolete, either marks the node obsolete,
-                // or replaces the unbounded node with another.
-                if let Some(max_entry) = self.children.0.max() {
-                    // Firstly, replaces the unbounded node with the max entry.
-                    self.children.1.swap(
-                        (max_entry.1.load(Relaxed, barrier).get_arc(), Tag::None),
-                        Release,
-                    );
-                    // Then, removes the node from the children list.
-                    if self.children.0.remove_if(max_entry.0, &mut |_| true).2 {
-                        // Retires the children if it was the last child.
-                        let result = self.children.0.retire();
-                        debug_assert!(result);
+        // The unbounded leaf becomes unreachable after all the other leaves are gone.
+        let fully_empty = if num_valid_leaves == 0 {
+            let unbounded_ptr = self.unbounded_child.load(Relaxed, barrier);
+            if let Some(unbounded) = unbounded_ptr.as_ref() {
+                if unbounded.retired(Relaxed) {
+                    if let Some(obsolete_node) = self.unbounded_child.swap((None, RETIRED), Release)
+                    {
+                        barrier.reclaim(obsolete_node);
                     }
-                    max_entry.1.swap((None, Tag::None), Release);
+                    true
                 } else {
-                    // Deprecates this internal node.
-                    let result = self.children.0.retire();
-                    debug_assert!(result);
-                    self.children.1.swap((None, Tag::First), Release);
+                    false
                 }
-                unbounded_ref.unlink(barrier);
+            } else {
+                debug_assert!(unbounded_ptr.tag() == RETIRED);
+                true
             }
-        }
-
-        if self.children.1.load(Relaxed, barrier).is_null() {
-            debug_assert!(self.children.0.obsolete());
-            Err(RemoveError::Empty((removed, leaf_removed)))
-        } else if removed {
-            Ok((removed, leaf_removed))
         } else {
-            // Retry is necessary as it may have not attempted removal.
-            Err(RemoveError::Retry((false, leaf_removed)))
+            false
+        };
+
+        if fully_empty {
+            Ok(RemoveResult::Retired)
+        } else {
+            Ok(RemoveResult::Success)
         }
-        */
     }
 }
 
@@ -657,7 +640,7 @@ where
     fn try_lock(internal_node: &'n InternalNode<K, V>) -> Option<Locker<'n, K, V>> {
         if internal_node
             .latch
-            .compare_exchange(Ptr::null(), (None, Tag::First), Acquire, Relaxed)
+            .compare_exchange(Ptr::null(), (None, LOCKED), Acquire, Relaxed)
             .is_ok()
         {
             Some(Locker {

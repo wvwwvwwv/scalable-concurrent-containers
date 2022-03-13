@@ -58,11 +58,11 @@ where
         }
     }
 
-    /// Checks if the node is obsolete.
-    pub fn obsolete(&self, mo: Ordering) -> bool {
+    /// Checks if the node has retired.
+    pub fn retired(&self, mo: Ordering) -> bool {
         match &self.node {
-            Type::Internal(internal_node) => internal_node.obsolete(mo),
-            Type::Leaf(leaf_node) => leaf_node.obsolete(mo),
+            Type::Internal(internal_node) => internal_node.retired(mo),
+            Type::Leaf(leaf_node) => leaf_node.retired(mo),
         }
     }
 
