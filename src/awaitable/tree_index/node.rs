@@ -8,7 +8,7 @@ use std::borrow::Borrow;
 use std::sync::atomic::Ordering;
 
 /// [`Type`] indicates the type of a [`Node`].
-enum Type<K, V>
+pub enum Type<K, V>
 where
     K: 'static + Clone + Ord + Send + Sync,
     V: 'static + Clone + Send + Sync,
@@ -43,6 +43,11 @@ where
         Node {
             node: Type::Leaf(LeafNode::new()),
         }
+    }
+
+    /// Returns a reference to the node internal.
+    pub fn node(&self) -> &Type<K, V> {
+        &self.node
     }
 
     /// Returns the depth of the node.
@@ -242,22 +247,19 @@ where
         false
     }
 
-    /// Rolls back the ongoing split operation recursively.
-    fn rollback(&self, barrier: &Barrier) {
+    /// Commits an on-going structural change.
+    pub fn commit(&self, barrier: &Barrier) {
         match &self.node {
-            Type::Internal(internal_node) => internal_node.rollback(barrier),
-            Type::Leaf(leaf_node) => leaf_node.rollback(barrier),
+            Type::Internal(internal_node) => internal_node.commit(barrier),
+            Type::Leaf(leaf_node) => leaf_node.commit(barrier),
         }
     }
 
-    /// Clears links to all the children to drop the deprecated node.
-    ///
-    /// It is called only when the node is a temporary one for split/merge,
-    /// or has become unreachable after split/merge/remove.
-    fn unlink(&self, barrier: &Barrier) {
+    /// Rolls back an on-going structural change.
+    pub fn rollback(&self, barrier: &Barrier) {
         match &self.node {
-            Type::Internal(internal_node) => internal_node.unlink(barrier),
-            Type::Leaf(leaf_node) => leaf_node.unlink(barrier),
+            Type::Internal(internal_node) => internal_node.rollback(barrier),
+            Type::Leaf(leaf_node) => leaf_node.rollback(barrier),
         }
     }
 }

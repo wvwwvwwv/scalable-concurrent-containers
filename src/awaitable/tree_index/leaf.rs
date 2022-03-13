@@ -37,8 +37,8 @@ pub enum RemoveResult {
 
 /// The number of entries and number of state bits per entry.
 pub struct Dimension {
-    num_entries: usize,
-    num_bits_per_entry: usize,
+    pub num_entries: usize,
+    pub num_bits_per_entry: usize,
 }
 
 impl Dimension {

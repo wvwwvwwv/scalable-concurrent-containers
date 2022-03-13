@@ -1,10 +1,11 @@
-use super::leaf::{InsertResult, RemoveResult, Scanner};
+use super::leaf::{InsertResult, RemoveResult, Scanner, DIMENSION};
 use super::Leaf;
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 use crate::LinkedList;
 
 use std::borrow::Borrow;
+use std::cmp::Ordering::{Equal, Greater, Less};
 use std::sync::atomic::Ordering::{self, AcqRel, Acquire, Relaxed, Release};
 
 /// [`Tag::First`] indicates the corresponding [`LeafNode`] has retired.
@@ -434,73 +435,43 @@ where
         }
 
         // Unlocks the leaf node.
-        self.latch.swap((None, Tag::None), Release);
+        if let Some(change) = self.latch.swap((None, Tag::None), Release) {
+            barrier.reclaim(change);
+        }
 
         // Since a new leaf has been inserted, the caller can retry.
         Err((key, value))
     }
 
-    /*
-        /// Splits itself into the given leaf nodes, and returns the middle key value.
-        pub fn split_leaf_node(
-            &self,
-            low_key_leaf_node: &LeafNode<K, V>,
-            high_key_leaf_node: &LeafNode<K, V>,
-            barrier: &Barrier,
-        ) -> Option<K> {
-            let mut middle_key = None;
+    /// Splits itself into the given leaf nodes, and returns the middle key value.
+    pub fn split_leaf_node(
+        &self,
+        low_key_leaf_node: &LeafNode<K, V>,
+        high_key_leaf_node: &LeafNode<K, V>,
+        barrier: &Barrier,
+    ) -> Option<K> {
+        let mut middle_key = None;
 
-            debug_assert!(!self.latch.load(Relaxed, barrier).is_null());
-            let new_leaves_ref = self.latch.load(Relaxed, barrier).as_ref().unwrap();
+        debug_assert!(!self.latch.load(Relaxed, barrier).is_null());
+        let new_leaves_ref = self.latch.load(Relaxed, barrier).as_ref().unwrap();
 
-            let low_key_leaves = &low_key_leaf_node.children;
-            let high_key_leaves = &high_key_leaf_node.children;
-
-            // Builds a list of valid leaves
-            #[allow(clippy::type_complexity)]
-            let mut entry_array: [Option<(Option<&K>, AtomicArc<Leaf<K, V>>)>; ARRAY_SIZE + 2] =
-                Default::default();
-            let mut num_entries = 0;
-            let low_key_leaf_ref = new_leaves_ref
-                .low_key_leaf
-                .load(Relaxed, barrier)
+        // Builds a list of valid leaves
+        #[allow(clippy::type_complexity)]
+        let mut entry_array: [Option<(Option<&K>, AtomicArc<Leaf<K, V>>)>;
+            DIMENSION.num_entries + 2] = Default::default();
+        let mut num_entries = 0;
+        let low_key_leaf_ref = new_leaves_ref
+            .low_key_leaf
+            .load(Relaxed, barrier)
+            .as_ref()
+            .unwrap();
+        let middle_key_ref = low_key_leaf_ref.max().unwrap().0;
+        for entry in Scanner::new(&self.children) {
+            if new_leaves_ref
+                .origin_leaf_key
                 .as_ref()
-                .unwrap();
-            let middle_key_ref = low_key_leaf_ref.max().unwrap().0;
-            for entry in Scanner::new(&self.children.0) {
-                if new_leaves_ref
-                    .origin_leaf_key
-                    .as_ref()
-                    .map_or_else(|| false, |key| entry.0.cmp(key) == Ordering::Equal)
-                {
-                    entry_array[num_entries].replace((
-                        Some(middle_key_ref),
-                        new_leaves_ref.low_key_leaf.clone(Relaxed, barrier),
-                    ));
-                    num_entries += 1;
-                    if !new_leaves_ref
-                        .high_key_leaf
-                        .load(Relaxed, barrier)
-                        .is_null()
-                    {
-                        entry_array[num_entries].replace((
-                            Some(entry.0),
-                            new_leaves_ref.high_key_leaf.clone(Relaxed, barrier),
-                        ));
-                        num_entries += 1;
-                    }
-                } else {
-                    entry_array[num_entries].replace((Some(entry.0), entry.1.clone(Relaxed, barrier)));
-                    num_entries += 1;
-                }
-            }
-            #[allow(clippy::branches_sharing_code)]
-            if new_leaves_ref.origin_leaf_key.is_some() {
-                // If the origin is a bounded node, assign the unbounded node to the high key node's unbounded.
-                entry_array[num_entries].replace((None, self.children.1.clone(Relaxed, barrier)));
-                num_entries += 1;
-            } else {
-                // If the origin is an unbounded node, assign the high key node to the high key node's unbounded.
+                .map_or_else(|| false, |key| entry.0.borrow() == key)
+            {
                 entry_array[num_entries].replace((
                     Some(middle_key_ref),
                     new_leaves_ref.low_key_leaf.clone(Relaxed, barrier),
@@ -511,49 +482,78 @@ where
                     .load(Relaxed, barrier)
                     .is_null()
                 {
-                    entry_array[num_entries]
-                        .replace((None, new_leaves_ref.high_key_leaf.clone(Relaxed, barrier)));
+                    entry_array[num_entries].replace((
+                        Some(entry.0),
+                        new_leaves_ref.high_key_leaf.clone(Relaxed, barrier),
+                    ));
                     num_entries += 1;
                 }
+            } else {
+                entry_array[num_entries].replace((Some(entry.0), entry.1.clone(Relaxed, barrier)));
+                num_entries += 1;
             }
-            debug_assert!(num_entries >= 2);
+        }
+        #[allow(clippy::branches_sharing_code)]
+        if new_leaves_ref.origin_leaf_key.is_some() {
+            // If the origin is a bounded node, assign the unbounded node to the high key node's
+            // unbounded.
+            entry_array[num_entries].replace((None, self.unbounded_child.clone(Relaxed, barrier)));
+            num_entries += 1;
+        } else {
+            // If the origin is an unbounded node, assign the high key node to the high key node's
+            // unbounded.
+            entry_array[num_entries].replace((
+                Some(middle_key_ref),
+                new_leaves_ref.low_key_leaf.clone(Relaxed, barrier),
+            ));
+            num_entries += 1;
+            if !new_leaves_ref
+                .high_key_leaf
+                .load(Relaxed, barrier)
+                .is_null()
+            {
+                entry_array[num_entries]
+                    .replace((None, new_leaves_ref.high_key_leaf.clone(Relaxed, barrier)));
+                num_entries += 1;
+            }
+        }
+        debug_assert!(num_entries >= 2);
 
-            let low_key_leaf_array_size = num_entries / 2;
-            for (index, entry) in entry_array.iter().enumerate() {
-                if let Some(entry) = entry {
-                    match (index + 1).cmp(&low_key_leaf_array_size) {
-                        Ordering::Less => {
-                            low_key_leaves
-                                .0
-                                .insert(entry.0.unwrap().clone(), entry.1.clone(Relaxed, barrier));
-                        }
-                        Ordering::Equal => {
-                            middle_key.replace(entry.0.unwrap().clone());
-                            low_key_leaves
-                                .1
+        let low_key_leaf_array_size = num_entries / 2;
+        for (index, entry) in entry_array.iter().enumerate() {
+            if let Some(entry) = entry {
+                match (index + 1).cmp(&low_key_leaf_array_size) {
+                    Less => {
+                        low_key_leaf_node
+                            .children
+                            .insert(entry.0.unwrap().clone(), entry.1.clone(Relaxed, barrier));
+                    }
+                    Equal => {
+                        middle_key.replace(entry.0.unwrap().clone());
+                        low_key_leaf_node
+                            .unbounded_child
+                            .swap((entry.1.get_arc(Relaxed, barrier), Tag::None), Relaxed);
+                    }
+                    Greater => {
+                        if let Some(key) = entry.0 {
+                            high_key_leaf_node
+                                .children
+                                .insert(key.clone(), entry.1.clone(Relaxed, barrier));
+                        } else {
+                            high_key_leaf_node
+                                .unbounded_child
                                 .swap((entry.1.get_arc(Relaxed, barrier), Tag::None), Relaxed);
                         }
-                        Ordering::Greater => {
-                            if let Some(key) = entry.0 {
-                                high_key_leaves
-                                    .0
-                                    .insert(key.clone(), entry.1.clone(Relaxed, barrier));
-                            } else {
-                                high_key_leaves
-                                    .1
-                                    .swap((entry.1.get_arc(Relaxed, barrier), Tag::None), Relaxed);
-                            }
-                        }
                     }
-                } else {
-                    break;
                 }
+            } else {
+                break;
             }
-
-            debug_assert!(middle_key.is_some());
-            middle_key
         }
-    */
+
+        debug_assert!(middle_key.is_some());
+        middle_key
+    }
 
     /// Checks the given full leaf whether it is being split.
     fn check_full_leaf<Q>(
@@ -652,6 +652,18 @@ where
         }
     }
 
+    /// Commits an on-going structural change.
+    pub fn commit(&self, barrier: &Barrier) {
+        // Keeps the leaf node locked to prevent further locking attempts.
+        if let Some(change) = self.latch.swap((None, Tag::First), Relaxed) {
+            if let Some(obsolete_leaf) = change.origin_leaf.swap((None, Tag::None), Relaxed) {
+                // Makes the leaf unreachable before dropping it.
+                obsolete_leaf.delete_self(Relaxed);
+                barrier.reclaim(obsolete_leaf);
+            }
+        }
+    }
+
     /// Rolls back the ongoing split operation recursively.
     pub fn rollback(&self, _barrier: &Barrier) {
         /*
@@ -690,31 +702,6 @@ where
                 barrier.reclaim(new_leaves);
             }
         };
-        */
-    }
-
-    /// Unlinks all the leaves.
-    ///
-    /// It is called only when the leaf node is a temporary one for split/merge,
-    /// or has become unreachable after split/merge/remove.
-    pub fn unlink(&self, _barrier: &Barrier) {
-        /*
-        for entry in Scanner::new(&self.children.0) {
-            entry.1.swap((None, Tag::None), Relaxed);
-        }
-        self.children.1.swap((None, Tag::First), Relaxed);
-
-        // Keeps the leaf node locked to prevent locking attempts.
-        if let Some(unused_leaves) = self.latch.swap((None, Tag::First), Relaxed) {
-            if let Some(obsolete_leaf) = unused_leaves
-                .origin_leaf_ptr
-                .swap((None, Tag::None), Relaxed)
-            {
-                // Makes the leaf unreachable before dropping it.
-                obsolete_leaf.delete_self(Relaxed);
-                barrier.reclaim(obsolete_leaf);
-            }
-        }
         */
     }
 }
