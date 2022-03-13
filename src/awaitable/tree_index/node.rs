@@ -23,7 +23,7 @@ where
     K: 'static + Clone + Ord + Send + Sync,
     V: 'static + Clone + Send + Sync,
 {
-    node: Type<K, V>,
+    pub(super) node: Type<K, V>,
 }
 
 impl<K, V> Node<K, V>

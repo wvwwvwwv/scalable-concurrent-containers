@@ -570,55 +570,82 @@ where
 
     /// Tries to coalesce nodes.
     fn coalesce(&self, barrier: &Barrier) -> Result<RemoveResult, bool> {
-        let lock = Locker::try_lock(self);
-        if lock.is_none() {
-            return Err(true);
-        }
+        while let Some(lock) = Locker::try_lock(self) {
+            let mut num_valid_leaves = 0;
+            for entry in Scanner::new(&self.children) {
+                let node_ptr = entry.1.load(Relaxed, barrier);
+                let node_ref = node_ptr.as_ref().unwrap();
+                if node_ref.retired(Relaxed) {
+                    let result = self.children.remove_if(entry.0, &mut |_| true);
+                    debug_assert_ne!(result, RemoveResult::Fail);
 
-        let mut num_valid_leaves = 0;
-        for entry in Scanner::new(&self.children) {
-            let node_ptr = entry.1.load(Relaxed, barrier);
-            let node_ref = node_ptr.as_ref().unwrap();
-            if node_ref.retired(Relaxed) {
-                let result = self.children.remove_if(entry.0, &mut |_| true);
-                debug_assert_ne!(result, RemoveResult::Fail);
+                    // Once the key is removed, it is safe to deallocate the node as the validation
+                    // loop ensures the absence of readers.
+                    if let Some(node) = entry.1.swap((None, Tag::None), Release) {
+                        barrier.reclaim(node);
+                    }
+                } else {
+                    num_valid_leaves += 1;
+                }
+            }
 
-                // Once the key is removed, it is safe to deallocate the node as the validation
-                // loop ensures the absence of readers.
-                if let Some(node) = entry.1.swap((None, Tag::None), Release) {
-                    barrier.reclaim(node);
+            // The unbounded leaf becomes unreachable after all the other leaves are gone.
+            let fully_empty = if num_valid_leaves == 0 {
+                let unbounded_ptr = self.unbounded_child.load(Relaxed, barrier);
+                if let Some(unbounded) = unbounded_ptr.as_ref() {
+                    if unbounded.retired(Relaxed) {
+                        if let Some(obsolete_node) =
+                            self.unbounded_child.swap((None, RETIRED), Release)
+                        {
+                            barrier.reclaim(obsolete_node);
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    debug_assert!(unbounded_ptr.tag() == RETIRED);
+                    true
                 }
             } else {
-                num_valid_leaves += 1;
+                false
+            };
+
+            if fully_empty {
+                return Ok(RemoveResult::Retired);
+            }
+
+            drop(lock);
+            if !self.has_retired_node(barrier) {
+                return Ok(RemoveResult::Success);
             }
         }
 
-        // The unbounded leaf becomes unreachable after all the other leaves are gone.
-        let fully_empty = if num_valid_leaves == 0 {
+        // Locking failed: retry.
+        Err(true)
+    }
+
+    /// Checks if the [`InternalNode`] has a retired [`Node`].
+    fn has_retired_node(&self, barrier: &Barrier) -> bool {
+        let mut has_valid_node = false;
+        for entry in Scanner::new(&self.children) {
+            let leaf_ptr = entry.1.load(Relaxed, barrier);
+            if let Some(leaf) = leaf_ptr.as_ref() {
+                if leaf.retired(Relaxed) {
+                    return true;
+                }
+                has_valid_node = true;
+            }
+        }
+        if !has_valid_node {
             let unbounded_ptr = self.unbounded_child.load(Relaxed, barrier);
             if let Some(unbounded) = unbounded_ptr.as_ref() {
                 if unbounded.retired(Relaxed) {
-                    if let Some(obsolete_node) = self.unbounded_child.swap((None, RETIRED), Release)
-                    {
-                        barrier.reclaim(obsolete_node);
-                    }
-                    true
-                } else {
-                    false
+                    return true;
                 }
-            } else {
-                debug_assert!(unbounded_ptr.tag() == RETIRED);
-                true
             }
-        } else {
-            false
-        };
-
-        if fully_empty {
-            Ok(RemoveResult::Retired)
-        } else {
-            Ok(RemoveResult::Success)
         }
+        false
     }
 }
 
@@ -689,25 +716,73 @@ mod test {
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering::Relaxed;
 
-    use proptest::prelude::*;
     use tokio::sync;
 
-    #[test]
-    fn basic() {}
+    fn new_level_3_node() -> InternalNode<usize, usize> {
+        InternalNode {
+            children: Leaf::new(),
+            unbounded_child: AtomicArc::new(Node {
+                node: Type::Internal(InternalNode {
+                    children: Leaf::new(),
+                    unbounded_child: AtomicArc::new(Node::new_leaf_node()),
+                    latch: AtomicArc::null(),
+                }),
+            }),
+            latch: AtomicArc::null(),
+        }
+    }
 
-    proptest! {
-        #[test]
-        fn prop(_insert in 0_usize..4096) {}
+    #[test]
+    fn bulk() {
+        let internal_node = new_level_3_node();
+        let barrier = Barrier::new();
+        assert_eq!(internal_node.depth(1, &barrier), 3);
+
+        for k in 0..8192 {
+            match internal_node.insert(k, k, &barrier) {
+                Ok(result) => match result {
+                    InsertResult::Success => {
+                        assert_eq!(internal_node.search(&k, &barrier), Some(&k));
+                    }
+                    InsertResult::Duplicate(..) | InsertResult::Retired(..) => unreachable!(),
+                    InsertResult::Full(_, _) => {
+                        internal_node.rollback(&barrier);
+                        for j in 0..k {
+                            assert_eq!(internal_node.search(&j, &barrier), Some(&j));
+                            if j == k - 1 {
+                                assert!(matches!(
+                                    internal_node.remove_if(&j, &mut |_| true, &barrier),
+                                    Ok(RemoveResult::Retired)
+                                ));
+                            } else {
+                                assert_eq!(
+                                    internal_node.remove_if(&j, &mut |_| true, &barrier),
+                                    Ok(RemoveResult::Success)
+                                );
+                            }
+                            assert_eq!(internal_node.search(&j, &barrier), None);
+                        }
+                        break;
+                    }
+                },
+                Err((k, v)) => {
+                    let result = internal_node.insert(k, v, &barrier);
+                    assert!(result.is_ok());
+                    assert_eq!(internal_node.search(&k, &barrier), Some(&k));
+                }
+            }
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn durability() {
         let num_tasks = 16_usize;
         let workload_size = 64_usize;
-        for _ in 0..8 {
+        for k in 0..8 {
+            let fixed_point = k * 256;
             for _ in 0..=workload_size {
                 let barrier = Arc::new(sync::Barrier::new(num_tasks));
-                let internal_node: Arc<InternalNode<usize, usize>> = Arc::new(InternalNode::new());
+                let internal_node = Arc::new(new_level_3_node());
                 let inserted: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
                 let mut task_handles = Vec::with_capacity(num_tasks);
                 for _ in 0..num_tasks {
@@ -716,8 +791,12 @@ mod test {
                     let inserted_clone = inserted.clone();
                     task_handles.push(tokio::spawn(async move {
                         barrier_clone.wait().await;
-                        drop(internal_node_clone);
-                        inserted_clone.swap(true, Relaxed);
+                        let barrier = Barrier::new();
+                        if let Ok(InsertResult::Success) =
+                            internal_node_clone.insert(fixed_point, fixed_point, &barrier)
+                        {
+                            assert!(!inserted_clone.swap(true, Relaxed));
+                        }
                     }));
                 }
                 for r in futures::future::join_all(task_handles).await {

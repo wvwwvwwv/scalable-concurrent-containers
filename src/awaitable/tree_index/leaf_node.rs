@@ -643,61 +643,88 @@ where
 
     /// Tries to coalesce empty or obsolete leaves after a successful removal of an entry.
     fn coalesce(&self, barrier: &Barrier) -> Result<RemoveResult, bool> {
-        let lock = Locker::try_lock(self);
-        if lock.is_none() {
-            return Err(true);
-        }
+        while let Some(lock) = Locker::try_lock(self) {
+            let mut num_valid_leaves = 0;
+            for entry in Scanner::new(&self.children) {
+                let leaf_ptr = entry.1.load(Relaxed, barrier);
+                let leaf = leaf_ptr.as_ref().unwrap();
+                if leaf.retired() {
+                    let deleted = leaf.delete_self(Relaxed);
+                    debug_assert!(deleted);
+                    let result = self.children.remove_if(entry.0, &mut |_| true);
+                    debug_assert_ne!(result, RemoveResult::Fail);
 
-        let mut num_valid_leaves = 0;
-        for entry in Scanner::new(&self.children) {
-            let leaf_ptr = entry.1.load(Relaxed, barrier);
-            let leaf_ref = leaf_ptr.as_ref().unwrap();
-            if leaf_ref.retired() {
-                let deleted = leaf_ref.delete_self(Relaxed);
-                debug_assert!(deleted);
-                let result = self.children.remove_if(entry.0, &mut |_| true);
-                debug_assert_ne!(result, RemoveResult::Fail);
+                    // The pointer is nullified after the metadata of `self.children` is updated so
+                    // that readers are able to retry when they find it being `null`.
+                    if let Some(leaf) = entry.1.swap((None, Tag::None), Release) {
+                        barrier.reclaim(leaf);
+                    }
+                } else {
+                    num_valid_leaves += 1;
+                }
+            }
 
-                // The pointer is nullified after the metadata of `self.children` is updated so
-                // that readers are able to retry when they find it being `null`.
-                if let Some(leaf) = entry.1.swap((None, Tag::None), Release) {
-                    barrier.reclaim(leaf);
+            // The unbounded leaf becomes unreachable after all the other leaves are gone.
+            let fully_empty = if num_valid_leaves == 0 {
+                let unbounded_ptr = self.unbounded_child.load(Relaxed, barrier);
+                if let Some(unbounded) = unbounded_ptr.as_ref() {
+                    if unbounded.retired() {
+                        let deleted = unbounded.delete_self(Relaxed);
+                        debug_assert!(deleted);
+                        // It has to mark the pointer in order to prevent `LeafNode::insert` from
+                        // replacing it with a new `Leaf`.
+                        if let Some(obsolete_leaf) =
+                            self.unbounded_child.swap((None, RETIRED), Release)
+                        {
+                            barrier.reclaim(obsolete_leaf);
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    debug_assert!(unbounded_ptr.tag() == RETIRED);
+                    true
                 }
             } else {
-                num_valid_leaves += 1;
+                false
+            };
+
+            if fully_empty {
+                return Ok(RemoveResult::Retired);
+            }
+
+            drop(lock);
+            if !self.has_retired_leaf(barrier) {
+                return Ok(RemoveResult::Success);
             }
         }
 
-        // The unbounded leaf becomes unreachable after all the other leaves are gone.
-        let fully_empty = if num_valid_leaves == 0 {
+        // Locking failed: retry.
+        Err(true)
+    }
+
+    /// Checks if the [`LeafNode`] has a retired [`Leaf`].
+    fn has_retired_leaf(&self, barrier: &Barrier) -> bool {
+        let mut has_valid_leaf = false;
+        for entry in Scanner::new(&self.children) {
+            let leaf_ptr = entry.1.load(Relaxed, barrier);
+            if let Some(leaf) = leaf_ptr.as_ref() {
+                if leaf.retired() {
+                    return true;
+                }
+                has_valid_leaf = true;
+            }
+        }
+        if !has_valid_leaf {
             let unbounded_ptr = self.unbounded_child.load(Relaxed, barrier);
             if let Some(unbounded) = unbounded_ptr.as_ref() {
                 if unbounded.retired() {
-                    let deleted = unbounded.delete_self(Relaxed);
-                    debug_assert!(deleted);
-                    // It has to mark the pointer in order to prevent `LeafNode::insert` from
-                    // replacing it with a new `Leaf`.
-                    if let Some(obsolete_leaf) = self.unbounded_child.swap((None, RETIRED), Release)
-                    {
-                        barrier.reclaim(obsolete_leaf);
-                    }
-                    true
-                } else {
-                    false
+                    return true;
                 }
-            } else {
-                debug_assert!(unbounded_ptr.tag() == RETIRED);
-                true
             }
-        } else {
-            false
-        };
-
-        if fully_empty {
-            Ok(RemoveResult::Retired)
-        } else {
-            Ok(RemoveResult::Success)
         }
+        false
     }
 }
 
@@ -768,7 +795,6 @@ mod test {
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering::Relaxed;
 
-    use proptest::prelude::*;
     use tokio::sync;
 
     #[test]
@@ -817,27 +843,38 @@ mod test {
         ));
     }
 
-    proptest! {
-        #[test]
-        fn prop(insert in 0_usize..256) {
-            let barrier = Barrier::new();
-            let leaf_node: LeafNode<usize, usize> = LeafNode::new();
-            for k in 0..insert {
-                let mut result = leaf_node.insert(k, k, &barrier);
-                if result.is_err() {
-                    result = leaf_node.insert(k, k, &barrier);
+    #[test]
+    fn bulk() {
+        let barrier = Barrier::new();
+        let leaf_node: LeafNode<usize, usize> = LeafNode::new();
+        for k in 0..1024 {
+            let mut result = leaf_node.insert(k, k, &barrier);
+            if result.is_err() {
+                result = leaf_node.insert(k, k, &barrier);
+            }
+            match result.unwrap() {
+                InsertResult::Success => {
+                    assert_eq!(leaf_node.search(&k, &barrier), Some(&k));
+                    continue;
                 }
-                match result.unwrap() {
-                    InsertResult::Success => continue,
-                    InsertResult::Duplicate(..) | InsertResult::Retired(..) => unreachable!(),
-                    InsertResult::Full(_, _) => {
-                        leaf_node.latch.swap((None, Tag::None), Relaxed);
-                        for r in 0..(k - 1) {
-                            assert!(matches!(leaf_node.remove_if(&r, &mut |_| true, &barrier), Ok(RemoveResult::Success)));
-                        }
-                        assert!(matches!(leaf_node.remove_if(&(k - 1), &mut |_| true, &barrier), Ok(RemoveResult::Retired)));
-                        break;
+                InsertResult::Duplicate(..) | InsertResult::Retired(..) => unreachable!(),
+                InsertResult::Full(_, _) => {
+                    leaf_node.latch.swap((None, Tag::None), Relaxed);
+                    for r in 0..(k - 1) {
+                        assert_eq!(leaf_node.search(&r, &barrier), Some(&r));
+                        assert_eq!(
+                            leaf_node.remove_if(&r, &mut |_| true, &barrier),
+                            Ok(RemoveResult::Success)
+                        );
+                        assert_eq!(leaf_node.search(&r, &barrier), None);
                     }
+                    assert_eq!(leaf_node.search(&(k - 1), &barrier), Some(&(k - 1)));
+                    assert_eq!(
+                        leaf_node.remove_if(&(k - 1), &mut |_| true, &barrier),
+                        Ok(RemoveResult::Retired)
+                    );
+                    assert_eq!(leaf_node.search(&(k - 1), &barrier), None);
+                    break;
                 }
             }
         }
