@@ -340,8 +340,11 @@ where
             Relaxed,
         ) {
             Ok((_, ptr)) => {
-                if self.retired(Relaxed) || full_leaf_ptr != full_leaf.load(Relaxed, barrier) {
-                    // `self` is now obsolete, or `full_leaf` has changed in the meantime.
+                if self.retired(Relaxed) {
+                    drop(self.latch.swap((None, Tag::None), Relaxed));
+                    return Ok(InsertResult::Retired(key, value));
+                }
+                if full_leaf_ptr != full_leaf.load(Relaxed, barrier) {
                     drop(self.latch.swap((None, Tag::None), Relaxed));
                     return Err((key, value));
                 }
@@ -644,7 +647,7 @@ where
     /// Tries to coalesce empty or obsolete leaves after a successful removal of an entry.
     fn coalesce(&self, barrier: &Barrier) -> Result<RemoveResult, bool> {
         while let Some(lock) = Locker::try_lock(self) {
-            let mut num_valid_leaves = 0;
+            let mut has_valid_leaf = false;
             for entry in Scanner::new(&self.children) {
                 let leaf_ptr = entry.1.load(Relaxed, barrier);
                 let leaf = leaf_ptr.as_ref().unwrap();
@@ -660,12 +663,14 @@ where
                         barrier.reclaim(leaf);
                     }
                 } else {
-                    num_valid_leaves += 1;
+                    has_valid_leaf = true;
                 }
             }
 
             // The unbounded leaf becomes unreachable after all the other leaves are gone.
-            let fully_empty = if num_valid_leaves == 0 {
+            let fully_empty = if has_valid_leaf {
+                false
+            } else {
                 let unbounded_ptr = self.unbounded_child.load(Relaxed, barrier);
                 if let Some(unbounded) = unbounded_ptr.as_ref() {
                     if unbounded.retired() {
@@ -686,8 +691,6 @@ where
                     debug_assert!(unbounded_ptr.tag() == RETIRED);
                     true
                 }
-            } else {
-                false
             };
 
             if fully_empty {
@@ -729,21 +732,20 @@ where
 }
 
 /// [`Locker`] holds exclusive access to a [`Leaf`].
-pub struct Locker<'n, K, V>
+struct Locker<'n, K, V>
 where
     K: 'static + Clone + Ord + Send + Sync,
     V: 'static + Clone + Send + Sync,
 {
     lock: &'n AtomicArc<StructuralChange<K, V>>,
-    deprecate: bool,
 }
 
 impl<'n, K, V> Locker<'n, K, V>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: Clone + Ord + Send + Sync,
+    V: Clone + Send + Sync,
 {
-    pub fn try_lock(leaf_node: &'n LeafNode<K, V>) -> Option<Locker<'n, K, V>> {
+    fn try_lock(leaf_node: &'n LeafNode<K, V>) -> Option<Locker<'n, K, V>> {
         if leaf_node
             .latch
             .compare_exchange(Ptr::null(), (None, LOCKED), Acquire, Relaxed)
@@ -751,15 +753,10 @@ where
         {
             Some(Locker {
                 lock: &leaf_node.latch,
-                deprecate: false,
             })
         } else {
             None
         }
-    }
-
-    pub fn deprecate(&mut self) {
-        self.deprecate = true;
     }
 }
 
@@ -769,10 +766,7 @@ where
     V: Clone + Send + Sync,
 {
     fn drop(&mut self) {
-        if !self.deprecate {
-            let unlocked = self.lock.update_tag_if(Tag::None, |t| t == LOCKED, Release);
-            debug_assert!(unlocked);
-        }
+        self.lock.swap((None, Tag::None), Release);
     }
 }
 

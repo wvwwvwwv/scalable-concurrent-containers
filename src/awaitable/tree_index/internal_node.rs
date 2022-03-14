@@ -187,7 +187,7 @@ where
                             InsertResult::Duplicate(key, value) => {
                                 return Ok(InsertResult::Duplicate(key, value));
                             }
-                            InsertResult::Full(key, value) | InsertResult::Retired(key, value) => {
+                            InsertResult::Full(key, value) => {
                                 return self.split_node(
                                     key,
                                     value,
@@ -197,6 +197,12 @@ where
                                     false,
                                     barrier,
                                 );
+                            }
+                            InsertResult::Retired(key, value) => {
+                                if let Ok(RemoveResult::Retired) = self.coalesce(barrier) {
+                                    return Ok(InsertResult::Retired(key, value));
+                                }
+                                return Err((key, value));
                             }
                         };
                     }
@@ -216,7 +222,7 @@ where
                     InsertResult::Duplicate(key, value) => {
                         return Ok(InsertResult::Duplicate(key, value));
                     }
-                    InsertResult::Full(key, value) | InsertResult::Retired(key, value) => {
+                    InsertResult::Full(key, value) => {
                         return self.split_node(
                             key,
                             value,
@@ -227,9 +233,15 @@ where
                             barrier,
                         );
                     }
+                    InsertResult::Retired(key, value) => {
+                        if let Ok(RemoveResult::Retired) = self.coalesce(barrier) {
+                            return Ok(InsertResult::Retired(key, value));
+                        }
+                        return Err((key, value));
+                    }
                 };
             }
-            return Err((key, value));
+            return Ok(InsertResult::Retired(key, value));
         }
     }
 
@@ -298,7 +310,8 @@ where
         root_node_split: bool,
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
-        let new_nodes = match self.latch.compare_exchange(
+        let target = full_node_ptr.as_ref().unwrap();
+        let new_nodes = if let Ok((_, ptr)) = self.latch.compare_exchange(
             Ptr::null(),
             (
                 Some(Arc::new(StructuralChange {
@@ -313,19 +326,20 @@ where
             Acquire,
             Relaxed,
         ) {
-            Ok((_, ptr)) => {
-                if self.retired(Relaxed) || full_node_ptr != full_node.load(Relaxed, barrier) {
-                    // `self` is now obsolete, or `full_leaf` has changed in the meantime.
-                    drop(self.latch.swap((None, Tag::None), Relaxed));
-                    //full_node_ref.rollback(barrier);
-                    return Err((key, value));
-                }
-                unsafe { &mut *(ptr.as_raw() as *mut StructuralChange<K, V>) }
+            if self.retired(Relaxed) {
+                drop(self.latch.swap((None, Tag::None), Relaxed));
+                target.rollback(barrier);
+                return Ok(InsertResult::Retired(key, value));
             }
-            Err(_) => {
-                //full_node_ref.rollback(barrier);
+            if full_node_ptr != full_node.load(Relaxed, barrier) {
+                drop(self.latch.swap((None, Tag::None), Relaxed));
+                target.rollback(barrier);
                 return Err((key, value));
             }
+            unsafe { &mut *(ptr.as_raw() as *mut StructuralChange<K, V>) }
+        } else {
+            target.rollback(barrier);
+            return Err((key, value));
         };
 
         if let Some(full_node_key) = full_node_key {
@@ -334,8 +348,6 @@ where
                 ptr.write(Some(full_node_key.clone()));
             }
         }
-
-        let target = full_node_ptr.as_ref().unwrap();
 
         match target.node() {
             Type::Internal(full_internal_node) => {
@@ -571,7 +583,7 @@ where
     /// Tries to coalesce nodes.
     fn coalesce(&self, barrier: &Barrier) -> Result<RemoveResult, bool> {
         while let Some(lock) = Locker::try_lock(self) {
-            let mut num_valid_leaves = 0;
+            let mut has_valid_node = false;
             for entry in Scanner::new(&self.children) {
                 let node_ptr = entry.1.load(Relaxed, barrier);
                 let node_ref = node_ptr.as_ref().unwrap();
@@ -585,12 +597,14 @@ where
                         barrier.reclaim(node);
                     }
                 } else {
-                    num_valid_leaves += 1;
+                    has_valid_node = true;
                 }
             }
 
             // The unbounded leaf becomes unreachable after all the other leaves are gone.
-            let fully_empty = if num_valid_leaves == 0 {
+            let fully_empty = if has_valid_node {
+                false
+            } else {
                 let unbounded_ptr = self.unbounded_child.load(Relaxed, barrier);
                 if let Some(unbounded) = unbounded_ptr.as_ref() {
                     if unbounded.retired(Relaxed) {
@@ -607,8 +621,6 @@ where
                     debug_assert!(unbounded_ptr.tag() == RETIRED);
                     true
                 }
-            } else {
-                false
             };
 
             if fully_empty {
@@ -649,20 +661,19 @@ where
     }
 }
 
-/// [`Locker`] holds exclusive access to a [`Leaf`].
+/// [`Locker`] holds exclusive access to a [`InternalNode`].
 struct Locker<'n, K, V>
 where
     K: 'static + Clone + Ord + Send + Sync,
     V: 'static + Clone + Send + Sync,
 {
     lock: &'n AtomicArc<StructuralChange<K, V>>,
-    deprecate: bool,
 }
 
 impl<'n, K, V> Locker<'n, K, V>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: Clone + Ord + Send + Sync,
+    V: Clone + Send + Sync,
 {
     fn try_lock(internal_node: &'n InternalNode<K, V>) -> Option<Locker<'n, K, V>> {
         if internal_node
@@ -672,27 +683,20 @@ where
         {
             Some(Locker {
                 lock: &internal_node.latch,
-                deprecate: false,
             })
         } else {
             None
         }
     }
-
-    fn deprecate(&mut self) {
-        self.deprecate = true;
-    }
 }
 
 impl<'n, K, V> Drop for Locker<'n, K, V>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: Clone + Ord + Send + Sync,
+    V: Clone + Send + Sync,
 {
     fn drop(&mut self) {
-        if !self.deprecate {
-            self.lock.swap((None, Tag::None), Release);
-        }
+        self.lock.swap((None, Tag::None), Release);
     }
 }
 
@@ -777,10 +781,11 @@ mod test {
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn durability() {
         let num_tasks = 16_usize;
-        let workload_size = 64_usize;
+        let num_iterations = 64;
+        let workload_size = 256_usize;
         for k in 0..8 {
-            let fixed_point = k * 256;
-            for _ in 0..=workload_size {
+            let fixed_point = k * 16;
+            for _ in 0..=num_iterations {
                 let barrier = Arc::new(sync::Barrier::new(num_tasks));
                 let internal_node = Arc::new(new_level_3_node());
                 let inserted: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
@@ -790,12 +795,58 @@ mod test {
                     let internal_node_clone = internal_node.clone();
                     let inserted_clone = inserted.clone();
                     task_handles.push(tokio::spawn(async move {
-                        barrier_clone.wait().await;
-                        let barrier = Barrier::new();
-                        if let Ok(InsertResult::Success) =
-                            internal_node_clone.insert(fixed_point, fixed_point, &barrier)
                         {
-                            assert!(!inserted_clone.swap(true, Relaxed));
+                            barrier_clone.wait().await;
+                            let barrier = Barrier::new();
+                            if let Ok(InsertResult::Success) =
+                                internal_node_clone.insert(fixed_point, fixed_point, &barrier)
+                            {
+                                assert!(!inserted_clone.swap(true, Relaxed));
+                            }
+                            assert_eq!(
+                                internal_node_clone.search(&fixed_point, &barrier).unwrap(),
+                                &fixed_point
+                            );
+                        }
+                        {
+                            barrier_clone.wait().await;
+                            let barrier = Barrier::new();
+                            for i in 0..workload_size {
+                                if i != fixed_point {
+                                    let _result = internal_node_clone.insert(i, i, &barrier);
+                                }
+                                assert_eq!(
+                                    internal_node_clone.search(&fixed_point, &barrier).unwrap(),
+                                    &fixed_point
+                                );
+                            }
+                            for _i in 0..workload_size {
+                                let max_scanner = internal_node_clone
+                                    .max_less_appr(&(fixed_point + 1), &barrier)
+                                    .unwrap();
+                                assert!(*max_scanner.get().unwrap().0 <= fixed_point);
+                                let mut min_scanner = internal_node_clone.min(&barrier).unwrap();
+                                if let Some((f, v)) = min_scanner.next() {
+                                    assert_eq!(*f, *v);
+                                    assert!(*f <= fixed_point);
+                                } else {
+                                    let (f, v) =
+                                        min_scanner.jump(None, &barrier).unwrap().get().unwrap();
+                                    assert_eq!(*f, *v);
+                                    assert!(*f <= fixed_point);
+                                }
+                                /*
+                                let _result = internal_node_clone.remove_if(
+                                    &i,
+                                    &mut |v| *v != fixed_point,
+                                    &barrier,
+                                );
+                                */
+                                assert_eq!(
+                                    internal_node_clone.search(&fixed_point, &barrier).unwrap(),
+                                    &fixed_point
+                                );
+                            }
                         }
                     }));
                 }
