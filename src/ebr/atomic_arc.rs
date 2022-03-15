@@ -252,7 +252,7 @@ impl<T: 'static> AtomicArc<T> {
         }
     }
 
-    /// Clones `self`.
+    /// Clones `self` including tags.
     ///
     /// # Examples
     ///

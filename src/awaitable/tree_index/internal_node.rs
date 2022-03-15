@@ -331,11 +331,7 @@ where
             Acquire,
             Relaxed,
         ) {
-            if self.retired(Relaxed) {
-                drop(self.latch.swap((None, Tag::None), Relaxed));
-                target.rollback(barrier);
-                return Ok(InsertResult::Retired(key, value));
-            }
+            debug_assert!(!self.retired(Relaxed));
             if full_node_ptr != full_node.load(Relaxed, barrier) {
                 drop(self.latch.swap((None, Tag::None), Relaxed));
                 target.rollback(barrier);
@@ -528,14 +524,18 @@ where
         }
 
         // Inserts the newly allocated internal nodes into the main array.
-        if let InsertResult::Full(middle_key, _) = self.children.insert(
+        match self.children.insert(
             new_nodes.middle_key.take().unwrap(),
             new_nodes.low_key_node.clone(Relaxed, barrier),
         ) {
-            // Insertion failed: expects that the parent splits this node.
-            new_nodes.middle_key.replace(middle_key);
-            return Ok(InsertResult::Full(key, value));
-        }
+            InsertResult::Success => (),
+            InsertResult::Duplicate(_, _) => debug_assert!(false, "unreachable"),
+            InsertResult::Full(middle_key, _) | InsertResult::Retired(middle_key, _) => {
+                // Insertion failed: expects that the parent splits this node.
+                new_nodes.middle_key.replace(middle_key);
+                return Ok(InsertResult::Full(key, value));
+            }
+        };
 
         // Replaces the full node with the high-key node.
         let unused_node = full_node.swap(
@@ -627,6 +627,7 @@ where
                         if let Some(obsolete_node) =
                             self.unbounded_child.swap((None, RETIRED), Release)
                         {
+                            debug_assert!(obsolete_node.retired(Relaxed));
                             barrier.reclaim(obsolete_node);
                         }
                         true
@@ -640,7 +641,6 @@ where
             };
 
             if fully_empty {
-                debug_assert!(self.children.retired());
                 return Ok(RemoveResult::Retired);
             }
 
