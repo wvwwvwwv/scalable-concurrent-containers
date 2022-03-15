@@ -199,7 +199,9 @@ where
                                 );
                             }
                             InsertResult::Retired(key, value) => {
+                                debug_assert!(child_ref.retired(Relaxed));
                                 if let Ok(RemoveResult::Retired) = self.coalesce(barrier) {
+                                    debug_assert!(self.retired(Relaxed));
                                     return Ok(InsertResult::Retired(key, value));
                                 }
                                 return Err((key, value));
@@ -234,13 +236,16 @@ where
                         );
                     }
                     InsertResult::Retired(key, value) => {
+                        debug_assert!(unbounded.retired(Relaxed));
                         if let Ok(RemoveResult::Retired) = self.coalesce(barrier) {
+                            debug_assert!(self.retired(Relaxed));
                             return Ok(InsertResult::Retired(key, value));
                         }
                         return Err((key, value));
                     }
                 };
             }
+            debug_assert!(unbounded_ptr.tag() == RETIRED);
             return Ok(InsertResult::Retired(key, value));
         }
     }
@@ -583,47 +588,59 @@ where
     /// Tries to coalesce nodes.
     fn coalesce(&self, barrier: &Barrier) -> Result<RemoveResult, bool> {
         while let Some(lock) = Locker::try_lock(self) {
-            let mut has_valid_node = false;
-            for entry in Scanner::new(&self.children) {
-                let node_ptr = entry.1.load(Relaxed, barrier);
+            let mut max_key_entry = None;
+            for (key, node) in Scanner::new(&self.children) {
+                let node_ptr = node.load(Relaxed, barrier);
                 let node_ref = node_ptr.as_ref().unwrap();
                 if node_ref.retired(Relaxed) {
-                    let result = self.children.remove_if(entry.0, &mut |_| true);
+                    let result = self.children.remove_if(key, &mut |_| true);
                     debug_assert_ne!(result, RemoveResult::Fail);
 
                     // Once the key is removed, it is safe to deallocate the node as the validation
                     // loop ensures the absence of readers.
-                    if let Some(node) = entry.1.swap((None, Tag::None), Release) {
+                    if let Some(node) = node.swap((None, Tag::None), Release) {
                         barrier.reclaim(node);
                     }
                 } else {
-                    has_valid_node = true;
+                    max_key_entry.replace((key, node_ptr));
                 }
             }
 
-            // The unbounded leaf becomes unreachable after all the other leaves are gone.
-            let fully_empty = if has_valid_node {
-                false
-            } else {
-                let unbounded_ptr = self.unbounded_child.load(Relaxed, barrier);
-                if let Some(unbounded) = unbounded_ptr.as_ref() {
-                    if unbounded.retired(Relaxed) {
+            // The unbounded node is replaced with the maximum key node if retired.
+            let unbounded_ptr = self.unbounded_child.load(Relaxed, barrier);
+            let fully_empty = if let Some(unbounded) = unbounded_ptr.as_ref() {
+                if unbounded.retired(Relaxed) {
+                    if let Some((key, Some(max_key_child))) =
+                        max_key_entry.map(|(k, p)| (k, p.get_arc()))
+                    {
+                        if let Some(obsolete_node) = self
+                            .unbounded_child
+                            .swap((Some(max_key_child), Tag::None), Release)
+                        {
+                            debug_assert!(obsolete_node.retired(Relaxed));
+                            barrier.reclaim(obsolete_node);
+                        }
+                        let result = self.children.remove_if(key, &mut |_| true);
+                        debug_assert_ne!(result, RemoveResult::Fail);
+                        false
+                    } else {
                         if let Some(obsolete_node) =
                             self.unbounded_child.swap((None, RETIRED), Release)
                         {
                             barrier.reclaim(obsolete_node);
                         }
                         true
-                    } else {
-                        false
                     }
                 } else {
-                    debug_assert!(unbounded_ptr.tag() == RETIRED);
-                    true
+                    false
                 }
+            } else {
+                debug_assert!(unbounded_ptr.tag() == RETIRED);
+                true
             };
 
             if fully_empty {
+                debug_assert!(self.children.retired());
                 return Ok(RemoveResult::Retired);
             }
 
@@ -696,6 +713,7 @@ where
     V: Clone + Send + Sync,
 {
     fn drop(&mut self) {
+        debug_assert_eq!(self.lock.tag(Relaxed), LOCKED);
         self.lock.swap((None, Tag::None), Release);
     }
 }
@@ -820,7 +838,11 @@ mod test {
                                     &fixed_point
                                 );
                             }
-                            for _i in 0..workload_size {
+                        } // TODO: remove FROM.
+                        {
+                            barrier_clone.wait().await;
+                            let barrier = Barrier::new(); // TODO: remove TO.
+                            for i in 0..workload_size {
                                 let max_scanner = internal_node_clone
                                     .max_less_appr(&(fixed_point + 1), &barrier)
                                     .unwrap();
@@ -835,13 +857,11 @@ mod test {
                                     assert_eq!(*f, *v);
                                     assert!(*f <= fixed_point);
                                 }
-                                /*
                                 let _result = internal_node_clone.remove_if(
                                     &i,
                                     &mut |v| *v != fixed_point,
                                     &barrier,
                                 );
-                                */
                                 assert_eq!(
                                     internal_node_clone.search(&fixed_point, &barrier).unwrap(),
                                     &fixed_point

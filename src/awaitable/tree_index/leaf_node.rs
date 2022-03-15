@@ -211,10 +211,7 @@ where
             }
 
             let mut unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
-            while unbounded_ptr.is_null() {
-                if unbounded_ptr.tag() == RETIRED {
-                    return Ok(InsertResult::Retired(key, value));
-                }
+            if unbounded_ptr.is_null() {
                 match self.unbounded_child.compare_exchange(
                     Ptr::null(),
                     (Some(Arc::new(Leaf::new())), Tag::None),
@@ -223,7 +220,6 @@ where
                 ) {
                     Ok((_, ptr)) => {
                         unbounded_ptr = ptr;
-                        break;
                     }
                     Err((_, actual)) => {
                         unbounded_ptr = actual;
@@ -252,7 +248,7 @@ where
                     }
                 };
             }
-            return Err((key, value));
+            return Ok(InsertResult::Retired(key, value));
         }
     }
 
@@ -766,6 +762,7 @@ where
     V: Clone + Send + Sync,
 {
     fn drop(&mut self) {
+        debug_assert_eq!(self.lock.tag(Relaxed), LOCKED);
         self.lock.swap((None, Tag::None), Release);
     }
 }
