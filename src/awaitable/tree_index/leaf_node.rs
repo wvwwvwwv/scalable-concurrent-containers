@@ -497,7 +497,7 @@ where
         }
         #[allow(clippy::branches_sharing_code)]
         if new_leaves_ref.origin_leaf_key.is_some() {
-            // If the origin is a bounded node, assign the unbounded node to the high key node's
+            // If the origin is a bounded node, assign the unbounded leaf as the high key node's
             // unbounded.
             entry_array[num_entries].replace((None, self.unbounded_child.clone(Relaxed, barrier)));
             num_entries += 1;
@@ -728,7 +728,7 @@ where
 }
 
 /// [`Locker`] holds exclusive access to a [`Leaf`].
-struct Locker<'n, K, V>
+pub struct Locker<'n, K, V>
 where
     K: 'static + Clone + Ord + Send + Sync,
     V: 'static + Clone + Send + Sync,
@@ -741,7 +741,8 @@ where
     K: Clone + Ord + Send + Sync,
     V: Clone + Send + Sync,
 {
-    fn try_lock(leaf_node: &'n LeafNode<K, V>) -> Option<Locker<'n, K, V>> {
+    /// Acquires exclusive lock on the [`LeafNode`].
+    pub fn try_lock(leaf_node: &'n LeafNode<K, V>) -> Option<Locker<'n, K, V>> {
         if leaf_node
             .latch
             .compare_exchange(Ptr::null(), (None, LOCKED), Acquire, Relaxed)

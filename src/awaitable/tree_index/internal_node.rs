@@ -23,7 +23,7 @@ where
     ///
     /// It stores the maximum key in the node, and key-value pairs are firstly pushed to this
     /// [`Node`].
-    unbounded_child: AtomicArc<Node<K, V>>,
+    pub(super) unbounded_child: AtomicArc<Node<K, V>>,
 
     /// `latch` acts as a mutex of the [`InternalNode`] that also stores the information about an
     /// on-going structural change.
@@ -194,7 +194,6 @@ where
                                     Some(child_key),
                                     child_ptr,
                                     child,
-                                    false,
                                     barrier,
                                 );
                             }
@@ -231,7 +230,6 @@ where
                             None,
                             unbounded_ptr,
                             &self.unbounded_child,
-                            false,
                             barrier,
                         );
                     }
@@ -305,14 +303,13 @@ where
     ///
     /// Returns an error if retry is required.
     #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
-    fn split_node(
+    pub fn split_node(
         &self,
         key: K,
         value: V,
         full_node_key: Option<&K>,
         full_node_ptr: Ptr<Node<K, V>>,
         full_node: &AtomicArc<Node<K, V>>,
-        root_node_split: bool,
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
         let target = full_node_ptr.as_ref().unwrap();
@@ -365,15 +362,15 @@ where
                 );
                 let low_key_nodes =
                     if let Type::Internal(low_key_internal_node) = &internal_nodes.0.node() {
-                        Some(low_key_internal_node)
+                        low_key_internal_node
                     } else {
-                        None
+                        unreachable!()
                     };
                 let high_key_nodes =
                     if let Type::Internal(high_key_internal_node) = &internal_nodes.1.node() {
-                        Some(high_key_internal_node)
+                        high_key_internal_node
                     } else {
-                        None
+                        unreachable!()
                     };
 
                 // Builds a list of valid nodes.
@@ -443,7 +440,7 @@ where
                     if let Some(entry) = entry {
                         match (index + 1).cmp(&low_key_node_array_size) {
                             Less => {
-                                low_key_nodes.unwrap().children.insert(
+                                low_key_nodes.children.insert(
                                     entry.0.unwrap().clone(),
                                     entry.1.clone(Relaxed, barrier),
                                 );
@@ -451,18 +448,16 @@ where
                             Equal => {
                                 new_nodes.middle_key.replace(entry.0.unwrap().clone());
                                 low_key_nodes
-                                    .unwrap()
                                     .unbounded_child
                                     .swap((entry.1.get_arc(Relaxed, barrier), Tag::None), Relaxed);
                             }
                             Greater => {
                                 if let Some(key) = entry.0 {
                                     high_key_nodes
-                                        .unwrap()
                                         .children
                                         .insert(key.clone(), entry.1.clone(Relaxed, barrier));
                                 } else {
-                                    high_key_nodes.as_ref().unwrap().unbounded_child.swap(
+                                    high_key_nodes.unbounded_child.swap(
                                         (entry.1.get_arc(Relaxed, barrier), Tag::None),
                                         Relaxed,
                                     );
@@ -517,11 +512,6 @@ where
                     .swap((Some(leaf_nodes.1), Tag::None), Relaxed);
             }
         };
-
-        // The full node is the current root: split_root processes the rest.
-        if root_node_split {
-            return Ok(InsertResult::Full(key, value));
-        }
 
         // Inserts the newly allocated internal nodes into the main array.
         match self.children.insert(
@@ -602,7 +592,7 @@ where
                         barrier.reclaim(node);
                     }
                 } else {
-                    max_key_entry.replace((key, node_ptr));
+                    max_key_entry.replace((key, node));
                 }
             }
 
@@ -610,18 +600,19 @@ where
             let unbounded_ptr = self.unbounded_child.load(Relaxed, barrier);
             let fully_empty = if let Some(unbounded) = unbounded_ptr.as_ref() {
                 if unbounded.retired(Relaxed) {
-                    if let Some((key, Some(max_key_child))) =
-                        max_key_entry.map(|(k, p)| (k, p.get_arc()))
-                    {
-                        if let Some(obsolete_node) = self
-                            .unbounded_child
-                            .swap((Some(max_key_child), Tag::None), Release)
-                        {
+                    if let Some((key, max_key_child)) = max_key_entry {
+                        if let Some(obsolete_node) = self.unbounded_child.swap(
+                            (max_key_child.get_arc(Relaxed, barrier), Tag::None),
+                            Release,
+                        ) {
                             debug_assert!(obsolete_node.retired(Relaxed));
                             barrier.reclaim(obsolete_node);
                         }
                         let result = self.children.remove_if(key, &mut |_| true);
                         debug_assert_ne!(result, RemoveResult::Fail);
+                        if let Some(node) = max_key_child.swap((None, Tag::None), Release) {
+                            barrier.reclaim(node);
+                        }
                         false
                     } else {
                         if let Some(obsolete_node) =
@@ -679,7 +670,7 @@ where
 }
 
 /// [`Locker`] holds exclusive access to a [`InternalNode`].
-struct Locker<'n, K, V>
+pub struct Locker<'n, K, V>
 where
     K: 'static + Clone + Ord + Send + Sync,
     V: 'static + Clone + Send + Sync,
@@ -692,7 +683,8 @@ where
     K: Clone + Ord + Send + Sync,
     V: Clone + Send + Sync,
 {
-    fn try_lock(internal_node: &'n InternalNode<K, V>) -> Option<Locker<'n, K, V>> {
+    /// Acquires exclusive lock on the [`InternalNode`].
+    pub fn try_lock(internal_node: &'n InternalNode<K, V>) -> Option<Locker<'n, K, V>> {
         if internal_node
             .latch
             .compare_exchange(Ptr::null(), (None, LOCKED), Acquire, Relaxed)
@@ -838,10 +830,6 @@ mod test {
                                     &fixed_point
                                 );
                             }
-                        } // TODO: remove FROM.
-                        {
-                            barrier_clone.wait().await;
-                            let barrier = Barrier::new(); // TODO: remove TO.
                             for i in 0..workload_size {
                                 let max_scanner = internal_node_clone
                                     .max_less_appr(&(fixed_point + 1), &barrier)

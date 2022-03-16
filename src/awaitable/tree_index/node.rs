@@ -1,11 +1,11 @@
-use super::internal_node::InternalNode;
+use super::internal_node::{self, InternalNode};
 use super::leaf::{InsertResult, RemoveResult, Scanner};
-use super::leaf_node::LeafNode;
+use super::leaf_node::{self, LeafNode};
 
-use crate::ebr::{AtomicArc, Barrier};
+use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
 
 use std::borrow::Borrow;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::Ordering::{self, Acquire, Relaxed, Release};
 
 /// [`Type`] indicates the type of a [`Node`].
 pub enum Type<K, V>
@@ -134,117 +134,86 @@ where
     }
 
     /// Splits the current root node.
-    pub fn split_root(&self, _root: &AtomicArc<Node<K, V>>, _barrier: &Barrier) {
-        /*
-        // The fact that the TreeIndex calls this function means that the root is in a split
-        // procedure, and the root is locked.
-        debug_assert_eq!(
-            self as *const Node<K, V>,
-            root.load(Relaxed, barrier).as_raw()
-        );
-        let new_root: Node<K, V> = Node::new_internal_node();
-        if let Type::Internal(internal_node) = &new_root.node {
-            if internal_node.split_node(None, root.load(Relaxed, barrier), root, true, barrier) {
-                let new_nodes = unsafe {
-                    #[allow(clippy::cast_ref_to_mut)]
-                    &mut *(internal_node
-                        .new_children
-                        .load(Relaxed, barrier)
-                        .as_ref()
-                        .unwrap() as *const NewNodes<K, V>
-                        as *mut NewNodes<K, V>)
-                };
+    pub fn split_root(
+        &self,
+        key: K,
+        value: V,
+        root: &AtomicArc<Node<K, V>>,
+        barrier: &Barrier,
+    ) -> (K, V) {
+        // The fact that the `TreeIndex` calls this function means that the root is full and
+        // locked.
+        let mut new_root: Node<K, V> = Node::new_internal_node();
+        if let Type::Internal(internal_node) = &mut new_root.node {
+            internal_node.unbounded_child = root.clone(Relaxed, barrier);
+            let result = internal_node.split_node(
+                key,
+                value,
+                None,
+                root.load(Relaxed, barrier),
+                &internal_node.unbounded_child,
+                barrier,
+            );
+            let (key, value) = match result {
+                Ok(_) => unreachable!(),
+                Err((k, v)) => (k, v),
+            };
 
-                // Inserts the newly allocated internal nodes into the main array.
-                let low_key_node_cloned = new_nodes.low_key_node.clone(Relaxed, barrier);
-                if !low_key_node_cloned.is_null(Relaxed) {
-                    internal_node
-                        .children
-                        .0
-                        .insert(new_nodes.middle_key.take().unwrap(), low_key_node_cloned);
-                }
-                let high_key_node_cloned = new_nodes.high_key_node.clone(Relaxed, barrier);
-                if !high_key_node_cloned.is_null(Relaxed) {
-                    internal_node.children.1.swap(
-                        (high_key_node_cloned.get_arc(Relaxed, barrier), Tag::None),
-                        Relaxed,
-                    );
-                }
-
-                debug_assert_eq!(
-                    self as *const Node<K, V>,
-                    root.load(Relaxed, barrier).as_raw()
-                );
-                // Updates the pointer.
-                if let Some(old_root) = root.swap((Some(Arc::new(new_root)), Tag::None), Release) {
-                    // Unlinks the former root node before dropping it.
-                    old_root.unlink(barrier);
-                    barrier.reclaim(old_root);
-
-                    // Unlocks the new root.
-                    let new_root = root.load(Relaxed, barrier).as_ref().unwrap();
-                    if let Type::Internal(internal_node) = &new_root.node {
-                        internal_node.new_children.swap((None, Tag::None), Release);
-                    }
-                };
-            }
+            // Updates the pointer: TODO - run it before unlocking the former root.
+            if let Some(old_root) = root.swap((Some(Arc::new(new_root)), Tag::None), Release) {
+                barrier.reclaim(old_root);
+            };
+            (key, value)
+        } else {
+            (key, value)
         }
-        */
     }
 
     /// Removes the current root node.
-    pub fn remove_root(_root: &AtomicArc<Node<K, V>>, _barrier: &Barrier) -> bool {
-        /*
-        let mut root_ptr = root.load(Acquire, barrier);
-        loop {
-            if let Some(root_ref) = root_ptr.as_ref() {
-                let mut internal_node_locker = None;
-                let mut leaf_node_locker = None;
-                match &root_ref.node {
-                    Type::Internal(internal_node) => {
-                        if let Some(locker) = InternalNodeLocker::try_lock(internal_node) {
-                            internal_node_locker.replace(locker);
-                        }
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a conflict is detected.
+    pub fn remove_root(root: &AtomicArc<Node<K, V>>, barrier: &Barrier) -> Result<bool, ()> {
+        let root_ptr = root.load(Acquire, barrier);
+        if let Some(root_ref) = root_ptr.as_ref() {
+            let mut internal_node_locker = None;
+            let mut leaf_node_locker = None;
+            match &root_ref.node {
+                Type::Internal(internal_node) => {
+                    if let Some(locker) = internal_node::Locker::try_lock(internal_node) {
+                        internal_node_locker.replace(locker);
                     }
-                    Type::Leaf(leaf_node) => {
-                        if let Some(locker) = LeafLocker::try_lock(leaf_node) {
-                            leaf_node_locker.replace(locker);
-                        }
-                    }
-                };
-                if internal_node_locker.is_none() && leaf_node_locker.is_none() {
-                    // The root node is locked by another thread.
-                    root_ptr = root.load(Acquire, barrier);
-                    continue;
                 }
-                if !root_ref.obsolete(barrier) {
-                    break;
+                Type::Leaf(leaf_node) => {
+                    if let Some(locker) = leaf_node::Locker::try_lock(leaf_node) {
+                        leaf_node_locker.replace(locker);
+                    }
                 }
-                match root.compare_exchange(root_ptr, (None, Tag::None), Acquire, Acquire) {
-                    Ok((old_root, _)) => {
-                        // It is important to keep the locked state until the node is dropped
-                        // in order for all the on-going structural changes being made to its
-                        // child nodes to fail.
-                        if let Some(internal_node_locker) = internal_node_locker.as_mut() {
-                            internal_node_locker.deprecate();
-                        }
-                        if let Some(leaf_node_locker) = leaf_node_locker.as_mut() {
-                            leaf_node_locker.deprecate();
-                        }
-                        if let Some(old_root) = old_root {
-                            barrier.reclaim(old_root);
-                        }
+            };
+            if internal_node_locker.is_none() && leaf_node_locker.is_none() {
+                // The root node is locked by another thread.
+                return Err(());
+            }
+            if !root_ref.retired(Relaxed) {
+                // The root node is still usable.
+                return Ok(false);
+            }
+
+            match root.compare_exchange(root_ptr, (None, Tag::None), Acquire, Acquire) {
+                Ok((old_root, _)) => {
+                    if let Some(old_root) = old_root {
+                        barrier.reclaim(old_root);
                     }
-                    Err((_, actual)) => {
-                        root_ptr = actual;
-                        continue;
-                    }
+                    return Ok(true);
+                }
+                Err(_) => {
+                    return Ok(false);
                 }
             }
-            return true;
         }
-        */
-        false
+
+        Err(())
     }
 
     /// Commits an on-going structural change.
