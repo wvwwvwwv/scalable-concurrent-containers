@@ -1,6 +1,3 @@
-#![allow(dead_code)]
-#![allow(clippy::unused_self)]
-
 //! The module implements [`TreeIndex`].
 
 mod internal_node;
@@ -8,22 +5,42 @@ mod leaf;
 mod leaf_node;
 mod node;
 
-use leaf::Leaf;
-use leaf_node::LeafNode;
+use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 
-use crate::ebr::AtomicArc;
+use leaf::{InsertResult, Leaf, RemoveResult, Scanner};
+use node::Node;
 
 use std::borrow::Borrow;
-use std::ops::{RangeBounds, RangeFull};
+use std::cmp::Ordering;
+use std::iter::FusedIterator;
+use std::ops::Bound::{Excluded, Included, Unbounded};
+use std::ops::RangeBounds;
+use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 
 /// Scalable concurrent B+ tree.
+///
+/// [`TreeIndex`] is a B+ tree variant that is optimized for read operations. Read operations, such
+/// as read, scan, are neither blocked nor interrupted by other threads. Write operations, such as
+/// insert, remove, do not block if they do not entail structural changes to the tree. In case an
+/// operation is conflicted with another, one of them yields the task executor.
+///
+/// ## The key features of [`TreeIndex`]
+///
+/// * Write-free read: read operations never modify the shared data.
+/// * Near lock-free write: write operations do not block unless a structural change is needed.
+///
+/// ## The key statistics for [`TreeIndex`]
+///
+/// * The maximum number of key-value pairs that a leaf can store: 14.
+/// * The maximum number of leaves or child nodes that a node can point to: 15.
+/// * The size of metadata per key-value pair in a leaf: 3-byte.
+/// * The size of metadata per leaf or node in a node: `size_of(K)` + 4.
 pub struct TreeIndex<K, V>
 where
     K: 'static + Clone + Ord + Send + Sync,
     V: 'static + Clone + Send + Sync,
 {
-    root: AtomicArc<Leaf<K, V>>,
-    non_root: AtomicArc<LeafNode<K, V>>,
+    root: AtomicArc<Node<K, V>>,
 }
 
 impl<K, V> TreeIndex<K, V>
@@ -44,7 +61,6 @@ where
     pub fn new() -> TreeIndex<K, V> {
         TreeIndex {
             root: AtomicArc::null(),
-            non_root: AtomicArc::null(),
         }
     }
 
@@ -60,10 +76,38 @@ where
     /// use scc::awaitable::TreeIndex;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    /// let future_insert = treeindex.insert(1, 10);
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// TODO.
     #[inline]
-    pub async fn insert(&self, key: K, value: V) -> Result<(), (K, V)> {
-        Err((key, value))
+    pub async fn insert(&self, mut key: K, mut value: V) -> Result<(), (K, V)> {
+        loop {
+            let barrier = Barrier::new();
+            if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
+                match root_ref.insert(key, value, &barrier) {
+                    Ok(r) => match r {
+                        InsertResult::Success => return Ok(()),
+                        InsertResult::Duplicate(k, v) => return Err((k, v)),
+                        InsertResult::Full(_, _) | InsertResult::Retired(_, _) => todo!(),
+                    },
+                    Err((k, v)) => {
+                        key = k;
+                        value = v;
+                        continue;
+                    }
+                }
+            }
+            let new_root = Arc::new(Node::new_leaf_node());
+            let _result = self.root.compare_exchange(
+                Ptr::null(),
+                (Some(new_root), Tag::None),
+                AcqRel,
+                Acquire,
+            );
+        }
     }
 
     /// Removes a key-value pair.
@@ -74,6 +118,7 @@ where
     /// use scc::awaitable::TreeIndex;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    /// let future_remove = treeindex.remove(&1);
     /// ```
     #[inline]
     pub async fn remove<Q>(&self, key_ref: &Q) -> bool
@@ -92,14 +137,39 @@ where
     /// use scc::awaitable::TreeIndex;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    /// let future_remove = treeindex.remove_if(&1, |v| *v == 0);
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// TODO.
     #[inline]
-    pub async fn remove_if<Q, F: FnMut(&V) -> bool>(&self, _key_ref: &Q, _condition: F) -> bool
+    pub async fn remove_if<Q, F: FnMut(&V) -> bool>(&self, key_ref: &Q, mut condition: F) -> bool
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        false
+        let mut has_been_removed = false;
+        // let mut has_leaf_been_removed = false;
+        loop {
+            let barrier = Barrier::new();
+            if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
+                match root_ref.remove_if(key_ref, &mut condition, &barrier) {
+                    Ok(r) => match r {
+                        RemoveResult::Success => return true,
+                        RemoveResult::Fail => return has_been_removed,
+                        RemoveResult::Retired => todo!(),
+                    },
+                    Err(removed) => {
+                        if removed {
+                            has_been_removed = true;
+                        }
+                    }
+                };
+            } else {
+                return false;
+            }
+        }
     }
 
     /// Reads a key-value pair.
@@ -112,13 +182,50 @@ where
     /// use scc::awaitable::TreeIndex;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    /// assert!(treeindex.read(&1, |k, v| *v).is_none());
     /// ```
     #[inline]
-    pub fn read<Q, R, F: FnOnce(&Q, &V) -> R>(&self, _key_ref: &Q, _reader: F) -> Option<R>
+    pub fn read<Q, R, F: FnOnce(&Q, &V) -> R>(&self, key_ref: &Q, reader: F) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
+        let barrier = Barrier::new();
+        self.read_with(key_ref, reader, &barrier)
+    }
+
+    /// Reads a key-value pair using the supplied [`Barrier`].
+    ///
+    /// It enables the caller to use the value reference outside the method. It returns `None`
+    /// if the key does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::awaitable::TreeIndex;
+    /// use scc::ebr::Barrier;
+    ///
+    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    ///
+    /// let barrier = Barrier::new();
+    /// assert!(treeindex.read_with(&1, |k, v| v, &barrier).is_none());
+    /// ```
+    #[inline]
+    pub fn read_with<'b, Q, R, F: FnOnce(&Q, &'b V) -> R>(
+        &self,
+        key_ref: &Q,
+        reader: F,
+        barrier: &'b Barrier,
+    ) -> Option<R>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        if let Some(root_ref) = self.root.load(Acquire, barrier).as_ref() {
+            if let Some(value) = root_ref.search(key_ref, barrier) {
+                return Some(reader(key_ref, value));
+            }
+        }
         None
     }
 
@@ -130,9 +237,14 @@ where
     /// use scc::awaitable::TreeIndex;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    ///
+    /// treeindex.clear();
+    /// assert_eq!(treeindex.len(), 0);
     /// ```
     #[inline]
-    pub async fn clear(&self) {}
+    pub fn clear(&self) {
+        self.root.swap((None, Tag::None), Relaxed);
+    }
 
     /// Returns the size of the [`TreeIndex`].
     ///
@@ -148,7 +260,8 @@ where
     /// ```
     #[inline]
     pub fn len(&self) -> usize {
-        0
+        let barrier = Barrier::new();
+        self.iter(&barrier).count()
     }
 
     /// Returns `true` if the [`TreeIndex`] is empty.
@@ -181,34 +294,55 @@ where
     /// ```
     #[inline]
     pub fn depth(&self) -> usize {
-        0
+        let barrier = Barrier::new();
+        self.root
+            .load(Acquire, &barrier)
+            .as_ref()
+            .map_or(0, |root_ref| root_ref.depth(1, &barrier))
     }
 
-    /// Iterates over all the entries in the [`TreeIndex`].
+    /// Returns a [`Visitor`].
+    ///
+    /// The returned [`Visitor`] starts scanning from the minimum key-value pair.
     ///
     /// # Examples
     ///
     /// ```
     /// use scc::awaitable::TreeIndex;
+    /// use scc::ebr::Barrier;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    ///
+    /// let barrier = Barrier::new();
+    /// let mut visitor = treeindex.iter(&barrier);
+    /// assert!(visitor.next().is_none());
     /// ```
     #[inline]
-    pub fn for_each<F: FnMut(&K, &V)>(&self, f: F) {
-        self.for_each_range(f, RangeFull);
+    pub fn iter<'t, 'b>(&'t self, barrier: &'b Barrier) -> Visitor<'t, 'b, K, V> {
+        Visitor::new(self, barrier)
     }
 
-    /// Iterates over entries in the specified key range.
+    /// Returns a [`Range`] that scans keys in the given range.
     ///
     /// # Examples
     ///
     /// ```
     /// use scc::awaitable::TreeIndex;
+    /// use scc::ebr::Barrier;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    ///
+    /// let barrier = Barrier::new();
+    /// assert_eq!(treeindex.range(4..=8, &barrier).count(), 0);
     /// ```
     #[inline]
-    pub fn for_each_range<F: FnMut(&K, &V), R: RangeBounds<K>>(&self, _f: F, _range: R) {}
+    pub fn range<'t, 'b, R: RangeBounds<K>>(
+        &'t self,
+        range: R,
+        barrier: &'b Barrier,
+    ) -> Range<'t, 'b, K, V, R> {
+        Range::new(self, range, barrier)
+    }
 }
 
 impl<K, V> Default for TreeIndex<K, V>
@@ -228,4 +362,236 @@ where
     fn default() -> Self {
         TreeIndex::new()
     }
+}
+
+/// [`Visitor`] scans all the key-value pairs in the [`TreeIndex`].
+///
+/// It is guaranteed to visit all the key-value pairs that outlive the [`Visitor`], and it
+/// scans keys in monotonically increasing order.
+pub struct Visitor<'t, 'b, K, V>
+where
+    K: 'static + Clone + Ord + Send + Sync,
+    V: 'static + Clone + Send + Sync,
+{
+    tree: &'t TreeIndex<K, V>,
+    leaf_scanner: Option<Scanner<'b, K, V>>,
+    barrier: &'b Barrier,
+}
+
+impl<'t, 'b, K, V> Visitor<'t, 'b, K, V>
+where
+    K: 'static + Clone + Ord + Send + Sync,
+    V: 'static + Clone + Send + Sync,
+{
+    fn new(tree: &'t TreeIndex<K, V>, barrier: &'b Barrier) -> Visitor<'t, 'b, K, V> {
+        Visitor::<'t, 'b, K, V> {
+            tree,
+            leaf_scanner: None,
+            barrier,
+        }
+    }
+}
+
+impl<'t, 'b, K, V> Iterator for Visitor<'t, 'b, K, V>
+where
+    K: 'static + Clone + Ord + Send + Sync,
+    V: 'static + Clone + Send + Sync,
+{
+    type Item = (&'b K, &'b V);
+    fn next(&mut self) -> Option<Self::Item> {
+        // Starts scanning.
+        if self.leaf_scanner.is_none() {
+            loop {
+                let root_ptr = self.tree.root.load(Acquire, self.barrier);
+                if let Some(root_ref) = root_ptr.as_ref() {
+                    if let Some(scanner) = root_ref.min(self.barrier) {
+                        self.leaf_scanner.replace(scanner);
+                        break;
+                    }
+                } else {
+                    return None;
+                }
+            }
+        }
+
+        // Proceeds to the next entry.
+        if let Some(mut scanner) = self.leaf_scanner.take() {
+            let min_allowed_key = scanner.get().map(|(key, _)| key);
+            if let Some(result) = scanner.next() {
+                self.leaf_scanner.replace(scanner);
+                return Some(result);
+            }
+            // Proceeds to the next leaf node.
+            if let Some(new_scanner) = scanner.jump(min_allowed_key, self.barrier) {
+                if let Some(entry) = new_scanner.get() {
+                    self.leaf_scanner.replace(new_scanner);
+                    return Some(entry);
+                }
+            }
+        }
+        None
+    }
+}
+
+impl<'t, 'b, K, V> FusedIterator for Visitor<'t, 'b, K, V>
+where
+    K: 'static + Clone + Ord + Send + Sync,
+    V: 'static + Clone + Send + Sync,
+{
+}
+
+/// [`Range`] represents a range of keys in the [`TreeIndex`].
+///
+/// It is identical to [`Visitor`] except that it does not traverse keys outside of the given
+/// range.
+pub struct Range<'t, 'b, K, V, R>
+where
+    K: 'static + Clone + Ord + Send + Sync,
+    V: 'static + Clone + Send + Sync,
+    R: 'static + RangeBounds<K>,
+{
+    tree: &'t TreeIndex<K, V>,
+    leaf_scanner: Option<Scanner<'b, K, V>>,
+    range: R,
+    check_lower_bound: bool,
+    check_upper_bound: bool,
+    barrier: &'b Barrier,
+}
+
+impl<'t, 'b, K, V, R> Range<'t, 'b, K, V, R>
+where
+    K: 'static + Clone + Ord + Send + Sync,
+    V: 'static + Clone + Send + Sync,
+    R: RangeBounds<K>,
+{
+    fn new(tree: &'t TreeIndex<K, V>, range: R, barrier: &'b Barrier) -> Range<'t, 'b, K, V, R> {
+        Range::<'t, 'b, K, V, R> {
+            tree,
+            leaf_scanner: None,
+            range,
+            check_lower_bound: true,
+            check_upper_bound: false,
+            barrier,
+        }
+    }
+
+    fn next_unbounded(&mut self) -> Option<(&'b K, &'b V)> {
+        // Starts scanning.
+        if self.leaf_scanner.is_none() {
+            loop {
+                let root_ptr = self.tree.root.load(Acquire, self.barrier);
+                if let Some(root_ref) = root_ptr.as_ref() {
+                    let min_allowed_key = match self.range.start_bound() {
+                        Excluded(key) | Included(key) => Some(key),
+                        Unbounded => {
+                            self.check_lower_bound = false;
+                            None
+                        }
+                    };
+                    if let Some(leaf_scanner) = min_allowed_key.map_or_else(
+                        || root_ref.min(self.barrier),
+                        |min_allowed_key| root_ref.max_less_appr(min_allowed_key, self.barrier),
+                    ) {
+                        self.check_upper_bound = match self.range.end_bound() {
+                            Excluded(key) => leaf_scanner
+                                .max_entry()
+                                .map_or(false, |max_entry| max_entry.0.cmp(key) != Ordering::Less),
+                            Included(key) => leaf_scanner.max_entry().map_or(false, |max_entry| {
+                                max_entry.0.cmp(key) == Ordering::Greater
+                            }),
+                            Unbounded => false,
+                        };
+                        self.leaf_scanner.replace(leaf_scanner);
+                        break;
+                    }
+                } else {
+                    // Empty.
+                    return None;
+                }
+            }
+        }
+
+        // Proceeds to the next entry.
+        if let Some(mut scanner) = self.leaf_scanner.take() {
+            let min_allowed_key = scanner.get().map(|(key, _)| key);
+            if let Some(result) = scanner.next() {
+                self.leaf_scanner.replace(scanner);
+                return Some(result);
+            }
+            // Proceeds to the next leaf node.
+            if let Some(new_scanner) = scanner.jump(min_allowed_key, self.barrier).take() {
+                if let Some(entry) = new_scanner.get() {
+                    self.check_upper_bound = match self.range.end_bound() {
+                        Excluded(key) => new_scanner
+                            .max_entry()
+                            .map_or(false, |max_entry| max_entry.0.cmp(key) != Ordering::Less),
+                        Included(key) => new_scanner
+                            .max_entry()
+                            .map_or(false, |max_entry| max_entry.0.cmp(key) == Ordering::Greater),
+                        Unbounded => false,
+                    };
+                    self.leaf_scanner.replace(new_scanner);
+                    return Some(entry);
+                }
+            }
+        }
+        None
+    }
+}
+
+impl<'t, 'b, K, V, R> Iterator for Range<'t, 'b, K, V, R>
+where
+    K: 'static + Clone + Ord + Send + Sync,
+    V: 'static + Clone + Send + Sync,
+    R: RangeBounds<K>,
+{
+    type Item = (&'b K, &'b V);
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some((key_ref, value_ref)) = self.next_unbounded() {
+            if self.check_lower_bound {
+                match self.range.start_bound() {
+                    Excluded(key) => {
+                        if key_ref.cmp(key) != Ordering::Greater {
+                            continue;
+                        }
+                    }
+                    Included(key) => {
+                        if key_ref.cmp(key) == Ordering::Less {
+                            continue;
+                        }
+                    }
+                    Unbounded => (),
+                }
+            }
+            self.check_lower_bound = false;
+            if self.check_upper_bound {
+                match self.range.end_bound() {
+                    Excluded(key) => {
+                        if key_ref.cmp(key) == Ordering::Less {
+                            return Some((key_ref, value_ref));
+                        }
+                    }
+                    Included(key) => {
+                        if key_ref.cmp(key) != Ordering::Greater {
+                            return Some((key_ref, value_ref));
+                        }
+                    }
+                    Unbounded => {
+                        return Some((key_ref, value_ref));
+                    }
+                }
+                break;
+            }
+            return Some((key_ref, value_ref));
+        }
+        None
+    }
+}
+
+impl<'t, 'b, K, V, R> FusedIterator for Range<'t, 'b, K, V, R>
+where
+    K: 'static + Clone + Ord + Send + Sync,
+    V: 'static + Clone + Send + Sync,
+    R: RangeBounds<K>,
+{
 }

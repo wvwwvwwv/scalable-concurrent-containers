@@ -62,7 +62,7 @@ impl Dimension {
     }
 
     /// Returns an uninitialized state of an entry.
-    fn uninit_state(&self) -> usize {
+    fn uninit_state() -> usize {
         0
     }
 
@@ -187,7 +187,7 @@ where
             let mut has_free_slot = false;
             for i in 0..DIMENSION.num_entries {
                 let rank = DIMENSION.state(metadata, i);
-                if rank == DIMENSION.uninit_state() {
+                if rank == Dimension::uninit_state() {
                     has_free_slot = true;
                     let interim_metadata =
                         DIMENSION.augment(metadata, i, DIMENSION.removed_state());
@@ -256,7 +256,7 @@ where
                                     continue;
                                 }
                                 let rank = DIMENSION.state(metadata, j);
-                                if rank != DIMENSION.uninit_state()
+                                if rank != Dimension::uninit_state()
                                     && rank != DIMENSION.removed_state()
                                 {
                                     empty = false;
@@ -405,7 +405,7 @@ where
                     continue;
                 }
                 let rank = DIMENSION.state(metadata, i);
-                if rank == DIMENSION.uninit_state() || rank == DIMENSION.removed_state() {
+                if rank == Dimension::uninit_state() || rank == DIMENSION.removed_state() {
                     continue;
                 }
                 debug_assert_ne!(rank, current_entry_rank);
@@ -491,7 +491,7 @@ where
             let mut min_max_rank = DIMENSION.removed_state();
             for i in 0..DIMENSION.num_entries {
                 let rank = DIMENSION.state(metadata, i);
-                if rank == DIMENSION.uninit_state() || rank == DIMENSION.removed_state() {
+                if rank == Dimension::uninit_state() || rank == DIMENSION.removed_state() {
                     continue;
                 }
                 if rank > max_min_rank && rank < min_max_rank {
@@ -590,7 +590,7 @@ where
         let metadata = self.metadata.load(Acquire);
         for i in 0..DIMENSION.num_entries {
             let rank = DIMENSION.state(metadata, i);
-            if rank != DIMENSION.uninit_state() {
+            if rank != Dimension::uninit_state() {
                 self.take(i);
             }
         }
@@ -634,7 +634,6 @@ where
             entry_ptr: std::ptr::null(),
         }
     }
-
     /// Returns a [`Scanner`] pointing to the max-less entry if there is one.
     ///
     /// If there is no key that is smaller than the given key, it returns a default [`Scanner`].
@@ -670,10 +669,10 @@ where
         unsafe { Some((&(*self.entry_ptr).0, &(*self.entry_ptr).1)) }
     }
 
-    /// Checks if the entry that the [`Scanner`] is pointing to is now removed.
-    pub fn removed(&self) -> bool {
-        DIMENSION.state(self.leaf.metadata.load(Relaxed), self.entry_index)
-            == DIMENSION.removed_state()
+    /// Returns the maximum key entry.
+    #[allow(clippy::unused_self)]
+    pub fn max_entry(&self) -> Option<(&'l K, &'l V)> {
+        None
     }
 
     /// Traverses the linked list.
