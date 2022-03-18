@@ -134,7 +134,6 @@ where
     }
 
     /// Splits the current root node.
-    #[allow(dead_code)]
     pub fn split_root(key: K, value: V, root: &AtomicArc<Node<K, V>>, barrier: &Barrier) -> (K, V) {
         // The fact that the `TreeIndex` calls this function means that the root is full and
         // locked.
@@ -169,7 +168,6 @@ where
     /// # Errors
     ///
     /// Returns an error if a conflict is detected.
-    #[allow(dead_code)]
     pub fn remove_root(root: &AtomicArc<Node<K, V>>, barrier: &Barrier) -> Result<bool, ()> {
         let root_ptr = root.load(Acquire, barrier);
         if let Some(root_ref) = root_ptr.as_ref() {

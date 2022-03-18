@@ -670,9 +670,8 @@ where
     }
 
     /// Returns the maximum key entry.
-    #[allow(clippy::unused_self)]
     pub fn max_entry(&self) -> Option<(&'l K, &'l V)> {
-        None
+        self.leaf.max()
     }
 
     /// Traverses the linked list.
@@ -831,6 +830,11 @@ mod test {
                     let result = leaf.max_less(leaf.metadata.load(Relaxed), &i);
                     assert_eq!(unsafe { *result.1 }, (i - 1, i - 1));
                 }
+            }
+            if insert == 0 {
+                assert_eq!(leaf.max(), None);
+            } else {
+                assert_eq!(leaf.max(), Some((&(insert - 1), &(insert - 1))));
             }
             for i in 0..insert {
                 assert!(matches!(leaf.insert(i, i), InsertResult::Duplicate(..)));

@@ -5,6 +5,8 @@ mod leaf;
 mod leaf_node;
 mod node;
 
+use super::async_yield;
+
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 
 use leaf::{InsertResult, Leaf, RemoveResult, Scanner};
@@ -78,28 +80,43 @@ where
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     /// let future_insert = treeindex.insert(1, 10);
     /// ```
-    ///
-    /// # Panics
-    ///
-    /// TODO.
     #[inline]
     pub async fn insert(&self, mut key: K, mut value: V) -> Result<(), (K, V)> {
         loop {
-            let barrier = Barrier::new();
-            if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
-                match root_ref.insert(key, value, &barrier) {
-                    Ok(r) => match r {
-                        InsertResult::Success => return Ok(()),
-                        InsertResult::Duplicate(k, v) => return Err((k, v)),
-                        InsertResult::Full(_, _) | InsertResult::Retired(_, _) => todo!(),
-                    },
-                    Err((k, v)) => {
-                        key = k;
-                        value = v;
-                        continue;
+            let need_await = {
+                let barrier = Barrier::new();
+                if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
+                    match root_ref.insert(key, value, &barrier) {
+                        Ok(r) => match r {
+                            InsertResult::Success => return Ok(()),
+                            InsertResult::Duplicate(k, v) => return Err((k, v)),
+                            InsertResult::Full(k, v) => {
+                                let (k, v) = Node::split_root(k, v, &self.root, &barrier);
+                                key = k;
+                                value = v;
+                                continue;
+                            }
+                            InsertResult::Retired(k, v) => {
+                                key = k;
+                                value = v;
+                                !matches!(Node::remove_root(&self.root, &barrier), Ok(true))
+                            }
+                        },
+                        Err((k, v)) => {
+                            key = k;
+                            value = v;
+                            true
+                        }
                     }
+                } else {
+                    false
                 }
+            };
+
+            if need_await {
+                async_yield::async_yield().await;
             }
+
             let new_root = Arc::new(Node::new_leaf_node());
             let _result = self.root.compare_exchange(
                 Ptr::null(),
@@ -139,10 +156,6 @@ where
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     /// let future_remove = treeindex.remove_if(&1, |v| *v == 0);
     /// ```
-    ///
-    /// # Panics
-    ///
-    /// TODO.
     #[inline]
     pub async fn remove_if<Q, F: FnMut(&V) -> bool>(&self, key_ref: &Q, mut condition: F) -> bool
     where
@@ -152,22 +165,34 @@ where
         let mut has_been_removed = false;
         // let mut has_leaf_been_removed = false;
         loop {
-            let barrier = Barrier::new();
-            if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
-                match root_ref.remove_if(key_ref, &mut condition, &barrier) {
-                    Ok(r) => match r {
-                        RemoveResult::Success => return true,
-                        RemoveResult::Fail => return has_been_removed,
-                        RemoveResult::Retired => todo!(),
-                    },
-                    Err(removed) => {
-                        if removed {
-                            has_been_removed = true;
+            let need_await = {
+                let barrier = Barrier::new();
+                if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
+                    match root_ref.remove_if(key_ref, &mut condition, &barrier) {
+                        Ok(r) => match r {
+                            RemoveResult::Success => return true,
+                            RemoveResult::Fail => return has_been_removed,
+                            RemoveResult::Retired => {
+                                if matches!(Node::remove_root(&self.root, &barrier), Ok(true)) {
+                                    return has_been_removed;
+                                }
+                                true
+                            }
+                        },
+                        Err(removed) => {
+                            if removed {
+                                has_been_removed = true;
+                            }
+                            true
                         }
                     }
-                };
-            } else {
-                return false;
+                } else {
+                    return false;
+                }
+            };
+
+            if need_await {
+                async_yield::async_yield().await;
             }
         }
     }
