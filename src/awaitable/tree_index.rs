@@ -163,7 +163,6 @@ where
         Q: Ord + ?Sized,
     {
         let mut has_been_removed = false;
-        // let mut has_leaf_been_removed = false;
         loop {
             let need_await = {
                 let barrier = Barrier::new();
@@ -174,8 +173,9 @@ where
                             RemoveResult::Fail => return has_been_removed,
                             RemoveResult::Retired => {
                                 if matches!(Node::remove_root(&self.root, &barrier), Ok(true)) {
-                                    return has_been_removed;
+                                    return true;
                                 }
+                                has_been_removed = true;
                                 true
                             }
                         },
