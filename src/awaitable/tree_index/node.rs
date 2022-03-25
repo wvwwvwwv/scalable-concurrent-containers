@@ -146,6 +146,7 @@ where
                 None,
                 root.load(Relaxed, barrier),
                 &internal_node.unbounded_child,
+                true,
                 barrier,
             );
             let (key, value) = match result {
@@ -153,10 +154,16 @@ where
                 Err((k, v)) => (k, v),
             };
 
-            // Updates the pointer: TODO - run it before unlocking the former root.
-            if let Some(old_root) = root.swap((Some(Arc::new(new_root)), Tag::None), Release) {
+            // Updates the pointer before unlocking the root.
+            let new_root = Arc::new(new_root);
+            if let Some(old_root) = root.swap((Some(new_root.clone()), Tag::None), Release) {
+                if let Type::Internal(internal_node) = &new_root.node {
+                    old_root.commit(barrier);
+                    internal_node.finish_root_split(barrier);
+                }
                 barrier.reclaim(old_root);
             };
+
             (key, value)
         } else {
             (key, value)

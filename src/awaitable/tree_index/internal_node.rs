@@ -194,6 +194,7 @@ where
                                     Some(child_key),
                                     child_ptr,
                                     child,
+                                    false,
                                     barrier,
                                 );
                             }
@@ -230,6 +231,7 @@ where
                             None,
                             unbounded_ptr,
                             &self.unbounded_child,
+                            false,
                             barrier,
                         );
                     }
@@ -310,6 +312,7 @@ where
         full_node_key: Option<&K>,
         full_node_ptr: Ptr<Node<K, V>>,
         full_node: &AtomicArc<Node<K, V>>,
+        root_split: bool,
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
         let target = full_node_ptr.as_ref().unwrap();
@@ -533,6 +536,11 @@ where
             Release,
         );
 
+        if root_split {
+            // Return without unlocking it.
+            return Err((key, value));
+        }
+
         // Drops the deprecated nodes.
         // - Still, the deprecated full leaf can be reachable by Scanners.
         if let Some(unused_node) = unused_node {
@@ -541,13 +549,20 @@ where
             barrier.reclaim(unused_node);
         }
 
-        // Unlocks the node.
+        // Unlock the node.
         if let Some(change) = self.latch.swap((None, Tag::None), Release) {
             barrier.reclaim(change);
         }
 
         // Since a new node has been inserted, the caller can retry.
         Err((key, value))
+    }
+
+    /// Finishes splitting the root node.
+    pub fn finish_root_split(&self, barrier: &Barrier) {
+        if let Some(change) = self.latch.swap((None, Tag::None), Release) {
+            barrier.reclaim(change);
+        }
     }
 
     /// Commits an on-going structural change.

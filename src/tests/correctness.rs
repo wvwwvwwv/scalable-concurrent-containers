@@ -917,8 +917,8 @@ mod treeindex_test_async {
                 barrier_cloned.wait().await;
                 let range = (task_id * workload_size)..((task_id + 1) * workload_size);
                 for id in range.clone() {
-                    let result = tree_cloned.insert(id, id).await;
-                    assert!(result.is_ok());
+                    assert!(tree_cloned.insert(id, id).await.is_ok());
+                    //assert!(tree_cloned.insert(id, id).await.is_err());
                 }
                 /*
                 for id in range.clone() {
