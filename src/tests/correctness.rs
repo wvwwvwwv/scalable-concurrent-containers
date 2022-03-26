@@ -902,6 +902,7 @@ mod treeindex_test_async {
         }
     }
 
+    #[ignore]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn integer_key() {
         let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::default());
@@ -918,9 +919,8 @@ mod treeindex_test_async {
                 let range = (task_id * workload_size)..((task_id + 1) * workload_size);
                 for id in range.clone() {
                     assert!(tree_cloned.insert(id, id).await.is_ok());
-                    //assert!(tree_cloned.insert(id, id).await.is_err());
+                    assert!(tree_cloned.insert(id, id).await.is_err());
                 }
-                /*
                 for id in range.clone() {
                     let result = tree_cloned.read(&id, |_, v| *v);
                     assert_eq!(result, Some(id));
@@ -931,7 +931,6 @@ mod treeindex_test_async {
                 for id in range {
                     assert!(!tree_cloned.remove_if(&id, |v| *v == id).await);
                 }
-                */
             }));
         }
 

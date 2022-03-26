@@ -872,6 +872,74 @@ mod test {
         }
     }
 
+    #[ignore]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    async fn parallel() {
+        let num_tasks = 8;
+        let workload_size = 16;
+        let barrier = Arc::new(sync::Barrier::new(num_tasks));
+        for _ in 0..16 {
+            let leaf_node = Arc::new(LeafNode::new());
+            let mut task_handles = Vec::with_capacity(num_tasks);
+            for task_id in 0..num_tasks {
+                let barrier_cloned = barrier.clone();
+                let leaf_node_cloned = leaf_node.clone();
+                task_handles.push(tokio::task::spawn(async move {
+                    barrier_cloned.wait().await;
+                    let barrier = Barrier::new();
+                    let range = (task_id * workload_size)..((task_id + 1) * workload_size);
+                    for id in range.clone() {
+                        loop {
+                            if let Ok(r) = leaf_node_cloned.insert(id, id, &barrier) {
+                                match r {
+                                    InsertResult::Success => {
+                                        match leaf_node_cloned.insert(id, id, &barrier) {
+                                            Ok(InsertResult::Duplicate(..)) | Err(_) => (),
+                                            _ => unreachable!(),
+                                        }
+                                        break;
+                                    }
+                                    _ => unreachable!(),
+                                }
+                            }
+                        }
+                    }
+                    for id in range.clone() {
+                        assert_eq!(leaf_node_cloned.search(&id, &barrier), Some(&id));
+                    }
+                    for id in range {
+                        let mut removed = false;
+                        loop {
+                            match leaf_node_cloned.remove_if(&id, &mut |_| true, &barrier) {
+                                Ok(r) => match r {
+                                    RemoveResult::Success | RemoveResult::Retired => {
+                                        removed = true;
+                                        break;
+                                    }
+                                    RemoveResult::Fail => {
+                                        assert!(removed);
+                                        break;
+                                    }
+                                },
+                                Err(r) => removed |= r,
+                            }
+                        }
+                        assert!(removed);
+                        if let Ok(RemoveResult::Success) =
+                            leaf_node_cloned.remove_if(&id, &mut |_| true, &barrier)
+                        {
+                            unreachable!()
+                        }
+                    }
+                }));
+            }
+
+            for r in futures::future::join_all(task_handles).await {
+                assert!(r.is_ok());
+            }
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn durability() {
         let num_tasks = 16_usize;
