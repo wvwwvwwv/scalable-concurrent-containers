@@ -184,9 +184,6 @@ where
                         // Data race resolution - see `LeafNode::search`.
                         match child_ref.insert(key, value, barrier)? {
                             InsertResult::Success => return Ok(InsertResult::Success),
-                            InsertResult::Frozen(key, value) => {
-                                return Err((key, value));
-                            }
                             InsertResult::Duplicate(key, value) => {
                                 return Ok(InsertResult::Duplicate(key, value));
                             }
@@ -200,6 +197,9 @@ where
                                     false,
                                     barrier,
                                 );
+                            }
+                            InsertResult::Frozen(key, value) => {
+                                return Err((key, value));
                             }
                             InsertResult::Retired(key, value) => {
                                 debug_assert!(child_ref.retired(Relaxed));
@@ -224,9 +224,6 @@ where
                 }
                 match unbounded.insert(key, value, barrier)? {
                     InsertResult::Success => return Ok(InsertResult::Success),
-                    InsertResult::Frozen(key, value) => {
-                        return Err((key, value));
-                    }
                     InsertResult::Duplicate(key, value) => {
                         return Ok(InsertResult::Duplicate(key, value));
                     }
@@ -240,6 +237,9 @@ where
                             false,
                             barrier,
                         );
+                    }
+                    InsertResult::Frozen(key, value) => {
+                        return Err((key, value));
                     }
                     InsertResult::Retired(key, value) => {
                         debug_assert!(unbounded.retired(Relaxed));
@@ -528,7 +528,7 @@ where
             new_nodes.low_key_node.clone(Relaxed, barrier),
         ) {
             InsertResult::Success => (),
-            InsertResult::Frozen(..) | InsertResult::Duplicate(..) => unreachable!(),
+            InsertResult::Duplicate(..) | InsertResult::Frozen(..) => unreachable!(),
             InsertResult::Full(middle_key, _) | InsertResult::Retired(middle_key, _) => {
                 // Insertion failed: expects that the parent splits this node.
                 new_nodes.middle_key.replace(middle_key);
@@ -779,8 +779,8 @@ mod test {
                     InsertResult::Success => {
                         assert_eq!(internal_node.search(&k, &barrier), Some(&k));
                     }
-                    InsertResult::Frozen(..)
-                    | InsertResult::Duplicate(..)
+                    InsertResult::Duplicate(..)
+                    | InsertResult::Frozen(..)
                     | InsertResult::Retired(..) => unreachable!(),
                     InsertResult::Full(_, _) => {
                         internal_node.rollback(&barrier);
@@ -818,6 +818,9 @@ mod test {
         let barrier = Arc::new(sync::Barrier::new(num_tasks));
         for _ in 0..8 {
             let internal_node = Arc::new(new_level_3_node());
+            assert!(internal_node
+                .insert(usize::MAX, usize::MAX, &Barrier::new())
+                .is_ok());
             let mut task_handles = Vec::with_capacity(num_tasks);
             for task_id in 0..num_tasks {
                 let barrier_cloned = barrier.clone();
@@ -837,11 +840,11 @@ mod test {
                                         }
                                         break;
                                     }
-                                    InsertResult::Frozen(..) => {
-                                        continue;
-                                    }
                                     InsertResult::Full(..) => {
                                         internal_node_cloned.rollback(&barrier);
+                                        continue;
+                                    }
+                                    InsertResult::Frozen(..) => {
                                         continue;
                                     }
                                     _ => unreachable!(),
@@ -849,32 +852,23 @@ mod test {
                             }
                         }
                     }
-                    for id in range.clone() {
+                    for id in range {
                         assert_eq!(internal_node_cloned.search(&id, &barrier), Some(&id));
                     }
                     /*
                     for id in range {
-                        if id == 0 {
-                            continue;
-                        }
                         let mut removed = false;
-                        loop {
+                        while !removed {
                             match internal_node_cloned.remove_if(&id, &mut |_| true, &barrier) {
                                 Ok(r) => match r {
-                                    RemoveResult::Success => {
-                                        removed = true;
-                                        break;
-                                    }
-                                    RemoveResult::Fail => {
-                                        assert!(removed);
-                                        break;
-                                    }
+                                    RemoveResult::Success => removed = true,
+                                    RemoveResult::Fail => assert!(removed),
                                     RemoveResult::Retired => unreachable!(),
                                 },
                                 Err(r) => removed |= r,
                             }
                         }
-                        assert!(removed);
+                        assert!(internal_node_cloned.search(&id, &barrier).is_none());
                         if let Ok(RemoveResult::Success) =
                             internal_node_cloned.remove_if(&id, &mut |_| true, &barrier)
                         {
@@ -889,7 +883,7 @@ mod test {
                 assert!(r.is_ok());
             }
             assert!(matches!(
-                internal_node.remove_if(&0, &mut |_| true, &Barrier::new()),
+                internal_node.remove_if(&usize::MAX, &mut |_| true, &Barrier::new()),
                 Ok(RemoveResult::Success | RemoveResult::Retired)
             ));
         }

@@ -4,16 +4,14 @@ use crate::LinkedList;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::mem::{size_of, MaybeUninit};
+use std::ptr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
 /// The result of insertion.
 pub enum InsertResult<K, V> {
-    /// Insert succeeded.
+    /// Insertion succeeded.
     Success,
-
-    /// The [`Leaf`] is frozen.
-    Frozen(K, V),
 
     /// Duplicate key found.
     Duplicate(K, V),
@@ -21,7 +19,14 @@ pub enum InsertResult<K, V> {
     /// No vacant slot for the key.
     Full(K, V),
 
+    /// The [`Leaf`] is frozen.
+    ///
+    /// It is not a terminal state that a frozen [`Leaf`] can be unfrozen.
+    Frozen(K, V),
+
     /// Insertion failed as the [`Leaf`] has retired.
+    ///
+    /// It is a terminal state.
     Retired(K, V),
 }
 
@@ -39,6 +44,7 @@ pub enum RemoveResult {
 }
 
 /// The number of entries and number of state bits per entry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Dimension {
     pub num_entries: usize,
     pub num_bits_per_entry: usize,
@@ -53,6 +59,11 @@ impl Dimension {
     /// Makes the metadata represent a frozen state.
     fn freeze(metadata: usize) -> usize {
         metadata | (1_usize << (size_of::<usize>() * 8 - 2))
+    }
+
+    /// Updates the metadata to represent a non-frozen state.
+    fn thaw(metadata: usize) -> usize {
+        metadata & (!(1_usize << (size_of::<usize>() * 8 - 2)))
     }
 
     /// Checks if the [`Leaf`] is retired.
@@ -99,7 +110,7 @@ impl Dimension {
 /// * 2 = The number of special states of a [`Leaf`]: frozen, retired.
 /// * U = `size_of::<usize>() * 8`.
 /// * Eq1 = M + 2 <= 2^B: B bits represent at least M + 2 states.
-/// * Eq2 = B * M + 2 <= U: M entries + 1 special state.
+/// * Eq2 = B * M + 2 <= U: M entries + 2 special state.
 /// * Eq3 = Ceil(Log2(M + 2)) * M + 2 <= U: derived from Eq1 and Eq2.
 ///
 /// Therefore, when U = 64 => M = 14 / B = 4, and U = 32 => M = 7 / B = 4.
@@ -168,6 +179,24 @@ where
             link: AtomicArc::null(),
             metadata: AtomicUsize::new(0),
         }
+    }
+
+    /// Returns `true` if the [`Leaf`] is frozen.
+    pub fn frozen(&self) -> bool {
+        Dimension::frozen(self.metadata.load(Relaxed))
+    }
+
+    /// Thaws the [`Leaf`].
+    pub fn thaw(&self) -> bool {
+        self.metadata
+            .fetch_update(Relaxed, Relaxed, |p| {
+                if Dimension::frozen(p) {
+                    Some(Dimension::thaw(p))
+                } else {
+                    None
+                }
+            })
+            .is_ok()
     }
 
     /// Returns `true` if the [`Leaf`] has retired.
@@ -358,7 +387,7 @@ where
                 &*self.entry_array[max_min_index].as_ptr()
             });
         }
-        (usize::MAX, std::ptr::null())
+        (usize::MAX, ptr::null())
     }
 
     /// Returns the minimum entry among those that are not `Ordering::Less` than the given key.
@@ -437,7 +466,7 @@ where
                 });
             }
         }
-        (usize::MAX, std::ptr::null())
+        (usize::MAX, ptr::null())
     }
 
     /// Freezes the [`Leaf`] and distribute entries to two new leaves.
@@ -448,19 +477,21 @@ where
         low_key_leaf: &mut Option<Arc<Leaf<K, V>>>,
         high_key_leaf: &mut Option<Arc<Leaf<K, V>>>,
     ) -> bool {
-        if self
-            .metadata
-            .fetch_update(Relaxed, Relaxed, |p| {
-                if Dimension::frozen(p) {
-                    None
-                } else {
-                    Some(Dimension::freeze(p))
-                }
-            })
-            .is_ok()
-        {
+        if let Ok(prev) = self.metadata.fetch_update(AcqRel, Acquire, |p| {
+            if Dimension::frozen(p) {
+                None
+            } else {
+                Some(Dimension::freeze(p))
+            }
+        }) {
             let mut iterated = 0;
-            for entry in Scanner::new(self) {
+            let scanner = Scanner {
+                leaf: self,
+                metadata: prev,
+                entry_index: DIMENSION.num_entries,
+                entry_ptr: ptr::null(),
+            };
+            for entry in scanner {
                 let result = if iterated < DIMENSION.num_entries / 2 {
                     if low_key_leaf.is_none() {
                         low_key_leaf.replace(Arc::new(Leaf::new()));
@@ -600,7 +631,7 @@ where
             let entry_array_mut_ptr = entry_array_ptr as *mut EntryArray<K, V>;
             let entry_array_mut_ref = &mut (*entry_array_mut_ptr);
             let entry_ptr = entry_array_mut_ref[index].as_mut_ptr();
-            std::ptr::read(entry_ptr)
+            ptr::read(entry_ptr)
         }
     }
 
@@ -669,7 +700,7 @@ where
             leaf,
             metadata: leaf.metadata.load(Acquire),
             entry_index: DIMENSION.num_entries,
-            entry_ptr: std::ptr::null(),
+            entry_ptr: ptr::null(),
         }
     }
     /// Returns a [`Scanner`] pointing to the max-less entry if there is one.
@@ -749,7 +780,7 @@ where
     }
 
     fn proceed(&mut self) {
-        self.entry_ptr = std::ptr::null();
+        self.entry_ptr = ptr::null();
         if self.entry_index == usize::MAX {
             return;
         }
@@ -856,6 +887,31 @@ mod test {
             leaf.insert("200".to_owned(), "200".to_owned()),
             InsertResult::Retired(..)
         ));
+    }
+
+    #[test]
+    fn special() {
+        let leaf: Leaf<usize, usize> = Leaf::new();
+        assert!(matches!(leaf.insert(11, 17), InsertResult::Success));
+        assert!(matches!(leaf.insert(17, 11), InsertResult::Success));
+
+        let mut leaf1 = None;
+        let mut leaf2 = None;
+        assert!(leaf.freeze_and_distribute(&mut leaf1, &mut leaf2));
+        assert_eq!(leaf1.as_ref().and_then(|l| l.search(&11)), Some(&17));
+        assert_eq!(leaf1.as_ref().and_then(|l| l.search(&17)), Some(&11));
+        assert!(leaf2.is_none());
+        assert!(matches!(leaf.insert(1, 7), InsertResult::Frozen(..)));
+        assert_eq!(leaf.remove_if(&17, &mut |_| true), RemoveResult::Success);
+        assert!(matches!(leaf.insert(3, 5), InsertResult::Frozen(..)));
+
+        assert!(leaf.thaw());
+        assert!(matches!(leaf.insert(1, 7), InsertResult::Success));
+
+        assert_eq!(leaf.remove_if(&1, &mut |_| true), RemoveResult::Success);
+        assert_eq!(leaf.remove_if(&11, &mut |_| true), RemoveResult::Retired);
+
+        assert!(matches!(leaf.insert(5, 3), InsertResult::Retired(..)));
     }
 
     proptest! {
