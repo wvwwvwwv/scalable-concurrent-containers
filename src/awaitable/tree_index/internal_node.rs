@@ -184,6 +184,9 @@ where
                         // Data race resolution - see `LeafNode::search`.
                         match child_ref.insert(key, value, barrier)? {
                             InsertResult::Success => return Ok(InsertResult::Success),
+                            InsertResult::Frozen(key, value) => {
+                                return Err((key, value));
+                            }
                             InsertResult::Duplicate(key, value) => {
                                 return Ok(InsertResult::Duplicate(key, value));
                             }
@@ -221,6 +224,9 @@ where
                 }
                 match unbounded.insert(key, value, barrier)? {
                     InsertResult::Success => return Ok(InsertResult::Success),
+                    InsertResult::Frozen(key, value) => {
+                        return Err((key, value));
+                    }
                     InsertResult::Duplicate(key, value) => {
                         return Ok(InsertResult::Duplicate(key, value));
                     }
@@ -522,7 +528,7 @@ where
             new_nodes.low_key_node.clone(Relaxed, barrier),
         ) {
             InsertResult::Success => (),
-            InsertResult::Duplicate(_, _) => debug_assert!(false, "unreachable"),
+            InsertResult::Frozen(..) | InsertResult::Duplicate(..) => unreachable!(),
             InsertResult::Full(middle_key, _) | InsertResult::Retired(middle_key, _) => {
                 // Insertion failed: expects that the parent splits this node.
                 new_nodes.middle_key.replace(middle_key);
@@ -773,7 +779,9 @@ mod test {
                     InsertResult::Success => {
                         assert_eq!(internal_node.search(&k, &barrier), Some(&k));
                     }
-                    InsertResult::Duplicate(..) | InsertResult::Retired(..) => unreachable!(),
+                    InsertResult::Frozen(..)
+                    | InsertResult::Duplicate(..)
+                    | InsertResult::Retired(..) => unreachable!(),
                     InsertResult::Full(_, _) => {
                         internal_node.rollback(&barrier);
                         for j in 0..k {
@@ -803,11 +811,10 @@ mod test {
         }
     }
 
-    #[ignore]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn parallel() {
         let num_tasks = 8;
-        let workload_size = 64;
+        let workload_size = 16;
         let barrier = Arc::new(sync::Barrier::new(num_tasks));
         for _ in 0..8 {
             let internal_node = Arc::new(new_level_3_node());
@@ -830,6 +837,13 @@ mod test {
                                         }
                                         break;
                                     }
+                                    InsertResult::Frozen(..) => {
+                                        continue;
+                                    }
+                                    InsertResult::Full(..) => {
+                                        internal_node_cloned.rollback(&barrier);
+                                        continue;
+                                    }
                                     _ => unreachable!(),
                                 }
                             }
@@ -838,12 +852,16 @@ mod test {
                     for id in range.clone() {
                         assert_eq!(internal_node_cloned.search(&id, &barrier), Some(&id));
                     }
+                    /*
                     for id in range {
+                        if id == 0 {
+                            continue;
+                        }
                         let mut removed = false;
                         loop {
                             match internal_node_cloned.remove_if(&id, &mut |_| true, &barrier) {
                                 Ok(r) => match r {
-                                    RemoveResult::Success | RemoveResult::Retired => {
+                                    RemoveResult::Success => {
                                         removed = true;
                                         break;
                                     }
@@ -851,6 +869,7 @@ mod test {
                                         assert!(removed);
                                         break;
                                     }
+                                    RemoveResult::Retired => unreachable!(),
                                 },
                                 Err(r) => removed |= r,
                             }
@@ -862,12 +881,17 @@ mod test {
                             unreachable!()
                         }
                     }
+                    */
                 }));
             }
 
             for r in futures::future::join_all(task_handles).await {
                 assert!(r.is_ok());
             }
+            assert!(matches!(
+                internal_node.remove_if(&0, &mut |_| true, &Barrier::new()),
+                Ok(RemoveResult::Success | RemoveResult::Retired)
+            ));
         }
     }
 

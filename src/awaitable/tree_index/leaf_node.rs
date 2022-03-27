@@ -190,6 +190,10 @@ where
                         // Data race resolution - see `LeafNode::search`.
                         match child_ref.insert(key, value) {
                             InsertResult::Success => return Ok(InsertResult::Success),
+                            InsertResult::Frozen(key, value) => {
+                                // The `Leaf` is being split: retry.
+                                return Err((key, value));
+                            }
                             InsertResult::Duplicate(key, value) => {
                                 return Ok(InsertResult::Duplicate(key, value));
                             }
@@ -233,6 +237,9 @@ where
                 }
                 match unbounded.insert(key, value) {
                     InsertResult::Success => return Ok(InsertResult::Success),
+                    InsertResult::Frozen(key, value) => {
+                        return Err((key, value));
+                    }
                     InsertResult::Duplicate(key, value) => {
                         return Ok(InsertResult::Duplicate(key, value));
                     }
@@ -359,13 +366,13 @@ where
         let mut low_key_leaf_arc = None;
         let mut high_key_leaf_arc = None;
 
-        // Distribute entries to two leaves.
-        target.distribute(&mut low_key_leaf_arc, &mut high_key_leaf_arc);
+        // Distribute entries to two leaves after make the target retired.
+        target.freeze_and_distribute(&mut low_key_leaf_arc, &mut high_key_leaf_arc);
 
-        if let Some(low_key_leaf_boxed) = low_key_leaf_arc.take() {
+        if let Some(low_key_leaf) = low_key_leaf_arc.take() {
             new_leaves
                 .low_key_leaf
-                .swap((Some(low_key_leaf_boxed), Tag::None), Relaxed);
+                .swap((Some(low_key_leaf), Tag::None), Relaxed);
             if let Some(high_key_leaf) = high_key_leaf_arc.take() {
                 new_leaves
                     .high_key_leaf
@@ -414,7 +421,7 @@ where
                 new_leaves.low_key_leaf.clone(Relaxed, barrier),
             ) {
                 InsertResult::Success => (),
-                InsertResult::Duplicate(_, _) => debug_assert!(false, "unreachable"),
+                InsertResult::Frozen(..) | InsertResult::Duplicate(..) => unreachable!(),
                 InsertResult::Full(_, _) | InsertResult::Retired(_, _) => {
                     return Ok(InsertResult::Full(key, value))
                 }
@@ -849,7 +856,9 @@ mod test {
                     assert_eq!(leaf_node.search(&k, &barrier), Some(&k));
                     continue;
                 }
-                InsertResult::Duplicate(..) | InsertResult::Retired(..) => unreachable!(),
+                InsertResult::Frozen(..)
+                | InsertResult::Duplicate(..)
+                | InsertResult::Retired(..) => unreachable!(),
                 InsertResult::Full(_, _) => {
                     leaf_node.latch.swap((None, Tag::None), Relaxed);
                     for r in 0..(k - 1) {
@@ -872,11 +881,10 @@ mod test {
         }
     }
 
-    #[ignore]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn parallel() {
         let num_tasks = 8;
-        let workload_size = 16;
+        let workload_size = 8;
         let barrier = Arc::new(sync::Barrier::new(num_tasks));
         for _ in 0..16 {
             let leaf_node = Arc::new(LeafNode::new());
@@ -899,20 +907,31 @@ mod test {
                                         }
                                         break;
                                     }
+                                    InsertResult::Frozen(..) => {
+                                        continue;
+                                    }
+                                    InsertResult::Full(..) => {
+                                        leaf_node_cloned.rollback(&barrier);
+                                        continue;
+                                    }
                                     _ => unreachable!(),
                                 }
                             }
                         }
                     }
-                    for id in range.clone() {
+                    for id in range {
                         assert_eq!(leaf_node_cloned.search(&id, &barrier), Some(&id));
                     }
+                    /*
                     for id in range {
+                        if id == 0 {
+                            continue;
+                        }
                         let mut removed = false;
                         loop {
                             match leaf_node_cloned.remove_if(&id, &mut |_| true, &barrier) {
                                 Ok(r) => match r {
-                                    RemoveResult::Success | RemoveResult::Retired => {
+                                    RemoveResult::Success => {
                                         removed = true;
                                         break;
                                     }
@@ -920,6 +939,7 @@ mod test {
                                         assert!(removed);
                                         break;
                                     }
+                                    RemoveResult::Retired => unreachable!(),
                                 },
                                 Err(r) => removed |= r,
                             }
@@ -931,12 +951,17 @@ mod test {
                             unreachable!()
                         }
                     }
+                    */
                 }));
             }
 
             for r in futures::future::join_all(task_handles).await {
                 assert!(r.is_ok());
             }
+            assert!(matches!(
+                leaf_node.remove_if(&0, &mut |_| true, &Barrier::new()),
+                Ok(RemoveResult::Success | RemoveResult::Retired)
+            ));
         }
     }
 

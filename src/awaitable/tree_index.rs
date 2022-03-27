@@ -89,6 +89,11 @@ where
                     match root_ref.insert(key, value, &barrier) {
                         Ok(r) => match r {
                             InsertResult::Success => return Ok(()),
+                            InsertResult::Frozen(k, v) => {
+                                key = k;
+                                value = v;
+                                true
+                            }
                             InsertResult::Duplicate(k, v) => return Err((k, v)),
                             InsertResult::Full(k, v) => {
                                 let (k, v) = Node::split_root(k, v, &self.root, &barrier);

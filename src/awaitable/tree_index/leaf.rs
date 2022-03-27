@@ -12,13 +12,16 @@ pub enum InsertResult<K, V> {
     /// Insert succeeded.
     Success,
 
+    /// The [`Leaf`] is frozen.
+    Frozen(K, V),
+
     /// Duplicate key found.
     Duplicate(K, V),
 
     /// No vacant slot for the key.
     Full(K, V),
 
-    /// Totally unusable.
+    /// Insertion failed as the [`Leaf`] has retired.
     Retired(K, V),
 }
 
@@ -31,7 +34,7 @@ pub enum RemoveResult {
     /// Remove failed.
     Fail,
 
-    /// Remove succeeded and became unusable.
+    /// Remove succeeded and the [`Leaf`] has retired without usable entries left.
     Retired,
 }
 
@@ -42,6 +45,16 @@ pub struct Dimension {
 }
 
 impl Dimension {
+    /// Checks if the [`Leaf`] is frozen.
+    fn frozen(metadata: usize) -> bool {
+        metadata & (1_usize << (size_of::<usize>() * 8 - 2)) != 0
+    }
+
+    /// Makes the metadata represent a frozen state.
+    fn freeze(metadata: usize) -> usize {
+        metadata | (1_usize << (size_of::<usize>() * 8 - 2))
+    }
+
     /// Checks if the [`Leaf`] is retired.
     fn retired(metadata: usize) -> bool {
         metadata & (1_usize << (size_of::<usize>() * 8 - 1)) != 0
@@ -83,11 +96,11 @@ impl Dimension {
 /// * M = The maximum number of entries.
 /// * B = The minimum number of bits to express the state of an entry.
 /// * 2 = The number of special states of an entry: uninit, removed.
-/// * 1 = The number of special states of a [`Leaf`]: retired.
+/// * 2 = The number of special states of a [`Leaf`]: frozen, retired.
 /// * U = `size_of::<usize>() * 8`.
 /// * Eq1 = M + 2 <= 2^B: B bits represent at least M + 2 states.
-/// * Eq2 = B * M + 1 <= U: M entries + 1 special state.
-/// * Eq3 = Ceil(Log2(M + 2)) * M + 1 <= U: derived from Eq1 and Eq2.
+/// * Eq2 = B * M + 2 <= U: M entries + 1 special state.
+/// * Eq3 = Ceil(Log2(M + 2)) * M + 2 <= U: derived from Eq1 and Eq2.
 ///
 /// Therefore, when U = 64 => M = 14 / B = 4, and U = 32 => M = 7 / B = 4.
 pub const DIMENSION: Dimension = match size_of::<usize>() {
@@ -96,7 +109,7 @@ pub const DIMENSION: Dimension = match size_of::<usize>() {
         num_bits_per_entry: 2,
     },
     2 => Dimension {
-        num_entries: 5,
+        num_entries: 4,
         num_bits_per_entry: 3,
     },
     4 => Dimension {
@@ -184,6 +197,10 @@ where
     pub fn insert(&self, key: K, value: V) -> InsertResult<K, V> {
         let mut metadata = self.metadata.load(Acquire);
         while !Dimension::retired(metadata) {
+            if Dimension::frozen(metadata) {
+                return InsertResult::Frozen(key, value);
+            }
+
             let mut has_free_slot = false;
             for i in 0..DIMENSION.num_entries {
                 let rank = DIMENSION.state(metadata, i);
@@ -423,31 +440,50 @@ where
         (usize::MAX, std::ptr::null())
     }
 
-    pub fn distribute(
+    /// Freezes the [`Leaf`] and distribute entries to two new leaves.
+    ///
+    /// A frozen [`Leaf`] cannot store more entries, and on-going insertion is cancelled.
+    pub fn freeze_and_distribute(
         &self,
         low_key_leaf: &mut Option<Arc<Leaf<K, V>>>,
         high_key_leaf: &mut Option<Arc<Leaf<K, V>>>,
-    ) {
-        let mut iterated = 0;
-        for entry in Scanner::new(self) {
-            if iterated < DIMENSION.num_entries / 2 {
-                if low_key_leaf.is_none() {
-                    low_key_leaf.replace(Arc::new(Leaf::new()));
+    ) -> bool {
+        if self
+            .metadata
+            .fetch_update(Relaxed, Relaxed, |p| {
+                if Dimension::frozen(p) {
+                    None
+                } else {
+                    Some(Dimension::freeze(p))
                 }
-                low_key_leaf
-                    .as_ref()
-                    .unwrap()
-                    .insert(entry.0.clone(), entry.1.clone());
-                iterated += 1;
-            } else {
-                if high_key_leaf.is_none() {
-                    high_key_leaf.replace(Arc::new(Leaf::new()));
-                }
-                high_key_leaf
-                    .as_ref()
-                    .unwrap()
-                    .insert(entry.0.clone(), entry.1.clone());
+            })
+            .is_ok()
+        {
+            let mut iterated = 0;
+            for entry in Scanner::new(self) {
+                let result = if iterated < DIMENSION.num_entries / 2 {
+                    if low_key_leaf.is_none() {
+                        low_key_leaf.replace(Arc::new(Leaf::new()));
+                    }
+                    iterated += 1;
+                    low_key_leaf
+                        .as_ref()
+                        .unwrap()
+                        .insert(entry.0.clone(), entry.1.clone())
+                } else {
+                    if high_key_leaf.is_none() {
+                        high_key_leaf.replace(Arc::new(Leaf::new()));
+                    }
+                    high_key_leaf
+                        .as_ref()
+                        .unwrap()
+                        .insert(entry.0.clone(), entry.1.clone())
+                };
+                debug_assert!(matches!(result, InsertResult::Success));
             }
+            true
+        } else {
+            false
         }
     }
 
@@ -523,7 +559,7 @@ where
                 self.metadata
                     .compare_exchange(metadata, final_metadata, AcqRel, Acquire)
             {
-                if Dimension::retired(actual) {
+                if Dimension::frozen(actual) || Dimension::retired(actual) {
                     return self.rollback(free_slot_index);
                 }
                 metadata = actual;
@@ -542,6 +578,8 @@ where
             & (!DIMENSION.state_mask(index));
         if Dimension::retired(result) {
             InsertResult::Retired(key, value)
+        } else if Dimension::frozen(result) {
+            InsertResult::Frozen(key, value)
         } else {
             InsertResult::Duplicate(key, value)
         }
@@ -886,7 +924,9 @@ mod test {
                             assert_eq!(*leaf_clone.search(&t).unwrap(), t);
                             true
                         }
-                        InsertResult::Duplicate(_, _) | InsertResult::Retired(_, _) => {
+                        InsertResult::Duplicate(_, _)
+                        | InsertResult::Frozen(_, _)
+                        | InsertResult::Retired(_, _) => {
                             unreachable!();
                         }
                         InsertResult::Full(k, v) => {
