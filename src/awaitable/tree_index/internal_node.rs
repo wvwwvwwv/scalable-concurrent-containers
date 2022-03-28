@@ -814,9 +814,9 @@ mod test {
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn parallel() {
         let num_tasks = 8;
-        let workload_size = 16;
+        let workload_size = 64;
         let barrier = Arc::new(sync::Barrier::new(num_tasks));
-        for _ in 0..8 {
+        for _ in 0..16 {
             let internal_node = Arc::new(new_level_3_node());
             assert!(internal_node
                 .insert(usize::MAX, usize::MAX, &Barrier::new())
@@ -828,6 +828,7 @@ mod test {
                 task_handles.push(tokio::task::spawn(async move {
                     barrier_cloned.wait().await;
                     let barrier = Barrier::new();
+                    let mut max_key = None;
                     let range = (task_id * workload_size)..((task_id + 1) * workload_size);
                     for id in range.clone() {
                         loop {
@@ -842,7 +843,8 @@ mod test {
                                     }
                                     InsertResult::Full(..) => {
                                         internal_node_cloned.rollback(&barrier);
-                                        continue;
+                                        max_key.replace(id);
+                                        break;
                                     }
                                     InsertResult::Frozen(..) => {
                                         continue;
@@ -851,18 +853,29 @@ mod test {
                                 }
                             }
                         }
+                        if max_key.is_some() {
+                            break;
+                        }
                     }
-                    for id in range {
+                    for id in range.clone() {
+                        if max_key.map_or(false, |m| m == id) {
+                            break;
+                        }
                         assert_eq!(internal_node_cloned.search(&id, &barrier), Some(&id));
                     }
-                    /*
                     for id in range {
+                        if max_key.map_or(false, |m| m == id) {
+                            break;
+                        }
                         let mut removed = false;
-                        while !removed {
+                        loop {
                             match internal_node_cloned.remove_if(&id, &mut |_| true, &barrier) {
                                 Ok(r) => match r {
-                                    RemoveResult::Success => removed = true,
-                                    RemoveResult::Fail => assert!(removed),
+                                    RemoveResult::Success => break,
+                                    RemoveResult::Fail => {
+                                        assert!(removed);
+                                        break;
+                                    }
                                     RemoveResult::Retired => unreachable!(),
                                 },
                                 Err(r) => removed |= r,
@@ -875,7 +888,6 @@ mod test {
                             unreachable!()
                         }
                     }
-                    */
                 }));
             }
 

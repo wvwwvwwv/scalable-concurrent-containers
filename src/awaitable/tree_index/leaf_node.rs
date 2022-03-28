@@ -282,18 +282,15 @@ where
                     if self.children.validate(metadata) {
                         // Data race resolution - see `LeafNode::search`.
                         let result = child.remove_if(key, condition);
-                        if result == RemoveResult::Fail {
-                            return Ok(RemoveResult::Fail);
+                        if child.frozen() {
+                            // When a `Leaf` is frozen, its entries may be being copied to new
+                            // `Leaves`.
+                            return Err(result != RemoveResult::Fail);
                         }
                         if result == RemoveResult::Retired {
                             return self.coalesce(barrier);
                         }
-                        if child.frozen() {
-                            // When a `Leaf` is frozen, its entries may be being copied to new
-                            // `Leaves`.
-                            return Err(true);
-                        }
-                        return Ok(RemoveResult::Success);
+                        return Ok(result);
                     }
                 }
                 // It is not a hot loop - see `LeafNode::search`.
@@ -307,18 +304,19 @@ where
                     continue;
                 }
                 let result = unbounded.remove_if(key, condition);
-                if result == RemoveResult::Fail {
-                    return Ok(RemoveResult::Fail);
+                if unbounded.frozen() {
+                    return Err(result != RemoveResult::Fail);
                 }
                 if result == RemoveResult::Retired {
                     return self.coalesce(barrier);
                 }
-                if unbounded.frozen() {
-                    return Err(true);
-                }
-                return Ok(RemoveResult::Success);
+                return Ok(result);
             }
-            return Err(false);
+
+            if unbounded_ptr.tag() == RETIRED {
+                return Err(false);
+            }
+            return Ok(RemoveResult::Fail);
         }
     }
 
@@ -375,7 +373,8 @@ where
         let mut high_key_leaf_arc = None;
 
         // Distribute entries to two leaves after make the target retired.
-        target.freeze_and_distribute(&mut low_key_leaf_arc, &mut high_key_leaf_arc);
+        let result = target.freeze_and_distribute(&mut low_key_leaf_arc, &mut high_key_leaf_arc);
+        debug_assert!(result);
 
         if let Some(low_key_leaf) = low_key_leaf_arc.take() {
             new_leaves
@@ -604,7 +603,8 @@ where
 
             if let Some(origin) = change.origin_leaf.swap((None, Tag::None), Relaxed) {
                 // Thaw the [`Leaf`].
-                origin.thaw();
+                let result = origin.thaw();
+                debug_assert!(result);
 
                 // Remove marks from the full leaf node.
                 //
@@ -858,7 +858,7 @@ mod test {
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn parallel() {
         let num_tasks = 8;
-        let workload_size = 8;
+        let workload_size = 64;
         let barrier = Arc::new(sync::Barrier::new(num_tasks));
         for _ in 0..16 {
             let leaf_node = Arc::new(LeafNode::new());
@@ -872,6 +872,7 @@ mod test {
                 task_handles.push(tokio::task::spawn(async move {
                     barrier_cloned.wait().await;
                     let barrier = Barrier::new();
+                    let mut max_key = None;
                     let range = (task_id * workload_size)..((task_id + 1) * workload_size);
                     for id in range.clone() {
                         loop {
@@ -886,7 +887,8 @@ mod test {
                                     }
                                     InsertResult::Full(..) => {
                                         leaf_node_cloned.rollback(&barrier);
-                                        continue;
+                                        max_key.replace(id);
+                                        break;
                                     }
                                     InsertResult::Frozen(..) => {
                                         continue;
@@ -895,31 +897,41 @@ mod test {
                                 }
                             }
                         }
+                        if max_key.is_some() {
+                            break;
+                        }
                     }
-                    for id in range {
+                    for id in range.clone() {
+                        if max_key.map_or(false, |m| m == id) {
+                            break;
+                        }
                         assert_eq!(leaf_node_cloned.search(&id, &barrier), Some(&id));
                     }
-                    /*
                     for id in range {
+                        if max_key.map_or(false, |m| m == id) {
+                            break;
+                        }
                         let mut removed = false;
-                        while !removed {
+                        loop {
                             match leaf_node_cloned.remove_if(&id, &mut |_| true, &barrier) {
                                 Ok(r) => match r {
-                                    RemoveResult::Success => removed = true,
-                                    RemoveResult::Fail => assert!(removed),
+                                    RemoveResult::Success => break,
+                                    RemoveResult::Fail => {
+                                        assert!(removed);
+                                        break;
+                                    }
                                     RemoveResult::Retired => unreachable!(),
                                 },
                                 Err(r) => removed |= r,
                             }
                         }
-                        assert!(leaf_node_cloned.search(&id, &barrier).is_none());
+                        assert!(leaf_node_cloned.search(&id, &barrier).is_none(), "{}", id);
                         if let Ok(RemoveResult::Success) =
                             leaf_node_cloned.remove_if(&id, &mut |_| true, &barrier)
                         {
                             unreachable!()
                         }
                     }
-                    */
                 }));
             }
 

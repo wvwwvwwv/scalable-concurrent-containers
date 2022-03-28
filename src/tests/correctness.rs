@@ -905,38 +905,39 @@ mod treeindex_test_async {
     #[ignore]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn integer_key() {
-        let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::default());
-
         let num_tasks = 8;
         let workload_size = 256;
-        let mut task_handles = Vec::with_capacity(num_tasks);
-        let barrier = Arc::new(Barrier::new(num_tasks));
-        for task_id in 0..num_tasks {
-            let barrier_cloned = barrier.clone();
-            let tree_cloned = tree.clone();
-            task_handles.push(tokio::task::spawn(async move {
-                barrier_cloned.wait().await;
-                let range = (task_id * workload_size)..((task_id + 1) * workload_size);
-                for id in range.clone() {
-                    assert!(tree_cloned.insert(id, id).await.is_ok());
-                    assert!(tree_cloned.insert(id, id).await.is_err());
-                }
-                for id in range.clone() {
-                    let result = tree_cloned.read(&id, |_, v| *v);
-                    assert_eq!(result, Some(id));
-                }
-                for id in range.clone() {
-                    assert!(tree_cloned.remove_if(&id, |v| *v == id).await);
-                }
-                for id in range {
-                    assert!(!tree_cloned.remove_if(&id, |v| *v == id).await);
-                }
-            }));
-        }
+        for _ in 0..16 {
+            let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::default());
+            let mut task_handles = Vec::with_capacity(num_tasks);
+            let barrier = Arc::new(Barrier::new(num_tasks));
+            for task_id in 0..num_tasks {
+                let barrier_cloned = barrier.clone();
+                let tree_cloned = tree.clone();
+                task_handles.push(tokio::task::spawn(async move {
+                    barrier_cloned.wait().await;
+                    let range = (task_id * workload_size)..((task_id + 1) * workload_size);
+                    for id in range.clone() {
+                        assert!(tree_cloned.insert(id, id).await.is_ok());
+                        assert!(tree_cloned.insert(id, id).await.is_err());
+                    }
+                    for id in range.clone() {
+                        let result = tree_cloned.read(&id, |_, v| *v);
+                        assert_eq!(result, Some(id));
+                    }
+                    for id in range.clone() {
+                        assert!(tree_cloned.remove_if(&id, |v| *v == id).await);
+                    }
+                    for id in range {
+                        assert!(!tree_cloned.remove_if(&id, |v| *v == id).await);
+                    }
+                }));
+            }
 
-        for r in futures::future::join_all(task_handles).await {
-            assert!(r.is_ok());
+            for r in futures::future::join_all(task_handles).await {
+                assert!(r.is_ok());
+            }
+            assert_eq!(tree.len(), 0);
         }
-        //assert_eq!(tree.len(), 0);
     }
 }
