@@ -312,10 +312,6 @@ where
                 }
                 return Ok(result);
             }
-
-            if unbounded_ptr.tag() == RETIRED {
-                return Err(false);
-            }
             return Ok(RemoveResult::Fail);
         }
     }
@@ -949,7 +945,7 @@ mod test {
     async fn durability() {
         let num_tasks = 16_usize;
         let workload_size = 64_usize;
-        for _ in 0..8 {
+        for _ in 0..16 {
             for k in 0..=workload_size {
                 let barrier = Arc::new(sync::Barrier::new(num_tasks));
                 let leaf_node: Arc<LeafNode<usize, usize>> = Arc::new(LeafNode::new());

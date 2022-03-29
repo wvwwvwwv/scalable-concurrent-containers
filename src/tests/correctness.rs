@@ -902,12 +902,11 @@ mod treeindex_test_async {
         }
     }
 
-    #[ignore]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn integer_key() {
         let num_tasks = 8;
         let workload_size = 256;
-        for _ in 0..16 {
+        for _ in 0..256 {
             let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::default());
             let mut task_handles = Vec::with_capacity(num_tasks);
             let barrier = Arc::new(Barrier::new(num_tasks));

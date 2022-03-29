@@ -301,7 +301,7 @@ where
                 }
                 return Ok(result);
             }
-            return Err(false);
+            return Ok(RemoveResult::Fail);
         }
     }
 
@@ -816,7 +816,7 @@ mod test {
         let num_tasks = 8;
         let workload_size = 64;
         let barrier = Arc::new(sync::Barrier::new(num_tasks));
-        for _ in 0..16 {
+        for _ in 0..64 {
             let internal_node = Arc::new(new_level_3_node());
             assert!(internal_node
                 .insert(usize::MAX, usize::MAX, &Barrier::new())
@@ -905,8 +905,8 @@ mod test {
     async fn durability() {
         let num_tasks = 16_usize;
         let num_iterations = 64;
-        let workload_size = 256_usize;
-        for k in 0..8 {
+        let workload_size = 64_usize;
+        for k in 0..64 {
             let fixed_point = k * 16;
             for _ in 0..=num_iterations {
                 let barrier = Arc::new(sync::Barrier::new(num_tasks));

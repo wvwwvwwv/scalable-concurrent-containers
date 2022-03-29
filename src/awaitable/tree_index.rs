@@ -192,7 +192,7 @@ where
                         }
                     }
                 } else {
-                    return false;
+                    return has_been_removed;
                 }
             };
 
@@ -431,16 +431,13 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         // Starts scanning.
         if self.leaf_scanner.is_none() {
-            loop {
-                let root_ptr = self.tree.root.load(Acquire, self.barrier);
-                if let Some(root_ref) = root_ptr.as_ref() {
-                    if let Some(scanner) = root_ref.min(self.barrier) {
-                        self.leaf_scanner.replace(scanner);
-                        break;
-                    }
-                } else {
-                    return None;
+            let root_ptr = self.tree.root.load(Acquire, self.barrier);
+            if let Some(root_ref) = root_ptr.as_ref() {
+                if let Some(scanner) = root_ref.min(self.barrier) {
+                    self.leaf_scanner.replace(scanner);
                 }
+            } else {
+                return None;
             }
         }
 
