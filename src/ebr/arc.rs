@@ -49,18 +49,24 @@ impl<T: 'static> Arc<T> {
     /// Returns a mutable reference to the underlying instance if the instance is exclusively
     /// owned.
     ///
+    /// # Safety
+    ///
+    /// If there is no [`Ptr`] to the underlying instance, it is safe.
+    ///
     /// # Examples
     ///
     /// ```
     /// use scc::ebr::Arc;
     ///
     /// let mut arc: Arc<usize> = Arc::new(38);
-    /// *arc.get_mut().unwrap() += 1;
+    /// unsafe {
+    ///     *arc.get_mut().unwrap() += 1;
+    /// }
     /// assert_eq!(*arc, 39);
     /// ```
     #[inline]
-    pub fn get_mut(&mut self) -> Option<&mut T> {
-        unsafe { self.instance_ptr.as_mut().get_mut() }
+    pub unsafe fn get_mut(&mut self) -> Option<&mut T> {
+        self.instance_ptr.as_mut().get_mut()
     }
 
     /// Provides a raw pointer to the underlying instance.
@@ -226,7 +232,7 @@ mod test {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
 
         let mut arc = Arc::new(A(AtomicUsize::new(10), 10, &DESTROYED));
-        if let Some(mut_ref) = arc.get_mut() {
+        if let Some(mut_ref) = unsafe { arc.get_mut() } {
             mut_ref.1 += 1;
         }
         arc.0.fetch_add(1, Relaxed);
@@ -234,23 +240,23 @@ mod test {
         assert_eq!(arc.deref().1, 11);
 
         let mut arc_cloned = arc.clone();
-        assert!(arc_cloned.get_mut().is_none());
+        assert!(unsafe { arc_cloned.get_mut().is_none() });
         arc_cloned.0.fetch_add(1, Relaxed);
         assert_eq!(arc_cloned.deref().0.load(Relaxed), 12);
         assert_eq!(arc_cloned.deref().1, 11);
 
         let mut arc_cloned_again = arc_cloned.clone();
-        assert!(arc_cloned_again.get_mut().is_none());
+        assert!(unsafe { arc_cloned_again.get_mut().is_none() });
         assert_eq!(arc_cloned_again.deref().0.load(Relaxed), 12);
         assert_eq!(arc_cloned_again.deref().1, 11);
 
         drop(arc);
         assert!(!DESTROYED.load(Relaxed));
-        assert!(arc_cloned_again.get_mut().is_none());
+        assert!(unsafe { arc_cloned_again.get_mut().is_none() });
 
         drop(arc_cloned);
         assert!(!DESTROYED.load(Relaxed));
-        assert!(arc_cloned_again.get_mut().is_some());
+        assert!(unsafe { arc_cloned_again.get_mut().is_some() });
 
         drop(arc_cloned_again);
         while !DESTROYED.load(Relaxed) {

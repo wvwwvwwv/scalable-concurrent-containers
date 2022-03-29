@@ -324,8 +324,6 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 
 ## Awaitable TreeIndex
 
-*WORK-IN-PROGRESS*
-
 [`awaitable::TreeIndex`](#Awaitable-TreeIndex) is a variant of [`TreeIndex`](#TreeIndex) tailored to asynchronous code. Methods that modify the data do not return the result immediately, instead a [`future`](https://doc.rust-lang.org/std/future/trait.Future.html) is returned; in order to get the result, the caller has to *await* it.
 
 
@@ -412,6 +410,11 @@ let result = future_insert.await;
 
 
 ## Changelog
+
+0.6.2
+
+* Asynchronous [`TreeIndex`](#Awaitable-TreeIndex).
+* Fix [`#65`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/65).
 
 0.6.1
 

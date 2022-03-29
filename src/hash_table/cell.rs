@@ -415,14 +415,15 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                 new_data_array.get_mut().unwrap().data[preferred_index]
                     .as_mut_ptr()
                     .write((key, value));
-            }
-            new_data_array.get_mut().unwrap().partial_hash_array[preferred_index] = partial_hash;
+                new_data_array.get_mut().unwrap().partial_hash_array[preferred_index] =
+                    partial_hash;
 
-            if LOCK_FREE {
-                fence(Release);
-            }
+                if LOCK_FREE {
+                    fence(Release);
+                }
 
-            new_data_array.get_mut().unwrap().occupied |= 1_u32 << preferred_index;
+                new_data_array.get_mut().unwrap().occupied |= 1_u32 << preferred_index;
+            }
 
             new_data_array
                 .link
