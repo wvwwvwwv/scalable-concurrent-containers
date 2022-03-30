@@ -89,17 +89,17 @@ where
     }
 
     /// Returns a [`Scanner`] pointing to an entry that is close enough to the entry with the
-    /// maximum key among those keys smaller than the given key.
+    /// maximum key among those keys smaller than or equal to the given key.
     ///
     /// This method is not linearlizable.
-    pub fn max_less_appr<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> Option<Scanner<'b, K, V>>
+    pub fn max_le_appr<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> Option<Scanner<'b, K, V>>
     where
         K: 'b + Borrow<Q>,
         Q: Ord + ?Sized,
     {
         match &self.node {
-            Type::Internal(internal_node) => internal_node.max_less_appr(key, barrier),
-            Type::Leaf(leaf_node) => leaf_node.max_less_appr(key, barrier),
+            Type::Internal(internal_node) => internal_node.max_le_appr(key, barrier),
+            Type::Leaf(leaf_node) => leaf_node.max_le_appr(key, barrier),
         }
     }
 

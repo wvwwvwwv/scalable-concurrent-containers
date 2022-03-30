@@ -128,7 +128,7 @@ where
     ///
     /// It returns `None` if all the keys in the [`LeafNode`] is equal to or greater than the given
     /// key.
-    pub fn max_less_appr<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> Option<Scanner<'b, K, V>>
+    pub fn max_le_appr<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> Option<Scanner<'b, K, V>>
     where
         K: 'b + Borrow<Q>,
         Q: Ord + ?Sized,
@@ -159,7 +159,7 @@ where
         min_scanner.next();
         loop {
             if let Some((k, _)) = min_scanner.get() {
-                if k.borrow() < key {
+                if k.borrow() <= key {
                     return Some(min_scanner);
                 }
                 break;
@@ -976,7 +976,7 @@ mod test {
                             }
                             for i in 0..workload_size {
                                 let max_scanner =
-                                    leaf_node_clone.max_less_appr(&(k + 1), &barrier).unwrap();
+                                    leaf_node_clone.max_le_appr(&k, &barrier).unwrap();
                                 assert!(*max_scanner.get().unwrap().0 <= k);
                                 let mut min_scanner = leaf_node_clone.min(&barrier).unwrap();
                                 if let Some((k_ref, v_ref)) = min_scanner.next() {

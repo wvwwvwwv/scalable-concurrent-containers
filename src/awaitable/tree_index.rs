@@ -1,9 +1,9 @@
 //! The module implements [`TreeIndex`].
 
-mod internal_node;
-mod leaf;
-mod leaf_node;
-mod node;
+pub(crate) mod internal_node;
+pub(crate) mod leaf;
+pub(crate) mod leaf_node;
+pub(crate) mod node;
 
 use super::async_yield;
 
@@ -349,7 +349,7 @@ where
     /// ```
     #[inline]
     pub fn iter<'t, 'b>(&'t self, barrier: &'b Barrier) -> Visitor<'t, 'b, K, V> {
-        Visitor::new(self, barrier)
+        Visitor::new(&self.root, barrier)
     }
 
     /// Returns a [`Range`] that scans keys in the given range.
@@ -371,7 +371,7 @@ where
         range: R,
         barrier: &'b Barrier,
     ) -> Range<'t, 'b, K, V, R> {
-        Range::new(self, range, barrier)
+        Range::new(&self.root, range, barrier)
     }
 }
 
@@ -403,7 +403,7 @@ where
     K: 'static + Clone + Ord + Send + Sync,
     V: 'static + Clone + Send + Sync,
 {
-    tree: &'t TreeIndex<K, V>,
+    root: &'t AtomicArc<Node<K, V>>,
     leaf_scanner: Option<Scanner<'b, K, V>>,
     barrier: &'b Barrier,
 }
@@ -413,9 +413,12 @@ where
     K: 'static + Clone + Ord + Send + Sync,
     V: 'static + Clone + Send + Sync,
 {
-    fn new(tree: &'t TreeIndex<K, V>, barrier: &'b Barrier) -> Visitor<'t, 'b, K, V> {
+    pub(crate) fn new(
+        root: &'t AtomicArc<Node<K, V>>,
+        barrier: &'b Barrier,
+    ) -> Visitor<'t, 'b, K, V> {
         Visitor::<'t, 'b, K, V> {
-            tree,
+            root,
             leaf_scanner: None,
             barrier,
         }
@@ -431,7 +434,7 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         // Starts scanning.
         if self.leaf_scanner.is_none() {
-            let root_ptr = self.tree.root.load(Acquire, self.barrier);
+            let root_ptr = self.root.load(Acquire, self.barrier);
             if let Some(root_ref) = root_ptr.as_ref() {
                 if let Some(scanner) = root_ref.min(self.barrier) {
                     self.leaf_scanner.replace(scanner);
@@ -477,7 +480,7 @@ where
     V: 'static + Clone + Send + Sync,
     R: 'static + RangeBounds<K>,
 {
-    tree: &'t TreeIndex<K, V>,
+    root: &'t AtomicArc<Node<K, V>>,
     leaf_scanner: Option<Scanner<'b, K, V>>,
     range: R,
     check_lower_bound: bool,
@@ -491,9 +494,13 @@ where
     V: 'static + Clone + Send + Sync,
     R: RangeBounds<K>,
 {
-    fn new(tree: &'t TreeIndex<K, V>, range: R, barrier: &'b Barrier) -> Range<'t, 'b, K, V, R> {
+    pub(crate) fn new(
+        root: &'t AtomicArc<Node<K, V>>,
+        range: R,
+        barrier: &'b Barrier,
+    ) -> Range<'t, 'b, K, V, R> {
         Range::<'t, 'b, K, V, R> {
-            tree,
+            root,
             leaf_scanner: None,
             range,
             check_lower_bound: true,
@@ -505,36 +512,43 @@ where
     fn next_unbounded(&mut self) -> Option<(&'b K, &'b V)> {
         // Starts scanning.
         if self.leaf_scanner.is_none() {
-            loop {
-                let root_ptr = self.tree.root.load(Acquire, self.barrier);
-                if let Some(root_ref) = root_ptr.as_ref() {
-                    let min_allowed_key = match self.range.start_bound() {
-                        Excluded(key) | Included(key) => Some(key),
-                        Unbounded => {
-                            self.check_lower_bound = false;
+            let root_ptr = self.root.load(Acquire, self.barrier);
+            if let Some(root_ref) = root_ptr.as_ref() {
+                let min_allowed_key = match self.range.start_bound() {
+                    Excluded(key) | Included(key) => Some(key),
+                    Unbounded => {
+                        self.check_lower_bound = false;
+                        None
+                    }
+                };
+                if let Some(leaf_scanner) = min_allowed_key.map_or_else(
+                    || {
+                        if let Some(mut min_scanner) = root_ref.min(self.barrier) {
+                            min_scanner.next();
+                            Some(min_scanner)
+                        } else {
                             None
                         }
+                    },
+                    |min_allowed_key| root_ref.max_le_appr(min_allowed_key, self.barrier),
+                ) {
+                    self.check_upper_bound = match self.range.end_bound() {
+                        Excluded(key) => leaf_scanner
+                            .max_entry()
+                            .map_or(false, |max_entry| max_entry.0.cmp(key) != Ordering::Less),
+                        Included(key) => leaf_scanner
+                            .max_entry()
+                            .map_or(false, |max_entry| max_entry.0.cmp(key) == Ordering::Greater),
+                        Unbounded => false,
                     };
-                    if let Some(leaf_scanner) = min_allowed_key.map_or_else(
-                        || root_ref.min(self.barrier),
-                        |min_allowed_key| root_ref.max_less_appr(min_allowed_key, self.barrier),
-                    ) {
-                        self.check_upper_bound = match self.range.end_bound() {
-                            Excluded(key) => leaf_scanner
-                                .max_entry()
-                                .map_or(false, |max_entry| max_entry.0.cmp(key) != Ordering::Less),
-                            Included(key) => leaf_scanner.max_entry().map_or(false, |max_entry| {
-                                max_entry.0.cmp(key) == Ordering::Greater
-                            }),
-                            Unbounded => false,
-                        };
+                    if let Some(result) = leaf_scanner.get() {
                         self.leaf_scanner.replace(leaf_scanner);
-                        break;
+                        return Some(result);
                     }
-                } else {
-                    // Empty.
-                    return None;
                 }
+            } else {
+                // Empty.
+                return None;
             }
         }
 

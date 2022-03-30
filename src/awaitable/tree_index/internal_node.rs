@@ -122,11 +122,11 @@ where
     }
 
     /// Returns a [`Scanner`] pointing to an entry that is close enough to the entry with the
-    /// maximum key among those keys smaller than the given key.
+    /// maximum key among those keys smaller than or equal to the given key.
     ///
     /// It returns `None` if all the keys in the [`InternalNode`] is equal to or greater than the
     /// given key.
-    pub fn max_less_appr<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> Option<Scanner<'b, K, V>>
+    pub fn max_le_appr<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> Option<Scanner<'b, K, V>>
     where
         K: 'b + Borrow<Q>,
         Q: Ord + ?Sized,
@@ -137,7 +137,7 @@ where
                     if let Some(child) = child.load(Acquire, barrier).as_ref() {
                         if self.children.validate(scanner.metadata()) {
                             // Data race resolution - see `LeafNode::search`.
-                            if let Some(scanner) = child.max_less_appr(key, barrier) {
+                            if let Some(scanner) = child.max_le_appr(key, barrier) {
                                 return Some(scanner);
                             }
                             // Fallback.
@@ -157,7 +157,7 @@ where
         min_scanner.next();
         loop {
             if let Some((k, _)) = min_scanner.get() {
-                if k.borrow() < key {
+                if k.borrow() <= key {
                     return Some(min_scanner);
                 }
                 break;
@@ -945,7 +945,7 @@ mod test {
                             }
                             for i in 0..workload_size {
                                 let max_scanner = internal_node_clone
-                                    .max_less_appr(&(fixed_point + 1), &barrier)
+                                    .max_le_appr(&fixed_point, &barrier)
                                     .unwrap();
                                 assert!(*max_scanner.get().unwrap().0 <= fixed_point);
                                 let mut min_scanner = internal_node_clone.min(&barrier).unwrap();
