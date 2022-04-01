@@ -1,10 +1,11 @@
 //! The module implements [`TreeIndex`].
 
+pub use crate::awaitable::tree_index::{Range, Visitor};
+
 use super::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 
 use crate::awaitable::tree_index::leaf::{InsertResult, RemoveResult};
 use crate::awaitable::tree_index::node::Node;
-use crate::awaitable::tree_index::{Range, Visitor};
 
 use std::borrow::Borrow;
 use std::ops::RangeBounds;
@@ -23,10 +24,9 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 ///
 /// ## The key statistics for [`TreeIndex`]
 ///
-/// * The maximum number of key-value pairs that a leaf can store: 8.
-/// * The maximum number of leaves or child nodes that a node can point to: 9.
-/// * The size of metadata per key-value pair in a leaf: 3-byte.
-/// * The size of metadata per leaf or node in a node: `size_of(K)` + 4.
+/// * The maximum number of key-value pairs that a leaf can store: 14.
+/// * The maximum number of leaves or child nodes that a node can point to: 15.
+/// * The size of metadata per key-value pair in a leaf: ~3-byte.
 pub struct TreeIndex<K, V>
 where
     K: 'static + Clone + Ord + Send + Sync,

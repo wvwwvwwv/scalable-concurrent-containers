@@ -14,6 +14,7 @@
 //! conflict over resources among threads.
 //!
 //! * [`HashMap`](awaitable::HashMap).
+//! * [`TreeIndex`](awaitable::TreeIndex).
 //!
 //! # [`EBR`](ebr)
 //!

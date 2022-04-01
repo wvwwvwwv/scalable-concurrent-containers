@@ -35,8 +35,7 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 ///
 /// * The maximum number of key-value pairs that a leaf can store: 14.
 /// * The maximum number of leaves or child nodes that a node can point to: 15.
-/// * The size of metadata per key-value pair in a leaf: 3-byte.
-/// * The size of metadata per leaf or node in a node: `size_of(K)` + 4.
+/// * The size of metadata per key-value pair in a leaf: ~3-byte.
 pub struct TreeIndex<K, V>
 where
     K: 'static + Clone + Ord + Send + Sync,
@@ -510,7 +509,7 @@ where
     }
 
     fn next_unbounded(&mut self) -> Option<(&'b K, &'b V)> {
-        // Starts scanning.
+        // Start scanning.
         if self.leaf_scanner.is_none() {
             let root_ptr = self.root.load(Acquire, self.barrier);
             if let Some(root_ref) = root_ptr.as_ref() {
@@ -523,6 +522,7 @@ where
                 };
                 if let Some(leaf_scanner) = min_allowed_key.map_or_else(
                     || {
+                        // Take the min entry.
                         if let Some(mut min_scanner) = root_ref.min(self.barrier) {
                             min_scanner.next();
                             Some(min_scanner)
@@ -530,8 +530,12 @@ where
                             None
                         }
                     },
-                    |min_allowed_key| root_ref.max_le_appr(min_allowed_key, self.barrier),
+                    |min_allowed_key| {
+                        // Take an entry that is close enough to the lower bound.
+                        root_ref.max_le_appr(min_allowed_key, self.barrier)
+                    },
                 ) {
+                    // Need to check the upper bound.
                     self.check_upper_bound = match self.range.end_bound() {
                         Excluded(key) => leaf_scanner
                             .max_entry()
@@ -552,14 +556,14 @@ where
             }
         }
 
-        // Proceeds to the next entry.
+        // Go to the next entry.
         if let Some(mut scanner) = self.leaf_scanner.take() {
             let min_allowed_key = scanner.get().map(|(key, _)| key);
             if let Some(result) = scanner.next() {
                 self.leaf_scanner.replace(scanner);
                 return Some(result);
             }
-            // Proceeds to the next leaf node.
+            // Go to the next leaf node.
             if let Some(new_scanner) = scanner.jump(min_allowed_key, self.barrier).take() {
                 if let Some(entry) = new_scanner.get() {
                     self.check_upper_bound = match self.range.end_bound() {

@@ -414,6 +414,8 @@ let result = future_insert.await;
 0.6.2
 
 * Asynchronous [`TreeIndex`](#Awaitable-TreeIndex).
+* Widen the node size of [`TreeIndex`](#TreeIndex): 7 -> 14.
+* `ebr::Arc::get_mut` is now unsafe.
 * Fix [`#65`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/65).
 
 0.6.1
@@ -428,8 +430,3 @@ let result = future_insert.await;
 
 * Optimize [`HashMap`](#HashMap) and [`HashSet`](#HashSet).
 * Fix a problem with the `retain` method erasing some entries satisfying the given predicate.
-
-0.5.7
-
-* Fix [`#63`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/63).
-* Add [`HashSet`](#HashSet).
