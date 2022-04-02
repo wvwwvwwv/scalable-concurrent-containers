@@ -10,7 +10,7 @@ use std::task::{Context, Poll};
 ///
 /// The code is copied from
 /// [`tokio`](https://docs.rs/tokio/1.13.0/src/tokio/task/yield_now.rs.html#38-59).
-pub(super) async fn async_yield() {
+pub(crate) async fn async_yield() {
     #[derive(Default)]
     struct YieldOnce(bool);
     impl Future for YieldOnce {

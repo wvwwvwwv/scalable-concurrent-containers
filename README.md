@@ -13,7 +13,6 @@ A collection of concurrent data structures and building blocks for concurrent pr
 - [scc::HashSet](#HashSet) is a concurrent hash set based on [scc::HashMap](#HashMap).
 - [scc::HashIndex](#HashIndex) is a concurrent hash index allowing lock-free read and scan.
 - [scc::TreeIndex](#TreeIndex) is a concurrent B+ tree allowing lock-free read and scan.
-- [scc::awaitable::TreeIndex](#Awaitable-TreeIndex) is a non-blocking awaitable concurrent B+ tree.
 
 
 ## EBR
@@ -179,6 +178,8 @@ assert_eq!(hashmap.retain(|key, value| *key == 1 && *value == 0), (1, 2));
 
 [`awaitable::HashMap`](#Awaitable-HashMap) is a variant of [`HashMap`](#HashMap) tailored to asynchronous code. Methods that access the data do not return the result immediately, instead a [`future`](https://doc.rust-lang.org/std/future/trait.Future.html) is returned; in order to get the result, the caller has to *await* it.
 
+* [`awaitable::HashMap`](#Awaitable-HashMap) and [`HashMap`](#HashMap) will be consolidated in SCC
+  0.6.4: [`#67`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/67).
 
 ### Examples
 
@@ -321,19 +322,14 @@ assert_eq!(treeindex.range(4..8, &barrier).count(), 4);
 assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 ```
 
-
-## Awaitable TreeIndex
-
-[`awaitable::TreeIndex`](#Awaitable-TreeIndex) is a variant of [`TreeIndex`](#TreeIndex) tailored to asynchronous code. Methods that modify the data do not return the result immediately, instead a [`future`](https://doc.rust-lang.org/std/future/trait.Future.html) is returned; in order to get the result, the caller has to *await* it.
-
-
-### Examples
+Asynchronous methods can be used in asynchronous code blocks.
 
 ```rust
-use scc::awaitable::TreeIndex;
+use scc::TreeIndex;
 
 let treeindex: TreeIndex<u64, u32> = TreeIndex::default();
-let future_insert = treeindex.insert(11, 17);
+
+let future_insert = treeindex.insert_async(11, 17);
 let result = future_insert.await;
 ```
 
@@ -413,8 +409,12 @@ let result = future_insert.await;
 
 0.6.2
 
-* Asynchronous [`TreeIndex`](#Awaitable-TreeIndex).
-* [`TreeIndex`] performance improvement.
+* Consolidate synchronous and asynchronous [`TreeIndex`](#TreeIndex) implementations.
+
+0.6.2
+
+* Asynchronous [`TreeIndex`](#TreeIndex).
+* [`TreeIndex`](#TreeIndex) performance improvement.
 * Fix ebr API: `ebr::Arc::get_mut` is now unsafe.
 * Fix [`#65`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/65).
 * Fix [`#66`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/66).

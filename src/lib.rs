@@ -6,15 +6,7 @@
 //! * [`HashMap`](HashMap).
 //! * [`HashIndex`](HashIndex).
 //! * [`TreeIndex`](TreeIndex).
-//!
-//! # [Awaitable concurrent containers](awaitable)
-//!
-//! The concurrent container types in `awaitable` are meant for asynchronous code blocks as their
-//! key operations are implemented in asynchronous methods where execution can be suspended on a
-//! conflict over resources among threads.
-//!
-//! * [`HashMap`](awaitable::HashMap).
-//! * [`TreeIndex`](awaitable::TreeIndex).
+//! * [`awaitable::HashMap`](awaitable::HashMap).
 //!
 //! # [`EBR`](ebr)
 //!

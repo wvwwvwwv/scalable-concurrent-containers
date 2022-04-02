@@ -317,6 +317,125 @@ mod treeindex_test {
     use std::sync::{Arc, Barrier};
     use std::thread;
 
+    use tokio::sync::Barrier as AsyncBarrier;
+
+    struct R(&'static AtomicUsize);
+    impl R {
+        fn new(cnt: &'static AtomicUsize) -> R {
+            cnt.fetch_add(1, Relaxed);
+            R(cnt)
+        }
+    }
+    impl Clone for R {
+        fn clone(&self) -> Self {
+            self.0.fetch_add(1, Relaxed);
+            R(self.0)
+        }
+    }
+    impl Drop for R {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Relaxed);
+        }
+    }
+
+    #[tokio::test]
+    async fn insert_drop() {
+        static CNT: AtomicUsize = AtomicUsize::new(0);
+        let tree: TreeIndex<usize, R> = TreeIndex::default();
+
+        let workload_size = 1024;
+        for k in 0..workload_size {
+            assert!(tree.insert_async(k, R::new(&CNT)).await.is_ok());
+        }
+        assert!(CNT.load(Relaxed) >= workload_size);
+        assert_eq!(tree.len(), workload_size);
+        drop(tree);
+
+        while CNT.load(Relaxed) != 0 {
+            drop(crate::ebr::Barrier::new());
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn insert_remove() {
+        static CNT: AtomicUsize = AtomicUsize::new(0);
+        let tree: TreeIndex<usize, R> = TreeIndex::default();
+
+        let workload_size = 1024;
+        for k in 0..workload_size {
+            assert!(tree.insert_async(k, R::new(&CNT)).await.is_ok());
+        }
+        assert!(CNT.load(Relaxed) >= workload_size);
+        assert_eq!(tree.len(), workload_size);
+        for k in 0..workload_size {
+            assert!(tree.remove_async(&k).await);
+        }
+        assert_eq!(tree.len(), 0);
+
+        while CNT.load(Relaxed) != 0 {
+            drop(crate::ebr::Barrier::new());
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn clear() {
+        static CNT: AtomicUsize = AtomicUsize::new(0);
+        let tree: TreeIndex<usize, R> = TreeIndex::default();
+
+        let workload_size = 1024;
+        for k in 0..workload_size {
+            assert!(tree.insert_async(k, R::new(&CNT)).await.is_ok());
+        }
+        assert!(CNT.load(Relaxed) >= workload_size);
+        assert_eq!(tree.len(), workload_size);
+        tree.clear();
+
+        while CNT.load(Relaxed) != 0 {
+            drop(crate::ebr::Barrier::new());
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    async fn integer_key() {
+        let num_tasks = 8;
+        let workload_size = 256;
+        for _ in 0..256 {
+            let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::default());
+            let mut task_handles = Vec::with_capacity(num_tasks);
+            let barrier = Arc::new(AsyncBarrier::new(num_tasks));
+            for task_id in 0..num_tasks {
+                let barrier_cloned = barrier.clone();
+                let tree_cloned = tree.clone();
+                task_handles.push(tokio::task::spawn(async move {
+                    barrier_cloned.wait().await;
+                    let range = (task_id * workload_size)..((task_id + 1) * workload_size);
+                    for id in range.clone() {
+                        assert!(tree_cloned.insert_async(id, id).await.is_ok());
+                        assert!(tree_cloned.insert_async(id, id).await.is_err());
+                    }
+                    for id in range.clone() {
+                        let result = tree_cloned.read(&id, |_, v| *v);
+                        assert_eq!(result, Some(id));
+                    }
+                    for id in range.clone() {
+                        assert!(tree_cloned.remove_if_async(&id, |v| *v == id).await);
+                    }
+                    for id in range {
+                        assert!(!tree_cloned.remove_if_async(&id, |v| *v == id).await);
+                    }
+                }));
+            }
+
+            for r in futures::future::join_all(task_handles).await {
+                assert!(r.is_ok());
+            }
+            assert_eq!(tree.len(), 0);
+        }
+    }
+
     #[test]
     fn reclaim() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
@@ -810,133 +929,5 @@ mod hashmap_test_async {
         }
 
         assert_eq!(hashmap.len(), 0);
-    }
-}
-
-#[cfg(test)]
-mod treeindex_test_async {
-    use crate::awaitable::TreeIndex;
-
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering::Relaxed;
-    use std::sync::Arc;
-
-    use tokio::sync::Barrier;
-
-    struct R(&'static AtomicUsize);
-    impl R {
-        fn new(cnt: &'static AtomicUsize) -> R {
-            cnt.fetch_add(1, Relaxed);
-            R(cnt)
-        }
-    }
-    impl Clone for R {
-        fn clone(&self) -> Self {
-            self.0.fetch_add(1, Relaxed);
-            R(self.0)
-        }
-    }
-    impl Drop for R {
-        fn drop(&mut self) {
-            self.0.fetch_sub(1, Relaxed);
-        }
-    }
-
-    #[tokio::test]
-    async fn insert_drop() {
-        static CNT: AtomicUsize = AtomicUsize::new(0);
-        let tree: TreeIndex<usize, R> = TreeIndex::default();
-
-        let workload_size = 1024;
-        for k in 0..workload_size {
-            assert!(tree.insert(k, R::new(&CNT)).await.is_ok());
-        }
-        assert!(CNT.load(Relaxed) >= workload_size);
-        assert_eq!(tree.len(), workload_size);
-        drop(tree);
-
-        while CNT.load(Relaxed) != 0 {
-            drop(crate::ebr::Barrier::new());
-            tokio::task::yield_now().await;
-        }
-    }
-
-    #[tokio::test]
-    async fn insert_remove() {
-        static CNT: AtomicUsize = AtomicUsize::new(0);
-        let tree: TreeIndex<usize, R> = TreeIndex::default();
-
-        let workload_size = 1024;
-        for k in 0..workload_size {
-            assert!(tree.insert(k, R::new(&CNT)).await.is_ok());
-        }
-        assert!(CNT.load(Relaxed) >= workload_size);
-        assert_eq!(tree.len(), workload_size);
-        for k in 0..workload_size {
-            assert!(tree.remove(&k).await);
-        }
-        assert_eq!(tree.len(), 0);
-
-        while CNT.load(Relaxed) != 0 {
-            drop(crate::ebr::Barrier::new());
-            tokio::task::yield_now().await;
-        }
-    }
-
-    #[tokio::test]
-    async fn clear() {
-        static CNT: AtomicUsize = AtomicUsize::new(0);
-        let tree: TreeIndex<usize, R> = TreeIndex::default();
-
-        let workload_size = 1024;
-        for k in 0..workload_size {
-            assert!(tree.insert(k, R::new(&CNT)).await.is_ok());
-        }
-        assert!(CNT.load(Relaxed) >= workload_size);
-        assert_eq!(tree.len(), workload_size);
-        tree.clear();
-
-        while CNT.load(Relaxed) != 0 {
-            drop(crate::ebr::Barrier::new());
-            tokio::task::yield_now().await;
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
-    async fn integer_key() {
-        let num_tasks = 8;
-        let workload_size = 256;
-        for _ in 0..256 {
-            let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::default());
-            let mut task_handles = Vec::with_capacity(num_tasks);
-            let barrier = Arc::new(Barrier::new(num_tasks));
-            for task_id in 0..num_tasks {
-                let barrier_cloned = barrier.clone();
-                let tree_cloned = tree.clone();
-                task_handles.push(tokio::task::spawn(async move {
-                    barrier_cloned.wait().await;
-                    let range = (task_id * workload_size)..((task_id + 1) * workload_size);
-                    for id in range.clone() {
-                        assert!(tree_cloned.insert(id, id).await.is_ok());
-                        assert!(tree_cloned.insert(id, id).await.is_err());
-                    }
-                    for id in range.clone() {
-                        let result = tree_cloned.read(&id, |_, v| *v);
-                        assert_eq!(result, Some(id));
-                    }
-                    for id in range.clone() {
-                        assert!(tree_cloned.remove_if(&id, |v| *v == id).await);
-                    }
-                    for id in range {
-                        assert!(!tree_cloned.remove_if(&id, |v| *v == id).await);
-                    }
-                }));
-            }
-
-            for r in futures::future::join_all(task_handles).await {
-                assert!(r.is_ok());
-            }
-            assert_eq!(tree.len(), 0);
-        }
     }
 }
