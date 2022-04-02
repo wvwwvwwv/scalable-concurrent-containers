@@ -407,7 +407,7 @@ let result = future_insert.await;
 
 ## Changelog
 
-0.6.2
+0.6.3
 
 * Consolidate synchronous and asynchronous [`TreeIndex`](#TreeIndex) implementations.
 
@@ -426,8 +426,3 @@ let result = future_insert.await;
 0.6.0
 
 * Asynchronous [`HashMap`](#Awaitable-HashMap).
-
-0.5.8
-
-* Optimize [`HashMap`](#HashMap) and [`HashSet`](#HashSet).
-* Fix a problem with the `retain` method erasing some entries satisfying the given predicate.
