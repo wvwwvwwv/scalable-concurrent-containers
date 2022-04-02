@@ -288,7 +288,7 @@ where
                             return Err(result != RemoveResult::Fail);
                         }
                         if result == RemoveResult::Retired {
-                            return self.coalesce(barrier);
+                            return self.coalesce(key, barrier);
                         }
                         return Ok(result);
                     }
@@ -308,7 +308,7 @@ where
                     return Err(result != RemoveResult::Fail);
                 }
                 if result == RemoveResult::Retired {
-                    return self.coalesce(barrier);
+                    return self.coalesce(key, barrier);
                 }
                 return Ok(result);
             }
@@ -618,7 +618,11 @@ where
     }
 
     /// Tries to coalesce empty or obsolete leaves after a successful removal of an entry.
-    fn coalesce(&self, barrier: &Barrier) -> Result<RemoveResult, bool> {
+    fn coalesce<Q>(&self, removed_key: &Q, barrier: &Barrier) -> Result<RemoveResult, bool>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         while let Some(lock) = Locker::try_lock(self) {
             let mut has_valid_leaf = false;
             for entry in Scanner::new(&self.children) {
@@ -627,7 +631,7 @@ where
                 if leaf.retired() {
                     let deleted = leaf.delete_self(Relaxed);
                     debug_assert!(deleted);
-                    let result = self.children.remove_if(entry.0, &mut |_| true);
+                    let result = self.children.remove_if(entry.0.borrow(), &mut |_| true);
                     debug_assert_ne!(result, RemoveResult::Fail);
 
                     // The pointer is nullified after the metadata of `self.children` is updated so
@@ -672,6 +676,8 @@ where
 
             drop(lock);
             if !self.has_retired_leaf(barrier) {
+                // Traverse several leaf nodes in order to cleanup deprecated links.
+                self.max_le_appr(removed_key, barrier);
                 return Ok(RemoveResult::Success);
             }
         }

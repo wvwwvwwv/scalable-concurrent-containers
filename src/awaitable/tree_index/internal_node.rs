@@ -203,7 +203,9 @@ where
                             }
                             InsertResult::Retired(key, value) => {
                                 debug_assert!(child_ref.retired(Relaxed));
-                                if let Ok(RemoveResult::Retired) = self.coalesce(barrier) {
+                                if let Ok(RemoveResult::Retired) =
+                                    self.coalesce(key.borrow(), barrier)
+                                {
                                     debug_assert!(self.retired(Relaxed));
                                     return Ok(InsertResult::Retired(key, value));
                                 }
@@ -243,7 +245,7 @@ where
                     }
                     InsertResult::Retired(key, value) => {
                         debug_assert!(unbounded.retired(Relaxed));
-                        if let Ok(RemoveResult::Retired) = self.coalesce(barrier) {
+                        if let Ok(RemoveResult::Retired) = self.coalesce(key.borrow(), barrier) {
                             debug_assert!(self.retired(Relaxed));
                             return Ok(InsertResult::Retired(key, value));
                         }
@@ -280,7 +282,7 @@ where
                         // Data race resolution - see `LeafNode::search`.
                         let result = child.remove_if(key, condition, barrier)?;
                         if result == RemoveResult::Retired {
-                            return self.coalesce(barrier);
+                            return self.coalesce(key, barrier);
                         }
                         return Ok(result);
                     }
@@ -297,7 +299,7 @@ where
                 }
                 let result = unbounded.remove_if(key, condition, barrier)?;
                 if result == RemoveResult::Retired {
-                    return self.coalesce(barrier);
+                    return self.coalesce(key, barrier);
                 }
                 return Ok(result);
             }
@@ -597,14 +599,18 @@ where
     }
 
     /// Tries to coalesce nodes.
-    fn coalesce(&self, barrier: &Barrier) -> Result<RemoveResult, bool> {
+    fn coalesce<Q>(&self, removed_key: &Q, barrier: &Barrier) -> Result<RemoveResult, bool>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         while let Some(lock) = Locker::try_lock(self) {
             let mut max_key_entry = None;
             for (key, node) in Scanner::new(&self.children) {
                 let node_ptr = node.load(Relaxed, barrier);
                 let node_ref = node_ptr.as_ref().unwrap();
                 if node_ref.retired(Relaxed) {
-                    let result = self.children.remove_if(key, &mut |_| true);
+                    let result = self.children.remove_if(key.borrow(), &mut |_| true);
                     debug_assert_ne!(result, RemoveResult::Fail);
 
                     // Once the key is removed, it is safe to deallocate the node as the validation
@@ -629,7 +635,7 @@ where
                             debug_assert!(obsolete_node.retired(Relaxed));
                             barrier.reclaim(obsolete_node);
                         }
-                        let result = self.children.remove_if(key, &mut |_| true);
+                        let result = self.children.remove_if(key.borrow(), &mut |_| true);
                         debug_assert_ne!(result, RemoveResult::Fail);
                         if let Some(node) = max_key_child.swap((None, Tag::None), Release) {
                             barrier.reclaim(node);
@@ -658,6 +664,8 @@ where
 
             drop(lock);
             if !self.has_retired_node(barrier) {
+                // Traverse several leaf nodes in order to cleanup deprecated links.
+                self.max_le_appr(removed_key, barrier);
                 return Ok(RemoveResult::Success);
             }
         }
