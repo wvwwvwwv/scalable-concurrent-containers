@@ -396,17 +396,17 @@ let result = future_insert.await;
 | MixedR  |  11.321s   |  11.697s   |  13.955s   |
 | RemoveR |   5.813s   |   5.92s    |   7.623s   |
 
-- [`TreeIndex`](#TreeIndex)
+- [`TreeIndex`](#TreeIndex): SLES 15SP2, Rust 1.59.0, and SCC 0.6.2
 
 |         | 11 threads | 22 threads | 44 threads |
 |---------|------------|------------|------------|
-| InsertL |   5.887s   |  10.731s   |  15.248s   |
-| ReadL   |   1.069s   |   1.128s   |   1.24s    |
-| ScanL   |  11.834s   |  26.22s    |  56.101s   |
-| RemoveL |   5.06s    |   8.964s   |  17.051s   |
-| InsertR |  16.986s   |  14.763s   |  23.677s   |
-| MixedR  | 101.077s   | 128.350s   | 158.627s   |
-| RemoveR |   6.771s   |   6.768s   |   8.102s   |
+| InsertL |   5.497s   |   7.61s    |  13.466s   |
+| ReadL   |   1.122s   |   1.133s   |   1.201s   |
+| ScanL   |  13.982s   |  28.410s   |  54.208s   |
+| RemoveL |   4.514s   |   8.137s   |  15.547s   |
+| InsertR |  16.579s   |  16.344s   |  22.842s   |
+| MixedR  |  96.987s   | 116.676s   | 149.478s   |
+| RemoveR |   5.649s   |   6.398s   |  10.133s   |
 
 
 ## Changelog
@@ -414,9 +414,10 @@ let result = future_insert.await;
 0.6.2
 
 * Asynchronous [`TreeIndex`](#Awaitable-TreeIndex).
-* Widen the node size of [`TreeIndex`](#TreeIndex): 7 -> 14.
-* `ebr::Arc::get_mut` is now unsafe.
+* [`TreeIndex`] performance improvement.
+* Fix ebr API: `ebr::Arc::get_mut` is now unsafe.
 * Fix [`#65`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/65).
+* Fix [`#66`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/66).
 
 0.6.1
 
