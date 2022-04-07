@@ -787,7 +787,9 @@ mod benchmark_async {
                 let per_task_workload_size = workload_cloned.size * per_op_workload_size;
                 barrier_cloned.wait().await;
                 for _ in 0..workload_cloned.scan {
-                    hashmap_cloned.for_each(|_, _| num_operations += 1).await;
+                    hashmap_cloned
+                        .for_each_async(|_, _| num_operations += 1)
+                        .await;
                 }
                 for i in 0..per_task_workload_size {
                     let remote_task_id = if num_tasks < 2 {
@@ -801,7 +803,7 @@ mod benchmark_async {
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let result = hashmap_cloned.insert(local_index, i).await;
+                        let result = hashmap_cloned.insert_async(local_index, i).await;
                         assert!(result.is_ok() || workload_cloned.has_remote_op());
                         num_operations += 1;
                     }
@@ -810,7 +812,7 @@ mod benchmark_async {
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let _result = hashmap_cloned.insert(remote_index, i).await;
+                        let _result = hashmap_cloned.insert_async(remote_index, i).await;
                         num_operations += 1;
                     }
                     for j in 0..workload_cloned.read_local {
@@ -818,7 +820,7 @@ mod benchmark_async {
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let result = hashmap_cloned.read(&local_index, |_, _| ()).await;
+                        let result = hashmap_cloned.read_async(&local_index, |_, _| ()).await;
                         assert!(result.is_some() || workload_cloned.has_remote_op());
                         num_operations += 1;
                     }
@@ -827,7 +829,7 @@ mod benchmark_async {
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let _result = hashmap_cloned.read(&remote_index, |_, _| ()).await;
+                        let _result = hashmap_cloned.read_async(&remote_index, |_, _| ()).await;
                         num_operations += 1;
                     }
                     for j in 0..workload_cloned.remove_local {
@@ -835,7 +837,7 @@ mod benchmark_async {
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let result = hashmap_cloned.remove(&local_index).await;
+                        let result = hashmap_cloned.remove_async(&local_index).await;
                         assert!(result.is_some() || workload_cloned.has_remote_op());
                         num_operations += 1;
                     }
@@ -844,7 +846,7 @@ mod benchmark_async {
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let _result = hashmap_cloned.remove(&remote_index).await;
+                        let _result = hashmap_cloned.remove_async(&remote_index).await;
                         num_operations += 1;
                     }
                 }

@@ -102,7 +102,12 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     /// Kills the [`Cell`].
     ///
     /// It returns an error if locking failed.
-    pub fn kill_cell<Q, F: Fn(&Q) -> (u64, u8), C: Fn(&K, &V) -> Option<(K, V)>>(
+    pub fn kill_cell<
+        Q,
+        F: Fn(&Q) -> (u64, u8),
+        C: Fn(&K, &V) -> Option<(K, V)>,
+        const TRY_LOCK: bool,
+    >(
         &self,
         cell_locker: &mut Locker<K, V, LOCK_FREE>,
         old_array: &CellArray<K, V, LOCK_FREE>,
@@ -154,8 +159,11 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
 
             let offset = new_cell_index - target_cell_index;
             while max_index <= offset {
-                let locker =
-                    Locker::try_lock(self.cell(max_index + target_cell_index), barrier)?.unwrap();
+                let locker = if TRY_LOCK {
+                    Locker::try_lock(self.cell(max_index + target_cell_index), barrier)?.unwrap()
+                } else {
+                    Locker::lock(self.cell(max_index + target_cell_index), barrier).unwrap()
+                };
                 target_cells[max_index].replace(locker);
                 max_index += 1;
             }
@@ -179,7 +187,12 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     /// Relocates a fixed number of `Cells` from the old array to the current array.
     ///
     /// Returns `true` if `old_array` is null.
-    pub fn partial_rehash<Q, F: Fn(&Q) -> (u64, u8), C: Fn(&K, &V) -> Option<(K, V)>>(
+    pub fn partial_rehash<
+        Q,
+        F: Fn(&Q) -> (u64, u8),
+        C: Fn(&K, &V) -> Option<(K, V)>,
+        const TRY_LOCK: bool,
+    >(
         &self,
         hasher: F,
         copier: C,
@@ -247,25 +260,29 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
 
             for old_cell_index in current..(current + Self::UNIT_SIZE).min(old_array_size) {
                 let old_cell_ref = old_array_ref.cell(old_cell_index);
-                match Locker::try_lock(old_cell_ref, barrier) {
-                    Ok(locker) => {
-                        if let Some(mut locker) = locker {
-                            if self
-                                .kill_cell(
-                                    &mut locker,
-                                    old_array_ref,
-                                    old_cell_index,
-                                    &hasher,
-                                    &copier,
-                                    barrier,
-                                )
-                                .is_err()
-                            {
-                                return false;
-                            }
-                        }
+                let lock_result = if TRY_LOCK {
+                    if let Ok(locker) = Locker::try_lock(old_cell_ref, barrier) {
+                        locker
+                    } else {
+                        return false;
                     }
-                    Err(_) => return false,
+                } else {
+                    Locker::lock(old_cell_ref, barrier)
+                };
+                if let Some(mut locker) = lock_result {
+                    if self
+                        .kill_cell::<Q, F, C, TRY_LOCK>(
+                            &mut locker,
+                            old_array_ref,
+                            old_cell_index,
+                            &hasher,
+                            &copier,
+                            barrier,
+                        )
+                        .is_err()
+                    {
+                        return false;
+                    }
                 }
             }
 

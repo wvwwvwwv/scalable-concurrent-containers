@@ -1,3 +1,5 @@
+use super::wait_queue::WaitQueue;
+
 use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
 
 use std::borrow::Borrow;
@@ -14,7 +16,8 @@ pub const ARRAY_SIZE: usize = 32;
 
 /// State bits.
 const KILLED: u32 = 1_u32 << 31;
-const LOCK: u32 = 1_u32 << 30;
+const WAITING: u32 = 1_u32 << 30;
+const LOCK: u32 = 1_u32 << 29;
 const SLOCK_MAX: u32 = LOCK - 1;
 const LOCK_MASK: u32 = LOCK | SLOCK_MAX;
 
@@ -29,6 +32,9 @@ pub struct Cell<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
 
     /// The number of valid entries in the [`Cell`].
     num_entries: u32,
+
+    /// The wait queue of the [`Cell`].
+    wait_queue: WaitQueue,
 }
 
 impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Default for Cell<K, V, LOCK_FREE> {
@@ -37,6 +43,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Default for Cell<K, V, 
             data_array: DataArray::new(),
             state: AtomicU32::new(0),
             num_entries: 0,
+            wait_queue: WaitQueue::default(),
         }
     }
 }
@@ -340,6 +347,27 @@ pub struct Locker<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
 }
 
 impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
+    /// Locks the [`Cell`].
+    #[inline]
+    #[allow(dead_code)]
+    pub fn lock(
+        cell: &'b Cell<K, V, LOCK_FREE>,
+        barrier: &'b Barrier,
+    ) -> Option<Locker<'b, K, V, LOCK_FREE>> {
+        loop {
+            if let Ok(locker) = Self::try_lock(cell, barrier) {
+                return locker;
+            }
+            if let Ok(locker) = cell.wait_queue.wait(|| {
+                // Mark that there is a waiting thread.
+                cell.state.fetch_or(WAITING, Release);
+                Self::try_lock(cell, barrier)
+            }) {
+                return locker;
+            }
+        }
+    }
+
     /// Tries to lock the [`Cell`].
     #[inline]
     pub fn try_lock(
@@ -517,12 +545,19 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Locker<'b,
     fn drop(&mut self) {
         let mut current = self.cell.state.load(Relaxed);
         loop {
-            match self
-                .cell
-                .state
-                .compare_exchange(current, current & (!LOCK), Release, Relaxed)
-            {
-                Ok(_) => break,
+            let wakeup = (current & WAITING) == WAITING;
+            match self.cell.state.compare_exchange(
+                current,
+                current & (!(WAITING | LOCK)),
+                Release,
+                Relaxed,
+            ) {
+                Ok(_) => {
+                    if wakeup {
+                        self.cell.wait_queue.signal();
+                    }
+                    break;
+                }
                 Err(result) => current = result,
             }
         }
@@ -534,6 +569,27 @@ pub struct Reader<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
 }
 
 impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
+    /// Locks the given [`Cell`].
+    #[inline]
+    #[allow(dead_code)]
+    pub fn lock(
+        cell: &'b Cell<K, V, LOCK_FREE>,
+        barrier: &'b Barrier,
+    ) -> Option<Reader<'b, K, V, LOCK_FREE>> {
+        loop {
+            if let Ok(reader) = Self::try_lock(cell, barrier) {
+                return reader;
+            }
+            if let Ok(reader) = cell.wait_queue.wait(|| {
+                // Mark that there is a waiting thread.
+                cell.state.fetch_or(WAITING, Release);
+                Self::try_lock(cell, barrier)
+            }) {
+                return reader;
+            }
+        }
+    }
+
     /// Tries to lock the [`Cell`].
     #[inline]
     pub fn try_lock(
@@ -570,13 +626,19 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Reader<'b,
     fn drop(&mut self) {
         let mut current = self.cell.state.load(Relaxed);
         loop {
-            let next = current - 1;
+            let wakeup = (current & WAITING) == WAITING;
+            let next = (current - 1) & !(WAITING);
             match self
                 .cell
                 .state
                 .compare_exchange(current, next, Relaxed, Relaxed)
             {
-                Ok(_) => break,
+                Ok(_) => {
+                    if wakeup {
+                        self.cell.wait_queue.signal();
+                    }
+                    break;
+                }
                 Err(result) => current = result,
             }
         }
@@ -643,12 +705,7 @@ mod test {
                 barrier_copied.wait().await;
                 let barrier = Barrier::new();
                 for i in 0..2048 {
-                    let exclusive_locker = loop {
-                        if let Ok(Some(locker)) = Locker::try_lock(&*cell_copied, &barrier) {
-                            break locker;
-                        }
-                    };
-
+                    let exclusive_locker = Locker::lock(&*cell_copied, &barrier).unwrap();
                     let mut sum: u64 = 0;
                     for j in 0..128 {
                         unsafe {
@@ -679,11 +736,7 @@ mod test {
                     }
                     drop(exclusive_locker);
 
-                    let read_locker = loop {
-                        if let Ok(Some(locker)) = Reader::try_lock(&*cell_copied, &barrier) {
-                            break locker;
-                        }
-                    };
+                    let read_locker = Reader::lock(&*cell_copied, &barrier).unwrap();
                     assert_eq!(
                         read_locker
                             .cell()

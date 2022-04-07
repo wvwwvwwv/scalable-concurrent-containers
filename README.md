@@ -187,7 +187,7 @@ assert_eq!(hashmap.retain(|key, value| *key == 1 && *value == 0), (1, 2));
 use scc::awaitable::HashMap;
 
 let hashmap: HashMap<u64, u32> = HashMap::default();
-let future_insert = hashmap.insert(11, 17);
+let future_insert = hashmap.insert_async(11, 17);
 let result = future_insert.await;
 ```
 

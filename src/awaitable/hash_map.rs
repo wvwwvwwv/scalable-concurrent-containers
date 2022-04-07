@@ -82,12 +82,12 @@ where
     /// use scc::awaitable::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    /// let future_insert = hashmap.insert(11, 17);
+    /// let future_insert = hashmap.insert_async(11, 17);
     /// ```
     #[inline]
-    pub async fn insert(&self, mut key: K, mut val: V) -> Result<(), (K, V)> {
+    pub async fn insert_async(&self, mut key: K, mut val: V) -> Result<(), (K, V)> {
         loop {
-            match self.insert_entry(key, val, &Barrier::new()) {
+            match self.insert_entry::<true>(key, val, &Barrier::new()) {
                 Ok(Some(returned)) => return Err(returned),
                 Ok(None) => return Ok(()),
                 Err(returned) => {
@@ -109,17 +109,23 @@ where
     /// use scc::awaitable::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    /// let future_insert = hashmap.insert(11, 17);
-    /// let future_read = hashmap.read(&11, |_, v| *v);
+    /// let future_insert = hashmap.insert_async(11, 17);
+    /// let future_read = hashmap.read_async(&11, |_, v| *v);
     /// ```
     #[inline]
-    pub async fn read<Q, R, F: FnMut(&K, &V) -> R>(&self, key_ref: &Q, mut reader: F) -> Option<R>
+    pub async fn read_async<Q, R, F: FnMut(&K, &V) -> R>(
+        &self,
+        key_ref: &Q,
+        mut reader: F,
+    ) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
         loop {
-            if let Ok(result) = self.read_entry(key_ref, &mut reader, &Barrier::new()) {
+            if let Ok(result) =
+                self.read_entry::<Q, R, _, true>(key_ref, &mut reader, &Barrier::new())
+            {
                 return result;
             }
             async_yield().await;
@@ -134,16 +140,16 @@ where
     /// use scc::awaitable::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    /// let future_insert = hashmap.insert(11, 17);
-    /// let future_remove = hashmap.remove(&11);
+    /// let future_insert = hashmap.insert_async(11, 17);
+    /// let future_remove = hashmap.remove_async(&11);
     /// ```
     #[inline]
-    pub async fn remove<Q>(&self, key_ref: &Q) -> Option<(K, V)>
+    pub async fn remove_async<Q>(&self, key_ref: &Q) -> Option<(K, V)>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.remove_if(key_ref, |_| true).await
+        self.remove_if_async(key_ref, |_| true).await
     }
 
     /// Removes a key-value pair if the key exists and the given condition is met.
@@ -154,11 +160,11 @@ where
     /// use scc::awaitable::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    /// let future_insert = hashmap.insert(11, 17);
-    /// let future_remove = hashmap.remove_if(&11, |_| true);
+    /// let future_insert = hashmap.insert_async(11, 17);
+    /// let future_remove = hashmap.remove_if_async(&11, |_| true);
     /// ```
     #[inline]
-    pub async fn remove_if<Q, F: FnMut(&V) -> bool>(
+    pub async fn remove_if_async<Q, F: FnMut(&V) -> bool>(
         &self,
         key_ref: &Q,
         mut condition: F,
@@ -168,7 +174,9 @@ where
         Q: Eq + Hash + ?Sized,
     {
         loop {
-            if let Ok(result) = self.remove_entry(key_ref, &mut condition, &Barrier::new()) {
+            if let Ok(result) =
+                self.remove_entry::<Q, F, true>(key_ref, &mut condition, &Barrier::new())
+            {
                 return result.0;
             }
             async_yield().await;
@@ -184,12 +192,12 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// let future_insert = hashmap.insert(1, 0);
-    /// let future_for_each = hashmap.for_each(|k, v| println!("{} {}", k, v));
+    /// let future_insert = hashmap.insert_async(1, 0);
+    /// let future_for_each = hashmap.for_each_async(|k, v| println!("{} {}", k, v));
     /// ```
     #[inline]
-    pub async fn for_each<F: FnMut(&K, &mut V)>(&self, mut f: F) {
-        self.retain(|k, v| {
+    pub async fn for_each_async<F: FnMut(&K, &mut V)>(&self, mut f: F) {
+        self.retain_async(|k, v| {
             f(k, v);
             true
         })
@@ -207,10 +215,13 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// let future_insert = hashmap.insert(1, 0);
-    /// let future_retain = hashmap.retain(|k, v| *k == 1);
+    /// let future_insert = hashmap.insert_async(1, 0);
+    /// let future_retain = hashmap.retain_async(|k, v| *k == 1);
     /// ```
-    pub async fn retain<F: FnMut(&K, &mut V) -> bool>(&self, mut filter: F) -> (usize, usize) {
+    pub async fn retain_async<F: FnMut(&K, &mut V) -> bool>(
+        &self,
+        mut filter: F,
+    ) -> (usize, usize) {
         let mut retained_entries = 0;
         let mut removed_entries = 0;
 
@@ -222,7 +233,7 @@ where
                 .old_array(awaitable_barrier.barrier())
                 .is_null()
             {
-                if current_array.partial_rehash(
+                if current_array.partial_rehash::<_, _, _, true>(
                     |key| self.hash(key),
                     |_, _| None,
                     awaitable_barrier.barrier(),
@@ -299,12 +310,12 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// let future_insert = hashmap.insert(1, 0);
-    /// let future_clear = hashmap.clear();
+    /// let future_insert = hashmap.insert_async(1, 0);
+    /// let future_clear = hashmap.clear_async();
     /// ```
     #[inline]
-    pub async fn clear(&self) -> usize {
-        self.retain(|_, _| false).await.1
+    pub async fn clear_async(&self) -> usize {
+        self.retain_async(|_, _| false).await.1
     }
 
     /// Returns the number of entries in the [`HashMap`].

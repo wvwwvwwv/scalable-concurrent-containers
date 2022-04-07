@@ -816,7 +816,7 @@ mod hashmap_test_async {
 
         let workload_size = 1024;
         for k in 0..workload_size {
-            assert!(hashmap.insert(k, R::new(&CNT)).await.is_ok());
+            assert!(hashmap.insert_async(k, R::new(&CNT)).await.is_ok());
         }
         assert_eq!(CNT.load(Relaxed), workload_size);
         assert_eq!(hashmap.len(), workload_size);
@@ -835,11 +835,11 @@ mod hashmap_test_async {
 
         let workload_size = 1024;
         for k in 0..workload_size {
-            assert!(hashmap.insert(k, R::new(&CNT)).await.is_ok());
+            assert!(hashmap.insert_async(k, R::new(&CNT)).await.is_ok());
         }
         assert_eq!(CNT.load(Relaxed), workload_size);
         assert_eq!(hashmap.len(), workload_size);
-        assert_eq!(hashmap.clear().await, workload_size);
+        assert_eq!(hashmap.clear_async().await, workload_size);
 
         while CNT.load(Relaxed) != 0 {
             drop(crate::ebr::Barrier::new());
@@ -862,19 +862,19 @@ mod hashmap_test_async {
                 barrier_cloned.wait().await;
                 let range = (task_id * workload_size)..((task_id + 1) * workload_size);
                 for id in range.clone() {
-                    let result = hashmap_cloned.insert(id, id).await;
+                    let result = hashmap_cloned.insert_async(id, id).await;
                     assert!(result.is_ok());
                 }
                 for id in range.clone() {
-                    let result = hashmap_cloned.read(&id, |_, v| *v).await;
+                    let result = hashmap_cloned.read_async(&id, |_, v| *v).await;
                     assert_eq!(result, Some(id));
                 }
                 for id in range.clone() {
-                    let result = hashmap_cloned.remove_if(&id, |v| *v == id).await;
+                    let result = hashmap_cloned.remove_if_async(&id, |v| *v == id).await;
                     assert_eq!(result, Some((id, id)));
                 }
                 for id in range {
-                    let result = hashmap_cloned.remove_if(&id, |v| *v == id).await;
+                    let result = hashmap_cloned.remove_if_async(&id, |v| *v == id).await;
                     assert_eq!(result, None);
                 }
             }));
@@ -902,16 +902,16 @@ mod hashmap_test_async {
                 barrier_cloned.wait().await;
                 let range = (task_id * workload_size)..((task_id + 1) * workload_size);
                 for id in range.clone() {
-                    let result = hashmap_cloned.insert(id, id).await;
+                    let result = hashmap_cloned.insert_async(id, id).await;
                     assert!(result.is_ok());
                 }
                 for id in range.clone() {
-                    let result = hashmap_cloned.insert(id, id).await;
+                    let result = hashmap_cloned.insert_async(id, id).await;
                     assert_eq!(result, Err((id, id)));
                 }
                 let mut iterated = 0;
                 hashmap_cloned
-                    .for_each(|k, _| {
+                    .for_each_async(|k, _| {
                         if range.contains(k) {
                             iterated += 1;
                         }
@@ -919,7 +919,7 @@ mod hashmap_test_async {
                     .await;
                 assert!(iterated >= workload_size);
 
-                let (_, removed) = hashmap_cloned.retain(|k, _| !range.contains(k)).await;
+                let (_, removed) = hashmap_cloned.retain_async(|k, _| !range.contains(k)).await;
                 assert_eq!(removed, workload_size);
             }));
         }
