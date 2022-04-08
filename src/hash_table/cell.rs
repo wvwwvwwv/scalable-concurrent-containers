@@ -1,10 +1,10 @@
 use super::wait_queue::WaitQueue;
 
-use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
+use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
 
 use std::borrow::Borrow;
 use std::mem::MaybeUninit;
-use std::ptr;
+use std::ptr::{self, addr_of};
 use std::sync::atomic::fence;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -25,7 +25,7 @@ const LOCK_MASK: u32 = LOCK | SLOCK_MAX;
 /// of entry arrays.
 pub struct Cell<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
     /// An array of key-value pairs and their metadata.
-    data_array: AtomicArc<DataArray<K, V>>,
+    data_array: DataArray<K, V>,
 
     /// The state of the [`Cell`].
     state: AtomicU32,
@@ -40,7 +40,7 @@ pub struct Cell<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
 impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Default for Cell<K, V, LOCK_FREE> {
     fn default() -> Self {
         Cell::<K, V, LOCK_FREE> {
-            data_array: AtomicArc::null(),
+            data_array: DataArray::new(),
             state: AtomicU32::new(0),
             num_entries: 0,
             wait_queue: WaitQueue::default(),
@@ -80,15 +80,15 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
             return None;
         }
 
-        let mut data_array_ptr = self.data_array.load(Relaxed, barrier);
+        let mut data_array_ptr = addr_of!(self.data_array);
         let preferred_index = partial_hash as usize % ARRAY_SIZE;
-        while let Some(data_array_ref) = data_array_ptr.as_ref() {
+        while let Some(data_array_ref) = unsafe { data_array_ptr.as_ref() } {
             if let Some((_, entry_ref)) =
                 Self::search_array(data_array_ref, key_ref, preferred_index, partial_hash)
             {
                 return Some(entry_ref);
             }
-            data_array_ptr = data_array_ref.link.load(Relaxed, barrier);
+            data_array_ptr = data_array_ref.link.load(Relaxed, barrier).as_raw();
         }
         None
     }
@@ -109,15 +109,15 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
             return None;
         }
 
-        let mut current_array_ptr = self.data_array.load(Relaxed, barrier);
-        let mut prev_array_ptr = Ptr::null();
+        let mut current_array_ptr = addr_of!(self.data_array);
+        let mut prev_array_ptr = ptr::null();
         let preferred_index = partial_hash as usize % ARRAY_SIZE;
-        while let Some(data_array_ref) = current_array_ptr.as_ref() {
+        while let Some(data_array_ref) = unsafe { current_array_ptr.as_ref() } {
             if let Some((index, _)) =
                 Self::search_array(data_array_ref, key_ref, preferred_index, partial_hash)
             {
                 return Some(EntryIterator {
-                    cell_ref: Some(self),
+                    cell: Some(self),
                     current_array_ptr,
                     prev_array_ptr,
                     current_index: index,
@@ -125,9 +125,20 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
                 });
             }
             prev_array_ptr = current_array_ptr;
-            current_array_ptr = data_array_ref.link.load(Relaxed, barrier);
+            current_array_ptr = data_array_ref.link.load(Relaxed, barrier).as_raw();
         }
         None
+    }
+
+    /// Kills the [`Cell`] for dropping it.
+    pub unsafe fn kill_and_drop(&self, barrier: &Barrier) {
+        if !self.data_array.link.load(Relaxed, barrier).is_null() {
+            if let Some(data_array) = self.data_array.link.swap((None, Tag::None), Relaxed) {
+                barrier.reclaim(data_array);
+            }
+        }
+        self.state.store(KILLED, Relaxed);
+        ptr::read(self);
     }
 
     /// Searches the given [`DataArray`] for an entry matching the key.
@@ -220,15 +231,15 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
 
 impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Cell<K, V, LOCK_FREE> {
     fn drop(&mut self) {
-        // The Cell must have been killed.
+        // The [`Cell`] must have been killed.
         debug_assert!(self.killed());
     }
 }
 
 pub struct EntryIterator<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
-    cell_ref: Option<&'b Cell<K, V, LOCK_FREE>>,
-    current_array_ptr: Ptr<'b, DataArray<K, V>>,
-    prev_array_ptr: Ptr<'b, DataArray<K, V>>,
+    cell: Option<&'b Cell<K, V, LOCK_FREE>>,
+    current_array_ptr: *const DataArray<K, V>,
+    prev_array_ptr: *const DataArray<K, V>,
     current_index: usize,
     barrier_ref: &'b Barrier,
 }
@@ -240,9 +251,9 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K
         barrier: &'b Barrier,
     ) -> EntryIterator<'b, K, V, LOCK_FREE> {
         EntryIterator {
-            cell_ref: Some(cell),
-            current_array_ptr: Ptr::null(),
-            prev_array_ptr: Ptr::null(),
+            cell: Some(cell),
+            current_array_ptr: ptr::null(),
+            prev_array_ptr: ptr::null(),
             current_index: usize::MAX,
             barrier_ref: barrier,
         }
@@ -251,7 +262,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K
     /// Gets a reference to the key-value pair.
     #[inline]
     pub fn get(&self) -> Option<&'b (K, V)> {
-        if let Some(data_array_ref) = self.current_array_ptr.as_ref() {
+        if let Some(data_array_ref) = unsafe { self.current_array_ptr.as_ref() } {
             let entry_ptr = data_array_ref.data[self.current_index].as_ptr();
             return Some(unsafe { &(*entry_ptr) });
         }
@@ -270,27 +281,24 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K
         };
         self.current_array_ptr = next_data_array
             .as_ref()
-            .map_or_else(Ptr::null, |n| n.ptr(self.barrier_ref));
-        let old_data_array = if let Some(prev_data_array_ref) = self.prev_array_ptr.as_ref() {
-            prev_data_array_ref
-                .link
-                .swap((next_data_array, Tag::None), Relaxed)
-        } else if let Some(cell_ref) = self.cell_ref.as_ref() {
-            debug_assert!(!cell_ref
-                .data_array
-                .load(Relaxed, self.barrier_ref)
-                .is_null());
-            cell_ref
-                .data_array
-                .swap((next_data_array, Tag::None), Relaxed)
-        } else {
-            None
-        };
+            .map_or_else(ptr::null, |n| n.ptr(self.barrier_ref).as_raw());
+        let old_data_array =
+            if let Some(prev_data_array_ref) = unsafe { self.prev_array_ptr.as_ref() } {
+                prev_data_array_ref
+                    .link
+                    .swap((next_data_array, Tag::None), Relaxed)
+            } else if let Some(cell) = self.cell.as_ref() {
+                cell.data_array
+                    .link
+                    .swap((next_data_array, Tag::None), Relaxed)
+            } else {
+                None
+            };
         if let Some(data_array) = old_data_array {
             self.barrier_ref.reclaim(data_array);
         }
         if self.current_array_ptr.is_null() {
-            self.cell_ref.take();
+            self.cell.take();
         } else {
             self.current_index = usize::MAX;
         }
@@ -302,12 +310,15 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Iterator
 {
     type Item = (&'b (K, V), u8);
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(&cell_ref) = self.cell_ref.as_ref() {
+        if let Some(&cell) = self.cell.as_ref() {
+            if (cell.state.load(Acquire) & KILLED) == KILLED {
+                return None;
+            }
             if self.current_array_ptr.is_null() {
                 // Starts scanning from the beginning.
-                self.current_array_ptr = cell_ref.data_array.load(Relaxed, self.barrier_ref);
+                self.current_array_ptr = addr_of!(cell.data_array);
             }
-            while let Some(data_array_ref) = self.current_array_ptr.as_ref() {
+            while let Some(data_array_ref) = unsafe { self.current_array_ptr.as_ref() } {
                 // Searches for the next valid entry.
                 let current_index = if self.current_index == usize::MAX {
                     0
@@ -321,24 +332,25 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Iterator
                     return Some((entry_ref, hash));
                 }
 
-                // Proceeds to the next DataArray.
+                // Proceeds to the next `DataArray`.
                 self.prev_array_ptr = self.current_array_ptr;
-                self.current_array_ptr = data_array_ref.link.load(Relaxed, self.barrier_ref);
+                self.current_array_ptr =
+                    data_array_ref.link.load(Acquire, self.barrier_ref).as_raw();
                 self.current_index = usize::MAX;
             }
             // Fuses itself.
-            self.cell_ref.take();
+            self.cell.take();
         }
         None
     }
 }
 
 pub struct Locker<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
-    cell_ref: &'b Cell<K, V, LOCK_FREE>,
+    cell: &'b Cell<K, V, LOCK_FREE>,
 }
 
 impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
-    /// Locks the given [`Cell`].
+    /// Locks the [`Cell`].
     #[inline]
     pub fn lock(
         cell: &'b Cell<K, V, LOCK_FREE>,
@@ -349,7 +361,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                 return locker;
             }
             if let Ok(locker) = cell.wait_queue.wait(|| {
-                // Marks that there is a waiting thread.
+                // Mark that there is a waiting thread.
                 cell.state.fetch_or(WAITING, Release);
                 Self::try_lock(cell, barrier)
             }) {
@@ -360,7 +372,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
 
     /// Tries to lock the [`Cell`].
     #[inline]
-    fn try_lock(
+    pub fn try_lock(
         cell: &'b Cell<K, V, LOCK_FREE>,
         _barrier: &'b Barrier,
     ) -> Result<Option<Locker<'b, K, V, LOCK_FREE>>, ()> {
@@ -373,7 +385,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
             .compare_exchange(current, current | LOCK, Acquire, Relaxed)
             .is_ok()
         {
-            Ok(Some(Locker { cell_ref: cell }))
+            Ok(Some(Locker { cell }))
         } else {
             Err(())
         }
@@ -381,20 +393,19 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
 
     /// Returns a reference to the [`Cell`].
     #[inline]
-    pub fn cell_ref(&self) -> &'b Cell<K, V, LOCK_FREE> {
-        self.cell_ref
+    pub fn cell(&self) -> &'b Cell<K, V, LOCK_FREE> {
+        self.cell
     }
 
     /// Inserts a new key-value pair into the [`Cell`] without a uniqueness check.
     #[inline]
     pub fn insert(&'b self, key: K, value: V, partial_hash: u8, barrier: &'b Barrier) {
-        assert!(self.cell_ref.num_entries != u32::MAX, "array overflow");
+        assert!(self.cell.num_entries != u32::MAX, "array overflow");
 
-        let mut data_array_ptr = self.cell_ref.data_array.load(Relaxed, barrier);
-        let data_array_head_ptr = data_array_ptr;
+        let mut data_array_ptr = addr_of!(self.cell.data_array);
         let preferred_index = partial_hash as usize % ARRAY_SIZE;
         let mut free_index = ARRAY_SIZE;
-        while let Some(data_array_ref) = data_array_ptr.as_ref() {
+        while let Some(data_array_ref) = unsafe { data_array_ptr.as_ref() } {
             if (data_array_ref.occupied & (1_u32 << preferred_index)) == 0 {
                 free_index = preferred_index;
                 break;
@@ -405,11 +416,11 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                 break;
             }
 
-            data_array_ptr = data_array_ref.link.load(Relaxed, barrier);
+            data_array_ptr = data_array_ref.link.load(Relaxed, barrier).as_raw();
         }
 
         if free_index == ARRAY_SIZE {
-            // Inserts a new `DataArray` at the head.
+            // Inserts a new `DataArray` at the linked list head.
             let mut new_data_array = Arc::new(DataArray::new());
             unsafe {
                 new_data_array.get_mut().unwrap().data[preferred_index]
@@ -425,18 +436,20 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                 new_data_array.get_mut().unwrap().occupied |= 1_u32 << preferred_index;
             }
 
-            new_data_array
-                .link
-                .swap((data_array_head_ptr.get_arc(), Tag::None), Relaxed);
-            self.cell_ref
+            new_data_array.link.swap(
+                (
+                    self.cell.data_array.link.get_arc(Relaxed, barrier),
+                    Tag::None,
+                ),
+                Relaxed,
+            );
+            self.cell
                 .data_array
+                .link
                 .swap((Some(new_data_array), Tag::None), Release);
         } else {
-            let data_array_ref = data_array_ptr.as_ref().unwrap();
             unsafe {
-                #[allow(clippy::cast_ref_to_mut)]
-                let data_array_mut_ref =
-                    &mut *(data_array_ref as *const DataArray<K, V> as *mut DataArray<K, V>);
+                let data_array_mut_ref = &mut *(data_array_ptr as *mut DataArray<K, V>);
                 data_array_mut_ref.data[free_index]
                     .as_mut_ptr()
                     .write((key, value));
@@ -449,7 +462,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                 data_array_mut_ref.occupied |= 1_u32 << free_index;
             };
         }
-        self.num_entries_updated(self.cell_ref.num_entries + 1);
+        self.num_entries_updated(self.cell.num_entries + 1);
     }
 
     /// Removes a key-value pair being pointed by the given [`EntryIterator`].
@@ -458,18 +471,18 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
             return None;
         }
 
-        if let Some(data_array_ref) = iterator.current_array_ptr.as_ref() {
-            if data_array_ref.occupied & (1_u32 << iterator.current_index) == 0 {
+        if let Some(data_array_mut_ref) =
+            unsafe { (iterator.current_array_ptr as *mut DataArray<K, V>).as_mut() }
+        {
+            if data_array_mut_ref.occupied & (1_u32 << iterator.current_index) == 0 {
                 return None;
             }
 
-            if LOCK_FREE && data_array_ref.removed & (1_u32 << iterator.current_index) != 0 {
+            if LOCK_FREE && (data_array_mut_ref.removed & (1_u32 << iterator.current_index)) != 0 {
                 return None;
             }
-            self.num_entries_updated(self.cell_ref.num_entries - 1);
-            #[allow(clippy::cast_ref_to_mut)]
-            let data_array_mut_ref =
-                unsafe { &mut *(data_array_ref as *const DataArray<K, V> as *mut DataArray<K, V>) };
+
+            self.num_entries_updated(self.cell.num_entries - 1);
             let result = if LOCK_FREE {
                 data_array_mut_ref.removed |= 1_u32 << iterator.current_index;
                 None
@@ -479,10 +492,10 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                 #[allow(clippy::uninit_assumed_init)]
                 Some(unsafe { ptr::replace(entry_ptr, MaybeUninit::uninit().assume_init()) })
             };
-            if LOCK_FREE && (data_array_ref.occupied & (!data_array_ref.removed)) == 0
-                || (!LOCK_FREE && data_array_ref.occupied == 0)
+            if LOCK_FREE && (data_array_mut_ref.occupied & (!data_array_mut_ref.removed)) == 0
+                || (!LOCK_FREE && data_array_mut_ref.occupied == 0)
             {
-                iterator.unlink_data_array(data_array_ref);
+                iterator.unlink_data_array(data_array_mut_ref);
             }
             return result;
         }
@@ -490,67 +503,31 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     }
 
     /// Extracts the key-value pair being pointed by `self`.
-    #[allow(clippy::unused_self)]
     pub fn extract(&self, iterator: &mut EntryIterator<K, V, LOCK_FREE>) -> (K, V) {
-        let data_array_ref = iterator.current_array_ptr.as_ref().unwrap();
+        let data_array_mut_ref =
+            unsafe { &mut *(iterator.current_array_ptr as *mut DataArray<K, V>) };
         debug_assert!(!LOCK_FREE);
         debug_assert_ne!(
-            data_array_ref.occupied & (1_u32 << iterator.current_index),
+            data_array_mut_ref.occupied & (1_u32 << iterator.current_index),
             0
         );
 
-        #[allow(clippy::cast_ref_to_mut)]
-        let data_array_mut_ref =
-            unsafe { &mut *(data_array_ref as *const DataArray<K, V> as *mut DataArray<K, V>) };
+        self.num_entries_updated(self.cell.num_entries - 1);
         data_array_mut_ref.occupied &= !(1_u32 << iterator.current_index);
         let entry_ptr = data_array_mut_ref.data[iterator.current_index].as_mut_ptr();
-        #[allow(clippy::uninit_assumed_init)]
-        let result = unsafe { ptr::replace(entry_ptr, MaybeUninit::uninit().assume_init()) };
+        let result = unsafe { ptr::read(entry_ptr) };
         if data_array_mut_ref.occupied == 0 {
-            iterator.unlink_data_array(data_array_ref);
+            iterator.unlink_data_array(data_array_mut_ref);
         }
         result
     }
 
-    /// Tries to inherit the data array from the other [`Cell`].
-    #[inline]
-    pub fn try_inherit(&self, other: &Locker<K, V, LOCK_FREE>, barrier: &Barrier) -> bool {
-        if self.cell_ref.data_array.load(Relaxed, barrier).is_null() {
-            let other_data_array_ptr = other.cell_ref.data_array.load(Relaxed, barrier);
-            if let Some(other_data_array_ref) = other_data_array_ptr.as_ref() {
-                if other_data_array_ref.link.load(Relaxed, barrier).is_null() {
-                    // The conditions are, `self` has none and `other` has a single data array.
-                    self.cell_ref.data_array.swap(
-                        (
-                            other.cell_ref.data_array.swap((None, Tag::None), Relaxed),
-                            Tag::None,
-                        ),
-                        Relaxed,
-                    );
-                    debug_assert!(other.cell_ref.data_array.load(Relaxed, barrier).is_null());
-                    debug_assert!(!self.cell_ref.data_array.load(Relaxed, barrier).is_null());
-                    debug_assert_eq!(self.cell_ref.num_entries, 0);
-                    self.num_entries_updated(1);
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    /// Notifies the [`Cell`] that an entry has been implicitly inherited.
-    #[inline]
-    pub fn entry_inherited(&self) {
-        debug_assert_ne!(self.cell_ref.num_entries, 0);
-        self.num_entries_updated(self.cell_ref.num_entries + 1);
-    }
-
     /// Purges all the data.
     pub fn purge(&mut self, barrier: &Barrier) {
-        self.cell_ref.state.fetch_or(KILLED, Release);
+        self.cell.state.fetch_or(KILLED, Release);
         self.num_entries_updated(0);
-        if !self.cell_ref.data_array.load(Relaxed, barrier).is_null() {
-            if let Some(data_array) = self.cell_ref.data_array.swap((None, Tag::None), Relaxed) {
+        if !self.cell.data_array.link.load(Relaxed, barrier).is_null() {
+            if let Some(data_array) = self.cell.data_array.link.swap((None, Tag::None), Relaxed) {
                 barrier.reclaim(data_array);
             }
         }
@@ -559,8 +536,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     /// Updates the number of entries.
     fn num_entries_updated(&self, num: u32) {
         #[allow(clippy::cast_ref_to_mut)]
-        let cell_mut_ref =
-            unsafe { &mut *(self.cell_ref as *const _ as *mut Cell<K, V, LOCK_FREE>) };
+        let cell_mut_ref = unsafe { &mut *(self.cell as *const _ as *mut Cell<K, V, LOCK_FREE>) };
         cell_mut_ref.num_entries = num;
     }
 }
@@ -568,10 +544,10 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
 impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Locker<'b, K, V, LOCK_FREE> {
     #[inline]
     fn drop(&mut self) {
-        let mut current = self.cell_ref.state.load(Relaxed);
+        let mut current = self.cell.state.load(Relaxed);
         loop {
             let wakeup = (current & WAITING) == WAITING;
-            match self.cell_ref.state.compare_exchange(
+            match self.cell.state.compare_exchange(
                 current,
                 current & (!(WAITING | LOCK)),
                 Release,
@@ -579,7 +555,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Locker<'b,
             ) {
                 Ok(_) => {
                     if wakeup {
-                        self.cell_ref.wait_queue.signal();
+                        self.cell.wait_queue.signal();
                     }
                     break;
                 }
@@ -590,7 +566,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Locker<'b,
 }
 
 pub struct Reader<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
-    cell_ref: &'b Cell<K, V, LOCK_FREE>,
+    cell: &'b Cell<K, V, LOCK_FREE>,
 }
 
 impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
@@ -605,7 +581,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
                 return reader;
             }
             if let Ok(reader) = cell.wait_queue.wait(|| {
-                // Marks that there is a waiting thread.
+                // Mark that there is a waiting thread.
                 cell.state.fetch_or(WAITING, Release);
                 Self::try_lock(cell, barrier)
             }) {
@@ -616,7 +592,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
 
     /// Tries to lock the [`Cell`].
     #[inline]
-    fn try_lock(
+    pub fn try_lock(
         cell: &'b Cell<K, V, LOCK_FREE>,
         _barrier: &'b Barrier,
     ) -> Result<Option<Reader<'b, K, V, LOCK_FREE>>, ()> {
@@ -624,7 +600,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
         if (current & LOCK_MASK) >= SLOCK_MAX {
             return Err(());
         }
-        if (current & KILLED) == KILLED {
+        if (current & KILLED) >= KILLED {
             return Ok(None);
         }
         if cell
@@ -632,7 +608,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
             .compare_exchange(current, current + 1, Acquire, Relaxed)
             .is_ok()
         {
-            Ok(Some(Reader { cell_ref: cell }))
+            Ok(Some(Reader { cell }))
         } else {
             Err(())
         }
@@ -640,26 +616,26 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
 
     /// Returns a reference to the [`Cell`].
     #[inline]
-    pub fn cell_ref(&self) -> &Cell<K, V, LOCK_FREE> {
-        self.cell_ref
+    pub fn cell(&self) -> &Cell<K, V, LOCK_FREE> {
+        self.cell
     }
 }
 
 impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Reader<'b, K, V, LOCK_FREE> {
     #[inline]
     fn drop(&mut self) {
-        let mut current = self.cell_ref.state.load(Relaxed);
+        let mut current = self.cell.state.load(Relaxed);
         loop {
             let wakeup = (current & WAITING) == WAITING;
             let next = (current - 1) & !(WAITING);
             match self
-                .cell_ref
+                .cell
                 .state
                 .compare_exchange(current, next, Relaxed, Relaxed)
             {
                 Ok(_) => {
                     if wakeup {
-                        self.cell_ref.wait_queue.signal();
+                        self.cell.wait_queue.signal();
                     }
                     break;
                 }
@@ -708,25 +684,27 @@ impl<K: 'static + Eq, V: 'static> Drop for DataArray<K, V> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::convert::TryInto;
-    use std::sync;
-    use std::thread;
 
-    #[test]
-    fn cell_locker() {
-        let num_threads = (ARRAY_SIZE * 2) as usize;
-        let barrier = sync::Arc::new(sync::Barrier::new(num_threads));
-        let cell: sync::Arc<Cell<usize, usize, true>> = sync::Arc::new(Cell::default());
+    use std::convert::TryInto;
+    use std::sync::atomic::AtomicPtr;
+
+    use tokio::sync;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    async fn queue() {
+        let num_tasks = ARRAY_SIZE + 2;
+        let barrier = Arc::new(sync::Barrier::new(num_tasks));
+        let cell: Arc<Cell<usize, usize, true>> = Arc::new(Cell::default());
         let mut data: [u64; 128] = [0; 128];
-        let mut thread_handles = Vec::with_capacity(num_threads);
-        for thread_id in 0..num_threads {
+        let mut task_handles = Vec::with_capacity(num_tasks);
+        for task_id in 0..num_tasks {
             let barrier_copied = barrier.clone();
             let cell_copied = cell.clone();
-            let data_ptr = sync::atomic::AtomicPtr::new(&mut data);
-            thread_handles.push(thread::spawn(move || {
-                barrier_copied.wait();
+            let data_ptr = AtomicPtr::new(&mut data);
+            task_handles.push(tokio::spawn(async move {
+                barrier_copied.wait().await;
                 let barrier = Barrier::new();
-                for i in 0..4096 {
+                for i in 0..2048 {
                     let exclusive_locker = Locker::lock(&*cell_copied, &barrier).unwrap();
                     let mut sum: u64 = 0;
                     for j in 0..128 {
@@ -738,22 +716,22 @@ mod test {
                     assert_eq!(sum % 256, 0);
                     if i == 0 {
                         exclusive_locker.insert(
-                            thread_id,
+                            task_id,
                             0,
-                            (thread_id % ARRAY_SIZE).try_into().unwrap(),
+                            (task_id % ARRAY_SIZE).try_into().unwrap(),
                             &barrier,
                         );
                     } else {
                         assert_eq!(
                             exclusive_locker
-                                .cell_ref()
+                                .cell()
                                 .search(
-                                    &thread_id,
-                                    (thread_id % ARRAY_SIZE).try_into().unwrap(),
+                                    &task_id,
+                                    (task_id % ARRAY_SIZE).try_into().unwrap(),
                                     &barrier
                                 )
                                 .unwrap(),
-                            &(thread_id, 0_usize)
+                            &(task_id, 0_usize)
                         );
                     }
                     drop(exclusive_locker);
@@ -761,50 +739,54 @@ mod test {
                     let read_locker = Reader::lock(&*cell_copied, &barrier).unwrap();
                     assert_eq!(
                         read_locker
-                            .cell_ref()
+                            .cell()
                             .search(
-                                &thread_id,
-                                (thread_id % ARRAY_SIZE).try_into().unwrap(),
+                                &task_id,
+                                (task_id % ARRAY_SIZE).try_into().unwrap(),
                                 &barrier
                             )
                             .unwrap(),
-                        &(thread_id, 0_usize)
+                        &(task_id, 0_usize)
                     );
                 }
             }));
         }
-        for handle in thread_handles {
-            handle.join().unwrap();
+        for r in futures::future::join_all(task_handles).await {
+            assert!(r.is_ok());
         }
+
         let sum: u64 = data.iter().sum();
         assert_eq!(sum % 256, 0);
-        assert_eq!(cell.num_entries(), num_threads);
+        assert_eq!(cell.num_entries(), num_tasks);
 
         let epoch_barrier = Barrier::new();
-        for thread_id in 0..num_threads {
+        for task_id in 0..num_tasks {
             assert_eq!(
                 cell.search(
-                    &thread_id,
-                    (thread_id % ARRAY_SIZE).try_into().unwrap(),
+                    &task_id,
+                    (task_id % ARRAY_SIZE).try_into().unwrap(),
                     &epoch_barrier
                 ),
-                Some(&(thread_id, 0))
+                Some(&(task_id, 0))
             );
         }
         let mut iterated = 0;
         for entry in cell.iter(&epoch_barrier) {
-            assert!(entry.0 .0 < num_threads);
+            assert!(entry.0 .0 < num_tasks);
             assert_eq!(entry.0 .1, 0);
             iterated += 1;
         }
         assert_eq!(cell.num_entries(), iterated);
 
-        let mut xlocker = Locker::lock(&*cell, &epoch_barrier).unwrap();
+        let mut xlocker = Locker::try_lock(&*cell, &epoch_barrier).unwrap().unwrap();
         xlocker.purge(&epoch_barrier);
         drop(xlocker);
 
         assert!(cell.killed());
         assert_eq!(cell.num_entries(), 0);
-        assert!(Locker::lock(&*cell, &epoch_barrier).is_none());
+        assert!(Locker::try_lock(&*cell, &epoch_barrier)
+            .ok()
+            .unwrap()
+            .is_none());
     }
 }

@@ -1,6 +1,6 @@
 //! The module implements [`HashIndex`].
 
-use super::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
+use super::ebr::{Arc, AtomicArc, Barrier, Ptr};
 use super::hash_table::cell::{EntryIterator, Locker};
 use super::hash_table::cell_array::CellArray;
 use super::hash_table::HashTable;
@@ -10,7 +10,7 @@ use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash};
 use std::iter::FusedIterator;
 use std::sync::atomic::AtomicU8;
-use std::sync::atomic::Ordering::{Acquire, Relaxed};
+use std::sync::atomic::Ordering::Acquire;
 
 /// Scalable concurrent hash index data structure.
 ///
@@ -109,7 +109,15 @@ where
     /// ```
     #[inline]
     pub fn insert(&self, key: K, val: V) -> Result<(), (K, V)> {
-        self.insert_entry(key, val)
+        if let Some((k, v)) = self
+            .insert_entry::<false>(key, val, &Barrier::new())
+            .ok()
+            .unwrap()
+        {
+            Err((k, v))
+        } else {
+            Ok(())
+        }
     }
 
     /// Removes a key-value pair if the key exists.
@@ -151,13 +159,17 @@ where
     /// assert!(!hashindex.remove_if(&1, |v| *v == 1));
     /// assert!(hashindex.remove_if(&1, |v| *v == 0));
     /// ```
+    #[allow(clippy::missing_panics_doc)]
     #[inline]
-    pub fn remove_if<Q, F: FnOnce(&V) -> bool>(&self, key_ref: &Q, condition: F) -> bool
+    pub fn remove_if<Q, F: FnMut(&V) -> bool>(&self, key_ref: &Q, mut condition: F) -> bool
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.remove_entry(key_ref, condition).1
+        self.remove_entry::<Q, _, false>(key_ref, &mut condition, &Barrier::new())
+            .ok()
+            .unwrap()
+            .1
     }
 
     /// Reads a key-value pair.
@@ -176,7 +188,7 @@ where
     /// assert_eq!(hashindex.read(&1, |_, v| *v).unwrap(), 10);
     /// ```
     #[inline]
-    pub fn read<Q, R, F: FnOnce(&K, &V) -> R>(&self, key_ref: &Q, reader: F) -> Option<R>
+    pub fn read<Q, R, F: Fn(&K, &V) -> R>(&self, key_ref: &Q, reader: F) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
@@ -204,18 +216,21 @@ where
     /// let value_ref = hashindex.read_with(&1, |k, v| v, &barrier).unwrap();
     /// assert_eq!(*value_ref, 10);
     /// ```
+    #[allow(clippy::missing_panics_doc)]
     #[inline]
-    pub fn read_with<'b, Q, R, F: FnOnce(&'b K, &'b V) -> R>(
+    pub fn read_with<'b, Q, R, F: FnMut(&'b K, &'b V) -> R>(
         &self,
         key_ref: &Q,
-        reader: F,
+        mut reader: F,
         barrier: &'b Barrier,
     ) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.read_entry(key_ref, reader, barrier)
+        self.read_entry::<Q, R, F, false>(key_ref, &mut reader, barrier)
+            .ok()
+            .unwrap()
     }
 
     /// Checks if the key exists.
@@ -258,7 +273,7 @@ where
         let mut current_array_ptr = self.array.load(Acquire, &barrier);
         while let Some(current_array_ref) = current_array_ptr.as_ref() {
             if !current_array_ref.old_array(&barrier).is_null() {
-                while !current_array_ref.partial_rehash(
+                while !current_array_ref.partial_rehash::<_, _, _, false>(
                     |k| self.hash(k),
                     |k, v| Some((k.clone(), v.clone())),
                     &barrier,
@@ -269,7 +284,7 @@ where
             }
             for index in 0..current_array_ref.num_cells() {
                 if let Some(mut locker) = Locker::lock(current_array_ref.cell(index), &barrier) {
-                    num_removed += locker.cell_ref().num_entries();
+                    num_removed += locker.cell().num_entries();
                     locker.purge(&barrier);
                 }
             }
@@ -414,25 +429,6 @@ where
     }
 }
 
-impl<K, V, H> Drop for HashIndex<K, V, H>
-where
-    K: 'static + Clone + Eq + Hash + Sync,
-    V: 'static + Clone + Sync,
-    H: BuildHasher,
-{
-    fn drop(&mut self) {
-        self.clear();
-        let barrier = Barrier::new();
-        let current_array_ptr = self.array.load(Acquire, &barrier);
-        if let Some(current_array_ref) = current_array_ptr.as_ref() {
-            current_array_ref.drop_old_array(&barrier);
-            if let Some(current_array) = self.array.swap((None, Tag::None), Relaxed) {
-                barrier.reclaim(current_array);
-            }
-        }
-    }
-}
-
 impl<K, V, H> HashTable<K, V, H, true> for HashIndex<K, V, H>
 where
     K: 'static + Clone + Eq + Hash + Sync,
@@ -482,7 +478,7 @@ where
     type Item = (&'b K, &'b V);
     fn next(&mut self) -> Option<Self::Item> {
         if self.current_array_ptr.is_null() {
-            // Starts scanning.
+            // Start scanning.
             let current_array_ptr = self.hash_index.array.load(Acquire, self.barrier_ref);
             let current_array_ref = current_array_ptr.as_ref().unwrap();
             let old_array_ptr = current_array_ref.old_array(self.barrier_ref);
@@ -497,12 +493,12 @@ where
         }
         loop {
             if let Some(iterator) = self.current_entry_iterator.as_mut() {
-                // Proceeds to the next entry in the Cell.
+                // Go to the next entry in the Cell.
                 if let Some(entry) = iterator.next() {
                     return Some((&entry.0 .0, &entry.0 .1));
                 }
             }
-            // Proceeds to the next Cell.
+            // Go to the next Cell.
             let array_ref = self.current_array_ptr.as_ref().unwrap();
             self.current_index += 1;
             if self.current_index == array_ref.num_cells() {
@@ -523,7 +519,7 @@ where
                     ));
                     continue;
                 }
-                // Starts from the very beginning.
+                // Start from the very beginning.
                 self.current_array_ptr = if old_array_ptr.is_null() {
                     current_array_ptr
                 } else {

@@ -1,6 +1,7 @@
 //! The module implements [`HashMap`].
 
-use super::ebr::{Arc, AtomicArc, Barrier, Tag};
+use super::async_yield::{self, AwaitableBarrier};
+use super::ebr::{Arc, AtomicArc, Barrier};
 use super::hash_table::cell::Locker;
 use super::hash_table::cell_array::CellArray;
 use super::hash_table::HashTable;
@@ -172,7 +173,46 @@ where
     /// ```
     #[inline]
     pub fn insert(&self, key: K, val: V) -> Result<(), (K, V)> {
-        self.insert_entry(key, val)
+        if let Some((k, v)) = self
+            .insert_entry::<false>(key, val, &Barrier::new())
+            .ok()
+            .unwrap()
+        {
+            Err((k, v))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Inserts a key-value pair into the [`HashMap`].
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error along with the supplied key-value pair.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    /// let future_insert = hashmap.insert_async(11, 17);
+    /// ```
+    #[inline]
+    pub async fn insert_async(&self, mut key: K, mut val: V) -> Result<(), (K, V)> {
+        loop {
+            match self.insert_entry::<true>(key, val, &Barrier::new()) {
+                Ok(Some(returned)) => return Err(returned),
+                Ok(None) => return Ok(()),
+                Err(returned) => {
+                    key = returned.0;
+                    val = returned.1;
+                }
+            }
+            async_yield::async_yield().await;
+        }
     }
 
     /// Updates an existing key-value pair.
@@ -191,6 +231,7 @@ where
     /// assert_eq!(hashmap.update(&1, |_, v| { *v = 2; *v }).unwrap(), 2);
     /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
     /// ```
+    #[allow(clippy::missing_panics_doc)]
     #[inline]
     pub fn update<Q, F, R>(&self, key_ref: &Q, updater: F) -> Option<R>
     where
@@ -200,7 +241,10 @@ where
     {
         let (hash, partial_hash) = self.hash(key_ref);
         let barrier = Barrier::new();
-        let (_, _, iterator) = self.acquire(key_ref, hash, partial_hash, &barrier);
+        let (_, _, iterator) = self
+            .acquire::<Q, false>(key_ref, hash, partial_hash, &barrier)
+            .ok()
+            .unwrap();
         if let Some(iterator) = iterator {
             if let Some((k, v)) = iterator.get() {
                 // The presence of `locker` prevents the entry from being modified outside it.
@@ -239,7 +283,10 @@ where
     ) {
         let (hash, partial_hash) = self.hash(&key);
         let barrier = Barrier::new();
-        let (_, locker, iterator) = self.acquire(&key, hash, partial_hash, &barrier);
+        let (_, locker, iterator) = self
+            .acquire::<_, false>(&key, hash, partial_hash, &barrier)
+            .ok()
+            .unwrap();
         if let Some(iterator) = iterator {
             if let Some((k, v)) = iterator.get() {
                 // The presence of `locker` prevents the entry from being modified outside it.
@@ -273,6 +320,28 @@ where
         self.remove_if(key_ref, |_| true)
     }
 
+    /// Removes a key-value pair if the key exists.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    /// let future_insert = hashmap.insert_async(11, 17);
+    /// let future_remove = hashmap.remove_async(&11);
+    /// ```
+    #[inline]
+    pub async fn remove_async<Q>(&self, key_ref: &Q) -> Option<(K, V)>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.remove_if_async(key_ref, |_| true).await
+    }
+
     /// Removes a key-value pair if the key exists and the given condition is met.
     ///
     /// # Examples
@@ -286,13 +355,54 @@ where
     /// assert!(hashmap.remove_if(&1, |v| *v == 1).is_none());
     /// assert_eq!(hashmap.remove_if(&1, |v| *v == 0).unwrap(), (1, 0));
     /// ```
+    #[allow(clippy::missing_panics_doc)]
     #[inline]
-    pub fn remove_if<Q, F: FnOnce(&V) -> bool>(&self, key_ref: &Q, condition: F) -> Option<(K, V)>
+    pub fn remove_if<Q, F: FnMut(&V) -> bool>(
+        &self,
+        key_ref: &Q,
+        mut condition: F,
+    ) -> Option<(K, V)>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.remove_entry(key_ref, condition).0
+        self.remove_entry::<Q, _, false>(key_ref, &mut condition, &Barrier::new())
+            .ok()
+            .unwrap()
+            .0
+    }
+
+    /// Removes a key-value pair if the key exists and the given condition is met.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    /// let future_insert = hashmap.insert_async(11, 17);
+    /// let future_remove = hashmap.remove_if_async(&11, |_| true);
+    /// ```
+    #[inline]
+    pub async fn remove_if_async<Q, F: FnMut(&V) -> bool>(
+        &self,
+        key_ref: &Q,
+        mut condition: F,
+    ) -> Option<(K, V)>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        loop {
+            if let Ok(result) =
+                self.remove_entry::<Q, F, true>(key_ref, &mut condition, &Barrier::new())
+            {
+                return result.0;
+            }
+            async_yield::async_yield().await;
+        }
     }
 
     /// Reads a key-value pair.
@@ -311,13 +421,47 @@ where
     /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 10);
     /// ```
     #[inline]
-    pub fn read<Q, R, F: FnOnce(&K, &V) -> R>(&self, key_ref: &Q, reader: F) -> Option<R>
+    pub fn read<Q, R, F: FnMut(&K, &V) -> R>(&self, key_ref: &Q, reader: F) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
         let barrier = Barrier::new();
         self.read_with(key_ref, reader, &barrier)
+    }
+
+    /// Reads a key-value pair.
+    ///
+    /// It returns `None` if the key does not exist. It is an asynchronous method returning an
+    /// `impl Future` for the caller to await or poll.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    /// let future_insert = hashmap.insert_async(11, 17);
+    /// let future_read = hashmap.read_async(&11, |_, v| *v);
+    /// ```
+    #[inline]
+    pub async fn read_async<Q, R, F: FnMut(&K, &V) -> R>(
+        &self,
+        key_ref: &Q,
+        mut reader: F,
+    ) -> Option<R>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        loop {
+            if let Ok(result) =
+                self.read_entry::<Q, R, _, true>(key_ref, &mut reader, &Barrier::new())
+            {
+                return result;
+            }
+            async_yield::async_yield().await;
+        }
     }
 
     /// Reads a key-value pair using the supplied [`Barrier`].
@@ -339,18 +483,21 @@ where
     /// let value_ref = hashmap.read_with(&1, |k, v| v, &barrier).unwrap();
     /// assert_eq!(*value_ref, 10);
     /// ```
+    #[allow(clippy::missing_panics_doc)]
     #[inline]
-    pub fn read_with<'b, Q, R, F: FnOnce(&'b K, &'b V) -> R>(
+    pub fn read_with<'b, Q, R, F: FnMut(&'b K, &'b V) -> R>(
         &self,
         key_ref: &Q,
-        reader: F,
+        mut reader: F,
         barrier: &'b Barrier,
     ) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.read_entry(key_ref, reader, barrier)
+        self.read_entry::<Q, R, F, false>(key_ref, &mut reader, barrier)
+            .ok()
+            .unwrap()
     }
 
     /// Checks if the key exists.
@@ -401,6 +548,29 @@ where
         });
     }
 
+    /// Iterates over all the entries in the [`HashMap`].
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// let future_insert = hashmap.insert_async(1, 0);
+    /// let future_for_each = hashmap.for_each_async(|k, v| println!("{} {}", k, v));
+    /// ```
+    #[inline]
+    pub async fn for_each_async<F: FnMut(&K, &mut V)>(&self, mut f: F) {
+        self.retain_async(|k, v| {
+            f(k, v);
+            true
+        })
+        .await;
+    }
+
     /// Retains key-value pairs that satisfy the given predicate.
     ///
     /// It returns the number of entries remaining and removed.
@@ -428,14 +598,18 @@ where
         let mut current_array_ptr = self.array.load(Acquire, &barrier);
         while let Some(current_array_ref) = current_array_ptr.as_ref() {
             if !current_array_ref.old_array(&barrier).is_null() {
-                current_array_ref.partial_rehash(|key| self.hash(key), |_, _| None, &barrier);
+                current_array_ref.partial_rehash::<_, _, _, false>(
+                    |key| self.hash(key),
+                    |_, _| None,
+                    &barrier,
+                );
                 current_array_ptr = self.array.load(Acquire, &barrier);
                 continue;
             }
 
             for cell_index in 0..current_array_ref.num_cells() {
                 if let Some(locker) = Locker::lock(current_array_ref.cell(cell_index), &barrier) {
-                    let mut iterator = locker.cell_ref().iter(&barrier);
+                    let mut iterator = locker.cell().iter(&barrier);
                     while iterator.next().is_some() {
                         let retain = if let Some((k, v)) = iterator.get() {
                             #[allow(clippy::cast_ref_to_mut)]
@@ -472,6 +646,104 @@ where
         (retained_entries, removed_entries)
     }
 
+    /// Retains key-value pairs that satisfy the given predicate.
+    ///
+    /// It returns the number of entries remaining and removed. It is an asynchronous method
+    /// returning an `impl Future` for the caller to await or poll.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// let future_insert = hashmap.insert_async(1, 0);
+    /// let future_retain = hashmap.retain_async(|k, v| *k == 1);
+    /// ```
+    pub async fn retain_async<F: FnMut(&K, &mut V) -> bool>(
+        &self,
+        mut filter: F,
+    ) -> (usize, usize) {
+        let mut retained_entries = 0;
+        let mut removed_entries = 0;
+
+        // An acquire fence is required to correctly load the contents of the array.
+        let mut awaitable_barrier = AwaitableBarrier::default();
+        let mut current_array_holder = self.array.get_arc(Acquire, awaitable_barrier.barrier());
+        while let Some(current_array) = current_array_holder.take() {
+            while !current_array
+                .old_array(awaitable_barrier.barrier())
+                .is_null()
+            {
+                if current_array.partial_rehash::<_, _, _, true>(
+                    |key| self.hash(key),
+                    |_, _| None,
+                    awaitable_barrier.barrier(),
+                ) {
+                    continue;
+                }
+                awaitable_barrier.drop_barrier_and_yield().await;
+            }
+
+            for cell_index in 0..current_array.num_cells() {
+                loop {
+                    {
+                        // Limits the scope of `barrier`.
+                        let barrier = awaitable_barrier.barrier();
+                        if let Ok(result) =
+                            Locker::try_lock(current_array.cell(cell_index), barrier)
+                        {
+                            if let Some(locker) = result {
+                                let mut iterator = locker.cell().iter(barrier);
+                                while iterator.next().is_some() {
+                                    let retain = if let Some((k, v)) = iterator.get() {
+                                        #[allow(clippy::cast_ref_to_mut)]
+                                        filter(k, unsafe { &mut *(v as *const V as *mut V) })
+                                    } else {
+                                        true
+                                    };
+                                    if retain {
+                                        retained_entries += 1;
+                                    } else {
+                                        locker.erase(&mut iterator);
+                                        removed_entries += 1;
+                                    }
+                                    if retained_entries == usize::MAX
+                                        || removed_entries == usize::MAX
+                                    {
+                                        // Gives up iteration on an integer overflow.
+                                        return (retained_entries, removed_entries);
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    awaitable_barrier.drop_barrier_and_yield().await;
+                }
+            }
+
+            if let Some(new_current_array) =
+                self.array.get_arc(Acquire, awaitable_barrier.barrier())
+            {
+                if new_current_array.as_ptr() == current_array.as_ptr() {
+                    break;
+                }
+                retained_entries = 0;
+                current_array_holder.replace(new_current_array);
+                continue;
+            }
+            break;
+        }
+
+        if removed_entries >= retained_entries {
+            self.resize(&Barrier::new());
+        }
+
+        (retained_entries, removed_entries)
+    }
+
     /// Clears all the key-value pairs.
     ///
     /// # Examples
@@ -487,6 +759,25 @@ where
     #[inline]
     pub fn clear(&self) -> usize {
         self.retain(|_, _| false).1
+    }
+
+    /// Clears all the key-value pairs.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// let future_insert = hashmap.insert_async(1, 0);
+    /// let future_clear = hashmap.clear_async();
+    /// ```
+    #[inline]
+    pub async fn clear_async(&self) -> usize {
+        self.retain_async(|_, _| false).await.1
     }
 
     /// Returns the number of entries in the [`HashMap`].
@@ -578,25 +869,6 @@ where
             additional_capacity: AtomicUsize::new(0),
             resize_mutex: AtomicU8::new(0),
             build_hasher: RandomState::new(),
-        }
-    }
-}
-
-impl<K, V, H> Drop for HashMap<K, V, H>
-where
-    K: 'static + Eq + Hash + Sync,
-    V: 'static + Sync,
-    H: BuildHasher,
-{
-    fn drop(&mut self) {
-        self.clear();
-        let barrier = Barrier::new();
-        let current_array_ptr = self.array.load(Acquire, &barrier);
-        if let Some(current_array_ref) = current_array_ptr.as_ref() {
-            current_array_ref.drop_old_array(&barrier);
-            if let Some(current_array) = self.array.swap((None, Tag::None), Relaxed) {
-                barrier.reclaim(current_array);
-            }
         }
     }
 }

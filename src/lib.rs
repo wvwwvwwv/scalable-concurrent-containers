@@ -6,7 +6,6 @@
 //! * [`HashMap`](HashMap).
 //! * [`HashIndex`](HashIndex).
 //! * [`TreeIndex`](TreeIndex).
-//! * [`awaitable::HashMap`](awaitable::HashMap).
 //!
 //! # [`EBR`](ebr)
 //!
@@ -27,8 +26,8 @@ pub use hash_set::HashSet;
 pub mod tree_index;
 pub use tree_index::TreeIndex;
 
-pub mod awaitable;
 pub mod ebr;
 
+mod async_yield;
 mod hash_table;
 mod tests;

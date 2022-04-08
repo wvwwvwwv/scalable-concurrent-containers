@@ -5,7 +5,7 @@ mod leaf;
 mod leaf_node;
 mod node;
 
-use crate::awaitable::async_yield;
+use crate::async_yield;
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 
 use leaf::{InsertResult, Leaf, RemoveResult, Scanner};

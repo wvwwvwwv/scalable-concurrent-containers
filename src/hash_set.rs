@@ -152,7 +152,7 @@ where
     /// assert_eq!(hashset.remove_if(&1, || true).unwrap(), 1);
     /// ```
     #[inline]
-    pub fn remove_if<Q, F: FnOnce() -> bool>(&self, key_ref: &Q, condition: F) -> Option<K>
+    pub fn remove_if<Q, F: FnMut() -> bool>(&self, key_ref: &Q, mut condition: F) -> Option<K>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
@@ -176,7 +176,7 @@ where
     /// assert!(hashset.read(&1, |_| true).unwrap());
     /// ```
     #[inline]
-    pub fn read<Q, R, F: FnOnce(&K) -> R>(&self, key_ref: &Q, reader: F) -> Option<R>
+    pub fn read<Q, R, F: FnMut(&K) -> R>(&self, key_ref: &Q, reader: F) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
@@ -205,10 +205,10 @@ where
     /// assert_eq!(*key_ref, 1);
     /// ```
     #[inline]
-    pub fn read_with<'b, Q, R, F: FnOnce(&'b K) -> R>(
+    pub fn read_with<'b, Q, R, F: FnMut(&'b K) -> R>(
         &self,
         key_ref: &Q,
-        reader: F,
+        mut reader: F,
         barrier: &'b Barrier,
     ) -> Option<R>
     where

@@ -729,7 +729,7 @@ mod benchmark {
 
 #[cfg(test)]
 mod benchmark_async {
-    use crate::awaitable::HashMap;
+    use crate::HashMap;
 
     use std::collections::hash_map::RandomState;
     use std::sync::atomic::AtomicUsize;

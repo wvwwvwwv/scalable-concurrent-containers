@@ -9,7 +9,6 @@ A collection of concurrent data structures and building blocks for concurrent pr
 - [scc::ebr](#EBR) implements epoch-based reclamation.
 - [scc::LinkedList](#LinkedList) is a type trait implementing a wait-free concurrent singly linked list.
 - [scc::HashMap](#HashMap) is a concurrent hash map.
-- [scc::awaitable::HashMap](#Awaitable-HashMap) is a non-blocking awaitable concurrent hash map.
 - [scc::HashSet](#HashSet) is a concurrent hash set based on [scc::HashMap](#HashMap).
 - [scc::HashIndex](#HashIndex) is a concurrent hash index allowing lock-free read and scan.
 - [scc::TreeIndex](#TreeIndex) is a concurrent B+ tree allowing lock-free read and scan.
@@ -173,18 +172,10 @@ assert!(hashmap.insert(3, 2).is_ok());
 assert_eq!(hashmap.retain(|key, value| *key == 1 && *value == 0), (1, 2));
 ```
 
-
-## Awaitable HashMap
-
-[`awaitable::HashMap`](#Awaitable-HashMap) is a variant of [`HashMap`](#HashMap) tailored to asynchronous code. Methods that access the data do not return the result immediately, instead a [`future`](https://doc.rust-lang.org/std/future/trait.Future.html) is returned; in order to get the result, the caller has to *await* it.
-
-* [`awaitable::HashMap`](#Awaitable-HashMap) and [`HashMap`](#HashMap) will be consolidated in SCC
-  0.6.4: [`#67`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/67).
-
-### Examples
+Asynchronous methods can be used in asynchronous code blocks.
 
 ```rust
-use scc::awaitable::HashMap;
+use scc::HashMap;
 
 let hashmap: HashMap<u64, u32> = HashMap::default();
 let future_insert = hashmap.insert_async(11, 17);
@@ -407,6 +398,10 @@ let result = future_insert.await;
 
 ## Changelog
 
+0.6.4
+
+* Consolidate synchronous and asynchronous [`HashMap`](#HashMap) implementations.
+
 0.6.3
 
 * Consolidate synchronous and asynchronous [`TreeIndex`](#TreeIndex) implementations.
@@ -422,7 +417,3 @@ let result = future_insert.await;
 0.6.1
 
 * Partially fix [`#66`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/66).
-
-0.6.0
-
-* Asynchronous [`HashMap`](#Awaitable-HashMap).

@@ -2,15 +2,152 @@
 mod hashmap_test {
     use crate::HashMap;
 
-    use proptest::prelude::*;
-    use proptest::strategy::{Strategy, ValueTree};
-    use proptest::test_runner::TestRunner;
     use std::collections::BTreeSet;
     use std::hash::{Hash, Hasher};
     use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
     use std::sync::atomic::{AtomicU64, AtomicUsize};
     use std::sync::{Arc, Barrier};
     use std::thread;
+
+    use proptest::prelude::*;
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+    use tokio::sync::Barrier as AsyncBarrier;
+
+    struct R(&'static AtomicUsize);
+    impl R {
+        fn new(cnt: &'static AtomicUsize) -> R {
+            cnt.fetch_add(1, Relaxed);
+            R(cnt)
+        }
+    }
+    impl Drop for R {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Relaxed);
+        }
+    }
+
+    #[tokio::test]
+    async fn insert_drop() {
+        static CNT: AtomicUsize = AtomicUsize::new(0);
+        let hashmap: HashMap<usize, R> = HashMap::default();
+
+        let workload_size = 1024;
+        for k in 0..workload_size {
+            assert!(hashmap.insert_async(k, R::new(&CNT)).await.is_ok());
+        }
+        assert_eq!(CNT.load(Relaxed), workload_size);
+        assert_eq!(hashmap.len(), workload_size);
+        drop(hashmap);
+
+        while CNT.load(Relaxed) != 0 {
+            drop(crate::ebr::Barrier::new());
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn clear() {
+        static CNT: AtomicUsize = AtomicUsize::new(0);
+        let hashmap: HashMap<usize, R> = HashMap::default();
+
+        let workload_size = 1024;
+        for k in 0..workload_size {
+            assert!(hashmap.insert_async(k, R::new(&CNT)).await.is_ok());
+        }
+        assert_eq!(CNT.load(Relaxed), workload_size);
+        assert_eq!(hashmap.len(), workload_size);
+        assert_eq!(hashmap.clear_async().await, workload_size);
+
+        while CNT.load(Relaxed) != 0 {
+            drop(crate::ebr::Barrier::new());
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    async fn integer_key() {
+        let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
+
+        let num_tasks = 8;
+        let workload_size = 256;
+        let mut task_handles = Vec::with_capacity(num_tasks);
+        let barrier = Arc::new(AsyncBarrier::new(num_tasks));
+        for task_id in 0..num_tasks {
+            let barrier_cloned = barrier.clone();
+            let hashmap_cloned = hashmap.clone();
+            task_handles.push(tokio::task::spawn(async move {
+                barrier_cloned.wait().await;
+                let range = (task_id * workload_size)..((task_id + 1) * workload_size);
+                for id in range.clone() {
+                    let result = hashmap_cloned.insert_async(id, id).await;
+                    assert!(result.is_ok());
+                }
+                for id in range.clone() {
+                    let result = hashmap_cloned.read_async(&id, |_, v| *v).await;
+                    assert_eq!(result, Some(id));
+                }
+                for id in range.clone() {
+                    let result = hashmap_cloned.remove_if_async(&id, |v| *v == id).await;
+                    assert_eq!(result, Some((id, id)));
+                }
+                for id in range {
+                    let result = hashmap_cloned.remove_if_async(&id, |v| *v == id).await;
+                    assert_eq!(result, None);
+                }
+            }));
+        }
+
+        for r in futures::future::join_all(task_handles).await {
+            assert!(r.is_ok());
+        }
+
+        assert_eq!(hashmap.len(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn retain_for_each() {
+        let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
+
+        let num_tasks = 8;
+        let workload_size = 256;
+        let mut task_handles = Vec::with_capacity(num_tasks);
+        let barrier = Arc::new(AsyncBarrier::new(num_tasks));
+        for task_id in 0..num_tasks {
+            let barrier_cloned = barrier.clone();
+            let hashmap_cloned = hashmap.clone();
+            task_handles.push(tokio::task::spawn(async move {
+                barrier_cloned.wait().await;
+                let range = (task_id * workload_size)..((task_id + 1) * workload_size);
+                for id in range.clone() {
+                    let result = hashmap_cloned.insert_async(id, id).await;
+                    assert!(result.is_ok());
+                }
+                for id in range.clone() {
+                    let result = hashmap_cloned.insert_async(id, id).await;
+                    assert_eq!(result, Err((id, id)));
+                }
+                let mut iterated = 0;
+                hashmap_cloned
+                    .for_each_async(|k, _| {
+                        if range.contains(k) {
+                            iterated += 1;
+                        }
+                    })
+                    .await;
+                assert!(iterated >= workload_size);
+
+                let (_, removed) = hashmap_cloned.retain_async(|k, _| !range.contains(k)).await;
+                assert_eq!(removed, workload_size);
+            }));
+        }
+
+        for r in futures::future::join_all(task_handles).await {
+            assert!(r.is_ok());
+        }
+
+        assert_eq!(hashmap.len(), 0);
+    }
 
     #[test]
     fn string_key() {
@@ -196,7 +333,11 @@ mod hashmap_test {
             }
             assert_eq!(checker.load(Relaxed), range * 2);
             drop(hashmap);
-            assert_eq!(checker.load(Relaxed), 0);
+
+            while checker.load(Relaxed) != 0 {
+                drop(crate::ebr::Barrier::new());
+                std::thread::yield_now();
+            }
         }
     }
 }
@@ -297,6 +438,7 @@ mod hashindex_test {
                     barrier.wait();
                 }
                 assert!(hashindex.remove(&i));
+                assert!(hashindex.read(&i, |_, _| ()).is_none());
                 removed.store(i, Release);
             }
             thread_handle.join().unwrap();
@@ -783,151 +925,5 @@ mod treeindex_test {
             }
             thread_handles.into_iter().for_each(|t| t.join().unwrap());
         }
-    }
-}
-
-#[cfg(test)]
-mod hashmap_test_async {
-    use crate::awaitable::HashMap;
-
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering::Relaxed;
-    use std::sync::Arc;
-
-    use tokio::sync::Barrier;
-
-    struct R(&'static AtomicUsize);
-    impl R {
-        fn new(cnt: &'static AtomicUsize) -> R {
-            cnt.fetch_add(1, Relaxed);
-            R(cnt)
-        }
-    }
-    impl Drop for R {
-        fn drop(&mut self) {
-            self.0.fetch_sub(1, Relaxed);
-        }
-    }
-
-    #[tokio::test]
-    async fn insert_drop() {
-        static CNT: AtomicUsize = AtomicUsize::new(0);
-        let hashmap: HashMap<usize, R> = HashMap::default();
-
-        let workload_size = 1024;
-        for k in 0..workload_size {
-            assert!(hashmap.insert_async(k, R::new(&CNT)).await.is_ok());
-        }
-        assert_eq!(CNT.load(Relaxed), workload_size);
-        assert_eq!(hashmap.len(), workload_size);
-        drop(hashmap);
-
-        while CNT.load(Relaxed) != 0 {
-            drop(crate::ebr::Barrier::new());
-            tokio::task::yield_now().await;
-        }
-    }
-
-    #[tokio::test]
-    async fn clear() {
-        static CNT: AtomicUsize = AtomicUsize::new(0);
-        let hashmap: HashMap<usize, R> = HashMap::default();
-
-        let workload_size = 1024;
-        for k in 0..workload_size {
-            assert!(hashmap.insert_async(k, R::new(&CNT)).await.is_ok());
-        }
-        assert_eq!(CNT.load(Relaxed), workload_size);
-        assert_eq!(hashmap.len(), workload_size);
-        assert_eq!(hashmap.clear_async().await, workload_size);
-
-        while CNT.load(Relaxed) != 0 {
-            drop(crate::ebr::Barrier::new());
-            tokio::task::yield_now().await;
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
-    async fn integer_key() {
-        let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
-
-        let num_tasks = 8;
-        let workload_size = 256;
-        let mut task_handles = Vec::with_capacity(num_tasks);
-        let barrier = Arc::new(Barrier::new(num_tasks));
-        for task_id in 0..num_tasks {
-            let barrier_cloned = barrier.clone();
-            let hashmap_cloned = hashmap.clone();
-            task_handles.push(tokio::task::spawn(async move {
-                barrier_cloned.wait().await;
-                let range = (task_id * workload_size)..((task_id + 1) * workload_size);
-                for id in range.clone() {
-                    let result = hashmap_cloned.insert_async(id, id).await;
-                    assert!(result.is_ok());
-                }
-                for id in range.clone() {
-                    let result = hashmap_cloned.read_async(&id, |_, v| *v).await;
-                    assert_eq!(result, Some(id));
-                }
-                for id in range.clone() {
-                    let result = hashmap_cloned.remove_if_async(&id, |v| *v == id).await;
-                    assert_eq!(result, Some((id, id)));
-                }
-                for id in range {
-                    let result = hashmap_cloned.remove_if_async(&id, |v| *v == id).await;
-                    assert_eq!(result, None);
-                }
-            }));
-        }
-
-        for r in futures::future::join_all(task_handles).await {
-            assert!(r.is_ok());
-        }
-
-        assert_eq!(hashmap.len(), 0);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn retain_for_each() {
-        let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
-
-        let num_tasks = 8;
-        let workload_size = 256;
-        let mut task_handles = Vec::with_capacity(num_tasks);
-        let barrier = Arc::new(Barrier::new(num_tasks));
-        for task_id in 0..num_tasks {
-            let barrier_cloned = barrier.clone();
-            let hashmap_cloned = hashmap.clone();
-            task_handles.push(tokio::task::spawn(async move {
-                barrier_cloned.wait().await;
-                let range = (task_id * workload_size)..((task_id + 1) * workload_size);
-                for id in range.clone() {
-                    let result = hashmap_cloned.insert_async(id, id).await;
-                    assert!(result.is_ok());
-                }
-                for id in range.clone() {
-                    let result = hashmap_cloned.insert_async(id, id).await;
-                    assert_eq!(result, Err((id, id)));
-                }
-                let mut iterated = 0;
-                hashmap_cloned
-                    .for_each_async(|k, _| {
-                        if range.contains(k) {
-                            iterated += 1;
-                        }
-                    })
-                    .await;
-                assert!(iterated >= workload_size);
-
-                let (_, removed) = hashmap_cloned.retain_async(|k, _| !range.contains(k)).await;
-                assert_eq!(removed, workload_size);
-            }));
-        }
-
-        for r in futures::future::join_all(task_handles).await {
-            assert!(r.is_ok());
-        }
-
-        assert_eq!(hashmap.len(), 0);
     }
 }
