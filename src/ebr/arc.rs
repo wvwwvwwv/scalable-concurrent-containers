@@ -2,7 +2,7 @@ use super::underlying::{Link, Underlying};
 use super::{Barrier, Ptr};
 
 use std::ops::Deref;
-use std::ptr::NonNull;
+use std::ptr::{addr_of, NonNull};
 
 /// [`Arc`] is a reference-counted handle to an instance.
 #[derive(Debug)]
@@ -87,7 +87,7 @@ impl<T: 'static> Arc<T> {
     #[inline]
     #[must_use]
     pub fn as_ptr(&self) -> *const T {
-        &**self.underlying() as *const T
+        addr_of!(**self.underlying())
     }
 
     /// Drops the underlying instance if the last reference is dropped.

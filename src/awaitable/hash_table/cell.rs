@@ -4,7 +4,7 @@ use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
 
 use std::borrow::Borrow;
 use std::mem::MaybeUninit;
-use std::ptr;
+use std::ptr::{self, addr_of};
 use std::sync::atomic::fence;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -80,7 +80,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
             return None;
         }
 
-        let mut data_array_ptr = &self.data_array as *const DataArray<K, V>;
+        let mut data_array_ptr = addr_of!(self.data_array);
         let preferred_index = partial_hash as usize % ARRAY_SIZE;
         while let Some(data_array_ref) = unsafe { data_array_ptr.as_ref() } {
             if let Some((_, entry_ref)) =
@@ -109,7 +109,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
             return None;
         }
 
-        let mut current_array_ptr = &self.data_array as *const DataArray<K, V>;
+        let mut current_array_ptr = addr_of!(self.data_array);
         let mut prev_array_ptr = ptr::null();
         let preferred_index = partial_hash as usize % ARRAY_SIZE;
         while let Some(data_array_ref) = unsafe { current_array_ptr.as_ref() } {
@@ -313,7 +313,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Iterator
         if let Some(&cell) = self.cell.as_ref() {
             if self.current_array_ptr.is_null() {
                 // Starts scanning from the beginning.
-                self.current_array_ptr = &cell.data_array as *const DataArray<K, V>;
+                self.current_array_ptr = addr_of!(cell.data_array);
             }
             while let Some(data_array_ref) = unsafe { self.current_array_ptr.as_ref() } {
                 // Searches for the next valid entry.
@@ -400,7 +400,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     pub fn insert(&'b self, key: K, value: V, partial_hash: u8, barrier: &'b Barrier) {
         assert!(self.cell.num_entries != u32::MAX, "array overflow");
 
-        let mut data_array_ptr = &self.cell.data_array as *const DataArray<K, V>;
+        let mut data_array_ptr = addr_of!(self.cell.data_array);
         let preferred_index = partial_hash as usize % ARRAY_SIZE;
         let mut free_index = ARRAY_SIZE;
         while let Some(data_array_ref) = unsafe { data_array_ptr.as_ref() } {

@@ -1,3 +1,4 @@
+use std::ptr::addr_of_mut;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::{Condvar, Mutex};
@@ -21,7 +22,7 @@ impl WaitQueue {
 
         while let Err(actual) =
             self.wait_queue
-                .compare_exchange(current, &mut entry as *mut Entry, Release, Relaxed)
+                .compare_exchange(current, addr_of_mut!(entry), Release, Relaxed)
         {
             current = actual;
             entry.next_ptr = current;

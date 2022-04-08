@@ -6,6 +6,7 @@ use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 
 use std::borrow::Borrow;
 use std::cmp::Ordering::{Equal, Greater, Less};
+use std::ptr::addr_of;
 use std::sync::atomic::Ordering::{self, Acquire, Relaxed, Release};
 
 /// Internal node.
@@ -352,7 +353,7 @@ where
         };
 
         if let Some(full_node_key) = full_node_key {
-            let ptr = &new_nodes.origin_node_key as *const Option<K> as *mut Option<K>;
+            let ptr = addr_of!(new_nodes.origin_node_key) as *mut Option<K>;
             unsafe {
                 ptr.write(Some(full_node_key.clone()));
             }

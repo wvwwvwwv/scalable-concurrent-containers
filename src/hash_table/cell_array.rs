@@ -249,7 +249,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         let required_cells =
             ((adjusted_total_cell_capacity + ARRAY_SIZE - 1) / ARRAY_SIZE).next_power_of_two();
         let log2_capacity =
-            ((size_of::<usize>() * 8) - (required_cells.leading_zeros() as usize) - 1).max(1);
+            (usize::BITS as usize - (required_cells.leading_zeros() as usize) - 1).max(1);
 
         // 2^lb_capacity * C::cell_size() >= capacity
         debug_assert!(log2_capacity > 0);

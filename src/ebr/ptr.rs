@@ -2,6 +2,7 @@ use super::underlying::Underlying;
 use super::{Arc, Tag};
 
 use std::marker::PhantomData;
+use std::ptr::addr_of;
 use std::{ops::Deref, ptr, ptr::NonNull};
 
 /// [`Ptr`] points to an instance.
@@ -84,7 +85,7 @@ impl<'b, T> Ptr<'b, T> {
         unsafe {
             Tag::unset_tag(self.instance_ptr)
                 .as_ref()
-                .map_or_else(ptr::null, |u| &**u as *const T)
+                .map_or_else(ptr::null, |u| addr_of!(**u))
         }
     }
 

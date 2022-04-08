@@ -6,6 +6,7 @@ use crate::LinkedList;
 
 use std::borrow::Borrow;
 use std::cmp::Ordering::{Equal, Greater, Less};
+use std::ptr::addr_of;
 use std::sync::atomic::Ordering::{self, AcqRel, Acquire, Relaxed, Release};
 
 /// [`Tag::First`] indicates the corresponding node has retired.
@@ -358,7 +359,7 @@ where
             Err(_) => return Err((key, value)),
         };
         if let Some(full_leaf_key) = full_leaf_key {
-            let ptr = &new_leaves.origin_leaf_key as *const Option<K> as *mut Option<K>;
+            let ptr = addr_of!(new_leaves.origin_leaf_key) as *mut Option<K>;
             unsafe {
                 ptr.write(Some(full_leaf_key.clone()));
             }

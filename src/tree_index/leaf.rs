@@ -4,7 +4,7 @@ use crate::LinkedList;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::mem::{size_of, MaybeUninit};
-use std::ptr;
+use std::ptr::{self, addr_of};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
@@ -53,27 +53,27 @@ pub struct Dimension {
 impl Dimension {
     /// Checks if the [`Leaf`] is frozen.
     fn frozen(metadata: usize) -> bool {
-        metadata & (1_usize << (size_of::<usize>() * 8 - 2)) != 0
+        metadata & (1_usize << (usize::BITS - 2)) != 0
     }
 
     /// Makes the metadata represent a frozen state.
     fn freeze(metadata: usize) -> usize {
-        metadata | (1_usize << (size_of::<usize>() * 8 - 2))
+        metadata | (1_usize << (usize::BITS - 2))
     }
 
     /// Updates the metadata to represent a non-frozen state.
     fn thaw(metadata: usize) -> usize {
-        metadata & (!(1_usize << (size_of::<usize>() * 8 - 2)))
+        metadata & (!(1_usize << (usize::BITS - 2)))
     }
 
     /// Checks if the [`Leaf`] is retired.
     fn retired(metadata: usize) -> bool {
-        metadata & (1_usize << (size_of::<usize>() * 8 - 1)) != 0
+        metadata & (1_usize << (usize::BITS - 1)) != 0
     }
 
     /// Makes the metadata represent a retired state.
     fn retire(metadata: usize) -> usize {
-        metadata | (1_usize << (size_of::<usize>() * 8 - 1))
+        metadata | (1_usize << (usize::BITS - 1))
     }
     /// Returns a bit mask for an entry.
     fn state_mask(&self, index: usize) -> usize {
@@ -627,7 +627,7 @@ where
 
     fn take(&self, index: usize) -> (K, V) {
         unsafe {
-            let entry_array_ptr = &self.entry_array as *const EntryArray<K, V>;
+            let entry_array_ptr = addr_of!(self.entry_array);
             let entry_array_mut_ptr = entry_array_ptr as *mut EntryArray<K, V>;
             let entry_array_mut_ref = &mut (*entry_array_mut_ptr);
             let entry_ptr = entry_array_mut_ref[index].as_mut_ptr();
@@ -637,7 +637,7 @@ where
 
     fn write(&self, index: usize, key: K, value: V) {
         unsafe {
-            let entry_array_ptr = &self.entry_array as *const EntryArray<K, V>;
+            let entry_array_ptr = addr_of!(self.entry_array);
             let entry_array_mut_ptr = entry_array_ptr as *mut EntryArray<K, V>;
             let entry_array_mut_ref = &mut (*entry_array_mut_ptr);
             entry_array_mut_ref[index].as_mut_ptr().write((key, value));
