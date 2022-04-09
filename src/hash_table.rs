@@ -93,9 +93,10 @@ where
         &self,
         key: K,
         val: V,
+        hash: u64,
+        partial_hash: u8,
         barrier: &Barrier,
     ) -> Result<Option<(K, V)>, (K, V)> {
-        let (hash, partial_hash) = self.hash(&key);
         match self.acquire::<_, TRY_LOCK>(&key, hash, partial_hash, barrier) {
             Ok((_, locker, iterator)) => {
                 if iterator.is_some() {
@@ -113,6 +114,8 @@ where
     fn read_entry<'b, Q, R, F: FnMut(&'b K, &'b V) -> R, const TRY_LOCK: bool>(
         &self,
         key_ref: &Q,
+        hash: u64,
+        partial_hash: u8,
         reader: &mut F,
         barrier: &'b Barrier,
     ) -> Result<Option<R>, ()>
@@ -120,8 +123,6 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let (hash, partial_hash) = self.hash(key_ref);
-
         // An acquire fence is required to correctly load the contents of the array.
         let mut current_array_ptr = self.cell_array().load(Acquire, barrier);
         while let Some(current_array_ref) = current_array_ptr.as_ref() {
@@ -187,6 +188,8 @@ where
     fn remove_entry<Q, F: FnMut(&V) -> bool, const TRY_LOCK: bool>(
         &self,
         key_ref: &Q,
+        hash: u64,
+        partial_hash: u8,
         condition: &mut F,
         barrier: &Barrier,
     ) -> Result<(Option<(K, V)>, bool), ()>
@@ -194,7 +197,6 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let (hash, partial_hash) = self.hash(key_ref);
         let (cell_index, locker, iterator) =
             self.acquire::<Q, TRY_LOCK>(key_ref, hash, partial_hash, barrier)?;
         if let Some(mut iterator) = iterator {
@@ -296,10 +298,10 @@ where
             }
             let cell_index = current_array_ref.calculate_cell_index(hash);
 
-            // Tries to resize the array.
+            // Try to resize the array.
             let num_entries = current_array_ref.cell(cell_index).num_entries();
             if check_resize && num_entries >= ARRAY_SIZE {
-                // Triggers resize if the estimated load factor is greater than 7/8.
+                // Trigger resize if the estimated load factor is greater than 7/8.
                 check_resize = false;
                 self.try_enlarge(current_array_ref, cell_index, num_entries, barrier);
                 continue;

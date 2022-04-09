@@ -162,7 +162,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
             fence(Acquire);
         }
 
-        // Looks into the preferred slot.
+        // Look into the preferred slot.
         if (occupied & (1_u32 << preferred_index)) != 0
             && data_array_ref.partial_hash_array[preferred_index] == partial_hash
         {
@@ -417,7 +417,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         }
 
         if free_index == ARRAY_SIZE {
-            // Inserts a new `DataArray` at the linked list head.
+            // Insert a new `DataArray` at the linked list head.
             let mut new_data_array = Arc::new(DataArray::new());
             unsafe {
                 new_data_array.get_mut().unwrap().data[preferred_index]

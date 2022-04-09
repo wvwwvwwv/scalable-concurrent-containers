@@ -169,8 +169,9 @@ where
     /// ```
     #[inline]
     pub fn insert(&self, key: K, val: V) -> Result<(), (K, V)> {
+        let (hash, partial_hash) = self.hash(&key);
         if let Some((k, v)) = self
-            .insert_entry::<false>(key, val, &Barrier::new())
+            .insert_entry::<false>(key, val, hash, partial_hash, &Barrier::new())
             .ok()
             .unwrap()
         {
@@ -186,7 +187,7 @@ where
     ///
     /// # Errors
     ///
-    /// Returns an error along with the supplied key-value pair.
+    /// Returns an error along with the supplied key-value pair if the key exists.
     ///
     /// # Examples
     ///
@@ -198,8 +199,9 @@ where
     /// ```
     #[inline]
     pub async fn insert_async(&self, mut key: K, mut val: V) -> Result<(), (K, V)> {
+        let (hash, partial_hash) = self.hash(&key);
         loop {
-            match self.insert_entry::<true>(key, val, &Barrier::new()) {
+            match self.insert_entry::<true>(key, val, hash, partial_hash, &Barrier::new()) {
                 Ok(Some(returned)) => return Err(returned),
                 Ok(None) => return Ok(()),
                 Err(returned) => {
@@ -227,7 +229,6 @@ where
     /// assert_eq!(hashmap.update(&1, |_, v| { *v = 2; *v }).unwrap(), 2);
     /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
     /// ```
-    #[allow(clippy::missing_panics_doc)]
     #[inline]
     pub fn update<Q, F, R>(&self, key_ref: &Q, updater: F) -> Option<R>
     where
@@ -239,8 +240,7 @@ where
         let barrier = Barrier::new();
         let (_, _, iterator) = self
             .acquire::<Q, false>(key_ref, hash, partial_hash, &barrier)
-            .ok()
-            .unwrap();
+            .ok()?;
         if let Some(iterator) = iterator {
             if let Some((k, v)) = iterator.get() {
                 // The presence of `locker` prevents the entry from being modified outside it.
@@ -351,7 +351,6 @@ where
     /// assert!(hashmap.remove_if(&1, |v| *v == 1).is_none());
     /// assert_eq!(hashmap.remove_if(&1, |v| *v == 0).unwrap(), (1, 0));
     /// ```
-    #[allow(clippy::missing_panics_doc)]
     #[inline]
     pub fn remove_if<Q, F: FnMut(&V) -> bool>(
         &self,
@@ -362,10 +361,16 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.remove_entry::<Q, _, false>(key_ref, &mut condition, &Barrier::new())
-            .ok()
-            .unwrap()
-            .0
+        let (hash, partial_hash) = self.hash(key_ref);
+        self.remove_entry::<Q, _, false>(
+            key_ref,
+            hash,
+            partial_hash,
+            &mut condition,
+            &Barrier::new(),
+        )
+        .ok()
+        .and_then(|(r, _)| r)
     }
 
     /// Removes a key-value pair if the key exists and the given condition is met.
@@ -391,10 +396,15 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
+        let (hash, partial_hash) = self.hash(key_ref);
         loop {
-            if let Ok(result) =
-                self.remove_entry::<Q, F, true>(key_ref, &mut condition, &Barrier::new())
-            {
+            if let Ok(result) = self.remove_entry::<Q, F, true>(
+                key_ref,
+                hash,
+                partial_hash,
+                &mut condition,
+                &Barrier::new(),
+            ) {
                 return result.0;
             }
             async_yield::async_yield().await;
@@ -450,10 +460,15 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
+        let (hash, partial_hash) = self.hash(key_ref);
         loop {
-            if let Ok(result) =
-                self.read_entry::<Q, R, _, true>(key_ref, &mut reader, &Barrier::new())
-            {
+            if let Ok(result) = self.read_entry::<Q, R, _, true>(
+                key_ref,
+                hash,
+                partial_hash,
+                &mut reader,
+                &Barrier::new(),
+            ) {
                 return result;
             }
             async_yield::async_yield().await;
@@ -479,7 +494,6 @@ where
     /// let value_ref = hashmap.read_with(&1, |k, v| v, &barrier).unwrap();
     /// assert_eq!(*value_ref, 10);
     /// ```
-    #[allow(clippy::missing_panics_doc)]
     #[inline]
     pub fn read_with<'b, Q, R, F: FnMut(&'b K, &'b V) -> R>(
         &self,
@@ -491,9 +505,10 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.read_entry::<Q, R, F, false>(key_ref, &mut reader, barrier)
+        let (hash, partial_hash) = self.hash(key_ref);
+        self.read_entry::<Q, R, F, false>(key_ref, hash, partial_hash, &mut reader, barrier)
             .ok()
-            .unwrap()
+            .and_then(|r| r)
     }
 
     /// Checks if the key exists.

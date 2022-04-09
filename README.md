@@ -327,73 +327,66 @@ let result = future_insert.await;
 
 ## Performance
 
-### Test setup
+* 0.6.4 unfinished ([`#68`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/68)): intermediate result.
 
-- OS: SUSE Linux Enterprise Server 15 SP1
+### Setup
+
+- OS: SUSE Linux Enterprise Server 15 SP2
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
 - RAM: 1TB
-- Rust: 1.56.0
-- SCC: 0.5.8
-- HashMap<usize, usize, RandomState> = HashMap::default()
-- HashIndex<usize, usize, RandomState> = HashIndex::default()
-- TreeIndex<usize, usize> = TreeIndex::default()
+- Rust: 1.60.0
+- SCC: 0.6.4
+- Default memory allocator
 
-### Test data
+### Workload
 
-- A disjoint range of `usize` integers is assigned to each thread: 128M integers for [`HashMap`](#HashMap) and 4M for others.
+- A disjoint range of 16M `usize` integers is assigned to each thread.
 - The performance test code asserts the expected outcome of each operation and the post state of the container.
-
-### Test workload: local
-
-- Each test is run twice in a single process in order to minimize the effect of page faults as the overhead is unpredictable.
+- Each test is run thrice in a single process in order to minimize the effect of page faults as the overhead is unpredictable.
 - Insert: each thread inserts its own records.
 - Read: each thread reads its own records in the container.
 - Scan: each thread scans the entire container once.
 - Remove: each thread removes its own records from the container.
-- The read/scan/remove data is populated by the insert test.
-
-### Test workload: local-remote
-
-- Insert, remove: each thread additionally operates using keys belonging to a randomly chosen remote thread.
+- InsertR, RemoveR: each thread additionally operates using keys belonging to a randomly chosen remote thread.
 - Mixed: each thread performs insert-local -> insert-remote -> read-local -> read-remote -> remove-local -> remove-remote.
 
-### Test Results
+### Results
 
 - [`HashMap`](#HashMap)
 
-|         | 11 threads | 22 threads | 44 threads |
-|---------|------------|------------|------------|
-| InsertL | 169.888s   | 182.077s   | 208.961s   |
-| ReadL   | 104.574s   | 112.154s   | 118.647s   |
-| ScanL   |  29.299s   |  60.656s   | 125.701s   |
-| RemoveL | 127.436s   | 135.593s   | 145.353s   |
-| InsertR | 324.540s   | 341.395s   | 365.969s   |
-| MixedR  | 376.788s   | 396.557s   | 412.073s   |
-| RemoveR | 260.364s   | 277.673s   | 295.6s     |
+|         |  1 thread  |  4 threads | 16 threads | 64 threads |
+|---------|------------|------------|------------|------------|
+| InsertL |  10.859s   |  17.513s   |  44.507s   |  47.992s   |
+| ReadL   |   4.089s   |   5.115s   |   6.935s   |   8.406s   |
+| ScanL   |   0.15s    |   0.728s   |   2.981s   |  12.192s   |
+| RemoveL |   4.6s     |   6.459s   |   9.614s   |  23.342s   |
+| InsertR |  13.601s   |  31.947s   |  58.194s   |  63.449s   |
+| MixedR  |  14.714s   |  32.153s   |  33.413s   |  34.917s   |
+| RemoveR |   8.143s   |  14.417s   |  21.52s    |  28.838s   |
 
 - [`HashIndex`](#HashIndex)
 
-|         | 11 threads | 22 threads | 44 threads |
-|---------|------------|------------|------------|
-| InsertL |   4.574s   |   4.871s   |   6.692s   |
-| ReadL   |   2.313s   |   2.397s   |   2.693s   |
-| ScanL   |   0.757s   |   1.548s   |   3.094s   |
-| RemoveL |   2.858s   |   2.927s   |   3.603s   |
-| InsertR |   7.554s   |   8.434s   |  10.151s   |
-| MixedR  |  11.321s   |  11.697s   |  13.955s   |
-| RemoveR |   5.813s   |   5.92s    |   7.623s   |
+|         |  1 thread  |  4 threads | 16 threads | 64 threads |
+|---------|------------|------------|------------|------------|
+| InsertL |  11.118s   |  18.891s   |  44.172s   |  48.15s    |
+| ReadL   |   3.762s   |   5.159s   |   6.576s   |   8.063s   |
+| ScanL   |   0.211s   |   1.094s   |   4.192s   |  17.037s   |
+| RemoveL |   4.559s   |   6.688s   |  10.926s   |  23.794s   |
+| InsertR |  14.028s   |  32.717s   |  58.559s   |  64.277s   |
+| MixedR  |  16.263s   |  39.432s   |  41.927s   |  45.227s   |
+| RemoveR |   8.217s   |  14.843s   |  20.304s   |  28.228s   |
 
-- [`TreeIndex`](#TreeIndex): SLES 15SP2, Rust 1.59.0, and SCC 0.6.2
+- [`TreeIndex`](#TreeIndex)
 
-|         | 11 threads | 22 threads | 44 threads |
-|---------|------------|------------|------------|
-| InsertL |   5.497s   |   7.61s    |  13.466s   |
-| ReadL   |   1.122s   |   1.133s   |   1.201s   |
-| ScanL   |  13.982s   |  28.410s   |  54.208s   |
-| RemoveL |   4.514s   |   8.137s   |  15.547s   |
-| InsertR |  16.579s   |  16.344s   |  22.842s   |
-| MixedR  |  96.987s   | 116.676s   | 149.478s   |
-| RemoveR |   5.649s   |   6.398s   |  10.133s   |
+|         |  1 thread  |  4 threads | 16 threads | 64 threads |
+|---------|------------|------------|------------|------------|
+| InsertL |  16.818s   |  19.784s   |  25.594s   |  68.566s   |
+| ReadL   |   3.651s   |   4.222s   |   4.55s    |   5.311s   |
+| ScanL   |   1.396s   |  12.058s   |  85.296s   | 308.588s   |
+| RemoveL |   6.205s   |  10.671s   |  26.743s   |  85.872s   |
+| InsertR |  22.381s   |  62.075s   |  64.898s   | 105.834s   |
+| MixedR  |  28.628s   | 133.629s   | 468.248s   | 820.25s    |
+| RemoveR |   9.605s   |  18.667s   |  26.052s   | 126.221s   |
 
 
 ## Changelog
@@ -401,6 +394,7 @@ let result = future_insert.await;
 0.6.4
 
 * Consolidate synchronous and asynchronous [`HashMap`](#HashMap) implementations.
+* [`HashMap`](#HashMap) read performance improvement.
 
 0.6.3
 
@@ -413,7 +407,3 @@ let result = future_insert.await;
 * Fix ebr API: `ebr::Arc::get_mut` is now unsafe.
 * Fix [`#65`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/65).
 * Fix [`#66`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/66).
-
-0.6.1
-
-* Partially fix [`#66`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/66).

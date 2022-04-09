@@ -716,11 +716,20 @@ mod benchmark {
     #[ignore]
     #[test]
     fn full_scale_benchmarks() {
-        hashmap_benchmark::<usize>(1024 * 1024 * 128, vec![11, 11, 11, 22, 22, 22, 44, 44, 44]);
+        hashmap_benchmark::<usize>(
+            1024 * 1024 * 16,
+            vec![1, 1, 1, 4, 4, 4, 16, 16, 16, 64, 64, 64],
+        );
         println!("----");
-        hashindex_benchmark::<usize>(1024 * 1024 * 4, vec![11, 11, 11, 22, 22, 22, 44, 44, 44]);
+        hashindex_benchmark::<usize>(
+            1024 * 1024 * 16,
+            vec![1, 1, 1, 4, 4, 4, 16, 16, 16, 64, 64, 64],
+        );
         println!("----");
-        treeindex_benchmark::<usize>(1024 * 1024 * 4, vec![11, 11, 11, 22, 22, 22, 44, 44, 44]);
+        treeindex_benchmark::<usize>(
+            1024 * 1024 * 16,
+            vec![1, 1, 1, 4, 4, 4, 16, 16, 16, 64, 64, 64],
+        );
         println!("----");
     }
 }

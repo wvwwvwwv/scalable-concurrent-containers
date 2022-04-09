@@ -109,8 +109,9 @@ where
     /// ```
     #[inline]
     pub fn insert(&self, key: K, val: V) -> Result<(), (K, V)> {
+        let (hash, partial_hash) = self.hash(&key);
         if let Some((k, v)) = self
-            .insert_entry::<false>(key, val, &Barrier::new())
+            .insert_entry::<false>(key, val, hash, partial_hash, &Barrier::new())
             .ok()
             .unwrap()
         {
@@ -159,17 +160,22 @@ where
     /// assert!(!hashindex.remove_if(&1, |v| *v == 1));
     /// assert!(hashindex.remove_if(&1, |v| *v == 0));
     /// ```
-    #[allow(clippy::missing_panics_doc)]
     #[inline]
     pub fn remove_if<Q, F: FnMut(&V) -> bool>(&self, key_ref: &Q, mut condition: F) -> bool
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.remove_entry::<Q, _, false>(key_ref, &mut condition, &Barrier::new())
-            .ok()
-            .unwrap()
-            .1
+        let (hash, partial_hash) = self.hash(key_ref);
+        self.remove_entry::<Q, _, false>(
+            key_ref,
+            hash,
+            partial_hash,
+            &mut condition,
+            &Barrier::new(),
+        )
+        .ok()
+        .map_or(false, |(_, r)| r)
     }
 
     /// Reads a key-value pair.
@@ -216,7 +222,6 @@ where
     /// let value_ref = hashindex.read_with(&1, |k, v| v, &barrier).unwrap();
     /// assert_eq!(*value_ref, 10);
     /// ```
-    #[allow(clippy::missing_panics_doc)]
     #[inline]
     pub fn read_with<'b, Q, R, F: FnMut(&'b K, &'b V) -> R>(
         &self,
@@ -228,9 +233,10 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.read_entry::<Q, R, F, false>(key_ref, &mut reader, barrier)
+        let (hash, partial_hash) = self.hash(key_ref);
+        self.read_entry::<Q, R, F, false>(key_ref, hash, partial_hash, &mut reader, barrier)
             .ok()
-            .unwrap()
+            .and_then(|r| r)
     }
 
     /// Checks if the key exists.
