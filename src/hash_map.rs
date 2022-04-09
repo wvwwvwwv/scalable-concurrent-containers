@@ -62,10 +62,6 @@ where
     ///
     /// The actual capacity is equal to or greater than the given capacity.
     ///
-    /// # Panics
-    ///
-    /// Panics if memory allocation fails.
-    ///
     /// # Examples
     ///
     /// ```
@@ -844,10 +840,6 @@ where
     /// Creates a [`HashMap`] with the default parameters.
     ///
     /// The default hash builder is [`RandomState`], and the default capacity is `64`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if memory allocation fails.
     ///
     /// # Examples
     ///

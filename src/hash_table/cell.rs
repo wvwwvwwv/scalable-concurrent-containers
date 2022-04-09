@@ -311,15 +311,12 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Iterator
     type Item = (&'b (K, V), u8);
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(&cell) = self.cell.as_ref() {
-            if (cell.state.load(Acquire) & KILLED) == KILLED {
-                return None;
-            }
             if self.current_array_ptr.is_null() {
-                // Starts scanning from the beginning.
+                // Start scanning from the beginning.
                 self.current_array_ptr = addr_of!(cell.data_array);
             }
             while let Some(data_array_ref) = unsafe { self.current_array_ptr.as_ref() } {
-                // Searches for the next valid entry.
+                // Search for the next valid entry.
                 let current_index = if self.current_index == usize::MAX {
                     0
                 } else {
@@ -332,13 +329,13 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Iterator
                     return Some((entry_ref, hash));
                 }
 
-                // Proceeds to the next `DataArray`.
+                // Go to the next `DataArray`.
                 self.prev_array_ptr = self.current_array_ptr;
                 self.current_array_ptr =
                     data_array_ref.link.load(Acquire, self.barrier_ref).as_raw();
                 self.current_index = usize::MAX;
             }
-            // Fuses itself.
+            // Fuse itself.
             self.cell.take();
         }
         None
@@ -524,6 +521,9 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
 
     /// Purges all the data.
     pub fn purge(&mut self, barrier: &Barrier) {
+        if LOCK_FREE {
+            self.cell_mut().data_array.removed = self.cell.data_array.occupied;
+        }
         self.cell.state.fetch_or(KILLED, Release);
         self.num_entries_updated(0);
         if !self.cell.data_array.link.load(Relaxed, barrier).is_null() {
@@ -535,9 +535,16 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
 
     /// Updates the number of entries.
     fn num_entries_updated(&self, num: u32) {
+        self.cell_mut().num_entries = num;
+    }
+
+    /// Returns a mutable reference to the `Cell`.
+    #[allow(clippy::mut_from_ref)]
+    fn cell_mut(&self) -> &mut Cell<K, V, LOCK_FREE> {
         #[allow(clippy::cast_ref_to_mut)]
-        let cell_mut_ref = unsafe { &mut *(self.cell as *const _ as *mut Cell<K, V, LOCK_FREE>) };
-        cell_mut_ref.num_entries = num;
+        unsafe {
+            &mut *(self.cell as *const _ as *mut Cell<K, V, LOCK_FREE>)
+        }
     }
 }
 

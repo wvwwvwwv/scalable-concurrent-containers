@@ -715,15 +715,13 @@ mod benchmark {
 
     #[ignore]
     #[test]
-    fn sync_full_scale_benchmarks() {
+    fn full_scale_benchmarks() {
         hashmap_benchmark::<usize>(1024 * 1024 * 128, vec![11, 11, 11, 22, 22, 22, 44, 44, 44]);
         println!("----");
-        /*
         hashindex_benchmark::<usize>(1024 * 1024 * 4, vec![11, 11, 11, 22, 22, 22, 44, 44, 44]);
         println!("----");
         treeindex_benchmark::<usize>(1024 * 1024 * 4, vec![11, 11, 11, 22, 22, 22, 44, 44, 44]);
         println!("----");
-        */
     }
 }
 
