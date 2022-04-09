@@ -19,7 +19,6 @@ pub struct CellArray<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
     cleared: AtomicBool,
     old_array: AtomicArc<CellArray<K, V, LOCK_FREE>>,
     rehashing: AtomicUsize,
-    rehashed: AtomicUsize,
 }
 
 impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FREE> {
@@ -59,7 +58,6 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                 cleared: AtomicBool::new(false),
                 old_array,
                 rehashing: AtomicUsize::new(0),
-                rehashed: AtomicUsize::new(0),
             }
         }
     }
@@ -214,47 +212,33 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             loop {
                 if current >= old_array_size {
                     // No available `Cell` range for the task.
-                    return self.try_drop_old_array::<TRY_LOCK>(
-                        old_array_ref,
-                        old_array_size,
-                        barrier,
-                    );
+                    return self.try_drop_old_array(old_array_ref, old_array_size, barrier);
                 }
-                if TRY_LOCK && (current & (Self::UNIT_SIZE - 1)) == Self::UNIT_SIZE - 1 {
+                if (current & (Self::UNIT_SIZE - 1)) == Self::UNIT_SIZE - 1 {
                     // Only `UNIT_SIZE - 1` tasks are allowed to rehash `Cells` at a moment.
                     return self.old_array.is_null(Relaxed);
                 }
-                let new = if TRY_LOCK {
-                    // `TRY_LOCK` means locking may fail, and thus failure handling is necessary.
-                    current + Self::UNIT_SIZE + 1
-                } else {
-                    current + Self::UNIT_SIZE
-                };
-                match old_array_ref
-                    .rehashing
-                    .compare_exchange(current, new, Relaxed, Relaxed)
-                {
+                match old_array_ref.rehashing.compare_exchange(
+                    current,
+                    current + Self::UNIT_SIZE + 1,
+                    Relaxed,
+                    Relaxed,
+                ) {
                     Ok(_) => {
-                        if TRY_LOCK {
-                            current &= !(Self::UNIT_SIZE - 1);
-                        }
+                        current &= !(Self::UNIT_SIZE - 1);
                         break;
                     }
                     Err(result) => current = result,
                 }
             }
 
+            // The guard ensures dropping one reference in `old_array_ref.rehashing`.
             let mut rehashing_guard = scopeguard::guard((current, false), |(prev, success)| {
                 if success {
                     // Keeps the index as it is.
-                    if TRY_LOCK {
-                        old_array_ref.rehashing.fetch_sub(1, Relaxed);
-                    } else {
-                        old_array_ref.rehashed.fetch_add(Self::UNIT_SIZE, Relaxed);
-                    }
+                    old_array_ref.rehashing.fetch_sub(1, Relaxed);
                 } else {
                     // On failure, `rehashing` reverts to its previous state.
-                    debug_assert!(TRY_LOCK);
                     let mut current = old_array_ref.rehashing.load(Relaxed);
                     loop {
                         let new = if current <= prev {
@@ -297,7 +281,6 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                         )
                         .is_err()
                     {
-                        debug_assert!(TRY_LOCK);
                         return false;
                     }
                 }
@@ -309,7 +292,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             if current + Self::UNIT_SIZE >= old_array_size {
                 // The last `Cell` in the old array has been relocated.
                 drop(rehashing_guard);
-                return self.try_drop_old_array::<TRY_LOCK>(old_array_ref, old_array_size, barrier);
+                return self.try_drop_old_array(old_array_ref, old_array_size, barrier);
             }
             false
         } else {
@@ -318,37 +301,32 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     }
 
     /// Tries to drop `old_array`.
-    fn try_drop_old_array<const TRY_LOCK: bool>(
+    fn try_drop_old_array(
         &self,
         old_array_ref: &CellArray<K, V, LOCK_FREE>,
         old_array_size: usize,
         barrier: &Barrier,
     ) -> bool {
-        if TRY_LOCK {
-            let mut current = old_array_ref.rehashing.load(Relaxed);
-            loop {
-                if (current & (Self::UNIT_SIZE - 1)) != 0 {
-                    // There is a task rehashing `Cells`.
-                    return self.old_array.is_null(Relaxed);
-                }
-                if current < old_array_size {
-                    // There are `Cells` to rehash.
-                    return self.old_array.is_null(Relaxed);
-                }
-                match old_array_ref.rehashing.compare_exchange(
-                    current,
-                    current | (Self::UNIT_SIZE - 1),
-                    Relaxed,
-                    Relaxed,
-                ) {
-                    Ok(_) => break,
-                    Err(result) => current = result,
-                }
+        let mut current = old_array_ref.rehashing.load(Relaxed);
+        loop {
+            if (current & (Self::UNIT_SIZE - 1)) != 0 {
+                // There is a task rehashing `Cells`.
+                return self.old_array.is_null(Relaxed);
             }
-        } else if old_array_ref.rehashed.load(Relaxed) < old_array_size {
-            return self.old_array.is_null(Relaxed);
+            if current < old_array_size {
+                // There are `Cells` to rehash.
+                return self.old_array.is_null(Relaxed);
+            }
+            match old_array_ref.rehashing.compare_exchange(
+                current,
+                current | (Self::UNIT_SIZE - 1),
+                Relaxed,
+                Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(result) => current = result,
+            }
         }
-
         if let Some(old_array) = self.old_array.swap((None, Tag::None), Relaxed) {
             old_array.cleared.store(true, Relaxed);
             barrier.reclaim(old_array);
