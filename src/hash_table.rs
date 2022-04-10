@@ -207,7 +207,7 @@ where
             };
             if remove {
                 let result = locker.erase(&mut iterator);
-                if cell_index < ARRAY_SIZE && locker.cell().num_entries() < ARRAY_SIZE / 16 {
+                if (cell_index % ARRAY_SIZE) == 0 && locker.cell().num_entries() < ARRAY_SIZE / 16 {
                     drop(locker);
                     if let Some(current_array_ref) =
                         self.cell_array().load(Acquire, barrier).as_ref()
@@ -300,7 +300,7 @@ where
 
             // Try to resize the array.
             let num_entries = current_array_ref.cell(cell_index).num_entries();
-            if check_resize && num_entries >= ARRAY_SIZE {
+            if cell_index % ARRAY_SIZE == 0 && check_resize && num_entries >= ARRAY_SIZE {
                 // Trigger resize if the estimated load factor is greater than 7/8.
                 check_resize = false;
                 self.try_enlarge(current_array_ref, cell_index, num_entries, barrier);

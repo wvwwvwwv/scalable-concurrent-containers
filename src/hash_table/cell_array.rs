@@ -203,7 +203,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         Q: Eq + Hash + ?Sized,
     {
         if let Some(old_array_ref) = self.old_array(barrier).as_ref() {
-            // Assigns itself a range of `Cells` to rehash.
+            // Assign itself a range of `Cells` to rehash.
             //
             // Aside from the range, it increments the implicit reference counting field in
             // `old_array_ref.rehashing`.
@@ -213,7 +213,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                 if current >= old_array_size
                     || (current & (Self::UNIT_SIZE - 1)) == Self::UNIT_SIZE - 1
                 {
-                    // Only `UNIT_SIZE - 1` tasks are allowed to rehash `Cells` at a moment.
+                    // Only `UNIT_SIZE - 1` threads are allowed to rehash `Cells` at a moment.
                     return self.old_array.is_null(Relaxed);
                 }
                 match old_array_ref.rehashing.compare_exchange(
@@ -233,9 +233,9 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             // The guard ensures dropping one reference in `old_array_ref.rehashing`.
             let mut rehashing_guard = scopeguard::guard((current, false), |(prev, success)| {
                 if success {
-                    // Keeps the index as it is.
-                    let old = old_array_ref.rehashing.fetch_sub(1, Relaxed);
-                    if (old & (Self::UNIT_SIZE - 1) == 1) && old >= old_array_size {
+                    // Keep the index as it is.
+                    let current = old_array_ref.rehashing.fetch_sub(1, Relaxed) - 1;
+                    if (current & (Self::UNIT_SIZE - 1) == 0) && current >= old_array_size {
                         // The last one trying to relocate old entries gets rid of the old array.
                         if let Some(old_array) = self.old_array.swap((None, Tag::None), Relaxed) {
                             old_array.cleared.store(true, Relaxed);

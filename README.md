@@ -327,8 +327,6 @@ let result = future_insert.await;
 
 ## Performance
 
-* 0.6.4 unfinished ([`#68`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/68)): intermediate result.
-
 ### Setup
 
 - OS: SUSE Linux Enterprise Server 15 SP2
@@ -336,19 +334,17 @@ let result = future_insert.await;
 - RAM: 1TB
 - Rust: 1.60.0
 - SCC: 0.6.4
-- Default memory allocator
 
 ### Workload
 
 - A disjoint range of 16M `usize` integers is assigned to each thread.
 - The performance test code asserts the expected outcome of each operation and the post state of the container.
-- Each test is run thrice in a single process in order to minimize the effect of page faults as the overhead is unpredictable.
 - Insert: each thread inserts its own records.
 - Read: each thread reads its own records in the container.
 - Scan: each thread scans the entire container once.
 - Remove: each thread removes its own records from the container.
 - InsertR, RemoveR: each thread additionally operates using keys belonging to a randomly chosen remote thread.
-- Mixed: each thread performs insert-local -> insert-remote -> read-local -> read-remote -> remove-local -> remove-remote.
+- MixedR: each thread performs insert-local -> insert-remote -> read-local -> read-remote -> remove-local -> remove-remote.
 
 ### Results
 
@@ -356,25 +352,25 @@ let result = future_insert.await;
 
 |         |  1 thread  |  4 threads | 16 threads | 64 threads |
 |---------|------------|------------|------------|------------|
-| InsertL |  10.859s   |  17.513s   |  44.507s   |  47.992s   |
-| ReadL   |   4.089s   |   5.115s   |   6.935s   |   8.406s   |
-| ScanL   |   0.15s    |   0.728s   |   2.981s   |  12.192s   |
-| RemoveL |   4.6s     |   6.459s   |   9.614s   |  23.342s   |
-| InsertR |  13.601s   |  31.947s   |  58.194s   |  63.449s   |
-| MixedR  |  14.714s   |  32.153s   |  33.413s   |  34.917s   |
-| RemoveR |   8.143s   |  14.417s   |  21.52s    |  28.838s   |
+| InsertL |   9.816s   |  16.688s   |  42.589s   |  47.589s   |
+| ReadL   |   4.079s   |   5.486s   |   6.862s   |   8.636s   |
+| ScanL   |   0.15s    |   0.727s   |   3.001s   |  12.512s   |
+| RemoveL |   4.627s   |   6.644s   |  10.987s   |  23.826s   |
+| InsertR |  11.424s   |  29.784s   |  56.771s   |  60.953s   |
+| MixedR  |  14.851s   |  30.712s   |  33.401s   |  34.612s   |
+| RemoveR |   8.316s   |  14.438s   |  21.737s   |  27.819s   |
 
 - [`HashIndex`](#HashIndex)
 
 |         |  1 thread  |  4 threads | 16 threads | 64 threads |
 |---------|------------|------------|------------|------------|
-| InsertL |  11.118s   |  18.891s   |  44.172s   |  48.15s    |
-| ReadL   |   3.762s   |   5.159s   |   6.576s   |   8.063s   |
-| ScanL   |   0.211s   |   1.094s   |   4.192s   |  17.037s   |
-| RemoveL |   4.559s   |   6.688s   |  10.926s   |  23.794s   |
-| InsertR |  14.028s   |  32.717s   |  58.559s   |  64.277s   |
-| MixedR  |  16.263s   |  39.432s   |  41.927s   |  45.227s   |
-| RemoveR |   8.217s   |  14.843s   |  20.304s   |  28.228s   |
+| InsertL |  10.287s   |  17.044s   |  43.286s   |  47.085s   |
+| ReadL   |   3.679s   |   4.839s   |   6.565s   |   8.004s   |
+| ScanL   |   0.204s   |   1.094s   |   4.194s   |  16.974s   |
+| RemoveL |   4.747s   |   6.564s   |  11.333s   |  23.429s   |
+| InsertR |  11.922s   |  30.295s   |  57.612s   |  61.138s   |
+| MixedR  |  16.403s   |  38.545s   |  43.204s   |  45.267s   |
+| RemoveR |   8.407s   |  14.786s   |  22.02s    |  28.118s   |
 
 - [`TreeIndex`](#TreeIndex)
 
@@ -394,7 +390,7 @@ let result = future_insert.await;
 0.6.4
 
 * Consolidate synchronous and asynchronous [`HashMap`](#HashMap) implementations.
-* [`HashMap`](#HashMap) read performance improvement.
+* [`HashMap`](#HashMap) performance improvement.
 
 0.6.3
 
