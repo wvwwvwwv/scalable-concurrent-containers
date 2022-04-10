@@ -210,11 +210,9 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             let old_array_size = old_array_ref.num_cells();
             let mut current = old_array_ref.rehashing.load(Relaxed);
             loop {
-                if current >= old_array_size {
-                    // No available `Cell` range for the task.
-                    return self.try_drop_old_array(old_array_ref, old_array_size, barrier);
-                }
-                if (current & (Self::UNIT_SIZE - 1)) == Self::UNIT_SIZE - 1 {
+                if current >= old_array_size
+                    || (current & (Self::UNIT_SIZE - 1)) == Self::UNIT_SIZE - 1
+                {
                     // Only `UNIT_SIZE - 1` tasks are allowed to rehash `Cells` at a moment.
                     return self.old_array.is_null(Relaxed);
                 }
@@ -236,7 +234,14 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             let mut rehashing_guard = scopeguard::guard((current, false), |(prev, success)| {
                 if success {
                     // Keeps the index as it is.
-                    old_array_ref.rehashing.fetch_sub(1, Relaxed);
+                    let old = old_array_ref.rehashing.fetch_sub(1, Relaxed);
+                    if (old & (Self::UNIT_SIZE - 1) == 1) && old >= old_array_size {
+                        // The last one trying to relocate old entries gets rid of the old array.
+                        if let Some(old_array) = self.old_array.swap((None, Tag::None), Relaxed) {
+                            old_array.cleared.store(true, Relaxed);
+                            barrier.reclaim(old_array);
+                        }
+                    }
                 } else {
                     // On failure, `rehashing` reverts to its previous state.
                     let mut current = old_array_ref.rehashing.load(Relaxed);
@@ -288,50 +293,8 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
 
             // Successfully rehashed all the `Cells` in the range.
             (*rehashing_guard).1 = true;
-
-            if current + Self::UNIT_SIZE >= old_array_size {
-                // The last `Cell` in the old array has been relocated.
-                drop(rehashing_guard);
-                return self.try_drop_old_array(old_array_ref, old_array_size, barrier);
-            }
-            false
-        } else {
-            true
         }
-    }
-
-    /// Tries to drop `old_array`.
-    fn try_drop_old_array(
-        &self,
-        old_array_ref: &CellArray<K, V, LOCK_FREE>,
-        old_array_size: usize,
-        barrier: &Barrier,
-    ) -> bool {
-        let mut current = old_array_ref.rehashing.load(Relaxed);
-        loop {
-            if (current & (Self::UNIT_SIZE - 1)) != 0 {
-                // There is a task rehashing `Cells`.
-                return self.old_array.is_null(Relaxed);
-            }
-            if current < old_array_size {
-                // There are `Cells` to rehash.
-                return self.old_array.is_null(Relaxed);
-            }
-            match old_array_ref.rehashing.compare_exchange(
-                current,
-                current | (Self::UNIT_SIZE - 1),
-                Relaxed,
-                Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(result) => current = result,
-            }
-        }
-        if let Some(old_array) = self.old_array.swap((None, Tag::None), Relaxed) {
-            old_array.cleared.store(true, Relaxed);
-            barrier.reclaim(old_array);
-        }
-        true
+        self.old_array.is_null(Relaxed)
     }
 
     /// Calculates `log_2` of the array size from the given cell capacity.
