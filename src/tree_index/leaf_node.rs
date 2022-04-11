@@ -289,7 +289,7 @@ where
                             return Err(result != RemoveResult::Fail);
                         }
                         if result == RemoveResult::Retired {
-                            return self.coalesce(key, barrier);
+                            return Ok(self.coalesce(key, barrier));
                         }
                         return Ok(result);
                     }
@@ -309,7 +309,7 @@ where
                     return Err(result != RemoveResult::Fail);
                 }
                 if result == RemoveResult::Retired {
-                    return self.coalesce(key, barrier);
+                    return Ok(self.coalesce(key, barrier));
                 }
                 return Ok(result);
             }
@@ -432,13 +432,8 @@ where
             };
 
             // Replace the full leaf with the high-key leaf.
-            full_leaf.swap(
-                (
-                    new_leaves.high_key_leaf.swap((None, Tag::None), Relaxed),
-                    Tag::None,
-                ),
-                Release,
-            )
+            let high_key_leaf = new_leaves.high_key_leaf.swap((None, Tag::None), Relaxed);
+            full_leaf.swap((high_key_leaf, Tag::None), Release)
         };
 
         if let Some(unused_leaf) = unused_leaf {
@@ -451,6 +446,9 @@ where
         if let Some(change) = self.latch.swap((None, Tag::None), Release) {
             barrier.reclaim(change);
         }
+
+        // Traverse several leaf nodes in order to cleanup deprecated links.
+        self.max_le_appr(key.borrow(), barrier);
 
         // Since a new leaf has been inserted, the caller can retry.
         Err((key, value))
@@ -619,7 +617,7 @@ where
     }
 
     /// Tries to coalesce empty or obsolete leaves after a successful removal of an entry.
-    fn coalesce<Q>(&self, removed_key: &Q, barrier: &Barrier) -> Result<RemoveResult, bool>
+    fn coalesce<Q>(&self, removed_key: &Q, barrier: &Barrier) -> RemoveResult
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
@@ -672,19 +670,19 @@ where
             };
 
             if fully_empty {
-                return Ok(RemoveResult::Retired);
+                return RemoveResult::Retired;
             }
 
             drop(lock);
             if !self.has_retired_leaf(barrier) {
                 // Traverse several leaf nodes in order to cleanup deprecated links.
                 self.max_le_appr(removed_key, barrier);
-                return Ok(RemoveResult::Success);
+                return RemoveResult::Success;
             }
         }
 
-        // Locking failed: retry.
-        Err(true)
+        // Locking failed: give up expecting that the lock owner eventually cleans up the leaf.
+        RemoveResult::Success
     }
 
     /// Checks if the [`LeafNode`] has a retired [`Leaf`].

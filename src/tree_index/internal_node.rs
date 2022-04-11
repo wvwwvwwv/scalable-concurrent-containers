@@ -204,9 +204,7 @@ where
                             }
                             InsertResult::Retired(key, value) => {
                                 debug_assert!(child_ref.retired(Relaxed));
-                                if let Ok(RemoveResult::Retired) =
-                                    self.coalesce(key.borrow(), barrier)
-                                {
+                                if self.coalesce(key.borrow(), barrier) == RemoveResult::Retired {
                                     debug_assert!(self.retired(Relaxed));
                                     return Ok(InsertResult::Retired(key, value));
                                 }
@@ -246,7 +244,7 @@ where
                     }
                     InsertResult::Retired(key, value) => {
                         debug_assert!(unbounded.retired(Relaxed));
-                        if let Ok(RemoveResult::Retired) = self.coalesce(key.borrow(), barrier) {
+                        if self.coalesce(key.borrow(), barrier) == RemoveResult::Retired {
                             debug_assert!(self.retired(Relaxed));
                             return Ok(InsertResult::Retired(key, value));
                         }
@@ -283,7 +281,7 @@ where
                         // Data race resolution - see `LeafNode::search`.
                         let result = child.remove_if(key, condition, barrier)?;
                         if result == RemoveResult::Retired {
-                            return self.coalesce(key, barrier);
+                            return Ok(self.coalesce(key, barrier));
                         }
                         return Ok(result);
                     }
@@ -300,7 +298,7 @@ where
                 }
                 let result = unbounded.remove_if(key, condition, barrier)?;
                 if result == RemoveResult::Retired {
-                    return self.coalesce(key, barrier);
+                    return Ok(self.coalesce(key, barrier));
                 }
                 return Ok(result);
             }
@@ -563,6 +561,9 @@ where
             barrier.reclaim(change);
         }
 
+        // Traverse several leaf nodes in order to cleanup deprecated links.
+        self.max_le_appr(key.borrow(), barrier);
+
         // Since a new node has been inserted, the caller can retry.
         Err((key, value))
     }
@@ -600,7 +601,7 @@ where
     }
 
     /// Tries to coalesce nodes.
-    fn coalesce<Q>(&self, removed_key: &Q, barrier: &Barrier) -> Result<RemoveResult, bool>
+    fn coalesce<Q>(&self, removed_key: &Q, barrier: &Barrier) -> RemoveResult
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
@@ -660,19 +661,19 @@ where
             };
 
             if fully_empty {
-                return Ok(RemoveResult::Retired);
+                return RemoveResult::Retired;
             }
 
             drop(lock);
             if !self.has_retired_node(barrier) {
                 // Traverse several leaf nodes in order to cleanup deprecated links.
                 self.max_le_appr(removed_key, barrier);
-                return Ok(RemoveResult::Success);
+                return RemoveResult::Success;
             }
         }
 
-        // Locking failed: retry.
-        Err(true)
+        // Locking failed: give up expecting that the lock owner eventually cleans up the node.
+        RemoveResult::Success
     }
 
     /// Checks if the [`InternalNode`] has a retired [`Node`].
