@@ -476,7 +476,7 @@ where
         &self,
         low_key_leaf: &mut Option<Arc<Leaf<K, V>>>,
         high_key_leaf: &mut Option<Arc<Leaf<K, V>>>,
-    ) -> Option<K> {
+    ) -> bool {
         if let Ok(prev) = self.metadata.fetch_update(AcqRel, Acquire, |p| {
             if Dimension::frozen(p) {
                 None
@@ -485,7 +485,6 @@ where
             }
         }) {
             let mut iterated = 0;
-            let mut mid_key = None;
             let scanner = Scanner {
                 leaf: self,
                 metadata: prev,
@@ -498,7 +497,6 @@ where
                         low_key_leaf.replace(Arc::new(Leaf::new()));
                     }
                     iterated += 1;
-                    mid_key.replace(entry.0);
                     low_key_leaf
                         .as_ref()
                         .unwrap()
@@ -514,9 +512,9 @@ where
                 };
                 debug_assert!(matches!(result, InsertResult::Success));
             }
-            mid_key.map(Clone::clone)
+            true
         } else {
-            None
+            false
         }
     }
 
@@ -899,7 +897,7 @@ mod test {
 
         let mut leaf1 = None;
         let mut leaf2 = None;
-        assert!(leaf.freeze_and_distribute(&mut leaf1, &mut leaf2).is_some());
+        assert!(leaf.freeze_and_distribute(&mut leaf1, &mut leaf2));
         assert_eq!(leaf1.as_ref().and_then(|l| l.search(&11)), Some(&17));
         assert_eq!(leaf1.as_ref().and_then(|l| l.search(&17)), Some(&11));
         assert!(leaf2.is_none());
