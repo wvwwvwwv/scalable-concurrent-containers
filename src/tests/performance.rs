@@ -569,6 +569,10 @@ mod benchmark {
             };
             let (duration, total_num_operations) =
                 perform(num_threads, 0, treeindex.clone(), insert.clone());
+            assert_eq!(
+                treeindex.iter(&ebr::Barrier::new()).count(),
+                total_num_operations
+            );
             println!(
                 "treeindex-insert-local: {}, {:?}, {}, depth = {}",
                 num_threads,
@@ -645,6 +649,10 @@ mod benchmark {
             };
             let (duration, total_num_operations) =
                 perform(num_threads, 0, treeindex.clone(), insert.clone());
+            assert_eq!(
+                treeindex.iter(&ebr::Barrier::new()).count(),
+                total_num_operations / 2
+            );
             println!(
                 "treeindex-insert-local-remote: {}, {:?}, {}, depth = {}",
                 num_threads,

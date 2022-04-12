@@ -366,6 +366,22 @@ where
 mod test {
     use super::*;
 
+    use std::time::Instant;
+
+    #[test]
+    fn alloc() {
+        let start = Instant::now();
+        let array: CellArray<usize, usize, true> =
+            CellArray::new(1024 * 1024 * 32, AtomicArc::default());
+        assert_eq!(array.num_cells(), 1024 * 1024);
+        let after_alloc = Instant::now();
+        println!("allocation took {:?}", after_alloc - start);
+        array.cleared.store(true, Relaxed);
+        drop(array);
+        let after_dealloc = Instant::now();
+        println!("deallocation took {:?}", after_dealloc - after_alloc);
+    }
+
     #[test]
     fn array() {
         for s in 0..ARRAY_SIZE * 2 {

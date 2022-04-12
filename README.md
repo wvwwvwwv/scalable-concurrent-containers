@@ -333,7 +333,7 @@ let result = future_insert.await;
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
 - RAM: 1TB
 - Rust: 1.60.0
-- SCC: 0.6.4
+- SCC: 0.6.4 (HashMap, HashIndex), 0.6.5 (TreeIndex)
 
 ### Workload
 
@@ -374,6 +374,8 @@ let result = future_insert.await;
 
 - [`TreeIndex`](#TreeIndex)
 
+* Test in progress.
+
 |         |  1 thread  |  4 threads | 16 threads | 64 threads |
 |---------|------------|------------|------------|------------|
 | InsertL |  16.818s   |  19.784s   |  25.594s   |  68.566s   |
@@ -386,6 +388,10 @@ let result = future_insert.await;
 
 
 ## Changelog
+
+0.6.5
+
+* [`TreeIndex`](#TreeIndex) performance improvement.
 
 0.6.4
 
