@@ -365,7 +365,7 @@ where
                     .as_ref()
                     .unwrap();
 
-                // Copies nodes except for the known full node to the newly allocated internal node entries.
+                // Copy nodes except for the known full node to the newly allocated internal node entries.
                 let internal_nodes = (
                     Arc::new(Node::new_internal_node()),
                     Arc::new(Node::new_internal_node()),
@@ -383,7 +383,7 @@ where
                         unreachable!()
                     };
 
-                // Builds a list of valid nodes.
+                // Build a list of valid nodes.
                 #[allow(clippy::type_complexity)]
                 let mut entry_array: [Option<(Option<&K>, AtomicArc<Node<K, V>>)>;
                     DIMENSION.num_entries + 2] = Default::default();
@@ -479,7 +479,7 @@ where
                     }
                 }
 
-                // Turns the new nodes into internal nodes.
+                // Turn the new nodes into internal nodes.
                 new_nodes
                     .low_key_node
                     .swap((Some(internal_nodes.0), Tag::None), Relaxed);
@@ -488,11 +488,13 @@ where
                     .swap((Some(internal_nodes.1), Tag::None), Relaxed);
             }
             Type::Leaf(full_leaf_node) => {
-                // Copies leaves except for the known full leaf to the newly allocated leaf node entries.
+                // Copy leaves except for the known full leaf to the newly allocated leaf node entries.
                 let leaf_nodes = (
                     Arc::new(Node::new_leaf_node()),
                     Arc::new(Node::new_leaf_node()),
                 );
+
+                // TODO.
                 let low_key_leaf_node = if let Type::Leaf(low_key_leaf_node) = &leaf_nodes.0.node()
                 {
                     Some(low_key_leaf_node)
@@ -513,7 +515,7 @@ where
                     )
                     .map(|middle_key| new_nodes.middle_key.replace(middle_key));
 
-                // Turns the new leaves into leaf nodes.
+                // Turn the new leaves into leaf nodes.
                 new_nodes
                     .low_key_node
                     .swap((Some(leaf_nodes.0), Tag::None), Relaxed);
@@ -523,21 +525,23 @@ where
             }
         };
 
-        // Inserts the newly allocated internal nodes into the main array.
-        match self.children.insert(
-            new_nodes.middle_key.take().unwrap(),
-            new_nodes.low_key_node.clone(Relaxed, barrier),
-        ) {
-            InsertResult::Success => (),
-            InsertResult::Duplicate(..) | InsertResult::Frozen(..) => unreachable!(),
-            InsertResult::Full(middle_key, _) | InsertResult::Retired(middle_key, _) => {
-                // Insertion failed: expects that the parent splits this node.
-                new_nodes.middle_key.replace(middle_key);
-                return Ok(InsertResult::Full(key, value));
-            }
-        };
+        // Insert the newly allocated internal nodes into the main array.
+        if let Some(middle_key) = new_nodes.middle_key.take() {
+            match self
+                .children
+                .insert(middle_key, new_nodes.low_key_node.clone(Relaxed, barrier))
+            {
+                InsertResult::Success => (),
+                InsertResult::Duplicate(..) | InsertResult::Frozen(..) => unreachable!(),
+                InsertResult::Full(middle_key, _) | InsertResult::Retired(middle_key, _) => {
+                    // Insertion failed: expects that the parent splits this node.
+                    new_nodes.middle_key.replace(middle_key);
+                    return Ok(InsertResult::Full(key, value));
+                }
+            };
+        }
 
-        // Replaces the full node with the high-key node.
+        // Replace the full node with the high-key node.
         let unused_node = full_node.swap(
             (new_nodes.high_key_node.get_arc(Relaxed, barrier), Tag::None),
             Release,
@@ -548,10 +552,8 @@ where
             return Err((key, value));
         }
 
-        // Drops the deprecated nodes.
-        // - Still, the deprecated full leaf can be reachable by Scanners.
+        // Drop the deprecated nodes.
         if let Some(unused_node) = unused_node {
-            // Cleans up the split operation by committing it.
             unused_node.commit(barrier);
             barrier.reclaim(unused_node);
         }

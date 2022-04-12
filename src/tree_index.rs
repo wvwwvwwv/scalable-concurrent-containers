@@ -269,20 +269,18 @@ where
                             if matches!(Node::remove_root(&self.root, &barrier), Ok(true)) {
                                 return true;
                             }
-                            has_been_removed = true;
-                            std::thread::yield_now();
                         }
                     },
                     Err(removed) => {
                         if removed {
                             has_been_removed = true;
                         }
-                        std::thread::yield_now();
                     }
                 }
             } else {
                 return has_been_removed;
             }
+            std::thread::yield_now();
         }
     }
 
