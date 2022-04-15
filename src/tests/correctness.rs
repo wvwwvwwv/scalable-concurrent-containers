@@ -80,19 +80,42 @@ mod hashmap_test {
                 barrier_cloned.wait().await;
                 let range = (task_id * workload_size)..((task_id + 1) * workload_size);
                 for id in range.clone() {
-                    let result = hashmap_cloned.insert_async(id, id).await;
-                    assert!(result.is_ok());
+                    let result = hashmap_cloned.update_async(&id, |_, _| 1).await;
+                    assert!(result.is_none());
+                }
+                for id in range.clone() {
+                    if id % 5 == 0 {
+                        hashmap_cloned.upsert_async(id, || id, |_, v| *v = id).await;
+                    } else {
+                        let result = hashmap_cloned.insert_async(id, id).await;
+                        assert!(result.is_ok());
+                    }
+                }
+                for id in range.clone() {
+                    if id % 7 == 0 {
+                        hashmap_cloned
+                            .upsert_async(id, || id, |_, v| *v = id + 1)
+                            .await;
+                    } else {
+                        let result = hashmap_cloned
+                            .update_async(&id, |_, v| {
+                                *v += 1;
+                                *v
+                            })
+                            .await;
+                        assert_eq!(result, Some(id + 1));
+                    }
                 }
                 for id in range.clone() {
                     let result = hashmap_cloned.read_async(&id, |_, v| *v).await;
-                    assert_eq!(result, Some(id));
+                    assert_eq!(result, Some(id + 1));
                 }
                 for id in range.clone() {
-                    let result = hashmap_cloned.remove_if_async(&id, |v| *v == id).await;
-                    assert_eq!(result, Some((id, id)));
+                    let result = hashmap_cloned.remove_if_async(&id, |v| *v == id + 1).await;
+                    assert_eq!(result, Some((id, id + 1)));
                 }
                 for id in range {
-                    let result = hashmap_cloned.remove_if_async(&id, |v| *v == id).await;
+                    let result = hashmap_cloned.remove_if_async(&id, |v| *v == id + 1).await;
                     assert_eq!(result, None);
                 }
             }));

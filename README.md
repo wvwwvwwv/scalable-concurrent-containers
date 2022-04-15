@@ -6,12 +6,12 @@
 
 A collection of concurrent data structures and building blocks for concurrent programming.
 
-- [scc::ebr](#EBR) implements epoch-based reclamation.
-- [scc::LinkedList](#LinkedList) is a type trait implementing a wait-free concurrent singly linked list.
-- [scc::HashMap](#HashMap) is a concurrent hash map.
-- [scc::HashSet](#HashSet) is a concurrent hash set based on [scc::HashMap](#HashMap).
-- [scc::HashIndex](#HashIndex) is a concurrent hash index allowing lock-free read and scan.
-- [scc::TreeIndex](#TreeIndex) is a concurrent B+ tree allowing lock-free read and scan.
+- [ebr](#EBR) implements epoch-based reclamation.
+- [LinkedList](#LinkedList) is a type trait implementing a wait-free concurrent singly linked list.
+- [HashMap](#HashMap) is a concurrent hash map.
+- [HashSet](#HashSet) is a concurrent hash set based on [scc::HashMap](#HashMap).
+- [HashIndex](#HashIndex) is a concurrent hash index allowing lock-free read and scan.
+- [TreeIndex](#TreeIndex) is a concurrent B+ tree allowing lock-free read and scan.
 
 
 ## EBR
@@ -75,7 +75,7 @@ assert_eq!(*ptr.as_ref().unwrap(), 17);
 
 ## LinkedList
 
-[`LinkedList`](#LinkedList) is a type trait that implements wait-free concurrent singly linked list operations, backed by [`EBR`](#EBR). It additionally provides support for marking an entry of a linked list to indicate that the entry is in a user-defined state.
+[LinkedList](#LinkedList) is a type trait that implements wait-free concurrent singly linked list operations, backed by [EBR](#EBR). It additionally provides support for marking an entry of a linked list to indicate that the entry is in a user-defined state.
 
 ### Examples
 
@@ -117,7 +117,7 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 ## HashMap
 
-[`HashMap`](#HashMap) is a scalable in-memory unique key-value container that is targeted at highly concurrent heavy workloads. It applies [`EBR`](#EBR) to its entry array management, thus enabling it to avoid container-level locking and data sharding.
+[HashMap](#HashMap) is a scalable in-memory unique key-value container that is targeted at highly concurrent heavy workloads. It applies [EBR](#EBR) to its entry array management, thus enabling it to avoid container-level locking and data sharding.
 
 ### Examples
 
@@ -214,7 +214,7 @@ assert_eq!(hashset.capacity(), 1048576);
 
 ## HashIndex
 
-[`HashIndex`](#HashIndex) is a read-optimized version of [`HashMap`](#HashMap). It applies [`EBR`](#EBR) to its entry management as well, enabling it to perform read operations without acquiring locks.
+[HashIndex](#HashIndex) is a read-optimized version of [HashMap](#HashMap). It applies [EBR](#EBR) to its entry management as well, enabling it to perform read operations without acquiring locks.
 
 ### Examples
 
@@ -229,7 +229,7 @@ assert!(hashindex.insert(1, 0).is_ok());
 assert_eq!(hashindex.read(&1, |_, v| *v).unwrap(), 0);
 ```
 
-An [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is implemented for [`HashIndex`](#HashIndex), because derived references can survive as long as the associated `ebr::Barrier` lives.
+An [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is implemented for [HashIndex](#HashIndex), because derived references can survive as long as the associated `ebr::Barrier` lives.
 
 ```rust
 use scc::ebr::Barrier;
@@ -257,7 +257,7 @@ assert_eq!(entry_ref, (&1, &0));
 
 ## TreeIndex
 
-[`TreeIndex`](#TreeIndex) is a B+ tree variant optimized for read operations. The `ebr` module enables it to implement lock-free read and scan methods.
+[TreeIndex](#TreeIndex) is a B+ tree variant optimized for read operations. The `ebr` module enables it to implement lock-free read and scan methods.
 
 ### Examples
 
@@ -348,7 +348,7 @@ let result = future_insert.await;
 
 ### Results
 
-- [`HashMap`](#HashMap)
+- [HashMap](#HashMap)
 
 |         |  1 thread  |  4 threads | 16 threads | 64 threads |
 |---------|------------|------------|------------|------------|
@@ -360,7 +360,7 @@ let result = future_insert.await;
 | MixedR  |  14.851s   |  30.712s   |  33.401s   |  34.612s   |
 | RemoveR |   8.316s   |  14.438s   |  21.737s   |  27.819s   |
 
-- [`HashIndex`](#HashIndex)
+- [HashIndex](#HashIndex)
 
 |         |  1 thread  |  4 threads | 16 threads | 64 threads |
 |---------|------------|------------|------------|------------|
@@ -372,40 +372,39 @@ let result = future_insert.await;
 | MixedR  |  16.403s   |  38.545s   |  43.204s   |  45.267s   |
 | RemoveR |   8.407s   |  14.786s   |  22.02s    |  28.118s   |
 
-- [`TreeIndex`](#TreeIndex)
-
-* Test in progress.
+- [TreeIndex](#TreeIndex)
 
 |         |  1 thread  |  4 threads | 16 threads | 64 threads |
 |---------|------------|------------|------------|------------|
-| InsertL |  16.818s   |  19.784s   |  25.594s   |  68.566s   |
-| ReadL   |   3.651s   |   4.222s   |   4.55s    |   5.311s   |
-| ScanL   |   1.396s   |  12.058s   |  85.296s   | 308.588s   |
-| RemoveL |   6.205s   |  10.671s   |  26.743s   |  85.872s   |
-| InsertR |  22.381s   |  62.075s   |  64.898s   | 105.834s   |
-| MixedR  |  28.628s   | 133.629s   | 468.248s   | 820.25s    |
-| RemoveR |   9.605s   |  18.667s   |  26.052s   | 126.221s   |
+| InsertL |  16.833s   |  19.778s   |  26.651s   |  68.163s   |
+| ReadL   |   3.783s   |   4.112s   |   4.696s   |   5.367s   |
+| ScanL   |   1.26s    |   4.958s   |  19.781s   |  88.587s   |
+| RemoveL |   5.986s   |   7.479s   |   8.825s   |   9.639s   |
+| InsertR |  22.233s   |  60.892s   |  70.324s   | 105.639s   |
+| MixedR  |  28.956s   | 186.537s   | 476.771s   | 672.449s   |
+| RemoveR |   9.281s   |  18.568s   |  25.262s   |  83.017s   |
 
 
 ## Changelog
 
 0.6.5
 
-* [`TreeIndex`](#TreeIndex) performance improvement.
+* [TreeIndex](#TreeIndex) remove performance improvement.
+* More [HashMap](#HashMap) asynchronous methods.
 
 0.6.4
 
-* Consolidate synchronous and asynchronous [`HashMap`](#HashMap) implementations.
-* [`HashMap`](#HashMap) performance improvement.
+* Consolidate synchronous and asynchronous [HashMap](#HashMap) implementations.
+* [HashMap](#HashMap) performance improvement.
 
 0.6.3
 
-* Consolidate synchronous and asynchronous [`TreeIndex`](#TreeIndex) implementations.
+* Consolidate synchronous and asynchronous [TreeIndex](#TreeIndex) implementations.
 
 0.6.2
 
-* Asynchronous [`TreeIndex`](#TreeIndex).
-* [`TreeIndex`](#TreeIndex) performance improvement.
+* Asynchronous [TreeIndex](`#TreeIndex).
+* [TreeIndex](#TreeIndex) performance improvement.
 * Fix ebr API: `ebr::Arc::get_mut` is now unsafe.
-* Fix [`#65`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/65).
-* Fix [`#66`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/66).
+* Fix [#65](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/65).
+* Fix [#66](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/66).

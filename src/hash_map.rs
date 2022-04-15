@@ -238,7 +238,7 @@ where
     {
         let (hash, partial_hash) = self.hash(key_ref);
         let barrier = Barrier::new();
-        let (_, _, iterator) = self
+        let (_, _locker, iterator) = self
             .acquire::<Q, false>(key_ref, hash, partial_hash, &barrier)
             .ok()?;
         if let Some(iterator) = iterator {
@@ -249,6 +249,45 @@ where
             }
         }
         None
+    }
+
+    /// Updates an existing key-value pair.
+    ///
+    /// It returns `None` if the key does not exist. It is an asynchronous method returning an
+    /// `impl Future` for the caller to await or poll.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// let future_update = hashmap.update_async(&1, |_, v| { *v = 2; *v });
+    /// ```
+    #[inline]
+    pub async fn update_async<Q, F, R>(&self, key_ref: &Q, updater: F) -> Option<R>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+        F: FnOnce(&K, &mut V) -> R,
+    {
+        let (hash, partial_hash) = self.hash(key_ref);
+        loop {
+            if let Ok((_, _locker, iterator)) =
+                self.acquire::<Q, true>(key_ref, hash, partial_hash, &Barrier::new())
+            {
+                if let Some(iterator) = iterator {
+                    if let Some((k, v)) = iterator.get() {
+                        #[allow(clippy::cast_ref_to_mut)]
+                        return Some(updater(k, unsafe { &mut *(v as *const V as *mut V) }));
+                    }
+                }
+                return None;
+            }
+            async_yield::async_yield().await;
+        }
     }
 
     /// Constructs the value in-place, or modifies an existing value corresponding to the key.
@@ -292,6 +331,50 @@ where
             }
         }
         locker.insert(key, constructor(), partial_hash, &barrier);
+    }
+
+    /// Constructs the value in-place, or modifies an existing value corresponding to the key.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    ///
+    /// # Panics
+    ///
+    /// Panics if memory allocation fails, or the number of entries in the target cell is
+    /// reached `u32::MAX`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// let future_upsert = hashmap.upsert_async(1, || 2, |_, v| *v = 3);
+    /// ```
+    #[inline]
+    pub async fn upsert_async<FI: FnOnce() -> V, FU: FnOnce(&K, &mut V)>(
+        &self,
+        key: K,
+        constructor: FI,
+        updater: FU,
+    ) {
+        let (hash, partial_hash) = self.hash(&key);
+        loop {
+            if let Ok((_, locker, iterator)) =
+                self.acquire::<_, true>(&key, hash, partial_hash, &Barrier::new())
+            {
+                if let Some(iterator) = iterator {
+                    if let Some((k, v)) = iterator.get() {
+                        #[allow(clippy::cast_ref_to_mut)]
+                        updater(k, unsafe { &mut *(v as *const V as *mut V) });
+                        return;
+                    }
+                }
+                locker.insert(key, constructor(), partial_hash, &Barrier::new());
+                return;
+            }
+            async_yield::async_yield().await;
+        }
     }
 
     /// Removes a key-value pair if the key exists.
@@ -531,6 +614,28 @@ where
         Q: Eq + Hash + ?Sized,
     {
         self.read(key, |_, _| ()).is_some()
+    }
+
+    /// Checks if the key exists.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// let future_contains = hashmap.contains_async(&1);
+    /// ```
+    #[inline]
+    pub async fn contains_async<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.read_async(key, |_, _| ()).await.is_some()
     }
 
     /// Iterates over all the entries in the [`HashMap`].
