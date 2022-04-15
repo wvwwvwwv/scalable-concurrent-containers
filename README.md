@@ -1,8 +1,8 @@
 # Scalable Concurrent Containers
 
-[![Cargo](https://img.shields.io/crates/v/scc?style=for-the-badge)](https://crates.io/crates/scc)
-![Crates.io](https://img.shields.io/crates/l/scc?style=for-the-badge)
-![GitHub Workflow Status](https://img.shields.io/github/workflow/status/wvwwvwwv/scalable-concurrent-containers/SCC?style=for-the-badge)
+[![Cargo](https://img.shields.io/crates/v/scc?style=flat-square)](https://crates.io/crates/scc)
+![Crates.io](https://img.shields.io/crates/l/scc?style=flat-square)
+![GitHub Workflow Status](https://img.shields.io/github/workflow/status/wvwwvwwv/scalable-concurrent-containers/SCC?style=flat-square)
 
 A collection of concurrent data structures and building blocks for concurrent programming.
 
@@ -147,7 +147,7 @@ hashmap.upsert(1, || 2, |_, v| *v = 3);
 assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 3);
 ```
 
-There is no method to confine the lifetime of references derived from an [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) to the [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html), and it is illegal to let them live as long as the [`HashMap`](#HashMap) stays valid due to the lack of a global lock. Therefore [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, it provides two methods that allow a [`HashMap`](#HashMap) to iterate over its entries: `for_each`, and `retain`.
+There is no method to confine the lifetime of references derived from an [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html), and it is illegal to let them live as long as the [HashMap](#HashMap) stays valid due to the lack of a global lock. Therefore [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, it provides two methods that allow a [HashMap](#HashMap) to iterate over its entries: `for_each`, and `retain`.
 
 ```rust
 use scc::HashMap;
@@ -185,11 +185,11 @@ let result = future_insert.await;
 
 ## HashSet
 
-[`HashSet`](#HashSet) is a variant of [`HashMap`](#HashMap) where the value type is fixed `()`.
+[HashSet](#HashSet) is a variant of [HashMap](#HashMap) where the value type is fixed `()`.
 
 ### Examples
 
-All the [`HashSet`](#HashSet) methods do not receive a value argument.
+All the [HashSet](#HashSet) methods do not receive a value argument.
 
 ```rust
 use scc::HashSet;
@@ -201,7 +201,7 @@ assert!(hashset.insert(1).is_ok());
 assert!(hashset.read(&1, |_| true).unwrap());
 ```
 
-The capacity of a [`HashSet`](#HashSet) can be specified.
+The capacity of a [HashSet](#HashSet) can be specified.
 
 ```rust
 use scc::HashSet;
@@ -229,7 +229,7 @@ assert!(hashindex.insert(1, 0).is_ok());
 assert_eq!(hashindex.read(&1, |_, v| *v).unwrap(), 0);
 ```
 
-An [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is implemented for [HashIndex](#HashIndex), because derived references can survive as long as the associated `ebr::Barrier` lives.
+An [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is implemented for [HashIndex](#HashIndex), because derived references can survive as long as the associated `ebr::Barrier` lives.
 
 ```rust
 use scc::ebr::Barrier;
@@ -403,7 +403,7 @@ let result = future_insert.await;
 
 0.6.2
 
-* Asynchronous [TreeIndex](`#TreeIndex).
+* Asynchronous [TreeIndex](#TreeIndex).
 * [TreeIndex](#TreeIndex) performance improvement.
 * Fix ebr API: `ebr::Arc::get_mut` is now unsafe.
 * Fix [#65](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/65).
