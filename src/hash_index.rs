@@ -1,5 +1,6 @@
 //! The module implements [`HashIndex`].
 
+use super::async_yield::{self, AwaitableBarrier};
 use super::ebr::{Arc, AtomicArc, Barrier, Ptr};
 use super::hash_table::cell::{EntryIterator, Locker};
 use super::hash_table::cell_array::CellArray;
@@ -121,6 +122,38 @@ where
         }
     }
 
+    /// Inserts a key-value pair into the [`HashIndex`].
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error along with the supplied key-value pair if the key exists.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    /// let future_insert = hashindex.insert_async(11, 17);
+    /// ```
+    #[inline]
+    pub async fn insert_async(&self, mut key: K, mut val: V) -> Result<(), (K, V)> {
+        let (hash, partial_hash) = self.hash(&key);
+        loop {
+            match self.insert_entry::<true>(key, val, hash, partial_hash, &Barrier::new()) {
+                Ok(Some(returned)) => return Err(returned),
+                Ok(None) => return Ok(()),
+                Err(returned) => {
+                    key = returned.0;
+                    val = returned.1;
+                }
+            }
+            async_yield::async_yield().await;
+        }
+    }
+
     /// Removes a key-value pair if the key exists.
     ///
     /// This method only marks the entry unreachable, and the memory will be reclaimed later.
@@ -143,6 +176,28 @@ where
         Q: Eq + Hash + ?Sized,
     {
         self.remove_if(key_ref, |_| true)
+    }
+
+    /// Removes a key-value pair if the key exists.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    /// let future_insert = hashindex.insert_async(11, 17);
+    /// let future_remove = hashindex.remove_async(&11);
+    /// ```
+    #[inline]
+    pub async fn remove_async<Q>(&self, key_ref: &Q) -> Option<(K, V)>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.remove_if_async(key_ref, |_| true).await
     }
 
     /// Removes a key-value pair if the key exists and the given condition is met.
@@ -176,6 +231,44 @@ where
         )
         .ok()
         .map_or(false, |(_, r)| r)
+    }
+
+    /// Removes a key-value pair if the key exists and the given condition is met.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    /// let future_insert = hashindex.insert_async(11, 17);
+    /// let future_remove = hashindex.remove_if_async(&11, |_| true);
+    /// ```
+    #[inline]
+    pub async fn remove_if_async<Q, F: FnMut(&V) -> bool>(
+        &self,
+        key_ref: &Q,
+        mut condition: F,
+    ) -> Option<(K, V)>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        let (hash, partial_hash) = self.hash(key_ref);
+        loop {
+            if let Ok(result) = self.remove_entry::<Q, F, true>(
+                key_ref,
+                hash,
+                partial_hash,
+                &mut condition,
+                &Barrier::new(),
+            ) {
+                return result.0;
+            }
+            async_yield::async_yield().await;
+        }
     }
 
     /// Reads a key-value pair.
@@ -289,9 +382,12 @@ where
                 }
             }
             for index in 0..current_array_ref.num_cells() {
-                if let Some(mut locker) = Locker::lock(current_array_ref.cell(index), &barrier) {
-                    num_removed += locker.cell().num_entries();
-                    locker.purge(&barrier);
+                if let Some(locker) = Locker::lock(current_array_ref.cell(index), &barrier) {
+                    let mut iterator = locker.cell().iter(&barrier);
+                    while iterator.next().is_some() {
+                        locker.erase(&mut iterator);
+                        num_removed += 1;
+                    }
                 }
             }
             let new_current_array_ptr = self.array.load(Acquire, &barrier);
@@ -301,6 +397,82 @@ where
             }
             current_array_ptr = new_current_array_ptr;
         }
+        num_removed
+    }
+
+    /// Clears all the key-value pairs.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// let future_insert = hashindex.insert_async(1, 0);
+    /// let future_retain = hashindex.clear_async();
+    /// ```
+    pub async fn clear_async(&self) -> usize {
+        let mut num_removed = 0;
+
+        // An acquire fence is required to correctly load the contents of the array.
+        let mut awaitable_barrier = AwaitableBarrier::default();
+        let mut current_array_holder = self.array.get_arc(Acquire, awaitable_barrier.barrier());
+        while let Some(current_array) = current_array_holder.take() {
+            while !current_array
+                .old_array(awaitable_barrier.barrier())
+                .is_null()
+            {
+                if current_array.partial_rehash::<_, _, _, true>(
+                    |key| self.hash(key),
+                    |_, _| None,
+                    awaitable_barrier.barrier(),
+                ) {
+                    continue;
+                }
+                awaitable_barrier.drop_barrier_and_yield().await;
+            }
+
+            for cell_index in 0..current_array.num_cells() {
+                loop {
+                    {
+                        // Limits the scope of `barrier`.
+                        let barrier = awaitable_barrier.barrier();
+                        if let Ok(result) =
+                            Locker::try_lock(current_array.cell(cell_index), barrier)
+                        {
+                            if let Some(locker) = result {
+                                let mut iterator = locker.cell().iter(barrier);
+                                while iterator.next().is_some() {
+                                    locker.erase(&mut iterator);
+                                    num_removed += 1;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    awaitable_barrier.drop_barrier_and_yield().await;
+                }
+            }
+
+            if let Some(new_current_array) =
+                self.array.get_arc(Acquire, awaitable_barrier.barrier())
+            {
+                if new_current_array.as_ptr() == current_array.as_ptr() {
+                    break;
+                }
+                current_array_holder.replace(new_current_array);
+                continue;
+            }
+            break;
+        }
+
+        if num_removed != 0 {
+            self.resize(&Barrier::new());
+        }
+
         num_removed
     }
 

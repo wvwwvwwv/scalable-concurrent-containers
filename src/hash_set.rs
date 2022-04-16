@@ -85,7 +85,7 @@ where
         self.map.reserve(capacity)
     }
 
-    /// Inserts a key-value pair into the [`HashSet`].
+    /// Inserts a key into the [`HashSet`].
     ///
     /// # Errors
     ///
@@ -114,7 +114,28 @@ where
         Ok(())
     }
 
-    /// Removes a key-value pair if the key exists.
+    /// Inserts a key into the [`HashSet`].
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error along with the supplied key if the key exists.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    ///
+    /// let hashset: HashSet<u64> = HashSet::default();
+    /// let future_insert = hashset.insert_async(11);
+    /// ```
+    #[inline]
+    pub async fn insert_async(&self, key: K) -> Result<(), K> {
+        self.map.insert_async(key, ()).await.map_err(|(k, _)| k)
+    }
+
+    /// Removes a key if the key exists.
     ///
     /// # Examples
     ///
@@ -136,7 +157,32 @@ where
         self.map.remove(key_ref).map(|(k, _)| k)
     }
 
-    /// Removes a key-value pair if the key exists and the given condition is met.
+    /// Removes a key if the key exists.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    ///
+    /// let hashset: HashSet<u64> = HashSet::default();
+    /// let future_insert = hashset.insert_async(11);
+    /// let future_remove = hashset.remove_async(&11);
+    /// ```
+    #[inline]
+    pub async fn remove_async<Q>(&self, key_ref: &Q) -> Option<K>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.map
+            .remove_if_async(key_ref, |_| true)
+            .await
+            .map(|(k, _)| k)
+    }
+
+    /// Removes a key if the key exists and the given condition is met.
     ///
     /// The key is locked while evaluating the condition.
     ///
@@ -158,6 +204,35 @@ where
         Q: Eq + Hash + ?Sized,
     {
         self.map.remove_if(key_ref, |_| condition()).map(|(k, _)| k)
+    }
+
+    /// Removes a key if the key exists and the given condition is met.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    ///
+    /// let hashset: HashSet<u64> = HashSet::default();
+    /// let future_insert = hashset.insert_async(11);
+    /// let future_remove = hashset.remove_if_async(&11, || true);
+    /// ```
+    #[inline]
+    pub async fn remove_if_async<Q, F: FnMut() -> bool>(
+        &self,
+        key_ref: &Q,
+        mut condition: F,
+    ) -> Option<K>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.map
+            .remove_if_async(key_ref, |_| condition())
+            .await
+            .map(|(k, _)| k)
     }
 
     /// Reads a key.
@@ -185,10 +260,32 @@ where
         self.read_with(key_ref, reader, &barrier)
     }
 
+    /// Reads a key.
+    ///
+    /// It returns `None` if the key does not exist. It is an asynchronous method returning an
+    /// `impl Future` for the caller to await or poll.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    ///
+    /// let hashset: HashSet<u64> = HashSet::default();
+    /// let future_insert = hashset.insert_async(11);
+    /// let future_read = hashset.read_async(&11, |k| *k);
+    /// ```
+    #[inline]
+    pub async fn read_async<Q, R, F: FnMut(&K) -> R>(&self, key_ref: &Q, mut reader: F) -> Option<R>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.map.read_async(key_ref, |k, _| reader(k)).await
+    }
+
     /// Reads a key using the supplied [`Barrier`].
     ///
-    /// It enables the caller to use the value reference outside the method. It returns `None`
-    /// if the key does not exist.
+    /// It returns `None` if the key does not exist.
     ///
     /// # Examples
     ///
@@ -240,6 +337,28 @@ where
         self.read(key, |_| ()).is_some()
     }
 
+    /// Checks if the key exists.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    ///
+    /// let hashset: HashSet<u64> = HashSet::default();
+    ///
+    /// let future_contains = hashset.contains_async(&1);
+    /// ```
+    #[inline]
+    pub async fn contains_async<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.map.contains_async(key).await
+    }
+
     /// Iterates over all the keys in the [`HashSet`].
     ///
     /// # Examples
@@ -264,6 +383,25 @@ where
         });
     }
 
+    /// Iterates over all the keys in the [`HashSet`].
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    ///
+    /// let hashset: HashSet<u64> = HashSet::default();
+    ///
+    /// let future_insert = hashset.insert_async(1);
+    /// let future_for_each = hashset.for_each_async(|k| println!("{}", k));
+    /// ```
+    #[inline]
+    pub async fn for_each_async<F: FnMut(&K)>(&self, mut f: F) {
+        self.map.for_each_async(|k, _| f(k)).await;
+    }
+
     /// Retains keys that satisfy the given predicate.
     ///
     /// It returns the number of keys remaining and removed.
@@ -285,6 +423,25 @@ where
         self.map.retain(|k, _| filter(k))
     }
 
+    /// Retains keys that satisfy the given predicate.
+    ///
+    /// It returns the number of entries remaining and removed. It is an asynchronous method
+    /// returning an `impl Future` for the caller to await or poll.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    ///
+    /// let hashset: HashSet<u64> = HashSet::default();
+    ///
+    /// let future_insert = hashset.insert_async(1);
+    /// let future_retain = hashset.retain_async(|k| *k == 1);
+    /// ```
+    pub async fn retain_async<F: FnMut(&K) -> bool>(&self, mut filter: F) -> (usize, usize) {
+        self.map.retain_async(|k, _| filter(k)).await
+    }
+
     /// Clears all the keys.
     ///
     /// # Examples
@@ -300,6 +457,25 @@ where
     #[inline]
     pub fn clear(&self) -> usize {
         self.map.clear()
+    }
+
+    /// Clears all the keys.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    ///
+    /// let hashset: HashSet<u64> = HashSet::default();
+    ///
+    /// let future_insert = hashset.insert_async(1);
+    /// let future_clear = hashset.clear_async();
+    /// ```
+    #[inline]
+    pub async fn clear_async(&self) -> usize {
+        self.map.clear_async().await
     }
 
     /// Returns the number of entries in the [`HashSet`].

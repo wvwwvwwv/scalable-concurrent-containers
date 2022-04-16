@@ -781,8 +781,8 @@ where
         &self,
         mut filter: F,
     ) -> (usize, usize) {
-        let mut retained_entries = 0;
-        let mut removed_entries = 0;
+        let mut num_retained = 0;
+        let mut num_removed = 0;
 
         // An acquire fence is required to correctly load the contents of the array.
         let mut awaitable_barrier = AwaitableBarrier::default();
@@ -820,16 +820,14 @@ where
                                         true
                                     };
                                     if retain {
-                                        retained_entries += 1;
+                                        num_retained += 1;
                                     } else {
                                         locker.erase(&mut iterator);
-                                        removed_entries += 1;
+                                        num_removed += 1;
                                     }
-                                    if retained_entries == usize::MAX
-                                        || removed_entries == usize::MAX
-                                    {
+                                    if num_retained == usize::MAX || num_removed == usize::MAX {
                                         // Gives up iteration on an integer overflow.
-                                        return (retained_entries, removed_entries);
+                                        return (num_retained, num_removed);
                                     }
                                 }
                             }
@@ -846,18 +844,18 @@ where
                 if new_current_array.as_ptr() == current_array.as_ptr() {
                     break;
                 }
-                retained_entries = 0;
+                num_retained = 0;
                 current_array_holder.replace(new_current_array);
                 continue;
             }
             break;
         }
 
-        if removed_entries >= retained_entries {
+        if num_removed >= num_retained {
             self.resize(&Barrier::new());
         }
 
-        (retained_entries, removed_entries)
+        (num_retained, num_removed)
     }
 
     /// Clears all the key-value pairs.
