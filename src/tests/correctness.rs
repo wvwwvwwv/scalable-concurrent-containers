@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod hashmap_test {
-    use crate::HashMap;
+    use crate::ebr;
+    use crate::{HashIndex, HashMap};
 
     use std::collections::BTreeSet;
     use std::hash::{Hash, Hasher};
@@ -21,6 +22,12 @@ mod hashmap_test {
             R(cnt)
         }
     }
+    impl Clone for R {
+        fn clone(&self) -> Self {
+            self.0.fetch_add(1, Relaxed);
+            R(self.0)
+        }
+    }
     impl Drop for R {
         fn drop(&mut self) {
             self.0.fetch_sub(1, Relaxed);
@@ -28,7 +35,7 @@ mod hashmap_test {
     }
 
     #[tokio::test]
-    async fn insert_drop() {
+    async fn hashmap_insert_drop() {
         static CNT: AtomicUsize = AtomicUsize::new(0);
         let hashmap: HashMap<usize, R> = HashMap::default();
 
@@ -41,32 +48,35 @@ mod hashmap_test {
         drop(hashmap);
 
         while CNT.load(Relaxed) != 0 {
-            drop(crate::ebr::Barrier::new());
+            drop(ebr::Barrier::new());
             tokio::task::yield_now().await;
         }
     }
 
     #[tokio::test]
-    async fn clear() {
+    async fn hashmap_clear() {
         static CNT: AtomicUsize = AtomicUsize::new(0);
         let hashmap: HashMap<usize, R> = HashMap::default();
 
         let workload_size = 1024;
-        for k in 0..workload_size {
-            assert!(hashmap.insert_async(k, R::new(&CNT)).await.is_ok());
+
+        for _ in 0..2 {
+            for k in 0..workload_size {
+                assert!(hashmap.insert_async(k, R::new(&CNT)).await.is_ok());
+            }
+            assert_eq!(CNT.load(Relaxed), workload_size);
+            assert_eq!(hashmap.len(), workload_size);
+            assert_eq!(hashmap.clear_async().await, workload_size);
         }
-        assert_eq!(CNT.load(Relaxed), workload_size);
-        assert_eq!(hashmap.len(), workload_size);
-        assert_eq!(hashmap.clear_async().await, workload_size);
 
         while CNT.load(Relaxed) != 0 {
-            drop(crate::ebr::Barrier::new());
+            drop(ebr::Barrier::new());
             tokio::task::yield_now().await;
         }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
-    async fn integer_key() {
+    async fn hashmap_integer_key() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
 
         let num_tasks = 8;
@@ -129,7 +139,7 @@ mod hashmap_test {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn retain_for_each() {
+    async fn hashmap_retain_for_each() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
 
         let num_tasks = 8;
@@ -173,7 +183,7 @@ mod hashmap_test {
     }
 
     #[test]
-    fn string_key() {
+    fn hashmap_string_key() {
         let hashmap1: HashMap<String, u32> = HashMap::default();
         let hashmap2: HashMap<u32, String> = HashMap::default();
         let mut checker1 = BTreeSet::new();
@@ -209,7 +219,7 @@ mod hashmap_test {
     }
 
     #[test]
-    fn accessor() {
+    fn hashmap_accessor() {
         let data_size = 4096;
         for _ in 0..16 {
             let hashmap: Arc<HashMap<u64, u64>> = Arc::new(HashMap::default());
@@ -308,7 +318,7 @@ mod hashmap_test {
 
     proptest! {
         #[test]
-        fn insert(key in 0_usize..16) {
+        fn hashmap_insert(key in 0_usize..16) {
             let range = 4096;
             let checker = Arc::new(AtomicUsize::new(0));
             let hashmap: HashMap<Data, Data> = HashMap::default();
@@ -358,28 +368,37 @@ mod hashmap_test {
             drop(hashmap);
 
             while checker.load(Relaxed) != 0 {
-                drop(crate::ebr::Barrier::new());
+                drop(ebr::Barrier::new());
                 std::thread::yield_now();
             }
         }
     }
-}
 
-#[cfg(test)]
-mod hashindex_test {
-    use crate::ebr;
-    use crate::HashIndex;
+    #[tokio::test]
+    async fn hashindex_clear() {
+        static CNT: AtomicUsize = AtomicUsize::new(0);
+        let hashindex: HashIndex<usize, R> = HashIndex::default();
 
-    use proptest::strategy::{Strategy, ValueTree};
-    use proptest::test_runner::TestRunner;
-    use std::collections::BTreeSet;
-    use std::sync::atomic::AtomicU64;
-    use std::sync::atomic::Ordering::{Acquire, Release};
-    use std::sync::{Arc, Barrier};
-    use std::thread;
+        let workload_size = 1024;
+
+        for _ in 0..2 {
+            for k in 0..workload_size {
+                assert!(hashindex.insert_async(k, R::new(&CNT)).await.is_ok());
+            }
+            assert!(CNT.load(Relaxed) >= workload_size);
+            assert_eq!(hashindex.len(), workload_size);
+            assert_eq!(hashindex.clear_async().await, workload_size);
+        }
+        drop(hashindex);
+
+        while CNT.load(Relaxed) != 0 {
+            drop(ebr::Barrier::new());
+            tokio::task::yield_now().await;
+        }
+    }
 
     #[test]
-    fn string_key() {
+    fn hashindex_string_key() {
         let hashindex1: HashIndex<String, u32> = HashIndex::default();
         let hashindex2: HashIndex<u32, String> = HashIndex::default();
         let mut checker1 = BTreeSet::new();
@@ -412,7 +431,7 @@ mod hashindex_test {
     }
 
     #[test]
-    fn visitor() {
+    fn hashindex_visitor() {
         let data_size = 4096;
         for _ in 0..64 {
             let hashindex: Arc<HashIndex<u64, u64>> = Arc::new(HashIndex::default());
@@ -517,7 +536,7 @@ mod treeindex_test {
         drop(tree);
 
         while CNT.load(Relaxed) != 0 {
-            drop(crate::ebr::Barrier::new());
+            drop(ebr::Barrier::new());
             tokio::task::yield_now().await;
         }
     }
@@ -539,7 +558,7 @@ mod treeindex_test {
         assert_eq!(tree.len(), 0);
 
         while CNT.load(Relaxed) != 0 {
-            drop(crate::ebr::Barrier::new());
+            drop(ebr::Barrier::new());
             tokio::task::yield_now().await;
         }
     }
@@ -558,7 +577,7 @@ mod treeindex_test {
         tree.clear();
 
         while CNT.load(Relaxed) != 0 {
-            drop(crate::ebr::Barrier::new());
+            drop(ebr::Barrier::new());
             tokio::task::yield_now().await;
         }
     }

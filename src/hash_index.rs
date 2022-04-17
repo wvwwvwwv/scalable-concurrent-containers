@@ -367,7 +367,7 @@ where
     /// assert_eq!(hashindex.clear(), 1);
     /// ```
     pub fn clear(&self) -> usize {
-        let mut num_removed = 0;
+        let mut num_removed: usize = 0;
         let barrier = Barrier::new();
         let mut current_array_ptr = self.array.load(Acquire, &barrier);
         while let Some(current_array_ref) = current_array_ptr.as_ref() {
@@ -386,7 +386,7 @@ where
                     let mut iterator = locker.cell().iter(&barrier);
                     while iterator.next().is_some() {
                         locker.erase(&mut iterator);
-                        num_removed += 1;
+                        num_removed = num_removed.saturating_add(1);
                     }
                 }
             }
@@ -415,7 +415,7 @@ where
     /// let future_retain = hashindex.clear_async();
     /// ```
     pub async fn clear_async(&self) -> usize {
-        let mut num_removed = 0;
+        let mut num_removed: usize = 0;
 
         // An acquire fence is required to correctly load the contents of the array.
         let mut awaitable_barrier = AwaitableBarrier::default();
@@ -447,7 +447,7 @@ where
                                 let mut iterator = locker.cell().iter(barrier);
                                 while iterator.next().is_some() {
                                     locker.erase(&mut iterator);
-                                    num_removed += 1;
+                                    num_removed = num_removed.saturating_add(1);
                                 }
                             }
                             break;

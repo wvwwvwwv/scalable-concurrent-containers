@@ -238,7 +238,9 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                     if (current & (Self::UNIT_SIZE - 1) == 0) && current >= old_array_size {
                         // The last one trying to relocate old entries gets rid of the old array.
                         if let Some(old_array) = self.old_array.swap((None, Tag::None), Relaxed) {
-                            old_array.cleared.store(true, Relaxed);
+                            if !LOCK_FREE {
+                                old_array.cleared.store(true, Relaxed);
+                            }
                             barrier.reclaim(old_array);
                         }
                     }
@@ -330,7 +332,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> Drop for CellArray<K, V, LOCK_FREE> {
             let barrier = Barrier::new();
             for index in 0..self.num_cells() {
                 let cell_ref = self.cell(index);
-                if !cell_ref.killed() {
+                if LOCK_FREE || !cell_ref.killed() {
                     unsafe {
                         cell_ref.kill_and_drop(&barrier);
                     }

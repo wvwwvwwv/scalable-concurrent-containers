@@ -147,7 +147,7 @@ hashmap.upsert(1, || 2, |_, v| *v = 3);
 assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 3);
 ```
 
-There is no method to confine the lifetime of references derived from an [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html), and it is illegal to let them live as long as the [HashMap](#HashMap) stays valid due to the lack of a global lock. Therefore [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, it provides two methods that allow a [HashMap](#HashMap) to iterate over its entries: `for_each`, and `retain`.
+There is no method to confine the lifetime of references derived from an [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html), and it is illegal to let them live as long as the [HashMap](#HashMap). Therefore [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, it provides two methods that allow a [HashMap](#HashMap) to iterate over its entries: `for_each`, and `retain`.
 
 ```rust
 use scc::HashMap;
@@ -168,7 +168,7 @@ assert_eq!(hashmap.read(&2, |_, v| *v).unwrap(), 2);
 
 assert!(hashmap.insert(3, 2).is_ok());
 
-// Inside `retain`, a `ebr::Barrier` protects the entry array.
+// Inside `retain`, an `ebr::Barrier` protects the entry array.
 assert_eq!(hashmap.retain(|key, value| *key == 1 && *value == 0), (1, 2));
 ```
 
@@ -185,7 +185,7 @@ let result = future_insert.await;
 
 ## HashSet
 
-[HashSet](#HashSet) is a variant of [HashMap](#HashMap) where the value type is fixed `()`.
+[HashSet](#HashSet) is a variant of [HashMap](#HashMap) where the value type is `()`.
 
 ### Examples
 
@@ -338,13 +338,12 @@ let result = future_insert.await;
 ### Workload
 
 - A disjoint range of 16M `usize` integers is assigned to each thread.
-- The performance test code asserts the expected outcome of each operation and the post state of the container.
 - Insert: each thread inserts its own records.
 - Read: each thread reads its own records in the container.
 - Scan: each thread scans the entire container once.
 - Remove: each thread removes its own records from the container.
 - InsertR, RemoveR: each thread additionally operates using keys belonging to a randomly chosen remote thread.
-- MixedR: each thread performs insert-local -> insert-remote -> read-local -> read-remote -> remove-local -> remove-remote.
+- MixedR: each thread performs `InsertR` -> `ReadR` -> `RemoveR`.
 
 ### Results
 
@@ -389,8 +388,8 @@ let result = future_insert.await;
 
 0.6.5
 
+* Add more asynchronous methods to [HashMap](#HashMap), [HashIndex](#HashIndex), and [HashSet](#HashSet).
 * [TreeIndex](#TreeIndex) remove performance improvement.
-* More [HashMap](#HashMap) asynchronous methods.
 
 0.6.4
 
