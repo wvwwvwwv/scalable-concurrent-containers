@@ -393,6 +393,10 @@ let result = future_insert.await;
 
 ## Changelog
 
+0.6.6
+
+* Add `{HashMap, HashSet}::{scan, scan_async}` for a read-only scan.
+
 0.6.5
 
 * Add more asynchronous methods to [HashMap](#HashMap), [HashIndex](#HashIndex), and [HashSet](#HashSet).
