@@ -71,7 +71,7 @@ mod benchmark {
         #[inline(always)]
         fn scan_test(&self) -> usize {
             let mut scanned = 0;
-            self.for_each(|_, _| scanned += 1);
+            self.scan(|_, _| scanned += 1);
             scanned
         }
 

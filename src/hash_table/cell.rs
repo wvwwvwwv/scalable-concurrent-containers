@@ -174,7 +174,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
             occupied &= !(1_u32 << preferred_index);
         }
 
-        // Looks into other slots.
+        // Look into other slots.
         let mut current_index = occupied.trailing_zeros();
         while (current_index as usize) < ARRAY_SIZE {
             let entry_ptr = data_array_ref.data[current_index as usize].as_ptr();

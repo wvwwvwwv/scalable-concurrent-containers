@@ -359,7 +359,58 @@ where
         self.map.contains_async(key).await
     }
 
+    /// Scans all the keys.
+    ///
+    /// Keys that have existed since the invocation of the method are guaranteed to be visited,
+    /// however the same key can be visited more than once if the [`HashSet`] gets resized by
+    /// another thread.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    ///
+    /// let hashset: HashSet<usize> = HashSet::default();
+    ///
+    /// assert!(hashset.insert(1).is_ok());
+    /// assert!(hashset.insert(2).is_ok());
+    ///
+    /// let mut sum = 0;
+    /// hashset.scan(|k| { sum += *k; });
+    /// assert_eq!(sum, 3);
+    /// ```
+    pub fn scan<F: FnMut(&K)>(&self, mut scanner: F) {
+        self.map.scan(|k, _| scanner(k));
+    }
+
+    /// Scans all the keys.
+    ///
+    /// Keys that have existed since the invocation of the method are guaranteed to be visited,
+    /// however the same key can be visited more than once if the [`HashSet`] gets resized by
+    /// another task.
+    ///
+    /// It returns the number of entries remaining and removed. It is an asynchronous method
+    /// returning an `impl Future` for the caller to await or poll.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    ///
+    /// let hashset: HashSet<usize> = HashSet::default();
+    ///
+    /// let future_insert = hashset.insert_async(1);
+    /// let future_retain = hashset.scan_async(|k| println!("{k}"));
+    /// ```
+    pub async fn scan_async<F: FnMut(&K)>(&self, mut scanner: F) {
+        self.map.scan_async(|k, _| scanner(k)).await;
+    }
+
     /// Iterates over all the keys in the [`HashSet`].
+    ///
+    /// Keys that have existed since the invocation of the method are guaranteed to be visited,
+    /// however the same key can be visited more than once if the [`HashSet`] gets resized by
+    /// another thread.
     ///
     /// # Examples
     ///
@@ -385,6 +436,10 @@ where
 
     /// Iterates over all the keys in the [`HashSet`].
     ///
+    /// Keys that have existed since the invocation of the method are guaranteed to be visited,
+    /// however the same key can be visited more than once if the [`HashSet`] gets resized by
+    /// another task.
+    ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
     ///
     /// # Examples
@@ -403,6 +458,10 @@ where
     }
 
     /// Retains keys that satisfy the given predicate.
+    ///
+    /// Keys that have existed since the invocation of the method are guaranteed to be visited,
+    /// however the same key can be visited more than once if the [`HashSet`] gets resized by
+    /// another thread.
     ///
     /// It returns the number of keys remaining and removed.
     ///
@@ -424,6 +483,10 @@ where
     }
 
     /// Retains keys that satisfy the given predicate.
+    ///
+    /// Keys that have existed since the invocation of the method are guaranteed to be visited,
+    /// however the same key can be visited more than once if the [`HashSet`] gets resized by
+    /// another task.
     ///
     /// It returns the number of entries remaining and removed. It is an asynchronous method
     /// returning an `impl Future` for the caller to await or poll.

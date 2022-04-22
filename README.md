@@ -327,6 +327,13 @@ let result = future_insert.await;
 
 ## Performance
 
+### Comparison with [Dashmap](https://github.com/xacrimon/dashmap) and [Flurry](https://github.com/jonhoo/flurry)
+
+- [Link](https://github.com/wvwwvwwv/conc-map-bench): based on [conc-map-bench](https://github.com/xacrimon/conc-map-bench).
+- SCC [HashMap](#HashMap) is 0-25% slower than [Dashmap](https://github.com/xacrimon/dashmap).
+- SCC [HashMap](#HashMap) and [Dashmap](https://github.com/xacrimon/dashmap) outperform [Flurry](https://github.com/jonhoo/flurry).
+
+
 ### Setup
 
 - OS: SUSE Linux Enterprise Server 15 SP2

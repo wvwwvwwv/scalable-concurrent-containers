@@ -2,7 +2,7 @@
 
 use super::async_yield::{self, AwaitableBarrier};
 use super::ebr::{Arc, AtomicArc, Barrier};
-use super::hash_table::cell::Locker;
+use super::hash_table::cell::{Locker, Reader};
 use super::hash_table::cell_array::CellArray;
 use super::hash_table::HashTable;
 
@@ -638,7 +638,136 @@ where
         self.read_async(key, |_, _| ()).await.is_some()
     }
 
+    /// Scans all the key-value pairs.
+    ///
+    /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
+    /// visited, however the same key-value pair can be visited more than once if the [`HashMap`]
+    /// gets resized by another thread.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<usize, usize> = HashMap::default();
+    ///
+    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// assert!(hashmap.insert(2, 1).is_ok());
+    ///
+    /// let mut sum = 0;
+    /// hashmap.scan(|k, v| { sum += *k + *v; });
+    /// assert_eq!(sum, 4);
+    /// ```
+    pub fn scan<F: FnMut(&K, &V)>(&self, mut scanner: F) {
+        let barrier = Barrier::new();
+
+        // An acquire fence is required to correctly load the contents of the array.
+        let mut current_array_ptr = self.array.load(Acquire, &barrier);
+        while let Some(current_array_ref) = current_array_ptr.as_ref() {
+            if !current_array_ref.old_array(&barrier).is_null() {
+                current_array_ref.partial_rehash::<_, _, _, false>(
+                    |key| self.hash(key),
+                    |_, _| None,
+                    &barrier,
+                );
+                current_array_ptr = self.array.load(Acquire, &barrier);
+                continue;
+            }
+
+            for cell_index in 0..current_array_ref.num_cells() {
+                if let Some(locker) = Reader::lock(current_array_ref.cell(cell_index), &barrier) {
+                    locker
+                        .cell()
+                        .iter(&barrier)
+                        .for_each(|((k, v), _)| scanner(k, v));
+                }
+            }
+
+            let new_current_array_ptr = self.array.load(Acquire, &barrier);
+            if current_array_ptr == new_current_array_ptr {
+                break;
+            }
+            current_array_ptr = new_current_array_ptr;
+        }
+    }
+
+    /// Scans all the key-value pairs.
+    ///
+    /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
+    /// visited, however the same key-value pair can be visited more than once if the [`HashMap`]
+    /// gets resized by another task.
+    ///
+    /// It returns the number of entries remaining and removed. It is an asynchronous method
+    /// returning an `impl Future` for the caller to await or poll.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<usize, usize> = HashMap::default();
+    ///
+    /// let future_insert = hashmap.insert_async(1, 0);
+    /// let future_retain = hashmap.scan_async(|k, v| println!("{k} {v}"));
+    /// ```
+    pub async fn scan_async<F: FnMut(&K, &V)>(&self, mut scanner: F) {
+        // An acquire fence is required to correctly load the contents of the array.
+        let mut awaitable_barrier = AwaitableBarrier::default();
+        let mut current_array_holder = self.array.get_arc(Acquire, awaitable_barrier.barrier());
+        while let Some(current_array) = current_array_holder.take() {
+            while !current_array
+                .old_array(awaitable_barrier.barrier())
+                .is_null()
+            {
+                if current_array.partial_rehash::<_, _, _, true>(
+                    |key| self.hash(key),
+                    |_, _| None,
+                    awaitable_barrier.barrier(),
+                ) {
+                    continue;
+                }
+                awaitable_barrier.drop_barrier_and_yield().await;
+            }
+
+            for cell_index in 0..current_array.num_cells() {
+                loop {
+                    {
+                        // Limits the scope of `barrier`.
+                        let barrier = awaitable_barrier.barrier();
+                        if let Ok(result) =
+                            Locker::try_lock(current_array.cell(cell_index), barrier)
+                        {
+                            if let Some(locker) = result {
+                                locker
+                                    .cell()
+                                    .iter(barrier)
+                                    .for_each(|((k, v), _)| scanner(k, v));
+                            }
+                            break;
+                        }
+                    }
+                    awaitable_barrier.drop_barrier_and_yield().await;
+                }
+            }
+
+            if let Some(new_current_array) =
+                self.array.get_arc(Acquire, awaitable_barrier.barrier())
+            {
+                if new_current_array.as_ptr() == current_array.as_ptr() {
+                    break;
+                }
+                current_array_holder.replace(new_current_array);
+                continue;
+            }
+            break;
+        }
+    }
+
     /// Iterates over all the entries in the [`HashMap`].
+    ///
+    /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
+    /// visited, however the same key-value pair can be visited more than once if the [`HashMap`]
+    /// gets resized by another thread.
     ///
     /// # Examples
     ///
@@ -666,6 +795,10 @@ where
 
     /// Iterates over all the entries in the [`HashMap`].
     ///
+    /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
+    /// visited, however the same key-value pair can be visited more than once if the [`HashMap`]
+    /// gets resized by another task.
+    ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
     ///
     /// # Examples
@@ -688,6 +821,10 @@ where
     }
 
     /// Retains key-value pairs that satisfy the given predicate.
+    ///
+    /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
+    /// visited, however the same key-value pair can be visited more than once if the [`HashMap`]
+    /// gets resized by another thread.
     ///
     /// It returns the number of entries remaining and removed.
     ///
@@ -759,6 +896,10 @@ where
     }
 
     /// Retains key-value pairs that satisfy the given predicate.
+    ///
+    /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
+    /// visited, however the same key-value pair can be visited more than once if the [`HashMap`]
+    /// gets resized by another task.
     ///
     /// It returns the number of entries remaining and removed. It is an asynchronous method
     /// returning an `impl Future` for the caller to await or poll.
