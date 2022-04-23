@@ -16,16 +16,16 @@ use std::sync::atomic::{AtomicU8, AtomicUsize};
 ///
 /// [`HashMap`] is a concurrent hash map data structure that is targeted at a highly concurrent
 /// workload. The use of an epoch-based reclamation technique enables the data structure to
-/// implement non-blocking resizing and fine-granular locking. It has a single array of entry
-/// metadata, and each entry of the array, called `Cell`, manages a fixed size key-value pair
-/// array. Each `Cell` has a customized 8-byte read-write mutex to protect the data structure,
-/// and a linked list for resolving hash collisions.
+/// implement non-blocking resizing and fine-granular locking. A [`HashMap`] instance only has a
+/// single array of entries instead of a fixed number of lock-protected hash tables. An entry of
+/// the array is called `Cell`; it manages a fixed number of key-value pairs using a customized
+/// mutex in it, and resolves hash conflicts by allocating a linked list of smaller hash tables.
 ///
 /// ## The key features of [`HashMap`]
 ///
-/// * Non-sharded: the data is managed by a single entry metadata array.
+/// * Non-sharded: the data is stored in a single array of key-value pairs.
 /// * Automatic resizing: it automatically grows or shrinks.
-/// * Non-blocking resizing: resizing does not block other threads.
+/// * Non-blocking resizing: resizing does not block other threads or tasks.
 /// * Incremental resizing: each access to the data structure is mandated to rehash a fixed
 ///   number of key-value pairs.
 /// * Optimized resizing: key-value pairs managed by a single `Cell` are guaranteed to be
@@ -35,8 +35,8 @@ use std::sync::atomic::{AtomicU8, AtomicUsize};
 /// ## The key statistics for [`HashMap`]
 ///
 /// * The expected size of metadata for a single key-value pair: 2-byte.
-/// * The expected number of atomic operations required for an operation on a single key: 2.
-/// * The expected number of atomic variables accessed during a single key operation: 1.
+/// * The expected number of atomic write operations required for an operation on a single key: 2.
+/// * The expected number of atomic variables accessed during a single key operation: 2.
 /// * The number of entries managed by a single metadata `Cell` without a linked list: 32.
 /// * The expected maximum linked list length when resize is triggered: log(capacity) / 8.
 pub struct HashMap<K, V, H = RandomState>
@@ -641,8 +641,8 @@ where
     /// Scans all the key-value pairs.
     ///
     /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
-    /// visited, however the same key-value pair can be visited more than once if the [`HashMap`]
-    /// gets resized by another thread.
+    /// visited if they are not removed, however the same key-value pair can be visited more than
+    /// once if the [`HashMap`] gets resized by another thread.
     ///
     /// # Examples
     ///
@@ -694,11 +694,8 @@ where
     /// Scans all the key-value pairs.
     ///
     /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
-    /// visited, however the same key-value pair can be visited more than once if the [`HashMap`]
-    /// gets resized by another task.
-    ///
-    /// It returns the number of entries remaining and removed. It is an asynchronous method
-    /// returning an `impl Future` for the caller to await or poll.
+    /// visited if they are not removed, however the same key-value pair can be visited more than
+    /// once if the [`HashMap`] gets resized by another task.
     ///
     /// # Examples
     ///
@@ -766,8 +763,8 @@ where
     /// Iterates over all the entries in the [`HashMap`].
     ///
     /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
-    /// visited, however the same key-value pair can be visited more than once if the [`HashMap`]
-    /// gets resized by another thread.
+    /// visited if they are not removed, however the same key-value pair can be visited more than
+    /// once if the [`HashMap`] gets resized by another thread.
     ///
     /// # Examples
     ///
@@ -796,8 +793,8 @@ where
     /// Iterates over all the entries in the [`HashMap`].
     ///
     /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
-    /// visited, however the same key-value pair can be visited more than once if the [`HashMap`]
-    /// gets resized by another task.
+    /// visited if they are not removed, however the same key-value pair can be visited more than
+    /// once if the [`HashMap`] gets resized by another task.
     ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
     ///
@@ -823,8 +820,8 @@ where
     /// Retains key-value pairs that satisfy the given predicate.
     ///
     /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
-    /// visited, however the same key-value pair can be visited more than once if the [`HashMap`]
-    /// gets resized by another thread.
+    /// visited if they are not removed, however the same key-value pair can be visited more than
+    /// once if the [`HashMap`] gets resized by another thread.
     ///
     /// It returns the number of entries remaining and removed.
     ///
@@ -898,8 +895,8 @@ where
     /// Retains key-value pairs that satisfy the given predicate.
     ///
     /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
-    /// visited, however the same key-value pair can be visited more than once if the [`HashMap`]
-    /// gets resized by another task.
+    /// visited if they are not removed, however the same key-value pair can be visited more than
+    /// once if the [`HashMap`] gets resized by another task.
     ///
     /// It returns the number of entries remaining and removed. It is an asynchronous method
     /// returning an `impl Future` for the caller to await or poll.

@@ -9,9 +9,11 @@ A collection of concurrent data structures and building blocks for concurrent pr
 - [ebr](#EBR) implements epoch-based reclamation.
 - [LinkedList](#LinkedList) is a type trait implementing a wait-free concurrent singly linked list.
 - [HashMap](#HashMap) is a concurrent hash map.
-- [HashSet](#HashSet) is a concurrent hash set based on [scc::HashMap](#HashMap).
+- [HashSet](#HashSet) is a concurrent hash set based on [HashMap](#HashMap).
 - [HashIndex](#HashIndex) is a concurrent hash index allowing lock-free read and scan.
 - [TreeIndex](#TreeIndex) is a concurrent B+ tree allowing lock-free read and scan.
+
+See [Comparison](#Comparison) and [Performance](#Performance) for benchmark results.
 
 
 ## EBR
@@ -325,11 +327,13 @@ let result = future_insert.await;
 ```
 
 
-## Comparison with [DashMap](https://github.com/xacrimon/dashmap) and [flurry](https://github.com/jonhoo/flurry)
+## Comparison
 
-- [Intel Xeon](https://github.com/wvwwvwwv/conc-map-bench) and [Apple M1](https://github.com/wvwwvwwv/conc-map-bench/tree/M1): based on [conc-map-bench](https://github.com/xacrimon/conc-map-bench).
-- SCC [HashMap](#HashMap) is overall 0-25% slower than [DashMap](https://github.com/xacrimon/dashmap).
-- SCC [HashMap](#HashMap) and [DashMap](https://github.com/xacrimon/dashmap) outperform [flurry](https://github.com/jonhoo/flurry).
+### Performance Comparison with [DashMap](https://github.com/xacrimon/dashmap) and [flurry](https://github.com/jonhoo/flurry)
+
+- [Tested on Apple M1](https://github.com/wvwwvwwv/conc-map-bench): based on [conc-map-bench](https://github.com/xacrimon/conc-map-bench).
+- Read-heavy: [flurry](https://github.com/jonhoo/flurry) outperforms the others.
+- Write-heavy: [HashMap](#HashMap) and [DashMap](https://github.com/xacrimon/dashmap) are significantly faster than [flurry](https://github.com/jonhoo/flurry).
 
 
 ## Performance
@@ -396,6 +400,7 @@ let result = future_insert.await;
 0.6.6
 
 * Add `{HashMap, HashSet}::{scan, scan_async}` for a read-only scan.
+* Minor [HashMap](#HashMap) optimization.
 
 0.6.5
 

@@ -28,8 +28,8 @@ use std::sync::atomic::Ordering::Acquire;
 /// ## The key statistics for [`HashIndex`]
 ///
 /// * The expected size of metadata for a single key-value pair: 2-byte.
-/// * The expected number of atomic operations required for an operation on a single key: 2.
-/// * The expected number of atomic variables accessed during a single key operation: 1.
+/// * The expected number of atomic write operations required for an operation on a single key: 2.
+/// * The expected number of atomic variables accessed during a single key operation: 2.
 /// * The number of entries managed by a single metadata cell without a linked list: 32.
 /// * The expected maximum linked list length when resize is triggered: log(capacity) / 8.
 pub struct HashIndex<K, V, H = RandomState>

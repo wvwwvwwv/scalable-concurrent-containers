@@ -361,9 +361,9 @@ where
 
     /// Scans all the keys.
     ///
-    /// Keys that have existed since the invocation of the method are guaranteed to be visited,
-    /// however the same key can be visited more than once if the [`HashSet`] gets resized by
-    /// another thread.
+    /// Keys that have existed since the invocation of the method are guaranteed to be visited if
+    /// they are not removed, however the same key can be visited more than once if the [`HashSet`]
+    /// gets resized by another thread.
     ///
     /// # Examples
     ///
@@ -385,12 +385,9 @@ where
 
     /// Scans all the keys.
     ///
-    /// Keys that have existed since the invocation of the method are guaranteed to be visited,
-    /// however the same key can be visited more than once if the [`HashSet`] gets resized by
-    /// another task.
-    ///
-    /// It returns the number of entries remaining and removed. It is an asynchronous method
-    /// returning an `impl Future` for the caller to await or poll.
+    /// Keys that have existed since the invocation of the method are guaranteed to be visited if
+    /// they are not removed, however the same key can be visited more than once if the [`HashSet`]
+    /// gets resized by another task.
     ///
     /// # Examples
     ///
@@ -408,9 +405,9 @@ where
 
     /// Iterates over all the keys in the [`HashSet`].
     ///
-    /// Keys that have existed since the invocation of the method are guaranteed to be visited,
-    /// however the same key can be visited more than once if the [`HashSet`] gets resized by
-    /// another thread.
+    /// Keys that have existed since the invocation of the method are guaranteed to be visited if
+    /// they are not removed, however the same key can be visited more than once if the [`HashSet`]
+    /// gets resized by another thread.
     ///
     /// # Examples
     ///
@@ -436,9 +433,9 @@ where
 
     /// Iterates over all the keys in the [`HashSet`].
     ///
-    /// Keys that have existed since the invocation of the method are guaranteed to be visited,
-    /// however the same key can be visited more than once if the [`HashSet`] gets resized by
-    /// another task.
+    /// Keys that have existed since the invocation of the method are guaranteed to be visited if
+    /// they are not removed, however the same key can be visited more than once if the [`HashSet`]
+    /// gets resized by another task.
     ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
     ///
@@ -459,9 +456,9 @@ where
 
     /// Retains keys that satisfy the given predicate.
     ///
-    /// Keys that have existed since the invocation of the method are guaranteed to be visited,
-    /// however the same key can be visited more than once if the [`HashSet`] gets resized by
-    /// another thread.
+    /// Keys that have existed since the invocation of the method are guaranteed to be visited if
+    /// they are not removed, however the same key can be visited more than once if the [`HashSet`]
+    /// gets resized by another thread.
     ///
     /// It returns the number of keys remaining and removed.
     ///
@@ -484,9 +481,9 @@ where
 
     /// Retains keys that satisfy the given predicate.
     ///
-    /// Keys that have existed since the invocation of the method are guaranteed to be visited,
-    /// however the same key can be visited more than once if the [`HashSet`] gets resized by
-    /// another task.
+    /// Keys that have existed since the invocation of the method are guaranteed to be visited if
+    /// they are not removed, however the same key can be visited more than once if the [`HashSet`]
+    /// gets resized by another task.
     ///
     /// It returns the number of entries remaining and removed. It is an asynchronous method
     /// returning an `impl Future` for the caller to await or poll.
