@@ -177,10 +177,12 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         // Look into other slots.
         let mut current_index = occupied.trailing_zeros();
         while (current_index as usize) < ARRAY_SIZE {
-            let entry_ptr = data_array_ref.data[current_index as usize].as_ptr();
-            let entry_ref = unsafe { &(*entry_ptr) };
-            if entry_ref.0.borrow() == key_ref {
-                return Some((current_index as usize, entry_ref));
+            if data_array_ref.partial_hash_array[current_index as usize] == partial_hash {
+                let entry_ptr = data_array_ref.data[current_index as usize].as_ptr();
+                let entry_ref = unsafe { &(*entry_ptr) };
+                if entry_ref.0.borrow() == key_ref {
+                    return Some((current_index as usize, entry_ref));
+                }
             }
             occupied &= !(1_u32 << current_index);
             current_index = occupied.trailing_zeros();

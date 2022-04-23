@@ -325,14 +325,14 @@ let result = future_insert.await;
 ```
 
 
-## Performance
+## Comparison with [DashMap](https://github.com/xacrimon/dashmap) and [flurry](https://github.com/jonhoo/flurry)
 
-### Comparison with [DashMap](https://github.com/xacrimon/dashmap) and [flurry](https://github.com/jonhoo/flurry)
-
-- [Link](https://github.com/wvwwvwwv/conc-map-bench): based on [conc-map-bench](https://github.com/xacrimon/conc-map-bench).
-- SCC [HashMap](#HashMap) is 0-25% slower than [DashMap](https://github.com/xacrimon/dashmap).
+- [Intel Xeon](https://github.com/wvwwvwwv/conc-map-bench) and [Apple M1](https://github.com/wvwwvwwv/conc-map-bench/tree/M1): based on [conc-map-bench](https://github.com/xacrimon/conc-map-bench).
+- SCC [HashMap](#HashMap) is overall 0-25% slower than [DashMap](https://github.com/xacrimon/dashmap).
 - SCC [HashMap](#HashMap) and [DashMap](https://github.com/xacrimon/dashmap) outperform [flurry](https://github.com/jonhoo/flurry).
 
+
+## Performance
 
 ### Setup
 

@@ -79,9 +79,18 @@ where
     }
 
     /// Estimates the number of entries using the given number of cells.
-    fn estimate(array_ref: &CellArray<K, V, LOCK_FREE>, num_cells_to_sample: usize) -> usize {
+    fn estimate(
+        array_ref: &CellArray<K, V, LOCK_FREE>,
+        sampling_index: usize,
+        num_cells_to_sample: usize,
+    ) -> usize {
         let mut num_entries = 0;
-        for i in 0..num_cells_to_sample {
+        let start = if sampling_index + num_cells_to_sample >= array_ref.num_cells() {
+            0
+        } else {
+            sampling_index
+        };
+        for i in start..(start + num_cells_to_sample) {
             num_entries += array_ref.cell(i).num_entries();
         }
         num_entries * (array_ref.num_cells() / num_cells_to_sample)
@@ -396,6 +405,7 @@ where
             }
         }
 
+        let mut sampling_index = 0;
         let mut resize = true;
         while resize {
             let _mutex_guard = scopeguard::guard(&mut resize, |resize| {
@@ -414,7 +424,9 @@ where
             let capacity = current_array_ref.num_entries();
             let num_cells = current_array_ref.num_cells();
             let num_cells_to_sample = (num_cells / 8).max(2).min(4096);
-            let estimated_num_entries = Self::estimate(current_array_ref, num_cells_to_sample);
+            let estimated_num_entries =
+                Self::estimate(current_array_ref, sampling_index, num_cells_to_sample);
+            sampling_index = sampling_index.wrapping_add(num_cells_to_sample);
             let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
                 let max_capacity = 1_usize << (std::mem::size_of::<usize>() * 8 - 1);
                 if capacity == max_capacity {
