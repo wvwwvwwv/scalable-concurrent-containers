@@ -334,7 +334,7 @@ let result = future_insert.await;
 - The benchmark tests are based on [conc-map-bench](https://github.com/xacrimon/conc-map-bench).
 - [Results on Apple M1](https://github.com/wvwwvwwv/conc-map-bench).
 - [Results on Intel Xeon](https://github.com/wvwwvwwv/conc-map-bench/tree/Intel).
-- [HashMap](#HashMap) outperforms the others if the workload is highly concurrent and write-heavy.
+- [HashMap](#HashMap) outperforms the others if the workload is highly concurrent or write-heavy.
 
 
 ## Performance
@@ -397,6 +397,11 @@ let result = future_insert.await;
 
 
 ## Changelog
+
+0.6.7
+
+* Fix ebr API: `ebr::AtomicArc::swap` returns the previous `Tag` along with the pointer.
+* Partially fix [#49](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/49) for [TreeIndex](#TreeIndex).
 
 0.6.6
 

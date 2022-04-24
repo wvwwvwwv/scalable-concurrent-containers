@@ -2,6 +2,7 @@ use super::leaf::{InsertResult, RemoveResult, Scanner, DIMENSION};
 use super::Leaf;
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
+use crate::wait_queue::WaitQueue;
 use crate::LinkedList;
 
 use std::borrow::Borrow;
@@ -11,6 +12,9 @@ use std::sync::atomic::Ordering::{self, AcqRel, Acquire, Relaxed, Release};
 
 /// [`Tag::First`] indicates the corresponding node has retired.
 pub const RETIRED: Tag = Tag::First;
+
+/// [`Tag::First`] indicates that there is a waiting thread.
+pub const WAITING: Tag = Tag::First;
 
 /// [`Tag::Second`] indicates the corresponding node is locked.
 pub const LOCKED: Tag = Tag::Second;
@@ -35,6 +39,9 @@ where
     /// `latch` acts as a mutex of the [`LeafNode`] that also stores the information about an
     /// on-going structural change.
     latch: AtomicArc<StructuralChange<K, V>>,
+
+    /// `wait_queue` for `latch`.
+    wait_queue: WaitQueue,
 }
 
 impl<K, V> LeafNode<K, V>
@@ -48,6 +55,7 @@ where
             children: Leaf::new(),
             unbounded_child: AtomicArc::null(),
             latch: AtomicArc::null(),
+            wait_queue: WaitQueue::default(),
         }
     }
 
@@ -322,6 +330,7 @@ where
     /// # Errors
     ///
     /// Returns an error if retry is required.
+    #[allow(clippy::too_many_lines)]
     fn split_leaf(
         &self,
         key: K,
@@ -347,11 +356,19 @@ where
         ) {
             Ok((_, ptr)) => {
                 if self.retired(Relaxed) {
-                    drop(self.latch.swap((None, Tag::None), Relaxed));
+                    let (change, tag) = self.latch.swap((None, Tag::None), Relaxed);
+                    if tag == WAITING {
+                        self.wait_queue.signal();
+                    }
+                    drop(change);
                     return Ok(InsertResult::Retired(key, value));
                 }
                 if full_leaf_ptr != full_leaf.load(Relaxed, barrier) {
-                    drop(self.latch.swap((None, Tag::None), Relaxed));
+                    let (change, tag) = self.latch.swap((None, Tag::None), Relaxed);
+                    if tag == WAITING {
+                        self.wait_queue.signal();
+                    }
+                    drop(change);
                     return Err((key, value));
                 }
                 ptr.as_ref().unwrap()
@@ -402,13 +419,12 @@ where
             let result =
                 target.push_back(low_key_leaf_ptr.get_arc().unwrap(), true, Release, barrier);
             debug_assert!(result.is_ok());
-            full_leaf.swap(
-                (
+            full_leaf
+                .swap(
                     new_leaves.low_key_leaf.swap((None, Tag::None), Relaxed),
-                    Tag::None,
-                ),
-                Release,
-            )
+                    Release,
+                )
+                .0
         } else {
             // From here, `Scanners` can reach the new leaves.
             let result =
@@ -432,8 +448,8 @@ where
             };
 
             // Replace the full leaf with the high-key leaf.
-            let high_key_leaf = new_leaves.high_key_leaf.swap((None, Tag::None), Relaxed);
-            full_leaf.swap((high_key_leaf, Tag::None), Release)
+            let high_key_leaf = new_leaves.high_key_leaf.swap((None, Tag::None), Relaxed).0;
+            full_leaf.swap((high_key_leaf, Tag::None), Release).0
         };
 
         if let Some(unused_leaf) = unused_leaf {
@@ -443,7 +459,11 @@ where
         }
 
         // Unlocks the leaf node.
-        if let Some(change) = self.latch.swap((None, Tag::None), Release) {
+        let (change, tag) = self.latch.swap((None, Tag::None), Release);
+        if tag == WAITING {
+            self.wait_queue.signal();
+        }
+        if let Some(change) = change {
             barrier.reclaim(change);
         }
 
@@ -569,8 +589,12 @@ where
     /// Commits an on-going structural change.
     pub fn commit(&self, barrier: &Barrier) {
         // Keeps the leaf node locked to prevent further locking attempts.
-        if let Some(change) = self.latch.swap((None, LOCKED), Relaxed) {
-            if let Some(obsolete_leaf) = change.origin_leaf.swap((None, Tag::None), Relaxed) {
+        let (change, tag) = self.latch.swap((None, LOCKED), Release);
+        if tag == WAITING {
+            self.wait_queue.signal();
+        }
+        if let Some(change) = change {
+            if let Some(obsolete_leaf) = change.origin_leaf.swap((None, Tag::None), Relaxed).0 {
                 // Makes the leaf unreachable before dropping it.
                 obsolete_leaf.delete_self(Relaxed);
                 barrier.reclaim(obsolete_leaf);
@@ -596,7 +620,7 @@ where
                 debug_assert!(deleted);
             }
 
-            if let Some(origin) = change.origin_leaf.swap((None, Tag::None), Relaxed) {
+            if let Some(origin) = change.origin_leaf.swap((None, Tag::None), Relaxed).0 {
                 // Thaw the [`Leaf`].
                 let result = origin.thaw();
                 debug_assert!(result);
@@ -611,7 +635,11 @@ where
         }
 
         // Unlocks the leaf node.
-        if let Some(change) = self.latch.swap((None, Tag::None), Release) {
+        let (change, tag) = self.latch.swap((None, Tag::None), Release);
+        if tag == WAITING {
+            self.wait_queue.signal();
+        }
+        if let Some(change) = change {
             barrier.reclaim(change);
         }
     }
@@ -635,7 +663,7 @@ where
 
                     // The pointer is nullified after the metadata of `self.children` is updated so
                     // that readers are able to retry when they find it being `null`.
-                    if let Some(leaf) = entry.1.swap((None, Tag::None), Release) {
+                    if let Some(leaf) = entry.1.swap((None, Tag::None), Release).0 {
                         barrier.reclaim(leaf);
                     }
                 } else {
@@ -655,7 +683,7 @@ where
                         // It has to mark the pointer in order to prevent `LeafNode::insert` from
                         // replacing it with a new `Leaf`.
                         if let Some(obsolete_leaf) =
-                            self.unbounded_child.swap((None, RETIRED), Release)
+                            self.unbounded_child.swap((None, RETIRED), Release).0
                         {
                             barrier.reclaim(obsolete_leaf);
                         }
@@ -715,7 +743,7 @@ where
     K: 'static + Clone + Ord + Send + Sync,
     V: 'static + Clone + Send + Sync,
 {
-    lock: &'n AtomicArc<StructuralChange<K, V>>,
+    leaf_node: &'n LeafNode<K, V>,
 }
 
 impl<'n, K, V> Locker<'n, K, V>
@@ -730,9 +758,7 @@ where
             .compare_exchange(Ptr::null(), (None, LOCKED), Acquire, Relaxed)
             .is_ok()
         {
-            Some(Locker {
-                lock: &leaf_node.latch,
-            })
+            Some(Locker { leaf_node })
         } else {
             None
         }
@@ -745,8 +771,11 @@ where
     V: Clone + Send + Sync,
 {
     fn drop(&mut self) {
-        debug_assert_eq!(self.lock.tag(Relaxed), LOCKED);
-        self.lock.swap((None, Tag::None), Release);
+        debug_assert_eq!(self.leaf_node.latch.tag(Relaxed), LOCKED);
+        let (_, tag) = self.leaf_node.latch.swap((None, Tag::None), Release);
+        if tag == WAITING {
+            self.leaf_node.wait_queue.signal();
+        }
     }
 }
 

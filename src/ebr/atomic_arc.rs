@@ -114,24 +114,29 @@ impl<T: 'static> AtomicArc<T> {
     ///
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(14);
     /// let barrier = Barrier::new();
-    /// let old = atomic_arc.swap((Some(Arc::new(15)), Tag::Second), Relaxed);
+    /// let (old, tag) = atomic_arc.swap((Some(Arc::new(15)), Tag::Second), Relaxed);
+    /// assert_eq!(tag, Tag::None);
     /// assert_eq!(*old.unwrap(), 14);
-    /// let old = atomic_arc.swap((None, Tag::First), Relaxed);
+    /// let (old, tag) = atomic_arc.swap((None, Tag::First), Relaxed);
+    /// assert_eq!(tag, Tag::Second);
     /// assert_eq!(*old.unwrap(), 15);
-    /// let old = atomic_arc.swap((None, Tag::None), Relaxed);
+    /// let (old, tag) = atomic_arc.swap((None, Tag::None), Relaxed);
+    /// assert_eq!(tag, Tag::First);
     /// assert!(old.is_none());
     /// ```
     #[inline]
-    pub fn swap(&self, new: (Option<Arc<T>>, Tag), order: Ordering) -> Option<Arc<T>> {
+    pub fn swap(&self, new: (Option<Arc<T>>, Tag), order: Ordering) -> (Option<Arc<T>>, Tag) {
         let desired = Tag::update_tag(
             new.0
                 .as_ref()
                 .map_or_else(ptr::null_mut, Arc::as_underlying_ptr),
             new.1,
         ) as *mut Underlying<T>;
-        let prev = Tag::unset_tag(self.instance_ptr.swap(desired, order)) as *mut Underlying<T>;
+        let prev = self.instance_ptr.swap(desired, order);
+        let tag = Tag::into_tag(prev);
+        let prev_ptr = Tag::unset_tag(prev) as *mut Underlying<T>;
         forget(new);
-        NonNull::new(prev).map(Arc::from)
+        (NonNull::new(prev_ptr).map(Arc::from), tag)
     }
 
     /// Returns its [`Tag`].
@@ -512,7 +517,7 @@ mod test {
                     }
                     drop(barrier);
 
-                    let old = atomic_arc.swap(
+                    let (old, _) = atomic_arc.swap(
                         (Some(Arc::new(String::from("How are you?"))), Tag::Second),
                         Release,
                     );

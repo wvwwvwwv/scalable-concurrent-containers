@@ -237,7 +237,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                     let current = old_array_ref.rehashing.fetch_sub(1, Relaxed) - 1;
                     if (current & (Self::UNIT_SIZE - 1) == 0) && current >= old_array_size {
                         // The last one trying to relocate old entries gets rid of the old array.
-                        if let Some(old_array) = self.old_array.swap((None, Tag::None), Relaxed) {
+                        if let Some(old_array) = self.old_array.swap((None, Tag::None), Relaxed).0 {
                             if !LOCK_FREE {
                                 old_array.cleared.store(true, Relaxed);
                             }

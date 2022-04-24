@@ -1,6 +1,5 @@
-use super::wait_queue::WaitQueue;
-
 use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
+use crate::wait_queue::WaitQueue;
 
 use std::borrow::Borrow;
 use std::mem::MaybeUninit;
@@ -133,7 +132,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
     /// Kills the [`Cell`] for dropping it.
     pub unsafe fn kill_and_drop(&self, barrier: &Barrier) {
         if !self.data_array.link.load(Relaxed, barrier).is_null() {
-            if let Some(data_array) = self.data_array.link.swap((None, Tag::None), Relaxed) {
+            if let Some(data_array) = self.data_array.link.swap((None, Tag::None), Relaxed).0 {
                 barrier.reclaim(data_array);
             }
         }
@@ -279,7 +278,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K
         let next_data_array = if LOCK_FREE {
             data_array_ref.link.get_arc(Relaxed, self.barrier_ref)
         } else {
-            data_array_ref.link.swap((None, Tag::None), Relaxed)
+            data_array_ref.link.swap((None, Tag::None), Relaxed).0
         };
         self.current_array_ptr = next_data_array
             .as_ref()
@@ -289,10 +288,12 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K
                 prev_data_array_ref
                     .link
                     .swap((next_data_array, Tag::None), Relaxed)
+                    .0
             } else if let Some(cell) = self.cell.as_ref() {
                 cell.data_array
                     .link
                     .swap((next_data_array, Tag::None), Relaxed)
+                    .0
             } else {
                 None
             };
@@ -529,7 +530,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         self.cell.state.fetch_or(KILLED, Release);
         self.num_entries_updated(0);
         if !self.cell.data_array.link.load(Relaxed, barrier).is_null() {
-            if let Some(data_array) = self.cell.data_array.link.swap((None, Tag::None), Relaxed) {
+            if let Some(data_array) = self.cell.data_array.link.swap((None, Tag::None), Relaxed).0 {
                 barrier.reclaim(data_array);
             }
         }

@@ -30,4 +30,6 @@ pub mod ebr;
 
 mod async_yield;
 mod hash_table;
+mod wait_queue;
+
 mod tests;

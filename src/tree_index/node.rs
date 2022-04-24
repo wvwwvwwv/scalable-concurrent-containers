@@ -156,7 +156,7 @@ where
 
             // Updates the pointer before unlocking the root.
             let new_root = Arc::new(new_root);
-            if let Some(old_root) = root.swap((Some(new_root.clone()), Tag::None), Release) {
+            if let Some(old_root) = root.swap((Some(new_root.clone()), Tag::None), Release).0 {
                 if let Type::Internal(internal_node) = &new_root.node {
                     old_root.commit(barrier);
                     internal_node.finish_root_split(barrier);

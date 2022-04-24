@@ -1,6 +1,5 @@
 pub mod cell;
 pub mod cell_array;
-pub mod wait_queue;
 
 use cell::{EntryIterator, Locker, Reader, ARRAY_SIZE};
 use cell_array::CellArray;
