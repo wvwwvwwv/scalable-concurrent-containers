@@ -331,9 +331,10 @@ let result = future_insert.await;
 
 ### Performance Comparison with [DashMap](https://github.com/xacrimon/dashmap) and [flurry](https://github.com/jonhoo/flurry)
 
-- [Tested on Apple M1](https://github.com/wvwwvwwv/conc-map-bench): based on [conc-map-bench](https://github.com/xacrimon/conc-map-bench).
-- Read-heavy: [flurry](https://github.com/jonhoo/flurry) outperforms the others.
-- Write-heavy: [HashMap](#HashMap) and [DashMap](https://github.com/xacrimon/dashmap) are significantly faster than [flurry](https://github.com/jonhoo/flurry).
+- The benchmark tests are based on [conc-map-bench](https://github.com/xacrimon/conc-map-bench).
+- [Results on Apple M1](https://github.com/wvwwvwwv/conc-map-bench).
+- [Results on Intel Xeon](https://github.com/wvwwvwwv/conc-map-bench/tree/Intel).
+- [HashMap](#HashMap) outperforms the others if the workload is highly concurrent and write-heavy.
 
 
 ## Performance
@@ -344,7 +345,7 @@ let result = future_insert.await;
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
 - RAM: 1TB
 - Rust: 1.60.0
-- SCC: 0.6.4 (HashMap, HashIndex), 0.6.5 (TreeIndex)
+- SCC: 0.6.6 (HashMap, HashIndex), 0.6.5 (TreeIndex)
 
 ### Workload
 
@@ -362,25 +363,25 @@ let result = future_insert.await;
 
 |         |  1 thread  |  4 threads | 16 threads | 64 threads |
 |---------|------------|------------|------------|------------|
-| InsertL |   9.816s   |  16.688s   |  42.589s   |  47.589s   |
-| ReadL   |   4.079s   |   5.486s   |   6.862s   |   8.636s   |
-| ScanL   |   0.15s    |   0.727s   |   3.001s   |  12.512s   |
-| RemoveL |   4.627s   |   6.644s   |  10.987s   |  23.826s   |
-| InsertR |  11.424s   |  29.784s   |  56.771s   |  60.953s   |
-| MixedR  |  14.851s   |  30.712s   |  33.401s   |  34.612s   |
-| RemoveR |   8.316s   |  14.438s   |  21.737s   |  27.819s   |
+| InsertL |   9.411s   |  16.041s   |  43.012s   |  46.540s   |
+| ReadL   |   3.934s   |   4.955s   |   6.548s   |   8.612s   |
+| ScanL   |   0.147s   |   0.801s   |   3.021s   |  13.186s   |
+| RemoveL |   4.654s   |   6.315s   |  10.651s   |  23.05s    |
+| InsertR |  11.116s   |  27.104s   |  54.909s   |  58.564s   |
+| MixedR  |  14.976s   |  29.388s   |  30.518s   |  33.081s   |
+| RemoveR |   7.057s   |  12.565s   |  18.873s   |  26.77s    |
 
 - [HashIndex](#HashIndex)
 
 |         |  1 thread  |  4 threads | 16 threads | 64 threads |
 |---------|------------|------------|------------|------------|
-| InsertL |  10.287s   |  17.044s   |  43.286s   |  47.085s   |
-| ReadL   |   3.679s   |   4.839s   |   6.565s   |   8.004s   |
-| ScanL   |   0.204s   |   1.094s   |   4.194s   |  16.974s   |
-| RemoveL |   4.747s   |   6.564s   |  11.333s   |  23.429s   |
-| InsertR |  11.922s   |  30.295s   |  57.612s   |  61.138s   |
-| MixedR  |  16.403s   |  38.545s   |  43.204s   |  45.267s   |
-| RemoveR |   8.407s   |  14.786s   |  22.02s    |  28.118s   |
+| InsertL |   9.73s    |  17.11s    |  44.599s   |  52.276s   |
+| ReadL   |   3.59s    |   4.977s   |   6.108s   |   8.3s     |
+| ScanL   |   0.279s   |   1.279s   |   5.079s   |  20.317s   |
+| RemoveL |   4.755s   |   7.406s   |  12.329s   |  33.509s   |
+| InsertR |  11.416s   |  26.998s   |  54.513s   |  65.274s   |
+| MixedR  |  18.224s   |  35.357s   |  39.05s    |  42.37s    |
+| RemoveR |   8.553s   |  13.314s   |  19.362s   |  38.209s   |
 
 - [TreeIndex](#TreeIndex)
 

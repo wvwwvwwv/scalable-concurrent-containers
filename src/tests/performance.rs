@@ -159,6 +159,9 @@ mod benchmark {
         container: Arc<C>,
         workload: Workload,
     ) -> (Duration, usize) {
+        for _ in 0..1024 {
+            drop(ebr::Barrier::new());
+        }
         let barrier = Arc::new(Barrier::new(num_threads + 1));
         let total_num_operations = Arc::new(AtomicUsize::new(0));
         let mut thread_handles = Vec::with_capacity(num_threads);
@@ -724,11 +727,6 @@ mod benchmark {
         );
         println!("----");
         hashindex_benchmark::<usize>(
-            1024 * 1024 * 16,
-            vec![1, 1, 1, 4, 4, 4, 16, 16, 16, 64, 64, 64],
-        );
-        println!("----");
-        treeindex_benchmark::<usize>(
             1024 * 1024 * 16,
             vec![1, 1, 1, 4, 4, 4, 16, 16, 16, 64, 64, 64],
         );

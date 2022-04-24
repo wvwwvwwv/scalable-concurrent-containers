@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU8, AtomicUsize};
 /// workload. The use of an epoch-based reclamation technique enables the data structure to
 /// implement non-blocking resizing and fine-granular locking. A [`HashMap`] instance only has a
 /// single array of entries instead of a fixed number of lock-protected hash tables. An entry of
-/// the array is called `Cell`; it manages a fixed number of key-value pairs using a customized
+/// the array is called a `Cell`; it manages a fixed number of key-value pairs using a customized
 /// mutex in it, and resolves hash conflicts by allocating a linked list of smaller hash tables.
 ///
 /// ## The key features of [`HashMap`]
