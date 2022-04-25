@@ -200,6 +200,9 @@ where
 
     /// Removes a key-value pair.
     ///
+    /// Removed entries might be reachable via iterators for a short time due to on-going node
+    /// split operations.
+    ///
     /// # Examples
     ///
     /// ```
@@ -222,6 +225,9 @@ where
 
     /// Removes a key-value pair.
     ///
+    /// Removed entries might be reachable via iterators for a short time due to on-going node
+    /// split operations.
+    ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
     ///
     /// # Examples
@@ -242,6 +248,9 @@ where
     }
 
     /// Removes a key-value pair if the given condition is met.
+    ///
+    /// Removed entries might be reachable via iterators for a short time due to on-going node
+    /// split operations.
     ///
     /// # Examples
     ///
@@ -289,6 +298,9 @@ where
     }
 
     /// Removes a key-value pair if the given condition is met.
+    ///
+    /// Removed entries might be reachable via iterators for a short time due to on-going node
+    /// split operations.
     ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
     ///
@@ -476,7 +488,8 @@ where
 
     /// Returns a [`Visitor`].
     ///
-    /// The returned [`Visitor`] starts scanning from the minimum key-value pair.
+    /// The returned [`Visitor`] starts scanning from the minimum key-value pair. Previously
+    /// removed entries can be visited momentarily due to on-going node split operations.
     ///
     /// # Examples
     ///
@@ -496,6 +509,9 @@ where
     }
 
     /// Returns a [`Range`] that scans keys in the given range.
+    ///
+    /// Previously removed entries can be visited momentarily due to on-going node split
+    /// operations.
     ///
     /// # Examples
     ///
