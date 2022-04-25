@@ -417,9 +417,16 @@ where
             let result =
                 target.push_back(low_key_leaf_ptr.get_arc().unwrap(), true, Release, barrier);
             debug_assert!(result.is_ok());
+
+            // The full leaf should be removed from the linked list before being replaced with the
+            // new leaf, otherwise future iterators may see entries that are removed from the new
+            // one.
+            let deleted = target.delete_self(Release);
+            debug_assert!(deleted);
+
             full_leaf
                 .swap(
-                    new_leaves.low_key_leaf.swap((None, Tag::None), Relaxed),
+                    new_leaves.low_key_leaf.swap((None, Tag::None), Release),
                     Release,
                 )
                 .0
@@ -447,12 +454,12 @@ where
 
             // Replace the full leaf with the high-key leaf.
             let high_key_leaf = new_leaves.high_key_leaf.swap((None, Tag::None), Relaxed).0;
+            let deleted = target.delete_self(Release);
+            debug_assert!(deleted);
             full_leaf.swap((high_key_leaf, Tag::None), Release).0
         };
 
         if let Some(unused_leaf) = unused_leaf {
-            let deleted = unused_leaf.delete_self(Release);
-            debug_assert!(deleted);
             barrier.reclaim(unused_leaf);
         }
 
