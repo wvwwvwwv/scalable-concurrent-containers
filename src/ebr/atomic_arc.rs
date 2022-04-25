@@ -214,16 +214,16 @@ impl<T: 'static> AtomicArc<T> {
     ///
     /// atomic_arc.update_tag_if(Tag::Both, |_| true, Relaxed);
     /// assert!(atomic_arc.compare_exchange(
-    ///     ptr, (Some(Arc::new(18)), Tag::First), Relaxed, Relaxed).is_err());
+    ///     ptr, (Some(Arc::new(18)), Tag::First), Relaxed, Relaxed, &barrier).is_err());
     ///
     /// ptr.set_tag(Tag::Both);
     /// let old: Arc<usize> = atomic_arc.compare_exchange(
-    ///     ptr, (Some(Arc::new(18)), Tag::First), Relaxed, Relaxed).unwrap().0.unwrap();
+    ///     ptr, (Some(Arc::new(18)), Tag::First), Relaxed, Relaxed, &barrier).unwrap().0.unwrap();
     /// assert_eq!(*old, 17);
     /// drop(old);
     ///
     /// assert!(atomic_arc.compare_exchange(
-    ///     ptr, (Some(Arc::new(19)), Tag::None), Relaxed, Relaxed).is_err());
+    ///     ptr, (Some(Arc::new(19)), Tag::None), Relaxed, Relaxed, &barrier).is_err());
     /// assert_eq!(*ptr.as_ref().unwrap(), 17);
     /// ```
     #[allow(clippy::type_complexity)]
@@ -234,6 +234,7 @@ impl<T: 'static> AtomicArc<T> {
         new: (Option<Arc<T>>, Tag),
         success: Ordering,
         failure: Ordering,
+        _barrier: &'b Barrier,
     ) -> Result<(Option<Arc<T>>, Ptr<'b, T>), (Option<Arc<T>>, Ptr<'b, T>)> {
         let desired = Tag::update_tag(
             new.0
@@ -495,6 +496,7 @@ mod test {
                         ),
                         Release,
                         Relaxed,
+                        &barrier,
                     ) {
                         if let Some(arc) = passed {
                             assert!(*arc == "How can I help you?");

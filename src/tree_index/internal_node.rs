@@ -1,5 +1,5 @@
 use super::leaf::{InsertResult, Leaf, RemoveResult, Scanner, DIMENSION};
-use super::leaf_node::{LOCKED, RETIRED, WAITING};
+use super::leaf_node::{LOCKED, RETIRED};
 use super::node::{Node, Type};
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
@@ -342,13 +342,12 @@ where
             ),
             Acquire,
             Relaxed,
+            barrier,
         ) {
             debug_assert!(!self.retired(Relaxed));
             if full_node_ptr != full_node.load(Relaxed, barrier) {
-                let (change, tag) = self.latch.swap((None, Tag::None), Relaxed);
-                if tag == WAITING {
-                    self.wait_queue.signal();
-                }
+                let (change, _) = self.latch.swap((None, Tag::None), Relaxed);
+                self.wait_queue.signal();
                 drop(change);
                 target.rollback(barrier);
                 return Err((key, value));
@@ -568,10 +567,8 @@ where
         }
 
         // Unlock the node.
-        let (change, tag) = self.latch.swap((None, Tag::None), Release);
-        if tag == WAITING {
-            self.wait_queue.signal();
-        }
+        let (change, _) = self.latch.swap((None, Tag::None), Release);
+        self.wait_queue.signal();
         if let Some(change) = change {
             barrier.reclaim(change);
         }
@@ -585,10 +582,8 @@ where
 
     /// Finishes splitting the root node.
     pub fn finish_root_split(&self, barrier: &Barrier) {
-        let (change, tag) = self.latch.swap((None, Tag::None), Release);
-        if tag == WAITING {
-            self.wait_queue.signal();
-        }
+        let (change, _) = self.latch.swap((None, Tag::None), Release);
+        self.wait_queue.signal();
         if let Some(change) = change {
             barrier.reclaim(change);
         }
@@ -596,11 +591,9 @@ where
 
     /// Commits an on-going structural change.
     pub fn commit(&self, barrier: &Barrier) {
-        // Keeps the internal node locked to prevent further locking attempts.
-        let (change, tag) = self.latch.swap((None, LOCKED), Release);
-        if tag == WAITING {
-            self.wait_queue.signal();
-        }
+        // Mark the internal node retired to prevent further locking attempts.
+        let (change, _) = self.latch.swap((None, RETIRED), Release);
+        self.wait_queue.signal();
         if let Some(change) = change {
             let obsolete_node_ptr = change.origin_node.load(Relaxed, barrier);
             if let Some(obsolete_node_ref) = obsolete_node_ptr.as_ref() {
@@ -618,10 +611,8 @@ where
         }
 
         // Unlocks the node after the origin node has been cleaned up.
-        let (change, tag) = self.latch.swap((None, Tag::None), Release);
-        if tag == WAITING {
-            self.wait_queue.signal();
-        }
+        let (change, _) = self.latch.swap((None, Tag::None), Release);
+        self.wait_queue.signal();
         if let Some(change) = change {
             barrier.reclaim(change);
         }
@@ -633,7 +624,7 @@ where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        while let Some(lock) = Locker::try_lock(self) {
+        while let Some(lock) = Locker::try_lock(self, barrier) {
             let mut max_key_entry = None;
             for (key, node) in Scanner::new(&self.children) {
                 let node_ptr = node.load(Relaxed, barrier);
@@ -746,10 +737,13 @@ where
     V: Clone + Send + Sync,
 {
     /// Acquires exclusive lock on the [`InternalNode`].
-    pub fn try_lock(internal_node: &'n InternalNode<K, V>) -> Option<Locker<'n, K, V>> {
+    pub fn try_lock(
+        internal_node: &'n InternalNode<K, V>,
+        barrier: &'n Barrier,
+    ) -> Option<Locker<'n, K, V>> {
         if internal_node
             .latch
-            .compare_exchange(Ptr::null(), (None, LOCKED), Acquire, Relaxed)
+            .compare_exchange(Ptr::null(), (None, LOCKED), Acquire, Relaxed, barrier)
             .is_ok()
         {
             Some(Locker { internal_node })
@@ -766,10 +760,8 @@ where
 {
     fn drop(&mut self) {
         debug_assert_eq!(self.internal_node.latch.tag(Relaxed), LOCKED);
-        let (_, tag) = self.internal_node.latch.swap((None, Tag::None), Release);
-        if tag == WAITING {
-            self.internal_node.wait_queue.signal();
-        }
+        self.internal_node.latch.swap((None, Tag::None), Release);
+        self.internal_node.wait_queue.signal();
     }
 }
 

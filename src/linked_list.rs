@@ -229,10 +229,13 @@ pub trait LinkedList: 'static + Sized {
             entry
                 .link_ref()
                 .swap((next_ptr.get_arc(), Tag::None), Relaxed);
-            match self
-                .link_ref()
-                .compare_exchange(next_ptr, (Some(entry), new_tag), order, Relaxed)
-            {
+            match self.link_ref().compare_exchange(
+                next_ptr,
+                (Some(entry), new_tag),
+                order,
+                Relaxed,
+                barrier,
+            ) {
                 Ok((_, updated)) => {
                     return Ok(updated);
                 }
@@ -303,6 +306,7 @@ pub trait LinkedList: 'static + Sized {
                 (next_valid_ptr.get_arc(), self_tag),
                 Release,
                 Relaxed,
+                barrier,
             ) {
                 barrier.reclaim(prev);
             }

@@ -30,7 +30,8 @@
 //!     ptr,
 //!     (Some(Arc::new(18)), Tag::First),
 //!     Relaxed,
-//!     Relaxed).is_err());
+//!     Relaxed,
+//!     &barrier).is_err());
 //!
 //! // `ptr` can be tagged.
 //! ptr.set_tag(Tag::First);
@@ -40,7 +41,8 @@
 //!     ptr,
 //!     (Some(Arc::new(18)), Tag::Second),
 //!     Relaxed,
-//!     Relaxed).unwrap().0.unwrap();
+//!     Relaxed,
+//!     &barrier).unwrap().0.unwrap();
 //! assert_eq!(*prev, 17);
 //!
 //! // `17` will be garbage-collected later.

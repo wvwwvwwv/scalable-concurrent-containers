@@ -47,7 +47,8 @@ assert!(atomic_arc.compare_exchange(
     ptr,
     (Some(Arc::new(18)), Tag::First),
     Relaxed,
-    Relaxed).is_err());
+    Relaxed,
+    &barrier).is_err());
 
 // `ptr` can be tagged.
 ptr.set_tag(Tag::First);
@@ -57,7 +58,8 @@ let prev: Arc<usize> = atomic_arc.compare_exchange(
     ptr,
     (Some(Arc::new(18)), Tag::Second),
     Relaxed,
-    Relaxed).unwrap().0.unwrap();
+    Relaxed,
+    &barrier).unwrap().0.unwrap();
 assert_eq!(*prev, 17);
 
 // `17` will be garbage-collected later.
@@ -400,7 +402,8 @@ let result = future_insert.await;
 
 0.6.7
 
-* Fix ebr API: `ebr::AtomicArc::swap` returns the previous `Tag` along with the pointer.
+* Fix ebr API: `ebr::AtomicArc::swap` returns the previous `ebr::Tag` along with the pointer.
+* Fix ebr API: `ebr::AtomicArc::compare_exchange` receives a reference to `ebr::Barrier`.
 * Partially fix [#49](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/49) for [TreeIndex](#TreeIndex).
 
 0.6.6

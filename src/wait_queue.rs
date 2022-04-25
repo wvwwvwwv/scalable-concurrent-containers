@@ -1,6 +1,6 @@
 use std::ptr::addr_of_mut;
 use std::sync::atomic::AtomicPtr;
-use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use std::sync::atomic::Ordering::{AcqRel, Relaxed};
 use std::sync::{Condvar, Mutex};
 
 /// [`WaitQueue`] implements an unfair wait queue.
@@ -15,24 +15,25 @@ pub struct WaitQueue {
 impl WaitQueue {
     /// Waits for the condition to be met or signalled.
     #[inline]
-    pub fn wait<T, F: FnOnce() -> Result<Option<T>, ()>>(&self, f: F) -> Result<Option<T>, ()> {
+    pub fn wait<T, F: FnOnce() -> Result<T, ()>>(&self, f: F) -> Result<T, ()> {
         // Inserts the thread into the wait queue.
         let mut current = self.wait_queue.load(Relaxed);
         let mut entry = Entry::new(current);
 
         while let Err(actual) =
             self.wait_queue
-                .compare_exchange(current, addr_of_mut!(entry), Release, Relaxed)
+                .compare_exchange(current, addr_of_mut!(entry), AcqRel, Relaxed)
         {
             current = actual;
             entry.next_ptr = current;
         }
 
-        // Executes the closure.
+        // Execute the closure.
         let result = f();
         if result.is_ok() {
             self.signal();
         }
+
         entry.wait();
         result
     }
@@ -40,7 +41,7 @@ impl WaitQueue {
     /// Signals the threads in the wait queue.
     #[inline]
     pub fn signal(&self) {
-        let mut current = self.wait_queue.swap(std::ptr::null_mut(), Acquire);
+        let mut current = self.wait_queue.swap(std::ptr::null_mut(), AcqRel);
         while let Some(entry_ref) = unsafe { current.as_ref() } {
             let next_ptr = entry_ref.next_ptr;
             entry_ref.signal();

@@ -29,6 +29,7 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 ///
 /// * Write-free read: read operations never modify the shared data.
 /// * Near lock-free write: write operations do not block unless a structural change is needed.
+/// * No busy waiting.
 ///
 /// ## The key statistics for [`TreeIndex`]
 ///
@@ -123,6 +124,7 @@ where
                 (Some(new_root), Tag::None),
                 AcqRel,
                 Acquire,
+                &barrier,
             );
         }
     }
@@ -191,6 +193,7 @@ where
                 (Some(new_root), Tag::None),
                 AcqRel,
                 Acquire,
+                &Barrier::new(),
             );
         }
     }

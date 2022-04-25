@@ -13,9 +13,6 @@ use std::sync::atomic::Ordering::{self, AcqRel, Acquire, Relaxed, Release};
 /// [`Tag::First`] indicates the corresponding node has retired.
 pub const RETIRED: Tag = Tag::First;
 
-/// [`Tag::First`] indicates that there is a waiting thread.
-pub const WAITING: Tag = Tag::First;
-
 /// [`Tag::Second`] indicates the corresponding node is locked.
 pub const LOCKED: Tag = Tag::Second;
 
@@ -230,6 +227,7 @@ where
                     (Some(Arc::new(Leaf::new())), Tag::None),
                     AcqRel,
                     Acquire,
+                    barrier,
                 ) {
                     Ok((_, ptr)) => {
                         unbounded_ptr = ptr;
@@ -340,7 +338,7 @@ where
         full_leaf: &AtomicArc<Leaf<K, V>>,
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
-        let new_leaves = match self.latch.compare_exchange(
+        let new_leaves_ptr = match self.latch.compare_exchange(
             Ptr::null(),
             (
                 Some(Arc::new(StructuralChange {
@@ -353,28 +351,28 @@ where
             ),
             Acquire,
             Relaxed,
+            barrier,
         ) {
-            Ok((_, ptr)) => {
-                if self.retired(Relaxed) {
-                    let (change, tag) = self.latch.swap((None, Tag::None), Relaxed);
-                    if tag == WAITING {
-                        self.wait_queue.signal();
-                    }
-                    drop(change);
-                    return Ok(InsertResult::Retired(key, value));
-                }
-                if full_leaf_ptr != full_leaf.load(Relaxed, barrier) {
-                    let (change, tag) = self.latch.swap((None, Tag::None), Relaxed);
-                    if tag == WAITING {
-                        self.wait_queue.signal();
-                    }
-                    drop(change);
-                    return Err((key, value));
-                }
-                ptr.as_ref().unwrap()
+            Ok((_, ptr)) => ptr,
+            Err((_, _)) => {
+                return Err((key, value));
             }
-            Err(_) => return Err((key, value)),
         };
+
+        if self.retired(Relaxed) {
+            let (change, _) = self.latch.swap((None, Tag::None), Relaxed);
+            self.wait_queue.signal();
+            drop(change);
+            return Ok(InsertResult::Retired(key, value));
+        }
+        if full_leaf_ptr != full_leaf.load(Relaxed, barrier) {
+            let (change, _) = self.latch.swap((None, Tag::None), Relaxed);
+            self.wait_queue.signal();
+            drop(change);
+            return Err((key, value));
+        }
+
+        let new_leaves = new_leaves_ptr.as_ref().unwrap();
         if let Some(full_leaf_key) = full_leaf_key {
             let ptr = addr_of!(new_leaves.origin_leaf_key) as *mut Option<K>;
             unsafe {
@@ -459,10 +457,8 @@ where
         }
 
         // Unlocks the leaf node.
-        let (change, tag) = self.latch.swap((None, Tag::None), Release);
-        if tag == WAITING {
-            self.wait_queue.signal();
-        }
+        let (change, _) = self.latch.swap((None, Tag::None), Release);
+        self.wait_queue.signal();
         if let Some(change) = change {
             barrier.reclaim(change);
         }
@@ -588,11 +584,9 @@ where
 
     /// Commits an on-going structural change.
     pub fn commit(&self, barrier: &Barrier) {
-        // Keeps the leaf node locked to prevent further locking attempts.
-        let (change, tag) = self.latch.swap((None, LOCKED), Release);
-        if tag == WAITING {
-            self.wait_queue.signal();
-        }
+        // Mark the leaf node retired to prevent further locking attempts.
+        let (change, _) = self.latch.swap((None, RETIRED), Release);
+        self.wait_queue.signal();
         if let Some(change) = change {
             if let Some(obsolete_leaf) = change.origin_leaf.swap((None, Tag::None), Relaxed).0 {
                 // Makes the leaf unreachable before dropping it.
@@ -635,10 +629,8 @@ where
         }
 
         // Unlocks the leaf node.
-        let (change, tag) = self.latch.swap((None, Tag::None), Release);
-        if tag == WAITING {
-            self.wait_queue.signal();
-        }
+        let (change, _) = self.latch.swap((None, Tag::None), Release);
+        self.wait_queue.signal();
         if let Some(change) = change {
             barrier.reclaim(change);
         }
@@ -650,7 +642,7 @@ where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        while let Some(lock) = Locker::try_lock(self) {
+        while let Some(lock) = Locker::try_lock(self, barrier) {
             let mut has_valid_leaf = false;
             for entry in Scanner::new(&self.children) {
                 let leaf_ptr = entry.1.load(Relaxed, barrier);
@@ -752,10 +744,13 @@ where
     V: Clone + Send + Sync,
 {
     /// Acquires exclusive lock on the [`LeafNode`].
-    pub fn try_lock(leaf_node: &'n LeafNode<K, V>) -> Option<Locker<'n, K, V>> {
+    pub fn try_lock(
+        leaf_node: &'n LeafNode<K, V>,
+        barrier: &'n Barrier,
+    ) -> Option<Locker<'n, K, V>> {
         if leaf_node
             .latch
-            .compare_exchange(Ptr::null(), (None, LOCKED), Acquire, Relaxed)
+            .compare_exchange(Ptr::null(), (None, LOCKED), Acquire, Relaxed, barrier)
             .is_ok()
         {
             Some(Locker { leaf_node })
@@ -772,10 +767,8 @@ where
 {
     fn drop(&mut self) {
         debug_assert_eq!(self.leaf_node.latch.tag(Relaxed), LOCKED);
-        let (_, tag) = self.leaf_node.latch.swap((None, Tag::None), Release);
-        if tag == WAITING {
-            self.leaf_node.wait_queue.signal();
-        }
+        self.leaf_node.latch.swap((None, Tag::None), Release);
+        self.leaf_node.wait_queue.signal();
     }
 }
 

@@ -182,12 +182,12 @@ where
             let mut leaf_node_locker = None;
             match &root_ref.node {
                 Type::Internal(internal_node) => {
-                    if let Some(locker) = internal_node::Locker::try_lock(internal_node) {
+                    if let Some(locker) = internal_node::Locker::try_lock(internal_node, barrier) {
                         internal_node_locker.replace(locker);
                     }
                 }
                 Type::Leaf(leaf_node) => {
-                    if let Some(locker) = leaf_node::Locker::try_lock(leaf_node) {
+                    if let Some(locker) = leaf_node::Locker::try_lock(leaf_node, barrier) {
                         leaf_node_locker.replace(locker);
                     }
                 }
@@ -201,7 +201,7 @@ where
                 return Ok(false);
             }
 
-            match root.compare_exchange(root_ptr, (None, Tag::None), Acquire, Acquire) {
+            match root.compare_exchange(root_ptr, (None, Tag::None), Acquire, Acquire, barrier) {
                 Ok((old_root, _)) => {
                     if let Some(old_root) = old_root {
                         barrier.reclaim(old_root);
