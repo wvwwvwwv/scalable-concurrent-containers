@@ -211,7 +211,7 @@ where
                             }
                             InsertResult::Frozen(key, value) => {
                                 // The `Leaf` is being split: retry.
-                                self.wait(barrier);
+                                self.wait(true, barrier);
                                 return Err((key, value));
                             }
                         };
@@ -259,7 +259,7 @@ where
                         );
                     }
                     InsertResult::Frozen(key, value) => {
-                        self.wait(barrier);
+                        self.wait(true, barrier);
                         return Err((key, value));
                     }
                 };
@@ -294,7 +294,7 @@ where
                         if child.frozen() {
                             // When a `Leaf` is frozen, its entries may be being copied to new
                             // `Leaves`.
-                            self.wait(barrier);
+                            self.wait(true, barrier);
                             return Err(result != RemoveResult::Fail);
                         }
                         if result == RemoveResult::Retired {
@@ -315,7 +315,7 @@ where
                 }
                 let result = unbounded.remove_if(key, condition);
                 if unbounded.frozen() {
-                    self.wait(barrier);
+                    self.wait(true, barrier);
                     return Err(result != RemoveResult::Fail);
                 }
                 if result == RemoveResult::Retired {
@@ -359,7 +359,7 @@ where
         ) {
             ptr
         } else {
-            self.wait(barrier);
+            self.wait(false, barrier);
             return Err((key, value));
         };
 
@@ -739,10 +739,14 @@ where
         false
     }
 
-    /// Waits for the lock on the [`LeafNode`] is released.
-    fn wait(&self, barrier: &Barrier) {
+    /// Waits for the lock on the [`LeafNode`] to be released.
+    fn wait(&self, expect_null: bool, barrier: &Barrier) {
         let _result = self.wait_queue.wait(|| {
-            let tag = self.latch.load(Relaxed, barrier).tag();
+            let ptr = self.latch.load(Relaxed, barrier);
+            if expect_null && ptr.is_null() {
+                return Ok(());
+            }
+            let tag = ptr.tag();
             if tag == Tag::None || tag == RETIRED {
                 Ok(())
             } else {

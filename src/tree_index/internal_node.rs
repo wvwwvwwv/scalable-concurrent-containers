@@ -722,7 +722,7 @@ where
         false
     }
 
-    /// Waits for the lock on the [`InternalNode`] is released.
+    /// Waits for the lock on the [`InternalNode`] to be released.
     fn wait(&self, barrier: &Barrier) {
         let _result = self.wait_queue.wait(|| {
             let tag = self.latch.load(Relaxed, barrier).tag();
