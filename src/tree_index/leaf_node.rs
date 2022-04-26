@@ -647,6 +647,23 @@ where
         }
     }
 
+    /// Waits for the lock on the [`LeafNode`] to be released.
+    pub(super) fn wait(&self, expect_null: bool, barrier: &Barrier) {
+        let _result = self.wait_queue.wait(|| {
+            let ptr = self.latch.load(Relaxed, barrier);
+            let is_null = ptr.is_null();
+            if expect_null && is_null {
+                // The `LeafNode` may be locked, but it does not care.
+                return Ok(());
+            }
+            if !is_null || ptr.tag() == LOCKED {
+                // The `LeafNode` is being split or locked.
+                return Err(());
+            }
+            Ok(())
+        });
+    }
+
     /// Tries to coalesce empty or obsolete leaves after a successful removal of an entry.
     fn coalesce<Q>(&self, removed_key: &Q, barrier: &Barrier) -> RemoveResult
     where
@@ -737,22 +754,6 @@ where
             }
         }
         false
-    }
-
-    /// Waits for the lock on the [`LeafNode`] to be released.
-    fn wait(&self, expect_null: bool, barrier: &Barrier) {
-        let _result = self.wait_queue.wait(|| {
-            let ptr = self.latch.load(Relaxed, barrier);
-            if expect_null && ptr.is_null() {
-                return Ok(());
-            }
-            let tag = ptr.tag();
-            if tag == Tag::None || tag == RETIRED {
-                Ok(())
-            } else {
-                Err(())
-            }
-        });
     }
 }
 
@@ -1013,18 +1014,27 @@ mod test {
                         {
                             barrier_clone.wait().await;
                             let barrier = Barrier::new();
-                            if let Ok(InsertResult::Success) =
-                                leaf_node_clone.insert(k, k, &barrier)
-                            {
-                                assert!(!inserted_clone.swap(true, Relaxed));
-                            }
+                            match leaf_node_clone.insert(k, k, &barrier) {
+                                Ok(InsertResult::Success) => {
+                                    assert!(!inserted_clone.swap(true, Relaxed));
+                                }
+                                Ok(InsertResult::Full(_, _) | InsertResult::Retired(_, _)) => {
+                                    leaf_node_clone.rollback(&barrier);
+                                }
+                                _ => (),
+                            };
                         }
                         {
                             barrier_clone.wait().await;
                             let barrier = Barrier::new();
                             for i in 0..workload_size {
                                 if i != k {
-                                    let _result = leaf_node_clone.insert(i, i, &barrier);
+                                    if let Ok(
+                                        InsertResult::Full(_, _) | InsertResult::Retired(_, _),
+                                    ) = leaf_node_clone.insert(i, i, &barrier)
+                                    {
+                                        leaf_node_clone.rollback(&barrier);
+                                    }
                                 }
                                 assert_eq!(leaf_node_clone.search(&k, &barrier).unwrap(), &k);
                             }

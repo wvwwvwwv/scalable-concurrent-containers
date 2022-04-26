@@ -184,11 +184,15 @@ where
                 Type::Internal(internal_node) => {
                     if let Some(locker) = internal_node::Locker::try_lock(internal_node, barrier) {
                         internal_node_locker.replace(locker);
+                    } else {
+                        internal_node.wait(barrier);
                     }
                 }
                 Type::Leaf(leaf_node) => {
                     if let Some(locker) = leaf_node::Locker::try_lock(leaf_node, barrier) {
                         leaf_node_locker.replace(locker);
+                    } else {
+                        leaf_node.wait(false, barrier);
                     }
                 }
             };

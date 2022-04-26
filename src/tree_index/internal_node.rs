@@ -619,6 +619,18 @@ where
         }
     }
 
+    /// Waits for the lock on the [`InternalNode`] to be released.
+    pub(super) fn wait(&self, barrier: &Barrier) {
+        let _result = self.wait_queue.wait(|| {
+            let ptr = self.latch.load(Relaxed, barrier);
+            if !ptr.is_null() || ptr.tag() == LOCKED {
+                // The `InternalNode` is being split or locked.
+                return Err(());
+            }
+            Ok(())
+        });
+    }
+
     /// Tries to coalesce nodes.
     fn coalesce<Q>(&self, removed_key: &Q, barrier: &Barrier) -> RemoveResult
     where
@@ -720,18 +732,6 @@ where
             }
         }
         false
-    }
-
-    /// Waits for the lock on the [`InternalNode`] to be released.
-    fn wait(&self, barrier: &Barrier) {
-        let _result = self.wait_queue.wait(|| {
-            let tag = self.latch.load(Relaxed, barrier).tag();
-            if tag == Tag::None || tag == RETIRED {
-                Ok(())
-            } else {
-                Err(())
-            }
-        });
     }
 }
 
@@ -970,11 +970,15 @@ mod test {
                         {
                             barrier_clone.wait().await;
                             let barrier = Barrier::new();
-                            if let Ok(InsertResult::Success) =
-                                internal_node_clone.insert(fixed_point, fixed_point, &barrier)
-                            {
-                                assert!(!inserted_clone.swap(true, Relaxed));
-                            }
+                            match internal_node_clone.insert(fixed_point, fixed_point, &barrier) {
+                                Ok(InsertResult::Success) => {
+                                    assert!(!inserted_clone.swap(true, Relaxed));
+                                }
+                                Ok(InsertResult::Full(_, _) | InsertResult::Retired(_, _)) => {
+                                    internal_node_clone.rollback(&barrier);
+                                }
+                                _ => (),
+                            };
                             assert_eq!(
                                 internal_node_clone.search(&fixed_point, &barrier).unwrap(),
                                 &fixed_point
@@ -985,7 +989,12 @@ mod test {
                             let barrier = Barrier::new();
                             for i in 0..workload_size {
                                 if i != fixed_point {
-                                    let _result = internal_node_clone.insert(i, i, &barrier);
+                                    if let Ok(
+                                        InsertResult::Full(_, _) | InsertResult::Retired(_, _),
+                                    ) = internal_node_clone.insert(i, i, &barrier)
+                                    {
+                                        internal_node_clone.rollback(&barrier);
+                                    }
                                 }
                                 assert_eq!(
                                     internal_node_clone.search(&fixed_point, &barrier).unwrap(),

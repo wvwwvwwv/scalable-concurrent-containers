@@ -84,8 +84,8 @@ where
     /// ```
     #[inline]
     pub fn insert(&self, mut key: K, mut value: V) -> Result<(), (K, V)> {
-        let barrier = Barrier::new();
         loop {
+            let barrier = Barrier::new();
             if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
                 match root_ref.insert(key, value, &barrier) {
                     Ok(r) => match r {
@@ -104,8 +104,7 @@ where
                         InsertResult::Retired(k, v) => {
                             key = k;
                             value = v;
-                            if !matches!(Node::remove_root(&self.root, &barrier), Ok(true)) {
-                            }
+                            let _result = Node::remove_root(&self.root, &barrier);
                         }
                     },
                     Err((k, v)) => {
@@ -257,9 +256,9 @@ where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        let barrier = Barrier::new();
         let mut has_been_removed = false;
         loop {
+            let barrier = Barrier::new();
             if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
                 match root_ref.remove_if(key_ref, &mut condition, &barrier) {
                     Ok(r) => match r {
