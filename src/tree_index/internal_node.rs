@@ -355,6 +355,7 @@ where
             unsafe { &mut *(ptr.as_raw() as *mut StructuralChange<K, V>) }
         } else {
             target.rollback(barrier);
+            self.wait(barrier);
             return Err((key, value));
         };
 
@@ -719,6 +720,18 @@ where
             }
         }
         false
+    }
+
+    /// Waits for the lock on the [`InternalNode`] is released.
+    fn wait(&self, barrier: &Barrier) {
+        let _result = self.wait_queue.wait(|| {
+            let tag = self.latch.load(Relaxed, barrier).tag();
+            if tag == Tag::None || tag == RETIRED {
+                Ok(())
+            } else {
+                Err(())
+            }
+        });
     }
 }
 

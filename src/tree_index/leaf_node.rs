@@ -211,6 +211,7 @@ where
                             }
                             InsertResult::Frozen(key, value) => {
                                 // The `Leaf` is being split: retry.
+                                self.wait(barrier);
                                 return Err((key, value));
                             }
                         };
@@ -258,6 +259,7 @@ where
                         );
                     }
                     InsertResult::Frozen(key, value) => {
+                        self.wait(barrier);
                         return Err((key, value));
                     }
                 };
@@ -292,6 +294,7 @@ where
                         if child.frozen() {
                             // When a `Leaf` is frozen, its entries may be being copied to new
                             // `Leaves`.
+                            self.wait(barrier);
                             return Err(result != RemoveResult::Fail);
                         }
                         if result == RemoveResult::Retired {
@@ -312,6 +315,7 @@ where
                 }
                 let result = unbounded.remove_if(key, condition);
                 if unbounded.frozen() {
+                    self.wait(barrier);
                     return Err(result != RemoveResult::Fail);
                 }
                 if result == RemoveResult::Retired {
@@ -338,7 +342,7 @@ where
         full_leaf: &AtomicArc<Leaf<K, V>>,
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
-        let new_leaves_ptr = match self.latch.compare_exchange(
+        let new_leaves_ptr = if let Ok((_, ptr)) = self.latch.compare_exchange(
             Ptr::null(),
             (
                 Some(Arc::new(StructuralChange {
@@ -353,10 +357,10 @@ where
             Relaxed,
             barrier,
         ) {
-            Ok((_, ptr)) => ptr,
-            Err((_, _)) => {
-                return Err((key, value));
-            }
+            ptr
+        } else {
+            self.wait(barrier);
+            return Err((key, value));
         };
 
         if self.retired(Relaxed) {
@@ -733,6 +737,18 @@ where
             }
         }
         false
+    }
+
+    /// Waits for the lock on the [`LeafNode`] is released.
+    fn wait(&self, barrier: &Barrier) {
+        let _result = self.wait_queue.wait(|| {
+            let tag = self.latch.load(Relaxed, barrier).tag();
+            if tag == Tag::None || tag == RETIRED {
+                Ok(())
+            } else {
+                Err(())
+            }
+        });
     }
 }
 

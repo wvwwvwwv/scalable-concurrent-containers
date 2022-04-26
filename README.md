@@ -404,7 +404,7 @@ let result = future_insert.await;
 
 * Fix ebr API: `ebr::AtomicArc::swap` returns the previous `ebr::Tag` along with the pointer.
 * Fix ebr API: `ebr::AtomicArc::compare_exchange` receives a reference to `ebr::Barrier`.
-* Partially fix [#49](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/49) for [TreeIndex](#TreeIndex).
+* Fix [#71](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/71).
 
 0.6.6
 

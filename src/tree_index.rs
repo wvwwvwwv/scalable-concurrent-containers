@@ -93,7 +93,6 @@ where
                         InsertResult::Frozen(k, v) => {
                             key = k;
                             value = v;
-                            std::thread::yield_now();
                         }
                         InsertResult::Duplicate(k, v) => return Err((k, v)),
                         InsertResult::Full(k, v) => {
@@ -106,14 +105,12 @@ where
                             key = k;
                             value = v;
                             if !matches!(Node::remove_root(&self.root, &barrier), Ok(true)) {
-                                std::thread::yield_now();
                             }
                         }
                     },
                     Err((k, v)) => {
                         key = k;
                         value = v;
-                        std::thread::yield_now();
                     }
                 }
             }
@@ -284,7 +281,6 @@ where
             } else {
                 return has_been_removed;
             }
-            std::thread::yield_now();
         }
     }
 
