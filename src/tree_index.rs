@@ -22,12 +22,11 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 ///
 /// [`TreeIndex`] is a B+ tree variant that is optimized for read operations. Read operations, such
 /// as read, scan, are neither blocked nor interrupted by other threads. Write operations, such as
-/// insert, remove, do not block if they do not entail structural changes to the tree. In case an
-/// operation is conflicted with another, one of them yields the current thread or task executor.
+/// insert, remove, do not block if they do not entail structural changes to the tree.
 ///
 /// ## The key features of [`TreeIndex`]
 ///
-/// * Write-free read: read operations never modify the shared data.
+/// * Lock-free-read: read and scan operations do not modify shared data and are never blocked.
 /// * Near lock-free write: write operations do not block unless a structural change is needed.
 /// * No busy waiting: each node has a wait queue to avoid spinning.
 ///

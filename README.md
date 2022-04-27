@@ -333,10 +333,10 @@ let result = future_insert.await;
 
 ### Performance Comparison with [DashMap](https://github.com/xacrimon/dashmap) and [flurry](https://github.com/jonhoo/flurry)
 
+- [HashMap](#HashMap) outperforms the others if the workload is highly concurrent or write-heavy.
 - The benchmark tests are based on [conc-map-bench](https://github.com/xacrimon/conc-map-bench).
 - [Results on Apple M1](https://github.com/wvwwvwwv/conc-map-bench).
 - [Results on Intel Xeon](https://github.com/wvwwvwwv/conc-map-bench/tree/Intel).
-- [HashMap](#HashMap) outperforms the others if the workload is highly concurrent or write-heavy.
 
 
 ## Performance
@@ -347,7 +347,7 @@ let result = future_insert.await;
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
 - RAM: 1TB
 - Rust: 1.60.0
-- SCC: 0.6.6 (HashMap, HashIndex), 0.6.5 (TreeIndex)
+- SCC: 0.6.7
 
 ### Workload
 
@@ -389,22 +389,22 @@ let result = future_insert.await;
 
 |         |  1 thread  |  4 threads | 16 threads | 64 threads |
 |---------|------------|------------|------------|------------|
-| InsertL |  16.833s   |  19.778s   |  26.651s   |  68.163s   |
-| ReadL   |   3.783s   |   4.112s   |   4.696s   |   5.367s   |
-| ScanL   |   1.26s    |   4.958s   |  19.781s   |  88.587s   |
-| RemoveL |   5.986s   |   7.479s   |   8.825s   |   9.639s   |
-| InsertR |  22.233s   |  60.892s   |  70.324s   | 105.639s   |
-| MixedR  |  28.956s   | 186.537s   | 476.771s   | 672.449s   |
-| RemoveR |   9.281s   |  18.568s   |  25.262s   |  83.017s   |
+| InsertL |  15.006s   |  17.896s   |  25.481s   |  74.218s   |
+| ReadL   |   3.55s    |   4.142s   |   4.585s   |   4.807s   |
+| ScanL   |   1.228s   |   4.913s   |  19.754s   |  81.71s    |
+| RemoveL |   5.841s   |   7.711s   |   8.688s   |   9.154s   |
+| InsertR |  20.388s   |  71.534s   |  77.573s   |  90.999s   |
+| MixedR  |  27.864s   | 162.571s   | 532.533s   | 630.033s   |
+| RemoveR |   9.346s   |  18.642s   |  22.832s   |  26.394s   |
 
 
 ## Changelog
 
 0.6.7
 
-* Fix ebr API: `ebr::AtomicArc::swap` returns the previous `ebr::Tag` along with the pointer.
-* Fix ebr API: `ebr::AtomicArc::compare_exchange` receives a reference to `ebr::Barrier`.
-* Fix [#71](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/71).
+* Fix ebr API, `ebr::AtomicArc::swap`: return the previous `ebr::Tag` along with the pointer.
+* Fix ebr API, `ebr::AtomicArc::compare_exchange`: receive a reference to `ebr::Barrier`.
+* Fix [#49](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/49) for synchronous [TreeIndex](#TreeIndex) methods.
 
 0.6.6
 
@@ -415,20 +415,3 @@ let result = future_insert.await;
 
 * Add more asynchronous methods to [HashMap](#HashMap), [HashIndex](#HashIndex), and [HashSet](#HashSet).
 * [TreeIndex](#TreeIndex) remove performance improvement.
-
-0.6.4
-
-* Consolidate synchronous and asynchronous [HashMap](#HashMap) implementations.
-* [HashMap](#HashMap) performance improvement.
-
-0.6.3
-
-* Consolidate synchronous and asynchronous [TreeIndex](#TreeIndex) implementations.
-
-0.6.2
-
-* Asynchronous [TreeIndex](#TreeIndex).
-* [TreeIndex](#TreeIndex) performance improvement.
-* Fix ebr API: `ebr::Arc::get_mut` is now unsafe.
-* Fix [#65](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/65).
-* Fix [#66](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/66).

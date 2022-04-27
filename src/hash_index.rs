@@ -21,9 +21,8 @@ use std::sync::atomic::Ordering::Acquire;
 ///
 /// ## The key differences between [`HashIndex`] and [`HashMap`](crate::HashMap).
 ///
-/// * Lock-free-read: read and scan operations do not modify shared data.
-/// * Immutability: the data in the container is treated immutable until it becomes
-///   unreachable.
+/// * Lock-free-read: read and scan operations do not modify shared data and are never blocked.
+/// * Immutability: the data in the container is treated immutable until it becomes unreachable.
 ///
 /// ## The key statistics for [`HashIndex`]
 ///
