@@ -399,7 +399,7 @@ let result = future_insert.await;
 
 0.6.8
 
-* Fix waiting issues with asynchronous [TreeIndex](#TreeIndex) methods.
+* Fix wait queue performance issues with asynchronous [TreeIndex](#TreeIndex) methods.
 
 0.6.7
 
