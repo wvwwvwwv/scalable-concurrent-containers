@@ -22,14 +22,13 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 ///
 /// [`TreeIndex`] is a B+ tree variant that is optimized for read operations. Read operations, such
 /// as read, scan, are neither blocked nor interrupted by other threads. Write operations, such as
-/// insert, remove, do not block if they do not entail structural changes to the tree. In case an
-/// operation is conflicted with another, one of them yields the current thread or task executor.
+/// insert, remove, do not block if they do not entail structural changes to the tree.
 ///
 /// ## The key features of [`TreeIndex`]
 ///
-/// * Write-free read: read operations never modify the shared data.
+/// * Lock-free-read: read and scan operations do not modify shared data and are never blocked.
 /// * Near lock-free write: write operations do not block unless a structural change is needed.
-/// * No busy waiting.
+/// * No busy waiting: each node has a wait queue to avoid spinning.
 ///
 /// ## The key statistics for [`TreeIndex`]
 ///
@@ -84,8 +83,8 @@ where
     /// ```
     #[inline]
     pub fn insert(&self, mut key: K, mut value: V) -> Result<(), (K, V)> {
-        let barrier = Barrier::new();
         loop {
+            let barrier = Barrier::new();
             if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
                 match root_ref.insert(key, value, &barrier) {
                     Ok(r) => match r {
@@ -93,7 +92,6 @@ where
                         InsertResult::Frozen(k, v) => {
                             key = k;
                             value = v;
-                            std::thread::yield_now();
                         }
                         InsertResult::Duplicate(k, v) => return Err((k, v)),
                         InsertResult::Full(k, v) => {
@@ -105,15 +103,12 @@ where
                         InsertResult::Retired(k, v) => {
                             key = k;
                             value = v;
-                            if !matches!(Node::remove_root(&self.root, &barrier), Ok(true)) {
-                                std::thread::yield_now();
-                            }
+                            let _result = Node::remove_root(&self.root, &barrier);
                         }
                     },
                     Err((k, v)) => {
                         key = k;
                         value = v;
-                        std::thread::yield_now();
                     }
                 }
             }
@@ -200,6 +195,9 @@ where
 
     /// Removes a key-value pair.
     ///
+    /// The removed key-value pair may be reachable via [`Range`] or [`Visitor`] momentarily if the
+    /// node that contained the key-value pair is being split.
+    ///
     /// # Examples
     ///
     /// ```
@@ -222,6 +220,9 @@ where
 
     /// Removes a key-value pair.
     ///
+    /// The removed key-value pair may be reachable via [`Range`] or [`Visitor`] momentarily if the
+    /// node that contained the key-value pair is being split.
+    ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
     ///
     /// # Examples
@@ -243,6 +244,9 @@ where
 
     /// Removes a key-value pair if the given condition is met.
     ///
+    /// The removed key-value pair may be reachable via [`Range`] or [`Visitor`] momentarily if the
+    /// node that contained the key-value pair is being split.
+    ///
     /// # Examples
     ///
     /// ```
@@ -260,9 +264,9 @@ where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        let barrier = Barrier::new();
         let mut has_been_removed = false;
         loop {
+            let barrier = Barrier::new();
             if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
                 match root_ref.remove_if(key_ref, &mut condition, &barrier) {
                     Ok(r) => match r {
@@ -284,11 +288,13 @@ where
             } else {
                 return has_been_removed;
             }
-            std::thread::yield_now();
         }
     }
 
     /// Removes a key-value pair if the given condition is met.
+    ///
+    /// The removed key-value pair may be reachable via [`Range`] or [`Visitor`] momentarily if the
+    /// node that contained the key-value pair is being split.
     ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
     ///
@@ -476,7 +482,10 @@ where
 
     /// Returns a [`Visitor`].
     ///
-    /// The returned [`Visitor`] starts scanning from the minimum key-value pair.
+    /// The returned [`Visitor`] starts scanning from the minimum key-value pair. Key-value pairs
+    /// are scanned in ascending order, and key-value pairs that have existed since the invocation
+    /// of the method are guaranteed to be visited if they are not removed. However, it is possible
+    /// to visit removed key-value pairs momentarily.
     ///
     /// # Examples
     ///
@@ -496,6 +505,10 @@ where
     }
 
     /// Returns a [`Range`] that scans keys in the given range.
+    ///
+    /// Key-value pairs in the range are scanned in ascending order, and key-value pairs that have
+    /// existed since the invocation of the method are guaranteed to be visited if they are not
+    /// removed. However, it is possible to visit removed key-value pairs momentarily.
     ///
     /// # Examples
     ///

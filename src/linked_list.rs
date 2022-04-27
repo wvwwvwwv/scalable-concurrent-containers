@@ -65,7 +65,7 @@ pub trait LinkedList: 'static + Sized {
             .update_tag_if(Tag::First, |t| t == Tag::None, order)
     }
 
-    /// Removes marks from `self`.
+    /// Removes the mark from `self`.
     ///
     /// It returns `false` if no flag has been marked on `self`.
     ///

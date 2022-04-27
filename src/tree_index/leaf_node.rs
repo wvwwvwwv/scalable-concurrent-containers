@@ -211,6 +211,7 @@ where
                             }
                             InsertResult::Frozen(key, value) => {
                                 // The `Leaf` is being split: retry.
+                                self.wait(true, barrier);
                                 return Err((key, value));
                             }
                         };
@@ -258,6 +259,7 @@ where
                         );
                     }
                     InsertResult::Frozen(key, value) => {
+                        self.wait(true, barrier);
                         return Err((key, value));
                     }
                 };
@@ -292,6 +294,7 @@ where
                         if child.frozen() {
                             // When a `Leaf` is frozen, its entries may be being copied to new
                             // `Leaves`.
+                            self.wait(true, barrier);
                             return Err(result != RemoveResult::Fail);
                         }
                         if result == RemoveResult::Retired {
@@ -312,6 +315,7 @@ where
                 }
                 let result = unbounded.remove_if(key, condition);
                 if unbounded.frozen() {
+                    self.wait(true, barrier);
                     return Err(result != RemoveResult::Fail);
                 }
                 if result == RemoveResult::Retired {
@@ -338,7 +342,7 @@ where
         full_leaf: &AtomicArc<Leaf<K, V>>,
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
-        let new_leaves_ptr = match self.latch.compare_exchange(
+        let new_leaves = if let Ok((_, ptr)) = self.latch.compare_exchange(
             Ptr::null(),
             (
                 Some(Arc::new(StructuralChange {
@@ -353,10 +357,10 @@ where
             Relaxed,
             barrier,
         ) {
-            Ok((_, ptr)) => ptr,
-            Err((_, _)) => {
-                return Err((key, value));
-            }
+            ptr.as_ref().unwrap()
+        } else {
+            self.wait(false, barrier);
+            return Err((key, value));
         };
 
         if self.retired(Relaxed) {
@@ -372,7 +376,6 @@ where
             return Err((key, value));
         }
 
-        let new_leaves = new_leaves_ptr.as_ref().unwrap();
         if let Some(full_leaf_key) = full_leaf_key {
             let ptr = addr_of!(new_leaves.origin_leaf_key) as *mut Option<K>;
             unsafe {
@@ -417,13 +420,6 @@ where
             let result =
                 target.push_back(low_key_leaf_ptr.get_arc().unwrap(), true, Release, barrier);
             debug_assert!(result.is_ok());
-
-            // The full leaf should be removed from the linked list before being replaced with the
-            // new leaf, otherwise future iterators may see entries that are removed from the new
-            // one.
-            let deleted = target.delete_self(Release);
-            debug_assert!(deleted);
-
             full_leaf
                 .swap(
                     new_leaves.low_key_leaf.swap((None, Tag::None), Release),
@@ -454,20 +450,23 @@ where
 
             // Replace the full leaf with the high-key leaf.
             let high_key_leaf = new_leaves.high_key_leaf.swap((None, Tag::None), Relaxed).0;
-            let deleted = target.delete_self(Release);
-            debug_assert!(deleted);
             full_leaf.swap((high_key_leaf, Tag::None), Release).0
         };
-
-        if let Some(unused_leaf) = unused_leaf {
-            barrier.reclaim(unused_leaf);
-        }
 
         // Unlocks the leaf node.
         let (change, _) = self.latch.swap((None, Tag::None), Release);
         self.wait_queue.signal();
         if let Some(change) = change {
             barrier.reclaim(change);
+        }
+
+        if let Some(unused_leaf) = unused_leaf {
+            // There is a possibility that entries were removed from the replaced leaf node whereas
+            // those entries still remain in `unused_leaf`; if that happens, iterators may see
+            // the removed entries momentarily.
+            let deleted = unused_leaf.delete_self(Release);
+            debug_assert!(deleted);
+            barrier.reclaim(unused_leaf);
         }
 
         // Traverse several leaf nodes in order to cleanup deprecated links.
@@ -603,7 +602,7 @@ where
         }
     }
 
-    /// Rolls back the ongoing split operation recursively.
+    /// Rolls back the ongoing split operation.
     pub fn rollback(&self, barrier: &Barrier) {
         if let Some(change) = self.latch.load(Relaxed, barrier).as_ref() {
             let low_key_leaf_ptr = change.low_key_leaf.load(Relaxed, barrier);
@@ -626,7 +625,7 @@ where
                 let result = origin.thaw();
                 debug_assert!(result);
 
-                // Remove marks from the full leaf node.
+                // Remove the mark from the full leaf node.
                 //
                 // This unmarking has to be a release-store, otherwise it can be re-ordered
                 // before previous `delete_self` calls.
@@ -641,6 +640,23 @@ where
         if let Some(change) = change {
             barrier.reclaim(change);
         }
+    }
+
+    /// Waits for the lock on the [`LeafNode`] to be released.
+    pub(super) fn wait(&self, expect_null: bool, barrier: &Barrier) {
+        let _result = self.wait_queue.wait(|| {
+            let ptr = self.latch.load(Relaxed, barrier);
+            let is_null = ptr.is_null();
+            if expect_null && is_null {
+                // The `LeafNode` may be locked, but it does not care.
+                return Ok(());
+            }
+            if !is_null || ptr.tag() == LOCKED {
+                // The `LeafNode` is being split or locked.
+                return Err(());
+            }
+            Ok(())
+        });
     }
 
     /// Tries to coalesce empty or obsolete leaves after a successful removal of an entry.
@@ -993,18 +1009,27 @@ mod test {
                         {
                             barrier_clone.wait().await;
                             let barrier = Barrier::new();
-                            if let Ok(InsertResult::Success) =
-                                leaf_node_clone.insert(k, k, &barrier)
-                            {
-                                assert!(!inserted_clone.swap(true, Relaxed));
-                            }
+                            match leaf_node_clone.insert(k, k, &barrier) {
+                                Ok(InsertResult::Success) => {
+                                    assert!(!inserted_clone.swap(true, Relaxed));
+                                }
+                                Ok(InsertResult::Full(_, _) | InsertResult::Retired(_, _)) => {
+                                    leaf_node_clone.rollback(&barrier);
+                                }
+                                _ => (),
+                            };
                         }
                         {
                             barrier_clone.wait().await;
                             let barrier = Barrier::new();
                             for i in 0..workload_size {
                                 if i != k {
-                                    let _result = leaf_node_clone.insert(i, i, &barrier);
+                                    if let Ok(
+                                        InsertResult::Full(_, _) | InsertResult::Retired(_, _),
+                                    ) = leaf_node_clone.insert(i, i, &barrier)
+                                    {
+                                        leaf_node_clone.rollback(&barrier);
+                                    }
                                 }
                                 assert_eq!(leaf_node_clone.search(&k, &barrier).unwrap(), &k);
                             }
