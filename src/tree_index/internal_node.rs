@@ -559,19 +559,18 @@ where
             return Err((key, value));
         }
 
-        // Drops the deprecated nodes.
-        // - Still, the deprecated full leaf can be reachable by Scanners.
-        if let Some(unused_node) = unused_node {
-            // Cleans up the split operation by committing it.
-            unused_node.commit(barrier);
-            barrier.reclaim(unused_node);
-        }
-
         // Unlock the node.
         let (change, _) = self.latch.swap((None, Tag::None), Release);
         self.wait_queue.signal();
         if let Some(change) = change {
             barrier.reclaim(change);
+        }
+
+        // Drop the deprecated nodes.
+        if let Some(unused_node) = unused_node {
+            // Clean up the split operation by committing it.
+            unused_node.commit(barrier);
+            barrier.reclaim(unused_node);
         }
 
         // Traverse several leaf nodes in order to cleanup deprecated links.
@@ -605,16 +604,12 @@ where
 
     /// Rolls back the ongoing split operation recursively.
     pub fn rollback(&self, barrier: &Barrier) {
-        if let Some(change) = self.latch.load(Relaxed, barrier).as_ref() {
-            if let Some(origin) = change.origin_node.swap((None, Tag::None), Relaxed).0 {
-                origin.rollback(barrier);
-            }
-        }
-
-        // Unlocks the node after the origin node has been cleaned up.
         let (change, _) = self.latch.swap((None, Tag::None), Release);
         self.wait_queue.signal();
         if let Some(change) = change {
+            if let Some(origin) = change.origin_node.swap((None, Tag::None), Relaxed).0 {
+                origin.rollback(barrier);
+            }
             barrier.reclaim(change);
         }
     }

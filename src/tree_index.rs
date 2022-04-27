@@ -196,6 +196,9 @@ where
 
     /// Removes a key-value pair.
     ///
+    /// The removed key-value pair may be reachable via [`Range`] or [`Visitor`] momentarily if the
+    /// node that contained the key-value pair is being split.
+    ///
     /// # Examples
     ///
     /// ```
@@ -218,6 +221,9 @@ where
 
     /// Removes a key-value pair.
     ///
+    /// The removed key-value pair may be reachable via [`Range`] or [`Visitor`] momentarily if the
+    /// node that contained the key-value pair is being split.
+    ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
     ///
     /// # Examples
@@ -238,6 +244,9 @@ where
     }
 
     /// Removes a key-value pair if the given condition is met.
+    ///
+    /// The removed key-value pair may be reachable via [`Range`] or [`Visitor`] momentarily if the
+    /// node that contained the key-value pair is being split.
     ///
     /// # Examples
     ///
@@ -284,6 +293,9 @@ where
     }
 
     /// Removes a key-value pair if the given condition is met.
+    ///
+    /// The removed key-value pair may be reachable via [`Range`] or [`Visitor`] momentarily if the
+    /// node that contained the key-value pair is being split.
     ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
     ///
