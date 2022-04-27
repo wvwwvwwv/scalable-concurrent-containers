@@ -342,7 +342,7 @@ where
         full_leaf: &AtomicArc<Leaf<K, V>>,
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
-        let new_leaves_ptr = if let Ok((_, ptr)) = self.latch.compare_exchange(
+        let new_leaves = if let Ok((_, ptr)) = self.latch.compare_exchange(
             Ptr::null(),
             (
                 Some(Arc::new(StructuralChange {
@@ -357,7 +357,7 @@ where
             Relaxed,
             barrier,
         ) {
-            ptr
+            ptr.as_ref().unwrap()
         } else {
             self.wait(false, barrier);
             return Err((key, value));
@@ -376,7 +376,6 @@ where
             return Err((key, value));
         }
 
-        let new_leaves = new_leaves_ptr.as_ref().unwrap();
         if let Some(full_leaf_key) = full_leaf_key {
             let ptr = addr_of!(new_leaves.origin_leaf_key) as *mut Option<K>;
             unsafe {
@@ -603,7 +602,7 @@ where
         }
     }
 
-    /// Rolls back the ongoing split operation recursively.
+    /// Rolls back the ongoing split operation.
     pub fn rollback(&self, barrier: &Barrier) {
         if let Some(change) = self.latch.load(Relaxed, barrier).as_ref() {
             let low_key_leaf_ptr = change.low_key_leaf.load(Relaxed, barrier);
@@ -626,7 +625,7 @@ where
                 let result = origin.thaw();
                 debug_assert!(result);
 
-                // Remove marks from the full leaf node.
+                // Remove the mark from the full leaf node.
                 //
                 // This unmarking has to be a release-store, otherwise it can be re-ordered
                 // before previous `delete_self` calls.

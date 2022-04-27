@@ -546,7 +546,7 @@ where
             }
         };
 
-        // Replaces the full node with the high-key node.
+        // Replace the full node with the high-key node.
         let unused_node = full_node
             .swap(
                 (new_nodes.high_key_node.get_arc(Relaxed, barrier), Tag::None),
@@ -560,11 +560,7 @@ where
         }
 
         // Unlock the node.
-        let (change, _) = self.latch.swap((None, Tag::None), Release);
-        self.wait_queue.signal();
-        if let Some(change) = change {
-            barrier.reclaim(change);
-        }
+        self.finish_split(barrier);
 
         // Drop the deprecated nodes.
         if let Some(unused_node) = unused_node {
@@ -580,8 +576,8 @@ where
         Err((key, value))
     }
 
-    /// Finishes splitting the root node.
-    pub fn finish_root_split(&self, barrier: &Barrier) {
+    /// Finishes splitting the [`InternalNode`].
+    pub fn finish_split(&self, barrier: &Barrier) {
         let (change, _) = self.latch.swap((None, Tag::None), Release);
         self.wait_queue.signal();
         if let Some(change) = change {
@@ -589,7 +585,7 @@ where
         }
     }
 
-    /// Commits an on-going structural change.
+    /// Commits an on-going structural change recursively.
     pub fn commit(&self, barrier: &Barrier) {
         // Mark the internal node retired to prevent further locking attempts.
         let (change, _) = self.latch.swap((None, RETIRED), Release);

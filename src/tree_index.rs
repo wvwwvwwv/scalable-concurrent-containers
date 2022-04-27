@@ -29,7 +29,7 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 ///
 /// * Write-free read: read operations never modify the shared data.
 /// * Near lock-free write: write operations do not block unless a structural change is needed.
-/// * No busy waiting.
+/// * No busy waiting: each node has a wait queue to avoid spinning.
 ///
 /// ## The key statistics for [`TreeIndex`]
 ///
@@ -483,7 +483,10 @@ where
 
     /// Returns a [`Visitor`].
     ///
-    /// The returned [`Visitor`] starts scanning from the minimum key-value pair.
+    /// The returned [`Visitor`] starts scanning from the minimum key-value pair. Key-value pairs
+    /// are scanned in ascending order, and key-value pairs that have existed since the invocation
+    /// of the method are guaranteed to be visited if they are not removed. However, it is possible
+    /// to visit removed key-value pairs momentarily.
     ///
     /// # Examples
     ///
@@ -503,6 +506,10 @@ where
     }
 
     /// Returns a [`Range`] that scans keys in the given range.
+    ///
+    /// Key-value pairs in the range are scanned in ascending order, and key-value pairs that have
+    /// existed since the invocation of the method are guaranteed to be visited if they are not
+    /// removed. However, it is possible to visit removed key-value pairs momentarily.
     ///
     /// # Examples
     ///

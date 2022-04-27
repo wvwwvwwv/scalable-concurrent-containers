@@ -159,7 +159,7 @@ where
             if let Some(old_root) = root.swap((Some(new_root.clone()), Tag::None), Release).0 {
                 if let Type::Internal(internal_node) = &new_root.node {
                     old_root.commit(barrier);
-                    internal_node.finish_root_split(barrier);
+                    internal_node.finish_split(barrier);
                 }
                 barrier.reclaim(old_root);
             };
