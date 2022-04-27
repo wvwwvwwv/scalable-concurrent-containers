@@ -13,7 +13,7 @@ A collection of concurrent data structures and building blocks for concurrent pr
 - [HashIndex](#HashIndex) is a concurrent hash index allowing lock-free read and scan.
 - [TreeIndex](#TreeIndex) is a concurrent B+ tree allowing lock-free read and scan.
 
-See [Comparison](#Comparison) and [Performance](#Performance) for benchmark results.
+See [Performance](#Performance) for benchmark results.
 
 
 ## EBR
@@ -329,16 +329,6 @@ let result = future_insert.await;
 ```
 
 
-## Comparison
-
-### Performance Comparison with [DashMap](https://github.com/xacrimon/dashmap) and [flurry](https://github.com/jonhoo/flurry)
-
-- [HashMap](#HashMap) outperforms the others if the workload is highly concurrent or write-heavy.
-- The benchmark tests are based on [conc-map-bench](https://github.com/xacrimon/conc-map-bench).
-- [Results on Apple M1](https://github.com/wvwwvwwv/conc-map-bench).
-- [Results on Intel Xeon](https://github.com/wvwwvwwv/conc-map-bench/tree/Intel).
-
-
 ## Performance
 
 ### Setup
@@ -347,7 +337,7 @@ let result = future_insert.await;
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
 - RAM: 1TB
 - Rust: 1.60.0
-- SCC: 0.6.7
+- SCC: 0.6.8
 
 ### Workload
 
@@ -397,8 +387,19 @@ let result = future_insert.await;
 | MixedR  |  27.864s   | 162.571s   | 532.533s   | 630.033s   |
 | RemoveR |   9.346s   |  18.642s   |  22.832s   |  26.394s   |
 
+### Performance Comparison with [DashMap](https://github.com/xacrimon/dashmap) and [flurry](https://github.com/jonhoo/flurry)
+
+- [HashMap](#HashMap) outperforms the others if the workload is highly concurrent or write-heavy.
+- The benchmark tests are based on [conc-map-bench](https://github.com/xacrimon/conc-map-bench).
+- [Results on Apple M1](https://github.com/wvwwvwwv/conc-map-bench).
+- [Results on Intel Xeon](https://github.com/wvwwvwwv/conc-map-bench/tree/Intel).
+
 
 ## Changelog
+
+0.6.8
+
+* Fix waiting issues with asynchronous [TreeIndex](#TreeIndex) methods.
 
 0.6.7
 

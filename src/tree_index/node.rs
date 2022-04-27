@@ -104,20 +104,20 @@ where
     }
 
     /// Inserts a key-value pair.
-    pub fn insert(
+    pub fn insert<const ASYNC: bool>(
         &self,
         key: K,
         value: V,
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
         match &self.node {
-            Type::Internal(internal_node) => internal_node.insert(key, value, barrier),
-            Type::Leaf(leaf_node) => leaf_node.insert(key, value, barrier),
+            Type::Internal(internal_node) => internal_node.insert::<ASYNC>(key, value, barrier),
+            Type::Leaf(leaf_node) => leaf_node.insert::<ASYNC>(key, value, barrier),
         }
     }
 
     /// Removes an entry associated with the given key.
-    pub fn remove_if<Q, F: FnMut(&V) -> bool>(
+    pub fn remove_if<Q, F: FnMut(&V) -> bool, const ASYNC: bool>(
         &self,
         key: &Q,
         condition: &mut F,
@@ -128,19 +128,26 @@ where
         Q: Ord + ?Sized,
     {
         match &self.node {
-            Type::Internal(internal_node) => internal_node.remove_if(key, condition, barrier),
-            Type::Leaf(leaf_node) => leaf_node.remove_if(key, condition, barrier),
+            Type::Internal(internal_node) => {
+                internal_node.remove_if::<_, _, ASYNC>(key, condition, barrier)
+            }
+            Type::Leaf(leaf_node) => leaf_node.remove_if::<_, _, ASYNC>(key, condition, barrier),
         }
     }
 
     /// Splits the current root node.
-    pub fn split_root(key: K, value: V, root: &AtomicArc<Node<K, V>>, barrier: &Barrier) -> (K, V) {
+    pub fn split_root<const ASYNC: bool>(
+        key: K,
+        value: V,
+        root: &AtomicArc<Node<K, V>>,
+        barrier: &Barrier,
+    ) -> (K, V) {
         // The fact that the `TreeIndex` calls this function means that the root is full and
         // locked.
         let mut new_root: Node<K, V> = Node::new_internal_node();
         if let Type::Internal(internal_node) = &mut new_root.node {
             internal_node.unbounded_child = root.clone(Relaxed, barrier);
-            let result = internal_node.split_node(
+            let result = internal_node.split_node::<ASYNC>(
                 key,
                 value,
                 None,
@@ -175,7 +182,10 @@ where
     /// # Errors
     ///
     /// Returns an error if a conflict is detected.
-    pub fn remove_root(root: &AtomicArc<Node<K, V>>, barrier: &Barrier) -> Result<bool, ()> {
+    pub fn remove_root<const ASYNC: bool>(
+        root: &AtomicArc<Node<K, V>>,
+        barrier: &Barrier,
+    ) -> Result<bool, ()> {
         let root_ptr = root.load(Acquire, barrier);
         if let Some(root_ref) = root_ptr.as_ref() {
             let mut internal_node_locker = None;
@@ -185,14 +195,14 @@ where
                     if let Some(locker) = internal_node::Locker::try_lock(internal_node, barrier) {
                         internal_node_locker.replace(locker);
                     } else {
-                        internal_node.wait(barrier);
+                        internal_node.wait::<ASYNC>(barrier);
                     }
                 }
                 Type::Leaf(leaf_node) => {
                     if let Some(locker) = leaf_node::Locker::try_lock(leaf_node, barrier) {
                         leaf_node_locker.replace(locker);
                     } else {
-                        leaf_node.wait(false, barrier);
+                        leaf_node.wait::<ASYNC>(false, barrier);
                     }
                 }
             };

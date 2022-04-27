@@ -86,7 +86,7 @@ where
         loop {
             let barrier = Barrier::new();
             if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
-                match root_ref.insert(key, value, &barrier) {
+                match root_ref.insert::<false>(key, value, &barrier) {
                     Ok(r) => match r {
                         InsertResult::Success => return Ok(()),
                         InsertResult::Frozen(k, v) => {
@@ -95,7 +95,7 @@ where
                         }
                         InsertResult::Duplicate(k, v) => return Err((k, v)),
                         InsertResult::Full(k, v) => {
-                            let (k, v) = Node::split_root(k, v, &self.root, &barrier);
+                            let (k, v) = Node::split_root::<false>(k, v, &self.root, &barrier);
                             key = k;
                             value = v;
                             continue;
@@ -103,7 +103,7 @@ where
                         InsertResult::Retired(k, v) => {
                             key = k;
                             value = v;
-                            let _result = Node::remove_root(&self.root, &barrier);
+                            let _result = Node::remove_root::<false>(&self.root, &barrier);
                         }
                     },
                     Err((k, v)) => {
@@ -146,7 +146,7 @@ where
             let need_await = {
                 let barrier = Barrier::new();
                 if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
-                    match root_ref.insert(key, value, &barrier) {
+                    match root_ref.insert::<true>(key, value, &barrier) {
                         Ok(r) => match r {
                             InsertResult::Success => return Ok(()),
                             InsertResult::Frozen(k, v) => {
@@ -156,7 +156,7 @@ where
                             }
                             InsertResult::Duplicate(k, v) => return Err((k, v)),
                             InsertResult::Full(k, v) => {
-                                let (k, v) = Node::split_root(k, v, &self.root, &barrier);
+                                let (k, v) = Node::split_root::<true>(k, v, &self.root, &barrier);
                                 key = k;
                                 value = v;
                                 continue;
@@ -164,7 +164,7 @@ where
                             InsertResult::Retired(k, v) => {
                                 key = k;
                                 value = v;
-                                !matches!(Node::remove_root(&self.root, &barrier), Ok(true))
+                                !matches!(Node::remove_root::<true>(&self.root, &barrier), Ok(true))
                             }
                         },
                         Err((k, v)) => {
@@ -268,12 +268,13 @@ where
         loop {
             let barrier = Barrier::new();
             if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
-                match root_ref.remove_if(key_ref, &mut condition, &barrier) {
+                match root_ref.remove_if::<_, _, false>(key_ref, &mut condition, &barrier) {
                     Ok(r) => match r {
                         RemoveResult::Success => return true,
                         RemoveResult::Fail => return has_been_removed,
                         RemoveResult::Retired => {
-                            if matches!(Node::remove_root(&self.root, &barrier), Ok(true)) {
+                            if matches!(Node::remove_root::<false>(&self.root, &barrier), Ok(true))
+                            {
                                 return true;
                             }
                             has_been_removed = true;
@@ -321,12 +322,15 @@ where
             let need_await = {
                 let barrier = Barrier::new();
                 if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
-                    match root_ref.remove_if(key_ref, &mut condition, &barrier) {
+                    match root_ref.remove_if::<_, _, true>(key_ref, &mut condition, &barrier) {
                         Ok(r) => match r {
                             RemoveResult::Success => return true,
                             RemoveResult::Fail => return has_been_removed,
                             RemoveResult::Retired => {
-                                if matches!(Node::remove_root(&self.root, &barrier), Ok(true)) {
+                                if matches!(
+                                    Node::remove_root::<true>(&self.root, &barrier),
+                                    Ok(true)
+                                ) {
                                     return true;
                                 }
                                 has_been_removed = true;
