@@ -389,7 +389,12 @@ where
 
         // Distribute entries to two leaves after make the target retired.
         let result = target.freeze_and_distribute(&mut low_key_leaf_arc, &mut high_key_leaf_arc);
-        debug_assert!(result);
+        if !result {
+            let (change, _) = self.latch.swap((None, Tag::None), Relaxed);
+            self.wait_queue.signal();
+            drop(change);
+            return Err((key, value));
+        } // TODO: assert!(result);
 
         if let Some(low_key_leaf) = low_key_leaf_arc.take() {
             new_leaves

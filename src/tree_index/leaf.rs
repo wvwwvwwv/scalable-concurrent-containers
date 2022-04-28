@@ -470,6 +470,8 @@ where
     }
 
     /// Freezes the [`Leaf`] temporarily.
+    ///
+    /// A frozen [`Leaf`] cannot store more entries, and on-going insertion is cancelled.
     pub fn freeze(&self) -> bool {
         self.metadata
             .fetch_update(AcqRel, Acquire, |p| {
@@ -483,8 +485,6 @@ where
     }
 
     /// Freezes the [`Leaf`] and distribute entries to two new leaves.
-    ///
-    /// A frozen [`Leaf`] cannot store more entries, and on-going insertion is cancelled.
     pub fn freeze_and_distribute(
         &self,
         low_key_leaf: &mut Option<Arc<Leaf<K, V>>>,
