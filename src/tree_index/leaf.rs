@@ -469,6 +469,19 @@ where
         (usize::MAX, ptr::null())
     }
 
+    /// Freezes the [`Leaf`] temporarily.
+    pub fn freeze(&self) -> bool {
+        self.metadata
+            .fetch_update(AcqRel, Acquire, |p| {
+                if Dimension::frozen(p) {
+                    None
+                } else {
+                    Some(Dimension::freeze(p))
+                }
+            })
+            .is_ok()
+    }
+
     /// Freezes the [`Leaf`] and distribute entries to two new leaves.
     ///
     /// A frozen [`Leaf`] cannot store more entries, and on-going insertion is cancelled.

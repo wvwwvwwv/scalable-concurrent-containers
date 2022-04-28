@@ -397,6 +397,10 @@ let result = future_insert.await;
 
 ## Changelog
 
+0.6.9
+
+* Fix [#71](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/71).
+
 0.6.8
 
 * Fix wait queue performance issues with asynchronous [TreeIndex](#TreeIndex) methods.

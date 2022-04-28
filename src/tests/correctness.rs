@@ -766,7 +766,17 @@ mod treeindex_test {
                         assert_eq!(entry, (&(first_key + 3), &(first_key + 3)));
                     }
 
+                    let key_at_halfway = first_key + range / 2;
                     for key in (first_key + 1)..(first_key + range) {
+                        if key == key_at_halfway {
+                            let ebr_barrier = ebr::Barrier::new();
+                            let mut range_scanner =
+                                tree_copied.range((first_key + 1).., &ebr_barrier);
+                            let entry = range_scanner.next().unwrap();
+                            assert_eq!(entry, (&key_at_halfway, &key_at_halfway));
+                            let entry = range_scanner.next().unwrap();
+                            assert_eq!(entry, (&(key_at_halfway + 1), &(key_at_halfway + 1)));
+                        }
                         assert!(tree_copied.remove(&key));
                         assert!(!tree_copied.remove(&key));
                         assert!(tree_copied.read(&(first_key + 1), |_, _| ()).is_none());

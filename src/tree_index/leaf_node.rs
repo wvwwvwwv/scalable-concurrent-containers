@@ -412,7 +412,49 @@ where
         // having been `scanned`.
         let low_key_leaf_ptr = new_leaves.low_key_leaf.load(Relaxed, barrier);
         let high_key_leaf_ptr = new_leaves.high_key_leaf.load(Relaxed, barrier);
-        let unused_leaf = if high_key_leaf_ptr.is_null() {
+        let unused_leaf = if let Some(high_key_leaf) = high_key_leaf_ptr.as_ref() {
+            // From here, `Scanners` can reach the new leaves.
+            let result =
+                target.push_back(high_key_leaf_ptr.get_arc().unwrap(), true, Release, barrier);
+            debug_assert!(result.is_ok());
+            let result =
+                target.push_back(low_key_leaf_ptr.get_arc().unwrap(), true, Release, barrier);
+            debug_assert!(result.is_ok());
+
+            // Takes the max key value stored in the low key leaf as the leaf key.
+            let low_key_leaf = low_key_leaf_ptr.as_ref().unwrap();
+            let max_key = low_key_leaf.max().unwrap().0;
+
+            // Need to freeze the leaf before trying to make it reachable.
+            let frozen = low_key_leaf.freeze();
+            debug_assert!(frozen);
+
+            match self.children.insert(
+                max_key.clone(),
+                new_leaves.low_key_leaf.clone(Relaxed, barrier),
+            ) {
+                InsertResult::Success => (),
+                InsertResult::Duplicate(..) | InsertResult::Frozen(..) => unreachable!(),
+                InsertResult::Full(_, _) | InsertResult::Retired(_, _) => {
+                    // Need to freeze the other leaf.
+                    let frozen = high_key_leaf.freeze();
+                    debug_assert!(frozen);
+                    return Ok(InsertResult::Full(key, value));
+                }
+            };
+
+            // Mark the full leaf deleted before making the new one reachable and updatable.
+            let delete = target.delete_self(Release);
+            debug_assert!(delete);
+
+            // Unfreeze the leaf.
+            let unfrozen = low_key_leaf.thaw();
+            debug_assert!(unfrozen);
+
+            // Replace the full leaf with the high-key leaf.
+            let high_key_leaf = new_leaves.high_key_leaf.swap((None, Tag::None), Relaxed).0;
+            full_leaf.swap((high_key_leaf, Tag::None), Release).0
+        } else {
             // From here, `Scanners` can reach the new leaf.
             //
             // The full leaf is marked so that readers know that the next leaves may contain
@@ -435,35 +477,6 @@ where
                     Release,
                 )
                 .0
-        } else {
-            // From here, `Scanners` can reach the new leaves.
-            let result =
-                target.push_back(high_key_leaf_ptr.get_arc().unwrap(), true, Release, barrier);
-            debug_assert!(result.is_ok());
-            let result =
-                target.push_back(low_key_leaf_ptr.get_arc().unwrap(), true, Release, barrier);
-            debug_assert!(result.is_ok());
-
-            // Takes the max key value stored in the low key leaf as the leaf key.
-            let max_key = low_key_leaf_ptr.as_ref().unwrap().max().unwrap().0;
-            match self.children.insert(
-                max_key.clone(),
-                new_leaves.low_key_leaf.clone(Relaxed, barrier),
-            ) {
-                InsertResult::Success => (),
-                InsertResult::Duplicate(..) | InsertResult::Frozen(..) => unreachable!(),
-                InsertResult::Full(_, _) | InsertResult::Retired(_, _) => {
-                    return Ok(InsertResult::Full(key, value))
-                }
-            };
-
-            // Mark the full leaf deleted before making the new one reachable and updatable.
-            let delete = target.delete_self(Release);
-            debug_assert!(delete);
-
-            // Replace the full leaf with the high-key leaf.
-            let high_key_leaf = new_leaves.high_key_leaf.swap((None, Tag::None), Relaxed).0;
-            full_leaf.swap((high_key_leaf, Tag::None), Release).0
         };
 
         // Unlocks the leaf node.
@@ -598,6 +611,20 @@ where
 
     /// Commits an on-going structural change.
     pub fn commit(&self, barrier: &Barrier) {
+        // Unfreeze both leaves.
+        if let Some(change) = self.latch.load(Relaxed, barrier).as_ref() {
+            let low_key_leaf = change.low_key_leaf.load(Relaxed, barrier).as_ref().unwrap();
+            let high_key_leaf = change
+                .high_key_leaf
+                .load(Relaxed, barrier)
+                .as_ref()
+                .unwrap();
+            let unfrozen = low_key_leaf.thaw();
+            debug_assert!(unfrozen);
+            let unfrozen = high_key_leaf.thaw();
+            debug_assert!(unfrozen);
+        }
+
         // Mark the leaf node retired to prevent further locking attempts.
         let (change, _) = self.latch.swap((None, RETIRED), Release);
         self.wait_queue.signal();
@@ -613,25 +640,25 @@ where
     /// Rolls back the ongoing split operation.
     pub fn rollback(&self, barrier: &Barrier) {
         if let Some(change) = self.latch.load(Relaxed, barrier).as_ref() {
-            let low_key_leaf_ptr = change.low_key_leaf.load(Relaxed, barrier);
-            let high_key_leaf_ptr = change.high_key_leaf.load(Relaxed, barrier);
+            let low_key_leaf = change.low_key_leaf.load(Relaxed, barrier).as_ref().unwrap();
+            let high_key_leaf = change
+                .high_key_leaf
+                .load(Relaxed, barrier)
+                .as_ref()
+                .unwrap();
 
             // Roll back the linked list state.
             //
             // `high_key_leaf` must be deleted first in order for `Scanners` not to omit entries.
-            if let Some(leaf_ref) = high_key_leaf_ptr.as_ref() {
-                let deleted = leaf_ref.delete_self(Relaxed);
-                debug_assert!(deleted);
-            }
-            if let Some(leaf_ref) = low_key_leaf_ptr.as_ref() {
-                let deleted = leaf_ref.delete_self(Release);
-                debug_assert!(deleted);
-            }
+            let deleted = high_key_leaf.delete_self(Relaxed);
+            debug_assert!(deleted);
+            let deleted = low_key_leaf.delete_self(Relaxed);
+            debug_assert!(deleted);
 
             if let Some(origin) = change.origin_leaf.swap((None, Tag::None), Relaxed).0 {
-                // Thaw the [`Leaf`].
-                let result = origin.thaw();
-                debug_assert!(result);
+                // Unfreeze the origin.
+                let unfrozen = origin.thaw();
+                debug_assert!(unfrozen);
 
                 // Remove the mark from the full leaf node.
                 //
@@ -642,7 +669,7 @@ where
             }
         }
 
-        // Unlocks the leaf node.
+        // Unlock the leaf node.
         let (change, _) = self.latch.swap((None, Tag::None), Release);
         self.wait_queue.signal();
         if let Some(change) = change {
