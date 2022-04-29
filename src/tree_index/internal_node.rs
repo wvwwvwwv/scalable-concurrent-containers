@@ -933,7 +933,7 @@ mod test {
                                         assert!(removed);
                                         break;
                                     }
-                                    RemoveResult::Retired => unreachable!(),
+                                    RemoveResult::Frozen | RemoveResult::Retired => unreachable!(),
                                 },
                                 Err(r) => removed |= r,
                             }

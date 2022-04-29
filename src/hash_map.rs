@@ -12,7 +12,7 @@ use std::hash::{BuildHasher, Hash};
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 use std::sync::atomic::{AtomicU8, AtomicUsize};
 
-/// Scalable concurrent hash map data structure.
+/// Scalable concurrent hash map.
 ///
 /// [`HashMap`] is a concurrent hash map data structure that is targeted at a highly concurrent
 /// workload. The use of an epoch-based reclamation technique enables the data structure to
@@ -24,13 +24,14 @@ use std::sync::atomic::{AtomicU8, AtomicUsize};
 /// ## The key features of [`HashMap`]
 ///
 /// * Non-sharded: the data is stored in a single array of key-value pairs.
-/// * Automatic resizing: it automatically grows or shrinks.
 /// * Non-blocking resizing: resizing does not block other threads or tasks.
+/// * Automatic resizing: it automatically grows or shrinks.
 /// * Incremental resizing: each access to the data structure is mandated to rehash a fixed
 ///   number of key-value pairs.
 /// * Optimized resizing: key-value pairs managed by a single `Cell` are guaranteed to be
 ///   relocated to consecutive `Cell` instances.
 /// * No busy waiting: the customized mutex never spins.
+/// * Linearlizability: [`HashMap`] methods are linearlizable.
 ///
 /// ## The key statistics for [`HashMap`]
 ///

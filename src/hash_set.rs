@@ -7,7 +7,7 @@ use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash};
 
-/// Scalable concurrent hash set data structure.
+/// Scalable concurrent hash set.
 ///
 /// [`HashSet`] is a concurrent hash set based on [`HashMap`]. It internally uses a [`HashMap`]
 /// as its key container, thus sharing all the characteristics of [`HashMap`].

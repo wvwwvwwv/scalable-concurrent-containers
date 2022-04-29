@@ -8,6 +8,7 @@ use crate::LinkedList;
 use std::borrow::Borrow;
 use std::cmp::Ordering::{Equal, Greater, Less};
 use std::ptr::addr_of;
+use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{self, AcqRel, Acquire, Relaxed, Release};
 
 /// [`Tag::First`] indicates the corresponding node has retired.
@@ -291,13 +292,12 @@ where
                     if self.children.validate(metadata) {
                         // Data race resolution - see `LeafNode::search`.
                         let result = child.remove_if(key, condition);
-                        if child.frozen() {
+                        if result == RemoveResult::Frozen {
                             // When a `Leaf` is frozen, its entries may be being copied to new
                             // `Leaves`.
                             self.wait::<ASYNC>(true, barrier);
-                            return Err(result != RemoveResult::Fail);
-                        }
-                        if result == RemoveResult::Retired {
+                            return Err(false);
+                        } else if result == RemoveResult::Retired {
                             return Ok(self.coalesce(key, barrier));
                         }
                         return Ok(result);
@@ -314,11 +314,10 @@ where
                     continue;
                 }
                 let result = unbounded.remove_if(key, condition);
-                if unbounded.frozen() {
+                if result == RemoveResult::Frozen {
                     self.wait::<ASYNC>(true, barrier);
-                    return Err(result != RemoveResult::Fail);
-                }
-                if result == RemoveResult::Retired {
+                    return Err(false);
+                } else if result == RemoveResult::Retired {
                     return Ok(self.coalesce(key, barrier));
                 }
                 return Ok(result);
@@ -350,6 +349,8 @@ where
                     origin_leaf: full_leaf.clone(Relaxed, barrier),
                     low_key_leaf: AtomicArc::null(),
                     high_key_leaf: AtomicArc::null(),
+                    low_key_leaf_node: AtomicPtr::default(),
+                    high_key_leaf_node: AtomicPtr::default(),
                 })),
                 Tag::None,
             ),
@@ -389,12 +390,7 @@ where
 
         // Distribute entries to two leaves after make the target retired.
         let result = target.freeze_and_distribute(&mut low_key_leaf_arc, &mut high_key_leaf_arc);
-        if !result {
-            let (change, _) = self.latch.swap((None, Tag::None), Relaxed);
-            self.wait_queue.signal();
-            drop(change);
-            return Err((key, value));
-        } // TODO: assert!(result);
+        debug_assert!(result);
 
         if let Some(low_key_leaf) = low_key_leaf_arc.take() {
             new_leaves
@@ -449,6 +445,10 @@ where
             };
 
             // Mark the full leaf deleted before making the new one reachable and updatable.
+            //
+            // If the order is reversed, there emerges a possibility that entries were removed from
+            // the replaced leaf node whereas those entries still remain in `unused_leaf`; if that
+            // happens, iterators may see the removed entries momentarily.
             let delete = target.delete_self(Release);
             debug_assert!(delete);
 
@@ -469,10 +469,6 @@ where
             debug_assert!(result.is_ok());
 
             // Mark the full leaf deleted before making the new one reachable and updatable.
-            //
-            // There is a possibility that entries were removed from the replaced leaf node whereas
-            // those entries still remain in `unused_leaf`; if that happens, iterators may see
-            // the removed entries momentarily.
             let deleted = target.delete_self(Release);
             debug_assert!(deleted);
 
@@ -510,40 +506,44 @@ where
         barrier: &Barrier,
     ) -> Option<K> {
         let mut middle_key = None;
+        let new_leaves = self.latch.load(Relaxed, barrier).as_ref().unwrap();
 
-        debug_assert!(!self.latch.load(Relaxed, barrier).is_null());
-        let new_leaves_ref = self.latch.load(Relaxed, barrier).as_ref().unwrap();
+        low_key_leaf_node.latch.swap((None, LOCKED), Relaxed);
+        high_key_leaf_node.latch.swap((None, LOCKED), Relaxed);
+
+        new_leaves
+            .low_key_leaf_node
+            .swap(addr_of!(*low_key_leaf_node) as *mut _, Relaxed);
+        new_leaves
+            .high_key_leaf_node
+            .swap(addr_of!(*high_key_leaf_node) as *mut _, Relaxed);
 
         // Builds a list of valid leaves
         #[allow(clippy::type_complexity)]
         let mut entry_array: [Option<(Option<&K>, AtomicArc<Leaf<K, V>>)>;
             DIMENSION.num_entries + 2] = Default::default();
         let mut num_entries = 0;
-        let low_key_leaf_ref = new_leaves_ref
+        let low_key_leaf_ref = new_leaves
             .low_key_leaf
             .load(Relaxed, barrier)
             .as_ref()
             .unwrap();
         let middle_key_ref = low_key_leaf_ref.max().unwrap().0;
         for entry in Scanner::new(&self.children) {
-            if new_leaves_ref
+            if new_leaves
                 .origin_leaf_key
                 .as_ref()
                 .map_or_else(|| false, |key| entry.0.borrow() == key)
             {
                 entry_array[num_entries].replace((
                     Some(middle_key_ref),
-                    new_leaves_ref.low_key_leaf.clone(Relaxed, barrier),
+                    new_leaves.low_key_leaf.clone(Relaxed, barrier),
                 ));
                 num_entries += 1;
-                if !new_leaves_ref
-                    .high_key_leaf
-                    .load(Relaxed, barrier)
-                    .is_null()
-                {
+                if !new_leaves.high_key_leaf.load(Relaxed, barrier).is_null() {
                     entry_array[num_entries].replace((
                         Some(entry.0),
-                        new_leaves_ref.high_key_leaf.clone(Relaxed, barrier),
+                        new_leaves.high_key_leaf.clone(Relaxed, barrier),
                     ));
                     num_entries += 1;
                 }
@@ -553,7 +553,7 @@ where
             }
         }
         #[allow(clippy::branches_sharing_code)]
-        if new_leaves_ref.origin_leaf_key.is_some() {
+        if new_leaves.origin_leaf_key.is_some() {
             // If the origin is a bounded node, assign the unbounded leaf as the high key node's
             // unbounded.
             entry_array[num_entries].replace((None, self.unbounded_child.clone(Relaxed, barrier)));
@@ -563,16 +563,12 @@ where
             // unbounded.
             entry_array[num_entries].replace((
                 Some(middle_key_ref),
-                new_leaves_ref.low_key_leaf.clone(Relaxed, barrier),
+                new_leaves.low_key_leaf.clone(Relaxed, barrier),
             ));
             num_entries += 1;
-            if !new_leaves_ref
-                .high_key_leaf
-                .load(Relaxed, barrier)
-                .is_null()
-            {
+            if !new_leaves.high_key_leaf.load(Relaxed, barrier).is_null() {
                 entry_array[num_entries]
-                    .replace((None, new_leaves_ref.high_key_leaf.clone(Relaxed, barrier)));
+                    .replace((None, new_leaves.high_key_leaf.clone(Relaxed, barrier)));
                 num_entries += 1;
             }
         }
@@ -618,6 +614,11 @@ where
     pub fn commit(&self, barrier: &Barrier) {
         // Unfreeze both leaves.
         if let Some(change) = self.latch.load(Relaxed, barrier).as_ref() {
+            if let Some(origin_leaf) = change.origin_leaf.swap((None, Tag::None), Relaxed).0 {
+                // Make the origin leaf unreachable before making the new leaves updatable.
+                origin_leaf.delete_self(Relaxed);
+                barrier.reclaim(origin_leaf);
+            }
             let low_key_leaf = change.low_key_leaf.load(Relaxed, barrier).as_ref().unwrap();
             let high_key_leaf = change
                 .high_key_leaf
@@ -628,17 +629,29 @@ where
             debug_assert!(unfrozen);
             let unfrozen = high_key_leaf.thaw();
             debug_assert!(unfrozen);
+
+            if let Some(low_key_leaf_node) =
+                unsafe { change.low_key_leaf_node.load(Relaxed).as_ref() }
+            {
+                let locked = low_key_leaf_node.latch.swap((None, Tag::None), Relaxed).1;
+                debug_assert_eq!(locked, LOCKED);
+                low_key_leaf_node.wait_queue.signal();
+            }
+
+            if let Some(high_key_leaf_node) =
+                unsafe { change.high_key_leaf_node.load(Relaxed).as_ref() }
+            {
+                let locked = high_key_leaf_node.latch.swap((None, Tag::None), Relaxed).1;
+                debug_assert_eq!(locked, LOCKED);
+                high_key_leaf_node.wait_queue.signal();
+            }
         }
 
         // Mark the leaf node retired to prevent further locking attempts.
         let (change, _) = self.latch.swap((None, RETIRED), Release);
         self.wait_queue.signal();
         if let Some(change) = change {
-            if let Some(obsolete_leaf) = change.origin_leaf.swap((None, Tag::None), Relaxed).0 {
-                // Makes the leaf unreachable before dropping it.
-                obsolete_leaf.delete_self(Relaxed);
-                barrier.reclaim(obsolete_leaf);
-            }
+            barrier.reclaim(change);
         }
     }
 
@@ -660,16 +673,13 @@ where
             let deleted = low_key_leaf.delete_self(Relaxed);
             debug_assert!(deleted);
 
-            if let Some(origin) = change.origin_leaf.swap((None, Tag::None), Relaxed).0 {
+            if let Some(origin_leaf) = change.origin_leaf.swap((None, Tag::None), Relaxed).0 {
                 // Unfreeze the origin.
-                let unfrozen = origin.thaw();
+                let unfrozen = origin_leaf.thaw();
                 debug_assert!(unfrozen);
 
                 // Remove the mark from the full leaf node.
-                //
-                // This unmarking has to be a release-store, otherwise it can be re-ordered
-                // before previous `delete_self` calls.
-                let unmarked = origin.unmark(Release);
+                let unmarked = origin_leaf.unmark(Release);
                 debug_assert!(unmarked);
             }
         }
@@ -849,6 +859,8 @@ where
     origin_leaf: AtomicArc<Leaf<K, V>>,
     low_key_leaf: AtomicArc<Leaf<K, V>>,
     high_key_leaf: AtomicArc<Leaf<K, V>>,
+    low_key_leaf_node: AtomicPtr<LeafNode<K, V>>,
+    high_key_leaf_node: AtomicPtr<LeafNode<K, V>>,
 }
 
 #[cfg(test)]
@@ -1014,7 +1026,7 @@ mod test {
                                         assert!(removed);
                                         break;
                                     }
-                                    RemoveResult::Retired => unreachable!(),
+                                    RemoveResult::Frozen | RemoveResult::Retired => unreachable!(),
                                 },
                                 Err(r) => removed |= r,
                             }

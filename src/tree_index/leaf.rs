@@ -39,6 +39,9 @@ pub enum RemoveResult {
     /// Remove failed.
     Fail,
 
+    /// The [`Leaf`] is frozen.
+    Frozen,
+
     /// Remove succeeded and the [`Leaf`] has retired without usable entries left.
     Retired,
 }
@@ -181,11 +184,6 @@ where
         }
     }
 
-    /// Returns `true` if the [`Leaf`] is frozen.
-    pub fn frozen(&self) -> bool {
-        Dimension::frozen(self.metadata.load(Relaxed))
-    }
-
     /// Thaws the [`Leaf`].
     pub fn thaw(&self) -> bool {
         self.metadata
@@ -272,6 +270,9 @@ where
         Q: Ord + ?Sized,
     {
         let mut metadata = self.metadata.load(Acquire);
+        if Dimension::frozen(metadata) {
+            return RemoveResult::Frozen;
+        }
         let mut max_min_rank = 0;
         let mut min_max_rank = DIMENSION.removed_state();
         for i in 0..DIMENSION.num_entries {
@@ -329,6 +330,9 @@ where
                                 Err(actual) => {
                                     if DIMENSION.state(actual, i) == DIMENSION.removed_state() {
                                         return RemoveResult::Fail;
+                                    }
+                                    if Dimension::frozen(actual) {
+                                        return RemoveResult::Frozen;
                                     }
                                     metadata = actual;
                                 }
@@ -915,13 +919,14 @@ mod test {
         assert_eq!(leaf1.as_ref().and_then(|l| l.search(&17)), Some(&11));
         assert!(leaf2.is_none());
         assert!(matches!(leaf.insert(1, 7), InsertResult::Frozen(..)));
-        assert_eq!(leaf.remove_if(&17, &mut |_| true), RemoveResult::Success);
+        assert_eq!(leaf.remove_if(&17, &mut |_| true), RemoveResult::Frozen);
         assert!(matches!(leaf.insert(3, 5), InsertResult::Frozen(..)));
 
         assert!(leaf.thaw());
         assert!(matches!(leaf.insert(1, 7), InsertResult::Success));
 
         assert_eq!(leaf.remove_if(&1, &mut |_| true), RemoveResult::Success);
+        assert_eq!(leaf.remove_if(&17, &mut |_| true), RemoveResult::Success);
         assert_eq!(leaf.remove_if(&11, &mut |_| true), RemoveResult::Retired);
 
         assert!(matches!(leaf.insert(5, 3), InsertResult::Retired(..)));
@@ -1029,6 +1034,7 @@ mod test {
                     match leaf_clone.remove_if(&t, &mut |_| true) {
                         RemoveResult::Success => assert!(inserted),
                         RemoveResult::Fail => assert!(!inserted),
+                        RemoveResult::Frozen => unreachable!(),
                         RemoveResult::Retired => {
                             assert!(inserted);
                             assert_eq!(retire_clone.swap(1, Relaxed), 0);

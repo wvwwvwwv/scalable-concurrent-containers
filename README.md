@@ -4,7 +4,7 @@
 ![Crates.io](https://img.shields.io/crates/l/scc?style=flat-square)
 ![GitHub Workflow Status](https://img.shields.io/github/workflow/status/wvwwvwwv/scalable-concurrent-containers/SCC?style=flat-square)
 
-A collection of concurrent data structures and building blocks for concurrent programming.
+A collection of high performance concurrent data structures and utilities for concurrent programming.
 
 - [ebr](#EBR) implements epoch-based reclamation.
 - [LinkedList](#LinkedList) is a type trait implementing a wait-free concurrent singly linked list.
@@ -13,7 +13,7 @@ A collection of concurrent data structures and building blocks for concurrent pr
 - [HashIndex](#HashIndex) is a concurrent hash index allowing lock-free read and scan.
 - [TreeIndex](#TreeIndex) is a concurrent B+ tree allowing lock-free read and scan.
 
-See [Performance](#Performance) for benchmark results.
+See [Performance](#Performance) for benchmark results and comparison with other concurrent hash maps.
 
 
 ## EBR
@@ -121,7 +121,7 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 ## HashMap
 
-[HashMap](#HashMap) is a scalable in-memory unique key-value container that is targeted at highly concurrent heavy workloads. It applies [EBR](#EBR) to its entry array management, thus enabling it to avoid container-level locking and data sharding.
+[HashMap](#HashMap) is a scalable in-memory unique key-value container that is targeted at highly concurrent write-heavy workloads. It applies [EBR](#EBR) to its hash table management in order to implement non-blocking resizing fine-granular locking; *it is not a lock-free data structure, and each access to a single key is serialized by a bucket-level mutex*.
 
 ### Examples
 
@@ -331,6 +331,8 @@ let result = future_insert.await;
 
 ## Performance
 
+**Interpret the results cautiously as benchmarks do not represent real world workloads.**
+
 ### Setup
 
 - OS: SUSE Linux Enterprise Server 15 SP2
@@ -387,12 +389,13 @@ let result = future_insert.await;
 | MixedR  |  27.864s   | 162.571s   | 532.533s   | 630.033s   |
 | RemoveR |   9.346s   |  18.642s   |  22.832s   |  26.394s   |
 
-### Performance Comparison with [DashMap](https://github.com/xacrimon/dashmap) and [flurry](https://github.com/jonhoo/flurry)
+### [HashMap](#HashMap) Performance Comparison with [DashMap](https://github.com/xacrimon/dashmap) and [flurry](https://github.com/jonhoo/flurry)
 
-- [HashMap](#HashMap) outperforms the others if the workload is highly concurrent or write-heavy.
-- The benchmark tests are based on [conc-map-bench](https://github.com/xacrimon/conc-map-bench).
 - [Results on Apple M1](https://github.com/wvwwvwwv/conc-map-bench).
 - [Results on Intel Xeon](https://github.com/wvwwvwwv/conc-map-bench/tree/Intel).
+- *Interpret the results cautiously as benchmarks do not represent real world workloads.*
+- [HashMap](#HashMap) outperforms the others *[according to the benchmark test](https://github.com/xacrimon/conc-map-bench)* under highly concurrent or write-heavy workloads.
+- The benchmark test is forked from [conc-map-bench](https://github.com/xacrimon/conc-map-bench).
 
 
 ## Changelog

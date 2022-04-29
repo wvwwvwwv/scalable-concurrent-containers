@@ -13,11 +13,16 @@ use std::iter::FusedIterator;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering::Acquire;
 
-/// Scalable concurrent hash index data structure.
+/// Scalable concurrent hash index.
 ///
 /// [`HashIndex`] is a concurrent hash index data structure that is optimized for read
 /// operations. The key characteristics of [`HashIndex`] are similar to that of
 /// [`HashMap`](super::HashMap).
+///
+/// ## Notes
+///
+/// [`HashIndex`] methods are linearlizable, however [`Visitor`] methods are not; [`Visitor`]
+/// is only guaranteed to observe events happened before the first call to [`Iterator::next`].
 ///
 /// ## The key differences between [`HashIndex`] and [`HashMap`](crate::HashMap).
 ///

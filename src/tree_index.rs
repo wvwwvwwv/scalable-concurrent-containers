@@ -24,6 +24,12 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 /// as read, scan, are neither blocked nor interrupted by other threads. Write operations, such as
 /// insert, remove, do not block if they do not entail structural changes to the tree.
 ///
+/// ## Notes
+///
+/// [`TreeIndex`] methods are linearlizable, however its iterator methods are not; [`Visitor`] and
+/// [`Range`] are only guaranteed to observe events happened before the first call to
+/// [`Iterator::next`].
+///
 /// ## The key features of [`TreeIndex`]
 ///
 /// * Lock-free-read: read and scan operations do not modify shared data and are never blocked.
@@ -195,9 +201,6 @@ where
 
     /// Removes a key-value pair.
     ///
-    /// The removed key-value pair may be reachable via [`Range`] or [`Visitor`] momentarily if the
-    /// node that contained the key-value pair is being split.
-    ///
     /// # Examples
     ///
     /// ```
@@ -220,9 +223,6 @@ where
 
     /// Removes a key-value pair.
     ///
-    /// The removed key-value pair may be reachable via [`Range`] or [`Visitor`] momentarily if the
-    /// node that contained the key-value pair is being split.
-    ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
     ///
     /// # Examples
@@ -243,9 +243,6 @@ where
     }
 
     /// Removes a key-value pair if the given condition is met.
-    ///
-    /// The removed key-value pair may be reachable via [`Range`] or [`Visitor`] momentarily if the
-    /// node that contained the key-value pair is being split.
     ///
     /// # Examples
     ///
@@ -272,6 +269,7 @@ where
                     Ok(r) => match r {
                         RemoveResult::Success => return true,
                         RemoveResult::Fail => return has_been_removed,
+                        RemoveResult::Frozen => (),
                         RemoveResult::Retired => {
                             if matches!(Node::remove_root::<false>(&self.root, &barrier), Ok(true))
                             {
@@ -293,9 +291,6 @@ where
     }
 
     /// Removes a key-value pair if the given condition is met.
-    ///
-    /// The removed key-value pair may be reachable via [`Range`] or [`Visitor`] momentarily if the
-    /// node that contained the key-value pair is being split.
     ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
     ///
@@ -319,13 +314,14 @@ where
     {
         let mut has_been_removed = false;
         loop {
-            let need_await = {
+            {
                 let barrier = Barrier::new();
                 if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
                     match root_ref.remove_if::<_, _, true>(key_ref, &mut condition, &barrier) {
                         Ok(r) => match r {
                             RemoveResult::Success => return true,
                             RemoveResult::Fail => return has_been_removed,
+                            RemoveResult::Frozen => (),
                             RemoveResult::Retired => {
                                 if matches!(
                                     Node::remove_root::<true>(&self.root, &barrier),
@@ -334,24 +330,20 @@ where
                                     return true;
                                 }
                                 has_been_removed = true;
-                                true
                             }
                         },
                         Err(removed) => {
                             if removed {
                                 has_been_removed = true;
                             }
-                            true
                         }
                     }
                 } else {
                     return has_been_removed;
                 }
-            };
-
-            if need_await {
-                async_yield::async_yield().await;
             }
+
+            async_yield::async_yield().await;
         }
     }
 
