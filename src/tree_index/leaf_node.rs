@@ -699,30 +699,42 @@ where
     }
 
     /// Cleans up logically deleted [`LeafNode`] instances in the linked list.
-    pub fn cleanup_link<'b, Q>(&self, key: &Q, barrier: &'b Barrier)
+    pub fn cleanup_link<'b, Q>(&self, key: &Q, tranverse_max: bool, barrier: &'b Barrier)
     where
         K: 'b + Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        if let Some(leaf_scanner) = Scanner::max_less(&self.children, key) {
+        let mut scanner = if tranverse_max {
+            if let Some(unbounded) = self.unbounded_child.load(Acquire, barrier).as_ref() {
+                Scanner::new(unbounded)
+            } else {
+                return;
+            }
+        } else if let Some(leaf_scanner) = Scanner::max_less(&self.children, key) {
             if let Some((_, child)) = leaf_scanner.get() {
                 if let Some(child) = child.load(Acquire, barrier).as_ref() {
-                    let mut scanner = Scanner::new(child);
-                    scanner.next();
-                    loop {
-                        if let Some((k, _)) = scanner.get() {
-                            if k.borrow() >= key {
-                                return;
-                            }
-                        }
-                        scanner = if let Some(scanner) = scanner.jump(None, barrier) {
-                            scanner
-                        } else {
-                            return;
-                        };
-                    }
+                    Scanner::new(child)
+                } else {
+                    return;
+                }
+            } else {
+                return;
+            }
+        } else {
+            return;
+        };
+        scanner.next();
+        loop {
+            if let Some((k, _)) = scanner.get() {
+                if k.borrow() >= key {
+                    return;
                 }
             }
+            scanner = if let Some(scanner) = scanner.jump(None, barrier) {
+                scanner
+            } else {
+                return;
+            };
         }
     }
 

@@ -255,7 +255,7 @@ where
     {
         match &self.node {
             Type::Internal(internal_node) => internal_node.cleanup_link(key, traverse_max, barrier),
-            Type::Leaf(leaf_node) => leaf_node.cleanup_link(key, barrier),
+            Type::Leaf(leaf_node) => leaf_node.cleanup_link(key, traverse_max, barrier),
         }
     }
 }
