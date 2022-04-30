@@ -217,7 +217,7 @@ where
                                 // `child` has been split, therefore it can be retried.
                                 key = k;
                                 value = v;
-                                self.cleanup_link(key.borrow(), barrier);
+                                self.cleanup_link(key.borrow(), false, barrier);
                                 continue;
                             }
                         };
@@ -261,7 +261,7 @@ where
                     InsertResult::Retry(k, v) => {
                         key = k;
                         value = v;
-                        self.cleanup_link(key.borrow(), barrier);
+                        self.cleanup_link(key.borrow(), false, barrier);
                         continue;
                     }
                 };
@@ -295,7 +295,7 @@ where
                         // Data race resolution - see `LeafNode::search`.
                         let result = child.remove_if::<_, _, ASYNC>(key, condition, barrier)?;
                         if result == RemoveResult::Cleanup {
-                            self.cleanup_link(key, barrier);
+                            self.cleanup_link(key, false, barrier);
                             return Ok(RemoveResult::Success);
                         }
                         if result == RemoveResult::Retired {
@@ -316,7 +316,7 @@ where
                 }
                 let result = unbounded.remove_if::<_, _, ASYNC>(key, condition, barrier)?;
                 if result == RemoveResult::Cleanup {
-                    self.cleanup_link(key, barrier);
+                    self.cleanup_link(key, false, barrier);
                     return Ok(RemoveResult::Success);
                 }
                 if result == RemoveResult::Retired {
@@ -627,15 +627,19 @@ where
     }
 
     /// Cleans up logically deleted [`LeafNode`] instances in the linked list.
-    pub fn cleanup_link<'b, Q>(&self, key: &Q, barrier: &'b Barrier)
+    pub fn cleanup_link<'b, Q>(&self, key: &Q, traverse_max: bool, barrier: &'b Barrier)
     where
         K: 'b + Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        if let Some(child_scanner) = Scanner::max_less(&self.children, key) {
+        if traverse_max {
+            if let Some(unbounded) = self.unbounded_child.load(Acquire, barrier).as_ref() {
+                unbounded.cleanup_link(key, true, barrier);
+            }
+        } else if let Some(child_scanner) = Scanner::max_less(&self.children, key) {
             if let Some((_, child)) = child_scanner.get() {
                 if let Some(child) = child.load(Acquire, barrier).as_ref() {
-                    child.cleanup_link(key, barrier);
+                    child.cleanup_link(key, true, barrier);
                 }
             }
         }

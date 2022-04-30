@@ -98,7 +98,7 @@ where
                         InsertResult::Frozen(k, v) | InsertResult::Retry(k, v) => {
                             key = k;
                             value = v;
-                            root_ref.cleanup_link(key.borrow(), &barrier);
+                            root_ref.cleanup_link(key.borrow(), false, &barrier);
                         }
                         InsertResult::Duplicate(k, v) => return Err((k, v)),
                         InsertResult::Full(k, v) => {
@@ -159,7 +159,7 @@ where
                             InsertResult::Frozen(k, v) | InsertResult::Retry(k, v) => {
                                 key = k;
                                 value = v;
-                                root_ref.cleanup_link(key.borrow(), &barrier);
+                                root_ref.cleanup_link(key.borrow(), false, &barrier);
                                 true
                             }
                             InsertResult::Duplicate(k, v) => return Err((k, v)),
@@ -271,7 +271,7 @@ where
                     Ok(r) => match r {
                         RemoveResult::Success => return true,
                         RemoveResult::Cleanup => {
-                            root_ref.cleanup_link(key_ref, &barrier);
+                            root_ref.cleanup_link(key_ref, false, &barrier);
                             return true;
                         }
                         RemoveResult::Retired => {
@@ -327,7 +327,7 @@ where
                         Ok(r) => match r {
                             RemoveResult::Success => return true,
                             RemoveResult::Cleanup => {
-                                root_ref.cleanup_link(key_ref, &barrier);
+                                root_ref.cleanup_link(key_ref, false, &barrier);
                                 return true;
                             }
                             RemoveResult::Retired => {

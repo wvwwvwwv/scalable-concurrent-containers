@@ -248,13 +248,13 @@ where
     }
 
     /// Cleans up logically deleted [`LeafNode`] instances in the linked list.
-    pub fn cleanup_link<'b, Q>(&self, key: &Q, barrier: &'b Barrier)
+    pub fn cleanup_link<'b, Q>(&self, key: &Q, traverse_max: bool, barrier: &'b Barrier)
     where
         K: 'b + Borrow<Q>,
         Q: Ord + ?Sized,
     {
         match &self.node {
-            Type::Internal(internal_node) => internal_node.cleanup_link(key, barrier),
+            Type::Internal(internal_node) => internal_node.cleanup_link(key, traverse_max, barrier),
             Type::Leaf(leaf_node) => leaf_node.cleanup_link(key, barrier),
         }
     }

@@ -650,10 +650,13 @@ mod treeindex_test {
             assert!(tree.remove(&k));
         }
 
+        let mut cnt = 0;
         while INST_CNT.load(Relaxed) > 0 {
             let barrier = ebr::Barrier::new();
             drop(barrier);
+            cnt += 1;
         }
+        assert!(cnt >= INST_CNT.load(Relaxed));
 
         let tree: TreeIndex<usize, R> = TreeIndex::new();
         for k in 0..(data_size / 16) {
@@ -661,10 +664,13 @@ mod treeindex_test {
         }
         tree.clear();
 
+        let mut cnt = 0;
         while INST_CNT.load(Relaxed) > 0 {
             let barrier = ebr::Barrier::new();
             drop(barrier);
+            cnt += 1;
         }
+        assert!(cnt >= INST_CNT.load(Relaxed));
     }
 
     #[test]
