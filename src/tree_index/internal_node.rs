@@ -214,13 +214,11 @@ where
                                 return Err((k, v));
                             }
                             InsertResult::Retry(k, v) => {
-                                if self.cleanup_link(k.borrow(), barrier) {
-                                    // `child` has been split, therefore it can be retried.
-                                    key = k;
-                                    value = v;
-                                    continue;
-                                }
-                                return Ok(InsertResult::Retry(k, v));
+                                // `child` has been split, therefore it can be retried.
+                                key = k;
+                                value = v;
+                                self.cleanup_link(key.borrow(), barrier);
+                                continue;
                             }
                         };
                     }
@@ -261,12 +259,10 @@ where
                         return Err((k, v));
                     }
                     InsertResult::Retry(k, v) => {
-                        if self.cleanup_link(k.borrow(), barrier) {
-                            key = k;
-                            value = v;
-                            continue;
-                        }
-                        return Ok(InsertResult::Retry(k, v));
+                        key = k;
+                        value = v;
+                        self.cleanup_link(key.borrow(), barrier);
+                        continue;
                     }
                 };
             }
@@ -299,10 +295,8 @@ where
                         // Data race resolution - see `LeafNode::search`.
                         let result = child.remove_if::<_, _, ASYNC>(key, condition, barrier)?;
                         if result == RemoveResult::Cleanup {
-                            if self.cleanup_link(key, barrier) {
-                                return Ok(RemoveResult::Success);
-                            }
-                            return Ok(RemoveResult::Cleanup);
+                            self.cleanup_link(key, barrier);
+                            return Ok(RemoveResult::Success);
                         }
                         if result == RemoveResult::Retired {
                             return Ok(self.coalesce(barrier));
@@ -322,10 +316,8 @@ where
                 }
                 let result = unbounded.remove_if::<_, _, ASYNC>(key, condition, barrier)?;
                 if result == RemoveResult::Cleanup {
-                    if self.cleanup_link(key, barrier) {
-                        return Ok(RemoveResult::Success);
-                    }
-                    return Ok(RemoveResult::Cleanup);
+                    self.cleanup_link(key, barrier);
+                    return Ok(RemoveResult::Success);
                 }
                 if result == RemoveResult::Retired {
                     return Ok(self.coalesce(barrier));
@@ -635,10 +627,7 @@ where
     }
 
     /// Cleans up logically deleted [`LeafNode`] instances in the linked list.
-    ///
-    /// Returns `false` if the deleted [`LeafNode`] is not reachable through the current
-    /// [`InternalNode`].
-    pub fn cleanup_link<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> bool
+    pub fn cleanup_link<'b, Q>(&self, key: &Q, barrier: &'b Barrier)
     where
         K: 'b + Borrow<Q>,
         Q: Ord + ?Sized,
@@ -646,11 +635,10 @@ where
         if let Some(child_scanner) = Scanner::max_less(&self.children, key) {
             if let Some((_, child)) = child_scanner.get() {
                 if let Some(child) = child.load(Acquire, barrier).as_ref() {
-                    return child.cleanup_link(key, barrier);
+                    child.cleanup_link(key, barrier);
                 }
             }
         }
-        false
     }
 
     /// Waits for the lock on the [`InternalNode`] to be released.

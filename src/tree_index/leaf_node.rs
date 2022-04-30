@@ -424,7 +424,7 @@ where
                 target.push_back(low_key_leaf_ptr.get_arc().unwrap(), true, Release, barrier);
             debug_assert!(result.is_ok());
 
-            // Takes the max key value stored in the low key leaf as the leaf key.
+            // Take the max key value stored in the low key leaf as the leaf key.
             let low_key_leaf = low_key_leaf_ptr.as_ref().unwrap();
             let max_key = low_key_leaf.max().unwrap().0;
 
@@ -699,10 +699,7 @@ where
     }
 
     /// Cleans up logically deleted [`LeafNode`] instances in the linked list.
-    ///
-    /// Returns `false` if the deleted [`LeafNode`] is not reachable through the current
-    /// [`LeafNode`].
-    pub fn cleanup_link<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> bool
+    pub fn cleanup_link<'b, Q>(&self, key: &Q, barrier: &'b Barrier)
     where
         K: 'b + Borrow<Q>,
         Q: Ord + ?Sized,
@@ -715,19 +712,18 @@ where
                     loop {
                         if let Some((k, _)) = scanner.get() {
                             if k.borrow() >= key {
-                                return true;
+                                return;
                             }
                         }
                         scanner = if let Some(scanner) = scanner.jump(None, barrier) {
                             scanner
                         } else {
-                            return true;
+                            return;
                         };
                     }
                 }
             }
         }
-        false
     }
 
     /// Waits for the lock on the [`LeafNode`] to be released.

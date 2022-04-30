@@ -165,8 +165,8 @@ where
             let new_root = Arc::new(new_root);
             if let Some(old_root) = root.swap((Some(new_root.clone()), Tag::None), Release).0 {
                 if let Type::Internal(internal_node) = &new_root.node {
-                    old_root.commit(barrier);
                     internal_node.finish_split(barrier);
+                    old_root.commit(barrier);
                 }
                 barrier.reclaim(old_root);
             };
@@ -248,9 +248,7 @@ where
     }
 
     /// Cleans up logically deleted [`LeafNode`] instances in the linked list.
-    ///
-    /// Returns `false` if the deleted [`LeafNode`] is not reachable through the current node.
-    pub fn cleanup_link<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> bool
+    pub fn cleanup_link<'b, Q>(&self, key: &Q, barrier: &'b Barrier)
     where
         K: 'b + Borrow<Q>,
         Q: Ord + ?Sized,
