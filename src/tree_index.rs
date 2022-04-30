@@ -95,9 +95,10 @@ where
                 match root_ref.insert::<false>(key, value, &barrier) {
                     Ok(r) => match r {
                         InsertResult::Success => return Ok(()),
-                        InsertResult::Frozen(k, v) => {
+                        InsertResult::Frozen(k, v) | InsertResult::Retry(k, v) => {
                             key = k;
                             value = v;
+                            root_ref.cleanup_link(key.borrow(), &barrier);
                         }
                         InsertResult::Duplicate(k, v) => return Err((k, v)),
                         InsertResult::Full(k, v) => {
@@ -155,9 +156,10 @@ where
                     match root_ref.insert::<true>(key, value, &barrier) {
                         Ok(r) => match r {
                             InsertResult::Success => return Ok(()),
-                            InsertResult::Frozen(k, v) => {
+                            InsertResult::Frozen(k, v) | InsertResult::Retry(k, v) => {
                                 key = k;
                                 value = v;
+                                root_ref.cleanup_link(key.borrow(), &barrier);
                                 true
                             }
                             InsertResult::Duplicate(k, v) => return Err((k, v)),
@@ -268,8 +270,10 @@ where
                 match root_ref.remove_if::<_, _, false>(key_ref, &mut condition, &barrier) {
                     Ok(r) => match r {
                         RemoveResult::Success => return true,
-                        RemoveResult::Fail => return has_been_removed,
-                        RemoveResult::Frozen => (),
+                        RemoveResult::Cleanup => {
+                            root_ref.cleanup_link(key_ref, &barrier);
+                            return true;
+                        }
                         RemoveResult::Retired => {
                             if matches!(Node::remove_root::<false>(&self.root, &barrier), Ok(true))
                             {
@@ -277,6 +281,8 @@ where
                             }
                             has_been_removed = true;
                         }
+                        RemoveResult::Fail => return has_been_removed,
+                        RemoveResult::Frozen => (),
                     },
                     Err(removed) => {
                         if removed {
@@ -320,8 +326,10 @@ where
                     match root_ref.remove_if::<_, _, true>(key_ref, &mut condition, &barrier) {
                         Ok(r) => match r {
                             RemoveResult::Success => return true,
-                            RemoveResult::Fail => return has_been_removed,
-                            RemoveResult::Frozen => (),
+                            RemoveResult::Cleanup => {
+                                root_ref.cleanup_link(key_ref, &barrier);
+                                return true;
+                            }
                             RemoveResult::Retired => {
                                 if matches!(
                                     Node::remove_root::<true>(&self.root, &barrier),
@@ -331,6 +339,8 @@ where
                                 }
                                 has_been_removed = true;
                             }
+                            RemoveResult::Fail => return has_been_removed,
+                            RemoveResult::Frozen => (),
                         },
                         Err(removed) => {
                             if removed {

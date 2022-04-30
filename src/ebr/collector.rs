@@ -171,7 +171,7 @@ impl Collector {
         if let Ok(mut collector_ptr) = lock_result {
             #[allow(clippy::blocks_in_if_conditions)]
             let _scope = scopeguard::guard(&ANCHOR, |a| {
-                // Unlocks the anchor.
+                // Unlock the anchor.
                 while a
                     .fetch_update(Release, Relaxed, |p| {
                         debug_assert!(Tag::into_tag(p) == Tag::First);
@@ -253,7 +253,11 @@ impl Collector {
         self.previous_instance_link = self.current_instance_link.take();
         while let Some(mut instance_ptr) = garbage_link.take() {
             let next = unsafe { instance_ptr.as_mut().free() };
+
+            // `self.num_instances` may have been updated when the instance is dropped, therefore
+            // `load(self.num_instances)` must not pass through dropping the instance.
             std::sync::atomic::compiler_fence(Acquire);
+
             self.num_instances -= 1;
             garbage_link = NonNull::new(next);
         }

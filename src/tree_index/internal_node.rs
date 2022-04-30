@@ -177,8 +177,8 @@ where
     /// Inserts a key-value pair.
     pub fn insert<const ASYNC: bool>(
         &self,
-        key: K,
-        value: V,
+        mut key: K,
+        mut value: V,
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
         loop {
@@ -190,13 +190,13 @@ where
                         // Data race resolution - see `LeafNode::search`.
                         match child_ref.insert::<ASYNC>(key, value, barrier)? {
                             InsertResult::Success => return Ok(InsertResult::Success),
-                            InsertResult::Duplicate(key, value) => {
-                                return Ok(InsertResult::Duplicate(key, value));
+                            InsertResult::Duplicate(k, v) => {
+                                return Ok(InsertResult::Duplicate(k, v));
                             }
-                            InsertResult::Full(key, value) => {
+                            InsertResult::Full(k, v) => {
                                 return self.split_node::<ASYNC>(
-                                    key,
-                                    value,
+                                    k,
+                                    v,
                                     Some(child_key),
                                     child_ptr,
                                     child,
@@ -204,16 +204,23 @@ where
                                     barrier,
                                 );
                             }
-                            InsertResult::Frozen(key, value) => {
-                                return Err((key, value));
-                            }
-                            InsertResult::Retired(key, value) => {
+                            InsertResult::Frozen(..) => unreachable!(),
+                            InsertResult::Retired(k, v) => {
                                 debug_assert!(child_ref.retired(Relaxed));
-                                if self.coalesce(key.borrow(), barrier) == RemoveResult::Retired {
+                                if self.coalesce(barrier) == RemoveResult::Retired {
                                     debug_assert!(self.retired(Relaxed));
-                                    return Ok(InsertResult::Retired(key, value));
+                                    return Ok(InsertResult::Retired(k, v));
                                 }
-                                return Err((key, value));
+                                return Err((k, v));
+                            }
+                            InsertResult::Retry(k, v) => {
+                                if self.cleanup_link(k.borrow(), barrier) {
+                                    // `child` has been split, therefore it can be retried.
+                                    key = k;
+                                    value = v;
+                                    continue;
+                                }
+                                return Ok(InsertResult::Retry(k, v));
                             }
                         };
                     }
@@ -230,13 +237,13 @@ where
                 }
                 match unbounded.insert::<ASYNC>(key, value, barrier)? {
                     InsertResult::Success => return Ok(InsertResult::Success),
-                    InsertResult::Duplicate(key, value) => {
-                        return Ok(InsertResult::Duplicate(key, value));
+                    InsertResult::Duplicate(k, v) => {
+                        return Ok(InsertResult::Duplicate(k, v));
                     }
-                    InsertResult::Full(key, value) => {
+                    InsertResult::Full(k, v) => {
                         return self.split_node::<ASYNC>(
-                            key,
-                            value,
+                            k,
+                            v,
                             None,
                             unbounded_ptr,
                             &self.unbounded_child,
@@ -244,16 +251,22 @@ where
                             barrier,
                         );
                     }
-                    InsertResult::Frozen(key, value) => {
-                        return Err((key, value));
-                    }
-                    InsertResult::Retired(key, value) => {
+                    InsertResult::Frozen(..) => unreachable!(),
+                    InsertResult::Retired(k, v) => {
                         debug_assert!(unbounded.retired(Relaxed));
-                        if self.coalesce(key.borrow(), barrier) == RemoveResult::Retired {
+                        if self.coalesce(barrier) == RemoveResult::Retired {
                             debug_assert!(self.retired(Relaxed));
-                            return Ok(InsertResult::Retired(key, value));
+                            return Ok(InsertResult::Retired(k, v));
                         }
-                        return Err((key, value));
+                        return Err((k, v));
+                    }
+                    InsertResult::Retry(k, v) => {
+                        if self.cleanup_link(k.borrow(), barrier) {
+                            key = k;
+                            value = v;
+                            continue;
+                        }
+                        return Ok(InsertResult::Retry(k, v));
                     }
                 };
             }
@@ -285,8 +298,14 @@ where
                     if self.children.validate(metadata) {
                         // Data race resolution - see `LeafNode::search`.
                         let result = child.remove_if::<_, _, ASYNC>(key, condition, barrier)?;
+                        if result == RemoveResult::Cleanup {
+                            if self.cleanup_link(key, barrier) {
+                                return Ok(RemoveResult::Success);
+                            }
+                            return Ok(RemoveResult::Cleanup);
+                        }
                         if result == RemoveResult::Retired {
-                            return Ok(self.coalesce(key, barrier));
+                            return Ok(self.coalesce(barrier));
                         }
                         return Ok(result);
                     }
@@ -302,8 +321,14 @@ where
                     continue;
                 }
                 let result = unbounded.remove_if::<_, _, ASYNC>(key, condition, barrier)?;
+                if result == RemoveResult::Cleanup {
+                    if self.cleanup_link(key, barrier) {
+                        return Ok(RemoveResult::Success);
+                    }
+                    return Ok(RemoveResult::Cleanup);
+                }
                 if result == RemoveResult::Retired {
-                    return Ok(self.coalesce(key, barrier));
+                    return Ok(self.coalesce(barrier));
                 }
                 return Ok(result);
             }
@@ -538,7 +563,9 @@ where
             new_nodes.low_key_node.clone(Relaxed, barrier),
         ) {
             InsertResult::Success => (),
-            InsertResult::Duplicate(..) | InsertResult::Frozen(..) => unreachable!(),
+            InsertResult::Duplicate(..) | InsertResult::Frozen(..) | InsertResult::Retry(..) => {
+                unreachable!()
+            }
             InsertResult::Full(middle_key, _) | InsertResult::Retired(middle_key, _) => {
                 // Insertion failed: expects that the parent splits this node.
                 new_nodes.middle_key.replace(middle_key);
@@ -556,7 +583,7 @@ where
 
         if root_split {
             // Return without unlocking it.
-            return Err((key, value));
+            return Ok(InsertResult::Retry(key, value));
         }
 
         // Unlock the node.
@@ -569,11 +596,8 @@ where
             barrier.reclaim(unused_node);
         }
 
-        // Traverse several leaf nodes in order to cleanup deprecated links.
-        self.max_le_appr(key.borrow(), barrier);
-
         // Since a new node has been inserted, the caller can retry.
-        Err((key, value))
+        Ok(InsertResult::Retry(key, value))
     }
 
     /// Finishes splitting the [`InternalNode`].
@@ -610,6 +634,25 @@ where
         }
     }
 
+    /// Cleans up logically deleted [`LeafNode`] instances in the linked list.
+    ///
+    /// Returns `false` if the deleted [`LeafNode`] is not reachable through the current
+    /// [`InternalNode`].
+    pub fn cleanup_link<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> bool
+    where
+        K: 'b + Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        if let Some(child_scanner) = Scanner::max_less(&self.children, key) {
+            if let Some((_, child)) = child_scanner.get() {
+                if let Some(child) = child.load(Acquire, barrier).as_ref() {
+                    return child.cleanup_link(key, barrier);
+                }
+            }
+        }
+        false
+    }
+
     /// Waits for the lock on the [`InternalNode`] to be released.
     pub(super) fn wait<const ASYNC: bool>(&self, barrier: &Barrier) {
         if ASYNC {
@@ -627,11 +670,12 @@ where
     }
 
     /// Tries to coalesce nodes.
-    fn coalesce<Q>(&self, removed_key: &Q, barrier: &Barrier) -> RemoveResult
+    fn coalesce<Q>(&self, barrier: &Barrier) -> RemoveResult
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
+        let mut node_deleted = false;
         while let Some(lock) = Locker::try_lock(self, barrier) {
             let mut max_key_entry = None;
             for (key, node) in Scanner::new(&self.children) {
@@ -645,6 +689,7 @@ where
                     // loop ensures the absence of readers.
                     if let Some(node) = node.swap((None, Tag::None), Release).0 {
                         barrier.reclaim(node);
+                        node_deleted = true;
                     }
                 } else {
                     max_key_entry.replace((key, node));
@@ -666,11 +711,13 @@ where
                         {
                             debug_assert!(obsolete_node.retired(Relaxed));
                             barrier.reclaim(obsolete_node);
+                            node_deleted = true;
                         }
                         let result = self.children.remove_if(key.borrow(), &mut |_| true);
                         debug_assert_ne!(result, RemoveResult::Fail);
                         if let Some(node) = max_key_child.swap((None, Tag::None), Release).0 {
                             barrier.reclaim(node);
+                            node_deleted = true;
                         }
                         false
                     } else {
@@ -679,6 +726,7 @@ where
                         {
                             debug_assert!(obsolete_node.retired(Relaxed));
                             barrier.reclaim(obsolete_node);
+                            node_deleted = true;
                         }
                         true
                     }
@@ -696,14 +744,15 @@ where
 
             drop(lock);
             if !self.has_retired_node(barrier) {
-                // Traverse several leaf nodes in order to cleanup deprecated links.
-                self.max_le_appr(removed_key, barrier);
-                return RemoveResult::Success;
+                break;
             }
         }
 
-        // Locking failed: give up expecting that the lock owner eventually cleans up the node.
-        RemoveResult::Success
+        if node_deleted {
+            RemoveResult::Cleanup
+        } else {
+            RemoveResult::Success
+        }
     }
 
     /// Checks if the [`InternalNode`] has a retired [`Node`].
@@ -840,18 +889,18 @@ mod test {
                                     Ok(RemoveResult::Retired)
                                 ));
                             } else {
-                                assert_eq!(
-                                    internal_node.remove_if::<_, _, false>(
-                                        &j,
-                                        &mut |_| true,
-                                        &barrier
-                                    ),
-                                    Ok(RemoveResult::Success)
-                                );
+                                assert!(internal_node
+                                    .remove_if::<_, _, false>(&j, &mut |_| true, &barrier)
+                                    .is_ok(),);
                             }
                             assert_eq!(internal_node.search(&j, &barrier), None);
                         }
                         break;
+                    }
+                    InsertResult::Retry(k, v) => {
+                        let result = internal_node.insert::<false>(k, v, &barrier);
+                        assert!(result.is_ok());
+                        assert_eq!(internal_node.search(&k, &barrier), Some(&k));
                     }
                 },
                 Err((k, v)) => {
@@ -899,7 +948,7 @@ mod test {
                                         max_key.replace(id);
                                         break;
                                     }
-                                    InsertResult::Frozen(..) => {
+                                    InsertResult::Frozen(..) | InsertResult::Retry(..) => {
                                         continue;
                                     }
                                     _ => unreachable!(),
@@ -928,7 +977,7 @@ mod test {
                                 &barrier,
                             ) {
                                 Ok(r) => match r {
-                                    RemoveResult::Success => break,
+                                    RemoveResult::Success | RemoveResult::Cleanup => break,
                                     RemoveResult::Fail => {
                                         assert!(removed);
                                         break;
@@ -951,10 +1000,9 @@ mod test {
             for r in futures::future::join_all(task_handles).await {
                 assert!(r.is_ok());
             }
-            assert!(matches!(
-                internal_node.remove_if::<_, _, false>(&usize::MAX, &mut |_| true, &Barrier::new()),
-                Ok(RemoveResult::Success | RemoveResult::Retired)
-            ));
+            assert!(internal_node
+                .remove_if::<_, _, false>(&usize::MAX, &mut |_| true, &Barrier::new())
+                .is_ok());
         }
     }
 

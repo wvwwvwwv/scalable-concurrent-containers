@@ -157,8 +157,8 @@ where
                 barrier,
             );
             let (key, value) = match result {
-                Ok(_) => unreachable!(),
-                Err((k, v)) => (k, v),
+                Ok(InsertResult::Retry(k, v)) => (k, v),
+                _ => unreachable!(),
             };
 
             // Updates the pointer before unlocking the root.
@@ -202,7 +202,7 @@ where
                     if let Some(locker) = leaf_node::Locker::try_lock(leaf_node, barrier) {
                         leaf_node_locker.replace(locker);
                     } else {
-                        leaf_node.wait::<ASYNC>(false, barrier);
+                        leaf_node.wait::<ASYNC>(barrier);
                     }
                 }
             };
@@ -244,6 +244,20 @@ where
         match &self.node {
             Type::Internal(internal_node) => internal_node.rollback(barrier),
             Type::Leaf(leaf_node) => leaf_node.rollback(barrier),
+        }
+    }
+
+    /// Cleans up logically deleted [`LeafNode`] instances in the linked list.
+    ///
+    /// Returns `false` if the deleted [`LeafNode`] is not reachable through the current node.
+    pub fn cleanup_link<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> bool
+    where
+        K: 'b + Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        match &self.node {
+            Type::Internal(internal_node) => internal_node.cleanup_link(key, barrier),
+            Type::Leaf(leaf_node) => leaf_node.cleanup_link(key, barrier),
         }
     }
 }

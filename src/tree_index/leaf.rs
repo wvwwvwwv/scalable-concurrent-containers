@@ -28,6 +28,9 @@ pub enum InsertResult<K, V> {
     ///
     /// It is a terminal state.
     Retired(K, V),
+
+    /// The operation can be retried.
+    Retry(K, V),
 }
 
 /// The result of removal.
@@ -36,14 +39,17 @@ pub enum RemoveResult {
     /// Remove succeeded.
     Success,
 
+    /// Remove succeeded and cleanup required.
+    Cleanup,
+
+    /// Remove succeeded and the [`Leaf`] has retired without usable entries left.
+    Retired,
+
     /// Remove failed.
     Fail,
 
     /// The [`Leaf`] is frozen.
     Frozen,
-
-    /// Remove succeeded and the [`Leaf`] has retired without usable entries left.
-    Retired,
 }
 
 /// The number of entries and number of state bits per entry.
@@ -1000,7 +1006,8 @@ mod test {
                         }
                         InsertResult::Duplicate(_, _)
                         | InsertResult::Frozen(_, _)
-                        | InsertResult::Retired(_, _) => {
+                        | InsertResult::Retired(_, _)
+                        | InsertResult::Retry(_, _) => {
                             unreachable!();
                         }
                         InsertResult::Full(k, v) => {
@@ -1034,7 +1041,7 @@ mod test {
                     match leaf_clone.remove_if(&t, &mut |_| true) {
                         RemoveResult::Success => assert!(inserted),
                         RemoveResult::Fail => assert!(!inserted),
-                        RemoveResult::Frozen => unreachable!(),
+                        RemoveResult::Frozen | RemoveResult::Cleanup => unreachable!(),
                         RemoveResult::Retired => {
                             assert!(inserted);
                             assert_eq!(retire_clone.swap(1, Relaxed), 0);

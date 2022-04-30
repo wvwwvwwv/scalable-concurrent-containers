@@ -4,14 +4,14 @@
 ![Crates.io](https://img.shields.io/crates/l/scc?style=flat-square)
 ![GitHub Workflow Status](https://img.shields.io/github/workflow/status/wvwwvwwv/scalable-concurrent-containers/SCC?style=flat-square)
 
-A collection of high performance concurrent data structures and utilities for concurrent programming.
+A collection of high performance concurrent container data structures and utilities for concurrent programming.
 
 - [ebr](#EBR) implements epoch-based reclamation.
 - [LinkedList](#LinkedList) is a type trait implementing a wait-free concurrent singly linked list.
 - [HashMap](#HashMap) is a concurrent hash map.
 - [HashSet](#HashSet) is a concurrent hash set based on [HashMap](#HashMap).
-- [HashIndex](#HashIndex) is a concurrent hash index allowing lock-free read and scan.
-- [TreeIndex](#TreeIndex) is a concurrent B+ tree allowing lock-free read and scan.
+- [HashIndex](#HashIndex) is a read-optimized concurrent hash index.
+- [TreeIndex](#TreeIndex) is a read-optimized concurrent B+ tree.
 
 See [Performance](#Performance) for benchmark results and comparison with other concurrent hash maps.
 
@@ -402,6 +402,7 @@ let result = future_insert.await;
 
 0.6.9
 
+* Fix [#66](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/66).
 * Fix [#71](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/71).
 
 0.6.8

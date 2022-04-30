@@ -1,6 +1,6 @@
 [package]
 name = "scc"
-description = "Collection of building blocks for concurrent programming."
+description = "High performance concurrent containers and utilities"
 version = "0.6.9"
 authors = ["wvwwvwwv <wvwwvwwv@me.com>"]
 edition = "2021"

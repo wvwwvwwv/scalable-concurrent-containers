@@ -197,24 +197,25 @@ where
                         // Data race resolution - see `LeafNode::search`.
                         match child_ref.insert(key, value) {
                             InsertResult::Success => return Ok(InsertResult::Success),
-                            InsertResult::Duplicate(key, value) => {
-                                return Ok(InsertResult::Duplicate(key, value));
+                            InsertResult::Duplicate(k, v) => {
+                                return Ok(InsertResult::Duplicate(k, v));
                             }
-                            InsertResult::Full(key, value) | InsertResult::Retired(key, value) => {
+                            InsertResult::Full(k, v) | InsertResult::Retired(k, v) => {
                                 return self.split_leaf::<ASYNC>(
-                                    key,
-                                    value,
+                                    k,
+                                    v,
                                     Some(child_key),
                                     child_ptr,
                                     child,
                                     barrier,
                                 );
                             }
-                            InsertResult::Frozen(key, value) => {
+                            InsertResult::Frozen(k, v) => {
                                 // The `Leaf` is being split: retry.
-                                self.wait::<ASYNC>(true, barrier);
-                                return Err((key, value));
+                                self.wait::<ASYNC>(barrier);
+                                return Err((k, v));
                             }
+                            InsertResult::Retry(..) => unreachable!(),
                         };
                     }
                 }
@@ -246,23 +247,24 @@ where
                 }
                 match unbounded.insert(key, value) {
                     InsertResult::Success => return Ok(InsertResult::Success),
-                    InsertResult::Duplicate(key, value) => {
-                        return Ok(InsertResult::Duplicate(key, value));
+                    InsertResult::Duplicate(k, v) => {
+                        return Ok(InsertResult::Duplicate(k, v));
                     }
-                    InsertResult::Full(key, value) | InsertResult::Retired(key, value) => {
+                    InsertResult::Full(k, v) | InsertResult::Retired(k, v) => {
                         return self.split_leaf::<ASYNC>(
-                            key,
-                            value,
+                            k,
+                            v,
                             None,
                             unbounded_ptr,
                             &self.unbounded_child,
                             barrier,
                         );
                     }
-                    InsertResult::Frozen(key, value) => {
-                        self.wait::<ASYNC>(true, barrier);
-                        return Err((key, value));
+                    InsertResult::Frozen(k, v) => {
+                        self.wait::<ASYNC>(barrier);
+                        return Err((k, v));
                     }
+                    InsertResult::Retry(..) => unreachable!(),
                 };
             }
             return Ok(InsertResult::Retired(key, value));
@@ -295,10 +297,10 @@ where
                         if result == RemoveResult::Frozen {
                             // When a `Leaf` is frozen, its entries may be being copied to new
                             // `Leaves`.
-                            self.wait::<ASYNC>(true, barrier);
+                            self.wait::<ASYNC>(barrier);
                             return Err(false);
                         } else if result == RemoveResult::Retired {
-                            return Ok(self.coalesce(key, barrier));
+                            return Ok(self.coalesce(barrier));
                         }
                         return Ok(result);
                     }
@@ -315,10 +317,10 @@ where
                 }
                 let result = unbounded.remove_if(key, condition);
                 if result == RemoveResult::Frozen {
-                    self.wait::<ASYNC>(true, barrier);
+                    self.wait::<ASYNC>(barrier);
                     return Err(false);
                 } else if result == RemoveResult::Retired {
-                    return Ok(self.coalesce(key, barrier));
+                    return Ok(self.coalesce(barrier));
                 }
                 return Ok(result);
             }
@@ -360,7 +362,7 @@ where
         ) {
             ptr.as_ref().unwrap()
         } else {
-            self.wait::<ASYNC>(false, barrier);
+            self.wait::<ASYNC>(barrier);
             return Err((key, value));
         };
 
@@ -435,7 +437,9 @@ where
                 new_leaves.low_key_leaf.clone(Relaxed, barrier),
             ) {
                 InsertResult::Success => (),
-                InsertResult::Duplicate(..) | InsertResult::Frozen(..) => unreachable!(),
+                InsertResult::Duplicate(..)
+                | InsertResult::Frozen(..)
+                | InsertResult::Retry(..) => unreachable!(),
                 InsertResult::Full(_, _) | InsertResult::Retired(_, _) => {
                     // Need to freeze the other leaf.
                     let frozen = high_key_leaf.freeze();
@@ -491,11 +495,8 @@ where
             barrier.reclaim(unused_leaf);
         }
 
-        // Traverse several leaf nodes in order to cleanup deprecated links.
-        self.max_le_appr(key.borrow(), barrier);
-
         // Since a new leaf has been inserted, the caller can retry.
-        Err((key, value))
+        Ok(InsertResult::Retry(key, value))
     }
 
     /// Splits itself into the given leaf nodes, and returns the middle key value.
@@ -511,6 +512,9 @@ where
         low_key_leaf_node.latch.swap((None, LOCKED), Relaxed);
         high_key_leaf_node.latch.swap((None, LOCKED), Relaxed);
 
+        // It is safe to keep the pointers to the new leaf nodes in this full leaf node since the
+        // whole split operation is protected under a single `ebr::Barrier`, and the pointers are
+        // only dereferenced during the operation.
         new_leaves
             .low_key_leaf_node
             .swap(addr_of!(*low_key_leaf_node) as *mut _, Relaxed);
@@ -630,6 +634,8 @@ where
             let unfrozen = high_key_leaf.thaw();
             debug_assert!(unfrozen);
 
+            // It is safe to dereference those pointers since the whole split operation is under a
+            // single `ebr::Barrier`.
             if let Some(low_key_leaf_node) =
                 unsafe { change.low_key_leaf_node.load(Relaxed).as_ref() }
             {
@@ -692,20 +698,47 @@ where
         }
     }
 
+    /// Cleans up logically deleted [`LeafNode`] instances in the linked list.
+    ///
+    /// Returns `false` if the deleted [`LeafNode`] is not reachable through the current
+    /// [`LeafNode`].
+    pub fn cleanup_link<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> bool
+    where
+        K: 'b + Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        if let Some(leaf_scanner) = Scanner::max_less(&self.children, key) {
+            if let Some((_, child)) = leaf_scanner.get() {
+                if let Some(child) = child.load(Acquire, barrier).as_ref() {
+                    let mut scanner = Scanner::new(child);
+                    scanner.next();
+                    loop {
+                        if let Some((k, _)) = scanner.get() {
+                            if k.borrow() >= key {
+                                return true;
+                            }
+                        }
+                        scanner = if let Some(scanner) = scanner.jump(None, barrier) {
+                            scanner
+                        } else {
+                            return true;
+                        };
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Waits for the lock on the [`LeafNode`] to be released.
-    pub(super) fn wait<const ASYNC: bool>(&self, expect_null: bool, barrier: &Barrier) {
+    pub(super) fn wait<const ASYNC: bool>(&self, barrier: &Barrier) {
         if ASYNC {
             // Currently, asynchronous waiting is not implemented.
             return;
         }
         let _result = self.wait_queue.wait(|| {
             let ptr = self.latch.load(Relaxed, barrier);
-            let is_null = ptr.is_null();
-            if expect_null && is_null {
-                // The `LeafNode` may be locked, but it does not care.
-                return Ok(());
-            }
-            if !is_null || ptr.tag() == LOCKED {
+            if !ptr.is_null() || ptr.tag() == LOCKED {
                 // The `LeafNode` is being split or locked.
                 return Err(());
             }
@@ -714,11 +747,12 @@ where
     }
 
     /// Tries to coalesce empty or obsolete leaves after a successful removal of an entry.
-    fn coalesce<Q>(&self, removed_key: &Q, barrier: &Barrier) -> RemoveResult
+    fn coalesce<Q>(&self, barrier: &Barrier) -> RemoveResult
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
+        let mut leaf_deleted = false;
         while let Some(lock) = Locker::try_lock(self, barrier) {
             let mut has_valid_leaf = false;
             for entry in Scanner::new(&self.children) {
@@ -734,6 +768,7 @@ where
                     // that readers are able to retry when they find it being `null`.
                     if let Some(leaf) = entry.1.swap((None, Tag::None), Release).0 {
                         barrier.reclaim(leaf);
+                        leaf_deleted = true;
                     }
                 } else {
                     has_valid_leaf = true;
@@ -749,12 +784,14 @@ where
                     if unbounded.retired() {
                         let deleted = unbounded.delete_self(Relaxed);
                         debug_assert!(deleted);
+
                         // It has to mark the pointer in order to prevent `LeafNode::insert` from
                         // replacing it with a new `Leaf`.
                         if let Some(obsolete_leaf) =
                             self.unbounded_child.swap((None, RETIRED), Release).0
                         {
                             barrier.reclaim(obsolete_leaf);
+                            leaf_deleted = true;
                         }
                         true
                     } else {
@@ -772,14 +809,15 @@ where
 
             drop(lock);
             if !self.has_retired_leaf(barrier) {
-                // Traverse several leaf nodes in order to cleanup deprecated links.
-                self.max_le_appr(removed_key, barrier);
-                return RemoveResult::Success;
+                break;
             }
         }
 
-        // Locking failed: give up expecting that the lock owner eventually cleans up the leaf.
-        RemoveResult::Success
+        if leaf_deleted {
+            RemoveResult::Cleanup
+        } else {
+            RemoveResult::Success
+        }
     }
 
     /// Checks if the [`LeafNode`] has a retired [`Leaf`].
@@ -939,10 +977,9 @@ mod test {
                     leaf_node.rollback(&barrier);
                     for r in 0..(k - 1) {
                         assert_eq!(leaf_node.search(&r, &barrier), Some(&r));
-                        assert_eq!(
-                            leaf_node.remove_if::<_, _, false>(&r, &mut |_| true, &barrier),
-                            Ok(RemoveResult::Success)
-                        );
+                        assert!(leaf_node
+                            .remove_if::<_, _, false>(&r, &mut |_| true, &barrier)
+                            .is_ok());
                         assert_eq!(leaf_node.search(&r, &barrier), None);
                     }
                     assert_eq!(leaf_node.search(&(k - 1), &barrier), Some(&(k - 1)));
@@ -952,6 +989,9 @@ mod test {
                     );
                     assert_eq!(leaf_node.search(&(k - 1), &barrier), None);
                     break;
+                }
+                InsertResult::Retry(..) => {
+                    assert!(leaf_node.insert::<false>(k, k, &barrier).is_ok());
                 }
             }
         }
@@ -992,7 +1032,7 @@ mod test {
                                         max_key.replace(id);
                                         break;
                                     }
-                                    InsertResult::Frozen(..) => {
+                                    InsertResult::Frozen(..) | InsertResult::Retry(..) => {
                                         continue;
                                     }
                                     _ => unreachable!(),
@@ -1021,7 +1061,7 @@ mod test {
                                 &barrier,
                             ) {
                                 Ok(r) => match r {
-                                    RemoveResult::Success => break,
+                                    RemoveResult::Success | RemoveResult::Cleanup => break,
                                     RemoveResult::Fail => {
                                         assert!(removed);
                                         break;
@@ -1044,10 +1084,9 @@ mod test {
             for r in futures::future::join_all(task_handles).await {
                 assert!(r.is_ok());
             }
-            assert!(matches!(
-                leaf_node.remove_if::<_, _, false>(&usize::MAX, &mut |_| true, &Barrier::new()),
-                Ok(RemoveResult::Success | RemoveResult::Retired)
-            ));
+            assert!(leaf_node
+                .remove_if::<_, _, false>(&usize::MAX, &mut |_| true, &Barrier::new())
+                .is_ok());
         }
     }
 

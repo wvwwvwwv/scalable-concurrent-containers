@@ -290,9 +290,7 @@ pub trait LinkedList: 'static + Sized {
                 if next_next_ptr.tag() != Tag::Second {
                     break next_ptr;
                 }
-                if !update_self {
-                    update_self = true;
-                }
+                update_self = true;
                 next_ptr = next_next_ptr;
             } else {
                 break Ptr::null();

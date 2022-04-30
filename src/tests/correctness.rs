@@ -641,24 +641,26 @@ mod treeindex_test {
             }
         }
 
-        let data_size = 65536; // 1_048_576;
+        let data_size = 1_048_576;
         let tree: TreeIndex<usize, R> = TreeIndex::new();
         for k in 0..data_size {
             assert!(tree.insert(k, R::new()).is_ok());
         }
-        for k in 0..data_size {
+        for k in (0..data_size).rev() {
             assert!(tree.remove(&k));
         }
+
         while INST_CNT.load(Relaxed) > 0 {
             let barrier = ebr::Barrier::new();
             drop(barrier);
         }
 
         let tree: TreeIndex<usize, R> = TreeIndex::new();
-        for k in 0..data_size {
+        for k in 0..(data_size / 16) {
             assert!(tree.insert(k, R::new()).is_ok());
         }
         tree.clear();
+
         while INST_CNT.load(Relaxed) > 0 {
             let barrier = ebr::Barrier::new();
             drop(barrier);
