@@ -4,9 +4,9 @@
 ![Crates.io](https://img.shields.io/crates/l/scc?style=flat-square)
 ![GitHub Workflow Status](https://img.shields.io/github/workflow/status/wvwwvwwv/scalable-concurrent-containers/SCC?style=flat-square)
 
-A collection of high performance concurrent container data structures and utilities for concurrent programming.
+A collection of high performance concurrent container data structures and utilities for asynchronous and concurrent programming.
 
-- [ebr](#EBR) implements epoch-based reclamation.
+- [EBR](#EBR) implements epoch-based reclamation.
 - [LinkedList](#LinkedList) is a type trait implementing a wait-free concurrent singly linked list.
 - [HashMap](#HashMap) is a concurrent hash map.
 - [HashSet](#HashSet) is a concurrent hash set based on [HashMap](#HashMap).
@@ -121,7 +121,7 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 ## HashMap
 
-[HashMap](#HashMap) is a scalable in-memory unique key-value container that is targeted at highly concurrent write-heavy workloads. It applies [EBR](#EBR) to its hash table management in order to implement non-blocking resizing fine-granular locking; *it is not a lock-free data structure, and each access to a single key is serialized by a bucket-level mutex*.
+[HashMap](#HashMap) is a scalable in-memory unique key-value container that is targeted at highly concurrent write-heavy workloads. It uses [EBR](#EBR) for its hash table memory management in order to implement non-blocking resizing and fine-granular locking; *it is not a lock-free data structure, and each access to a single key is serialized by a bucket-level mutex*. [HashMap](#HashMap) is optimized for frequently updated large data sets, such as the lock table in database management software.
 
 ### Examples
 
@@ -176,7 +176,7 @@ assert!(hashmap.insert(3, 2).is_ok());
 assert_eq!(hashmap.retain(|key, value| *key == 1 && *value == 0), (1, 2));
 ```
 
-Asynchronous methods can be used in asynchronous code blocks.
+Asynchronous methods can be used in asynchronous code blocks; *asynchronous methods yield the task when the target mutex cannot be acquire*.
 
 ```rust
 use scc::HashMap;
@@ -317,7 +317,7 @@ assert_eq!(treeindex.range(4..8, &barrier).count(), 4);
 assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 ```
 
-Asynchronous methods can be used in asynchronous code blocks.
+Asynchronous methods can be used in asynchronous code blocks; *asynchronous methods yield the task when the target mutex cannot be acquire*.
 
 ```rust
 use scc::TreeIndex;
@@ -339,11 +339,11 @@ let result = future_insert.await;
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
 - RAM: 1TB
 - Rust: 1.60.0
-- SCC: 0.6.8
+- SCC: 0.6.9
 
 ### Workload
 
-- A disjoint range of 16M `usize` integers is assigned to each thread.
+- A disjoint **range** of 16M `usize` integers is assigned to each thread.
 - Insert: each thread inserts its own records.
 - Read: each thread reads its own records in the container.
 - Scan: each thread scans the entire container once.
@@ -381,13 +381,13 @@ let result = future_insert.await;
 
 |         |  1 thread  |  4 threads | 16 threads | 64 threads |
 |---------|------------|------------|------------|------------|
-| InsertL |  15.006s   |  17.896s   |  25.481s   |  74.218s   |
-| ReadL   |   3.55s    |   4.142s   |   4.585s   |   4.807s   |
-| ScanL   |   1.228s   |   4.913s   |  19.754s   |  81.71s    |
-| RemoveL |   5.841s   |   7.711s   |   8.688s   |   9.154s   |
-| InsertR |  20.388s   |  71.534s   |  77.573s   |  90.999s   |
-| MixedR  |  27.864s   | 162.571s   | 532.533s   | 630.033s   |
-| RemoveR |   9.346s   |  18.642s   |  22.832s   |  26.394s   |
+| InsertL |  14.839s   |  16.196s   |  18.644s   |  43.914s   |
+| ReadL   |   3.584s   |   4.168s   |   4.531s   |   5.208s   |
+| ScanL   |   1.239s   |   5.088s   |  20.778s   |  85.319s   |
+| RemoveL |   5.736s   |   8.327s   |  10.5s     |  10.465s   |
+| InsertR |  20.543s   |  77.743s   |  56.254s   |  65.242s   |
+| MixedR  |  27.587s   | 164.433s   | 429.19s    | 453.633s   |
+| RemoveR |   9.38s    |  20.262s   |  30.455s   |  39.091s   |
 
 ### [HashMap](#HashMap) Performance Comparison with [DashMap](https://github.com/xacrimon/dashmap) and [flurry](https://github.com/jonhoo/flurry)
 
@@ -402,6 +402,7 @@ let result = future_insert.await;
 
 0.6.9
 
+* Improve [TreeIndex](#TreeIndex) performance.
 * Fix [#66](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/66).
 * Fix [#71](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/71).
 
@@ -419,8 +420,3 @@ let result = future_insert.await;
 
 * Add `{HashMap, HashSet}::{scan, scan_async}` for a read-only scan.
 * Minor [HashMap](#HashMap) optimization.
-
-0.6.5
-
-* Add more asynchronous methods to [HashMap](#HashMap), [HashIndex](#HashIndex), and [HashSet](#HashSet).
-* [TreeIndex](#TreeIndex) remove performance improvement.

@@ -699,6 +699,8 @@ where
     }
 
     /// Cleans up logically deleted [`LeafNode`] instances in the linked list.
+    ///
+    /// If the target leaf node does not exist in the sub-tree, returns `false`.
     pub fn cleanup_link<'b, Q>(&self, key: &Q, tranverse_max: bool, barrier: &'b Barrier) -> bool
     where
         K: 'b + Borrow<Q>,
@@ -724,8 +726,8 @@ where
             return false;
         };
 
-        // It *would* be the maximum leaf node that contains keys smaller than the target key.
-        // Hopefully, two jumps will be sufficient.
+        // It *would* be the maximum leaf node among those that containing keys smaller than the
+        // target key. Hopefully, two jumps will be sufficient.
         scanner.jump(None, barrier).map(|s| s.jump(None, barrier));
         true
     }

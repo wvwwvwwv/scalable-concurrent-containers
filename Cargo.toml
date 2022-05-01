@@ -7,8 +7,8 @@ edition = "2021"
 readme = "README.md"
 repository = "https://github.com/wvwwvwwv/scalable-concurrent-containers/"
 license = "Apache-2.0"
-categories = ["concurrency", "data-structures"]
-keywords = ["concurrent", "asynchronous", "ebr", "hashmap", "tree"]
+categories = ["asynchronous", "concurrency", "data-structures", "memory-management"]
+keywords = ["asynchronous", "concurrent", "ebr", "hashmap", "tree"]
 
 [dependencies]
 scopeguard = "^1.1"
@@ -18,7 +18,7 @@ criterion = "^0.3"
 futures = "^0.3"
 loom = "^0.5"
 proptest = "^1.0"
-tokio = { version = "^1.17.0", features = ["full"] }
+tokio = { version = "^1.18.0", features = ["full"] }
 
 [[bench]]
 name = "ebr"

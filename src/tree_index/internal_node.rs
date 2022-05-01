@@ -635,6 +635,8 @@ where
     }
 
     /// Cleans up logically deleted [`LeafNode`] instances in the linked list.
+    ///
+    /// If the target leaf node does not exist in the sub-tree, returns `false`.
     pub fn cleanup_link<'b, Q>(&self, key: &Q, traverse_max: bool, barrier: &'b Barrier) -> bool
     where
         K: 'b + Borrow<Q>,
