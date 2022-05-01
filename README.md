@@ -177,7 +177,7 @@ assert!(hashmap.insert(3, 2).is_ok());
 assert_eq!(hashmap.retain(|key, value| *key == 1 && *value == 0), (1, 2));
 ```
 
-Asynchronous methods can be used in asynchronous code blocks; *asynchronous methods yield the task when the target mutex cannot be acquire*.
+Asynchronous methods can be used in asynchronous code blocks; *asynchronous methods yield the task executor when the target mutex cannot be acquire*.
 
 ```rust
 use scc::HashMap;
@@ -318,7 +318,7 @@ assert_eq!(treeindex.range(4..8, &barrier).count(), 4);
 assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 ```
 
-Asynchronous methods can be used in asynchronous code blocks; *asynchronous methods yield the task when the target mutex cannot be acquire*.
+Asynchronous methods can be used in asynchronous code blocks; *asynchronous methods yield the task executor when the target mutex cannot be acquire*.
 
 ```rust
 use scc::TreeIndex;
@@ -400,6 +400,10 @@ let result = future_insert.await;
 
 
 ## Changelog
+
+0.6.10
+
+* Cleanup API.
 
 0.6.9
 
