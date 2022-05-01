@@ -248,7 +248,7 @@ where
     }
 
     /// Cleans up logically deleted [`LeafNode`] instances in the linked list.
-    pub fn cleanup_link<'b, Q>(&self, key: &Q, traverse_max: bool, barrier: &'b Barrier)
+    pub fn cleanup_link<'b, Q>(&self, key: &Q, traverse_max: bool, barrier: &'b Barrier) -> bool
     where
         K: 'b + Borrow<Q>,
         Q: Ord + ?Sized,

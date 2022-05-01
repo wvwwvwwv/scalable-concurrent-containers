@@ -699,43 +699,35 @@ where
     }
 
     /// Cleans up logically deleted [`LeafNode`] instances in the linked list.
-    pub fn cleanup_link<'b, Q>(&self, key: &Q, tranverse_max: bool, barrier: &'b Barrier)
+    pub fn cleanup_link<'b, Q>(&self, key: &Q, tranverse_max: bool, barrier: &'b Barrier) -> bool
     where
         K: 'b + Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        let mut scanner = if tranverse_max {
+        let scanner = if tranverse_max {
             if let Some(unbounded) = self.unbounded_child.load(Acquire, barrier).as_ref() {
                 Scanner::new(unbounded)
             } else {
-                return;
+                return false;
             }
         } else if let Some(leaf_scanner) = Scanner::max_less(&self.children, key) {
             if let Some((_, child)) = leaf_scanner.get() {
                 if let Some(child) = child.load(Acquire, barrier).as_ref() {
                     Scanner::new(child)
                 } else {
-                    return;
+                    return false;
                 }
             } else {
-                return;
+                return false;
             }
         } else {
-            return;
+            return false;
         };
-        scanner.next();
-        loop {
-            if let Some((k, _)) = scanner.get() {
-                if k.borrow() >= key {
-                    return;
-                }
-            }
-            scanner = if let Some(scanner) = scanner.jump(None, barrier) {
-                scanner
-            } else {
-                return;
-            };
-        }
+
+        // It *would* be the maximum leaf node that contains keys smaller than the target key.
+        // Hopefully, two jumps will be sufficient.
+        scanner.jump(None, barrier).map(|s| s.jump(None, barrier));
+        true
     }
 
     /// Waits for the lock on the [`LeafNode`] to be released.
@@ -760,9 +752,10 @@ where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        let mut leaf_deleted = false;
+        let mut uncleaned_leaf = false;
+        let mut prev_valid_leaf = None;
         while let Some(lock) = Locker::try_lock(self, barrier) {
-            let mut has_valid_leaf = false;
+            prev_valid_leaf.take();
             for entry in Scanner::new(&self.children) {
                 let leaf_ptr = entry.1.load(Relaxed, barrier);
                 let leaf = leaf_ptr.as_ref().unwrap();
@@ -776,15 +769,20 @@ where
                     // that readers are able to retry when they find it being `null`.
                     if let Some(leaf) = entry.1.swap((None, Tag::None), Release).0 {
                         barrier.reclaim(leaf);
-                        leaf_deleted = true;
+                        if let Some(prev_leaf) = prev_valid_leaf.as_ref() {
+                            // One jump is sufficient.
+                            Scanner::new(*prev_leaf).jump(None, barrier);
+                        } else {
+                            uncleaned_leaf = true;
+                        }
                     }
                 } else {
-                    has_valid_leaf = true;
+                    prev_valid_leaf.replace(leaf);
                 }
             }
 
             // The unbounded leaf becomes unreachable after all the other leaves are gone.
-            let fully_empty = if has_valid_leaf {
+            let fully_empty = if prev_valid_leaf.is_some() {
                 false
             } else {
                 let unbounded_ptr = self.unbounded_child.load(Relaxed, barrier);
@@ -799,7 +797,7 @@ where
                             self.unbounded_child.swap((None, RETIRED), Release).0
                         {
                             barrier.reclaim(obsolete_leaf);
-                            leaf_deleted = true;
+                            uncleaned_leaf = true;
                         }
                         true
                     } else {
@@ -821,7 +819,7 @@ where
             }
         }
 
-        if leaf_deleted {
+        if uncleaned_leaf {
             RemoveResult::Cleanup
         } else {
             RemoveResult::Success

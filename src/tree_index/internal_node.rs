@@ -215,10 +215,12 @@ where
                             }
                             InsertResult::Retry(k, v) => {
                                 // `child` has been split, therefore it can be retried.
-                                key = k;
-                                value = v;
-                                self.cleanup_link(key.borrow(), false, barrier);
-                                continue;
+                                if self.cleanup_link(k.borrow(), false, barrier) {
+                                    key = k;
+                                    value = v;
+                                    continue;
+                                }
+                                return Ok(InsertResult::Retry(k, v));
                             }
                         };
                     }
@@ -259,10 +261,12 @@ where
                         return Err((k, v));
                     }
                     InsertResult::Retry(k, v) => {
-                        key = k;
-                        value = v;
-                        self.cleanup_link(key.borrow(), false, barrier);
-                        continue;
+                        if self.cleanup_link(k.borrow(), false, barrier) {
+                            key = k;
+                            value = v;
+                            continue;
+                        }
+                        return Ok(InsertResult::Retry(k, v));
                     }
                 };
             }
@@ -295,8 +299,10 @@ where
                         // Data race resolution - see `LeafNode::search`.
                         let result = child.remove_if::<_, _, ASYNC>(key, condition, barrier)?;
                         if result == RemoveResult::Cleanup {
-                            self.cleanup_link(key, false, barrier);
-                            return Ok(RemoveResult::Success);
+                            if self.cleanup_link(key, false, barrier) {
+                                return Ok(RemoveResult::Success);
+                            }
+                            return Ok(RemoveResult::Cleanup);
                         }
                         if result == RemoveResult::Retired {
                             return Ok(self.coalesce(barrier));
@@ -316,8 +322,10 @@ where
                 }
                 let result = unbounded.remove_if::<_, _, ASYNC>(key, condition, barrier)?;
                 if result == RemoveResult::Cleanup {
-                    self.cleanup_link(key, false, barrier);
-                    return Ok(RemoveResult::Success);
+                    if self.cleanup_link(key, false, barrier) {
+                        return Ok(RemoveResult::Success);
+                    }
+                    return Ok(RemoveResult::Cleanup);
                 }
                 if result == RemoveResult::Retired {
                     return Ok(self.coalesce(barrier));
@@ -627,22 +635,24 @@ where
     }
 
     /// Cleans up logically deleted [`LeafNode`] instances in the linked list.
-    pub fn cleanup_link<'b, Q>(&self, key: &Q, traverse_max: bool, barrier: &'b Barrier)
+    pub fn cleanup_link<'b, Q>(&self, key: &Q, traverse_max: bool, barrier: &'b Barrier) -> bool
     where
         K: 'b + Borrow<Q>,
         Q: Ord + ?Sized,
     {
         if traverse_max {
+            // It just has to search for the maximum leaf node in the tree.
             if let Some(unbounded) = self.unbounded_child.load(Acquire, barrier).as_ref() {
-                unbounded.cleanup_link(key, true, barrier);
+                return unbounded.cleanup_link(key, true, barrier);
             }
         } else if let Some(child_scanner) = Scanner::max_less(&self.children, key) {
             if let Some((_, child)) = child_scanner.get() {
                 if let Some(child) = child.load(Acquire, barrier).as_ref() {
-                    child.cleanup_link(key, true, barrier);
+                    return child.cleanup_link(key, true, barrier);
                 }
             }
         }
+        false
     }
 
     /// Waits for the lock on the [`InternalNode`] to be released.

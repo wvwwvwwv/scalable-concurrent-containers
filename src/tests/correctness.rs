@@ -656,6 +656,7 @@ mod treeindex_test {
             drop(barrier);
             cnt += 1;
         }
+        println!("{cnt}");
         assert!(cnt >= INST_CNT.load(Relaxed));
 
         let tree: TreeIndex<usize, R> = TreeIndex::new();
@@ -670,6 +671,7 @@ mod treeindex_test {
             drop(barrier);
             cnt += 1;
         }
+        println!("{cnt}");
         assert!(cnt >= INST_CNT.load(Relaxed));
     }
 
