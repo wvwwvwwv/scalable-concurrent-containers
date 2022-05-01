@@ -78,6 +78,7 @@ where
     /// let result = hashmap.capacity();
     /// assert_eq!(result, 64);
     /// ```
+    #[inline]
     pub fn new(capacity: usize, build_hasher: H) -> HashMap<K, V, H> {
         let initial_capacity = capacity.max(Self::default_capacity());
         let array = Arc::new(CellArray::<K, V, false>::new(
@@ -122,6 +123,7 @@ where
     ///
     /// assert_eq!(hashmap.capacity(), 1024);
     /// ```
+    #[inline]
     pub fn reserve(&self, capacity: usize) -> Option<Ticket<K, V, H>> {
         let mut current_additional_capacity = self.additional_capacity.load(Relaxed);
         loop {
@@ -1100,6 +1102,7 @@ where
     /// let result = hashmap.capacity();
     /// assert_eq!(result, 64);
     /// ```
+    #[inline]
     fn default() -> Self {
         HashMap {
             array: AtomicArc::new(CellArray::<K, V, false>::new(

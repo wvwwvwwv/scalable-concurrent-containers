@@ -78,6 +78,7 @@ where
     /// let result = hashindex.capacity();
     /// assert_eq!(result, 64);
     /// ```
+    #[inline]
     pub fn new(capacity: usize, build_hasher: H) -> HashIndex<K, V, H> {
         let initial_capacity = capacity.max(Self::default_capacity());
         HashIndex {
@@ -567,6 +568,7 @@ where
     ///
     /// assert_eq!(entry_ref, (&1, &0));
     /// ```
+    #[inline]
     pub fn iter<'h, 'b>(&'h self, barrier: &'b Barrier) -> Visitor<'h, 'b, K, V, H> {
         Visitor {
             hash_index: self,
@@ -598,6 +600,7 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32, _> = HashIndex::default();
     /// ```
+    #[inline]
     fn default() -> Self {
         HashIndex {
             array: AtomicArc::from(Arc::new(CellArray::<K, V, true>::new(

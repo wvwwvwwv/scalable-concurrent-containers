@@ -13,7 +13,7 @@ A collection of high performance concurrent container data structures and utilit
 - [HashIndex](#HashIndex) is a read-optimized concurrent hash index.
 - [TreeIndex](#TreeIndex) is a read-optimized concurrent B+ tree.
 
-See [Performance](#Performance) for benchmark results and comparison with other concurrent hash maps.
+_See [Performance](#Performance) for benchmark results for the container data structures and comparison with other concurrent hash maps_.
 
 
 ## EBR
@@ -118,6 +118,7 @@ assert_eq!(next_ptr.as_ref().unwrap().1, 1);
 tail.delete_self(Relaxed);
 assert!(head.next_ptr(Relaxed, &barrier).is_null());
 ```
+
 
 ## HashMap
 
@@ -331,7 +332,7 @@ let result = future_insert.await;
 
 ## Performance
 
-**Interpret the results cautiously as benchmarks do not represent real world workloads.**
+**Interpret the results cautiously as benchmarks do not represent real world workloads**.
 
 ### Setup
 
@@ -391,8 +392,8 @@ let result = future_insert.await;
 
 ### [HashMap](#HashMap) Performance Comparison with [DashMap](https://github.com/xacrimon/dashmap) and [flurry](https://github.com/jonhoo/flurry)
 
-- [Results on Apple M1](https://github.com/wvwwvwwv/conc-map-bench).
-- [Results on Intel Xeon](https://github.com/wvwwvwwv/conc-map-bench/tree/Intel).
+- [Results on Apple M1 (8 cores)](https://github.com/wvwwvwwv/conc-map-bench).
+- [Results on Intel Xeon (88 cores)](https://github.com/wvwwvwwv/conc-map-bench/tree/Intel).
 - *Interpret the results cautiously as benchmarks do not represent real world workloads.*
 - [HashMap](#HashMap) outperforms the others *[according to the benchmark test](https://github.com/xacrimon/conc-map-bench)* under highly concurrent or write-heavy workloads.
 - The benchmark test is forked from [conc-map-bench](https://github.com/xacrimon/conc-map-bench).

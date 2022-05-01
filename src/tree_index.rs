@@ -551,6 +551,7 @@ where
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::default();
     /// ```
+    #[inline]
     fn default() -> Self {
         TreeIndex::new()
     }
@@ -575,10 +576,7 @@ where
     K: 'static + Clone + Ord + Send + Sync,
     V: 'static + Clone + Send + Sync,
 {
-    pub(crate) fn new(
-        root: &'t AtomicArc<Node<K, V>>,
-        barrier: &'b Barrier,
-    ) -> Visitor<'t, 'b, K, V> {
+    fn new(root: &'t AtomicArc<Node<K, V>>, barrier: &'b Barrier) -> Visitor<'t, 'b, K, V> {
         Visitor::<'t, 'b, K, V> {
             root,
             leaf_scanner: None,
@@ -656,7 +654,7 @@ where
     V: 'static + Clone + Send + Sync,
     R: RangeBounds<K>,
 {
-    pub(crate) fn new(
+    fn new(
         root: &'t AtomicArc<Node<K, V>>,
         range: R,
         barrier: &'b Barrier,

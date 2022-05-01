@@ -47,6 +47,7 @@ where
     /// let result = hashset.capacity();
     /// assert_eq!(result, 64);
     /// ```
+    #[inline]
     pub fn new(capacity: usize, build_hasher: H) -> HashSet<K, H> {
         HashSet {
             map: HashMap::new(capacity, build_hasher),
@@ -81,6 +82,7 @@ where
     ///
     /// assert_eq!(hashset.capacity(), 1024);
     /// ```
+    #[inline]
     pub fn reserve(&self, capacity: usize) -> Option<Ticket<K, H>> {
         self.map.reserve(capacity)
     }
@@ -379,6 +381,7 @@ where
     /// hashset.scan(|k| { sum += *k; });
     /// assert_eq!(sum, 3);
     /// ```
+    #[inline]
     pub fn scan<F: FnMut(&K)>(&self, mut scanner: F) {
         self.map.scan(|k, _| scanner(k));
     }
@@ -399,6 +402,7 @@ where
     /// let future_insert = hashset.insert_async(1);
     /// let future_retain = hashset.scan_async(|k| println!("{k}"));
     /// ```
+    #[inline]
     pub async fn scan_async<F: FnMut(&K)>(&self, mut scanner: F) {
         self.map.scan_async(|k, _| scanner(k)).await;
     }
@@ -475,6 +479,7 @@ where
     ///
     /// assert_eq!(hashset.retain(|k| *k == 1), (1, 2));
     /// ```
+    #[inline]
     pub fn retain<F: FnMut(&K) -> bool>(&self, mut filter: F) -> (usize, usize) {
         self.map.retain(|k, _| filter(k))
     }
@@ -498,6 +503,7 @@ where
     /// let future_insert = hashset.insert_async(1);
     /// let future_retain = hashset.retain_async(|k| *k == 1);
     /// ```
+    #[inline]
     pub async fn retain_async<F: FnMut(&K) -> bool>(&self, mut filter: F) -> (usize, usize) {
         self.map.retain_async(|k, _| filter(k)).await
     }
@@ -613,6 +619,7 @@ impl<K: 'static + Eq + Hash + Sync> Default for HashSet<K, RandomState> {
     /// let result = hashset.capacity();
     /// assert_eq!(result, 64);
     /// ```
+    #[inline]
     fn default() -> Self {
         HashSet {
             map: HashMap::default(),
