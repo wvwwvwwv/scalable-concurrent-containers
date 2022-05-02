@@ -1,18 +1,16 @@
 #![deny(missing_docs, warnings, clippy::all, clippy::pedantic)]
 
-//! Scalable concurrent containers.
+//! Concurrent containers.
 //!
-//! * [`LinkedList`](LinkedList).
-//! * [`HashMap`](HashMap).
-//! * [`HashIndex`](HashIndex).
-//! * [`TreeIndex`](TreeIndex).
+//! * [`HashMap`]: concurrent hash map.
+//! * [`HashIndex`]: concurrent hash map optimized for read.
+//! * [`TreeIndex`]: concurrent B+ tree optimized for read.
 //!
-//! # [`EBR`](ebr)
+//! Utilities.
 //!
-//! The [`ebr`] module implements epoch-based reclamation for every container type in this crate.
-
-mod linked_list;
-pub use linked_list::LinkedList;
+//! * [Epoch-based-reclamation](ebr).
+//! * [`LinkedList`]: lock-free concurrent linked list type trait.
+//! * [`Queue`]: lock-free concurrent queue.
 
 pub mod hash_map;
 pub use hash_map::HashMap;
@@ -22,6 +20,12 @@ pub use hash_index::HashIndex;
 
 pub mod hash_set;
 pub use hash_set::HashSet;
+
+mod linked_list;
+pub use linked_list::LinkedList;
+
+mod queue;
+pub use queue::Queue;
 
 pub mod tree_index;
 pub use tree_index::TreeIndex;

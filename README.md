@@ -8,8 +8,9 @@ A collection of high performance concurrent container data structures and utilit
 
 - [EBR](#EBR) implements epoch-based reclamation.
 - [LinkedList](#LinkedList) is a type trait implementing a wait-free concurrent singly linked list.
+- [Queue](#Queue) is a concurrent lock-free first-in-first-out queue.
 - [HashMap](#HashMap) is a concurrent hash map.
-- [HashSet](#HashSet) is a concurrent hash set based on [HashMap](#HashMap).
+- [HashSet](#HashSet) is a variant of [HashMap](#HashMap).
 - [HashIndex](#HashIndex) is a read-optimized concurrent hash index.
 - [TreeIndex](#TreeIndex) is a read-optimized concurrent B+ tree.
 
@@ -117,6 +118,19 @@ assert_eq!(next_ptr.as_ref().unwrap().1, 1);
 // Once `tail` is deleted, it becomes invisible.
 tail.delete_self(Relaxed);
 assert!(head.next_ptr(Relaxed, &barrier).is_null());
+```
+
+
+## Queue
+
+* WORK-IN-PROGRESS
+
+[Queue](#Queue) is a concurrent lock-free first-in-first-out queue.
+
+### Examples
+
+```rust
+use scc::Queue;
 ```
 
 
@@ -403,6 +417,7 @@ let result = future_insert.await;
 
 0.6.10
 
+* New data structure: [Queue](#Queue).
 * Cleanup API.
 
 0.6.9
