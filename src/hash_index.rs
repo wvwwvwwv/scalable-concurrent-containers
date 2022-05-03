@@ -27,7 +27,7 @@ use std::sync::atomic::Ordering::Acquire;
 /// ## The key differences between [`HashIndex`] and [`HashMap`](crate::HashMap).
 ///
 /// * Lock-free-read: read and scan operations do not modify shared data and are never blocked.
-/// * Immutability: the data in the container is treated immutable until it becomes unreachable.
+/// * Immutability: the data in the container is immutable until it becomes unreachable.
 ///
 /// ## The key statistics for [`HashIndex`]
 ///
@@ -57,10 +57,6 @@ where
     /// Creates an empty [`HashIndex`] with the given capacity and build hasher.
     ///
     /// The actual capacity is equal to or greater than the given capacity.
-    ///
-    /// # Panics
-    ///
-    /// Panics if memory allocation fails.
     ///
     /// # Examples
     ///
@@ -100,8 +96,8 @@ where
     ///
     /// # Panics
     ///
-    /// Panics if memory allocation fails, or the number of entries in the target cell reaches
-    /// `u32::MAX`.
+    /// Panics if the number of entries in the target `Cell` reaches `u32::MAX` due to a poor hash
+    /// function.
     ///
     /// # Examples
     ///
@@ -589,16 +585,15 @@ where
     ///
     /// The default hash builder is [`RandomState`], and the default capacity is `64`.
     ///
-    /// # Panics
-    ///
-    /// Panics if memory allocation fails.
-    ///
     /// # Examples
     ///
     /// ```
     /// use scc::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32, _> = HashIndex::default();
+    ///
+    /// let result = hashmap.capacity();
+    /// assert_eq!(result, 64);
     /// ```
     #[inline]
     fn default() -> Self {

@@ -35,6 +35,7 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 /// * Lock-free-read: read and scan operations do not modify shared data and are never blocked.
 /// * Near lock-free write: write operations do not block unless a structural change is needed.
 /// * No busy waiting: each node has a wait queue to avoid spinning.
+/// * Immutability: the data in the container is immutable until it becomes unreachable.
 ///
 /// ## The key statistics for [`TreeIndex`]
 ///

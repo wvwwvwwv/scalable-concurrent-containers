@@ -28,10 +28,6 @@ where
     ///
     /// The actual capacity is equal to or greater than the given capacity.
     ///
-    /// # Panics
-    ///
-    /// Panics if memory allocation fails.
-    ///
     /// # Examples
     ///
     /// ```
@@ -95,8 +91,8 @@ where
     ///
     /// # Panics
     ///
-    /// Panics if memory allocation fails, or the number of entries in the target cell reaches
-    /// `u32::MAX`.
+    /// Panics if the number of entries in the target `Cell` reaches `u32::MAX` due to a poor hash
+    /// function.
     ///
     /// # Examples
     ///
@@ -124,6 +120,11 @@ where
     ///
     /// Returns an error along with the supplied key if the key exists.
     ///
+    /// # Panics
+    ///
+    /// Panics if the number of entries in the target `Cell` reaches `u32::MAX` due to a poor hash
+    ///
+    /// function.
     /// # Examples
     ///
     /// ```
@@ -604,10 +605,6 @@ impl<K: 'static + Eq + Hash + Sync> Default for HashSet<K, RandomState> {
     /// Creates a [`HashSet`] with the default parameters.
     ///
     /// The default hash builder is [`RandomState`], and the default capacity is `64`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if memory allocation fails.
     ///
     /// # Examples
     ///

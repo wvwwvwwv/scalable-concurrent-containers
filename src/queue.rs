@@ -61,6 +61,15 @@ impl<T: 'static> Queue<T> {
     }
 
     /// Returns `true` if the [`Queue`] is empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::Queue;
+    ///
+    /// let queue: Queue<usize> = Queue::default();
+    /// assert!(queue.is_empty());
+    /// ```
     pub fn is_empty(&self) -> bool {
         self.newest.is_null(Acquire)
     }

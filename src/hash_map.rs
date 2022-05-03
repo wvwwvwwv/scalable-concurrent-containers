@@ -157,8 +157,8 @@ where
     ///
     /// # Panics
     ///
-    /// Panics if memory allocation fails, or the number of entries in the target cell reaches
-    /// `u32::MAX`.
+    /// Panics if the number of entries in the target `Cell` reaches `u32::MAX` due to a poor hash
+    /// function.
     ///
     /// # Examples
     ///
@@ -191,6 +191,10 @@ where
     /// # Errors
     ///
     /// Returns an error along with the supplied key-value pair if the key exists.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the number of entries in the target `Cell` reaches `u32::MAX` due to a poor hash
     ///
     /// # Examples
     ///
@@ -297,8 +301,8 @@ where
     ///
     /// # Panics
     ///
-    /// Panics if memory allocation fails, or the number of entries in the target cell is
-    /// reached `u32::MAX`.
+    /// Panics if the number of entries in the target `Cell` reaches `u32::MAX` due to a poor hash
+    /// function.
     ///
     /// # Examples
     ///
@@ -342,8 +346,8 @@ where
     ///
     /// # Panics
     ///
-    /// Panics if memory allocation fails, or the number of entries in the target cell is
-    /// reached `u32::MAX`.
+    /// Panics if the number of entries in the target `Cell` reaches `u32::MAX` due to a poor hash
+    /// function.
     ///
     /// # Examples
     ///

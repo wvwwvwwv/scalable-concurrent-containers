@@ -130,6 +130,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
     }
 
     /// Kills the [`Cell`] for dropping it.
+    #[inline]
     pub unsafe fn kill_and_drop(&self, barrier: &Barrier) {
         if !self.data_array.link.load(Relaxed, barrier).is_null() {
             if let Some(data_array) = self.data_array.link.swap((None, Tag::None), Relaxed).0 {

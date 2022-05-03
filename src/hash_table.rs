@@ -235,8 +235,8 @@ where
 
     /// Acquires a [`Locker`] and [`EntryIterator`].
     ///
-    /// It returns an error if locking failed, otherwise it returns an [`EntryIterator`] if the
-    /// key exists or `None` if not.
+    /// It returns an error if locking failed, or returns an [`EntryIterator`] if the key exists,
+    /// otherwise `None` is returned.
     #[inline]
     #[allow(clippy::type_complexity)]
     fn acquire<'h, 'b, Q, const TRY_LOCK: bool>(
