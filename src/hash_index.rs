@@ -592,7 +592,7 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32, _> = HashIndex::default();
     ///
-    /// let result = hashmap.capacity();
+    /// let result = hashindex.capacity();
     /// assert_eq!(result, 64);
     /// ```
     #[inline]
