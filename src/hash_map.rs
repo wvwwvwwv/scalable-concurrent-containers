@@ -517,13 +517,16 @@ where
     /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 10);
     /// ```
     #[inline]
-    pub fn read<Q, R, F: FnMut(&K, &V) -> R>(&self, key_ref: &Q, reader: F) -> Option<R>
+    pub fn read<Q, R, F: FnMut(&K, &V) -> R>(&self, key_ref: &Q, mut reader: F) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
         let barrier = Barrier::new();
-        self.read_with(key_ref, reader, &barrier)
+        let (hash, partial_hash) = self.hash(key_ref);
+        self.read_entry::<Q, R, F, false>(key_ref, hash, partial_hash, &mut reader, &barrier)
+            .ok()
+            .and_then(|r| r)
     }
 
     /// Reads a key-value pair.
@@ -563,42 +566,6 @@ where
             }
             async_yield::async_yield().await;
         }
-    }
-
-    /// Reads a key-value pair using the supplied [`Barrier`].
-    ///
-    /// It enables the caller to use the value reference outside the method. It returns `None`
-    /// if the key does not exist.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::ebr::Barrier;
-    /// use scc::HashMap;
-    ///
-    /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    ///
-    /// assert!(hashmap.insert(1, 10).is_ok());
-    ///
-    /// let barrier = Barrier::new();
-    /// let value_ref = hashmap.read_with(&1, |k, v| v, &barrier).unwrap();
-    /// assert_eq!(*value_ref, 10);
-    /// ```
-    #[inline]
-    pub fn read_with<'b, Q, R, F: FnMut(&'b K, &'b V) -> R>(
-        &self,
-        key_ref: &Q,
-        mut reader: F,
-        barrier: &'b Barrier,
-    ) -> Option<R>
-    where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
-    {
-        let (hash, partial_hash) = self.hash(key_ref);
-        self.read_entry::<Q, R, F, false>(key_ref, hash, partial_hash, &mut reader, barrier)
-            .ok()
-            .and_then(|r| r)
     }
 
     /// Checks if the key exists.

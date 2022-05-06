@@ -1,6 +1,5 @@
 //! The module implements [`HashSet`].
 
-use super::ebr::Barrier;
 use super::HashMap;
 
 use std::borrow::Borrow;
@@ -254,13 +253,12 @@ where
     /// assert!(hashset.read(&1, |_| true).unwrap());
     /// ```
     #[inline]
-    pub fn read<Q, R, F: FnMut(&K) -> R>(&self, key_ref: &Q, reader: F) -> Option<R>
+    pub fn read<Q, R, F: FnMut(&K) -> R>(&self, key_ref: &Q, mut reader: F) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let barrier = Barrier::new();
-        self.read_with(key_ref, reader, &barrier)
+        self.map.read(key_ref, |k, _| reader(k))
     }
 
     /// Reads a key.
@@ -284,38 +282,6 @@ where
         Q: Eq + Hash + ?Sized,
     {
         self.map.read_async(key_ref, |k, _| reader(k)).await
-    }
-
-    /// Reads a key using the supplied [`Barrier`].
-    ///
-    /// It returns `None` if the key does not exist.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::ebr::Barrier;
-    /// use scc::HashSet;
-    ///
-    /// let hashset: HashSet<u64> = HashSet::default();
-    ///
-    /// assert!(hashset.insert(1).is_ok());
-    ///
-    /// let barrier = Barrier::new();
-    /// let key_ref = hashset.read_with(&1, |k| k, &barrier).unwrap();
-    /// assert_eq!(*key_ref, 1);
-    /// ```
-    #[inline]
-    pub fn read_with<'b, Q, R, F: FnMut(&'b K) -> R>(
-        &self,
-        key_ref: &Q,
-        mut reader: F,
-        barrier: &'b Barrier,
-    ) -> Option<R>
-    where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
-    {
-        self.map.read_with(key_ref, |k, _| reader(k), barrier)
     }
 
     /// Checks if the key exists.

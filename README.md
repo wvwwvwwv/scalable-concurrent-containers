@@ -418,7 +418,7 @@ let result = future_insert.await;
 0.6.10
 
 * New data structure: [Queue](#Queue).
-* Cleanup API.
+* Remove incorrect methods: `{HashMap, HashSet}::read_with`.
 
 0.6.9
 
