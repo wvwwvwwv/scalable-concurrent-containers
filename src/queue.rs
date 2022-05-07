@@ -78,33 +78,17 @@ impl<T: 'static> Queue<T> {
     pub fn pop(&self) -> Option<Arc<Entry<T>>> {
         let barrier = Barrier::new();
         let mut current = self.oldest.load(Acquire, &barrier);
-        while let Some(oldest_entry) = current.as_ref() {
-            if !oldest_entry
-                .next
-                .update_tag_if(Tag::First, |t| t == Tag::None, Release)
-            {
-                // Failed to own the entry.
-                current = self.cleanup(&barrier);
-                continue;
-            }
-            match self.oldest.compare_exchange(
-                current,
-                (oldest_entry.next.get_arc(Acquire, &barrier), Tag::None),
-                AcqRel,
-                Acquire,
-                &barrier,
-            ) {
-                Ok((oldest_entry, new_ptr)) => {
-                    if new_ptr.is_null() {
-                        // Reset `newest`.
-                        self.newest.swap((None, Tag::None), Relaxed);
-                    }
-                    return oldest_entry;
-                }
-                Err((_, actual_ptr)) => {
-                    current = actual_ptr;
+        while !current.is_null() {
+            if let Some(oldest_entry) = current.get_arc() {
+                if oldest_entry
+                    .next
+                    .update_tag_if(Tag::First, |t| t == Tag::None, Release)
+                {
+                    self.cleanup(&barrier);
+                    return Some(oldest_entry);
                 }
             }
+            current = self.cleanup(&barrier);
         }
         None
     }
@@ -171,7 +155,9 @@ impl<T: 'static> Queue<T> {
                     return Ok(());
                 }
                 Err((_, actual_ptr)) => {
-                    newest_ptr = if actual_ptr.is_null() {
+                    newest_ptr = if actual_ptr.tag() == Tag::First {
+                        self.cleanup(barrier)
+                    } else if actual_ptr.is_null() {
                         self.oldest.load(Acquire, barrier)
                     } else {
                         actual_ptr
@@ -190,10 +176,32 @@ impl<T: 'static> Queue<T> {
         Err(unsafe { new_entry.get_mut().unwrap().take_inner() })
     }
 
-    /// Cleans up marked entries.
+    /// Cleans up logically popped entries.
     fn cleanup<'b>(&self, barrier: &'b Barrier) -> Ptr<'b, Entry<T>> {
-        // TODO.
-        self.oldest.load(Acquire, barrier)
+        let oldest_ptr = self.oldest.load(Acquire, barrier);
+        if let Some(oldest_entry) = oldest_ptr.as_ref() {
+            if oldest_entry.next.tag(Relaxed) == Tag::First {
+                match self.oldest.compare_exchange(
+                    oldest_ptr,
+                    (oldest_entry.next.get_arc(Acquire, barrier), Tag::None),
+                    AcqRel,
+                    Acquire,
+                    barrier,
+                ) {
+                    Ok((_, new_ptr)) => {
+                        if new_ptr.is_null() {
+                            // Reset `newest`.
+                            self.newest.swap((None, Tag::None), Relaxed);
+                        }
+                        return new_ptr;
+                    }
+                    Err((_, actual_ptr)) => {
+                        return actual_ptr;
+                    }
+                }
+            }
+        }
+        oldest_ptr
     }
 
     /// Updates `newest`.
