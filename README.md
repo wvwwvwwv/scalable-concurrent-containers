@@ -123,14 +123,21 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 ## Queue
 
-* WORK-IN-PROGRESS
-
 [Queue](#Queue) is a concurrent lock-free first-in-first-out queue.
 
 ### Examples
 
 ```rust
 use scc::Queue;
+
+let queue: Queue<usize> = Queue::default();
+
+queue.push(1);
+assert!(queue.push_if(2, |e| e.map_or(false, |x| *x == 1)).is_ok());
+assert_eq!(queue.push_if(3, |e| e.map_or(false, |x| *x == 1)), Err(3));
+assert_eq!(queue.pop().map(|e| **e), Some(1));
+assert_eq!(queue.pop().map(|e| **e), Some(2));
+assert!(queue.pop().is_none());
 ```
 
 
