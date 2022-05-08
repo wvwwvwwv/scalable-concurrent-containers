@@ -52,7 +52,7 @@ hashmap.upsert(1, || 2, |_, v| *v = 3);
 assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 3);
 ```
 
-There is no method to confine the lifetime of references derived from an [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html), and it is illegal to let them live as long as the [HashMap](#HashMap). Therefore [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, it provides two methods that allow a [HashMap](#HashMap) to iterate over its entries: `for_each`, and `retain`.
+There is no method to confine the lifetime of references derived from an [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html), and it is illegal to let them live as long as the [HashMap](#HashMap). Therefore [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, it provides a number of methods as substitutes for [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html): `for_each`, `for_each_async`, `scan`, `scan_async`, `retain`, and `retain_async`.
 
 ```rust
 use scc::HashMap;
@@ -93,7 +93,7 @@ let result = future_insert.await;
 
 ## HashSet
 
-[HashSet](#HashSet) is a variant of [HashMap](#HashMap) where the value type is `()`.
+[HashSet](#HashSet) is identical to [HashMap](#HashMap) except that the value type is always `()`.
 
 ### Examples
 
@@ -107,16 +107,6 @@ let hashset: HashSet<u64> = HashSet::default();
 assert!(hashset.read(&1, |_| true).is_none());
 assert!(hashset.insert(1).is_ok());
 assert!(hashset.read(&1, |_| true).unwrap());
-```
-
-The capacity of a [HashSet](#HashSet) can be specified.
-
-```rust
-use scc::HashSet;
-use std::collections::hash_map::RandomState;
-
-let hashset: HashSet<u64, RandomState> = HashSet::new(1000000, RandomState::new());
-assert_eq!(hashset.capacity(), 1048576);
 ```
 
 
@@ -440,18 +430,3 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 * Improve [TreeIndex](#TreeIndex) performance.
 * Fix [#66](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/66).
 * Fix [#71](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/71).
-
-0.6.8
-
-* Fix wait queue performance issues with asynchronous [TreeIndex](#TreeIndex) methods.
-
-0.6.7
-
-* Fix ebr API, `ebr::AtomicArc::swap`: return the previous `ebr::Tag` along with the pointer.
-* Fix ebr API, `ebr::AtomicArc::compare_exchange`: receive a reference to `ebr::Barrier`.
-* Fix [#49](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/49) for synchronous [TreeIndex](#TreeIndex) methods.
-
-0.6.6
-
-* Add `{HashMap, HashSet}::{scan, scan_async}` for a read-only scan.
-* Minor [HashMap](#HashMap) optimization.
