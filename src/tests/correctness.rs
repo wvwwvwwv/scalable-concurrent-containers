@@ -1011,8 +1011,8 @@ mod queue_test {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         const NUM_TASKS: usize = 8;
         const NUM_PRODUCERS: usize = NUM_TASKS / 2;
-        let workload_size = 1024;
-        for _ in 0..256 {
+        let workload_size = 64;
+        for _ in 0..1 {
             let queue: Arc<Queue<R>> = Arc::new(Queue::default());
             let num_popped: Arc<AtomicUsize> = Arc::new(AtomicUsize::default());
             let mut task_handles = Vec::with_capacity(NUM_TASKS);
@@ -1024,7 +1024,7 @@ mod queue_test {
                 task_handles.push(tokio::task::spawn(async move {
                     barrier_cloned.wait().await;
                     if task_id < NUM_PRODUCERS {
-                        for seq in 0..workload_size {
+                        for seq in 1..=workload_size {
                             queue_cloned.push(R::new(task_id, seq, &INST_CNT));
                         }
                     } else {
