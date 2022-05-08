@@ -4,141 +4,20 @@
 ![Crates.io](https://img.shields.io/crates/l/scc?style=flat-square)
 ![GitHub Workflow Status](https://img.shields.io/github/workflow/status/wvwwvwwv/scalable-concurrent-containers/SCC?style=flat-square)
 
-A collection of high performance concurrent container data structures and utilities for asynchronous and concurrent programming.
+A collection of high performance containers and utilities for asynchronous and concurrent programming.
 
-- [EBR](#EBR) implements epoch-based reclamation.
-- [LinkedList](#LinkedList) is a type trait implementing a wait-free concurrent singly linked list.
-- [Queue](#Queue) is a concurrent lock-free first-in-first-out queue.
+#### Concurrent Containers
 - [HashMap](#HashMap) is a concurrent hash map.
 - [HashSet](#HashSet) is a variant of [HashMap](#HashMap).
 - [HashIndex](#HashIndex) is a read-optimized concurrent hash index.
 - [TreeIndex](#TreeIndex) is a read-optimized concurrent B+ tree.
+- [Queue](#Queue) is a concurrent lock-free first-in-first-out queue.
 
-_See [Performance](#Performance) for benchmark results for the container data structures and comparison with other concurrent hash maps_.
+#### Utilities for Concurrent Programming
+- [EBR](#EBR) implements epoch-based reclamation.
+- [LinkedList](#LinkedList) is a type trait implementing a lock-free concurrent singly linked list.
 
-
-## EBR
-
-The `ebr` module implements epoch-based reclamation and various types of auxiliary data structures to make use of it. Its epoch-based reclamation algorithm is similar to that implemented in [crossbeam_epoch](https://docs.rs/crossbeam-epoch/), however users may find it easier to use as the lifetime of an instance is safely managed. For instance, `ebr::AtomicArc` and `ebr::Arc` hold a strong reference to the underlying instance, and the instance is automatically passed to the garbage collector when the reference count drops to zero.
-
-### Examples
-
-The `ebr` module can be used without an `unsafe` block.
-
-```rust
-use scc::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
-
-use std::sync::atomic::Ordering::Relaxed;
-
-// `atomic_arc` holds a strong reference to `17`.
-let atomic_arc: AtomicArc<usize> = AtomicArc::new(17);
-
-// `barrier` prevents the garbage collector from dropping reachable instances.
-let barrier: Barrier = Barrier::new();
-
-// `ptr` cannot outlive `barrier`.
-let mut ptr: Ptr<usize> = atomic_arc.load(Relaxed, &barrier);
-assert_eq!(*ptr.as_ref().unwrap(), 17);
-
-// `atomic_arc` can be tagged.
-atomic_arc.update_tag_if(Tag::First, |t| t == Tag::None, Relaxed);
-
-// `ptr` is not tagged, so CAS fails.
-assert!(atomic_arc.compare_exchange(
-    ptr,
-    (Some(Arc::new(18)), Tag::First),
-    Relaxed,
-    Relaxed,
-    &barrier).is_err());
-
-// `ptr` can be tagged.
-ptr.set_tag(Tag::First);
-
-// The return value of CAS is a handle to the instance that `atomic_arc` previously owned.
-let prev: Arc<usize> = atomic_arc.compare_exchange(
-    ptr,
-    (Some(Arc::new(18)), Tag::Second),
-    Relaxed,
-    Relaxed,
-    &barrier).unwrap().0.unwrap();
-assert_eq!(*prev, 17);
-
-// `17` will be garbage-collected later.
-drop(prev);
-
-// `ebr::AtomicArc` can be converted into `ebr::Arc`.
-let arc: Arc<usize> = atomic_arc.try_into_arc(Relaxed).unwrap();
-assert_eq!(*arc, 18);
-
-// `18` will be garbage-collected later.
-drop(arc);
-
-// `17` is still valid as `barrier` keeps the garbage collector from dropping it.
-assert_eq!(*ptr.as_ref().unwrap(), 17);
-```
-
-
-## LinkedList
-
-[LinkedList](#LinkedList) is a type trait that implements wait-free concurrent singly linked list operations, backed by [EBR](#EBR). It additionally provides support for marking an entry of a linked list to indicate that the entry is in a user-defined state.
-
-### Examples
-
-```rust
-use scc::ebr::{Arc, AtomicArc, Barrier};
-use scc::LinkedList;
-
-use std::sync::atomic::Ordering::Relaxed;
-
-#[derive(Default)]
-struct L(AtomicArc<L>, usize);
-impl LinkedList for L {
-    fn link_ref(&self) -> &AtomicArc<L> {
-        &self.0
-    }
-}
-
-let barrier = Barrier::new();
-
-let head: L = L::default();
-let tail: Arc<L> = Arc::new(L(AtomicArc::null(), 1));
-
-// A new entry is pushed.
-assert!(head.push_back(tail.clone(), false, Relaxed, &barrier).is_ok());
-assert!(!head.is_marked(Relaxed));
-
-// Users can mark a flag on an entry.
-head.mark(Relaxed);
-assert!(head.is_marked(Relaxed));
-
-// `next_ptr` traverses the linked list.
-let next_ptr = head.next_ptr(Relaxed, &barrier);
-assert_eq!(next_ptr.as_ref().unwrap().1, 1);
-
-// Once `tail` is deleted, it becomes invisible.
-tail.delete_self(Relaxed);
-assert!(head.next_ptr(Relaxed, &barrier).is_null());
-```
-
-
-## Queue
-
-[Queue](#Queue) is a concurrent lock-free first-in-first-out queue.
-
-### Examples
-
-```rust
-use scc::Queue;
-
-let queue: Queue<usize> = Queue::default();
-
-queue.push(1);
-assert!(queue.push_if(2, |e| e.map_or(false, |x| *x == 1)).is_ok());
-assert_eq!(queue.push_if(3, |e| e.map_or(false, |x| *x == 1)), Err(3));
-assert_eq!(queue.pop().map(|e| **e), Some(1));
-assert_eq!(queue.pop().map(|e| **e), Some(2));
-assert!(queue.pop().is_none());
-```
+_See [Performance](#Performance) for benchmark results for the containers and comparison with other concurrent hash maps_.
 
 
 ## HashMap
@@ -198,7 +77,7 @@ assert!(hashmap.insert(3, 2).is_ok());
 assert_eq!(hashmap.retain(|key, value| *key == 1 && *value == 0), (1, 2));
 ```
 
-Asynchronous methods can be used in asynchronous code blocks; *asynchronous methods yield the task executor when the target mutex cannot be acquire*.
+Asynchronous methods can be used in asynchronous code blocks; *asynchronous methods yield the task executor when the target mutex cannot be acquired ([#49](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/49))*.
 
 ```rust
 use scc::HashMap;
@@ -339,7 +218,7 @@ assert_eq!(treeindex.range(4..8, &barrier).count(), 4);
 assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 ```
 
-Asynchronous methods can be used in asynchronous code blocks; *asynchronous methods yield the task executor when the target mutex cannot be acquire*.
+Asynchronous methods can be used in asynchronous code blocks; *asynchronous methods yield the task executor when the target mutex cannot be acquired ([#49](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/49))*.
 
 ```rust
 use scc::TreeIndex;
@@ -348,6 +227,130 @@ let treeindex: TreeIndex<u64, u32> = TreeIndex::default();
 
 let future_insert = treeindex.insert_async(11, 17);
 let result = future_insert.await;
+```
+
+
+## Queue
+
+[Queue](#Queue) is a concurrent lock-free first-in-first-out queue.
+
+### Examples
+
+```rust
+use scc::Queue;
+
+let queue: Queue<usize> = Queue::default();
+
+queue.push(1);
+assert!(queue.push_if(2, |e| e.map_or(false, |x| *x == 1)).is_ok());
+assert_eq!(queue.push_if(3, |e| e.map_or(false, |x| *x == 1)), Err(3));
+assert_eq!(queue.pop().map(|e| **e), Some(1));
+assert_eq!(queue.pop().map(|e| **e), Some(2));
+assert!(queue.pop().is_none());
+```
+
+
+## EBR
+
+The `ebr` module implements epoch-based reclamation and various types of auxiliary data structures to make use of it. Its epoch-based reclamation algorithm is similar to that implemented in [crossbeam_epoch](https://docs.rs/crossbeam-epoch/), however users may find it easier to use as the lifetime of an instance is safely managed. For instance, `ebr::AtomicArc` and `ebr::Arc` hold a strong reference to the underlying instance, and the instance is automatically passed to the garbage collector when the reference count drops to zero.
+
+### Examples
+
+The `ebr` module can be used without an `unsafe` block.
+
+```rust
+use scc::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
+
+use std::sync::atomic::Ordering::Relaxed;
+
+// `atomic_arc` holds a strong reference to `17`.
+let atomic_arc: AtomicArc<usize> = AtomicArc::new(17);
+
+// `barrier` prevents the garbage collector from dropping reachable instances.
+let barrier: Barrier = Barrier::new();
+
+// `ptr` cannot outlive `barrier`.
+let mut ptr: Ptr<usize> = atomic_arc.load(Relaxed, &barrier);
+assert_eq!(*ptr.as_ref().unwrap(), 17);
+
+// `atomic_arc` can be tagged.
+atomic_arc.update_tag_if(Tag::First, |t| t == Tag::None, Relaxed);
+
+// `ptr` is not tagged, so CAS fails.
+assert!(atomic_arc.compare_exchange(
+    ptr,
+    (Some(Arc::new(18)), Tag::First),
+    Relaxed,
+    Relaxed,
+    &barrier).is_err());
+
+// `ptr` can be tagged.
+ptr.set_tag(Tag::First);
+
+// The return value of CAS is a handle to the instance that `atomic_arc` previously owned.
+let prev: Arc<usize> = atomic_arc.compare_exchange(
+    ptr,
+    (Some(Arc::new(18)), Tag::Second),
+    Relaxed,
+    Relaxed,
+    &barrier).unwrap().0.unwrap();
+assert_eq!(*prev, 17);
+
+// `17` will be garbage-collected later.
+drop(prev);
+
+// `ebr::AtomicArc` can be converted into `ebr::Arc`.
+let arc: Arc<usize> = atomic_arc.try_into_arc(Relaxed).unwrap();
+assert_eq!(*arc, 18);
+
+// `18` will be garbage-collected later.
+drop(arc);
+
+// `17` is still valid as `barrier` keeps the garbage collector from dropping it.
+assert_eq!(*ptr.as_ref().unwrap(), 17);
+```
+
+
+## LinkedList
+
+[LinkedList](#LinkedList) is a type trait that implements lock-free concurrent singly linked list operations, backed by [EBR](#EBR). It additionally provides support for marking an entry of a linked list to denote a user-defined state.
+
+### Examples
+
+```rust
+use scc::ebr::{Arc, AtomicArc, Barrier};
+use scc::LinkedList;
+
+use std::sync::atomic::Ordering::Relaxed;
+
+#[derive(Default)]
+struct L(AtomicArc<L>, usize);
+impl LinkedList for L {
+    fn link_ref(&self) -> &AtomicArc<L> {
+        &self.0
+    }
+}
+
+let barrier = Barrier::new();
+
+let head: L = L::default();
+let tail: Arc<L> = Arc::new(L(AtomicArc::null(), 1));
+
+// A new entry is pushed.
+assert!(head.push_back(tail.clone(), false, Relaxed, &barrier).is_ok());
+assert!(!head.is_marked(Relaxed));
+
+// Users can mark a flag on an entry.
+head.mark(Relaxed);
+assert!(head.is_marked(Relaxed));
+
+// `next_ptr` traverses the linked list.
+let next_ptr = head.next_ptr(Relaxed, &barrier);
+assert_eq!(next_ptr.as_ref().unwrap().1, 1);
+
+// Once `tail` is deleted, it becomes invisible.
+tail.delete_self(Relaxed);
+assert!(head.next_ptr(Relaxed, &barrier).is_null());
 ```
 
 

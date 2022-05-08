@@ -983,7 +983,6 @@ mod treeindex_test {
 
 #[cfg(test)]
 mod queue_test {
-    use crate::ebr;
     use crate::Queue;
 
     use std::sync::atomic::AtomicUsize;
@@ -992,27 +991,19 @@ mod queue_test {
 
     use tokio::sync::Barrier as AsyncBarrier;
 
-    struct R(usize, usize, &'static AtomicUsize);
+    struct R(usize, usize);
     impl R {
-        fn new(task_id: usize, seq: usize, cnt: &'static AtomicUsize) -> R {
-            cnt.fetch_add(1, Relaxed);
-            R(task_id, seq, cnt)
-        }
-    }
-    impl Drop for R {
-        fn drop(&mut self) {
-            self.2.fetch_sub(1, Relaxed);
+        fn new(task_id: usize, seq: usize) -> R {
+            R(task_id, seq)
         }
     }
 
-    #[ignore]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn mpmc() {
-        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
-        const NUM_TASKS: usize = 8;
+        const NUM_TASKS: usize = 12;
         const NUM_PRODUCERS: usize = NUM_TASKS / 2;
-        let workload_size = 64;
-        for _ in 0..1 {
+        let workload_size = 256;
+        for _ in 0..256 {
             let queue: Arc<Queue<R>> = Arc::new(Queue::default());
             let num_popped: Arc<AtomicUsize> = Arc::new(AtomicUsize::default());
             let mut task_handles = Vec::with_capacity(NUM_TASKS);
@@ -1025,22 +1016,23 @@ mod queue_test {
                     barrier_cloned.wait().await;
                     if task_id < NUM_PRODUCERS {
                         for seq in 1..=workload_size {
-                            queue_cloned.push(R::new(task_id, seq, &INST_CNT));
+                            assert_eq!(queue_cloned.push(R::new(task_id, seq)).1, seq);
                         }
                     } else {
                         let mut popped_acc: [usize; NUM_PRODUCERS] = Default::default();
                         loop {
-                            let mut num_popped = 0;
+                            let mut cnt = 0;
                             while let Some(popped) = queue_cloned.pop() {
-                                num_popped += 1;
+                                cnt += 1;
                                 assert!(popped_acc[popped.0] < popped.1);
                                 popped_acc[popped.0] = popped.1;
                             }
-                            if num_popped_cloned.fetch_add(num_popped, Relaxed) + num_popped
+                            if num_popped_cloned.fetch_add(cnt, Relaxed) + cnt
                                 == workload_size * NUM_PRODUCERS
                             {
                                 break;
                             }
+                            tokio::task::yield_now().await;
                         }
                     }
                 }));
@@ -1050,11 +1042,6 @@ mod queue_test {
                 assert!(r.is_ok());
             }
             assert!(queue.is_empty());
-        }
-
-        while INST_CNT.load(Relaxed) > 0 {
-            let barrier = ebr::Barrier::new();
-            drop(barrier);
         }
     }
 }

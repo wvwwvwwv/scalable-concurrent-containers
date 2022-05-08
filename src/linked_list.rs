@@ -2,7 +2,7 @@ use super::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 
 use std::sync::atomic::Ordering::{self, Relaxed, Release};
 
-/// [`LinkedList`] is a wait-free self-referential singly linked list.
+/// [`LinkedList`] is a type trait implementing a lock-free singly linked list.
 pub trait LinkedList: 'static + Sized {
     /// Returns a reference to the forward link.
     ///

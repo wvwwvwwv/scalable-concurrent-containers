@@ -163,6 +163,12 @@ impl<T: 'static> Arc<T> {
     }
 }
 
+impl<T: 'static> AsRef<T> for Arc<T> {
+    fn as_ref(&self) -> &T {
+        &**self.underlying()
+    }
+}
+
 impl<T: 'static> Clone for Arc<T> {
     #[inline]
     fn clone(&self) -> Self {
