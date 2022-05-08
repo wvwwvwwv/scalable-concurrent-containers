@@ -4,7 +4,7 @@
 ![Crates.io](https://img.shields.io/crates/l/scc?style=flat-square)
 ![GitHub Workflow Status](https://img.shields.io/github/workflow/status/wvwwvwwv/scalable-concurrent-containers/SCC?style=flat-square)
 
-A collection of high performance containers and utilities for asynchronous and concurrent programming.
+A collection of high performance concurrent containers and utilities for asynchronous and concurrent programming.
 
 #### Concurrent Containers
 - [HashMap](#HashMap) is a concurrent hash map.
@@ -39,7 +39,7 @@ assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
 assert_eq!(hashmap.remove(&1).unwrap(), (1, 2));
 ```
 
-It supports `upsert` as in database management software; it tries to insert the given key-value pair, and if it fails, it updates the value field with the supplied closure.
+It supports `upsert` as in database management software; it tries to insert the given key-value pair, and if the key exists, it updates the value field with the supplied closure.
 
 ```rust
 use scc::HashMap;
@@ -83,6 +83,9 @@ Asynchronous methods can be used in asynchronous code blocks; *asynchronous meth
 use scc::HashMap;
 
 let hashmap: HashMap<u64, u32> = HashMap::default();
+
+assert!(hashmap.insert(1, 0).is_ok());
+
 let future_insert = hashmap.insert_async(11, 17);
 let result = future_insert.await;
 ```
@@ -123,7 +126,7 @@ assert_eq!(hashset.capacity(), 1048576);
 
 ### Examples
 
-Its `read` method does not modify any shared data.
+Its `read` method is completely lock-free and does not modify any shared data.
 
 ```rust
 use scc::HashIndex;
@@ -134,7 +137,7 @@ assert!(hashindex.insert(1, 0).is_ok());
 assert_eq!(hashindex.read(&1, |_, v| *v).unwrap(), 0);
 ```
 
-An [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is implemented for [HashIndex](#HashIndex), because derived references can survive as long as the associated `ebr::Barrier` lives.
+An [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is implemented for [HashIndex](#HashIndex), because any derived references can survive as long as the associated `ebr::Barrier` lives.
 
 ```rust
 use scc::ebr::Barrier;
@@ -166,7 +169,7 @@ assert_eq!(entry_ref, (&1, &0));
 
 ### Examples
 
-Key-value pairs can be inserted, read, and removed.
+Key-value pairs can be inserted, read, and removed, and the `read` method is lock-free.
 
 ```rust
 use scc::TreeIndex;
@@ -178,7 +181,7 @@ assert_eq!(treeindex.read(&1, |_, value| *value).unwrap(), 10);
 assert!(treeindex.remove(&1));
 ```
 
-Key-value pairs can be scanned.
+Key-value pairs can be scanned and the `scan` method is lock-free.
 
 ```rust
 use scc::ebr::Barrier;
@@ -225,6 +228,8 @@ use scc::TreeIndex;
 
 let treeindex: TreeIndex<u64, u32> = TreeIndex::default();
 
+assert!(treeindex.insert(1, 0).is_ok());
+
 let future_insert = treeindex.insert_async(11, 17);
 let result = future_insert.await;
 ```
@@ -243,7 +248,7 @@ let queue: Queue<usize> = Queue::default();
 
 queue.push(1);
 assert!(queue.push_if(2, |e| e.map_or(false, |x| *x == 1)).is_ok());
-assert_eq!(queue.push_if(3, |e| e.map_or(false, |x| *x == 1)), Err(3));
+assert!(queue.push_if(3, |e| e.map_or(false, |x| *x == 1)).is_err());
 assert_eq!(queue.pop().map(|e| **e), Some(1));
 assert_eq!(queue.pop().map(|e| **e), Some(2));
 assert!(queue.pop().is_none());

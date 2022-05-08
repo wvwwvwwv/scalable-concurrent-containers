@@ -89,18 +89,54 @@ impl<T: 'static> Queue<T> {
     /// ```
     #[inline]
     pub fn pop(&self) -> Option<Arc<Entry<T>>> {
+        match self.pop_if(|_| true) {
+            Ok(result) => result,
+            Err(_) => unreachable!(),
+        }
+    }
+
+    /// Pops the oldest entry if the oldest entry satisfies the given condition.
+    ///
+    /// Returns `None` if the [`Queue`] is empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error along with the oldest entry if the given condition is not met.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::Queue;
+    ///
+    /// let queue: Queue<usize> = Queue::default();
+    ///
+    /// queue.push(3);
+    /// queue.push(1);
+    ///
+    /// assert!(queue.pop_if(|v| *v == 1).is_err());
+    /// assert_eq!(queue.pop().map(|e| **e), Some(3));
+    /// assert_eq!(queue.pop_if(|v| *v == 1).ok().and_then(|e| e).map(|e| **e), Some(1));
+    /// ```
+    #[inline]
+    pub fn pop_if<F: FnMut(&T) -> bool>(
+        &self,
+        mut cond: F,
+    ) -> Result<Option<Arc<Entry<T>>>, Arc<Entry<T>>> {
         let barrier = Barrier::new();
         let mut current = self.oldest.load(Acquire, &barrier);
         while !current.is_null() {
             if let Some(oldest_entry) = current.get_arc() {
+                if !oldest_entry.is_removed() && !cond(&*oldest_entry) {
+                    return Err(oldest_entry);
+                }
                 if oldest_entry.remove() {
                     self.cleanup_oldest(&barrier);
-                    return Some(oldest_entry);
+                    return Ok(Some(oldest_entry));
                 }
             }
             current = self.cleanup_oldest(&barrier);
         }
-        None
+        Ok(None)
     }
 
     /// Peeks the oldest entry.
