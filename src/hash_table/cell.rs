@@ -361,7 +361,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
             if let Ok(locker) = Self::try_lock(cell, barrier) {
                 return locker;
             }
-            if let Ok(locker) = cell.wait_queue.wait(|| {
+            if let Ok(locker) = cell.wait_queue.wait_sync(|| {
                 // Mark that there is a waiting thread.
                 cell.state.fetch_or(WAITING, Release);
                 Self::try_lock(cell, barrier)
@@ -591,7 +591,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
             if let Ok(reader) = Self::try_lock(cell, barrier) {
                 return reader;
             }
-            if let Ok(reader) = cell.wait_queue.wait(|| {
+            if let Ok(reader) = cell.wait_queue.wait_sync(|| {
                 // Mark that there is a waiting thread.
                 cell.state.fetch_or(WAITING, Release);
                 Self::try_lock(cell, barrier)

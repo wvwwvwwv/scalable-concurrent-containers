@@ -1,31 +1,35 @@
+use std::future::Future;
+use std::mem::transmute;
+use std::pin::Pin;
 use std::ptr::addr_of_mut;
-use std::sync::atomic::AtomicPtr;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{AcqRel, Relaxed};
 use std::sync::{Condvar, Mutex};
+use std::task::{Context, Poll, Waker};
 
 /// [`WaitQueue`] implements an unfair wait queue.
 ///
 /// The sole purpose of the data structure is to avoid busy-waiting.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct WaitQueue {
     /// The wait queue of the [`Cell`].
-    wait_queue: AtomicPtr<Entry>,
+    wait_queue: AtomicUsize,
 }
 
 impl WaitQueue {
     /// Waits for the condition to be met or signalled.
     #[inline]
-    pub fn wait<T, F: FnOnce() -> Result<T, ()>>(&self, f: F) -> Result<T, ()> {
+    pub fn wait_sync<T, F: FnOnce() -> Result<T, ()>>(&self, f: F) -> Result<T, ()> {
         // Inserts the thread into the wait queue.
         let mut current = self.wait_queue.load(Relaxed);
-        let mut entry = Entry::new(current);
+        let mut entry = SyncEntry::new(current);
 
         while let Err(actual) =
             self.wait_queue
-                .compare_exchange(current, addr_of_mut!(entry), AcqRel, Relaxed)
+                .compare_exchange(current, addr_of_mut!(entry) as usize, AcqRel, Relaxed)
         {
             current = actual;
-            entry.next_ptr = current;
+            entry.next = current;
         }
 
         // Execute the closure.
@@ -41,28 +45,76 @@ impl WaitQueue {
     /// Signals the threads in the wait queue.
     #[inline]
     pub fn signal(&self) {
-        let mut current = self.wait_queue.swap(std::ptr::null_mut(), AcqRel);
-        while let Some(entry_ref) = unsafe { current.as_ref() } {
-            let next_ptr = entry_ref.next_ptr;
-            entry_ref.signal();
-            current = next_ptr;
+        let mut current = self.wait_queue.swap(0, AcqRel);
+        while current != 0 {
+            if (current & 1_usize) == 0 {
+                // Synchronous.
+                let entry_ref = unsafe { &*SyncEntry::reinterpret(current) };
+                let next = entry_ref.next;
+                entry_ref.signal();
+                current = next;
+            } else {
+                // Asynchronous.
+                let entry_ref = unsafe { &*AsyncEntry::reinterpret(current & (!1_usize)) };
+                let next = entry_ref.next;
+                entry_ref.signal();
+                current = next;
+            }
         }
     }
 }
 
-/// [`Entry`] is inserted into [`WaitQueue`].
-struct Entry {
-    next_ptr: *mut Entry,
+/// [`AsyncEntry`] is inserted into [`WaitQueue`] for the caller to await until woken up.
+#[derive(Debug)]
+pub(crate) struct AsyncEntry {
+    next: usize,
+    mutex: Mutex<(bool, Option<Waker>)>,
+}
+
+impl AsyncEntry {
+    /// Sends a signal.
+    fn signal(&self) {
+        let mut locked = self.mutex.lock().unwrap();
+        locked.0 = true;
+        if let Some(waker) = locked.1.take() {
+            waker.wake();
+        }
+    }
+
+    /// Reinterpret `usize` as `*mut AsyncEntry`.
+    unsafe fn reinterpret(val: usize) -> *mut AsyncEntry {
+        transmute(val)
+    }
+}
+
+impl Future for AsyncEntry {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut locked = self.mutex.lock().unwrap();
+        if locked.0 {
+            return Poll::Ready(());
+        }
+        locked.1.replace(cx.waker().clone());
+        Poll::Pending
+    }
+}
+
+/// [`SyncEntry`] is inserted into [`WaitQueue`] for the caller to synchronously wait until
+/// signalled.
+#[derive(Debug)]
+struct SyncEntry {
+    next: usize,
     condvar: Condvar,
     mutex: Mutex<bool>,
 }
 
-impl Entry {
-    /// Creates a new [`Entry`].
-    fn new(next_ptr: *mut Entry) -> Entry {
+impl SyncEntry {
+    /// Creates a new [`SyncEntry`].
+    fn new(next: usize) -> SyncEntry {
         #[allow(clippy::mutex_atomic)]
-        Entry {
-            next_ptr,
+        SyncEntry {
+            next,
             condvar: Condvar::new(),
             mutex: Mutex::new(false),
         }
@@ -83,5 +135,10 @@ impl Entry {
         let mut completed = self.mutex.lock().unwrap();
         *completed = true;
         self.condvar.notify_one();
+    }
+
+    /// Reinterpret `usize` as `*mut SyncEntry`.
+    unsafe fn reinterpret(val: usize) -> *mut SyncEntry {
+        transmute(val)
     }
 }

@@ -1,14 +1,14 @@
 [package]
 name = "scc"
 description = "High performance concurrent containers and utilities"
-version = "0.6.10"
+version = "0.6.11"
 authors = ["wvwwvwwv <wvwwvwwv@me.com>"]
 edition = "2021"
 readme = "README.md"
 repository = "https://github.com/wvwwvwwv/scalable-concurrent-containers/"
 license = "Apache-2.0"
 categories = ["asynchronous", "concurrency", "data-structures", "memory-management"]
-keywords = ["asynchronous", "concurrent", "ebr", "hashmap", "tree"]
+keywords = ["async", "concurrent", "ebr", "hashmap", "tree"]
 
 [dependencies]
 scopeguard = "^1.1"

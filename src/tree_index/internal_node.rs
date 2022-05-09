@@ -663,7 +663,7 @@ where
             // Currently, asynchronous waiting is not implemented.
             return;
         }
-        let _result = self.wait_queue.wait(|| {
+        let _result = self.wait_queue.wait_sync(|| {
             let ptr = self.latch.load(Relaxed, barrier);
             if !ptr.is_null() || ptr.tag() == LOCKED {
                 // The `InternalNode` is being split or locked.
