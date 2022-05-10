@@ -32,7 +32,6 @@ pub use tree_index::TreeIndex;
 
 pub mod ebr;
 
-mod async_yield;
 mod hash_table;
 mod wait_queue;
 

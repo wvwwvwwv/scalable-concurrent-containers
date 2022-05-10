@@ -1,10 +1,10 @@
 //! The module implements [`HashIndex`].
 
-use super::async_yield::{self, AwaitableBarrier};
 use super::ebr::{Arc, AtomicArc, Barrier, Ptr};
 use super::hash_table::cell::{EntryIterator, Locker};
 use super::hash_table::cell_array::CellArray;
 use super::hash_table::HashTable;
+use super::wait_queue::AsyncWait;
 
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
@@ -151,7 +151,7 @@ where
                     val = returned.1;
                 }
             }
-            async_yield::async_yield().await;
+            AsyncWait::default().await;
         }
     }
 
@@ -268,7 +268,7 @@ where
             ) {
                 return result.0;
             }
-            async_yield::async_yield().await;
+            AsyncWait::default().await;
         }
     }
 
@@ -419,48 +419,48 @@ where
         let mut num_removed: usize = 0;
 
         // An acquire fence is required to correctly load the contents of the array.
-        let mut awaitable_barrier = AwaitableBarrier::default();
-        let mut current_array_holder = self.array.get_arc(Acquire, awaitable_barrier.barrier());
+        let mut current_array_holder = self.array.get_arc(Acquire, &Barrier::new());
         while let Some(current_array) = current_array_holder.take() {
-            while !current_array
-                .old_array(awaitable_barrier.barrier())
-                .is_null()
-            {
+            while !current_array.old_array(&Barrier::new()).is_null() {
                 if current_array.partial_rehash::<_, _, _, true>(
                     |key| self.hash(key),
                     |_, _| None,
-                    awaitable_barrier.barrier(),
+                    &Barrier::new(),
                 ) {
-                    continue;
+                    break;
                 }
-                awaitable_barrier.drop_barrier_and_yield().await;
+                AsyncWait::default().await;
             }
 
             for cell_index in 0..current_array.num_cells() {
-                loop {
+                let killed = loop {
                     {
-                        // Limits the scope of `barrier`.
-                        let barrier = awaitable_barrier.barrier();
+                        let barrier = Barrier::new();
                         if let Ok(result) =
-                            Locker::try_lock(current_array.cell(cell_index), barrier)
+                            Locker::try_lock(current_array.cell(cell_index), &barrier)
                         {
                             if let Some(locker) = result {
-                                let mut iterator = locker.cell().iter(barrier);
+                                let mut iterator = locker.cell().iter(&barrier);
                                 while iterator.next().is_some() {
                                     locker.erase(&mut iterator);
                                     num_removed = num_removed.saturating_add(1);
                                 }
+                                break false;
                             }
-                            break;
-                        }
+
+                            // The `Cell` having been killed means that a new array has been
+                            // allocated.
+                            break true;
+                        };
                     }
-                    awaitable_barrier.drop_barrier_and_yield().await;
+                    AsyncWait::default().await;
+                };
+                if killed {
+                    break;
                 }
             }
 
-            if let Some(new_current_array) =
-                self.array.get_arc(Acquire, awaitable_barrier.barrier())
-            {
+            if let Some(new_current_array) = self.array.get_arc(Acquire, &Barrier::new()) {
                 if new_current_array.as_ptr() == current_array.as_ptr() {
                     break;
                 }

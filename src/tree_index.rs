@@ -5,8 +5,8 @@ mod leaf;
 mod leaf_node;
 mod node;
 
-use crate::async_yield;
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
+use crate::wait_queue::AsyncWait;
 
 use leaf::{InsertResult, Leaf, RemoveResult, Scanner};
 use node::Node;
@@ -188,7 +188,7 @@ where
             };
 
             if need_await {
-                async_yield::async_yield().await;
+                AsyncWait::default().await;
             }
 
             let new_root = Arc::new(Node::new_leaf_node());
@@ -354,7 +354,7 @@ where
                 }
             }
 
-            async_yield::async_yield().await;
+            AsyncWait::default().await;
         }
     }
 
