@@ -1,6 +1,7 @@
 use super::cell::{Cell, Locker, ARRAY_SIZE};
 
 use crate::ebr::{AtomicArc, Barrier, Ptr, Tag};
+use crate::wait_queue::AsyncWait;
 
 use std::alloc::{alloc_zeroed, dealloc, Layout};
 use std::borrow::Borrow;
@@ -29,7 +30,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     ///
     /// `total_cell_capacity` is the desired number entries, not the number of [`Cell`]
     /// instances.
-    pub fn new(
+    pub(crate) fn new(
         total_cell_capacity: usize,
         old_array: AtomicArc<CellArray<K, V, LOCK_FREE>>,
     ) -> CellArray<K, V, LOCK_FREE> {
@@ -64,56 +65,56 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
 
     /// Returns a reference to a [`Cell`] at the given position.
     #[inline]
-    pub fn cell(&self, index: usize) -> &Cell<K, V, LOCK_FREE> {
+    pub(crate) fn cell(&self, index: usize) -> &Cell<K, V, LOCK_FREE> {
         debug_assert!(index < self.num_cells());
         unsafe { &(*(self.array_ptr.add(index))) }
     }
 
     /// Returns the recommended sampling size.
     #[inline]
-    pub fn sample_size(&self) -> usize {
+    pub(crate) fn sample_size(&self) -> usize {
         (self.log2_capacity as usize).next_power_of_two()
     }
 
     /// Returns the number of [`Cell`] instances in the [`CellArray`].
     #[inline]
-    pub fn num_cells(&self) -> usize {
+    pub(crate) fn num_cells(&self) -> usize {
         self.array_capacity
     }
 
     /// Returns the number of total entries.
     #[inline]
-    pub fn num_entries(&self) -> usize {
+    pub(crate) fn num_entries(&self) -> usize {
         self.array_capacity * ARRAY_SIZE
     }
 
     /// Returns a [`Ptr`] to the old array.
     #[inline]
-    pub fn old_array<'b>(&self, barrier: &'b Barrier) -> Ptr<'b, CellArray<K, V, LOCK_FREE>> {
+    pub(crate) fn old_array<'b>(
+        &self,
+        barrier: &'b Barrier,
+    ) -> Ptr<'b, CellArray<K, V, LOCK_FREE>> {
         self.old_array.load(Relaxed, barrier)
     }
 
     /// Calculates the [`Cell`] index for the hash value.
     #[inline]
-    pub fn calculate_cell_index(&self, hash: u64) -> usize {
+    pub(crate) fn calculate_cell_index(&self, hash: u64) -> usize {
         (hash >> (64 - self.log2_capacity)).try_into().unwrap()
     }
 
     /// Kills the [`Cell`].
     ///
     /// It returns an error if locking failed.
-    pub fn kill_cell<
-        Q,
-        F: Fn(&Q) -> (u64, u8),
-        C: Fn(&K, &V) -> Option<(K, V)>,
-        const TRY_LOCK: bool,
-    >(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn kill_cell<Q, F: Fn(&Q) -> (u64, u8), C: Fn(&K, &V) -> Option<(K, V)>>(
         &self,
         cell_locker: &mut Locker<K, V, LOCK_FREE>,
         old_array: &CellArray<K, V, LOCK_FREE>,
         old_cell_index: usize,
         hasher: &F,
         copier: &C,
+        async_wait: Option<*mut AsyncWait>,
         barrier: &Barrier,
     ) -> Result<(), ()>
     where
@@ -159,8 +160,13 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
 
             let offset = new_cell_index - target_cell_index;
             while max_index <= offset {
-                let locker = if TRY_LOCK {
-                    Locker::try_lock(self.cell(max_index + target_cell_index), barrier)?.unwrap()
+                let locker = if let Some(&async_wait) = async_wait.as_ref() {
+                    Locker::try_lock_or_wait(
+                        self.cell(max_index + target_cell_index),
+                        async_wait,
+                        barrier,
+                    )?
+                    .unwrap()
                 } else {
                     Locker::lock(self.cell(max_index + target_cell_index), barrier).unwrap()
                 };
@@ -187,17 +193,13 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     /// Relocates a fixed number of `Cells` from the old array to the current array.
     ///
     /// Returns `true` if `old_array` is null.
-    pub fn partial_rehash<
-        Q,
-        F: Fn(&Q) -> (u64, u8),
-        C: Fn(&K, &V) -> Option<(K, V)>,
-        const TRY_LOCK: bool,
-    >(
+    pub(crate) fn partial_rehash<Q, F: Fn(&Q) -> (u64, u8), C: Fn(&K, &V) -> Option<(K, V)>>(
         &self,
         hasher: F,
         copier: C,
+        async_wait: Option<*mut AsyncWait>,
         barrier: &Barrier,
-    ) -> bool
+    ) -> Result<bool, ()>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
@@ -214,7 +216,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                     || (current & (Self::UNIT_SIZE - 1)) == Self::UNIT_SIZE - 1
                 {
                     // Only `UNIT_SIZE - 1` threads are allowed to rehash `Cells` at a moment.
-                    return self.old_array.is_null(Relaxed);
+                    return Ok(self.old_array.is_null(Relaxed));
                 }
                 match old_array_ref.rehashing.compare_exchange(
                     current,
@@ -267,36 +269,28 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
 
             for old_cell_index in current..(current + Self::UNIT_SIZE).min(old_array_size) {
                 let old_cell_ref = old_array_ref.cell(old_cell_index);
-                let lock_result = if TRY_LOCK {
-                    if let Ok(locker) = Locker::try_lock(old_cell_ref, barrier) {
-                        locker
-                    } else {
-                        return false;
-                    }
+                let lock_result = if let Some(&async_wait) = async_wait.as_ref() {
+                    Locker::try_lock_or_wait(old_cell_ref, async_wait, barrier)?
                 } else {
                     Locker::lock(old_cell_ref, barrier)
                 };
                 if let Some(mut locker) = lock_result {
-                    if self
-                        .kill_cell::<Q, F, C, TRY_LOCK>(
-                            &mut locker,
-                            old_array_ref,
-                            old_cell_index,
-                            &hasher,
-                            &copier,
-                            barrier,
-                        )
-                        .is_err()
-                    {
-                        return false;
-                    }
+                    self.kill_cell::<Q, F, C>(
+                        &mut locker,
+                        old_array_ref,
+                        old_cell_index,
+                        &hasher,
+                        &copier,
+                        async_wait,
+                        barrier,
+                    )?;
                 }
             }
 
             // Successfully rehashed all the `Cells` in the range.
             (*rehashing_guard).1 = true;
         }
-        self.old_array.is_null(Relaxed)
+        Ok(self.old_array.is_null(Relaxed))
     }
 
     /// Calculates `log_2` of the array size from the given cell capacity.

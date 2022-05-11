@@ -1,7 +1,6 @@
 use std::future::Future;
 use std::mem::transmute;
 use std::pin::Pin;
-use std::ptr::addr_of_mut;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{AcqRel, Relaxed};
 use std::sync::{Condvar, Mutex};
@@ -24,14 +23,15 @@ impl WaitQueue {
     /// Waits for the condition to be met or signalled.
     #[inline]
     pub fn wait_sync<T, F: FnOnce() -> Result<T, ()>>(&self, f: F) -> Result<T, ()> {
-        // Inserts the thread into the wait queue.
         let mut current = self.wait_queue.load(Relaxed);
         let mut entry = SyncWait::new(current);
 
-        while let Err(actual) =
-            self.wait_queue
-                .compare_exchange(current, addr_of_mut!(entry) as usize, AcqRel, Relaxed)
-        {
+        while let Err(actual) = self.wait_queue.compare_exchange(
+            current,
+            std::ptr::addr_of_mut!(entry) as usize,
+            AcqRel,
+            Relaxed,
+        ) {
             current = actual;
             entry.next = current;
         }
@@ -44,6 +44,45 @@ impl WaitQueue {
 
         entry.wait();
         result
+    }
+
+    /// Pushes an [`AsyncWait`] into the [`WaitQueue`].
+    ///
+    /// If it happens to acquire the desired resource, it returns an `Ok(T)` after waking up all
+    /// the entries in the [`WaitQueue`].
+    #[inline]
+    pub fn push_async_entry<T, F: FnOnce() -> Result<T, ()>>(
+        &self,
+        async_entry: *mut AsyncWait,
+        f: F,
+    ) -> Result<T, ()> {
+        let async_entry_mut = unsafe { &mut *async_entry };
+        debug_assert!(async_entry_mut.mutex.is_none());
+
+        let mut current = self.wait_queue.load(Relaxed);
+        async_entry_mut.mutex.replace(Mutex::new((false, None)));
+        async_entry_mut.next = current;
+
+        while let Err(actual) = self.wait_queue.compare_exchange(
+            current,
+            (async_entry as usize) | ASYNC,
+            AcqRel,
+            Relaxed,
+        ) {
+            current = actual;
+            async_entry_mut.next = current;
+        }
+
+        // Execute the closure.
+        if let Ok(result) = f() {
+            // The caller does not have to await.
+            self.signal();
+            async_entry_mut.mutex.take();
+            Ok(result)
+        } else {
+            // The caller has to await.
+            Err(())
+        }
     }
 
     /// Signals the threads in the wait queue.
@@ -103,14 +142,11 @@ impl Future for AsyncWait {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if let Some(mutex) = self.mutex.as_ref() {
-            if let Ok(mut locked) = mutex.try_lock() {
+            if let Ok(mut locked) = mutex.lock() {
                 if locked.0 {
                     return Poll::Ready(());
                 }
                 locked.1.replace(cx.waker().clone());
-            } else {
-                // It is being signalled.
-                cx.waker().wake_by_ref();
             }
             Poll::Pending
         } else if self.next == 0 {

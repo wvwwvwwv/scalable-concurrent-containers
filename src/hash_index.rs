@@ -10,6 +10,7 @@ use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash};
 use std::iter::FusedIterator;
+use std::ptr::addr_of_mut;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering::Acquire;
 
@@ -113,7 +114,7 @@ where
     pub fn insert(&self, key: K, val: V) -> Result<(), (K, V)> {
         let (hash, partial_hash) = self.hash(&key);
         if let Some((k, v)) = self
-            .insert_entry::<false>(key, val, hash, partial_hash, &Barrier::new())
+            .insert_entry(key, val, hash, partial_hash, None, &Barrier::new())
             .ok()
             .unwrap()
         {
@@ -143,7 +144,15 @@ where
     pub async fn insert_async(&self, mut key: K, mut val: V) -> Result<(), (K, V)> {
         let (hash, partial_hash) = self.hash(&key);
         loop {
-            match self.insert_entry::<true>(key, val, hash, partial_hash, &Barrier::new()) {
+            let mut async_wait = AsyncWait::default();
+            match self.insert_entry(
+                key,
+                val,
+                hash,
+                partial_hash,
+                Some(addr_of_mut!(async_wait)),
+                &Barrier::new(),
+            ) {
                 Ok(Some(returned)) => return Err(returned),
                 Ok(None) => return Ok(()),
                 Err(returned) => {
@@ -151,7 +160,7 @@ where
                     val = returned.1;
                 }
             }
-            AsyncWait::default().await;
+            async_wait.await;
         }
     }
 
@@ -223,11 +232,12 @@ where
         Q: Eq + Hash + ?Sized,
     {
         let (hash, partial_hash) = self.hash(key_ref);
-        self.remove_entry::<Q, _, false>(
+        self.remove_entry::<Q, _>(
             key_ref,
             hash,
             partial_hash,
             &mut condition,
+            None,
             &Barrier::new(),
         )
         .ok()
@@ -259,16 +269,18 @@ where
     {
         let (hash, partial_hash) = self.hash(key_ref);
         loop {
-            if let Ok(result) = self.remove_entry::<Q, F, true>(
+            let mut async_wait = AsyncWait::default();
+            if let Ok(result) = self.remove_entry::<Q, F>(
                 key_ref,
                 hash,
                 partial_hash,
                 &mut condition,
+                Some(addr_of_mut!(async_wait)),
                 &Barrier::new(),
             ) {
                 return result.0;
             }
-            AsyncWait::default().await;
+            async_wait.await;
         }
     }
 
@@ -328,7 +340,7 @@ where
         Q: Eq + Hash + ?Sized,
     {
         let (hash, partial_hash) = self.hash(key_ref);
-        self.read_entry::<Q, R, F, false>(key_ref, hash, partial_hash, &mut reader, barrier)
+        self.read_entry::<Q, R, F>(key_ref, hash, partial_hash, &mut reader, None, barrier)
             .ok()
             .and_then(|r| r)
     }
@@ -372,14 +384,15 @@ where
         let barrier = Barrier::new();
         let mut current_array_ptr = self.array.load(Acquire, &barrier);
         while let Some(current_array_ref) = current_array_ptr.as_ref() {
-            if !current_array_ref.old_array(&barrier).is_null() {
-                while !current_array_ref.partial_rehash::<_, _, _, false>(
+            while !current_array_ref.old_array(&barrier).is_null() {
+                if current_array_ref.partial_rehash::<_, _, _>(
                     |k| self.hash(k),
                     |k, v| Some((k.clone(), v.clone())),
+                    None,
                     &barrier,
-                ) {
-                    current_array_ptr = self.array.load(Acquire, &barrier);
-                    continue;
+                ) == Ok(true)
+                {
+                    break;
                 }
             }
             for index in 0..current_array_ref.num_cells() {
@@ -422,23 +435,29 @@ where
         let mut current_array_holder = self.array.get_arc(Acquire, &Barrier::new());
         while let Some(current_array) = current_array_holder.take() {
             while !current_array.old_array(&Barrier::new()).is_null() {
-                if current_array.partial_rehash::<_, _, _, true>(
+                let mut async_wait = AsyncWait::default();
+                if current_array.partial_rehash::<_, _, _>(
                     |key| self.hash(key),
                     |_, _| None,
+                    Some(addr_of_mut!(async_wait)),
                     &Barrier::new(),
-                ) {
+                ) == Ok(true)
+                {
                     break;
                 }
-                AsyncWait::default().await;
+                async_wait.await;
             }
 
             for cell_index in 0..current_array.num_cells() {
                 let killed = loop {
+                    let mut async_wait = AsyncWait::default();
                     {
                         let barrier = Barrier::new();
-                        if let Ok(result) =
-                            Locker::try_lock(current_array.cell(cell_index), &barrier)
-                        {
+                        if let Ok(result) = Locker::try_lock_or_wait(
+                            current_array.cell(cell_index),
+                            addr_of_mut!(async_wait),
+                            &barrier,
+                        ) {
                             if let Some(locker) = result {
                                 let mut iterator = locker.cell().iter(&barrier);
                                 while iterator.next().is_some() {
@@ -453,7 +472,7 @@ where
                             break true;
                         };
                     }
-                    AsyncWait::default().await;
+                    async_wait.await;
                 };
                 if killed {
                     break;
