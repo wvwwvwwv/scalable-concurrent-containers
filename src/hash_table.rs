@@ -5,6 +5,7 @@ use cell::{EntryIterator, Locker, Reader, ARRAY_SIZE};
 use cell_array::CellArray;
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
+use crate::wait_queue::AsyncWait;
 
 use std::borrow::Borrow;
 use std::convert::TryInto;
@@ -97,15 +98,16 @@ where
 
     /// Inserts an entry into the [`HashTable`].
     #[inline]
-    fn insert_entry<const TRY_LOCK: bool>(
+    fn insert_entry(
         &self,
         key: K,
         val: V,
         hash: u64,
         partial_hash: u8,
+        async_wait: Option<*mut AsyncWait>,
         barrier: &Barrier,
     ) -> Result<Option<(K, V)>, (K, V)> {
-        match self.acquire::<_, TRY_LOCK>(&key, hash, partial_hash, barrier) {
+        match self.acquire::<_>(&key, hash, partial_hash, async_wait, barrier) {
             Ok((_, locker, iterator)) => {
                 if iterator.is_some() {
                     return Ok(Some((key, val)));
@@ -119,12 +121,13 @@ where
 
     /// Reads an entry from the [`HashTable`].
     #[inline]
-    fn read_entry<'b, Q, R, F: FnMut(&'b K, &'b V) -> R, const TRY_LOCK: bool>(
+    fn read_entry<'b, Q, R, F: FnMut(&'b K, &'b V) -> R>(
         &self,
         key_ref: &Q,
         hash: u64,
         partial_hash: u8,
         reader: &mut F,
+        async_wait: Option<*mut AsyncWait>,
         barrier: &'b Barrier,
     ) -> Result<Option<R>, ()>
     where
@@ -135,11 +138,12 @@ where
         let mut current_array_ptr = self.cell_array().load(Acquire, barrier);
         while let Some(current_array_ref) = current_array_ptr.as_ref() {
             if let Some(old_array_ref) = current_array_ref.old_array(barrier).as_ref() {
-                if !current_array_ref.partial_rehash::<Q, _, _, TRY_LOCK>(
+                if !current_array_ref.partial_rehash::<Q, _, _>(
                     |key| self.hash(key),
                     &Self::copier,
+                    async_wait,
                     barrier,
-                ) {
+                )? {
                     let cell_index = old_array_ref.calculate_cell_index(hash);
                     if LOCK_FREE {
                         let cell_ref = old_array_ref.cell(cell_index);
@@ -147,8 +151,12 @@ where
                             return Ok(Some(reader(&entry.0, &entry.1)));
                         }
                     } else {
-                        let lock_result = if TRY_LOCK {
-                            Reader::try_lock(old_array_ref.cell(cell_index), barrier)?
+                        let lock_result = if let Some(&async_wait) = async_wait.as_ref() {
+                            Reader::try_lock_or_wait(
+                                old_array_ref.cell(cell_index),
+                                async_wait,
+                                barrier,
+                            )?
                         } else {
                             Reader::lock(old_array_ref.cell(cell_index), barrier)
                         };
@@ -169,8 +177,12 @@ where
                     return Ok(Some(reader(&entry.0, &entry.1)));
                 }
             } else {
-                let lock_result = if TRY_LOCK {
-                    Reader::try_lock(current_array_ref.cell(cell_index), barrier)?
+                let lock_result = if let Some(&async_wait) = async_wait.as_ref() {
+                    Reader::try_lock_or_wait(
+                        current_array_ref.cell(cell_index),
+                        async_wait,
+                        barrier,
+                    )?
                 } else {
                     Reader::lock(current_array_ref.cell(cell_index), barrier)
                 };
@@ -193,12 +205,13 @@ where
 
     /// Removes an entry if the condition is met.
     #[inline]
-    fn remove_entry<Q, F: FnMut(&V) -> bool, const TRY_LOCK: bool>(
+    fn remove_entry<Q, F: FnMut(&V) -> bool>(
         &self,
         key_ref: &Q,
         hash: u64,
         partial_hash: u8,
         condition: &mut F,
+        async_wait: Option<*mut AsyncWait>,
         barrier: &Barrier,
     ) -> Result<(Option<(K, V)>, bool), ()>
     where
@@ -206,7 +219,7 @@ where
         Q: Eq + Hash + ?Sized,
     {
         let (cell_index, locker, iterator) =
-            self.acquire::<Q, TRY_LOCK>(key_ref, hash, partial_hash, barrier)?;
+            self.acquire::<Q>(key_ref, hash, partial_hash, async_wait, barrier)?;
         if let Some(mut iterator) = iterator {
             let remove = if let Some((_, v)) = iterator.get() {
                 condition(v)
@@ -239,11 +252,12 @@ where
     /// otherwise `None` is returned.
     #[inline]
     #[allow(clippy::type_complexity)]
-    fn acquire<'h, 'b, Q, const TRY_LOCK: bool>(
+    fn acquire<'h, 'b, Q>(
         &'h self,
         key_ref: &Q,
         hash: u64,
         partial_hash: u8,
+        async_wait: Option<*mut AsyncWait>,
         barrier: &'b Barrier,
     ) -> Result<
         (
@@ -276,15 +290,20 @@ where
             let current_array_ptr = self.cell_array().load(Acquire, barrier);
             let current_array_ref = current_array_ptr.as_ref().unwrap();
             if let Some(old_array_ref) = current_array_ref.old_array(barrier).as_ref() {
-                if !current_array_ref.partial_rehash::<Q, _, _, TRY_LOCK>(
+                if !current_array_ref.partial_rehash::<Q, _, _>(
                     |key| self.hash(key),
                     &Self::copier,
+                    async_wait,
                     barrier,
-                ) {
+                )? {
                     check_resize = false;
                     let cell_index = old_array_ref.calculate_cell_index(hash);
-                    let lock_result = if TRY_LOCK {
-                        Locker::try_lock(old_array_ref.cell(cell_index), barrier)?
+                    let lock_result = if let Some(&async_wait) = async_wait.as_ref() {
+                        Locker::try_lock_or_wait(
+                            old_array_ref.cell(cell_index),
+                            async_wait,
+                            barrier,
+                        )?
                     } else {
                         Locker::lock(old_array_ref.cell(cell_index), barrier)
                     };
@@ -293,12 +312,13 @@ where
                             return Ok((cell_index, locker, Some(iterator)));
                         }
                         // Kills the Cell.
-                        current_array_ref.kill_cell::<Q, _, _, TRY_LOCK>(
+                        current_array_ref.kill_cell::<Q, _, _>(
                             &mut locker,
                             old_array_ref,
                             cell_index,
                             &|key| self.hash(key),
                             &Self::copier,
+                            async_wait,
                             barrier,
                         )?;
                     }
@@ -315,8 +335,8 @@ where
                 continue;
             }
 
-            let lock_result = if TRY_LOCK {
-                Locker::try_lock(current_array_ref.cell(cell_index), barrier)?
+            let lock_result = if let Some(&async_wait) = async_wait.as_ref() {
+                Locker::try_lock_or_wait(current_array_ref.cell(cell_index), async_wait, barrier)?
             } else {
                 Locker::lock(current_array_ref.cell(cell_index), barrier)
             };

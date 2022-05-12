@@ -1,5 +1,5 @@
 use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
-use crate::wait_queue::WaitQueue;
+use crate::wait_queue::{AsyncWait, WaitQueue};
 
 use std::borrow::Borrow;
 use std::mem::MaybeUninit;
@@ -353,7 +353,7 @@ pub struct Locker<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
 impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     /// Locks the [`Cell`].
     #[inline]
-    pub fn lock(
+    pub(crate) fn lock(
         cell: &'b Cell<K, V, LOCK_FREE>,
         barrier: &'b Barrier,
     ) -> Option<Locker<'b, K, V, LOCK_FREE>> {
@@ -371,36 +371,32 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         }
     }
 
-    /// Tries to lock the [`Cell`].
+    /// Tries to lock the [`Cell`], and if it fails, pushes an [`AsyncWait`].
     #[inline]
-    pub fn try_lock(
+    pub(crate) fn try_lock_or_wait(
         cell: &'b Cell<K, V, LOCK_FREE>,
-        _barrier: &'b Barrier,
+        async_wait: *mut AsyncWait,
+        barrier: &'b Barrier,
     ) -> Result<Option<Locker<'b, K, V, LOCK_FREE>>, ()> {
-        let current = cell.state.load(Relaxed) & (!LOCK_MASK);
-        if (current & KILLED) == KILLED {
-            return Ok(None);
+        if let Ok(locker) = Self::try_lock(cell, barrier) {
+            return Ok(locker);
         }
-        if cell
-            .state
-            .compare_exchange(current, current | LOCK, Acquire, Relaxed)
-            .is_ok()
-        {
-            Ok(Some(Locker { cell }))
-        } else {
-            Err(())
-        }
+        cell.wait_queue.push_async_entry(async_wait, || {
+            // Mark that there is a waiting thread.
+            cell.state.fetch_or(WAITING, Release);
+            Self::try_lock(cell, barrier)
+        })
     }
 
     /// Returns a reference to the [`Cell`].
     #[inline]
-    pub fn cell(&self) -> &'b Cell<K, V, LOCK_FREE> {
+    pub(crate) fn cell(&self) -> &'b Cell<K, V, LOCK_FREE> {
         self.cell
     }
 
     /// Inserts a new key-value pair into the [`Cell`] without a uniqueness check.
     #[inline]
-    pub fn insert(&'b self, key: K, value: V, partial_hash: u8, barrier: &'b Barrier) {
+    pub(crate) fn insert(&'b self, key: K, value: V, partial_hash: u8, barrier: &'b Barrier) {
         assert!(self.cell.num_entries != u32::MAX, "array overflow");
 
         let mut data_array_ptr = addr_of!(self.cell.data_array);
@@ -467,7 +463,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     }
 
     /// Removes a key-value pair being pointed by the given [`EntryIterator`].
-    pub fn erase(&self, iterator: &mut EntryIterator<K, V, LOCK_FREE>) -> Option<(K, V)> {
+    pub(crate) fn erase(&self, iterator: &mut EntryIterator<K, V, LOCK_FREE>) -> Option<(K, V)> {
         if iterator.current_index == usize::MAX {
             return None;
         }
@@ -504,7 +500,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     }
 
     /// Extracts the key-value pair being pointed by `self`.
-    pub fn extract(&self, iterator: &mut EntryIterator<K, V, LOCK_FREE>) -> (K, V) {
+    pub(crate) fn extract(&self, iterator: &mut EntryIterator<K, V, LOCK_FREE>) -> (K, V) {
         let data_array_mut_ref =
             unsafe { &mut *(iterator.current_array_ptr as *mut DataArray<K, V>) };
         debug_assert!(!LOCK_FREE);
@@ -524,7 +520,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     }
 
     /// Purges all the data.
-    pub fn purge(&mut self, barrier: &Barrier) {
+    pub(crate) fn purge(&mut self, barrier: &Barrier) {
         if LOCK_FREE {
             self.cell_mut().data_array.removed = self.cell.data_array.occupied;
         }
@@ -548,6 +544,26 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         #[allow(clippy::cast_ref_to_mut)]
         unsafe {
             &mut *(self.cell as *const _ as *mut Cell<K, V, LOCK_FREE>)
+        }
+    }
+
+    /// Tries to lock the [`Cell`].
+    fn try_lock(
+        cell: &'b Cell<K, V, LOCK_FREE>,
+        _barrier: &'b Barrier,
+    ) -> Result<Option<Locker<'b, K, V, LOCK_FREE>>, ()> {
+        let current = cell.state.load(Relaxed) & (!LOCK_MASK);
+        if (current & KILLED) == KILLED {
+            return Ok(None);
+        }
+        if cell
+            .state
+            .compare_exchange(current, current | LOCK, Acquire, Relaxed)
+            .is_ok()
+        {
+            Ok(Some(Locker { cell }))
+        } else {
+            Err(())
         }
     }
 }
@@ -583,7 +599,7 @@ pub struct Reader<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
 impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
     /// Locks the given [`Cell`].
     #[inline]
-    pub fn lock(
+    pub(crate) fn lock(
         cell: &'b Cell<K, V, LOCK_FREE>,
         barrier: &'b Barrier,
     ) -> Option<Reader<'b, K, V, LOCK_FREE>> {
@@ -601,9 +617,32 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
         }
     }
 
+    /// Tries to lock the [`Cell`], and if it fails, pushes an [`AsyncWait`].
+    #[inline]
+    pub(crate) fn try_lock_or_wait(
+        cell: &'b Cell<K, V, LOCK_FREE>,
+        async_wait: *mut AsyncWait,
+        barrier: &'b Barrier,
+    ) -> Result<Option<Reader<'b, K, V, LOCK_FREE>>, ()> {
+        if let Ok(reader) = Self::try_lock(cell, barrier) {
+            return Ok(reader);
+        }
+        cell.wait_queue.push_async_entry(async_wait, || {
+            // Mark that there is a waiting thread.
+            cell.state.fetch_or(WAITING, Release);
+            Self::try_lock(cell, barrier)
+        })
+    }
+
+    /// Returns a reference to the [`Cell`].
+    #[inline]
+    pub(crate) fn cell(&self) -> &Cell<K, V, LOCK_FREE> {
+        self.cell
+    }
+
     /// Tries to lock the [`Cell`].
     #[inline]
-    pub fn try_lock(
+    fn try_lock(
         cell: &'b Cell<K, V, LOCK_FREE>,
         _barrier: &'b Barrier,
     ) -> Result<Option<Reader<'b, K, V, LOCK_FREE>>, ()> {
@@ -623,12 +662,6 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
         } else {
             Err(())
         }
-    }
-
-    /// Returns a reference to the [`Cell`].
-    #[inline]
-    pub fn cell(&self) -> &Cell<K, V, LOCK_FREE> {
-        self.cell
     }
 }
 
@@ -789,15 +822,12 @@ mod test {
         }
         assert_eq!(cell.num_entries(), iterated);
 
-        let mut xlocker = Locker::try_lock(&*cell, &epoch_barrier).unwrap().unwrap();
+        let mut xlocker = Locker::lock(&*cell, &epoch_barrier).unwrap();
         xlocker.purge(&epoch_barrier);
         drop(xlocker);
 
         assert!(cell.killed());
         assert_eq!(cell.num_entries(), 0);
-        assert!(Locker::try_lock(&*cell, &epoch_barrier)
-            .ok()
-            .unwrap()
-            .is_none());
+        assert!(Locker::lock(&*cell, &epoch_barrier).is_none());
     }
 }

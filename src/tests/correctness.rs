@@ -94,10 +94,15 @@ mod hashmap_test {
                     assert!(result.is_none());
                 }
                 for id in range.clone() {
-                    if id % 5 == 0 {
+                    if id % 10 == 0 {
                         hashmap_cloned.upsert_async(id, || id, |_, v| *v = id).await;
-                    } else {
+                    } else if id % 5 == 0 {
+                        hashmap_cloned.upsert(id, || id, |_, v| *v = id);
+                    } else if id % 2 == 0 {
                         let result = hashmap_cloned.insert_async(id, id).await;
+                        assert!(result.is_ok());
+                    } else {
+                        let result = hashmap_cloned.insert(id, id);
                         assert!(result.is_ok());
                     }
                 }
@@ -119,10 +124,17 @@ mod hashmap_test {
                 for id in range.clone() {
                     let result = hashmap_cloned.read_async(&id, |_, v| *v).await;
                     assert_eq!(result, Some(id + 1));
+                    let result = hashmap_cloned.read(&id, |_, v| *v);
+                    assert_eq!(result, Some(id + 1));
                 }
                 for id in range.clone() {
-                    let result = hashmap_cloned.remove_if_async(&id, |v| *v == id + 1).await;
-                    assert_eq!(result, Some((id, id + 1)));
+                    if id % 2 == 0 {
+                        let result = hashmap_cloned.remove_if_async(&id, |v| *v == id + 1).await;
+                        assert_eq!(result, Some((id, id + 1)));
+                    } else {
+                        let result = hashmap_cloned.remove_if(&id, |v| *v == id + 1);
+                        assert_eq!(result, Some((id, id + 1)));
+                    }
                 }
                 for id in range {
                     let result = hashmap_cloned.remove_if_async(&id, |v| *v == id + 1).await;

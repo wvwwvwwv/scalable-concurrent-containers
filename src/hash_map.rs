@@ -9,6 +9,7 @@ use super::wait_queue::AsyncWait;
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash};
+use std::pin::Pin;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 use std::sync::atomic::{AtomicU8, AtomicUsize};
 
@@ -174,7 +175,7 @@ where
     pub fn insert(&self, key: K, val: V) -> Result<(), (K, V)> {
         let (hash, partial_hash) = self.hash(&key);
         if let Some((k, v)) = self
-            .insert_entry::<false>(key, val, hash, partial_hash, &Barrier::new())
+            .insert_entry(key, val, hash, partial_hash, None, &Barrier::new())
             .ok()
             .unwrap()
         {
@@ -208,7 +209,16 @@ where
     pub async fn insert_async(&self, mut key: K, mut val: V) -> Result<(), (K, V)> {
         let (hash, partial_hash) = self.hash(&key);
         loop {
-            match self.insert_entry::<true>(key, val, hash, partial_hash, &Barrier::new()) {
+            let mut async_wait = AsyncWait::default();
+            let mut async_wait_pinned = Pin::new(&mut async_wait);
+            match self.insert_entry(
+                key,
+                val,
+                hash,
+                partial_hash,
+                Some(async_wait_pinned.mut_ptr()),
+                &Barrier::new(),
+            ) {
                 Ok(Some(returned)) => return Err(returned),
                 Ok(None) => return Ok(()),
                 Err(returned) => {
@@ -216,7 +226,7 @@ where
                     val = returned.1;
                 }
             }
-            AsyncWait::default().await;
+            async_wait_pinned.await;
         }
     }
 
@@ -246,7 +256,7 @@ where
         let (hash, partial_hash) = self.hash(key_ref);
         let barrier = Barrier::new();
         let (_, _locker, iterator) = self
-            .acquire::<Q, false>(key_ref, hash, partial_hash, &barrier)
+            .acquire::<Q>(key_ref, hash, partial_hash, None, &barrier)
             .ok()?;
         if let Some(iterator) = iterator {
             if let Some((k, v)) = iterator.get() {
@@ -282,9 +292,15 @@ where
     {
         let (hash, partial_hash) = self.hash(key_ref);
         loop {
-            if let Ok((_, _locker, iterator)) =
-                self.acquire::<Q, true>(key_ref, hash, partial_hash, &Barrier::new())
-            {
+            let mut async_wait = AsyncWait::default();
+            let mut async_wait_pinned = Pin::new(&mut async_wait);
+            if let Ok((_, _locker, iterator)) = self.acquire::<Q>(
+                key_ref,
+                hash,
+                partial_hash,
+                Some(async_wait_pinned.mut_ptr()),
+                &Barrier::new(),
+            ) {
                 if let Some(iterator) = iterator {
                     if let Some((k, v)) = iterator.get() {
                         #[allow(clippy::cast_ref_to_mut)]
@@ -293,7 +309,7 @@ where
                 }
                 return None;
             }
-            AsyncWait::default().await;
+            async_wait_pinned.await;
         }
     }
 
@@ -326,7 +342,7 @@ where
         let (hash, partial_hash) = self.hash(&key);
         let barrier = Barrier::new();
         let (_, locker, iterator) = self
-            .acquire::<_, false>(&key, hash, partial_hash, &barrier)
+            .acquire::<_>(&key, hash, partial_hash, None, &barrier)
             .ok()
             .unwrap();
         if let Some(iterator) = iterator {
@@ -367,9 +383,15 @@ where
     ) {
         let (hash, partial_hash) = self.hash(&key);
         loop {
-            if let Ok((_, locker, iterator)) =
-                self.acquire::<_, true>(&key, hash, partial_hash, &Barrier::new())
-            {
+            let mut async_wait = AsyncWait::default();
+            let mut async_wait_pinned = Pin::new(&mut async_wait);
+            if let Ok((_, locker, iterator)) = self.acquire::<_>(
+                &key,
+                hash,
+                partial_hash,
+                Some(async_wait_pinned.mut_ptr()),
+                &Barrier::new(),
+            ) {
                 if let Some(iterator) = iterator {
                     if let Some((k, v)) = iterator.get() {
                         #[allow(clippy::cast_ref_to_mut)]
@@ -380,7 +402,7 @@ where
                 locker.insert(key, constructor(), partial_hash, &Barrier::new());
                 return;
             }
-            AsyncWait::default().await;
+            async_wait_pinned.await;
         }
     }
 
@@ -452,11 +474,12 @@ where
         Q: Eq + Hash + ?Sized,
     {
         let (hash, partial_hash) = self.hash(key_ref);
-        self.remove_entry::<Q, _, false>(
+        self.remove_entry::<Q, _>(
             key_ref,
             hash,
             partial_hash,
             &mut condition,
+            None,
             &Barrier::new(),
         )
         .ok()
@@ -488,16 +511,19 @@ where
     {
         let (hash, partial_hash) = self.hash(key_ref);
         loop {
-            if let Ok(result) = self.remove_entry::<Q, F, true>(
+            let mut async_wait = AsyncWait::default();
+            let mut async_wait_pinned = Pin::new(&mut async_wait);
+            if let Ok(result) = self.remove_entry::<Q, F>(
                 key_ref,
                 hash,
                 partial_hash,
                 &mut condition,
+                Some(async_wait_pinned.mut_ptr()),
                 &Barrier::new(),
             ) {
                 return result.0;
             }
-            AsyncWait::default().await;
+            async_wait_pinned.await;
         }
     }
 
@@ -524,7 +550,7 @@ where
     {
         let barrier = Barrier::new();
         let (hash, partial_hash) = self.hash(key_ref);
-        self.read_entry::<Q, R, F, false>(key_ref, hash, partial_hash, &mut reader, &barrier)
+        self.read_entry::<Q, R, F>(key_ref, hash, partial_hash, &mut reader, None, &barrier)
             .ok()
             .and_then(|r| r)
     }
@@ -555,16 +581,19 @@ where
     {
         let (hash, partial_hash) = self.hash(key_ref);
         loop {
-            if let Ok(result) = self.read_entry::<Q, R, _, true>(
+            let mut async_wait = AsyncWait::default();
+            let mut async_wait_pinned = Pin::new(&mut async_wait);
+            if let Ok(result) = self.read_entry::<Q, R, _>(
                 key_ref,
                 hash,
                 partial_hash,
                 &mut reader,
+                Some(async_wait_pinned.mut_ptr()),
                 &Barrier::new(),
             ) {
                 return result;
             }
-            AsyncWait::default().await;
+            async_wait_pinned.await;
         }
     }
 
@@ -638,14 +667,16 @@ where
         // An acquire fence is required to correctly load the contents of the array.
         let mut current_array_ptr = self.array.load(Acquire, &barrier);
         while let Some(current_array_ref) = current_array_ptr.as_ref() {
-            if !current_array_ref.old_array(&barrier).is_null() {
-                current_array_ref.partial_rehash::<_, _, _, false>(
+            while !current_array_ref.old_array(&barrier).is_null() {
+                if current_array_ref.partial_rehash::<_, _, _>(
                     |key| self.hash(key),
                     |_, _| None,
+                    None,
                     &barrier,
-                );
-                current_array_ptr = self.array.load(Acquire, &barrier);
-                continue;
+                ) == Ok(true)
+                {
+                    break;
+                }
             }
 
             for cell_index in 0..current_array_ref.num_cells() {
@@ -686,23 +717,31 @@ where
         let mut current_array_holder = self.array.get_arc(Acquire, &Barrier::new());
         while let Some(current_array) = current_array_holder.take() {
             while !current_array.old_array(&Barrier::new()).is_null() {
-                if current_array.partial_rehash::<_, _, _, true>(
+                let mut async_wait = AsyncWait::default();
+                let mut async_wait_pinned = Pin::new(&mut async_wait);
+                if current_array.partial_rehash::<_, _, _>(
                     |key| self.hash(key),
                     |_, _| None,
+                    Some(async_wait_pinned.mut_ptr()),
                     &Barrier::new(),
-                ) {
+                ) == Ok(true)
+                {
                     break;
                 }
-                AsyncWait::default().await;
+                async_wait_pinned.await;
             }
 
             for cell_index in 0..current_array.num_cells() {
                 let killed = loop {
+                    let mut async_wait = AsyncWait::default();
+                    let mut async_wait_pinned = Pin::new(&mut async_wait);
                     {
                         let barrier = Barrier::new();
-                        if let Ok(result) =
-                            Reader::try_lock(current_array.cell(cell_index), &barrier)
-                        {
+                        if let Ok(result) = Reader::try_lock_or_wait(
+                            current_array.cell(cell_index),
+                            async_wait_pinned.mut_ptr(),
+                            &barrier,
+                        ) {
                             if let Some(locker) = result {
                                 let mut iterator = locker.cell().iter(&barrier);
                                 while iterator.next().is_some() {
@@ -719,7 +758,7 @@ where
                             break true;
                         };
                     }
-                    AsyncWait::default().await;
+                    async_wait_pinned.await;
                 };
                 if killed {
                     break;
@@ -824,14 +863,16 @@ where
         // An acquire fence is required to correctly load the contents of the array.
         let mut current_array_ptr = self.array.load(Acquire, &barrier);
         while let Some(current_array_ref) = current_array_ptr.as_ref() {
-            if !current_array_ref.old_array(&barrier).is_null() {
-                current_array_ref.partial_rehash::<_, _, _, false>(
+            while !current_array_ref.old_array(&barrier).is_null() {
+                if current_array_ref.partial_rehash::<_, _, _>(
                     |key| self.hash(key),
                     |_, _| None,
+                    None,
                     &barrier,
-                );
-                current_array_ptr = self.array.load(Acquire, &barrier);
-                continue;
+                ) == Ok(true)
+                {
+                    break;
+                }
             }
 
             for cell_index in 0..current_array_ref.num_cells() {
@@ -899,23 +940,31 @@ where
         let mut current_array_holder = self.array.get_arc(Acquire, &Barrier::new());
         while let Some(current_array) = current_array_holder.take() {
             while !current_array.old_array(&Barrier::new()).is_null() {
-                if current_array.partial_rehash::<_, _, _, true>(
+                let mut async_wait = AsyncWait::default();
+                let mut async_wait_pinned = Pin::new(&mut async_wait);
+                if current_array.partial_rehash::<_, _, _>(
                     |key| self.hash(key),
                     |_, _| None,
+                    Some(async_wait_pinned.mut_ptr()),
                     &Barrier::new(),
-                ) {
+                ) == Ok(true)
+                {
                     break;
                 }
-                AsyncWait::default().await;
+                async_wait_pinned.await;
             }
 
             for cell_index in 0..current_array.num_cells() {
                 let killed = loop {
+                    let mut async_wait = AsyncWait::default();
+                    let mut async_wait_pinned = Pin::new(&mut async_wait);
                     {
                         let barrier = Barrier::new();
-                        if let Ok(result) =
-                            Locker::try_lock(current_array.cell(cell_index), &barrier)
-                        {
+                        if let Ok(result) = Locker::try_lock_or_wait(
+                            current_array.cell(cell_index),
+                            async_wait_pinned.mut_ptr(),
+                            &barrier,
+                        ) {
                             if let Some(locker) = result {
                                 let mut iterator = locker.cell().iter(&barrier);
                                 while iterator.next().is_some() {
@@ -940,7 +989,7 @@ where
                             break true;
                         };
                     }
-                    AsyncWait::default().await;
+                    async_wait_pinned.await;
                 };
                 if killed {
                     break;

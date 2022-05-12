@@ -701,26 +701,15 @@ mod benchmark {
     }
 
     #[test]
-    fn hashmap_benchmarks() {
-        hashmap_benchmark::<String>(16384, vec![1, 2, 4]);
+    fn benchmarks_sync() {
         hashmap_benchmark::<usize>(65536, vec![1, 2, 4]);
-    }
-
-    #[test]
-    fn hashindex_benchmarks() {
-        hashindex_benchmark::<String>(16384, vec![1, 2, 4]);
         hashindex_benchmark::<usize>(65536, vec![1, 2, 4]);
-    }
-
-    #[test]
-    fn treeindex_benchmarks() {
-        treeindex_benchmark::<String>(16384, vec![1, 2, 4]);
         treeindex_benchmark::<usize>(65536, vec![1, 2, 4]);
     }
 
     #[ignore]
     #[test]
-    fn full_scale_benchmarks() {
+    fn full_scale_benchmarks_sync() {
         hashmap_benchmark::<usize>(
             1024 * 1024 * 16,
             vec![1, 1, 1, 4, 4, 4, 16, 16, 16, 64, 64, 64],
@@ -740,7 +729,7 @@ mod benchmark {
 
 #[cfg(test)]
 mod benchmark_async {
-    use crate::HashMap;
+    use crate::{HashIndex, HashMap, TreeIndex};
 
     use std::collections::hash_map::RandomState;
     use std::sync::atomic::AtomicUsize;
@@ -778,7 +767,7 @@ mod benchmark_async {
         }
     }
 
-    async fn perform(
+    async fn hashmap_perform(
         num_tasks: usize,
         start_index: usize,
         hashmap: Arc<HashMap<usize, usize, RandomState>>,
@@ -898,7 +887,7 @@ mod benchmark_async {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                perform(num_tasks, 0, hashmap.clone(), insert.clone()).await;
+                hashmap_perform(num_tasks, 0, hashmap.clone(), insert.clone()).await;
             println!(
                 "hashmap-insert-local: {}, {:?}, {}",
                 num_tasks, duration, total_num_operations
@@ -917,7 +906,7 @@ mod benchmark_async {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                perform(num_tasks, 0, hashmap.clone(), scan.clone()).await;
+                hashmap_perform(num_tasks, 0, hashmap.clone(), scan.clone()).await;
             println!(
                 "hashmap-scan: {}, {:?}, {}",
                 num_tasks, duration, total_num_operations
@@ -935,7 +924,7 @@ mod benchmark_async {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                perform(num_tasks, 0, hashmap.clone(), read.clone()).await;
+                hashmap_perform(num_tasks, 0, hashmap.clone(), read.clone()).await;
             println!(
                 "hashmap-read-local: {}, {:?}, {}",
                 num_tasks, duration, total_num_operations
@@ -953,7 +942,7 @@ mod benchmark_async {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                perform(num_tasks, 0, hashmap.clone(), remove.clone()).await;
+                hashmap_perform(num_tasks, 0, hashmap.clone(), remove.clone()).await;
             println!(
                 "hashmap-remove-local: {}, {:?}, {}",
                 num_tasks, duration, total_num_operations
@@ -972,7 +961,7 @@ mod benchmark_async {
                 remove_remote: 0,
             };
             let (duration, total_num_operations) =
-                perform(num_tasks, 0, hashmap.clone(), insert.clone()).await;
+                hashmap_perform(num_tasks, 0, hashmap.clone(), insert.clone()).await;
             println!(
                 "hashmap-insert-local-remote: {}, {:?}, {}",
                 num_tasks, duration, total_num_operations
@@ -990,7 +979,7 @@ mod benchmark_async {
                 remove_local: 1,
                 remove_remote: 1,
             };
-            let (duration, total_num_operations) = perform(
+            let (duration, total_num_operations) = hashmap_perform(
                 num_tasks,
                 workload_size * num_tasks,
                 hashmap.clone(),
@@ -1015,7 +1004,7 @@ mod benchmark_async {
                 remove_remote: 1,
             };
             let (duration, total_num_operations) =
-                perform(num_tasks, 0, hashmap.clone(), remove.clone()).await;
+                hashmap_perform(num_tasks, 0, hashmap.clone(), remove.clone()).await;
             println!(
                 "hashmap-remove-local-remote: {}, {:?}, {}",
                 num_tasks, duration, total_num_operations
@@ -1024,15 +1013,531 @@ mod benchmark_async {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
-    async fn hashmap_benchmarks() {
-        hashmap_benchmark(16384, vec![1, 2, 4]).await;
+    async fn hashindex_perform(
+        num_tasks: usize,
+        start_index: usize,
+        hashindex: Arc<HashIndex<usize, usize, RandomState>>,
+        workload: Workload,
+    ) -> (Duration, usize) {
+        let total_num_operations = Arc::new(AtomicUsize::new(0));
+        let mut task_handles = Vec::with_capacity(num_tasks);
+        let barrier = Arc::new(Barrier::new(num_tasks + 1));
+        for task_id in 0..num_tasks {
+            let barrier_cloned = barrier.clone();
+            let hashindex_cloned = hashindex.clone();
+            let workload_cloned = Arc::new(workload.clone());
+            let total_num_operations_cloned = total_num_operations.clone();
+            task_handles.push(tokio::task::spawn(async move {
+                let mut num_operations = 0;
+                let per_op_workload_size = workload_cloned.max_per_op_size();
+                let per_task_workload_size = workload_cloned.size * per_op_workload_size;
+                barrier_cloned.wait().await;
+                for _ in 0..workload_cloned.scan {
+                    hashindex_cloned
+                        .iter(&crate::ebr::Barrier::new())
+                        .for_each(|(_, _)| num_operations += 1);
+                }
+                for i in 0..per_task_workload_size {
+                    let remote_task_id = if num_tasks < 2 {
+                        0
+                    } else {
+                        (task_id + 1 + i % (num_tasks - 1)) % num_tasks
+                    };
+                    assert!(num_tasks < 2 || task_id != remote_task_id);
+                    for j in 0..workload_cloned.insert_local {
+                        let local_index = task_id * per_task_workload_size
+                            + i * per_op_workload_size
+                            + j
+                            + start_index;
+                        let result = hashindex_cloned.insert_async(local_index, i).await;
+                        assert!(result.is_ok() || workload_cloned.has_remote_op());
+                        num_operations += 1;
+                    }
+                    for j in 0..workload_cloned.insert_remote {
+                        let remote_index = remote_task_id * per_task_workload_size
+                            + i * per_op_workload_size
+                            + j
+                            + start_index;
+                        let _result = hashindex_cloned.insert_async(remote_index, i).await;
+                        num_operations += 1;
+                    }
+                    for j in 0..workload_cloned.read_local {
+                        let local_index = task_id * per_task_workload_size
+                            + i * per_op_workload_size
+                            + j
+                            + start_index;
+                        let result = hashindex_cloned.read(&local_index, |_, _| ());
+                        assert!(result.is_some() || workload_cloned.has_remote_op());
+                        num_operations += 1;
+                    }
+                    for j in 0..workload_cloned.read_remote {
+                        let remote_index = remote_task_id * per_task_workload_size
+                            + i * per_op_workload_size
+                            + j
+                            + start_index;
+                        let _result = hashindex_cloned.read(&remote_index, |_, _| ());
+                        num_operations += 1;
+                    }
+                    for j in 0..workload_cloned.remove_local {
+                        let local_index = task_id * per_task_workload_size
+                            + i * per_op_workload_size
+                            + j
+                            + start_index;
+                        let result = hashindex_cloned.remove_async(&local_index).await;
+                        assert!(result || workload_cloned.has_remote_op());
+                        num_operations += 1;
+                    }
+                    for j in 0..workload_cloned.remove_remote {
+                        let remote_index = remote_task_id * per_task_workload_size
+                            + i * per_op_workload_size
+                            + j
+                            + start_index;
+                        let _result = hashindex_cloned.remove_async(&remote_index).await;
+                        num_operations += 1;
+                    }
+                }
+                barrier_cloned.wait().await;
+                total_num_operations_cloned.fetch_add(num_operations, Relaxed);
+            }));
+        }
+
+        barrier.wait().await;
+        let start_time = Instant::now();
+        barrier.wait().await;
+        let end_time = Instant::now();
+
+        for r in futures::future::join_all(task_handles).await {
+            assert!(r.is_ok());
+        }
+
+        (
+            end_time.saturating_duration_since(start_time),
+            total_num_operations.load(Relaxed),
+        )
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn hashindex_benchmark(workload_size: usize, num_tasks_list: Vec<usize>) {
+        for num_tasks in num_tasks_list {
+            let hashindex: Arc<HashIndex<usize, usize, RandomState>> =
+                Arc::new(HashIndex::default());
+
+            // 1. insert-local
+            let insert = Workload {
+                size: workload_size,
+                insert_local: 1,
+                insert_remote: 0,
+                scan: 0,
+                read_local: 0,
+                read_remote: 0,
+                remove_local: 0,
+                remove_remote: 0,
+            };
+            let (duration, total_num_operations) =
+                hashindex_perform(num_tasks, 0, hashindex.clone(), insert.clone()).await;
+            println!(
+                "hashindex-insert-local: {}, {:?}, {}",
+                num_tasks, duration, total_num_operations
+            );
+            assert_eq!(hashindex.len(), workload_size * num_tasks);
+
+            // 2. scan
+            let scan = Workload {
+                size: workload_size,
+                insert_local: 0,
+                insert_remote: 0,
+                scan: 1,
+                read_local: 0,
+                read_remote: 0,
+                remove_local: 0,
+                remove_remote: 0,
+            };
+            let (duration, total_num_operations) =
+                hashindex_perform(num_tasks, 0, hashindex.clone(), scan.clone()).await;
+            println!(
+                "hashindex-scan: {}, {:?}, {}",
+                num_tasks, duration, total_num_operations
+            );
+
+            // 3. read-local
+            let read = Workload {
+                size: workload_size,
+                insert_local: 0,
+                insert_remote: 0,
+                scan: 0,
+                read_local: 1,
+                read_remote: 0,
+                remove_local: 0,
+                remove_remote: 0,
+            };
+            let (duration, total_num_operations) =
+                hashindex_perform(num_tasks, 0, hashindex.clone(), read.clone()).await;
+            println!(
+                "hashindex-read-local: {}, {:?}, {}",
+                num_tasks, duration, total_num_operations
+            );
+
+            // 4. remove-local
+            let remove = Workload {
+                size: workload_size,
+                insert_local: 0,
+                insert_remote: 0,
+                scan: 0,
+                read_local: 0,
+                read_remote: 0,
+                remove_local: 1,
+                remove_remote: 0,
+            };
+            let (duration, total_num_operations) =
+                hashindex_perform(num_tasks, 0, hashindex.clone(), remove.clone()).await;
+            println!(
+                "hashindex-remove-local: {}, {:?}, {}",
+                num_tasks, duration, total_num_operations
+            );
+            assert_eq!(hashindex.len(), 0);
+
+            // 5. insert-local-remote
+            let insert = Workload {
+                size: workload_size,
+                insert_local: 1,
+                insert_remote: 1,
+                scan: 0,
+                read_local: 0,
+                read_remote: 0,
+                remove_local: 0,
+                remove_remote: 0,
+            };
+            let (duration, total_num_operations) =
+                hashindex_perform(num_tasks, 0, hashindex.clone(), insert.clone()).await;
+            println!(
+                "hashindex-insert-local-remote: {}, {:?}, {}",
+                num_tasks, duration, total_num_operations
+            );
+            assert_eq!(hashindex.len(), workload_size * num_tasks);
+
+            // 6. mixed
+            let mixed = Workload {
+                size: workload_size,
+                insert_local: 1,
+                insert_remote: 1,
+                scan: 0,
+                read_local: 1,
+                read_remote: 1,
+                remove_local: 1,
+                remove_remote: 1,
+            };
+            let (duration, total_num_operations) = hashindex_perform(
+                num_tasks,
+                workload_size * num_tasks,
+                hashindex.clone(),
+                mixed.clone(),
+            )
+            .await;
+            println!(
+                "hashindex-mixed: {}, {:?}, {}",
+                num_tasks, duration, total_num_operations
+            );
+            assert_eq!(hashindex.len(), workload_size * num_tasks);
+
+            // 7. remove-local-remote
+            let remove = Workload {
+                size: workload_size,
+                insert_local: 0,
+                insert_remote: 0,
+                scan: 0,
+                read_local: 0,
+                read_remote: 0,
+                remove_local: 1,
+                remove_remote: 1,
+            };
+            let (duration, total_num_operations) =
+                hashindex_perform(num_tasks, 0, hashindex.clone(), remove.clone()).await;
+            println!(
+                "hashindex-remove-local-remote: {}, {:?}, {}",
+                num_tasks, duration, total_num_operations
+            );
+            assert_eq!(hashindex.len(), 0);
+        }
+    }
+
+    async fn treeindex_perform(
+        num_tasks: usize,
+        start_index: usize,
+        treeindex: Arc<TreeIndex<usize, usize>>,
+        workload: Workload,
+    ) -> (Duration, usize) {
+        let total_num_operations = Arc::new(AtomicUsize::new(0));
+        let mut task_handles = Vec::with_capacity(num_tasks);
+        let barrier = Arc::new(Barrier::new(num_tasks + 1));
+        for task_id in 0..num_tasks {
+            let barrier_cloned = barrier.clone();
+            let treeindex_cloned = treeindex.clone();
+            let workload_cloned = Arc::new(workload.clone());
+            let total_num_operations_cloned = total_num_operations.clone();
+            task_handles.push(tokio::task::spawn(async move {
+                let mut num_operations = 0;
+                let per_op_workload_size = workload_cloned.max_per_op_size();
+                let per_task_workload_size = workload_cloned.size * per_op_workload_size;
+                barrier_cloned.wait().await;
+                for _ in 0..workload_cloned.scan {
+                    treeindex_cloned
+                        .iter(&crate::ebr::Barrier::new())
+                        .for_each(|(_, _)| num_operations += 1);
+                }
+                for i in 0..per_task_workload_size {
+                    let remote_task_id = if num_tasks < 2 {
+                        0
+                    } else {
+                        (task_id + 1 + i % (num_tasks - 1)) % num_tasks
+                    };
+                    assert!(num_tasks < 2 || task_id != remote_task_id);
+                    for j in 0..workload_cloned.insert_local {
+                        let local_index = task_id * per_task_workload_size
+                            + i * per_op_workload_size
+                            + j
+                            + start_index;
+                        let result = treeindex_cloned.insert_async(local_index, i).await;
+                        assert!(result.is_ok() || workload_cloned.has_remote_op());
+                        num_operations += 1;
+                    }
+                    for j in 0..workload_cloned.insert_remote {
+                        let remote_index = remote_task_id * per_task_workload_size
+                            + i * per_op_workload_size
+                            + j
+                            + start_index;
+                        let _result = treeindex_cloned.insert_async(remote_index, i).await;
+                        num_operations += 1;
+                    }
+                    for j in 0..workload_cloned.read_local {
+                        let local_index = task_id * per_task_workload_size
+                            + i * per_op_workload_size
+                            + j
+                            + start_index;
+                        let result = treeindex_cloned.read(&local_index, |_, _| ());
+                        assert!(result.is_some() || workload_cloned.has_remote_op());
+                        num_operations += 1;
+                    }
+                    for j in 0..workload_cloned.read_remote {
+                        let remote_index = remote_task_id * per_task_workload_size
+                            + i * per_op_workload_size
+                            + j
+                            + start_index;
+                        let _result = treeindex_cloned.read(&remote_index, |_, _| ());
+                        num_operations += 1;
+                    }
+                    for j in 0..workload_cloned.remove_local {
+                        let local_index = task_id * per_task_workload_size
+                            + i * per_op_workload_size
+                            + j
+                            + start_index;
+                        let result = treeindex_cloned.remove_async(&local_index).await;
+                        assert!(result || workload_cloned.has_remote_op());
+                        num_operations += 1;
+                    }
+                    for j in 0..workload_cloned.remove_remote {
+                        let remote_index = remote_task_id * per_task_workload_size
+                            + i * per_op_workload_size
+                            + j
+                            + start_index;
+                        let _result = treeindex_cloned.remove_async(&remote_index).await;
+                        num_operations += 1;
+                    }
+                }
+                barrier_cloned.wait().await;
+                total_num_operations_cloned.fetch_add(num_operations, Relaxed);
+            }));
+        }
+
+        barrier.wait().await;
+        let start_time = Instant::now();
+        barrier.wait().await;
+        let end_time = Instant::now();
+
+        for r in futures::future::join_all(task_handles).await {
+            assert!(r.is_ok());
+        }
+
+        (
+            end_time.saturating_duration_since(start_time),
+            total_num_operations.load(Relaxed),
+        )
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn treeindex_benchmark(workload_size: usize, num_tasks_list: Vec<usize>) {
+        for num_tasks in num_tasks_list {
+            let treeindex: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::default());
+
+            // 1. insert-local
+            let insert = Workload {
+                size: workload_size,
+                insert_local: 1,
+                insert_remote: 0,
+                scan: 0,
+                read_local: 0,
+                read_remote: 0,
+                remove_local: 0,
+                remove_remote: 0,
+            };
+            let (duration, total_num_operations) =
+                treeindex_perform(num_tasks, 0, treeindex.clone(), insert.clone()).await;
+            println!(
+                "treeindex-insert-local: {}, {:?}, {}, depth = {}",
+                num_tasks,
+                duration,
+                total_num_operations,
+                treeindex.depth()
+            );
+            assert_eq!(treeindex.len(), workload_size * num_tasks);
+
+            // 2. scan
+            let scan = Workload {
+                size: workload_size,
+                insert_local: 0,
+                insert_remote: 0,
+                scan: 1,
+                read_local: 0,
+                read_remote: 0,
+                remove_local: 0,
+                remove_remote: 0,
+            };
+            let (duration, total_num_operations) =
+                treeindex_perform(num_tasks, 0, treeindex.clone(), scan.clone()).await;
+            println!(
+                "treeindex-scan: {}, {:?}, {}",
+                num_tasks, duration, total_num_operations,
+            );
+
+            // 3. read-local
+            let read = Workload {
+                size: workload_size,
+                insert_local: 0,
+                insert_remote: 0,
+                scan: 0,
+                read_local: 1,
+                read_remote: 0,
+                remove_local: 0,
+                remove_remote: 0,
+            };
+            let (duration, total_num_operations) =
+                treeindex_perform(num_tasks, 0, treeindex.clone(), read.clone()).await;
+            println!(
+                "treeindex-read-local: {}, {:?}, {}",
+                num_tasks, duration, total_num_operations,
+            );
+
+            // 4. remove-local
+            let remove = Workload {
+                size: workload_size,
+                insert_local: 0,
+                insert_remote: 0,
+                scan: 0,
+                read_local: 0,
+                read_remote: 0,
+                remove_local: 1,
+                remove_remote: 0,
+            };
+            let (duration, total_num_operations) =
+                treeindex_perform(num_tasks, 0, treeindex.clone(), remove.clone()).await;
+            println!(
+                "treeindex-remove-local: {}, {:?}, {}",
+                num_tasks, duration, total_num_operations,
+            );
+            assert_eq!(treeindex.len(), 0);
+
+            // 5. insert-local-remote
+            let insert = Workload {
+                size: workload_size,
+                insert_local: 1,
+                insert_remote: 1,
+                scan: 0,
+                read_local: 0,
+                read_remote: 0,
+                remove_local: 0,
+                remove_remote: 0,
+            };
+            let (duration, total_num_operations) =
+                treeindex_perform(num_tasks, 0, treeindex.clone(), insert.clone()).await;
+            println!(
+                "treeindex-insert-local-remote: {}, {:?}, {}, depth = {}",
+                num_tasks,
+                duration,
+                total_num_operations,
+                treeindex.depth()
+            );
+            assert_eq!(treeindex.len(), workload_size * num_tasks);
+
+            // 6. mixed
+            let mixed = Workload {
+                size: workload_size,
+                insert_local: 1,
+                insert_remote: 1,
+                scan: 0,
+                read_local: 1,
+                read_remote: 1,
+                remove_local: 1,
+                remove_remote: 1,
+            };
+            let (duration, total_num_operations) = treeindex_perform(
+                num_tasks,
+                workload_size * num_tasks,
+                treeindex.clone(),
+                mixed.clone(),
+            )
+            .await;
+            println!(
+                "treeindex-mixed: {}, {:?}, {}",
+                num_tasks, duration, total_num_operations,
+            );
+            assert_eq!(treeindex.len(), workload_size * num_tasks);
+
+            // 7. remove-local-remote
+            let remove = Workload {
+                size: workload_size,
+                insert_local: 0,
+                insert_remote: 0,
+                scan: 0,
+                read_local: 0,
+                read_remote: 0,
+                remove_local: 1,
+                remove_remote: 1,
+            };
+            let (duration, total_num_operations) =
+                treeindex_perform(num_tasks, 0, treeindex.clone(), remove.clone()).await;
+            println!(
+                "treeindex-remove-local-remote: {}, {:?}, {}",
+                num_tasks, duration, total_num_operations,
+            );
+            assert_eq!(treeindex.len(), 0);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+    async fn benchmarks_async() {
         hashmap_benchmark(65536, vec![1, 2, 4]).await;
+        hashindex_benchmark(65536, vec![1, 2, 4]).await;
+        treeindex_benchmark(65536, vec![1, 2, 4]).await;
     }
 
     #[ignore]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 88)]
-    async fn async_full_scale_benchmarks() {
-        hashmap_benchmark(1024 * 1024 * 128, vec![11, 11, 11, 22, 22, 22, 44, 44, 44]).await;
+    #[tokio::test(flavor = "multi_thread", worker_threads = 96)]
+    async fn full_scale_benchmarks_async() {
+        hashmap_benchmark(
+            1024 * 1024 * 16,
+            vec![1, 1, 1, 4, 4, 4, 16, 16, 16, 64, 64, 64],
+        )
+        .await;
+        println!("----");
+        hashindex_benchmark(
+            1024 * 1024 * 16,
+            vec![1, 1, 1, 4, 4, 4, 16, 16, 16, 64, 64, 64],
+        )
+        .await;
+        println!("----");
+        treeindex_benchmark(
+            1024 * 1024 * 16,
+            vec![1, 1, 1, 4, 4, 4, 16, 16, 16, 64, 64, 64],
+        )
+        .await;
     }
 }
