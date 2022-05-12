@@ -422,8 +422,8 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 0.6.11
 
-* Fix [#49](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/49) for [HashMap](#HashMap) and [HashIndex](#HashIndex).
-* Fix incorrect methods: `HashIndex::{remove_async, remove_if_async}`.
+* Fix [#49](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/49).
+* Fix incorrect interface: `HashIndex::{remove_async, remove_if_async}`.
 
 0.6.10
 

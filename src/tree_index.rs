@@ -16,6 +16,7 @@ use std::cmp::Ordering;
 use std::iter::FusedIterator;
 use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::ops::RangeBounds;
+use std::pin::Pin;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 
 /// Scalable concurrent B+ tree.
@@ -151,6 +152,9 @@ where
     #[inline]
     pub async fn insert_async(&self, mut key: K, mut value: V) -> Result<(), (K, V)> {
         loop {
+            let mut async_wait = AsyncWait::default();
+            let async_wait_pinned = Pin::new(&mut async_wait);
+
             let need_await = {
                 let barrier = Barrier::new();
                 if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
@@ -188,7 +192,7 @@ where
             };
 
             if need_await {
-                AsyncWait::default().await;
+                async_wait_pinned.await;
             }
 
             let new_root = Arc::new(Node::new_leaf_node());
@@ -321,6 +325,8 @@ where
     {
         let mut has_been_removed = false;
         loop {
+            let mut async_wait = AsyncWait::default();
+            let async_wait_pinned = Pin::new(&mut async_wait);
             {
                 let barrier = Barrier::new();
                 if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
@@ -353,8 +359,7 @@ where
                     return has_been_removed;
                 }
             }
-
-            AsyncWait::default().await;
+            async_wait_pinned.await;
         }
     }
 
