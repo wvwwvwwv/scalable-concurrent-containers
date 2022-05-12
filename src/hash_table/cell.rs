@@ -375,13 +375,13 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     #[inline]
     pub(crate) fn try_lock_or_wait(
         cell: &'b Cell<K, V, LOCK_FREE>,
-        async_entry: *mut AsyncWait,
+        async_wait: *mut AsyncWait,
         barrier: &'b Barrier,
     ) -> Result<Option<Locker<'b, K, V, LOCK_FREE>>, ()> {
         if let Ok(locker) = Self::try_lock(cell, barrier) {
             return Ok(locker);
         }
-        cell.wait_queue.push_async_entry(async_entry, || {
+        cell.wait_queue.push_async_entry(async_wait, || {
             // Mark that there is a waiting thread.
             cell.state.fetch_or(WAITING, Release);
             Self::try_lock(cell, barrier)
@@ -621,13 +621,13 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
     #[inline]
     pub(crate) fn try_lock_or_wait(
         cell: &'b Cell<K, V, LOCK_FREE>,
-        async_entry: *mut AsyncWait,
+        async_wait: *mut AsyncWait,
         barrier: &'b Barrier,
     ) -> Result<Option<Reader<'b, K, V, LOCK_FREE>>, ()> {
         if let Ok(reader) = Self::try_lock(cell, barrier) {
             return Ok(reader);
         }
-        cell.wait_queue.push_async_entry(async_entry, || {
+        cell.wait_queue.push_async_entry(async_wait, || {
             // Mark that there is a waiting thread.
             cell.state.fetch_or(WAITING, Release);
             Self::try_lock(cell, barrier)

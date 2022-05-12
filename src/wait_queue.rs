@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::mem::transmute;
 use std::pin::Pin;
+use std::ptr::addr_of_mut;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{AcqRel, Relaxed};
 use std::sync::{Condvar, Mutex};
@@ -26,12 +27,10 @@ impl WaitQueue {
         let mut current = self.wait_queue.load(Relaxed);
         let mut entry = SyncWait::new(current);
 
-        while let Err(actual) = self.wait_queue.compare_exchange(
-            current,
-            std::ptr::addr_of_mut!(entry) as usize,
-            AcqRel,
-            Relaxed,
-        ) {
+        while let Err(actual) =
+            self.wait_queue
+                .compare_exchange(current, addr_of_mut!(entry) as usize, AcqRel, Relaxed)
+        {
             current = actual;
             entry.next = current;
         }
@@ -53,31 +52,32 @@ impl WaitQueue {
     #[inline]
     pub fn push_async_entry<T, F: FnOnce() -> Result<T, ()>>(
         &self,
-        async_entry: *mut AsyncWait,
+        async_wait: *mut AsyncWait,
         f: F,
     ) -> Result<T, ()> {
-        let async_entry_mut = unsafe { &mut *async_entry };
-        debug_assert!(async_entry_mut.mutex.is_none());
+        let async_wait_mut = unsafe { &mut *async_wait };
+        debug_assert!(async_wait_mut.mutex.is_none());
 
         let mut current = self.wait_queue.load(Relaxed);
-        async_entry_mut.mutex.replace(Mutex::new((false, None)));
-        async_entry_mut.next = current;
+        async_wait_mut.next = current;
+        async_wait_mut.mutex.replace(Mutex::new((false, None)));
 
         while let Err(actual) = self.wait_queue.compare_exchange(
             current,
-            (async_entry as usize) | ASYNC,
+            (async_wait as usize) | ASYNC,
             AcqRel,
             Relaxed,
         ) {
             current = actual;
-            async_entry_mut.next = current;
+            async_wait_mut.next = current;
         }
 
         // Execute the closure.
         if let Ok(result) = f() {
             // The caller does not have to await.
             self.signal();
-            async_entry_mut.mutex.take();
+            async_wait_mut.force_wait();
+            async_wait_mut.mutex.take();
             Ok(result)
         } else {
             // The caller has to await.
@@ -118,16 +118,33 @@ pub(crate) struct AsyncWait {
 }
 
 impl AsyncWait {
+    /// Returns its pointer value.
+    pub(crate) fn mut_ptr(&mut self) -> *mut AsyncWait {
+        addr_of_mut!(*self)
+    }
+
     /// Sends a signal.
     fn signal(&self) {
         if let Some(mutex) = self.mutex.as_ref() {
-            let mut locked = mutex.lock().unwrap();
-            locked.0 = true;
-            if let Some(waker) = locked.1.take() {
-                waker.wake();
+            if let Ok(mut locked) = mutex.lock() {
+                locked.0 = true;
+                if let Some(waker) = locked.1.take() {
+                    waker.wake();
+                }
             }
         } else {
             unreachable!();
+        }
+    }
+
+    /// Forces `self` to wait for a signal.
+    fn force_wait(&self) {
+        while let Some(mutex) = self.mutex.as_ref() {
+            if let Ok(locked) = mutex.lock() {
+                if locked.0 {
+                    break;
+                }
+            }
         }
     }
 

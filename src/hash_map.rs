@@ -9,7 +9,7 @@ use super::wait_queue::AsyncWait;
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash};
-use std::ptr::addr_of_mut;
+use std::pin::Pin;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 use std::sync::atomic::{AtomicU8, AtomicUsize};
 
@@ -210,12 +210,13 @@ where
         let (hash, partial_hash) = self.hash(&key);
         loop {
             let mut async_wait = AsyncWait::default();
+            let mut async_wait_pinned = Pin::new(&mut async_wait);
             match self.insert_entry(
                 key,
                 val,
                 hash,
                 partial_hash,
-                Some(addr_of_mut!(async_wait)),
+                Some(async_wait_pinned.mut_ptr()),
                 &Barrier::new(),
             ) {
                 Ok(Some(returned)) => return Err(returned),
@@ -225,7 +226,7 @@ where
                     val = returned.1;
                 }
             }
-            async_wait.await;
+            async_wait_pinned.await;
         }
     }
 
@@ -292,11 +293,12 @@ where
         let (hash, partial_hash) = self.hash(key_ref);
         loop {
             let mut async_wait = AsyncWait::default();
+            let mut async_wait_pinned = Pin::new(&mut async_wait);
             if let Ok((_, _locker, iterator)) = self.acquire::<Q>(
                 key_ref,
                 hash,
                 partial_hash,
-                Some(addr_of_mut!(async_wait)),
+                Some(async_wait_pinned.mut_ptr()),
                 &Barrier::new(),
             ) {
                 if let Some(iterator) = iterator {
@@ -307,7 +309,7 @@ where
                 }
                 return None;
             }
-            async_wait.await;
+            async_wait_pinned.await;
         }
     }
 
@@ -382,11 +384,12 @@ where
         let (hash, partial_hash) = self.hash(&key);
         loop {
             let mut async_wait = AsyncWait::default();
+            let mut async_wait_pinned = Pin::new(&mut async_wait);
             if let Ok((_, locker, iterator)) = self.acquire::<_>(
                 &key,
                 hash,
                 partial_hash,
-                Some(addr_of_mut!(async_wait)),
+                Some(async_wait_pinned.mut_ptr()),
                 &Barrier::new(),
             ) {
                 if let Some(iterator) = iterator {
@@ -399,7 +402,7 @@ where
                 locker.insert(key, constructor(), partial_hash, &Barrier::new());
                 return;
             }
-            async_wait.await;
+            async_wait_pinned.await;
         }
     }
 
@@ -509,17 +512,18 @@ where
         let (hash, partial_hash) = self.hash(key_ref);
         loop {
             let mut async_wait = AsyncWait::default();
+            let mut async_wait_pinned = Pin::new(&mut async_wait);
             if let Ok(result) = self.remove_entry::<Q, F>(
                 key_ref,
                 hash,
                 partial_hash,
                 &mut condition,
-                Some(addr_of_mut!(async_wait)),
+                Some(async_wait_pinned.mut_ptr()),
                 &Barrier::new(),
             ) {
                 return result.0;
             }
-            async_wait.await;
+            async_wait_pinned.await;
         }
     }
 
@@ -578,17 +582,18 @@ where
         let (hash, partial_hash) = self.hash(key_ref);
         loop {
             let mut async_wait = AsyncWait::default();
+            let mut async_wait_pinned = Pin::new(&mut async_wait);
             if let Ok(result) = self.read_entry::<Q, R, _>(
                 key_ref,
                 hash,
                 partial_hash,
                 &mut reader,
-                Some(addr_of_mut!(async_wait)),
+                Some(async_wait_pinned.mut_ptr()),
                 &Barrier::new(),
             ) {
                 return result;
             }
-            async_wait.await;
+            async_wait_pinned.await;
         }
     }
 
@@ -713,26 +718,28 @@ where
         while let Some(current_array) = current_array_holder.take() {
             while !current_array.old_array(&Barrier::new()).is_null() {
                 let mut async_wait = AsyncWait::default();
+                let mut async_wait_pinned = Pin::new(&mut async_wait);
                 if current_array.partial_rehash::<_, _, _>(
                     |key| self.hash(key),
                     |_, _| None,
-                    Some(addr_of_mut!(async_wait)),
+                    Some(async_wait_pinned.mut_ptr()),
                     &Barrier::new(),
                 ) == Ok(true)
                 {
                     break;
                 }
-                async_wait.await;
+                async_wait_pinned.await;
             }
 
             for cell_index in 0..current_array.num_cells() {
                 let killed = loop {
                     let mut async_wait = AsyncWait::default();
+                    let mut async_wait_pinned = Pin::new(&mut async_wait);
                     {
                         let barrier = Barrier::new();
                         if let Ok(result) = Reader::try_lock_or_wait(
                             current_array.cell(cell_index),
-                            addr_of_mut!(async_wait),
+                            async_wait_pinned.mut_ptr(),
                             &barrier,
                         ) {
                             if let Some(locker) = result {
@@ -751,7 +758,7 @@ where
                             break true;
                         };
                     }
-                    async_wait.await;
+                    async_wait_pinned.await;
                 };
                 if killed {
                     break;
@@ -934,26 +941,28 @@ where
         while let Some(current_array) = current_array_holder.take() {
             while !current_array.old_array(&Barrier::new()).is_null() {
                 let mut async_wait = AsyncWait::default();
+                let mut async_wait_pinned = Pin::new(&mut async_wait);
                 if current_array.partial_rehash::<_, _, _>(
                     |key| self.hash(key),
                     |_, _| None,
-                    Some(addr_of_mut!(async_wait)),
+                    Some(async_wait_pinned.mut_ptr()),
                     &Barrier::new(),
                 ) == Ok(true)
                 {
                     break;
                 }
-                async_wait.await;
+                async_wait_pinned.await;
             }
 
             for cell_index in 0..current_array.num_cells() {
                 let killed = loop {
                     let mut async_wait = AsyncWait::default();
+                    let mut async_wait_pinned = Pin::new(&mut async_wait);
                     {
                         let barrier = Barrier::new();
                         if let Ok(result) = Locker::try_lock_or_wait(
                             current_array.cell(cell_index),
-                            addr_of_mut!(async_wait),
+                            async_wait_pinned.mut_ptr(),
                             &barrier,
                         ) {
                             if let Some(locker) = result {
@@ -980,7 +989,7 @@ where
                             break true;
                         };
                     }
-                    async_wait.await;
+                    async_wait_pinned.await;
                 };
                 if killed {
                     break;

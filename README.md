@@ -77,7 +77,7 @@ assert!(hashmap.insert(3, 2).is_ok());
 assert_eq!(hashmap.retain(|key, value| *key == 1 && *value == 0), (1, 2));
 ```
 
-Asynchronous methods can be used in asynchronous code blocks; *asynchronous methods yield the task executor when the target mutex cannot be acquired ([#49](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/49))*.
+Asynchronous methods can be used in asynchronous code blocks.
 
 ```rust
 use scc::HashMap;
@@ -419,6 +419,11 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 
 ## Changelog
+
+0.6.11
+
+* Fix [#49](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/49) for [HashMap](#HashMap) and [HashIndex](#HashIndex).
+* Fix incorrect methods: `HashIndex::{remove_async, remove_if_async}`.
 
 0.6.10
 
