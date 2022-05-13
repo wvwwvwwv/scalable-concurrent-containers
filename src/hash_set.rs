@@ -367,7 +367,7 @@ where
     /// let hashset: HashSet<usize> = HashSet::default();
     ///
     /// let future_insert = hashset.insert_async(1);
-    /// let future_retain = hashset.scan_async(|k| println!("{k}"));
+    /// let future_scan = hashset.scan_async(|k| println!("{k}"));
     /// ```
     #[inline]
     pub async fn scan_async<F: FnMut(&K)>(&self, mut scanner: F) {

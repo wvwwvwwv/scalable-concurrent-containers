@@ -22,11 +22,11 @@ _See [Performance](#Performance) for benchmark results for the containers and co
 
 ## HashMap
 
-[HashMap](#HashMap) is a scalable in-memory unique key-value container that is targeted at highly concurrent write-heavy workloads. It uses [EBR](#EBR) for its hash table memory management in order to implement non-blocking resizing and fine-granular locking; *it is not a lock-free data structure, and each access to a single key is serialized by a bucket-level mutex*. [HashMap](#HashMap) is optimized for frequently updated large data sets, such as the lock table in database management software.
+[HashMap](#HashMap) is a scalable in-memory unique key-value container that is targeted at highly concurrent write-heavy workloads. It uses [EBR](#EBR) for its hash table memory management in order to implement non-blocking resizing and fine-granular locking without manual data sharding; *it is not a lock-free data structure, and each access to a single key is serialized by a bucket-level mutex*. [HashMap](#HashMap) is optimized for frequently updated large data sets, such as the lock table in database management software.
 
 ### Examples
 
-A unique key can be inserted along with its corresponding value, and then it can be updated, read, and removed.
+A unique key can be inserted along with its corresponding value, and then it can be updated, read, and removed synchronously or asynchronously.
 
 ```rust
 use scc::HashMap;
@@ -37,6 +37,9 @@ assert!(hashmap.insert(1, 0).is_ok());
 assert_eq!(hashmap.update(&1, |v| { *v = 2; *v }).unwrap(), 2);
 assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
 assert_eq!(hashmap.remove(&1).unwrap(), (1, 2));
+
+let future_insert = hashmap.insert_async(2, 1);
+let future_remove = hashmap.remove_async(&1);
 ```
 
 It supports `upsert` as in database management software; it tries to insert the given key-value pair, and if the key exists, it updates the value field with the supplied closure.
@@ -50,6 +53,8 @@ hashmap.upsert(1, || 2, |_, v| *v = 2);
 assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
 hashmap.upsert(1, || 2, |_, v| *v = 3);
 assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 3);
+
+let future_upsert = hashmap.upsert_async(2, || 1, |_, v| *v = 3);
 ```
 
 There is no method to confine the lifetime of references derived from an [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html), and it is illegal to let them live as long as the [HashMap](#HashMap). Therefore [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, it provides a number of methods as substitutes for [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html): `for_each`, `for_each_async`, `scan`, `scan_async`, `retain`, and `retain_async`.
@@ -75,19 +80,9 @@ assert!(hashmap.insert(3, 2).is_ok());
 
 // Inside `retain`, an `ebr::Barrier` protects the entry array.
 assert_eq!(hashmap.retain(|key, value| *key == 1 && *value == 0), (1, 2));
-```
 
-Asynchronous methods can be used in asynchronous code blocks.
-
-```rust
-use scc::HashMap;
-
-let hashmap: HashMap<u64, u32> = HashMap::default();
-
-assert!(hashmap.insert(1, 0).is_ok());
-
-let future_insert = hashmap.insert_async(11, 17);
-let result = future_insert.await;
+// It is possible to scan the entries asynchronously.
+let future_scan = hashmap.scan_async(|k, v| println!("{k} {v}"));
 ```
 
 
@@ -107,6 +102,8 @@ let hashset: HashSet<u64> = HashSet::default();
 assert!(hashset.read(&1, |_| true).is_none());
 assert!(hashset.insert(1).is_ok());
 assert!(hashset.read(&1, |_| true).unwrap());
+
+let future_insert = hashset.insert_async(2);
 ```
 
 
@@ -125,6 +122,9 @@ let hashindex: HashIndex<u64, u32> = HashIndex::default();
 
 assert!(hashindex.insert(1, 0).is_ok());
 assert_eq!(hashindex.read(&1, |_, v| *v).unwrap(), 0);
+
+let future_insert = hashindex.insert_async(2, 1);
+let future_remove = hashindex.remove_if(&1, |_| true);
 ```
 
 An [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is implemented for [HashIndex](#HashIndex), because any derived references can survive as long as the associated `ebr::Barrier` lives.
@@ -166,9 +166,12 @@ use scc::TreeIndex;
 
 let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
 
-assert!(treeindex.insert(1, 10).is_ok());
-assert_eq!(treeindex.read(&1, |_, value| *value).unwrap(), 10);
+assert!(treeindex.insert(1, 2).is_ok());
+assert_eq!(treeindex.read(&1, |_, value| *value).unwrap(), 2);
 assert!(treeindex.remove(&1));
+
+let future_insert = treeindex.insert_async(2, 3);
+let future_remove = treeindex.remove_if_async(&1, |v| *v == 2);
 ```
 
 Key-value pairs can be scanned and the `scan` method is lock-free.
@@ -209,19 +212,6 @@ let barrier = Barrier::new();
 assert_eq!(treeindex.range(1..1, &barrier).count(), 0);
 assert_eq!(treeindex.range(4..8, &barrier).count(), 4);
 assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
-```
-
-Asynchronous methods can be used in asynchronous code blocks.
-
-```rust
-use scc::TreeIndex;
-
-let treeindex: TreeIndex<u64, u32> = TreeIndex::default();
-
-assert!(treeindex.insert(1, 0).is_ok());
-
-let future_insert = treeindex.insert_async(11, 17);
-let result = future_insert.await;
 ```
 
 
@@ -359,7 +349,7 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
 - RAM: 1TB
 - Rust: 1.60.0
-- SCC: 0.6.9
+- SCC: 0.7.0
 
 ### Workload
 
@@ -420,7 +410,7 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 ## Changelog
 
-0.6.11
+0.7.0
 
 * Fix [#49](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/49).
 * Fix incorrect interface: `HashIndex::{remove_async, remove_if_async}`.

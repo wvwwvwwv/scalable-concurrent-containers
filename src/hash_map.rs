@@ -710,7 +710,7 @@ where
     /// let hashmap: HashMap<usize, usize> = HashMap::default();
     ///
     /// let future_insert = hashmap.insert_async(1, 0);
-    /// let future_retain = hashmap.scan_async(|k, v| println!("{k} {v}"));
+    /// let future_scan = hashmap.scan_async(|k, v| println!("{k} {v}"));
     /// ```
     pub async fn scan_async<F: FnMut(&K, &V)>(&self, mut scanner: F) {
         // An acquire fence is required to correctly load the contents of the array.

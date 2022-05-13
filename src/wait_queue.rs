@@ -150,7 +150,7 @@ impl AsyncWait {
         false
     }
 
-    /// Reinterpret `usize` as `*mut AsyncWait`.
+    /// Reinterprets `usize` as `*mut AsyncWait`.
     unsafe fn reinterpret(val: usize) -> *mut AsyncWait {
         transmute(val)
     }
