@@ -1,4 +1,4 @@
-//! The module implements [`HashIndex`].
+//! [`HashIndex`] is a read-optimized asynchronous concurrent hash map.
 
 use super::ebr::{Arc, AtomicArc, Barrier, Ptr};
 use super::hash_table::cell::{EntryIterator, Locker};
@@ -16,9 +16,9 @@ use std::sync::atomic::Ordering::Acquire;
 
 /// Scalable concurrent hash index.
 ///
-/// [`HashIndex`] is a concurrent hash index data structure that is optimized for read
+/// [`HashIndex`] is an asynchronous concurrent hash map data structure that is optimized for read
 /// operations. The key characteristics of [`HashIndex`] are similar to that of
-/// [`HashMap`](super::HashMap).
+/// [`HashMap`](super::HashMap) except that its read operations are lock-free.
 ///
 /// ## Notes
 ///
@@ -95,11 +95,6 @@ where
     ///
     /// Returns an error along with the supplied key-value pair if the key exists.
     ///
-    /// # Panics
-    ///
-    /// Panics if the number of entries in the target `Cell` reaches `u32::MAX` due to a poor hash
-    /// function.
-    ///
     /// # Examples
     ///
     /// ```
@@ -113,10 +108,8 @@ where
     #[inline]
     pub fn insert(&self, key: K, val: V) -> Result<(), (K, V)> {
         let (hash, partial_hash) = self.hash(&key);
-        if let Some((k, v)) = self
-            .insert_entry(key, val, hash, partial_hash, None, &Barrier::new())
-            .ok()
-            .unwrap()
+        if let Ok(Some((k, v))) =
+            self.insert_entry(key, val, hash, partial_hash, None, &Barrier::new())
         {
             Err((k, v))
         } else {

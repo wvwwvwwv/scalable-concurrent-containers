@@ -1,4 +1,4 @@
-//! The module implements [`TreeIndex`].
+//! [`TreeIndex`] is a read-optimized asynchronous concurrent B+ tree.
 
 mod internal_node;
 mod leaf;
@@ -21,9 +21,10 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 
 /// Scalable concurrent B+ tree.
 ///
-/// [`TreeIndex`] is a B+ tree variant that is optimized for read operations. Read operations, such
-/// as read, scan, are neither blocked nor interrupted by other threads. Write operations, such as
-/// insert, remove, do not block if they do not entail structural changes to the tree.
+/// [`TreeIndex`] is an asynchronous concurrent B+ tree variant that is optimized for read
+/// operations. Read operations, such as read, scan, are neither blocked nor interrupted by other
+/// threads or tasks. Write operations, such as insert, remove, do not block if structural changes
+/// are not required.
 ///
 /// ## Notes
 ///

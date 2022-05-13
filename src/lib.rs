@@ -1,16 +1,16 @@
 #![deny(missing_docs, warnings, clippy::all, clippy::pedantic)]
 
-//! Concurrent containers.
+//! Asynchronous and concurrent containers.
 //!
-//! * [`HashMap`]: concurrent hash map.
-//! * [`HashIndex`]: concurrent hash map optimized for read.
-//! * [`TreeIndex`]: concurrent B+ tree optimized for read.
+//! * [`HashMap`]: asynchronous and concurrent hash map.
+//! * [`HashIndex`]: asynchronous and concurrent hash map optimized for read.
+//! * [`TreeIndex`]: asynchronous and concurrent B+ tree optimized for read.
+//! * [`Queue`]: lock-free concurrent queue.
 //!
 //! Utilities.
 //!
 //! * [Epoch-based-reclamation](ebr).
 //! * [`LinkedList`]: lock-free concurrent linked list type trait.
-//! * [`Queue`]: lock-free concurrent queue.
 
 pub mod hash_map;
 pub use hash_map::HashMap;

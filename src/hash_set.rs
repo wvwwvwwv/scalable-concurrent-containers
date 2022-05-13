@@ -1,4 +1,4 @@
-//! The module implements [`HashSet`].
+//! [`HashSet`] is an asynchronous concurrent hash set.
 
 use super::HashMap;
 
@@ -8,8 +8,7 @@ use std::hash::{BuildHasher, Hash};
 
 /// Scalable concurrent hash set.
 ///
-/// [`HashSet`] is a concurrent hash set based on [`HashMap`]. It internally uses a [`HashMap`]
-/// as its key container, thus sharing all the characteristics of [`HashMap`].
+/// [`HashSet`] is an asynchronous concurrent hash set based on [`HashMap`].
 pub struct HashSet<K, H = RandomState>
 where
     K: 'static + Eq + Hash + Sync,
@@ -88,11 +87,6 @@ where
     ///
     /// Returns an error along with the supplied key if the key exists.
     ///
-    /// # Panics
-    ///
-    /// Panics if the number of entries in the target `Cell` reaches `u32::MAX` due to a poor hash
-    /// function.
-    ///
     /// # Examples
     ///
     /// ```
@@ -118,10 +112,6 @@ where
     /// # Errors
     ///
     /// Returns an error along with the supplied key if the key exists.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the number of entries in the target `Cell` reaches `u32::MAX` due to a poor hash
     ///
     /// function.
     /// # Examples

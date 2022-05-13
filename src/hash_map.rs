@@ -1,4 +1,4 @@
-//! The module implements [`HashMap`].
+//! [`HashMap`] is an asynchronous concurrent hash map.
 
 use super::ebr::{Arc, AtomicArc, Barrier};
 use super::hash_table::cell::{Locker, Reader};
@@ -15,9 +15,9 @@ use std::sync::atomic::{AtomicU8, AtomicUsize};
 
 /// Scalable concurrent hash map.
 ///
-/// [`HashMap`] is a concurrent hash map data structure that is targeted at a highly concurrent
-/// workload. The use of an epoch-based reclamation technique enables the data structure to
-/// implement non-blocking resizing and fine-granular locking. A [`HashMap`] instance only has a
+/// [`HashMap`] is an asynchronous concurrent hash map data structure that is targeted at a highly
+/// concurrent workload. The use of an epoch-based reclamation technique enables the data structure
+/// to implement non-blocking resizing and fine-granular locking. A [`HashMap`] instance only has a
 /// single array of entries instead of a fixed number of lock-protected hash tables. An entry of
 /// the array is called a `Cell`; it manages a fixed number of key-value pairs using a customized
 /// mutex in it, and resolves hash conflicts by allocating a linked list of smaller hash tables.
@@ -29,9 +29,8 @@ use std::sync::atomic::{AtomicU8, AtomicUsize};
 /// * Automatic resizing: it automatically grows or shrinks.
 /// * Incremental resizing: each access to the data structure is mandated to rehash a fixed
 ///   number of key-value pairs.
-/// * Optimized resizing: key-value pairs managed by a single `Cell` are guaranteed to be
-///   relocated to consecutive `Cell` instances.
-/// * No busy waiting: the customized mutex never spins.
+/// * No busy waiting: the thread or the asynchronous task is suspended until the desired resource
+///   becomes available.
 /// * Linearlizability: [`HashMap`] methods are linearlizable.
 ///
 /// ## The key statistics for [`HashMap`]
@@ -156,11 +155,6 @@ where
     ///
     /// Returns an error along with the supplied key-value pair if the key exists.
     ///
-    /// # Panics
-    ///
-    /// Panics if the number of entries in the target `Cell` reaches `u32::MAX` due to a poor hash
-    /// function.
-    ///
     /// # Examples
     ///
     /// ```
@@ -174,10 +168,8 @@ where
     #[inline]
     pub fn insert(&self, key: K, val: V) -> Result<(), (K, V)> {
         let (hash, partial_hash) = self.hash(&key);
-        if let Some((k, v)) = self
-            .insert_entry(key, val, hash, partial_hash, None, &Barrier::new())
-            .ok()
-            .unwrap()
+        if let Ok(Some((k, v))) =
+            self.insert_entry(key, val, hash, partial_hash, None, &Barrier::new())
         {
             Err((k, v))
         } else {
@@ -192,10 +184,6 @@ where
     /// # Errors
     ///
     /// Returns an error along with the supplied key-value pair if the key exists.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the number of entries in the target `Cell` reaches `u32::MAX` due to a poor hash
     ///
     /// # Examples
     ///
@@ -315,11 +303,6 @@ where
 
     /// Constructs the value in-place, or modifies an existing value corresponding to the key.
     ///
-    /// # Panics
-    ///
-    /// Panics if the number of entries in the target `Cell` reaches `u32::MAX` due to a poor hash
-    /// function.
-    ///
     /// # Examples
     ///
     /// ```
@@ -341,29 +324,24 @@ where
     ) {
         let (hash, partial_hash) = self.hash(&key);
         let barrier = Barrier::new();
-        let (_, locker, iterator) = self
-            .acquire::<_>(&key, hash, partial_hash, None, &barrier)
-            .ok()
-            .unwrap();
-        if let Some(iterator) = iterator {
-            if let Some((k, v)) = iterator.get() {
-                // The presence of `locker` prevents the entry from being modified outside it.
-                #[allow(clippy::cast_ref_to_mut)]
-                updater(k, unsafe { &mut *(v as *const V as *mut V) });
-                return;
+        if let Ok((_, locker, iterator)) =
+            self.acquire::<_>(&key, hash, partial_hash, None, &barrier)
+        {
+            if let Some(iterator) = iterator {
+                if let Some((k, v)) = iterator.get() {
+                    // The presence of `locker` prevents the entry from being modified outside it.
+                    #[allow(clippy::cast_ref_to_mut)]
+                    updater(k, unsafe { &mut *(v as *const V as *mut V) });
+                    return;
+                }
             }
-        }
-        locker.insert(key, constructor(), partial_hash, &barrier);
+            locker.insert(key, constructor(), partial_hash, &barrier);
+        };
     }
 
     /// Constructs the value in-place, or modifies an existing value corresponding to the key.
     ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the number of entries in the target `Cell` reaches `u32::MAX` due to a poor hash
-    /// function.
     ///
     /// # Examples
     ///

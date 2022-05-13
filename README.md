@@ -4,25 +4,25 @@
 ![Crates.io](https://img.shields.io/crates/l/scc?style=flat-square)
 ![GitHub Workflow Status](https://img.shields.io/github/workflow/status/wvwwvwwv/scalable-concurrent-containers/SCC?style=flat-square)
 
-A collection of high performance concurrent containers and utilities for asynchronous and concurrent programming.
+A collection of high performance containers and utilities for asynchronous and concurrent programming.
 
-#### Concurrent Containers
-- [HashMap](#HashMap) is a concurrent hash map.
+#### Asynchronous and Concurrent Containers
+- [HashMap](#HashMap) is an asynchronous concurrent hash map.
 - [HashSet](#HashSet) is a variant of [HashMap](#HashMap).
-- [HashIndex](#HashIndex) is a read-optimized concurrent hash index.
-- [TreeIndex](#TreeIndex) is a read-optimized concurrent B+ tree.
+- [HashIndex](#HashIndex) is a read-optimized asynchronous concurrent hash index.
+- [TreeIndex](#TreeIndex) is a read-optimized asynchronous concurrent B+ tree.
 - [Queue](#Queue) is a concurrent lock-free first-in-first-out queue.
 
 #### Utilities for Concurrent Programming
 - [EBR](#EBR) implements epoch-based reclamation.
 - [LinkedList](#LinkedList) is a type trait implementing a lock-free concurrent singly linked list.
 
-_See [Performance](#Performance) for benchmark results for the containers and comparison with other concurrent hash maps_.
+_See [Performance](#Performance) for benchmark results for the containers and comparison with other concurrent maps_.
 
 
 ## HashMap
 
-[HashMap](#HashMap) is a scalable in-memory unique key-value container that is targeted at highly concurrent write-heavy workloads. It uses [EBR](#EBR) for its hash table memory management in order to implement non-blocking resizing and fine-granular locking without manual data sharding; *it is not a lock-free data structure, and each access to a single key is serialized by a bucket-level mutex*. [HashMap](#HashMap) is optimized for frequently updated large data sets, such as the lock table in database management software.
+[HashMap](#HashMap) is a scalable in-memory unique key-value container that is targeted at highly concurrent write-heavy workloads. It uses [EBR](#EBR) for its hash table memory management in order to implement non-blocking resizing and fine-granular locking without static data sharding; *it is not a lock-free data structure, and each access to a single key is serialized by a bucket-level mutex*. [HashMap](#HashMap) is optimized for frequently updated large data sets, such as the lock table in database management software.
 
 ### Examples
 
@@ -79,10 +79,11 @@ assert_eq!(hashmap.read(&2, |_, v| *v).unwrap(), 2);
 assert!(hashmap.insert(3, 2).is_ok());
 
 // Inside `retain`, an `ebr::Barrier` protects the entry array.
-assert_eq!(hashmap.retain(|key, value| *key == 1 && *value == 0), (1, 2));
+assert_eq!(hashmap.retain(|k, v| *k == 1 && *v == 0), (1, 2));
 
 // It is possible to scan the entries asynchronously.
 let future_scan = hashmap.scan_async(|k, v| println!("{k} {v}"));
+let future_for_each = hashmap.for_each_async(|k, v_mut| { *v_mut = *k; });
 ```
 
 
@@ -104,6 +105,7 @@ assert!(hashset.insert(1).is_ok());
 assert!(hashset.read(&1, |_| true).unwrap());
 
 let future_insert = hashset.insert_async(2);
+let future_remove = hashset.remove_async(&1);
 ```
 
 
@@ -167,7 +169,7 @@ use scc::TreeIndex;
 let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
 
 assert!(treeindex.insert(1, 2).is_ok());
-assert_eq!(treeindex.read(&1, |_, value| *value).unwrap(), 2);
+assert_eq!(treeindex.read(&1, |_, v| *v).unwrap(), 2);
 assert!(treeindex.remove(&1));
 
 let future_insert = treeindex.insert_async(2, 3);
@@ -359,7 +361,7 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 - Scan: each thread scans the entire container once.
 - Remove: each thread removes its own records from the container.
 - InsertR, RemoveR: each thread additionally operates using keys belonging to a randomly chosen remote thread.
-- MixedR: each thread performs `InsertR` -> `ReadR` -> `RemoveR`.
+- Mixed: each thread performs `InsertR` -> `ReadR` -> `RemoveR`.
 
 ### Results
 
@@ -367,37 +369,37 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 |         |  1 thread  |  4 threads | 16 threads | 64 threads |
 |---------|------------|------------|------------|------------|
-| InsertL |   9.411s   |  16.041s   |  43.012s   |  46.540s   |
-| ReadL   |   3.934s   |   4.955s   |   6.548s   |   8.612s   |
-| ScanL   |   0.147s   |   0.801s   |   3.021s   |  13.186s   |
-| RemoveL |   4.654s   |   6.315s   |  10.651s   |  23.05s    |
-| InsertR |  11.116s   |  27.104s   |  54.909s   |  58.564s   |
-| MixedR  |  14.976s   |  29.388s   |  30.518s   |  33.081s   |
-| RemoveR |   7.057s   |  12.565s   |  18.873s   |  26.77s    |
+| Insert  |   9.48s    |  16.178s   |  42.799s   |  45.928s   |
+| Read    |   3.96s    |   5.119s   |   6.569s   |   8.299s   |
+| Scan    |   0.147s   |   0.812s   |   3.02s    |  13.26s    |
+| Remove  |   4.699s   |   6.682s   |  10.923s   |  23.212s   |
+| InsertR |  11.182s   |  27.138s   |  53.489s   |  57.839s   |
+| Mixed   |  14.924s   |  31.285s   |  30.837s   |  33.285s   |
+| RemoveR |   7.058s   |  12.888s   |  18.83s    |  26.969s   |
 
 - [HashIndex](#HashIndex)
 
 |         |  1 thread  |  4 threads | 16 threads | 64 threads |
 |---------|------------|------------|------------|------------|
-| InsertL |   9.73s    |  17.11s    |  44.599s   |  52.276s   |
-| ReadL   |   3.59s    |   4.977s   |   6.108s   |   8.3s     |
-| ScanL   |   0.279s   |   1.279s   |   5.079s   |  20.317s   |
-| RemoveL |   4.755s   |   7.406s   |  12.329s   |  33.509s   |
-| InsertR |  11.416s   |  26.998s   |  54.513s   |  65.274s   |
-| MixedR  |  18.224s   |  35.357s   |  39.05s    |  42.37s    |
-| RemoveR |   8.553s   |  13.314s   |  19.362s   |  38.209s   |
+| Insert  |   9.711s   |  16.848s   |  43.537s   |  51.047s   |
+| Read    |   3.594s   |   4.91s    |   6.297s   |   8.149s   |
+| Scan    |   0.267s   |   1.299s   |   5.096s   |  20.333s   |
+| Remove  |   4.793s   |   7.068s   |  12.463s   |  32.599s   |
+| InsertR |  11.408s   |  27.405s   |  54.514s   |  64.536s   |
+| Mixed   |  16.864s   |  35.796s   |  38.818s   |  41.617s   |
+| RemoveR |   7.284s   |  13.311s   |  19.423s   |  38.212s   |
 
 - [TreeIndex](#TreeIndex)
 
 |         |  1 thread  |  4 threads | 16 threads | 64 threads |
 |---------|------------|------------|------------|------------|
-| InsertL |  14.839s   |  16.196s   |  18.644s   |  43.914s   |
-| ReadL   |   3.584s   |   4.168s   |   4.531s   |   5.208s   |
-| ScanL   |   1.239s   |   5.088s   |  20.778s   |  85.319s   |
-| RemoveL |   5.736s   |   8.327s   |  10.5s     |  10.465s   |
-| InsertR |  20.543s   |  77.743s   |  56.254s   |  65.242s   |
-| MixedR  |  27.587s   | 164.433s   | 429.19s    | 453.633s   |
-| RemoveR |   9.38s    |  20.262s   |  30.455s   |  39.091s   |
+| Insert  |  14.479s   |  15.995s   |  18.663s   |  48.034s   |
+| Read    |   3.577s   |   4.107s   |   4.549s   |   4.999s   |
+| Scan    |   1.258s   |   5.186s   |  20.982s   |  83.714s   |
+| Remove  |   5.775s   |   8.332s   |   9.951s   |  10.337s   |
+| InsertR |  19.995s   |  73.901s   |  41.952s   |  64.629s   |
+| Mixed   |  27.95s    | 162.835s   | 423.863s   | 446.756s   |
+| RemoveR |   9.33s    |  23.095s   |  28.811s   |  35.342s   |
 
 ### [HashMap](#HashMap) Performance Comparison with [DashMap](https://github.com/xacrimon/dashmap) and [flurry](https://github.com/jonhoo/flurry)
 
@@ -412,8 +414,9 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 0.7.0
 
-* Fix [#49](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/49).
+* API stabilized.
 * Fix incorrect interface: `HashIndex::{remove_async, remove_if_async}`.
+* Fix [#49](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/49).
 
 0.6.10
 
