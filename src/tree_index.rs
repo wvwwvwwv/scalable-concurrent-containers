@@ -94,7 +94,7 @@ where
         loop {
             let barrier = Barrier::new();
             if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
-                match root_ref.insert::<false>(key, value, &barrier) {
+                match root_ref.insert(key, value, None, &barrier) {
                     Ok(r) => match r {
                         InsertResult::Success => return Ok(()),
                         InsertResult::Frozen(k, v) | InsertResult::Retry(k, v) => {
@@ -112,7 +112,7 @@ where
                         InsertResult::Retired(k, v) => {
                             key = k;
                             value = v;
-                            let _result = Node::remove_root::<false>(&self.root, &barrier);
+                            let _result = Node::remove_root(&self.root, None, &barrier);
                         }
                     },
                     Err((k, v)) => {
@@ -153,12 +153,12 @@ where
     pub async fn insert_async(&self, mut key: K, mut value: V) -> Result<(), (K, V)> {
         loop {
             let mut async_wait = AsyncWait::default();
-            let async_wait_pinned = Pin::new(&mut async_wait);
+            let mut async_wait_pinned = Pin::new(&mut async_wait);
 
             let need_await = {
                 let barrier = Barrier::new();
                 if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
-                    match root_ref.insert::<true>(key, value, &barrier) {
+                    match root_ref.insert(key, value, Some(async_wait_pinned.mut_ptr()), &barrier) {
                         Ok(r) => match r {
                             InsertResult::Success => return Ok(()),
                             InsertResult::Frozen(k, v) | InsertResult::Retry(k, v) => {
@@ -177,7 +177,14 @@ where
                             InsertResult::Retired(k, v) => {
                                 key = k;
                                 value = v;
-                                !matches!(Node::remove_root::<true>(&self.root, &barrier), Ok(true))
+                                !matches!(
+                                    Node::remove_root(
+                                        &self.root,
+                                        Some(async_wait_pinned.mut_ptr()),
+                                        &barrier
+                                    ),
+                                    Ok(true)
+                                )
                             }
                         },
                         Err((k, v)) => {
@@ -272,7 +279,7 @@ where
         loop {
             let barrier = Barrier::new();
             if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
-                match root_ref.remove_if::<_, _, false>(key_ref, &mut condition, &barrier) {
+                match root_ref.remove_if::<_, _>(key_ref, &mut condition, None, &barrier) {
                     Ok(r) => match r {
                         RemoveResult::Success => return true,
                         RemoveResult::Cleanup => {
@@ -280,8 +287,7 @@ where
                             return true;
                         }
                         RemoveResult::Retired => {
-                            if matches!(Node::remove_root::<false>(&self.root, &barrier), Ok(true))
-                            {
+                            if matches!(Node::remove_root(&self.root, None, &barrier), Ok(true)) {
                                 return true;
                             }
                             has_been_removed = true;
@@ -326,11 +332,16 @@ where
         let mut has_been_removed = false;
         loop {
             let mut async_wait = AsyncWait::default();
-            let async_wait_pinned = Pin::new(&mut async_wait);
+            let mut async_wait_pinned = Pin::new(&mut async_wait);
             {
                 let barrier = Barrier::new();
                 if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
-                    match root_ref.remove_if::<_, _, true>(key_ref, &mut condition, &barrier) {
+                    match root_ref.remove_if::<_, _>(
+                        key_ref,
+                        &mut condition,
+                        Some(async_wait_pinned.mut_ptr()),
+                        &barrier,
+                    ) {
                         Ok(r) => match r {
                             RemoveResult::Success => return true,
                             RemoveResult::Cleanup => {
@@ -339,7 +350,11 @@ where
                             }
                             RemoveResult::Retired => {
                                 if matches!(
-                                    Node::remove_root::<true>(&self.root, &barrier),
+                                    Node::remove_root(
+                                        &self.root,
+                                        Some(async_wait_pinned.mut_ptr()),
+                                        &barrier
+                                    ),
                                     Ok(true)
                                 ) {
                                     return true;

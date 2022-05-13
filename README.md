@@ -211,7 +211,7 @@ assert_eq!(treeindex.range(4..8, &barrier).count(), 4);
 assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 ```
 
-Asynchronous methods can be used in asynchronous code blocks; *asynchronous methods yield the task executor when the target mutex cannot be acquired ([#49](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/49))*.
+Asynchronous methods can be used in asynchronous code blocks.
 
 ```rust
 use scc::TreeIndex;

@@ -23,7 +23,7 @@ pub(crate) struct WaitQueue {
 impl WaitQueue {
     /// Waits for the condition to be met or signalled.
     #[inline]
-    pub fn wait_sync<T, F: FnOnce() -> Result<T, ()>>(&self, f: F) -> Result<T, ()> {
+    pub(crate) fn wait_sync<T, F: FnOnce() -> Result<T, ()>>(&self, f: F) -> Result<T, ()> {
         let mut current = self.wait_queue.load(Relaxed);
         let mut entry = SyncWait::new(current);
 
@@ -50,7 +50,7 @@ impl WaitQueue {
     /// If it happens to acquire the desired resource, it returns an `Ok(T)` after waking up all
     /// the entries in the [`WaitQueue`].
     #[inline]
-    pub fn push_async_entry<T, F: FnOnce() -> Result<T, ()>>(
+    pub(crate) fn push_async_entry<T, F: FnOnce() -> Result<T, ()>>(
         &self,
         async_wait: *mut AsyncWait,
         f: F,
@@ -74,20 +74,21 @@ impl WaitQueue {
 
         // Execute the closure.
         if let Ok(result) = f() {
-            // The caller does not have to await.
             self.signal();
-            async_wait_mut.force_wait();
-            async_wait_mut.mutex.take();
-            Ok(result)
-        } else {
-            // The caller has to await.
-            Err(())
+            if async_wait_mut.try_wait() {
+                async_wait_mut.mutex.take();
+                return Ok(result);
+            }
+            // Another task is waking up `async_wait_mut`: dispose of `result`.
         }
+
+        // The caller has to await.
+        Err(())
     }
 
     /// Signals the threads in the wait queue.
     #[inline]
-    pub fn signal(&self) {
+    pub(crate) fn signal(&self) {
         let mut current = self.wait_queue.swap(0, AcqRel);
         while (current & (!ASYNC)) != 0 {
             if (current & ASYNC) == 0 {
@@ -137,15 +138,16 @@ impl AsyncWait {
         }
     }
 
-    /// Forces `self` to wait for a signal.
-    fn force_wait(&self) {
-        while let Some(mutex) = self.mutex.as_ref() {
+    /// Tries to receive a signal.
+    fn try_wait(&self) -> bool {
+        if let Some(mutex) = self.mutex.as_ref() {
             if let Ok(locked) = mutex.lock() {
                 if locked.0 {
-                    break;
+                    return true;
                 }
             }
         }
+        false
     }
 
     /// Reinterpret `usize` as `*mut AsyncWait`.

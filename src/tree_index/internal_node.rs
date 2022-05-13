@@ -3,7 +3,7 @@ use super::leaf_node::{LOCKED, RETIRED};
 use super::node::{Node, Type};
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
-use crate::wait_queue::WaitQueue;
+use crate::wait_queue::{AsyncWait, WaitQueue};
 
 use std::borrow::Borrow;
 use std::cmp::Ordering::{Equal, Greater, Less};
@@ -41,7 +41,7 @@ where
     V: 'static + Clone + Send + Sync,
 {
     /// Creates a new empty internal node.
-    pub fn new() -> InternalNode<K, V> {
+    pub(crate) fn new() -> InternalNode<K, V> {
         InternalNode {
             children: Leaf::new(),
             unbounded_child: AtomicArc::null(),
@@ -51,7 +51,7 @@ where
     }
 
     /// Returns the depth of the node.
-    pub fn depth(&self, depth: usize, barrier: &Barrier) -> usize {
+    pub(crate) fn depth(&self, depth: usize, barrier: &Barrier) -> usize {
         let unbounded_ptr = self.unbounded_child.load(Relaxed, barrier);
         if let Some(unbounded_ref) = unbounded_ptr.as_ref() {
             return unbounded_ref.depth(depth + 1, barrier);
@@ -60,12 +60,12 @@ where
     }
 
     /// Returns `true` if the [`InternalNode`] has retired.
-    pub fn retired(&self, mo: Ordering) -> bool {
+    pub(crate) fn retired(&self, mo: Ordering) -> bool {
         self.unbounded_child.tag(mo) == RETIRED
     }
 
     /// Searches for an entry associated with the given key.
-    pub fn search<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> Option<&'b V>
+    pub(crate) fn search<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> Option<&'b V>
     where
         K: 'b + Borrow<Q>,
         Q: Ord + ?Sized,
@@ -93,7 +93,7 @@ where
     }
 
     /// Returns the minimum key entry.
-    pub fn min<'b>(&self, barrier: &'b Barrier) -> Option<Scanner<'b, K, V>> {
+    pub(crate) fn min<'b>(&self, barrier: &'b Barrier) -> Option<Scanner<'b, K, V>> {
         loop {
             let mut retry = false;
             let scanner = Scanner::new(&self.children);
@@ -132,7 +132,11 @@ where
     ///
     /// It returns `None` if all the keys in the [`InternalNode`] is equal to or greater than the
     /// given key.
-    pub fn max_le_appr<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> Option<Scanner<'b, K, V>>
+    pub(crate) fn max_le_appr<'b, Q>(
+        &self,
+        key: &Q,
+        barrier: &'b Barrier,
+    ) -> Option<Scanner<'b, K, V>>
     where
         K: 'b + Borrow<Q>,
         Q: Ord + ?Sized,
@@ -175,10 +179,11 @@ where
     }
 
     /// Inserts a key-value pair.
-    pub fn insert<const ASYNC: bool>(
+    pub(crate) fn insert(
         &self,
         mut key: K,
         mut value: V,
+        async_wait: Option<*mut AsyncWait>,
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
         loop {
@@ -188,19 +193,20 @@ where
                 if let Some(child_ref) = child_ptr.as_ref() {
                     if self.children.validate(metadata) {
                         // Data race resolution - see `LeafNode::search`.
-                        match child_ref.insert::<ASYNC>(key, value, barrier)? {
+                        match child_ref.insert(key, value, async_wait, barrier)? {
                             InsertResult::Success => return Ok(InsertResult::Success),
                             InsertResult::Duplicate(k, v) => {
                                 return Ok(InsertResult::Duplicate(k, v));
                             }
                             InsertResult::Full(k, v) => {
-                                return self.split_node::<ASYNC>(
+                                return self.split_node(
                                     k,
                                     v,
                                     Some(child_key),
                                     child_ptr,
                                     child,
                                     false,
+                                    async_wait,
                                     barrier,
                                 );
                             }
@@ -235,19 +241,20 @@ where
                 if !self.children.validate(metadata) {
                     continue;
                 }
-                match unbounded.insert::<ASYNC>(key, value, barrier)? {
+                match unbounded.insert(key, value, async_wait, barrier)? {
                     InsertResult::Success => return Ok(InsertResult::Success),
                     InsertResult::Duplicate(k, v) => {
                         return Ok(InsertResult::Duplicate(k, v));
                     }
                     InsertResult::Full(k, v) => {
-                        return self.split_node::<ASYNC>(
+                        return self.split_node(
                             k,
                             v,
                             None,
                             unbounded_ptr,
                             &self.unbounded_child,
                             false,
+                            async_wait,
                             barrier,
                         );
                     }
@@ -280,10 +287,11 @@ where
     /// # Errors
     ///
     /// Returns an error if a retry is required with a boolean flag indicating that an entry has been removed.
-    pub fn remove_if<Q, F: FnMut(&V) -> bool, const ASYNC: bool>(
+    pub(crate) fn remove_if<Q, F: FnMut(&V) -> bool>(
         &self,
         key: &Q,
         condition: &mut F,
+        async_wait: Option<*mut AsyncWait>,
         barrier: &Barrier,
     ) -> Result<RemoveResult, bool>
     where
@@ -297,7 +305,8 @@ where
                 if let Some(child) = child_ptr.as_ref() {
                     if self.children.validate(metadata) {
                         // Data race resolution - see `LeafNode::search`.
-                        let result = child.remove_if::<_, _, ASYNC>(key, condition, barrier)?;
+                        let result =
+                            child.remove_if::<_, _>(key, condition, async_wait, barrier)?;
                         if result == RemoveResult::Cleanup {
                             if self.cleanup_link(key, false, barrier) {
                                 return Ok(RemoveResult::Success);
@@ -320,7 +329,7 @@ where
                     // Data race resolution - see `LeafNode::search`.
                     continue;
                 }
-                let result = unbounded.remove_if::<_, _, ASYNC>(key, condition, barrier)?;
+                let result = unbounded.remove_if::<_, _>(key, condition, async_wait, barrier)?;
                 if result == RemoveResult::Cleanup {
                     if self.cleanup_link(key, false, barrier) {
                         return Ok(RemoveResult::Success);
@@ -341,8 +350,8 @@ where
     /// # Errors
     ///
     /// Returns an error if retry is required.
-    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
-    pub fn split_node<const ASYNC: bool>(
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    pub(crate) fn split_node(
         &self,
         key: K,
         value: V,
@@ -350,6 +359,7 @@ where
         full_node_ptr: Ptr<Node<K, V>>,
         full_node: &AtomicArc<Node<K, V>>,
         root_split: bool,
+        async_wait: Option<*mut AsyncWait>,
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
         let target = full_node_ptr.as_ref().unwrap();
@@ -380,7 +390,7 @@ where
             unsafe { &mut *(ptr.as_raw() as *mut StructuralChange<K, V>) }
         } else {
             target.rollback(barrier);
-            self.wait::<ASYNC>(barrier);
+            self.wait(async_wait, barrier);
             return Err((key, value));
         };
 
@@ -601,7 +611,7 @@ where
     }
 
     /// Finishes splitting the [`InternalNode`].
-    pub fn finish_split(&self, barrier: &Barrier) {
+    pub(crate) fn finish_split(&self, barrier: &Barrier) {
         let (change, _) = self.latch.swap((None, Tag::None), Release);
         self.wait_queue.signal();
         if let Some(change) = change {
@@ -610,7 +620,7 @@ where
     }
 
     /// Commits an on-going structural change recursively.
-    pub fn commit(&self, barrier: &Barrier) {
+    pub(crate) fn commit(&self, barrier: &Barrier) {
         // Mark the internal node retired to prevent further locking attempts.
         let (change, _) = self.latch.swap((None, RETIRED), Release);
         self.wait_queue.signal();
@@ -623,7 +633,7 @@ where
     }
 
     /// Rolls back the ongoing split operation recursively.
-    pub fn rollback(&self, barrier: &Barrier) {
+    pub(crate) fn rollback(&self, barrier: &Barrier) {
         let (change, _) = self.latch.swap((None, Tag::None), Release);
         self.wait_queue.signal();
         if let Some(change) = change {
@@ -637,7 +647,12 @@ where
     /// Cleans up logically deleted [`LeafNode`] instances in the linked list.
     ///
     /// If the target leaf node does not exist in the sub-tree, returns `false`.
-    pub fn cleanup_link<'b, Q>(&self, key: &Q, traverse_max: bool, barrier: &'b Barrier) -> bool
+    pub(crate) fn cleanup_link<'b, Q>(
+        &self,
+        key: &Q,
+        traverse_max: bool,
+        barrier: &'b Barrier,
+    ) -> bool
     where
         K: 'b + Borrow<Q>,
         Q: Ord + ?Sized,
@@ -656,21 +671,22 @@ where
         }
         false
     }
-
-    /// Waits for the lock on the [`InternalNode`] to be released.
-    pub(super) fn wait<const ASYNC: bool>(&self, barrier: &Barrier) {
-        if ASYNC {
-            // Currently, asynchronous waiting is not implemented.
-            return;
-        }
-        let _result = self.wait_queue.wait_sync(|| {
+    /// Waits for the lock on the [`LeafNode`] to be released.
+    pub(super) fn wait(&self, async_wait: Option<*mut AsyncWait>, barrier: &Barrier) {
+        let waiter = || {
             let ptr = self.latch.load(Relaxed, barrier);
             if !ptr.is_null() || ptr.tag() == LOCKED {
                 // The `InternalNode` is being split or locked.
                 return Err(());
             }
             Ok(())
-        });
+        };
+
+        if let Some(&async_wait) = async_wait.as_ref() {
+            let _result = self.wait_queue.push_async_entry(async_wait, waiter);
+        } else {
+            let _result = self.wait_queue.wait_sync(waiter);
+        }
     }
 
     /// Tries to coalesce nodes.
@@ -871,7 +887,7 @@ mod test {
         assert_eq!(internal_node.depth(1, &barrier), 3);
 
         for k in 0..8192 {
-            match internal_node.insert::<false>(k, k, &barrier) {
+            match internal_node.insert(k, k, None, &barrier) {
                 Ok(result) => match result {
                     InsertResult::Success => {
                         assert_eq!(internal_node.search(&k, &barrier), Some(&k));
@@ -885,16 +901,17 @@ mod test {
                             assert_eq!(internal_node.search(&j, &barrier), Some(&j));
                             if j == k - 1 {
                                 assert!(matches!(
-                                    internal_node.remove_if::<_, _, false>(
+                                    internal_node.remove_if::<_, _>(
                                         &j,
                                         &mut |_| true,
+                                        None,
                                         &barrier
                                     ),
                                     Ok(RemoveResult::Retired)
                                 ));
                             } else {
                                 assert!(internal_node
-                                    .remove_if::<_, _, false>(&j, &mut |_| true, &barrier)
+                                    .remove_if::<_, _>(&j, &mut |_| true, None, &barrier)
                                     .is_ok(),);
                             }
                             assert_eq!(internal_node.search(&j, &barrier), None);
@@ -902,13 +919,13 @@ mod test {
                         break;
                     }
                     InsertResult::Retry(k, v) => {
-                        let result = internal_node.insert::<false>(k, v, &barrier);
+                        let result = internal_node.insert(k, v, None, &barrier);
                         assert!(result.is_ok());
                         assert_eq!(internal_node.search(&k, &barrier), Some(&k));
                     }
                 },
                 Err((k, v)) => {
-                    let result = internal_node.insert::<false>(k, v, &barrier);
+                    let result = internal_node.insert(k, v, None, &barrier);
                     assert!(result.is_ok());
                     assert_eq!(internal_node.search(&k, &barrier), Some(&k));
                 }
@@ -924,7 +941,7 @@ mod test {
         for _ in 0..64 {
             let internal_node = Arc::new(new_level_3_node());
             assert!(internal_node
-                .insert::<false>(usize::MAX, usize::MAX, &Barrier::new())
+                .insert(usize::MAX, usize::MAX, None, &Barrier::new())
                 .is_ok());
             let mut task_handles = Vec::with_capacity(num_tasks);
             for task_id in 0..num_tasks {
@@ -937,11 +954,10 @@ mod test {
                     let range = (task_id * workload_size)..((task_id + 1) * workload_size);
                     for id in range.clone() {
                         loop {
-                            if let Ok(r) = internal_node_cloned.insert::<false>(id, id, &barrier) {
+                            if let Ok(r) = internal_node_cloned.insert(id, id, None, &barrier) {
                                 match r {
                                     InsertResult::Success => {
-                                        match internal_node_cloned.insert::<false>(id, id, &barrier)
-                                        {
+                                        match internal_node_cloned.insert(id, id, None, &barrier) {
                                             Ok(InsertResult::Duplicate(..)) | Err(_) => (),
                                             _ => unreachable!(),
                                         }
@@ -975,9 +991,10 @@ mod test {
                         }
                         let mut removed = false;
                         loop {
-                            match internal_node_cloned.remove_if::<_, _, false>(
+                            match internal_node_cloned.remove_if::<_, _>(
                                 &id,
                                 &mut |_| true,
+                                None,
                                 &barrier,
                             ) {
                                 Ok(r) => match r {
@@ -992,9 +1009,12 @@ mod test {
                             }
                         }
                         assert!(internal_node_cloned.search(&id, &barrier).is_none());
-                        if let Ok(RemoveResult::Success) = internal_node_cloned
-                            .remove_if::<_, _, false>(&id, &mut |_| true, &barrier)
-                        {
+                        if let Ok(RemoveResult::Success) = internal_node_cloned.remove_if::<_, _>(
+                            &id,
+                            &mut |_| true,
+                            None,
+                            &barrier,
+                        ) {
                             unreachable!()
                         }
                     }
@@ -1005,7 +1025,7 @@ mod test {
                 assert!(r.is_ok());
             }
             assert!(internal_node
-                .remove_if::<_, _, false>(&usize::MAX, &mut |_| true, &Barrier::new())
+                .remove_if::<_, _>(&usize::MAX, &mut |_| true, None, &Barrier::new())
                 .is_ok());
         }
     }
@@ -1030,9 +1050,10 @@ mod test {
                         {
                             barrier_clone.wait().await;
                             let barrier = Barrier::new();
-                            match internal_node_clone.insert::<false>(
+                            match internal_node_clone.insert(
                                 fixed_point,
                                 fixed_point,
+                                None,
                                 &barrier,
                             ) {
                                 Ok(InsertResult::Success) => {
@@ -1055,7 +1076,7 @@ mod test {
                                 if i != fixed_point {
                                     if let Ok(
                                         InsertResult::Full(_, _) | InsertResult::Retired(_, _),
-                                    ) = internal_node_clone.insert::<false>(i, i, &barrier)
+                                    ) = internal_node_clone.insert(i, i, None, &barrier)
                                     {
                                         internal_node_clone.rollback(&barrier);
                                     }
@@ -1080,9 +1101,10 @@ mod test {
                                     assert_eq!(*f, *v);
                                     assert!(*f <= fixed_point);
                                 }
-                                let _result = internal_node_clone.remove_if::<_, _, false>(
+                                let _result = internal_node_clone.remove_if::<_, _>(
                                     &i,
                                     &mut |v| *v != fixed_point,
+                                    None,
                                     &barrier,
                                 );
                                 assert_eq!(
