@@ -81,7 +81,7 @@ where
 
     /// Returns the minimum key-value pair.
     ///
-    /// This method is not linearlizable.
+    /// This method is not linearizable.
     pub(crate) fn min<'b>(&self, barrier: &'b Barrier) -> Option<Scanner<'b, K, V>> {
         match &self.node {
             Type::Internal(internal_node) => internal_node.min(barrier),
@@ -92,7 +92,7 @@ where
     /// Returns a [`Scanner`] pointing to an entry that is close enough to the entry with the
     /// maximum key among those keys smaller than or equal to the given key.
     ///
-    /// This method is not linearlizable.
+    /// This method is not linearizable.
     pub(crate) fn max_le_appr<'b, Q>(
         &self,
         key: &Q,

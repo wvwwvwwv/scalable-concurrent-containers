@@ -1,4 +1,4 @@
-//! [`HashIndex`] is a read-optimized asynchronous concurrent hash map.
+//! [`HashIndex`] is a read-optimized concurrent and asynchronous hash map.
 
 use super::ebr::{Arc, AtomicArc, Barrier, Ptr};
 use super::hash_table::cell::{EntryIterator, Locker};
@@ -16,13 +16,13 @@ use std::sync::atomic::Ordering::Acquire;
 
 /// Scalable concurrent hash index.
 ///
-/// [`HashIndex`] is an asynchronous concurrent hash map data structure that is optimized for read
-/// operations. The key characteristics of [`HashIndex`] are similar to that of
+/// [`HashIndex`] is a concurrent and asynchronous hash map data structure that is optimized for
+/// read operations. The key characteristics of [`HashIndex`] are similar to that of
 /// [`HashMap`](super::HashMap) except that its read operations are lock-free.
 ///
 /// ## Notes
 ///
-/// [`HashIndex`] methods are linearlizable, however [`Visitor`] methods are not; [`Visitor`]
+/// [`HashIndex`] methods are linearizable, however [`Visitor`] methods are not; [`Visitor`]
 /// is only guaranteed to observe events happened before the first call to [`Iterator::next`].
 ///
 /// ## The key differences between [`HashIndex`] and [`HashMap`](crate::HashMap).
@@ -119,7 +119,7 @@ where
 
     /// Inserts a key-value pair into the [`HashIndex`].
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Errors
     ///
@@ -184,7 +184,7 @@ where
 
     /// Removes a key-value pair if the key exists.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -240,7 +240,7 @@ where
 
     /// Removes a key-value pair if the key exists and the given condition is met.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -411,7 +411,7 @@ where
 
     /// Clears all the key-value pairs.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///

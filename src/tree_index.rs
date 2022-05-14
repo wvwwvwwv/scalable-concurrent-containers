@@ -1,4 +1,4 @@
-//! [`TreeIndex`] is a read-optimized asynchronous concurrent B+ tree.
+//! [`TreeIndex`] is a read-optimized concurrent and asynchronous B+ tree.
 
 mod internal_node;
 mod leaf;
@@ -21,14 +21,14 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 
 /// Scalable concurrent B+ tree.
 ///
-/// [`TreeIndex`] is an asynchronous concurrent B+ tree variant that is optimized for read
+/// [`TreeIndex`] is a concurrent and asynchronous B+ tree variant that is optimized for read
 /// operations. Read operations, such as read, scan, are neither blocked nor interrupted by other
 /// threads or tasks. Write operations, such as insert, remove, do not block if structural changes
 /// are not required.
 ///
 /// ## Notes
 ///
-/// [`TreeIndex`] methods are linearlizable, however its iterator methods are not; [`Visitor`] and
+/// [`TreeIndex`] methods are linearizable, however its iterator methods are not; [`Visitor`] and
 /// [`Range`] are only guaranteed to observe events happened before the first call to
 /// [`Iterator::next`].
 ///
@@ -136,7 +136,7 @@ where
 
     /// Inserts a key-value pair.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Errors
     ///
@@ -238,7 +238,7 @@ where
 
     /// Removes a key-value pair.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -310,7 +310,7 @@ where
 
     /// Removes a key-value pair if the given condition is met.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///

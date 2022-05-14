@@ -1,4 +1,4 @@
-//! [`HashMap`] is an asynchronous concurrent hash map.
+//! [`HashMap`] is a concurrent and asynchronous hash map.
 
 use super::ebr::{Arc, AtomicArc, Barrier};
 use super::hash_table::cell::{Locker, Reader};
@@ -15,31 +15,31 @@ use std::sync::atomic::{AtomicU8, AtomicUsize};
 
 /// Scalable concurrent hash map.
 ///
-/// [`HashMap`] is an asynchronous concurrent hash map data structure that is targeted at a highly
-/// concurrent workload. The use of an epoch-based reclamation technique enables the data structure
-/// to implement non-blocking resizing and fine-granular locking. A [`HashMap`] instance only has a
-/// single array of entries instead of a fixed number of lock-protected hash tables. An entry of
-/// the array is called a `Cell`; it manages a fixed number of key-value pairs using a customized
-/// mutex in it, and resolves hash conflicts by allocating a linked list of smaller hash tables.
+/// [`HashMap`] is a concurrent and asynchronous hash map data structure that is targeted at a
+/// highly concurrent workload. The use of an epoch-based reclamation technique enables the hash
+/// map to implement non-blocking resizing and fine-granular locking. A [`HashMap`] instance has a
+/// single array of *buckets* instead of a fixed number of lock-protected hash tables. Each bucket
+/// has a fixed size array of key-value pairs and a customized mutex to protect the data, and it
+/// resolves hash conflicts by allocating a linked list of bucket-local hash tables.
 ///
 /// ## The key features of [`HashMap`]
 ///
 /// * Non-sharded: the data is stored in a single array of key-value pairs.
 /// * Non-blocking resizing: resizing does not block other threads or tasks.
 /// * Automatic resizing: it automatically grows or shrinks.
-/// * Incremental resizing: each access to the data structure is mandated to rehash a fixed
-///   number of key-value pairs.
-/// * No busy waiting: the thread or the asynchronous task is suspended until the desired resource
+/// * Incremental resizing: each access to the data structure is mandated to move a fixed
+///   number of key-value pairs right after a new array is allocated.
+/// * No busy waiting: the thread or asynchronous task is suspended until the desired resource
 ///   becomes available.
-/// * Linearlizability: [`HashMap`] methods are linearlizable.
+/// * Linearizability: [`HashMap`] methods are linearizable.
 ///
 /// ## The key statistics for [`HashMap`]
 ///
 /// * The expected size of metadata for a single key-value pair: 2-byte.
 /// * The expected number of atomic write operations required for an operation on a single key: 2.
 /// * The expected number of atomic variables accessed during a single key operation: 2.
-/// * The number of entries managed by a single metadata `Cell` without a linked list: 32.
-/// * The expected maximum linked list length when resize is triggered: log(capacity) / 8.
+/// * The number of entries managed by a single bucket without a linked list: 32.
+/// * The expected maximum linked list length when a resize is triggered: log(capacity) / 8.
 pub struct HashMap<K, V, H = RandomState>
 where
     K: 'static + Eq + Hash + Sync,
@@ -179,7 +179,7 @@ where
 
     /// Inserts a key-value pair into the [`HashMap`].
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Errors
     ///
@@ -259,7 +259,7 @@ where
     /// Updates an existing key-value pair.
     ///
     /// It returns `None` if the key does not exist. It is an asynchronous method returning an
-    /// `impl Future` for the caller to await or poll.
+    /// `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -341,7 +341,7 @@ where
 
     /// Constructs the value in-place, or modifies an existing value corresponding to the key.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -408,7 +408,7 @@ where
 
     /// Removes a key-value pair if the key exists.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -466,7 +466,7 @@ where
 
     /// Removes a key-value pair if the key exists and the given condition is met.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -536,7 +536,7 @@ where
     /// Reads a key-value pair.
     ///
     /// It returns `None` if the key does not exist. It is an asynchronous method returning an
-    /// `impl Future` for the caller to await or poll.
+    /// `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -599,7 +599,7 @@ where
 
     /// Checks if the key exists.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -756,6 +756,8 @@ where
 
     /// Iterates over all the entries in the [`HashMap`].
     ///
+    /// This method allows modifying each value.
+    ///
     /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
     /// visited if they are not removed, however the same key-value pair can be visited more than
     /// once if the [`HashMap`] gets resized by another thread.
@@ -786,11 +788,13 @@ where
 
     /// Iterates over all the entries in the [`HashMap`].
     ///
+    /// This method allows modifying each value.
+    ///
     /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
     /// visited if they are not removed, however the same key-value pair can be visited more than
     /// once if the [`HashMap`] gets resized by another task.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -812,6 +816,8 @@ where
     }
 
     /// Retains key-value pairs that satisfy the given predicate.
+    ///
+    /// This method allows modifying each value.
     ///
     /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
     /// visited if they are not removed, however the same key-value pair can be visited more than
@@ -890,12 +896,14 @@ where
 
     /// Retains key-value pairs that satisfy the given predicate.
     ///
+    /// This method allows modifying each value.
+    ///
     /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
     /// visited if they are not removed, however the same key-value pair can be visited more than
     /// once if the [`HashMap`] gets resized by another task.
     ///
     /// It returns the number of entries remaining and removed. It is an asynchronous method
-    /// returning an `impl Future` for the caller to await or poll.
+    /// returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -1011,7 +1019,7 @@ where
 
     /// Clears all the key-value pairs.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///

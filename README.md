@@ -4,13 +4,13 @@
 ![Crates.io](https://img.shields.io/crates/l/scc?style=flat-square)
 ![GitHub Workflow Status](https://img.shields.io/github/workflow/status/wvwwvwwv/scalable-concurrent-containers/SCC?style=flat-square)
 
-A collection of high performance containers and utilities for asynchronous and concurrent programming.
+A collection of high performance containers and utilities for concurrent and asynchronous programming.
 
 #### Asynchronous and Concurrent Containers
-- [HashMap](#HashMap) is an asynchronous concurrent hash map.
-- [HashSet](#HashSet) is a variant of [HashMap](#HashMap).
-- [HashIndex](#HashIndex) is a read-optimized asynchronous concurrent hash index.
-- [TreeIndex](#TreeIndex) is a read-optimized asynchronous concurrent B+ tree.
+- [HashMap](#HashMap) is a concurrent and asynchronous hash map.
+- [HashSet](#HashSet) is a concurrent and asynchronous hash set.
+- [HashIndex](#HashIndex) is a read-optimized concurrent and asynchronous hash map.
+- [TreeIndex](#TreeIndex) is a read-optimized concurrent and asynchronous B+ tree.
 - [Queue](#Queue) is a concurrent lock-free first-in-first-out queue.
 
 #### Utilities for Concurrent Programming
@@ -26,7 +26,7 @@ _See [Performance](#Performance) for benchmark results for the containers and co
 
 ### Examples
 
-A unique key can be inserted along with its corresponding value, and then it can be updated, read, and removed synchronously or asynchronously.
+A unique key can be inserted along with its corresponding value, and then the inserted entry can be updated, read, and removed synchronously or asynchronously.
 
 ```rust
 use scc::HashMap;
@@ -89,7 +89,7 @@ let future_for_each = hashmap.for_each_async(|k, v_mut| { *v_mut = *k; });
 
 ## HashSet
 
-[HashSet](#HashSet) is identical to [HashMap](#HashMap) except that the value type is always `()`.
+[HashSet](#HashSet) is a version of [HashMap](#HashMap) where the value type is `()`.
 
 ### Examples
 
@@ -111,7 +111,7 @@ let future_remove = hashset.remove_async(&1);
 
 ## HashIndex
 
-[HashIndex](#HashIndex) is a read-optimized version of [HashMap](#HashMap). It applies [EBR](#EBR) to its entry management as well, enabling it to perform read operations without acquiring locks.
+[HashIndex](#HashIndex) is a read-optimized version of [HashMap](#HashMap). It applies [EBR](#EBR) to its entry management as well, enabling it to perform read operations without blocking or being blocked.
 
 ### Examples
 
@@ -412,7 +412,7 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 ## Changelog
 
-0.7.0
+0.7.0 - 0.7.1
 
 * API stabilized.
 * Fix incorrect interface: `HashIndex::{remove_async, remove_if_async}`.
@@ -422,9 +422,3 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 * New data structure: [Queue](#Queue).
 * Remove incorrect methods: `{HashMap, HashSet}::read_with`.
-
-0.6.9
-
-* Improve [TreeIndex](#TreeIndex) performance.
-* Fix [#66](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/66).
-* Fix [#71](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/71).

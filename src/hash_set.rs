@@ -1,4 +1,4 @@
-//! [`HashSet`] is an asynchronous concurrent hash set.
+//! [`HashSet`] is a concurrent and asynchronous hash set.
 
 use super::HashMap;
 
@@ -8,7 +8,7 @@ use std::hash::{BuildHasher, Hash};
 
 /// Scalable concurrent hash set.
 ///
-/// [`HashSet`] is an asynchronous concurrent hash set based on [`HashMap`].
+/// [`HashSet`] is a concurrent and asynchronous hash set based on [`HashMap`].
 pub struct HashSet<K, H = RandomState>
 where
     K: 'static + Eq + Hash + Sync,
@@ -107,7 +107,7 @@ where
 
     /// Inserts a key into the [`HashSet`].
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Errors
     ///
@@ -151,7 +151,7 @@ where
 
     /// Removes a key if the key exists.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -200,7 +200,7 @@ where
 
     /// Removes a key if the key exists and the given condition is met.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -254,7 +254,7 @@ where
     /// Reads a key.
     ///
     /// It returns `None` if the key does not exist. It is an asynchronous method returning an
-    /// `impl Future` for the caller to await or poll.
+    /// `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -298,7 +298,7 @@ where
 
     /// Checks if the key exists.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -398,7 +398,7 @@ where
     /// they are not removed, however the same key can be visited more than once if the [`HashSet`]
     /// gets resized by another task.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -448,7 +448,7 @@ where
     /// gets resized by another task.
     ///
     /// It returns the number of entries remaining and removed. It is an asynchronous method
-    /// returning an `impl Future` for the caller to await or poll.
+    /// returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -484,7 +484,7 @@ where
 
     /// Clears all the keys.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await or poll.
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
