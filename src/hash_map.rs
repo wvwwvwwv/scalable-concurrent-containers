@@ -27,8 +27,8 @@ use std::sync::atomic::{AtomicU8, AtomicUsize};
 /// * Non-sharded: the data is stored in a single array of key-value pairs.
 /// * Non-blocking resizing: resizing does not block other threads or tasks.
 /// * Automatic resizing: it automatically grows or shrinks.
-/// * Incremental resizing: each access to the data structure is mandated to move a fixed
-///   number of key-value pairs right after a new array is allocated.
+/// * Incremental resizing: each access to the hash map is mandated to move a fixed
+///   number of key-value pairs if an old array is present.
 /// * No busy waiting: the thread or asynchronous task is suspended until the desired resource
 ///   becomes available.
 /// * Linearizability: [`HashMap`] methods are linearizable.

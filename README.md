@@ -6,7 +6,7 @@
 
 A collection of high performance containers and utilities for concurrent and asynchronous programming.
 
-#### Asynchronous and Concurrent Containers
+#### Concurrent and Asynchronous Containers
 - [HashMap](#HashMap) is a concurrent and asynchronous hash map.
 - [HashSet](#HashSet) is a concurrent and asynchronous hash set.
 - [HashIndex](#HashIndex) is a read-optimized concurrent and asynchronous hash map.

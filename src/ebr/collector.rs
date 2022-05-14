@@ -1,7 +1,7 @@
 use super::tag::Tag;
 use super::underlying::Link;
 
-use core::panic;
+use std::panic;
 use std::ptr;
 use std::ptr::NonNull;
 use std::sync::atomic::fence;

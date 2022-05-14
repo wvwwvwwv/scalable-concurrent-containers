@@ -48,6 +48,7 @@ impl Barrier {
     /// let barrier = Barrier::new();
     /// barrier.reclaim(arc);
     /// ```
+    #[inline]
     pub fn reclaim<T: 'static>(&self, arc: Arc<T>) {
         if let Some(ptr) = arc.drop_ref() {
             self.reclaim_underlying(ptr);

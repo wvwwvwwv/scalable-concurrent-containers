@@ -51,7 +51,8 @@ impl<T: 'static> Arc<T> {
     ///
     /// # Safety
     ///
-    /// If there is no [`Ptr`] to the underlying instance, it is safe.
+    /// The method is `unsafe` since there can be a [`Ptr`] to the instance; in other words, it is
+    /// safe as long as there is no [`Ptr`] to the instance.
     ///
     /// # Examples
     ///
@@ -122,6 +123,7 @@ impl<T: 'static> Arc<T> {
     /// }
     /// assert!(DROPPED.load(Relaxed));
     /// ```
+    #[inline]
     pub unsafe fn drop_in_place(mut self) {
         if self.underlying().drop_ref() {
             self.instance_ptr.as_mut().free();

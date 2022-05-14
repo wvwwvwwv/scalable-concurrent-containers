@@ -1,8 +1,8 @@
 //! Epoch-based reclamation.
 //!
-//! The epoch consensus algorithm and the use of memory barriers and RMW are similar to that of
-//! [`crossbeam_epoch`](https://docs.rs/crossbeam-epoch/), however the API set is vastly
-//! different, for instance, `unsafe` blocks are not required to read an EBR-subject instance.
+//! The epoch consensus algorithm and the use of memory barriers and RMW semantics are similar to
+//! that of [`crossbeam_epoch`](https://docs.rs/crossbeam-epoch/), however the API set is vastly
+//! different, for instance, `unsafe` blocks are not required to read an instance subject to EBR.
 //!
 //! # Examples
 //!
