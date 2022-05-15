@@ -250,8 +250,8 @@ where
     ///
     /// It returns an error if locking failed, or returns an [`EntryIterator`] if the key exists,
     /// otherwise `None` is returned.
-    #[inline]
     #[allow(clippy::type_complexity)]
+    #[inline]
     fn acquire<'h, 'b, Q>(
         &'h self,
         key_ref: &Q,

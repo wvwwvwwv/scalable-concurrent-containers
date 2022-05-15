@@ -22,7 +22,7 @@ const LOCK_MASK: u32 = LOCK | SLOCK_MAX;
 
 /// [`Cell`] is a small fixed-size hash table that resolves hash conflicts using a linked list
 /// of entry arrays.
-pub struct Cell<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
+pub(crate) struct Cell<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
     /// An array of key-value pairs and their metadata.
     data_array: DataArray<K, V>,
 
@@ -49,23 +49,26 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Default for Cell<K, V, 
 
 impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
     /// Returns true if the [`Cell`] has been killed.
-    pub fn killed(&self) -> bool {
+    #[inline]
+    pub(crate) fn killed(&self) -> bool {
         (self.state.load(Relaxed) & KILLED) == KILLED
     }
 
     /// Returns the number of entries in the [`Cell`].
-    pub fn num_entries(&self) -> usize {
+    #[inline]
+    pub(crate) fn num_entries(&self) -> usize {
         self.num_entries as usize
     }
 
     /// Iterates the contents of the [`Cell`].
-    pub fn iter<'b>(&'b self, barrier: &'b Barrier) -> EntryIterator<'b, K, V, LOCK_FREE> {
+    #[inline]
+    pub(crate) fn iter<'b>(&'b self, barrier: &'b Barrier) -> EntryIterator<'b, K, V, LOCK_FREE> {
         EntryIterator::new(self, barrier)
     }
 
     /// Searches for an entry associated with the given key.
     #[inline]
-    pub fn search<'b, Q>(
+    pub(crate) fn search<'b, Q>(
         &self,
         key_ref: &Q,
         partial_hash: u8,
@@ -94,7 +97,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
 
     /// Gets an [`EntryIterator`] pointing to an entry associated with the given key.
     #[inline]
-    pub fn get<'b, Q>(
+    pub(crate) fn get<'b, Q>(
         &'b self,
         key_ref: &Q,
         partial_hash: u8,
@@ -131,7 +134,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
 
     /// Kills the [`Cell`] for dropping it.
     #[inline]
-    pub unsafe fn kill_and_drop(&self, barrier: &Barrier) {
+    pub(crate) unsafe fn kill_and_drop(&self, barrier: &Barrier) {
         if !self.data_array.link.load(Relaxed, barrier).is_null() {
             if let Some(data_array) = self.data_array.link.swap((None, Tag::None), Relaxed).0 {
                 barrier.reclaim(data_array);
@@ -248,7 +251,7 @@ pub struct EntryIterator<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool>
 
 impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K, V, LOCK_FREE> {
     /// Creates a new [`EntryIterator`].
-    pub fn new(
+    pub(crate) fn new(
         cell: &'b Cell<K, V, LOCK_FREE>,
         barrier: &'b Barrier,
     ) -> EntryIterator<'b, K, V, LOCK_FREE> {
@@ -263,7 +266,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K
 
     /// Gets a reference to the key-value pair.
     #[inline]
-    pub fn get(&self) -> Option<&'b (K, V)> {
+    pub(crate) fn get(&self) -> Option<&'b (K, V)> {
         if let Some(data_array_ref) = unsafe { self.current_array_ptr.as_ref() } {
             let entry_ptr = data_array_ref.data[self.current_index].as_ptr();
             return Some(unsafe { &(*entry_ptr) });
@@ -274,7 +277,6 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K
     /// Tries to remove the current data array from the linked list.
     ///
     /// It should only be invoked when the caller is holding a [`Locker`] on the [`Cell`].
-    #[inline]
     fn unlink_data_array(&mut self, data_array_ref: &DataArray<K, V>) {
         let next_data_array = if LOCK_FREE {
             data_array_ref.link.get_arc(Relaxed, self.barrier_ref)
@@ -641,7 +643,6 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
     }
 
     /// Tries to lock the [`Cell`].
-    #[inline]
     fn try_lock(
         cell: &'b Cell<K, V, LOCK_FREE>,
         _barrier: &'b Barrier,

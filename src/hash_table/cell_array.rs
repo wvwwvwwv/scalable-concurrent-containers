@@ -30,6 +30,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     ///
     /// `total_cell_capacity` is the desired number entries, not the number of [`Cell`]
     /// instances.
+    #[inline]
     pub(crate) fn new(
         total_cell_capacity: usize,
         old_array: AtomicArc<CellArray<K, V, LOCK_FREE>>,
@@ -107,6 +108,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     ///
     /// It returns an error if locking failed.
     #[allow(clippy::too_many_arguments)]
+    #[inline]
     pub(crate) fn kill_cell<Q, F: Fn(&Q) -> (u64, u8), C: Fn(&K, &V) -> Option<(K, V)>>(
         &self,
         cell_locker: &mut Locker<K, V, LOCK_FREE>,
@@ -193,6 +195,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     /// Relocates a fixed number of `Cells` from the old array to the current array.
     ///
     /// Returns `true` if `old_array` is null.
+    #[inline]
     pub(crate) fn partial_rehash<Q, F: Fn(&Q) -> (u64, u8), C: Fn(&K, &V) -> Option<(K, V)>>(
         &self,
         hasher: F,

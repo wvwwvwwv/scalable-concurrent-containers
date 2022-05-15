@@ -109,9 +109,6 @@ impl WaitQueue {
 }
 
 /// [`AsyncWait`] is inserted into [`WaitQueue`] for the caller to await until woken up.
-///
-/// If an [`AsyncWait`] is polled without being inserted into a [`WaitQueue`], the [`AsyncWait`]
-/// yields the task executor.
 #[derive(Debug, Default)]
 pub(crate) struct AsyncWait {
     next: usize,
@@ -159,7 +156,7 @@ impl AsyncWait {
 impl Future for AsyncWait {
     type Output = ();
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if let Some(mutex) = self.mutex.as_ref() {
             if let Ok(mut locked) = mutex.lock() {
                 if locked.0 {
@@ -168,13 +165,7 @@ impl Future for AsyncWait {
                 locked.1.replace(cx.waker().clone());
             }
             Poll::Pending
-        } else if self.next == 0 {
-            // `mutex` is not initialized: use `next` to yield the task executor.
-            self.next = ASYNC;
-            cx.waker().wake_by_ref();
-            Poll::Pending
         } else {
-            // It has yielded a task executor before.
             Poll::Ready(())
         }
     }
