@@ -55,11 +55,11 @@ impl<T: 'static> Queue<T> {
     ///
     /// queue.push(11);
     ///
-    /// assert!(queue.push_if(17, |e| e.map_or(false, |x| *x == 11)).is_ok());
-    /// assert!(queue.push_if(29, |e| e.map_or(false, |x| *x == 11)).is_err());
+    /// assert!(queue.push_if(17, |e| e.map_or(false, |x| **x == 11)).is_ok());
+    /// assert!(queue.push_if(29, |e| e.map_or(false, |x| **x == 11)).is_err());
     /// ```
     #[inline]
-    pub fn push_if<F: FnMut(Option<&T>) -> bool>(
+    pub fn push_if<F: FnMut(Option<&Entry<T>>) -> bool>(
         &self,
         val: T,
         cond: F,
@@ -190,7 +190,7 @@ impl<T: 'static> Queue<T> {
     }
 
     /// Pushes an entry into the [`Queue`].
-    fn push_if_internal<F: FnMut(Option<&T>) -> bool>(
+    fn push_if_internal<F: FnMut(Option<&Entry<T>>) -> bool>(
         &self,
         val: T,
         mut cond: F,
@@ -203,7 +203,7 @@ impl<T: 'static> Queue<T> {
         }
         newest_ptr = Self::traverse(newest_ptr, barrier);
 
-        if !cond(newest_ptr.as_ref().map(AsRef::as_ref)) {
+        if !cond(newest_ptr.as_ref()) {
             // The condition is not met.
             return Err(val);
         }
@@ -247,7 +247,7 @@ impl<T: 'static> Queue<T> {
                     };
                     newest_ptr = Self::traverse(newest_ptr, barrier);
 
-                    if !cond(newest_ptr.as_ref().map(AsRef::as_ref)) {
+                    if !cond(newest_ptr.as_ref()) {
                         // The condition is not met.
                         break;
                     }
