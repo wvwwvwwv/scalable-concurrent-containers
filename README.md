@@ -295,6 +295,10 @@ drop(arc);
 
 // `17` is still valid as `barrier` keeps the garbage collector from dropping it.
 assert_eq!(*ptr.as_ref().unwrap(), 17);
+
+// If the thread is expected to lie dormant, call `suspend()` in order for the thread-local garbage
+// collector and all the garbage instances in it to be reclaimed by other threads.
+suspend();
 ```
 
 

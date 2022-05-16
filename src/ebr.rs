@@ -9,7 +9,7 @@
 //! The following code shows [`Arc`], [`AtomicArc`], [`Barrier`], [`Ptr`], and [`Tag`] usage.
 //!
 //! ```
-//! use scc::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
+//! use scc::ebr::{suspend, Arc, AtomicArc, Barrier, Ptr, Tag};
 //! use std::sync::atomic::Ordering::Relaxed;
 //!
 //! // `atomic_arc` holds a strong reference to `17`.
@@ -58,10 +58,9 @@
 //! // `17` is still valid as `barrier` keeps the garbage collector from dropping it.
 //! assert_eq!(*ptr.as_ref().unwrap(), 17);
 //!
-//! // If the thread is expected to lie dormant, call `Barrier::suspend()` in order for the
-//! // thread-local garbage collector and all the garbage instances in it to be reclaimed by other
-//! // threads.
-//! Barrier::suspend();
+//! // If the thread is expected to lie dormant, call `suspend()` in order for the thread-local
+//! // garbage collector and all the garbage instances in it to be reclaimed by other threads.
+//! suspend();
 //! ```
 
 mod arc;
@@ -81,3 +80,32 @@ pub use tag::Tag;
 
 mod collector;
 mod underlying;
+
+/// Suspends the thread.
+///
+/// If returns `false` if there is an active [`Barrier`] in the thread. Otherwise, it immediately
+/// relinquishes the thread-local garbage collector, so that other threads are able to reclaim the
+/// garbage collector and all the garbage instances in it.
+///
+/// # Examples
+///
+/// ```
+/// use scc::ebr::{suspend, Arc, Barrier};
+/// {
+///     let arc: Arc<usize> = Arc::new(47);
+///     let barrier = Barrier::new();
+///     barrier.reclaim(arc);
+///     assert!(!suspend());
+/// }
+///
+/// assert!(suspend());
+///
+/// let new_arc: Arc<usize> = Arc::new(17);
+/// let barrier = Barrier::new();
+/// barrier.reclaim(new_arc);
+/// ```
+#[inline]
+#[must_use]
+pub fn suspend() -> bool {
+    collector::Collector::pass_garbage()
+}
