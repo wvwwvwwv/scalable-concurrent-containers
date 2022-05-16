@@ -265,7 +265,33 @@ impl Collector {
 
     /// Returns the [`Collector`] attached to the current thread.
     pub(super) fn current() -> *mut Collector {
-        TLS.with(|tls| tls.collector_ptr)
+        TLS.with(|tls| {
+            let ptr = tls.collector_ptr.load(Relaxed);
+            if ptr.is_null() {
+                let new_collector = Collector::alloc();
+                tls.collector_ptr.store(new_collector, Relaxed);
+                new_collector
+            } else {
+                ptr
+            }
+        })
+    }
+
+    /// Suspends the thread by passing the current `Collector` to another thread.
+    pub(super) fn suspend() -> bool {
+        TLS.with(|tls| {
+            let ptr = tls.collector_ptr.load(Relaxed);
+            if !ptr.is_null() {
+                unsafe {
+                    if (*ptr).num_readers == 0 {
+                        (*ptr).state.fetch_or(Collector::INVALID, Release);
+                        tls.collector_ptr.store(ptr::null_mut(), Relaxed);
+                        return true;
+                    }
+                }
+            }
+            false
+        })
     }
 }
 
@@ -284,6 +310,7 @@ impl Link for Collector {
     fn set(&mut self, next_ptr: *const dyn Link) {
         self.link = next_ptr;
     }
+
     fn free(&mut self) -> *mut dyn Link {
         let next = self.link as *mut dyn Link;
         unsafe { Box::from_raw(self as *mut Collector) };
@@ -298,21 +325,21 @@ impl Link for Collector {
 static EPOCH: AtomicU8 = AtomicU8::new(0);
 
 /// The global anchor for thread-local instances of [`Collector`].
-static ANCHOR: AtomicPtr<Collector> = AtomicPtr::new(std::ptr::null_mut());
+static ANCHOR: AtomicPtr<Collector> = AtomicPtr::new(ptr::null_mut());
 
 /// A wrapper of [`Collector`] for a thread to properly cleanup collected instances.
 struct ThreadLocal {
-    collector_ptr: *mut Collector,
+    collector_ptr: AtomicPtr<Collector>,
 }
 
 impl Drop for ThreadLocal {
     fn drop(&mut self) {
-        if let Some(collector_ref) = unsafe { self.collector_ptr.as_mut() } {
+        if let Some(collector_ref) = unsafe { self.collector_ptr.load(Relaxed).as_mut() } {
             collector_ref.state.fetch_or(Collector::INVALID, Release);
         }
     }
 }
 
 thread_local! {
-    static TLS: ThreadLocal = ThreadLocal { collector_ptr: Collector::alloc() };
+    static TLS: ThreadLocal = ThreadLocal { collector_ptr: AtomicPtr::default() };
 }
