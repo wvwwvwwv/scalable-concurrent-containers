@@ -23,7 +23,7 @@ where
     /// Returns the default capacity.
     #[inline]
     fn default_capacity() -> usize {
-        ARRAY_SIZE * 2
+        ARRAY_SIZE
     }
 
     /// Returns the hash value of the given key.

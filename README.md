@@ -246,7 +246,7 @@ The `ebr` module implements epoch-based reclamation and various types of auxilia
 The `ebr` module can be used without an `unsafe` block.
 
 ```rust
-use scc::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
+use scc::ebr::{suspend, Arc, AtomicArc, Barrier, Ptr, Tag};
 
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -296,8 +296,8 @@ drop(arc);
 // `17` is still valid as `barrier` keeps the garbage collector from dropping it.
 assert_eq!(*ptr.as_ref().unwrap(), 17);
 
-// If the thread is expected to lie dormant, call `suspend()` in order for the thread-local garbage
-// collector and all the garbage instances in it to be reclaimed by other threads.
+// If the thread is expected to lie dormant for a while, call `suspend()` to allow other threads
+// to reclaim its own retired instances.
 suspend();
 ```
 
@@ -416,13 +416,7 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 ## Changelog
 
-0.7.0 - 0.7.1
+0.8.0
 
-* API stabilized.
-* Fix incorrect interface: `HashIndex::{remove_async, remove_if_async}`.
-* Fix [#49](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/49).
-
-0.6.10
-
-* New data structure: [Queue](#Queue).
-* Remove incorrect methods: `{HashMap, HashSet}::read_with`.
+* Add `ebr::suspend` which enables garbage instances in a dormant thread to be reclaimed by other threads.
+* Minor [Queue](#Queue) API update.

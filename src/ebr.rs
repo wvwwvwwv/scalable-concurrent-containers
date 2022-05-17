@@ -58,8 +58,8 @@
 //! // `17` is still valid as `barrier` keeps the garbage collector from dropping it.
 //! assert_eq!(*ptr.as_ref().unwrap(), 17);
 //!
-//! // If the thread is expected to lie dormant, call `suspend()` in order for the thread-local
-//! // garbage collector and all the garbage instances in it to be reclaimed by other threads.
+//! // If the thread is expected to lie dormant for a while, call `suspend()` to allow other
+//! // threads to reclaim its own retired instances.
 //! suspend();
 //! ```
 
@@ -81,16 +81,17 @@ pub use tag::Tag;
 mod collector;
 mod underlying;
 
-/// Suspends the thread.
+/// Suspends the garbage collector of the current thread.
 ///
-/// If returns `false` if there is an active [`Barrier`] in the thread. Otherwise, it immediately
-/// relinquishes the thread-local garbage collector, so that other threads are able to reclaim the
-/// garbage collector and all the garbage instances in it.
+/// If returns `false` if there is an active [`Barrier`] in the thread. Otherwise, it passes all
+/// its garbage instances to a free flowing garbage container that can be cleaned up by other
+/// threads.
 ///
 /// # Examples
 ///
 /// ```
 /// use scc::ebr::{suspend, Arc, Barrier};
+///
 /// {
 ///     let arc: Arc<usize> = Arc::new(47);
 ///     let barrier = Barrier::new();

@@ -365,6 +365,8 @@ unsafe impl<T: 'static> Send for AtomicArc<T> {}
 mod test {
     use super::*;
 
+    use crate::ebr::suspend;
+
     use std::sync::atomic::Ordering::{Acquire, Release};
     use std::sync::atomic::{AtomicBool, AtomicU8};
     use std::thread;
@@ -474,10 +476,10 @@ mod test {
         let atomic_arc: Arc<AtomicArc<String>> =
             Arc::new(AtomicArc::new(String::from("How are you?")));
         let mut thread_handles = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..16 {
             let atomic_arc = atomic_arc.clone();
             thread_handles.push(thread::spawn(move || {
-                for _ in 0..256 {
+                for _ in 0..64 {
                     let barrier = Barrier::new();
                     let mut ptr = atomic_arc.load(Acquire, &barrier);
                     assert!(ptr.tag() == Tag::None || ptr.tag() == Tag::Second);
@@ -507,7 +509,10 @@ mod test {
                         }
                         assert!(ptr.tag() == Tag::None || ptr.tag() == Tag::Second);
                     }
+                    assert!(!suspend());
                     drop(barrier);
+
+                    assert!(suspend());
 
                     atomic_arc.update_tag_if(Tag::None, |_| true, Relaxed);
 

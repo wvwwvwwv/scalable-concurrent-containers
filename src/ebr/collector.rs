@@ -268,16 +268,20 @@ impl Collector {
         TLS.with(|tls| tls.collector_ptr)
     }
 
-    /// Suspends the [`Collector`] attached to the current thread.
+    /// Passes its garbage instances to a free flowing [`Collector`].
     pub(super) fn pass_garbage() -> bool {
         TLS.with(|tls| {
             let collector = unsafe { &mut (*tls.collector_ptr) };
             if collector.num_readers == 0 {
-                let new_collector = unsafe { &mut (*Collector::alloc()) };
-                new_collector.previous_instance_link = collector.previous_instance_link.take();
-                new_collector.current_instance_link = collector.current_instance_link.take();
-                new_collector.next_instance_link = collector.next_instance_link.take();
-                new_collector.state.fetch_or(Collector::INVALID, Release);
+                if collector.num_instances != 0 {
+                    let new_collector = unsafe { &mut (*Collector::alloc()) };
+                    new_collector.num_instances = collector.num_instances;
+                    new_collector.previous_instance_link = collector.previous_instance_link.take();
+                    new_collector.current_instance_link = collector.current_instance_link.take();
+                    new_collector.next_instance_link = collector.next_instance_link.take();
+                    new_collector.state.fetch_or(Collector::INVALID, Release);
+                    collector.num_instances = 0;
+                }
                 true
             } else {
                 false

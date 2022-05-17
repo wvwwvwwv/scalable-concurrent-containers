@@ -113,12 +113,12 @@ impl<T: 'static> Queue<T> {
     /// queue.push(3);
     /// queue.push(1);
     ///
-    /// assert!(queue.pop_if(|v| *v == 1).is_err());
+    /// assert!(queue.pop_if(|v| **v == 1).is_err());
     /// assert_eq!(queue.pop().map(|e| **e), Some(3));
-    /// assert_eq!(queue.pop_if(|v| *v == 1).ok().and_then(|e| e).map(|e| **e), Some(1));
+    /// assert_eq!(queue.pop_if(|v| **v == 1).ok().and_then(|e| e).map(|e| **e), Some(1));
     /// ```
     #[inline]
-    pub fn pop_if<F: FnMut(&T) -> bool>(
+    pub fn pop_if<F: FnMut(&Entry<T>) -> bool>(
         &self,
         mut cond: F,
     ) -> Result<Option<Arc<Entry<T>>>, Arc<Entry<T>>> {
@@ -150,15 +150,15 @@ impl<T: 'static> Queue<T> {
     ///
     /// let queue: Queue<usize> = Queue::default();
     ///
-    /// assert!(queue.peek(|v| *v).is_none());
+    /// assert!(queue.peek(|v| **v).is_none());
     ///
     /// queue.push(37);
     /// queue.push(3);
     ///
-    /// assert_eq!(queue.peek(|v| *v), Some(37));
+    /// assert_eq!(queue.peek(|v| **v), Some(37));
     /// ```
     #[inline]
-    pub fn peek<R, F: FnOnce(&T) -> R>(&self, reader: F) -> Option<R> {
+    pub fn peek<R, F: FnOnce(&Entry<T>) -> R>(&self, reader: F) -> Option<R> {
         let barrier = Barrier::new();
         let mut current = self.oldest.load(Acquire, &barrier);
         while let Some(oldest_entry) = current.as_ref() {
@@ -339,7 +339,7 @@ impl<T: 'static> Entry<T> {
     /// assert!(entry.remove());
     /// assert!(!entry.remove());
     ///
-    /// assert_eq!(queue.peek(|v| *v), Some(11));
+    /// assert_eq!(queue.peek(|v| **v), Some(11));
     /// ```
     #[inline]
     pub fn remove(&self) -> bool {
