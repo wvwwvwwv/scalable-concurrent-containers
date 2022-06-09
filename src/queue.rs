@@ -367,7 +367,7 @@ impl<T: 'static> Entry<T> {
         self.next.tag(Relaxed) == Tag::First
     }
 
-    /// Extracts the instance of `T`.
+    /// Extracts the inner instance of `T`.
     unsafe fn take_inner(&mut self) -> T {
         self.instance.take().unwrap()
     }

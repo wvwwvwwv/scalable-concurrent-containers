@@ -87,6 +87,8 @@ mod underlying;
 /// its garbage instances to a free flowing garbage container that can be cleaned up by other
 /// threads.
 ///
+/// Note that the method allocates heap memory if the thread has garbage instances.
+///
 /// # Examples
 ///
 /// ```
