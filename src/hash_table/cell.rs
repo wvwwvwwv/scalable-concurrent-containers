@@ -493,6 +493,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     }
 
     /// Removes a key-value pair being pointed by the given [`EntryIterator`].
+    #[inline]
     pub(crate) fn erase(&self, iterator: &mut EntryIterator<K, V, LOCK_FREE>) -> Option<(K, V)> {
         if iterator.current_index == usize::MAX {
             return None;
@@ -514,6 +515,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     }
 
     /// Extracts the key-value pair being pointed by `self`.
+    #[inline]
     pub(crate) fn extract(&self, iterator: &mut EntryIterator<K, V, LOCK_FREE>) -> (K, V) {
         debug_assert!(!LOCK_FREE);
         if iterator.current_array_ptr.is_null() {
@@ -530,6 +532,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     }
 
     /// Purges all the data.
+    #[inline]
     pub(crate) fn purge(&mut self, barrier: &Barrier) {
         if LOCK_FREE {
             self.cell_mut().data_array.removed = self.cell.data_array.occupied;
