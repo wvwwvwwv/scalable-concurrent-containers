@@ -19,7 +19,6 @@ A collection of high performance containers and utilities for concurrent and asy
 
 _See [Performance](#Performance) for benchmark results for the containers and comparison with other concurrent maps_.
 
-
 ## HashMap
 
 [HashMap](#HashMap) is a scalable in-memory unique key-value container that is targeted at highly concurrent write-heavy workloads. It uses [EBR](#EBR) for its hash table memory management in order to implement non-blocking resizing and fine-granular locking without static data sharding; *it is not a lock-free data structure, and each access to a single key is serialized by a bucket-level mutex*. [HashMap](#HashMap) is optimized for frequently updated large data sets, such as the lock table in database management software.
@@ -86,7 +85,6 @@ let future_scan = hashmap.scan_async(|k, v| println!("{k} {v}"));
 let future_for_each = hashmap.for_each_async(|k, v_mut| { *v_mut = *k; });
 ```
 
-
 ## HashSet
 
 [HashSet](#HashSet) is a version of [HashMap](#HashMap) where the value type is `()`.
@@ -107,7 +105,6 @@ assert!(hashset.read(&1, |_| true).unwrap());
 let future_insert = hashset.insert_async(2);
 let future_remove = hashset.remove_async(&1);
 ```
-
 
 ## HashIndex
 
@@ -153,7 +150,6 @@ drop(hashindex);
 // The entry can be read after `hashindex` is dropped.
 assert_eq!(entry_ref, (&1, &0));
 ```
-
 
 ## TreeIndex
 
@@ -216,7 +212,6 @@ assert_eq!(treeindex.range(4..8, &barrier).count(), 4);
 assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 ```
 
-
 ## Queue
 
 [Queue](#Queue) is a concurrent lock-free first-in-first-out queue.
@@ -235,7 +230,6 @@ assert_eq!(queue.pop().map(|e| **e), Some(1));
 assert_eq!(queue.pop().map(|e| **e), Some(2));
 assert!(queue.pop().is_none());
 ```
-
 
 ## EBR
 
@@ -301,7 +295,6 @@ assert_eq!(*ptr.as_ref().unwrap(), 17);
 suspend();
 ```
 
-
 ## LinkedList
 
 [LinkedList](#LinkedList) is a type trait that implements lock-free concurrent singly linked list operations, backed by [EBR](#EBR). It additionally provides support for marking an entry of a linked list to denote a user-defined state.
@@ -343,7 +336,6 @@ assert_eq!(next_ptr.as_ref().unwrap().1, 1);
 tail.delete_self(Relaxed);
 assert!(head.next_ptr(Relaxed, &barrier).is_null());
 ```
-
 
 ## Performance
 
@@ -413,10 +405,10 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 - [HashMap](#HashMap) outperforms the others *[according to the benchmark test](https://github.com/xacrimon/conc-map-bench)* under highly concurrent or write-heavy workloads.
 - The benchmark test is forked from [conc-map-bench](https://github.com/xacrimon/conc-map-bench).
 
-
 ## Changelog
 
 0.8.0
 
 * Add `ebr::suspend` which enables garbage instances in a dormant thread to be reclaimed by other threads.
 * Minor [Queue](#Queue) API update.
+* Reduce [HashMap](#HashMap) memory usage.

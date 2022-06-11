@@ -1,7 +1,7 @@
 pub mod cell;
 pub mod cell_array;
 
-use cell::{EntryIterator, Locker, Reader, ARRAY_SIZE};
+use cell::{EntryIterator, Locker, Reader, CELL_LEN};
 use cell_array::CellArray;
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
@@ -23,7 +23,7 @@ where
     /// Returns the default capacity.
     #[inline]
     fn default_capacity() -> usize {
-        ARRAY_SIZE
+        CELL_LEN
     }
 
     /// Returns the hash value of the given key.
@@ -221,14 +221,9 @@ where
         let (cell_index, locker, iterator) =
             self.acquire::<Q>(key_ref, hash, partial_hash, async_wait, barrier)?;
         if let Some(mut iterator) = iterator {
-            let remove = if let Some((_, v)) = iterator.get() {
-                condition(v)
-            } else {
-                false
-            };
-            if remove {
+            if condition(&iterator.get().1) {
                 let result = locker.erase(&mut iterator);
-                if (cell_index % ARRAY_SIZE) == 0 && locker.cell().num_entries() < ARRAY_SIZE / 16 {
+                if (cell_index % CELL_LEN) == 0 && locker.cell().num_entries() < CELL_LEN / 16 {
                     drop(locker);
                     if let Some(current_array_ref) =
                         self.cell_array().load(Acquire, barrier).as_ref()
@@ -328,7 +323,7 @@ where
 
             // Try to resize the array.
             let num_entries = current_array_ref.cell(cell_index).num_entries();
-            if cell_index % ARRAY_SIZE == 0 && check_resize && num_entries >= ARRAY_SIZE {
+            if cell_index % CELL_LEN == 0 && check_resize && num_entries >= CELL_LEN {
                 // Trigger resize if the estimated load factor is greater than 7/8.
                 check_resize = false;
                 self.try_enlarge(current_array_ref, cell_index, num_entries, barrier);
@@ -362,7 +357,7 @@ where
     ) {
         let sample_size = array_ref.sample_size();
         let array_size = array_ref.num_cells();
-        let threshold = sample_size * (ARRAY_SIZE / 8) * 7;
+        let threshold = sample_size * (CELL_LEN / 8) * 7;
         if num_entries > threshold
             || (1..sample_size).any(|i| {
                 num_entries += array_ref.cell((cell_index + i) % array_size).num_entries();
@@ -383,7 +378,7 @@ where
     ) {
         let sample_size = array_ref.sample_size();
         let array_size = array_ref.num_cells();
-        let threshold = sample_size * ARRAY_SIZE / 16;
+        let threshold = sample_size * CELL_LEN / 16;
         let mut num_entries = 0;
         if !(1..sample_size).any(|i| {
             num_entries += array_ref.cell((cell_index + i) % array_size).num_entries();

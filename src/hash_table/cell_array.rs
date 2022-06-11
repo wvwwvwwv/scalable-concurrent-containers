@@ -1,4 +1,4 @@
-use super::cell::{Cell, Locker, ARRAY_SIZE};
+use super::cell::{Cell, Locker, CELL_LEN};
 
 use crate::ebr::{AtomicArc, Barrier, Ptr, Tag};
 use crate::wait_queue::AsyncWait;
@@ -24,7 +24,7 @@ pub struct CellArray<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
 
 impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FREE> {
     /// The number of `Cells` a task has to relocate on a single call to `partial_rehash`.
-    const UNIT_SIZE: usize = ARRAY_SIZE;
+    const UNIT_SIZE: usize = CELL_LEN;
 
     /// Creates a new Array of given capacity.
     ///
@@ -86,7 +86,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     /// Returns the number of total entries.
     #[inline]
     pub(crate) fn num_entries(&self) -> usize {
-        self.array_capacity * ARRAY_SIZE
+        self.array_capacity * CELL_LEN
     }
 
     /// Returns a [`Ptr`] to the old array.
@@ -299,16 +299,16 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     /// Calculates `log_2` of the array size from the given cell capacity.
     fn calculate_log2_array_size(total_cell_capacity: usize) -> u8 {
         let adjusted_total_cell_capacity =
-            total_cell_capacity.min((usize::MAX / 2) - (ARRAY_SIZE - 1));
+            total_cell_capacity.min((usize::MAX / 2) - (CELL_LEN - 1));
         let required_cells =
-            ((adjusted_total_cell_capacity + ARRAY_SIZE - 1) / ARRAY_SIZE).next_power_of_two();
+            ((adjusted_total_cell_capacity + CELL_LEN - 1) / CELL_LEN).next_power_of_two();
         let log2_capacity =
             (usize::BITS as usize - (required_cells.leading_zeros() as usize) - 1).max(1);
 
         // 2^lb_capacity * C::cell_size() >= capacity
         debug_assert!(log2_capacity > 0);
         debug_assert!(log2_capacity < (std::mem::size_of::<usize>() * 8));
-        debug_assert!((1_usize << log2_capacity) * ARRAY_SIZE >= adjusted_total_cell_capacity);
+        debug_assert!((1_usize << log2_capacity) * CELL_LEN >= adjusted_total_cell_capacity);
         log2_capacity.try_into().unwrap()
     }
 
@@ -383,12 +383,12 @@ mod test {
 
     #[test]
     fn array() {
-        for s in 0..ARRAY_SIZE * 2 {
+        for s in 0..CELL_LEN * 2 {
             let array: CellArray<usize, usize, true> = CellArray::new(s, AtomicArc::default());
-            assert!(array.num_cells() >= s.max(ARRAY_SIZE) / ARRAY_SIZE);
-            assert!(array.num_cells() <= 2 * (s.max(ARRAY_SIZE) / ARRAY_SIZE));
-            assert!(array.num_entries() >= s.max(ARRAY_SIZE));
-            assert!(array.num_entries() <= 2 * s.max(ARRAY_SIZE));
+            assert!(array.num_cells() >= s.max(CELL_LEN) / CELL_LEN);
+            assert!(array.num_cells() <= 2 * (s.max(CELL_LEN) / CELL_LEN));
+            assert!(array.num_entries() >= s.max(CELL_LEN));
+            assert!(array.num_entries() <= 2 * s.max(CELL_LEN));
         }
     }
 }

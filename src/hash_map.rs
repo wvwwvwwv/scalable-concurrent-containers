@@ -247,11 +247,11 @@ where
             .acquire::<Q>(key_ref, hash, partial_hash, None, &barrier)
             .ok()?;
         if let Some(iterator) = iterator {
-            if let Some((k, v)) = iterator.get() {
-                // The presence of `locker` prevents the entry from being modified outside it.
-                #[allow(clippy::cast_ref_to_mut)]
-                return Some(updater(k, unsafe { &mut *(v as *const V as *mut V) }));
-            }
+            let (k, v) = iterator.get();
+
+            // The presence of `locker` prevents the entry from being modified outside it.
+            #[allow(clippy::cast_ref_to_mut)]
+            return Some(updater(k, unsafe { &mut *(v as *const V as *mut V) }));
         }
         None
     }
@@ -290,10 +290,9 @@ where
                 &Barrier::new(),
             ) {
                 if let Some(iterator) = iterator {
-                    if let Some((k, v)) = iterator.get() {
-                        #[allow(clippy::cast_ref_to_mut)]
-                        return Some(updater(k, unsafe { &mut *(v as *const V as *mut V) }));
-                    }
+                    let (k, v) = iterator.get();
+                    #[allow(clippy::cast_ref_to_mut)]
+                    return Some(updater(k, unsafe { &mut *(v as *const V as *mut V) }));
                 }
                 return None;
             }
@@ -328,12 +327,11 @@ where
             self.acquire::<_>(&key, hash, partial_hash, None, &barrier)
         {
             if let Some(iterator) = iterator {
-                if let Some((k, v)) = iterator.get() {
-                    // The presence of `locker` prevents the entry from being modified outside it.
-                    #[allow(clippy::cast_ref_to_mut)]
-                    updater(k, unsafe { &mut *(v as *const V as *mut V) });
-                    return;
-                }
+                let (k, v) = iterator.get();
+                // The presence of `locker` prevents the entry from being modified outside it.
+                #[allow(clippy::cast_ref_to_mut)]
+                updater(k, unsafe { &mut *(v as *const V as *mut V) });
+                return;
             }
             locker.insert(key, constructor(), partial_hash, &barrier);
         };
@@ -371,11 +369,10 @@ where
                 &Barrier::new(),
             ) {
                 if let Some(iterator) = iterator {
-                    if let Some((k, v)) = iterator.get() {
-                        #[allow(clippy::cast_ref_to_mut)]
-                        updater(k, unsafe { &mut *(v as *const V as *mut V) });
-                        return;
-                    }
+                    let (k, v) = iterator.get();
+                    #[allow(clippy::cast_ref_to_mut)]
+                    updater(k, unsafe { &mut *(v as *const V as *mut V) });
+                    return;
                 }
                 locker.insert(key, constructor(), partial_hash, &Barrier::new());
                 return;
@@ -723,10 +720,8 @@ where
                             if let Some(locker) = result {
                                 let mut iterator = locker.cell().iter(&barrier);
                                 while iterator.next().is_some() {
-                                    if let Some((k, v)) = iterator.get() {
-                                        #[allow(clippy::cast_ref_to_mut)]
-                                        scanner(k, v);
-                                    }
+                                    let (k, v) = iterator.get();
+                                    scanner(k, v);
                                 }
                                 break false;
                             }
@@ -863,12 +858,9 @@ where
                 if let Some(locker) = Locker::lock(current_array_ref.cell(cell_index), &barrier) {
                     let mut iterator = locker.cell().iter(&barrier);
                     while iterator.next().is_some() {
-                        let retain = if let Some((k, v)) = iterator.get() {
-                            #[allow(clippy::cast_ref_to_mut)]
-                            filter(k, unsafe { &mut *(v as *const V as *mut V) })
-                        } else {
-                            true
-                        };
+                        let (k, v) = iterator.get();
+                        #[allow(clippy::cast_ref_to_mut)]
+                        let retain = filter(k, unsafe { &mut *(v as *const V as *mut V) });
                         if retain {
                             num_retained = num_retained.saturating_add(1);
                         } else {
@@ -954,12 +946,10 @@ where
                             if let Some(locker) = result {
                                 let mut iterator = locker.cell().iter(&barrier);
                                 while iterator.next().is_some() {
-                                    let retain = if let Some((k, v)) = iterator.get() {
-                                        #[allow(clippy::cast_ref_to_mut)]
-                                        filter(k, unsafe { &mut *(v as *const V as *mut V) })
-                                    } else {
-                                        true
-                                    };
+                                    let (k, v) = iterator.get();
+                                    #[allow(clippy::cast_ref_to_mut)]
+                                    let retain =
+                                        filter(k, unsafe { &mut *(v as *const V as *mut V) });
                                     if retain {
                                         num_retained = num_retained.saturating_add(1);
                                     } else {
