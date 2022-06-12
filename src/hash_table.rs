@@ -23,7 +23,7 @@ where
     /// Returns the default capacity.
     #[inline]
     fn default_capacity() -> usize {
-        CELL_LEN
+        CELL_LEN * 2
     }
 
     /// Returns the hash value of the given key.

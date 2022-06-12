@@ -117,6 +117,7 @@ pub(crate) struct AsyncWait {
 
 impl AsyncWait {
     /// Returns its pointer value.
+    #[inline]
     pub(crate) fn mut_ptr(&mut self) -> *mut AsyncWait {
         addr_of_mut!(*self)
     }

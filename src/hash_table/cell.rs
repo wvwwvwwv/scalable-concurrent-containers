@@ -1,4 +1,4 @@
-use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
+use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 use crate::wait_queue::{AsyncWait, WaitQueue};
 
 use std::borrow::Borrow;
@@ -122,16 +122,16 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         if let Some((index, _)) = Self::search_array(&self.data_array, key_ref, partial_hash) {
             return Some(EntryIterator {
                 cell: Some(self),
-                current_array_ptr: ptr::null(),
-                prev_array_ptr: ptr::null(),
+                current_array_ptr: Ptr::null(),
+                prev_array_ptr: Ptr::null(),
                 current_index: index,
                 barrier_ref: barrier,
             });
         }
 
-        let mut current_array_ptr = self.data_array.link.load(Acquire, barrier).as_raw();
-        let mut prev_array_ptr = ptr::null();
-        while let Some(data_array_ref) = unsafe { current_array_ptr.as_ref() } {
+        let mut current_array_ptr = self.data_array.link.load(Acquire, barrier);
+        let mut prev_array_ptr = Ptr::null();
+        while let Some(data_array_ref) = current_array_ptr.as_ref() {
             if let Some((index, _)) = Self::search_array(data_array_ref, key_ref, partial_hash) {
                 return Some(EntryIterator {
                     cell: Some(self),
@@ -142,7 +142,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
                 });
             }
             prev_array_ptr = current_array_ptr;
-            current_array_ptr = data_array_ref.link.load(Acquire, barrier).as_raw();
+            current_array_ptr = data_array_ref.link.load(Acquire, barrier);
         }
 
         None
@@ -259,22 +259,23 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Cell<K, V, LOC
 
 pub struct EntryIterator<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
     cell: Option<&'b Cell<K, V, LOCK_FREE>>,
-    current_array_ptr: *const DataArray<K, V, LINKED_LEN>,
-    prev_array_ptr: *const DataArray<K, V, LINKED_LEN>,
+    current_array_ptr: Ptr<'b, DataArray<K, V, LINKED_LEN>>,
+    prev_array_ptr: Ptr<'b, DataArray<K, V, LINKED_LEN>>,
     current_index: usize,
     barrier_ref: &'b Barrier,
 }
 
 impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K, V, LOCK_FREE> {
     /// Creates a new [`EntryIterator`].
+    #[inline]
     pub(crate) fn new(
         cell: &'b Cell<K, V, LOCK_FREE>,
         barrier: &'b Barrier,
     ) -> EntryIterator<'b, K, V, LOCK_FREE> {
         EntryIterator {
             cell: Some(cell),
-            current_array_ptr: ptr::null(),
-            prev_array_ptr: ptr::null(),
+            current_array_ptr: Ptr::null(),
+            prev_array_ptr: Ptr::null(),
             current_index: usize::MAX,
             barrier_ref: barrier,
         }
@@ -283,7 +284,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K
     /// Gets a reference to the key-value pair.
     #[inline]
     pub(crate) fn get(&self) -> &'b (K, V) {
-        let entry_ptr = if let Some(data_array_ref) = unsafe { self.current_array_ptr.as_ref() } {
+        let entry_ptr = if let Some(data_array_ref) = self.current_array_ptr.as_ref() {
             data_array_ref.data[self.current_index].as_ptr()
         } else {
             self.cell.as_ref().unwrap().data_array.data[self.current_index].as_ptr()
@@ -302,21 +303,20 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K
         };
         self.current_array_ptr = next_data_array
             .as_ref()
-            .map_or_else(ptr::null, |n| n.ptr(self.barrier_ref).as_raw());
-        let old_data_array =
-            if let Some(prev_data_array_ref) = unsafe { self.prev_array_ptr.as_ref() } {
-                prev_data_array_ref
-                    .link
-                    .swap((next_data_array, Tag::None), Relaxed)
-                    .0
-            } else if let Some(cell) = self.cell.as_ref() {
-                cell.data_array
-                    .link
-                    .swap((next_data_array, Tag::None), Relaxed)
-                    .0
-            } else {
-                None
-            };
+            .map_or_else(Ptr::null, |n| n.ptr(self.barrier_ref));
+        let old_data_array = if let Some(prev_data_array_ref) = self.prev_array_ptr.as_ref() {
+            prev_data_array_ref
+                .link
+                .swap((next_data_array, Tag::None), Relaxed)
+                .0
+        } else if let Some(cell) = self.cell.as_ref() {
+            cell.data_array
+                .link
+                .swap((next_data_array, Tag::None), Relaxed)
+                .0
+        } else {
+            None
+        };
         if let Some(data_array) = old_data_array {
             self.barrier_ref.reclaim(data_array);
         }
@@ -346,7 +346,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K
             return Some((entry_ref, hash));
         }
 
-        self.current_array_ptr = data_array_ref.link.load(Acquire, self.barrier_ref).as_raw();
+        self.current_array_ptr = data_array_ref.link.load(Acquire, self.barrier_ref);
         self.current_index = usize::MAX;
 
         None
@@ -364,7 +364,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Iterator
                     return Some(result);
                 }
             }
-            while let Some(data_array_ref) = unsafe { self.current_array_ptr.as_ref() } {
+            while let Some(data_array_ref) = self.current_array_ptr.as_ref() {
                 if let Some(result) = self.next_entry(data_array_ref) {
                     return Some(result);
                 }
@@ -502,8 +502,9 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         if iterator.current_array_ptr.is_null() {
             self.erase_entry(&mut self.cell_mut().data_array, iterator.current_index)
         } else {
-            let data_array_mut =
-                unsafe { &mut *(iterator.current_array_ptr as *mut DataArray<K, V, LINKED_LEN>) };
+            let data_array_mut = unsafe {
+                &mut *(iterator.current_array_ptr.as_raw() as *mut DataArray<K, V, LINKED_LEN>)
+            };
             let result = self.erase_entry(data_array_mut, iterator.current_index);
             if LOCK_FREE && (data_array_mut.occupied & (!data_array_mut.removed)) == 0
                 || (!LOCK_FREE && data_array_mut.occupied == 0)
@@ -521,8 +522,9 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         if iterator.current_array_ptr.is_null() {
             self.extract_entry(&mut self.cell_mut().data_array, iterator.current_index)
         } else {
-            let data_array_mut =
-                unsafe { &mut *(iterator.current_array_ptr as *mut DataArray<K, V, LINKED_LEN>) };
+            let data_array_mut = unsafe {
+                &mut *(iterator.current_array_ptr.as_raw() as *mut DataArray<K, V, LINKED_LEN>)
+            };
             let extracted = self.extract_entry(data_array_mut, iterator.current_index);
             if data_array_mut.occupied == 0 {
                 iterator.unlink_data_array(data_array_mut);

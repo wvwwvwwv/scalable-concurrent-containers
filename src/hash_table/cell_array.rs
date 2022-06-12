@@ -5,7 +5,6 @@ use crate::wait_queue::AsyncWait;
 
 use std::alloc::{alloc_zeroed, dealloc, Layout};
 use std::borrow::Borrow;
-use std::convert::TryInto;
 use std::hash::Hash;
 use std::mem::size_of;
 use std::sync::atomic::Ordering::Relaxed;
@@ -99,9 +98,10 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     }
 
     /// Calculates the [`Cell`] index for the hash value.
+    #[allow(clippy::cast_possible_truncation)]
     #[inline]
     pub(crate) fn calculate_cell_index(&self, hash: u64) -> usize {
-        (hash >> (64 - self.log2_capacity)).try_into().unwrap()
+        hash.wrapping_shr(64 - u32::from(self.log2_capacity)) as usize
     }
 
     /// Kills the [`Cell`].
@@ -297,6 +297,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     }
 
     /// Calculates `log_2` of the array size from the given cell capacity.
+    #[allow(clippy::cast_possible_truncation)]
     fn calculate_log2_array_size(total_cell_capacity: usize) -> u8 {
         let adjusted_total_cell_capacity =
             total_cell_capacity.min((usize::MAX / 2) - (CELL_LEN - 1));
@@ -309,7 +310,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         debug_assert!(log2_capacity > 0);
         debug_assert!(log2_capacity < (std::mem::size_of::<usize>() * 8));
         debug_assert!((1_usize << log2_capacity) * CELL_LEN >= adjusted_total_cell_capacity);
-        log2_capacity.try_into().unwrap()
+        log2_capacity as u8
     }
 
     /// Calculates the layout of the memory block.
