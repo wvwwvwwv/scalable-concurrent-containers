@@ -1085,7 +1085,7 @@ where
 
 impl<K, V, H> Debug for HashMap<K, V, H>
 where
-    K: 'static + Debug + Eq + Hash + Sync + Debug,
+    K: 'static + Debug + Eq + Hash + Sync,
     V: 'static + Debug + Sync,
     H: BuildHasher,
 {

@@ -595,7 +595,7 @@ where
 
 impl<K, V, H> Debug for HashIndex<K, V, H>
 where
-    K: 'static + Clone + Debug + Eq + Hash + Sync + Debug,
+    K: 'static + Clone + Debug + Eq + Hash + Sync,
     V: 'static + Clone + Debug + Sync,
     H: 'static + BuildHasher,
 {
