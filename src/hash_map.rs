@@ -8,6 +8,7 @@ use super::wait_queue::AsyncWait;
 
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
+use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
 use std::pin::Pin;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
@@ -1113,6 +1114,22 @@ where
             resize_mutex: AtomicU8::new(0),
             build_hasher: RandomState::new(),
         }
+    }
+}
+
+impl<K, V, H> Debug for HashMap<K, V, H>
+where
+    K: 'static + Eq + Hash + Sync + Debug,
+    V: 'static + Sync + Debug,
+    H: BuildHasher,
+{
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut d = f.debug_map();
+        self.scan(|k, v| {
+            d.entry(k, v);
+        });
+        d.finish()
     }
 }
 

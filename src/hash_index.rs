@@ -8,6 +8,7 @@ use super::wait_queue::AsyncWait;
 
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
+use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
 use std::iter::FusedIterator;
 use std::pin::Pin;
@@ -622,6 +623,19 @@ where
             resize_mutex: AtomicU8::new(0),
             build_hasher: RandomState::new(),
         }
+    }
+}
+
+impl<K, V, H> Debug for HashIndex<K, V, H>
+where
+    K: 'static + Clone + Eq + Hash + Sync + Debug,
+    V: 'static + Clone + Sync + Debug,
+    H: 'static + BuildHasher,
+{
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let barrier = Barrier::new();
+        f.debug_map().entries(self.iter(&barrier)).finish()
     }
 }
 
