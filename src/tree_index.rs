@@ -13,6 +13,7 @@ use node::Node;
 
 use std::borrow::Borrow;
 use std::cmp::Ordering;
+use std::fmt::{self, Debug};
 use std::iter::FusedIterator;
 use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::ops::RangeBounds;
@@ -576,6 +577,17 @@ where
     #[inline]
     fn default() -> Self {
         TreeIndex::new()
+    }
+}
+
+impl<K, V> Debug for TreeIndex<K, V>
+where
+    K: 'static + Clone + Ord + Send + Sync + Debug,
+    V: 'static + Clone + Send + Sync + Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let barrier = Barrier::new();
+        f.debug_map().entries(self.iter(&barrier)).finish()
     }
 }
 

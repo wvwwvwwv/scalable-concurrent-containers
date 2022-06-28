@@ -4,6 +4,7 @@ use super::HashMap;
 
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
+use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
 
 /// Scalable concurrent hash set.
@@ -577,6 +578,20 @@ impl<K: 'static + Eq + Hash + Sync> Default for HashSet<K, RandomState> {
         HashSet {
             map: HashMap::default(),
         }
+    }
+}
+
+impl<K, H> Debug for HashSet<K, H>
+where
+    K: 'static + Eq + Hash + Sync + Debug,
+    H: BuildHasher,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut d = f.debug_set();
+        self.scan(|k| {
+            d.entry(k);
+        });
+        d.finish()
     }
 }
 
