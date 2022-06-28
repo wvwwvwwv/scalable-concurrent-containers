@@ -593,6 +593,19 @@ where
     }
 }
 
+impl<K, V, H> Debug for HashIndex<K, V, H>
+where
+    K: 'static + Clone + Debug + Eq + Hash + Sync + Debug,
+    V: 'static + Clone + Debug + Sync,
+    H: 'static + BuildHasher,
+{
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let barrier = Barrier::new();
+        f.debug_map().entries(self.iter(&barrier)).finish()
+    }
+}
+
 impl<K, V> Default for HashIndex<K, V, RandomState>
 where
     K: 'static + Clone + Eq + Hash + Sync,
@@ -626,37 +639,29 @@ where
     }
 }
 
-impl<K, V, H> Debug for HashIndex<K, V, H>
-where
-    K: 'static + Clone + Eq + Hash + Sync + Debug,
-    V: 'static + Clone + Sync + Debug,
-    H: 'static + BuildHasher,
-{
-    #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let barrier = Barrier::new();
-        f.debug_map().entries(self.iter(&barrier)).finish()
-    }
-}
-
 impl<K, V, H> HashTable<K, V, H, true> for HashIndex<K, V, H>
 where
     K: 'static + Clone + Eq + Hash + Sync,
     V: 'static + Clone + Sync,
     H: BuildHasher,
 {
+    #[inline]
     fn hasher(&self) -> &H {
         &self.build_hasher
     }
+    #[inline]
     fn copier(key: &K, val: &V) -> Option<(K, V)> {
         Some((key.clone(), val.clone()))
     }
+    #[inline]
     fn cell_array(&self) -> &AtomicArc<CellArray<K, V, true>> {
         &self.array
     }
+    #[inline]
     fn minimum_capacity(&self) -> usize {
         self.minimum_capacity
     }
+    #[inline]
     fn resize_mutex(&self) -> &AtomicU8 {
         &self.resize_mutex
     }
@@ -686,6 +691,7 @@ where
     H: 'static + BuildHasher,
 {
     type Item = (&'b K, &'b V);
+
     fn next(&mut self) -> Option<Self::Item> {
         if self.current_array_ptr.is_null() {
             // Start scanning.

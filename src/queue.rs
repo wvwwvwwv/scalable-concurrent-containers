@@ -2,12 +2,11 @@
 
 use super::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 
-use std::fmt::{Debug, Display};
+use std::fmt::{self, Debug, Display};
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
 /// [`Queue`] is a lock-free concurrent first-in-first-out queue.
-#[derive(Debug)]
 pub struct Queue<T: 'static> {
     /// `oldest` points to the oldest entry in the [`Queue`].
     oldest: AtomicArc<Entry<T>>,
@@ -301,7 +300,23 @@ impl<T: 'static> Queue<T> {
     }
 }
 
+impl<T: 'static + Debug> Debug for Queue<T> {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut d = f.debug_set();
+        let barrier = Barrier::new();
+        let mut current = self.oldest.load(Acquire, &barrier);
+        while let Some(entry) = current.as_ref() {
+            let next = entry.next.load(Acquire, &barrier);
+            d.entry(entry);
+            current = next;
+        }
+        d.finish()
+    }
+}
+
 impl<T: 'static> Default for Queue<T> {
+    #[inline]
     fn default() -> Self {
         Self {
             oldest: AtomicArc::default(),
@@ -388,12 +403,14 @@ impl<T: 'static> AsRef<T> for Entry<T> {
 }
 
 impl<T: 'static> AsMut<T> for Entry<T> {
+    #[inline]
     fn as_mut(&mut self) -> &mut T {
         self.instance.as_mut().unwrap()
     }
 }
 
 impl<T: 'static + Debug> Debug for Entry<T> {
+    #[inline]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Entry")
             .field("instance", &self.instance)
@@ -405,18 +422,21 @@ impl<T: 'static + Debug> Debug for Entry<T> {
 impl<T: 'static> Deref for Entry<T> {
     type Target = T;
 
+    #[inline]
     fn deref(&self) -> &Self::Target {
         self.instance.as_ref().unwrap()
     }
 }
 
 impl<T: 'static> DerefMut for Entry<T> {
+    #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.instance.as_mut().unwrap()
     }
 }
 
 impl<T: 'static + Display> Display for Entry<T> {
+    #[inline]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(instance) = self.instance.as_ref() {
             write!(f, "Some({})", instance)

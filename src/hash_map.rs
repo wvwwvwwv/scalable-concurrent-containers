@@ -1083,6 +1083,22 @@ where
     }
 }
 
+impl<K, V, H> Debug for HashMap<K, V, H>
+where
+    K: 'static + Debug + Eq + Hash + Sync + Debug,
+    V: 'static + Debug + Sync,
+    H: BuildHasher,
+{
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut d = f.debug_map();
+        self.scan(|k, v| {
+            d.entry(k, v);
+        });
+        d.finish()
+    }
+}
+
 impl<K, V> Default for HashMap<K, V, RandomState>
 where
     K: 'static + Eq + Hash + Sync,
@@ -1117,40 +1133,29 @@ where
     }
 }
 
-impl<K, V, H> Debug for HashMap<K, V, H>
-where
-    K: 'static + Eq + Hash + Sync + Debug,
-    V: 'static + Sync + Debug,
-    H: BuildHasher,
-{
-    #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut d = f.debug_map();
-        self.scan(|k, v| {
-            d.entry(k, v);
-        });
-        d.finish()
-    }
-}
-
 impl<K, V, H> HashTable<K, V, H, false> for HashMap<K, V, H>
 where
     K: 'static + Eq + Hash + Sync,
     V: 'static + Sync,
     H: BuildHasher,
 {
+    #[inline]
     fn hasher(&self) -> &H {
         &self.build_hasher
     }
+    #[inline]
     fn copier(_: &K, _: &V) -> Option<(K, V)> {
         None
     }
+    #[inline]
     fn cell_array(&self) -> &AtomicArc<CellArray<K, V, false>> {
         &self.array
     }
+    #[inline]
     fn minimum_capacity(&self) -> usize {
         self.minimum_capacity + self.additional_capacity.load(Relaxed)
     }
+    #[inline]
     fn resize_mutex(&self) -> &AtomicU8 {
         &self.resize_mutex
     }
@@ -1176,6 +1181,7 @@ where
     V: 'static + Sync,
     H: BuildHasher,
 {
+    #[inline]
     fn drop(&mut self) {
         let result = self
             .hash_map

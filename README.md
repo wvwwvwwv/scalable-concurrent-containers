@@ -407,6 +407,10 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 ## Changelog
 
+0.8.1
+
+* Implement `Debug` for container types.
+
 0.8.0
 
 * Add `ebr::suspend` which enables garbage instances in a dormant thread to be reclaimed by other threads.

@@ -558,6 +558,21 @@ where
     }
 }
 
+impl<K, H> Debug for HashSet<K, H>
+where
+    K: 'static + Debug + Eq + Hash + Sync,
+    H: BuildHasher,
+{
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut d = f.debug_set();
+        self.scan(|k| {
+            d.entry(k);
+        });
+        d.finish()
+    }
+}
+
 impl<K: 'static + Eq + Hash + Sync> Default for HashSet<K, RandomState> {
     /// Creates a [`HashSet`] with the default parameters.
     ///
@@ -578,20 +593,6 @@ impl<K: 'static + Eq + Hash + Sync> Default for HashSet<K, RandomState> {
         HashSet {
             map: HashMap::default(),
         }
-    }
-}
-
-impl<K, H> Debug for HashSet<K, H>
-where
-    K: 'static + Eq + Hash + Sync + Debug,
-    H: BuildHasher,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut d = f.debug_set();
-        self.scan(|k| {
-            d.entry(k);
-        });
-        d.finish()
     }
 }
 

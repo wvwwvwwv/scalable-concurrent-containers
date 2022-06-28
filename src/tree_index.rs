@@ -560,6 +560,18 @@ where
     }
 }
 
+impl<K, V> Debug for TreeIndex<K, V>
+where
+    K: 'static + Clone + Debug + Ord + Send + Sync,
+    V: 'static + Clone + Debug + Send + Sync,
+{
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let barrier = Barrier::new();
+        f.debug_map().entries(self.iter(&barrier)).finish()
+    }
+}
+
 impl<K, V> Default for TreeIndex<K, V>
 where
     K: 'static + Clone + Ord + Send + Sync,
@@ -577,17 +589,6 @@ where
     #[inline]
     fn default() -> Self {
         TreeIndex::new()
-    }
-}
-
-impl<K, V> Debug for TreeIndex<K, V>
-where
-    K: 'static + Clone + Ord + Send + Sync + Debug,
-    V: 'static + Clone + Send + Sync + Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let barrier = Barrier::new();
-        f.debug_map().entries(self.iter(&barrier)).finish()
     }
 }
 
