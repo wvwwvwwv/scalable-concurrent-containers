@@ -409,7 +409,7 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 0.8.2
 
-* Fix [#57](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/77).
+* Fix [#77](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/77).
 
 0.8.1
 
