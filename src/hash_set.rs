@@ -558,6 +558,19 @@ where
     }
 }
 
+impl<K, H> Clone for HashSet<K, H>
+where
+    K: 'static + Clone + Eq + Hash + Sync,
+    H: BuildHasher + Clone,
+{
+    #[inline]
+    fn clone(&self) -> Self {
+        Self {
+            map: self.map.clone(),
+        }
+    }
+}
+
 impl<K, H> Debug for HashSet<K, H>
 where
     K: 'static + Debug + Eq + Hash + Sync,

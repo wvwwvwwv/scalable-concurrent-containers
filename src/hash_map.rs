@@ -1083,6 +1083,23 @@ where
     }
 }
 
+impl<K, V, H> Clone for HashMap<K, V, H>
+where
+    K: 'static + Clone + Eq + Hash + Sync,
+    V: 'static + Clone + Sync,
+    H: BuildHasher + Clone,
+{
+    #[inline]
+    fn clone(&self) -> Self {
+        let cloned = Self::new(Self::default_capacity(), self.hasher().clone());
+        self.scan(|k, v| {
+            // TODO: optimized it.
+            let _reuslt = cloned.insert(k.clone(), v.clone());
+        });
+        cloned
+    }
+}
+
 impl<K, V, H> Debug for HashMap<K, V, H>
 where
     K: 'static + Debug + Eq + Hash + Sync,

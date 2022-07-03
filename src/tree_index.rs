@@ -560,6 +560,22 @@ where
     }
 }
 
+impl<K, V> Clone for TreeIndex<K, V>
+where
+    K: 'static + Clone + Ord + Send + Sync,
+    V: 'static + Clone + Send + Sync,
+{
+    #[inline]
+    fn clone(&self) -> Self {
+        let cloned = Self::default();
+        for (k, v) in self.iter(&Barrier::new()) {
+            // TODO: optimized it.
+            let _reuslt = cloned.insert(k.clone(), v.clone());
+        }
+        cloned
+    }
+}
+
 impl<K, V> Debug for TreeIndex<K, V>
 where
     K: 'static + Clone + Debug + Ord + Send + Sync,

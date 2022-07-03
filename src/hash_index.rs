@@ -593,6 +593,23 @@ where
     }
 }
 
+impl<K, V, H> Clone for HashIndex<K, V, H>
+where
+    K: 'static + Clone + Eq + Hash + Sync,
+    V: 'static + Clone + Sync,
+    H: 'static + BuildHasher + Clone,
+{
+    #[inline]
+    fn clone(&self) -> Self {
+        let cloned = Self::new(Self::default_capacity(), self.hasher().clone());
+        for (k, v) in self.iter(&Barrier::new()) {
+            // TODO: optimized it.
+            let _reuslt = cloned.insert(k.clone(), v.clone());
+        }
+        cloned
+    }
+}
+
 impl<K, V, H> Debug for HashIndex<K, V, H>
 where
     K: 'static + Clone + Debug + Eq + Hash + Sync,

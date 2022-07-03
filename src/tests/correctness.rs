@@ -75,6 +75,29 @@ mod hashmap_test {
         }
     }
 
+    #[tokio::test]
+    async fn hashmap_clone() {
+        static CNT: AtomicUsize = AtomicUsize::new(0);
+        let hashmap: HashMap<usize, R> = HashMap::default();
+
+        let workload_size = 1024;
+
+        for k in 0..workload_size {
+            assert!(hashmap.insert_async(k, R::new(&CNT)).await.is_ok());
+        }
+        let cloned = hashmap.clone();
+        hashmap.clear();
+        for k in 0..workload_size {
+            assert!(cloned.read(&k, |_, _| ()).is_some());
+        }
+        cloned.clear();
+
+        while CNT.load(Relaxed) != 0 {
+            drop(ebr::Barrier::new());
+            tokio::task::yield_now().await;
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn hashmap_integer_key() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
@@ -409,6 +432,29 @@ mod hashmap_test {
         }
     }
 
+    #[tokio::test]
+    async fn hashindex_clone() {
+        static CNT: AtomicUsize = AtomicUsize::new(0);
+        let hashindex: HashIndex<usize, R> = HashIndex::default();
+
+        let workload_size = 1024;
+
+        for k in 0..workload_size {
+            assert!(hashindex.insert_async(k, R::new(&CNT)).await.is_ok());
+        }
+        let cloned = hashindex.clone();
+        drop(hashindex);
+        for k in 0..workload_size {
+            assert!(cloned.read(&k, |_, _| ()).is_some());
+        }
+        drop(cloned);
+
+        while CNT.load(Relaxed) != 0 {
+            drop(ebr::Barrier::new());
+            tokio::task::yield_now().await;
+        }
+    }
+
     #[test]
     fn hashindex_string_key() {
         let hashindex1: HashIndex<String, u32> = HashIndex::default();
@@ -587,6 +633,28 @@ mod treeindex_test {
         assert!(CNT.load(Relaxed) >= workload_size);
         assert_eq!(tree.len(), workload_size);
         tree.clear();
+
+        while CNT.load(Relaxed) != 0 {
+            drop(ebr::Barrier::new());
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn clone() {
+        static CNT: AtomicUsize = AtomicUsize::new(0);
+        let tree: TreeIndex<usize, R> = TreeIndex::default();
+
+        let workload_size = 1024;
+        for k in 0..workload_size {
+            assert!(tree.insert_async(k, R::new(&CNT)).await.is_ok());
+        }
+        let cloned = tree.clone();
+        tree.clear();
+        for k in 0..workload_size {
+            assert!(cloned.read(&k, |_, _| ()).is_some());
+        }
+        cloned.clear();
 
         while CNT.load(Relaxed) != 0 {
             drop(ebr::Barrier::new());
