@@ -300,6 +300,21 @@ impl<T: 'static> Queue<T> {
     }
 }
 
+impl<T: 'static + Clone> Clone for Queue<T> {
+    fn clone(&self) -> Self {
+        let cloned = Self::default();
+        let barrier = Barrier::new();
+        let mut current = self.oldest.load(Acquire, &barrier);
+        while let Some(entry) = current.as_ref() {
+            // TODO: optimize it.
+            let next = entry.next.load(Acquire, &barrier);
+            let _result = cloned.push_if_internal((**entry).clone(), |_| true, &barrier);
+            current = next;
+        }
+        cloned
+    }
+}
+
 impl<T: 'static + Debug> Debug for Queue<T> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -416,6 +431,16 @@ impl<T: 'static + Debug> Debug for Entry<T> {
             .field("instance", &self.instance)
             .field("next", &self.next)
             .finish()
+    }
+}
+
+impl<T: 'static + Clone> Clone for Entry<T> {
+    #[inline]
+    fn clone(&self) -> Self {
+        Self {
+            instance: self.instance.clone(),
+            next: AtomicArc::default(),
+        }
     }
 }
 

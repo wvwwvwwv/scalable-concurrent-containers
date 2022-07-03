@@ -1077,6 +1077,25 @@ mod queue_test {
             R(task_id, seq)
         }
     }
+    #[test]
+    fn clone() {
+        let queue = Queue::default();
+        queue.push(37);
+        queue.push(3);
+        queue.push(1);
+
+        let cloned = queue.clone();
+
+        assert_eq!(queue.pop().map(|e| **e), Some(37));
+        assert_eq!(queue.pop().map(|e| **e), Some(3));
+        assert_eq!(queue.pop().map(|e| **e), Some(1));
+        assert!(queue.pop().is_none());
+
+        assert_eq!(cloned.pop().map(|e| **e), Some(37));
+        assert_eq!(cloned.pop().map(|e| **e), Some(3));
+        assert_eq!(cloned.pop().map(|e| **e), Some(1));
+        assert!(cloned.pop().is_none());
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn mpmc() {
