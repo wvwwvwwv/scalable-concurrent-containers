@@ -346,6 +346,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K
             return Some((entry_ref, hash));
         }
 
+        self.prev_array_ptr = self.current_array_ptr;
         self.current_array_ptr = data_array_ref.link.load(Acquire, self.barrier_ref);
         self.current_index = usize::MAX;
 
@@ -506,7 +507,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                 &mut *(iterator.current_array_ptr.as_raw() as *mut DataArray<K, V, LINKED_LEN>)
             };
             let result = self.erase_entry(data_array_mut, iterator.current_index);
-            if LOCK_FREE && (data_array_mut.occupied & (!data_array_mut.removed)) == 0
+            if (LOCK_FREE && (data_array_mut.occupied & (!data_array_mut.removed)) == 0)
                 || (!LOCK_FREE && data_array_mut.occupied == 0)
             {
                 iterator.unlink_data_array(data_array_mut);

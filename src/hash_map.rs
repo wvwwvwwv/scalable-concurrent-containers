@@ -842,9 +842,9 @@ where
 
         // An acquire fence is required to correctly load the contents of the array.
         let mut current_array_ptr = self.array.load(Acquire, &barrier);
-        while let Some(current_array_ref) = current_array_ptr.as_ref() {
-            while !current_array_ref.old_array(&barrier).is_null() {
-                if current_array_ref.partial_rehash::<_, _, _>(
+        while let Some(current_array) = current_array_ptr.as_ref() {
+            while !current_array.old_array(&barrier).is_null() {
+                if current_array.partial_rehash::<_, _, _>(
                     |key| self.hash(key),
                     |_, _| None,
                     None,
@@ -854,9 +854,10 @@ where
                     break;
                 }
             }
+            debug_assert!(current_array.old_array(&barrier).is_null());
 
-            for cell_index in 0..current_array_ref.num_cells() {
-                if let Some(locker) = Locker::lock(current_array_ref.cell(cell_index), &barrier) {
+            for cell_index in 0..current_array.num_cells() {
+                if let Some(locker) = Locker::lock(current_array.cell(cell_index), &barrier) {
                     let mut iterator = locker.cell().iter(&barrier);
                     while iterator.next().is_some() {
                         let (k, v) = iterator.get();
@@ -932,6 +933,7 @@ where
                 }
                 async_wait_pinned.await;
             }
+            debug_assert!(current_array.old_array(&Barrier::new()).is_null());
 
             for cell_index in 0..current_array.num_cells() {
                 let killed = loop {
@@ -1091,7 +1093,7 @@ where
 {
     #[inline]
     fn clone(&self) -> Self {
-        let cloned = Self::new(Self::default_capacity(), self.hasher().clone());
+        let cloned = Self::new(self.capacity(), self.hasher().clone());
         self.scan(|k, v| {
             // TODO: optimized it.
             let _reuslt = cloned.insert(k.clone(), v.clone());

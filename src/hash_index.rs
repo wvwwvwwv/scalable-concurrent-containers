@@ -601,7 +601,7 @@ where
 {
     #[inline]
     fn clone(&self) -> Self {
-        let cloned = Self::new(Self::default_capacity(), self.hasher().clone());
+        let cloned = Self::new(self.capacity(), self.hasher().clone());
         for (k, v) in self.iter(&Barrier::new()) {
             // TODO: optimized it.
             let _reuslt = cloned.insert(k.clone(), v.clone());
