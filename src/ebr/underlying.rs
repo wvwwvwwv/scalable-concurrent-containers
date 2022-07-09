@@ -1,7 +1,7 @@
 use std::mem::ManuallyDrop;
 use std::ops::Deref;
 use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
+use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
 /// [`Underlying`] stores an instance of type `T`, and a link to the next [`Underlying`].
 pub(super) struct Underlying<T> {
@@ -25,17 +25,13 @@ impl<T> Underlying<T> {
         // The `fetch_order` must be as strong as `Acquire` for the caller to correctly validate
         // the newest state of the pointer.
         self.ref_cnt()
-            .fetch_update(
-                AcqRel,
-                Acquire,
-                |r| {
-                    if r % 2 == 1 {
-                        Some(r + 2)
-                    } else {
-                        None
-                    }
-                },
-            )
+            .fetch_update(Acquire, Acquire, |r| {
+                if r % 2 == 1 {
+                    Some(r + 2)
+                } else {
+                    None
+                }
+            })
             .is_ok()
     }
 

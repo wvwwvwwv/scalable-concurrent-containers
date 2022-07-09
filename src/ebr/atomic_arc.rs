@@ -557,10 +557,10 @@ mod test {
         let atomic_arc: Arc<AtomicArc<String>> =
             Arc::new(AtomicArc::new(String::from("How are you?")));
         let mut thread_handles = Vec::new();
-        for t in 0..4 {
+        for t in 0..6 {
             let atomic_arc = atomic_arc.clone();
             thread_handles.push(thread::spawn(move || {
-                for i in 0..256 {
+                for i in 0..4096 * 65536 {
                     if t == 0 {
                         let tag = if i % 3 == 0 {
                             Tag::First
