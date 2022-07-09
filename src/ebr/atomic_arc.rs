@@ -5,7 +5,7 @@ use std::mem::forget;
 use std::ptr;
 use std::ptr::NonNull;
 use std::sync::atomic::AtomicPtr;
-use std::sync::atomic::Ordering::{self, Relaxed};
+use std::sync::atomic::Ordering::{self, Acquire, Relaxed};
 
 /// [`AtomicArc`] owns the underlying instance, and allows users to perform atomic operations
 /// on the pointer to it.
@@ -281,7 +281,7 @@ impl<T: 'static> AtomicArc<T> {
         unsafe {
             let mut ptr = self.instance_ptr.load(order);
             while let Some(underlying_ref) = (Tag::unset_tag(ptr)).as_ref() {
-                if underlying_ref.try_add_ref() {
+                if underlying_ref.try_add_ref(Acquire) {
                     return Self {
                         instance_ptr: AtomicPtr::new(ptr),
                     };
@@ -315,7 +315,7 @@ impl<T: 'static> AtomicArc<T> {
     pub fn get_arc(&self, order: Ordering, _barrier: &Barrier) -> Option<Arc<T>> {
         let mut ptr = Tag::unset_tag(self.instance_ptr.load(order));
         while let Some(underlying_ptr) = NonNull::new(ptr as *mut Underlying<T>) {
-            if unsafe { underlying_ptr.as_ref() }.try_add_ref() {
+            if unsafe { underlying_ptr.as_ref() }.try_add_ref(Acquire) {
                 return Some(Arc::from(underlying_ptr));
             }
             let ptr_again = Tag::unset_tag(self.instance_ptr.load(order));
@@ -557,10 +557,10 @@ mod test {
         let atomic_arc: Arc<AtomicArc<String>> =
             Arc::new(AtomicArc::new(String::from("How are you?")));
         let mut thread_handles = Vec::new();
-        for t in 0..6 {
+        for t in 0..4 {
             let atomic_arc = atomic_arc.clone();
             thread_handles.push(thread::spawn(move || {
-                for i in 0..4096 * 65536 {
+                for i in 0..256 {
                     if t == 0 {
                         let tag = if i % 3 == 0 {
                             Tag::First

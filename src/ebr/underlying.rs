@@ -1,7 +1,7 @@
 use std::mem::ManuallyDrop;
 use std::ops::Deref;
 use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::{Acquire, Relaxed};
+use std::sync::atomic::Ordering::{self, Relaxed};
 
 /// [`Underlying`] stores an instance of type `T`, and a link to the next [`Underlying`].
 pub(super) struct Underlying<T> {
@@ -20,18 +20,23 @@ impl<T> Underlying<T> {
     }
 
     /// Tries to add a strong reference to the underlying instance.
+    ///
+    // `order` must be as strong as `Acquire` for the caller to correctly validate the newest state
+    // of the pointer.
     #[inline]
-    pub(super) fn try_add_ref(&self) -> bool {
-        // The `fetch_order` must be as strong as `Acquire` for the caller to correctly validate
-        // the newest state of the pointer.
+    pub(super) fn try_add_ref(&self, order: Ordering) -> bool {
         self.ref_cnt()
-            .fetch_update(Acquire, Acquire, |r| {
-                if r % 2 == 1 {
-                    Some(r + 2)
-                } else {
-                    None
-                }
-            })
+            .fetch_update(
+                order,
+                order,
+                |r| {
+                    if r % 2 == 1 {
+                        Some(r + 2)
+                    } else {
+                        None
+                    }
+                },
+            )
             .is_ok()
     }
 

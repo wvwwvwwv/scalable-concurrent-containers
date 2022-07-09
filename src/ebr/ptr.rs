@@ -3,6 +3,7 @@ use super::{Arc, Tag};
 
 use std::marker::PhantomData;
 use std::ptr::addr_of;
+use std::sync::atomic::Ordering::Relaxed;
 use std::{ops::Deref, ptr, ptr::NonNull};
 
 /// [`Ptr`] points to an instance.
@@ -205,7 +206,7 @@ impl<'b, T> Ptr<'b, T> {
         unsafe {
             if let Some(ptr) = NonNull::new(Tag::unset_tag(self.instance_ptr) as *mut Underlying<T>)
             {
-                if ptr.as_ref().try_add_ref() {
+                if ptr.as_ref().try_add_ref(Relaxed) {
                     return Some(Arc::from(ptr));
                 }
             }
