@@ -260,6 +260,9 @@ impl<T: 'static> AtomicArc<T> {
 
     /// Clones `self` including tags.
     ///
+    /// If `self` is not supposed to be an `AtomicArc::null`, this will never return an
+    /// `AtomicArc::null`.
+    ///
     /// # Examples
     ///
     /// ```
@@ -276,19 +279,26 @@ impl<T: 'static> AtomicArc<T> {
     #[must_use]
     pub fn clone(&self, order: Ordering, _barrier: &Barrier) -> AtomicArc<T> {
         unsafe {
-            let ptr = self.instance_ptr.load(order);
-            if let Some(underlying_ref) = (Tag::unset_tag(ptr)).as_ref() {
+            let mut ptr = self.instance_ptr.load(order);
+            while let Some(underlying_ref) = (Tag::unset_tag(ptr)).as_ref() {
                 if underlying_ref.try_add_ref() {
                     return Self {
                         instance_ptr: AtomicPtr::new(ptr),
                     };
                 }
+                let ptr_again = self.instance_ptr.load(order);
+                if Tag::unset_tag(ptr) == Tag::unset_tag(ptr_again) {
+                    break;
+                }
+                ptr = ptr_again;
             }
             Self::null()
         }
     }
 
     /// Tries to create an [`Arc`] out of `self`.
+    ///
+    /// If `self` is not supposed to be an `AtomicArc::null`, this will never return `None`.
     ///
     /// # Examples
     ///
@@ -303,11 +313,16 @@ impl<T: 'static> AtomicArc<T> {
     /// ```
     #[inline]
     pub fn get_arc(&self, order: Ordering, _barrier: &Barrier) -> Option<Arc<T>> {
-        let ptr = self.instance_ptr.load(order);
-        if let Some(underlying_ptr) = NonNull::new(Tag::unset_tag(ptr) as *mut Underlying<T>) {
+        let mut ptr = Tag::unset_tag(self.instance_ptr.load(order));
+        while let Some(underlying_ptr) = NonNull::new(ptr as *mut Underlying<T>) {
             if unsafe { underlying_ptr.as_ref() }.try_add_ref() {
                 return Some(Arc::from(underlying_ptr));
             }
+            let ptr_again = Tag::unset_tag(self.instance_ptr.load(order));
+            if ptr == ptr_again {
+                break;
+            }
+            ptr = ptr_again;
         }
         None
     }
@@ -530,6 +545,49 @@ mod test {
                     );
                     if let Some(arc) = old {
                         assert!(*arc == "How are you?" || *arc == "How can I help you?");
+                    }
+                }
+            }));
+        }
+        thread_handles.into_iter().for_each(|t| t.join().unwrap());
+    }
+
+    #[test]
+    fn atomic_arc_clone() {
+        let atomic_arc: Arc<AtomicArc<String>> =
+            Arc::new(AtomicArc::new(String::from("How are you?")));
+        let mut thread_handles = Vec::new();
+        for t in 0..4 {
+            let atomic_arc = atomic_arc.clone();
+            thread_handles.push(thread::spawn(move || {
+                for i in 0..256 {
+                    if t == 0 {
+                        let tag = if i % 3 == 0 {
+                            Tag::First
+                        } else if i % 2 == 0 {
+                            Tag::Second
+                        } else {
+                            Tag::None
+                        };
+                        let (old, _) = atomic_arc
+                            .swap((Some(Arc::new(String::from("How are you?"))), tag), Release);
+                        assert!(old.is_some());
+                        if let Some(arc) = old {
+                            assert!(*arc == "How are you?");
+                        }
+                    } else {
+                        let (cloned, _) = (*atomic_arc)
+                            .clone(Acquire, &Barrier::new())
+                            .swap((None, Tag::First), Release);
+                        assert!(cloned.is_some());
+                        if let Some(arc) = cloned {
+                            assert!(*arc == "How are you?");
+                        }
+                        let cloned = atomic_arc.get_arc(Acquire, &Barrier::new());
+                        assert!(cloned.is_some());
+                        if let Some(arc) = cloned {
+                            assert!(*arc == "How are you?");
+                        }
                     }
                 }
             }));

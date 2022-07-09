@@ -407,6 +407,10 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 ## Changelog
 
+0.8.3
+
+* Fix `ebr::AtomicArc::clone`: ensure that it clones a non-null `ebr::Arc` if the `ebr::AtomicArc` never becomes `null`.
+
 0.8.2
 
 * Fix [#77](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/77).
