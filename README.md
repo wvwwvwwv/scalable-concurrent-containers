@@ -409,7 +409,7 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 0.8.3
 
-* Fix `ebr::AtomicArc::clone`: ensure that it clones a non-null `ebr::Arc` if the `ebr::AtomicArc` never becomes `null`.
+* Fix `ebr::AtomicArc::{clone, get_arc}` to never return a null pointer if the `ebr::AtomicArc` is always non-null.
 
 0.8.2
 

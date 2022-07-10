@@ -1146,3 +1146,309 @@ mod queue_test {
         }
     }
 }
+
+#[cfg(test)]
+mod ebr_test {
+
+    use crate::ebr::{suspend, Arc, AtomicArc, Barrier, Tag};
+
+    use std::ops::Deref;
+    use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
+
+    struct A(AtomicUsize, usize, &'static AtomicBool);
+    impl Drop for A {
+        fn drop(&mut self) {
+            self.2.swap(true, Relaxed);
+        }
+    }
+
+    #[test]
+    fn arc() {
+        static DESTROYED: AtomicBool = AtomicBool::new(false);
+
+        let mut arc = Arc::new(A(AtomicUsize::new(10), 10, &DESTROYED));
+        if let Some(mut_ref) = unsafe { arc.get_mut() } {
+            mut_ref.1 += 1;
+        }
+        arc.0.fetch_add(1, Relaxed);
+        assert_eq!(arc.deref().0.load(Relaxed), 11);
+        assert_eq!(arc.deref().1, 11);
+
+        let mut arc_cloned = arc.clone();
+        assert!(unsafe { arc_cloned.get_mut().is_none() });
+        arc_cloned.0.fetch_add(1, Relaxed);
+        assert_eq!(arc_cloned.deref().0.load(Relaxed), 12);
+        assert_eq!(arc_cloned.deref().1, 11);
+
+        let mut arc_cloned_again = arc_cloned.clone();
+        assert!(unsafe { arc_cloned_again.get_mut().is_none() });
+        assert_eq!(arc_cloned_again.deref().0.load(Relaxed), 12);
+        assert_eq!(arc_cloned_again.deref().1, 11);
+
+        drop(arc);
+        assert!(!DESTROYED.load(Relaxed));
+        assert!(unsafe { arc_cloned_again.get_mut().is_none() });
+
+        drop(arc_cloned);
+        assert!(!DESTROYED.load(Relaxed));
+        assert!(unsafe { arc_cloned_again.get_mut().is_some() });
+
+        drop(arc_cloned_again);
+        while !DESTROYED.load(Relaxed) {
+            drop(Barrier::new());
+        }
+    }
+
+    #[test]
+    fn arc_send() {
+        static DESTROYED: AtomicBool = AtomicBool::new(false);
+
+        let arc = Arc::new(A(AtomicUsize::new(14), 14, &DESTROYED));
+        let arc_cloned = arc.clone();
+        let thread = std::thread::spawn(move || {
+            assert_eq!(arc_cloned.0.load(Relaxed), arc_cloned.1);
+        });
+        assert!(thread.join().is_ok());
+        assert_eq!(arc.0.load(Relaxed), arc.1);
+    }
+
+    #[test]
+    fn arc_arc_send() {
+        static DESTROYED: AtomicBool = AtomicBool::new(false);
+
+        let arc_arc = Arc::new(A(AtomicUsize::new(14), 14, &DESTROYED));
+        let arc_arc_cloned = arc_arc.clone();
+        let thread = std::thread::spawn(move || {
+            assert_eq!(arc_arc_cloned.0.load(Relaxed), 14);
+        });
+        assert!(thread.join().is_ok());
+        assert_eq!(arc_arc.0.load(Relaxed), 14);
+
+        unsafe {
+            arc_arc.drop_in_place();
+        }
+        assert!(DESTROYED.load(Relaxed));
+    }
+
+    #[test]
+    fn arc_nested() {
+        static DESTROYED: AtomicBool = AtomicBool::new(false);
+
+        struct Nest(Arc<A>);
+
+        let nested_arc = Arc::new(Nest(Arc::new(A(AtomicUsize::new(10), 10, &DESTROYED))));
+        assert!(!DESTROYED.load(Relaxed));
+        drop(nested_arc);
+
+        while !DESTROYED.load(Relaxed) {
+            drop(Barrier::new());
+        }
+    }
+
+    #[test]
+    fn atomic_arc() {
+        static DESTROYED: AtomicBool = AtomicBool::new(false);
+
+        let atomic_arc = AtomicArc::new(A(AtomicUsize::new(10), 10, &DESTROYED));
+        assert!(!DESTROYED.load(Relaxed));
+
+        let barrier = Barrier::new();
+        let atomic_arc_cloned = atomic_arc.clone(Relaxed, &barrier);
+        assert_eq!(
+            atomic_arc_cloned
+                .load(Relaxed, &barrier)
+                .as_ref()
+                .unwrap()
+                .1,
+            10
+        );
+
+        drop(atomic_arc);
+        assert!(!DESTROYED.load(Relaxed));
+
+        atomic_arc_cloned.update_tag_if(Tag::Second, |_| true, Relaxed);
+
+        drop(atomic_arc_cloned);
+        drop(barrier);
+
+        while !DESTROYED.load(Relaxed) {
+            drop(Barrier::new());
+        }
+    }
+
+    #[test]
+    fn atomic_arc_send() {
+        static DESTROYED: AtomicBool = AtomicBool::new(false);
+
+        let atomic_arc = AtomicArc::new(A(AtomicUsize::new(14), 14, &DESTROYED));
+        let atomic_arc_cloned = atomic_arc.clone(Relaxed, &Barrier::new());
+        let thread = std::thread::spawn(move || {
+            let barrier = Barrier::new();
+            let ptr = atomic_arc_cloned.load(Relaxed, &barrier);
+            assert_eq!(ptr.as_ref().unwrap().0.load(Relaxed), 14);
+        });
+        assert!(thread.join().is_ok());
+    }
+
+    #[test]
+    fn atomic_arc_creation() {
+        static DESTROYED: AtomicBool = AtomicBool::new(false);
+
+        let atomic_arc = AtomicArc::new(A(AtomicUsize::new(11), 11, &DESTROYED));
+        assert!(!DESTROYED.load(Relaxed));
+
+        let barrier = Barrier::new();
+
+        let arc = atomic_arc.get_arc(Relaxed, &barrier);
+
+        drop(atomic_arc);
+        assert!(!DESTROYED.load(Relaxed));
+
+        if let Some(arc) = arc {
+            assert_eq!(arc.1, 11);
+            assert!(!DESTROYED.load(Relaxed));
+        }
+        drop(barrier);
+
+        while !DESTROYED.load(Relaxed) {
+            drop(Barrier::new());
+        }
+    }
+
+    #[test]
+    fn atomic_arc_conversion() {
+        static DESTROYED: AtomicBool = AtomicBool::new(false);
+
+        let atomic_arc = AtomicArc::new(A(AtomicUsize::new(11), 11, &DESTROYED));
+        assert!(!DESTROYED.load(Relaxed));
+
+        let barrier = Barrier::new();
+
+        let arc = atomic_arc.try_into_arc(Relaxed);
+        assert!(!DESTROYED.load(Relaxed));
+
+        if let Some(arc) = arc {
+            assert_eq!(arc.1, 11);
+            assert!(!DESTROYED.load(Relaxed));
+        }
+        drop(barrier);
+
+        while !DESTROYED.load(Relaxed) {
+            drop(Barrier::new());
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    async fn atomic_arc_parallel() {
+        let atomic_arc: Arc<AtomicArc<String>> =
+            Arc::new(AtomicArc::new(String::from("How are you?")));
+        let mut task_handles = Vec::new();
+        for _ in 0..16 {
+            let atomic_arc = atomic_arc.clone();
+            task_handles.push(tokio::task::spawn(async move {
+                for _ in 0..64 {
+                    let barrier = Barrier::new();
+                    let mut ptr = atomic_arc.load(Acquire, &barrier);
+                    assert!(ptr.tag() == Tag::None || ptr.tag() == Tag::Second);
+                    if let Some(str_ref) = ptr.as_ref() {
+                        assert!(str_ref == "How are you?" || str_ref == "How can I help you?");
+                    }
+                    let converted: Result<Arc<String>, _> = Arc::try_from(ptr);
+                    if let Ok(arc) = converted {
+                        assert!(*arc == "How are you?" || *arc == "How can I help you?");
+                    }
+                    while let Err((passed, current)) = atomic_arc.compare_exchange(
+                        ptr,
+                        (
+                            Some(Arc::new(String::from("How can I help you?"))),
+                            Tag::Second,
+                        ),
+                        Release,
+                        Relaxed,
+                        &barrier,
+                    ) {
+                        if let Some(arc) = passed {
+                            assert!(*arc == "How can I help you?");
+                        }
+                        ptr = current;
+                        if let Some(str_ref) = ptr.as_ref() {
+                            assert!(str_ref == "How are you?" || str_ref == "How can I help you?");
+                        }
+                        assert!(ptr.tag() == Tag::None || ptr.tag() == Tag::Second);
+                    }
+                    assert!(!suspend());
+                    drop(barrier);
+
+                    assert!(suspend());
+
+                    atomic_arc.update_tag_if(Tag::None, |_| true, Relaxed);
+
+                    let barrier = Barrier::new();
+                    ptr = atomic_arc.load(Acquire, &barrier);
+                    assert!(ptr.tag() == Tag::None || ptr.tag() == Tag::Second);
+                    if let Some(str_ref) = ptr.as_ref() {
+                        assert!(str_ref == "How are you?" || str_ref == "How can I help you?");
+                    }
+                    drop(barrier);
+
+                    let (old, _) = atomic_arc.swap(
+                        (Some(Arc::new(String::from("How are you?"))), Tag::Second),
+                        Release,
+                    );
+                    if let Some(arc) = old {
+                        assert!(*arc == "How are you?" || *arc == "How can I help you?");
+                    }
+                }
+            }));
+        }
+        for r in futures::future::join_all(task_handles).await {
+            assert!(r.is_ok());
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    async fn atomic_arc_clone() {
+        let atomic_arc: Arc<AtomicArc<String>> =
+            Arc::new(AtomicArc::new(String::from("How are you?")));
+        let mut task_handles = Vec::new();
+        for t in 0..4 {
+            let atomic_arc = atomic_arc.clone();
+            task_handles.push(tokio::task::spawn(async move {
+                for i in 0..256 {
+                    if t == 0 {
+                        let tag = if i % 3 == 0 {
+                            Tag::First
+                        } else if i % 2 == 0 {
+                            Tag::Second
+                        } else {
+                            Tag::None
+                        };
+                        let (old, _) = atomic_arc
+                            .swap((Some(Arc::new(String::from("How are you?"))), tag), Release);
+                        assert!(old.is_some());
+                        if let Some(arc) = old {
+                            assert!(*arc == "How are you?");
+                        }
+                    } else {
+                        let (cloned, _) = (*atomic_arc)
+                            .clone(Acquire, &Barrier::new())
+                            .swap((None, Tag::First), Release);
+                        assert!(cloned.is_some());
+                        if let Some(arc) = cloned {
+                            assert!(*arc == "How are you?");
+                        }
+                        let cloned = atomic_arc.get_arc(Acquire, &Barrier::new());
+                        assert!(cloned.is_some());
+                        if let Some(arc) = cloned {
+                            assert!(*arc == "How are you?");
+                        }
+                    }
+                }
+            }));
+        }
+        for r in futures::future::join_all(task_handles).await {
+            assert!(r.is_ok());
+        }
+    }
+}
