@@ -37,6 +37,27 @@ impl Barrier {
         Barrier { collector_ptr }
     }
 
+    /// Executes the supplied closure at a later point of time.
+    ///
+    /// It is guaranteed that the closure will be executed when every [`Barrier`] at the moment
+    /// when the method was invoked is dropped, however it is totally non-deterministic when
+    /// exactly the closure will be executed.
+    ///
+    /// Note that the supplied closure is store in the heap memory.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::Barrier;
+    ///
+    /// let barrier = Barrier::new();
+    /// barrier.defer_execute(|| println!("deferred"));
+    /// ```
+    #[inline]
+    pub fn defer_execute<F: 'static + FnOnce()>(&self, f: F) {
+        self.reclaim(Arc::new(DeferredClosure { f: Some(f) }));
+    }
+
     /// Reclaims an [`Arc`].
     ///
     /// # Examples
@@ -76,6 +97,18 @@ impl Drop for Barrier {
     fn drop(&mut self) {
         unsafe {
             (*self.collector_ptr).end_barrier();
+        }
+    }
+}
+
+struct DeferredClosure<F: 'static + FnOnce()> {
+    f: Option<F>,
+}
+
+impl<F: 'static + FnOnce()> Drop for DeferredClosure<F> {
+    fn drop(&mut self) {
+        if let Some(f) = self.f.take() {
+            f();
         }
     }
 }

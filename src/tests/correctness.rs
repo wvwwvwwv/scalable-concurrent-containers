@@ -1164,6 +1164,19 @@ mod ebr_test {
     }
 
     #[test]
+    fn deferred() {
+        static EXECUTED: AtomicBool = AtomicBool::new(false);
+
+        let barrier = Barrier::new();
+        barrier.defer_execute(|| EXECUTED.store(true, Relaxed));
+        drop(barrier);
+
+        while !EXECUTED.load(Relaxed) {
+            drop(Barrier::new());
+        }
+    }
+
+    #[test]
     fn arc() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
 

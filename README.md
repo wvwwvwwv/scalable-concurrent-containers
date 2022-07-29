@@ -407,6 +407,10 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 ## Changelog
 
+0.8.4
+
+* Implement `ebr::Barrier::defer_execute` for deferred closure execution.
+
 0.8.3
 
 * Fix `ebr::AtomicArc::{clone, get_arc}` to never return a null pointer if the `ebr::AtomicArc` is always non-null.
