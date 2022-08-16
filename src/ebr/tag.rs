@@ -1,5 +1,4 @@
 use std::cmp::PartialEq;
-use std::mem::transmute;
 
 /// [`Tag`] is a four-state `Enum` that can be embedded in a pointer as the two least
 /// significant bits of the pointer value.
@@ -41,12 +40,12 @@ impl Tag {
     /// Sets a tag, overwriting any existing tag in the pointer.
     #[inline]
     pub(super) fn update_tag<P>(ptr: *const P, tag: Tag) -> *const P {
-        unsafe { transmute(((ptr as usize) & (!3)) | tag.value()) }
+        (((ptr as usize) & (!3)) | tag.value()) as *const P
     }
 
     /// Returns the pointer with the tag bits erased.
     #[inline]
     pub(super) fn unset_tag<P>(ptr: *const P) -> *const P {
-        unsafe { transmute((ptr as usize) & (!3)) }
+        ((ptr as usize) & (!3)) as *const P
     }
 }

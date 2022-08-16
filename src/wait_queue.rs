@@ -1,5 +1,4 @@
 use std::future::Future;
-use std::mem::transmute;
 use std::pin::Pin;
 use std::ptr::addr_of_mut;
 use std::sync::atomic::AtomicUsize;
@@ -150,7 +149,7 @@ impl AsyncWait {
 
     /// Reinterprets `usize` as `*mut AsyncWait`.
     unsafe fn reinterpret(val: usize) -> *mut AsyncWait {
-        transmute(val)
+        val as *mut AsyncWait
     }
 }
 
@@ -211,6 +210,6 @@ impl SyncWait {
 
     /// Reinterpret `usize` as `*mut SyncWait`.
     unsafe fn reinterpret(val: usize) -> *mut SyncWait {
-        transmute(val)
+        val as *mut SyncWait
     }
 }

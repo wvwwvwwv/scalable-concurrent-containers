@@ -165,7 +165,7 @@ impl<T: 'static> Queue<T> {
                 current = self.cleanup_oldest(&barrier);
                 continue;
             }
-            return Some(reader(&*oldest_entry));
+            return Some(reader(oldest_entry));
         }
         None
     }
