@@ -490,6 +490,41 @@ mod hashmap_test {
         assert_eq!(hashindex2.len(), 0);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn hashindex_rebuild() {
+        let hashindex: Arc<HashIndex<usize, usize>> = Arc::new(HashIndex::default());
+        let num_tasks = 4;
+        let num_iter = 64;
+        let workload_size = 256;
+
+        for k in 0..num_tasks * workload_size {
+            assert!(hashindex.insert(k, k).is_ok());
+        }
+
+        let mut task_handles = Vec::with_capacity(num_tasks);
+        let barrier = Arc::new(AsyncBarrier::new(num_tasks));
+        for task_id in 0..num_tasks {
+            let barrier_cloned = barrier.clone();
+            let hashindex_cloned = hashindex.clone();
+            task_handles.push(tokio::task::spawn(async move {
+                barrier_cloned.wait().await;
+                let range = (task_id * workload_size)..((task_id + 1) * workload_size);
+                for _ in 0..num_iter {
+                    for id in range.clone() {
+                        assert!(hashindex_cloned.remove_async(&id).await);
+                        assert!(hashindex_cloned.insert_async(id, id).await.is_ok());
+                    }
+                }
+            }));
+        }
+
+        for r in futures::future::join_all(task_handles).await {
+            assert!(r.is_ok());
+        }
+
+        assert_eq!(hashindex.len(), num_tasks * workload_size);
+    }
+
     #[test]
     fn hashindex_visitor() {
         let data_size = 4096;

@@ -63,6 +63,12 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         self.num_entries as usize
     }
 
+    /// Returns `true` if the [`Cell`] requires to be rebuilt.
+    #[inline]
+    pub(crate) fn need_rebuild(&self) -> bool {
+        self.data_array.removed == (u32::MAX >> (32 - CELL_LEN))
+    }
+
     /// Iterates the contents of the [`Cell`].
     #[inline]
     pub(crate) fn iter<'b>(&'b self, barrier: &'b Barrier) -> EntryIterator<'b, K, V, LOCK_FREE> {

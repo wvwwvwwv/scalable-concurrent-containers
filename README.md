@@ -290,6 +290,10 @@ drop(arc);
 // `17` is still valid as `barrier` keeps the garbage collector from dropping it.
 assert_eq!(*ptr.as_ref().unwrap(), 17);
 
+// Execution of a closure can be deferred until all the current readers are gone.
+barrier.defer_execute(|| println!("deferred"));
+drop(barrier);
+
 // If the thread is expected to lie dormant for a while, call `suspend()` to allow other threads
 // to reclaim its own retired instances.
 suspend();
@@ -410,6 +414,7 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 0.8.4
 
 * Implement `ebr::Barrier::defer_execute` for deferred closure execution.
+* Fix [#78](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/78).
 
 0.8.3
 

@@ -96,6 +96,29 @@ where
         num_entries * (array_ref.num_cells() / num_cells_to_sample)
     }
 
+    /// Checks whether rebuilding the entire hash table is required.
+    fn check_rebuild(
+        array_ref: &CellArray<K, V, LOCK_FREE>,
+        sampling_index: usize,
+        num_cells_to_sample: usize,
+    ) -> bool {
+        let mut num_cells_to_rebuild = 0;
+        let start = if sampling_index + num_cells_to_sample >= array_ref.num_cells() {
+            0
+        } else {
+            sampling_index
+        };
+        for i in start..(start + num_cells_to_sample) {
+            if array_ref.cell(i).need_rebuild() {
+                num_cells_to_rebuild += 1;
+                if num_cells_to_rebuild > num_cells_to_sample / 2 {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Inserts an entry into the [`HashTable`].
     #[inline]
     fn insert_entry(
@@ -223,15 +246,35 @@ where
         if let Some(mut iterator) = iterator {
             if condition(&iterator.get().1) {
                 let result = locker.erase(&mut iterator);
-                if (cell_index % CELL_LEN) == 0 && locker.cell().num_entries() < CELL_LEN / 16 {
+                let need_shrink = locker.cell().num_entries() < CELL_LEN / 16;
+                let need_rebuild = LOCK_FREE && locker.cell().need_rebuild();
+                if (cell_index % CELL_LEN) == 0 && (need_shrink || need_rebuild) {
                     drop(locker);
                     if let Some(current_array_ref) =
                         self.cell_array().load(Acquire, barrier).as_ref()
                     {
-                        if current_array_ref.old_array(barrier).is_null()
-                            && current_array_ref.num_entries() > self.minimum_capacity()
-                        {
-                            self.try_shrink(current_array_ref, cell_index, barrier);
+                        let array_size = current_array_ref.num_cells();
+                        let sample_size = current_array_ref.sample_size();
+                        if current_array_ref.old_array(barrier).is_null() {
+                            if need_shrink
+                                && current_array_ref.num_entries() > self.minimum_capacity()
+                            {
+                                self.try_shrink(
+                                    current_array_ref,
+                                    array_size,
+                                    sample_size,
+                                    cell_index,
+                                    barrier,
+                                );
+                            } else if need_rebuild {
+                                self.try_rebuild(
+                                    current_array_ref,
+                                    array_size,
+                                    sample_size,
+                                    cell_index,
+                                    barrier,
+                                );
+                            }
                         }
                     }
                 }
@@ -326,7 +369,14 @@ where
             if cell_index % CELL_LEN == 0 && check_resize && num_entries >= CELL_LEN {
                 // Trigger resize if the estimated load factor is greater than 7/8.
                 check_resize = false;
-                self.try_enlarge(current_array_ref, cell_index, num_entries, barrier);
+                self.try_enlarge(
+                    current_array_ref,
+                    current_array_ref.num_cells(),
+                    current_array_ref.sample_size(),
+                    cell_index,
+                    num_entries,
+                    barrier,
+                );
                 continue;
             }
 
@@ -351,12 +401,12 @@ where
     fn try_enlarge(
         &self,
         array_ref: &CellArray<K, V, LOCK_FREE>,
+        array_size: usize,
+        sample_size: usize,
         cell_index: usize,
         mut num_entries: usize,
         barrier: &Barrier,
     ) {
-        let sample_size = array_ref.sample_size();
-        let array_size = array_ref.num_cells();
         let threshold = sample_size * (CELL_LEN / 8) * 7;
         if num_entries > threshold
             || (1..sample_size).any(|i| {
@@ -373,16 +423,40 @@ where
     fn try_shrink(
         &self,
         array_ref: &CellArray<K, V, LOCK_FREE>,
+        array_size: usize,
+        sample_size: usize,
         cell_index: usize,
         barrier: &Barrier,
     ) {
-        let sample_size = array_ref.sample_size();
-        let array_size = array_ref.num_cells();
         let threshold = sample_size * CELL_LEN / 16;
         let mut num_entries = 0;
         if !(1..sample_size).any(|i| {
             num_entries += array_ref.cell((cell_index + i) % array_size).num_entries();
             num_entries >= threshold
+        }) {
+            self.resize(barrier);
+        }
+    }
+
+    /// Tries to rebuild the array.
+    #[inline]
+    fn try_rebuild(
+        &self,
+        array_ref: &CellArray<K, V, LOCK_FREE>,
+        array_size: usize,
+        sample_size: usize,
+        cell_index: usize,
+        barrier: &Barrier,
+    ) {
+        let threshold = sample_size / 2;
+        let mut num_cells_to_rebuild = 1;
+        if (1..sample_size).any(|i| {
+            if array_ref.cell((cell_index + i) % array_size).need_rebuild() {
+                num_cells_to_rebuild += 1;
+                num_cells_to_rebuild > threshold
+            } else {
+                false
+            }
         }) {
             self.resize(barrier);
         }
@@ -438,6 +512,7 @@ where
             let capacity = current_array_ref.num_entries();
             let num_cells = current_array_ref.num_cells();
             let num_cells_to_sample = (num_cells / 8).max(2).min(4096);
+            let mut rebuild = false;
             let estimated_num_entries =
                 Self::estimate(current_array_ref, sampling_index, num_cells_to_sample);
             sampling_index = sampling_index.wrapping_add(num_cells_to_sample);
@@ -466,11 +541,15 @@ where
                     .next_power_of_two()
                     .max(self.minimum_capacity())
             } else {
+                if LOCK_FREE {
+                    rebuild =
+                        Self::check_rebuild(current_array_ref, sampling_index, num_cells_to_sample);
+                }
                 capacity
             };
 
             // Array::new may not be able to allocate the requested number of cells.
-            if new_capacity != capacity {
+            if new_capacity != capacity || (LOCK_FREE && rebuild) {
                 self.cell_array().swap(
                     (
                         Some(Arc::new(CellArray::<K, V, LOCK_FREE>::new(
