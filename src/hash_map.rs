@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicU8, AtomicUsize};
 ///   number of key-value pairs if an old array is present.
 /// * No busy waiting: the thread or asynchronous task is suspended until the desired resource
 ///   becomes available.
-/// * Linearizability: [`HashMap`] methods are linearizable.
+/// * Linearizability: [`HashMap`] insert/read/remove/update/upsert methods are linearizable.
 ///
 /// ## The key statistics for [`HashMap`]
 ///

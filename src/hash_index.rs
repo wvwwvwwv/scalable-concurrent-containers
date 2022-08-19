@@ -21,15 +21,11 @@ use std::sync::atomic::Ordering::Acquire;
 /// read operations. The key characteristics of [`HashIndex`] are similar to that of
 /// [`HashMap`](super::HashMap) except that its read operations are lock-free.
 ///
-/// ## Notes
-///
-/// [`HashIndex`] methods are linearizable, however [`Visitor`] methods are not; [`Visitor`]
-/// is only guaranteed to observe events happened before the first call to [`Iterator::next`].
-///
 /// ## The key differences between [`HashIndex`] and [`HashMap`](crate::HashMap).
 ///
 /// * Lock-free-read: read and scan operations do not modify shared data and are never blocked.
 /// * Immutability: the data in the container is immutable until it becomes unreachable.
+/// * Linearizability: [`HashIndex`] insert/remove methods are linearizable.
 ///
 /// ## The key statistics for [`HashIndex`]
 ///
@@ -282,7 +278,9 @@ where
 
     /// Reads a key-value pair.
     ///
-    /// It returns `None` if the key does not exist.
+    /// It returns `None` if the key does not exist. This method is not linearizable; the key-value
+    /// pair being read by this method can be removed from the container or copied to a different
+    /// memory location.
     ///
     /// # Examples
     ///
@@ -296,19 +294,23 @@ where
     /// assert_eq!(hashindex.read(&1, |_, v| *v).unwrap(), 10);
     /// ```
     #[inline]
-    pub fn read<Q, R, F: Fn(&K, &V) -> R>(&self, key_ref: &Q, reader: F) -> Option<R>
+    pub fn read<Q, R, F: Fn(&K, &V) -> R>(&self, key_ref: &Q, mut reader: F) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
         let barrier = Barrier::new();
-        self.read_with(key_ref, reader, &barrier)
+        let (hash, partial_hash) = self.hash(key_ref);
+        self.read_entry::<Q, R, F>(key_ref, hash, partial_hash, &mut reader, None, &barrier)
+            .ok()
+            .and_then(|r| r)
     }
 
     /// Reads a key-value pair using the supplied [`Barrier`].
     ///
     /// It enables the caller to use the value reference outside the method. It returns `None`
-    /// if the key does not exist.
+    /// if the key does not exist. This method is not linearizable; the key-value pair being read
+    /// by this method can be removed from the container or copied to a different memory location.
     ///
     /// # Examples
     ///
