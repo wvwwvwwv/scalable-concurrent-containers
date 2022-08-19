@@ -1,7 +1,8 @@
 [package]
 name = "scc"
 description = "High performance containers and utilities for concurrent and asynchronous programming"
-version = "0.8.4"
+documentation = "https://docs.rs/scc"
+version = "0.8.5"
 authors = ["wvwwvwwv <wvwwvwwv@me.com>"]
 edition = "2021"
 readme = "README.md"
