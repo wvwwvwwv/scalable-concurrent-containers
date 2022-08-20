@@ -177,7 +177,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         K: Borrow<Q>,
         Q: Eq + ?Sized,
     {
-        let mut occupied = if LOCK_FREE {
+        let occupied = if LOCK_FREE {
             data_array_ref.occupied & (!data_array_ref.removed)
         } else {
             data_array_ref.occupied
@@ -186,21 +186,11 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
             fence(Acquire);
         }
 
-        // Look into the preferred slot.
-        let preferred_index = partial_hash as usize % LEN;
-        if (occupied & (1_u32 << preferred_index)) != 0
-            && data_array_ref.partial_hash_array[preferred_index] == partial_hash
-        {
-            let entry_ptr = data_array_ref.data[preferred_index].as_ptr();
-            let entry_ref = unsafe { &(*entry_ptr) };
-            if entry_ref.0.borrow() == key_ref {
-                return Some((preferred_index, entry_ref));
-            }
-            occupied &= !(1_u32 << preferred_index);
-        }
+        let preferred_index_bit = 1_u32 << (partial_hash as usize % LEN);
 
-        // Look into other slots.
-        let mut current_index = occupied.trailing_zeros();
+        // Look into other slots beyond the preferred slot.
+        let mut from_preferred = occupied & !(preferred_index_bit - 1);
+        let mut current_index = from_preferred.trailing_zeros();
         while (current_index as usize) < LEN {
             if data_array_ref.partial_hash_array[current_index as usize] == partial_hash {
                 let entry_ptr = data_array_ref.data[current_index as usize].as_ptr();
@@ -209,8 +199,23 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
                     return Some((current_index as usize, entry_ref));
                 }
             }
-            occupied &= !(1_u32 << current_index);
-            current_index = occupied.trailing_zeros();
+            from_preferred &= !(1_u32 << current_index);
+            current_index = from_preferred.trailing_zeros();
+        }
+
+        // Look into other slots before the preferred slot.
+        let mut until_preferred = occupied & (preferred_index_bit - 1);
+        let mut current_index = until_preferred.trailing_zeros();
+        while (current_index as usize) < LEN {
+            if data_array_ref.partial_hash_array[current_index as usize] == partial_hash {
+                let entry_ptr = data_array_ref.data[current_index as usize].as_ptr();
+                let entry_ref = unsafe { &(*entry_ptr) };
+                if entry_ref.0.borrow() == key_ref {
+                    return Some((current_index as usize, entry_ref));
+                }
+            }
+            until_preferred &= !(1_u32 << current_index);
+            current_index = until_preferred.trailing_zeros();
         }
 
         None
@@ -447,8 +452,9 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
             );
             return;
         }
-        let free_index = self.cell.data_array.occupied.trailing_ones() as usize;
-        if free_index < CELL_LEN {
+        let free_index =
+            Self::get_free_index::<CELL_LEN>(self.cell.data_array.occupied, preferred_index);
+        if free_index != CELL_LEN {
             self.insert_entry(
                 &mut self.cell_mut().data_array,
                 free_index,
@@ -467,8 +473,9 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                 self.insert_entry(data_array_mut, preferred_index, key, value, partial_hash);
                 return;
             }
-            let free_index = data_array_mut.occupied.trailing_ones() as usize;
-            if free_index < LINKED_LEN {
+            let free_index =
+                Self::get_free_index::<LINKED_LEN>(data_array_mut.occupied, preferred_index);
+            if free_index != LINKED_LEN {
                 self.insert_entry(data_array_mut, free_index, key, value, partial_hash);
                 return;
             }
@@ -553,6 +560,16 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                 barrier.reclaim(data_array);
             }
         }
+    }
+
+    /// Gets the most optimal free slot index from the given bitmap.
+    #[inline]
+    fn get_free_index<const MAX_INDEX: usize>(occupied: u32, preferred_index: usize) -> usize {
+        let mut free_index = (occupied | ((1_u32 << preferred_index) - 1)).trailing_ones() as usize;
+        if free_index == MAX_INDEX {
+            free_index = occupied.trailing_ones() as usize;
+        }
+        free_index
     }
 
     /// Removes a key-value pair in the slot.
