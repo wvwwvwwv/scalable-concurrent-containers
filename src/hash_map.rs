@@ -60,9 +60,7 @@ where
     V: 'static + Sync,
     H: BuildHasher,
 {
-    /// Creates an empty [`HashMap`] with the given capacity and [`BuildHasher`].
-    ///
-    /// The actual capacity is equal to or greater than the given capacity.
+    /// Creates an empty [`HashMap`] with the given [`BuildHasher`].
     ///
     /// # Examples
     ///
@@ -70,17 +68,40 @@ where
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(1000, RandomState::new());
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::with_hasher(RandomState::new());
+    /// ```
+    #[inline]
+    pub fn with_hasher(build_hasher: H) -> HashMap<K, V, H> {
+        HashMap {
+            array: AtomicArc::new(CellArray::<K, V, false>::new(
+                Self::default_capacity(),
+                AtomicArc::null(),
+            )),
+            minimum_capacity: Self::default_capacity(),
+            additional_capacity: AtomicUsize::new(0),
+            resize_mutex: AtomicU8::new(0),
+            build_hasher,
+        }
+    }
+
+    /// Creates an empty [`HashMap`] with the specified capacity and [`BuildHasher`].
+    ///
+    /// The actual capacity is equal to or greater than the specified capacity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    /// use std::collections::hash_map::RandomState;
+    ///
+    /// let hashmap: HashMap<u64, u32, RandomState> =
+    ///     HashMap::with_capacity_and_hasher(1000, RandomState::new());
     ///
     /// let result = hashmap.capacity();
     /// assert_eq!(result, 1024);
-    ///
-    /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    /// let result = hashmap.capacity();
-    /// assert_eq!(result, 64);
     /// ```
     #[inline]
-    pub fn new(capacity: usize, build_hasher: H) -> HashMap<K, V, H> {
+    pub fn with_capacity_and_hasher(capacity: usize, build_hasher: H) -> HashMap<K, V, H> {
         let initial_capacity = capacity.max(Self::default_capacity());
         let array = Arc::new(CellArray::<K, V, false>::new(
             initial_capacity,
@@ -111,7 +132,7 @@ where
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<usize, usize, RandomState> = HashMap::new(1000, RandomState::new());
+    /// let hashmap: HashMap<usize, usize, RandomState> = HashMap::with_capacity(1000);
     /// assert_eq!(hashmap.capacity(), 1024);
     ///
     /// let ticket = hashmap.reserve(10000);
@@ -1076,7 +1097,7 @@ where
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::new(1000000, RandomState::new());
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::with_capacity(1000000);
     /// assert_eq!(hashmap.capacity(), 1048576);
     /// ```
     #[inline]
@@ -1093,7 +1114,7 @@ where
 {
     #[inline]
     fn clone(&self) -> Self {
-        let cloned = Self::new(self.capacity(), self.hasher().clone());
+        let cloned = Self::with_capacity_and_hasher(self.capacity(), self.hasher().clone());
         self.scan(|k, v| {
             // TODO: optimized it.
             let _reuslt = cloned.insert(k.clone(), v.clone());
@@ -1118,12 +1139,69 @@ where
     }
 }
 
+impl<K, V> HashMap<K, V, RandomState>
+where
+    K: 'static + Eq + Hash + Sync,
+    V: 'static + Sync,
+{
+    /// Creates an empty default [`HashMap`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::new();
+    ///
+    /// let result = hashmap.capacity();
+    /// assert_eq!(result, 64);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Creates an empty [`HashMap`] with the specified capacity.
+    ///
+    /// The actual capacity is equal to or greater than the specified capacity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    /// use std::collections::hash_map::RandomState;
+    ///
+    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::with_capacity(1000);
+    ///
+    /// let result = hashmap.capacity();
+    /// assert_eq!(result, 1024);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> HashMap<K, V, RandomState> {
+        let initial_capacity = capacity.max(Self::default_capacity());
+        let array = Arc::new(CellArray::<K, V, false>::new(
+            initial_capacity,
+            AtomicArc::null(),
+        ));
+        let current_capacity = array.num_entries();
+        HashMap {
+            array: AtomicArc::from(array),
+            minimum_capacity: current_capacity,
+            additional_capacity: AtomicUsize::new(0),
+            resize_mutex: AtomicU8::new(0),
+            build_hasher: RandomState::new(),
+        }
+    }
+}
+
 impl<K, V> Default for HashMap<K, V, RandomState>
 where
     K: 'static + Eq + Hash + Sync,
     V: 'static + Sync,
 {
-    /// Creates a [`HashMap`] with the default parameters.
+    /// Creates an empty default [`HashMap`].
     ///
     /// The default hash builder is [`RandomState`], and the default capacity is `64`.
     ///

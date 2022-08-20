@@ -52,9 +52,7 @@ where
     V: 'static + Clone + Sync,
     H: BuildHasher,
 {
-    /// Creates an empty [`HashIndex`] with the given capacity and build hasher.
-    ///
-    /// The actual capacity is equal to or greater than the given capacity.
+    /// Creates an empty [`HashIndex`] with the given [`BuildHasher`].
     ///
     /// # Examples
     ///
@@ -62,18 +60,40 @@ where
     /// use scc::HashIndex;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashindex: HashIndex<u64, u32, RandomState> = HashIndex::new(1000, RandomState::new());
+    /// let hashindex: HashIndex<u64, u32, RandomState> =
+    ///     HashIndex::with_hasher(RandomState::new());
+    /// ```
+    #[inline]
+    pub fn with_hasher(build_hasher: H) -> HashIndex<K, V, H> {
+        HashIndex {
+            array: AtomicArc::from(Arc::new(CellArray::<K, V, true>::new(
+                Self::default_capacity(),
+                AtomicArc::null(),
+            ))),
+            minimum_capacity: Self::default_capacity(),
+            resize_mutex: AtomicU8::new(0),
+            build_hasher,
+        }
+    }
+
+    /// Creates an empty [`HashIndex`] with the specified capacity and build hasher.
+    ///
+    /// The actual capacity is equal to or greater than the specified capacity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    /// use std::collections::hash_map::RandomState;
+    ///
+    /// let hashindex: HashIndex<u64, u32, RandomState> =
+    ///     HashIndex::with_capacity_and_hasher(1000, RandomState::new());
     ///
     /// let result = hashindex.capacity();
     /// assert_eq!(result, 1024);
-    ///
-    ///
-    /// let hashindex: HashIndex<u64, u32, _> = HashIndex::default();
-    /// let result = hashindex.capacity();
-    /// assert_eq!(result, 64);
     /// ```
     #[inline]
-    pub fn new(capacity: usize, build_hasher: H) -> HashIndex<K, V, H> {
+    pub fn with_capacity_and_hasher(capacity: usize, build_hasher: H) -> HashIndex<K, V, H> {
         let initial_capacity = capacity.max(Self::default_capacity());
         HashIndex {
             array: AtomicArc::from(Arc::new(CellArray::<K, V, true>::new(
@@ -637,7 +657,7 @@ where
     /// use scc::HashIndex;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashindex: HashIndex<u64, u32, RandomState> = HashIndex::new(1000000, RandomState::new());
+    /// let hashindex: HashIndex<u64, u32, RandomState> = HashIndex::with_capacity(1000000);
     /// assert_eq!(hashindex.capacity(), 1048576);
     /// ```
     #[inline]
@@ -697,7 +717,7 @@ where
 {
     #[inline]
     fn clone(&self) -> Self {
-        let cloned = Self::new(self.capacity(), self.hasher().clone());
+        let cloned = Self::with_capacity_and_hasher(self.capacity(), self.hasher().clone());
         for (k, v) in self.iter(&Barrier::new()) {
             // TODO: optimized it.
             let _reuslt = cloned.insert(k.clone(), v.clone());
@@ -719,12 +739,66 @@ where
     }
 }
 
+impl<K, V> HashIndex<K, V, RandomState>
+where
+    K: 'static + Clone + Eq + Hash + Sync,
+    V: 'static + Clone + Sync,
+{
+    /// Creates an empty default [`HashIndex`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::new();
+    ///
+    /// let result = hashindex.capacity();
+    /// assert_eq!(result, 64);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Creates an empty [`HashIndex`] with the specified capacity.
+    ///
+    /// The actual capacity is equal to or greater than the specified capacity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    /// use std::collections::hash_map::RandomState;
+    ///
+    /// let hashindex: HashIndex<u64, u32, RandomState> = HashIndex::with_capacity(1000);
+    ///
+    /// let result = hashindex.capacity();
+    /// assert_eq!(result, 1024);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> HashIndex<K, V, RandomState> {
+        let initial_capacity = capacity.max(Self::default_capacity());
+        HashIndex {
+            array: AtomicArc::from(Arc::new(CellArray::<K, V, true>::new(
+                initial_capacity,
+                AtomicArc::null(),
+            ))),
+            minimum_capacity: initial_capacity,
+            resize_mutex: AtomicU8::new(0),
+            build_hasher: RandomState::new(),
+        }
+    }
+}
+
 impl<K, V> Default for HashIndex<K, V, RandomState>
 where
     K: 'static + Clone + Eq + Hash + Sync,
     V: 'static + Clone + Sync,
 {
-    /// Creates a [`HashIndex`] with the default parameters.
+    /// Creates an empty default [`HashIndex`].
     ///
     /// The default hash builder is [`RandomState`], and the default capacity is `64`.
     ///

@@ -23,9 +23,7 @@ where
     K: 'static + Eq + Hash + Sync,
     H: BuildHasher,
 {
-    /// Creates an empty [`HashSet`] with the given capacity and [`BuildHasher`].
-    ///
-    /// The actual capacity is equal to or greater than the given capacity.
+    /// Creates an empty [`HashSet`] with the given [`BuildHasher`].
     ///
     /// # Examples
     ///
@@ -33,19 +31,35 @@ where
     /// use scc::HashSet;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashset: HashSet<u64, RandomState> = HashSet::new(1000, RandomState::new());
+    /// let hashset: HashSet<u64, RandomState> = HashSet::with_hasher(RandomState::new());
+    /// ```
+    #[inline]
+    pub fn with_hasher(build_hasher: H) -> HashSet<K, H> {
+        HashSet {
+            map: HashMap::with_hasher(build_hasher),
+        }
+    }
+
+    /// Creates an empty [`HashSet`] with the specified capacity and [`BuildHasher`].
+    ///
+    /// The actual capacity is equal to or greater than the specified capacity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    /// use std::collections::hash_map::RandomState;
+    ///
+    /// let hashset: HashSet<u64, RandomState> =
+    ///     HashSet::with_capacity_and_hasher(1000, RandomState::new());
     ///
     /// let result = hashset.capacity();
     /// assert_eq!(result, 1024);
-    ///
-    /// let hashset: HashSet<u64> = HashSet::default();
-    /// let result = hashset.capacity();
-    /// assert_eq!(result, 64);
     /// ```
     #[inline]
-    pub fn new(capacity: usize, build_hasher: H) -> HashSet<K, H> {
+    pub fn with_capacity_and_hasher(capacity: usize, build_hasher: H) -> HashSet<K, H> {
         HashSet {
-            map: HashMap::new(capacity, build_hasher),
+            map: HashMap::with_capacity_and_hasher(capacity, build_hasher),
         }
     }
 
@@ -64,7 +78,7 @@ where
     /// use scc::HashSet;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashset: HashSet<usize, RandomState> = HashSet::new(1000, RandomState::new());
+    /// let hashset: HashSet<usize, RandomState> = HashSet::with_capacity(1000);
     /// assert_eq!(hashset.capacity(), 1024);
     ///
     /// let ticket = hashset.reserve(10000);
@@ -549,7 +563,7 @@ where
     /// use scc::HashSet;
     /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashset: HashSet<u64, RandomState> = HashSet::new(1000000, RandomState::new());
+    /// let hashset: HashSet<u64, RandomState> = HashSet::with_capacity(1000000);
     /// assert_eq!(hashset.capacity(), 1048576);
     /// ```
     #[inline]
@@ -586,8 +600,51 @@ where
     }
 }
 
+impl<K: 'static + Eq + Hash + Sync> HashSet<K, RandomState> {
+    /// Creates an empty default [`HashSet`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    ///
+    /// let hashset: HashSet<u64> = HashSet::new();
+    ///
+    /// let result = hashset.capacity();
+    /// assert_eq!(result, 64);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Creates an empty [`HashSet`] with the specified capacity.
+    ///
+    /// The actual capacity is equal to or greater than the specified capacity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    /// use std::collections::hash_map::RandomState;
+    ///
+    /// let hashset: HashSet<u64, RandomState> = HashSet::with_capacity(1000);
+    ///
+    /// let result = hashset.capacity();
+    /// assert_eq!(result, 1024);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> HashSet<K, RandomState> {
+        HashSet {
+            map: HashMap::with_capacity(capacity),
+        }
+    }
+}
+
 impl<K: 'static + Eq + Hash + Sync> Default for HashSet<K, RandomState> {
-    /// Creates a [`HashSet`] with the default parameters.
+    /// Creates an empty default [`HashSet`].
     ///
     /// The default hash builder is [`RandomState`], and the default capacity is `64`.
     ///
