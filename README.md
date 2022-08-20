@@ -411,6 +411,12 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 ## Changelog
 
+0.9.0
+
+* API update: `HashMap::new`, `HashIndex::new`, and `HashSet::new`.
+* Add `unsafe HashIndex::update` for linearizability.
+* Performance improvement.
+
 0.8.4
 
 * Implement `ebr::Barrier::defer_execute` for deferred closure execution.

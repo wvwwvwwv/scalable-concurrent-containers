@@ -1,9 +1,94 @@
-use criterion::{criterion_group, criterion_main, Criterion};
-
 use scc::HashMap;
 
 use std::convert::TryInto;
 use std::time::Instant;
+
+use criterion::{criterion_group, criterion_main, Criterion};
+
+fn search_circular(c: &mut Criterion) {
+    let preferred_index: usize = rand::random::<usize>() % 32;
+    let mut bitmap: u32 = rand::random::<u32>() | (1_u32 << 16);
+    let mut num_hit = 0;
+    c.bench_function("HashMap: search_circular", |b| {
+        b.iter(|| {
+            let occupied = bitmap;
+            if (occupied & (1_u32 << preferred_index)) != 0 {
+                num_hit += 1;
+            }
+            for i in 1..32 {
+                let current_index = (preferred_index + i) % 32;
+                if (occupied & (1_u32 << current_index)) != 0 {
+                    num_hit += 1;
+                }
+            }
+            bitmap = bitmap.rotate_left(1);
+        })
+    });
+    assert_ne!(num_hit, 0);
+}
+
+fn search_fixed(c: &mut Criterion) {
+    let preferred_index: usize = rand::random::<usize>() % 32;
+    let mut bitmap: u32 = rand::random::<u32>() | (1_u32 << 16);
+    let mut num_hit = 0;
+    c.bench_function("HashMap: search_fixed", |b| {
+        b.iter(|| {
+            let mut occupied = bitmap;
+            if (occupied & (1_u32 << preferred_index)) != 0 {
+                occupied &= !(1_u32 << preferred_index);
+                num_hit += 1;
+            }
+            let mut current_index = occupied.trailing_zeros();
+            while (current_index as usize) < 32 {
+                if (occupied & (1_u32 << current_index)) != 0 {
+                    occupied &= !(1_u32 << current_index);
+                    num_hit += 1;
+                }
+                current_index = occupied.trailing_zeros();
+            }
+            bitmap = bitmap.rotate_left(1);
+        })
+    });
+    assert_ne!(num_hit, 0);
+}
+
+fn search_opt(c: &mut Criterion) {
+    let preferred_index: usize = rand::random::<usize>() % 32;
+    let mut bitmap: u32 = rand::random::<u32>() | (1_u32 << 16);
+    let mut num_hit = 0;
+    c.bench_function("HashMap: search_opt", |b| {
+        b.iter(|| {
+            let mut occupied = bitmap;
+            if (occupied & (1_u32 << preferred_index)) != 0 {
+                occupied &= !(1_u32 << preferred_index);
+                num_hit += 1;
+            }
+
+            let mut phase1 = occupied & !((1_u32 << preferred_index) - 1);
+            let mut current_index = phase1.trailing_zeros();
+            while (current_index as usize) < 32 {
+                if (phase1 & (1_u32 << current_index)) != 0 {
+                    phase1 &= !(1_u32 << current_index);
+                    num_hit += 1;
+                }
+                current_index = phase1.trailing_zeros();
+            }
+
+            let mut phase2 = occupied & ((1_u32 << preferred_index) - 1);
+            let mut current_index = phase2.trailing_zeros();
+            while (current_index as usize) < 32 {
+                if (phase2 & (1_u32 << current_index)) != 0 {
+                    phase2 &= !(1_u32 << current_index);
+                    num_hit += 1;
+                }
+                current_index = phase2.trailing_zeros();
+            }
+
+            bitmap = bitmap.rotate_left(1);
+        })
+    });
+    assert_ne!(num_hit, 0);
+}
 
 fn insert_cold(c: &mut Criterion) {
     c.bench_function("HashMap: insert, cold", |b| {
@@ -72,6 +157,9 @@ fn read(c: &mut Criterion) {
 
 criterion_group!(
     hash_map,
+    search_circular,
+    search_fixed,
+    search_opt,
     insert_cold,
     insert_array_warmed_up,
     insert_fully_warmed_up,

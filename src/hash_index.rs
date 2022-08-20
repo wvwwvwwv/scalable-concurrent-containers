@@ -25,7 +25,7 @@ use std::sync::atomic::Ordering::Acquire;
 ///
 /// * Lock-free-read: read and scan operations do not modify shared data and are never blocked.
 /// * Immutability: the data in the container is immutable until it becomes unreachable.
-/// * Linearizability: [`HashIndex`] insert/remove methods are linearizable.
+/// * Linearizability: [`HashIndex`] insert/remove/update methods are linearizable.
 ///
 /// ## The key statistics for [`HashIndex`]
 ///
@@ -150,6 +150,100 @@ where
                     key = returned.0;
                     val = returned.1;
                 }
+            }
+            async_wait_pinned.await;
+        }
+    }
+
+    /// Updates an existing key-value pair.
+    ///
+    /// It returns `None` if the key does not exist.
+    ///
+    /// # Safety
+    ///
+    /// The caller has to make sure that there is no reader of the entry, e.g., a reader keeping a
+    /// reference to the entry via [`HashIndex::iter`], [`HashIndex::read`], or
+    /// [`HashIndex::read_with`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// assert!(unsafe { hashindex.update(&1, |_, _| true).is_none() });
+    /// assert!(hashindex.insert(1, 0).is_ok());
+    /// assert_eq!(unsafe { hashindex.update(&1, |_, v| { *v = 2; *v }).unwrap() }, 2);
+    /// assert_eq!(hashindex.read(&1, |_, v| *v).unwrap(), 2);
+    /// ```
+    #[inline]
+    pub unsafe fn update<Q, F, R>(&self, key_ref: &Q, updater: F) -> Option<R>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+        F: FnOnce(&K, &mut V) -> R,
+    {
+        let (hash, partial_hash) = self.hash(key_ref);
+        let barrier = Barrier::new();
+        let (_, _locker, iterator) = self
+            .acquire::<Q>(key_ref, hash, partial_hash, None, &barrier)
+            .ok()?;
+        if let Some(iterator) = iterator {
+            let (k, v) = iterator.get();
+
+            // The presence of `locker` prevents the entry from being modified outside it.
+            #[allow(clippy::cast_ref_to_mut)]
+            return Some(updater(k, &mut *(v as *const V as *mut V)));
+        }
+        None
+    }
+
+    /// Updates an existing key-value pair.
+    ///
+    /// It returns `None` if the key does not exist. It is an asynchronous method returning an
+    /// `impl Future` for the caller to await.
+    ///
+    /// # Safety
+    ///
+    /// The caller has to make sure that there is no reader of the entry, e.g., a reader keeping a
+    /// reference to the entry via [`HashIndex::iter`], [`HashIndex::read`], or
+    /// [`HashIndex::read_with`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// assert!(hashindex.insert(1, 0).is_ok());
+    /// let future_update = unsafe { hashindex.update_async(&1, |_, v| { *v = 2; *v }) };
+    /// ```
+    #[inline]
+    pub async unsafe fn update_async<Q, F, R>(&self, key_ref: &Q, updater: F) -> Option<R>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+        F: FnOnce(&K, &mut V) -> R,
+    {
+        let (hash, partial_hash) = self.hash(key_ref);
+        loop {
+            let mut async_wait = AsyncWait::default();
+            let mut async_wait_pinned = Pin::new(&mut async_wait);
+            if let Ok((_, _locker, iterator)) = self.acquire::<Q>(
+                key_ref,
+                hash,
+                partial_hash,
+                Some(async_wait_pinned.mut_ptr()),
+                &Barrier::new(),
+            ) {
+                if let Some(iterator) = iterator {
+                    let (k, v) = iterator.get();
+                    #[allow(clippy::cast_ref_to_mut)]
+                    return Some(updater(k, &mut *(v as *const V as *mut V)));
+                }
+                return None;
             }
             async_wait_pinned.await;
         }
