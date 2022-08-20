@@ -187,12 +187,20 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
             fence(Acquire);
         }
 
+        let len = LEN as u32;
+        let preferred_index = u32::from(partial_hash) % len;
+        if (occupied & (1_u32 << preferred_index)) != 0 {
+            let entry_ptr = data_array_ref.data[preferred_index as usize].as_ptr();
+            let entry_ref = unsafe { &(*entry_ptr) };
+            if entry_ref.0.borrow() == key_ref {
+                return Some((preferred_index as usize, entry_ref));
+            }
+        }
+
         if LEN == 32 {
-            let len = LEN as u32;
-            let preferred_index = u32::from(partial_hash) % len;
             let mut bitmap = occupied.rotate_right(preferred_index);
             let mut offset = bitmap.trailing_zeros();
-            while offset < len {
+            while offset != len {
                 let index = (preferred_index + offset) % len;
                 if data_array_ref.partial_hash_array[index as usize] == partial_hash {
                     let entry_ptr = data_array_ref.data[index as usize].as_ptr();
@@ -205,11 +213,9 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
                 offset = bitmap.trailing_zeros();
             }
         } else if LEN == 8 {
-            let len = LEN as u32;
-            let preferred_index = u32::from(partial_hash) % len;
             let mut bitmap = (occupied as u8).rotate_right(preferred_index);
             let mut offset = bitmap.trailing_zeros();
-            while offset < len {
+            while offset != len {
                 let index = (preferred_index + offset) % len;
                 if data_array_ref.partial_hash_array[index as usize] == partial_hash {
                     let entry_ptr = data_array_ref.data[index as usize].as_ptr();
@@ -221,8 +227,6 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
                 bitmap &= !(1_u8 << offset);
                 offset = bitmap.trailing_zeros();
             }
-        } else {
-            unreachable!();
         }
 
         None
