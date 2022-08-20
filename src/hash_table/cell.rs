@@ -167,6 +167,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
     }
 
     /// Searches the given [`DataArray`] for an entry matching the key.
+    #[allow(clippy::cast_possible_truncation)]
     #[inline]
     fn search_array<'b, Q, const LEN: usize>(
         data_array_ref: &'b DataArray<K, V, LEN>,
@@ -186,36 +187,42 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
             fence(Acquire);
         }
 
-        let preferred_index_bit = 1_u32 << (partial_hash as usize % LEN);
-
-        // Look into other slots beyond the preferred slot.
-        let mut from_preferred = occupied & !(preferred_index_bit - 1);
-        let mut current_index = from_preferred.trailing_zeros();
-        while (current_index as usize) < LEN {
-            if data_array_ref.partial_hash_array[current_index as usize] == partial_hash {
-                let entry_ptr = data_array_ref.data[current_index as usize].as_ptr();
-                let entry_ref = unsafe { &(*entry_ptr) };
-                if entry_ref.0.borrow() == key_ref {
-                    return Some((current_index as usize, entry_ref));
+        if LEN == 32 {
+            let len = LEN as u32;
+            let preferred_index = u32::from(partial_hash) % len;
+            let mut bitmap = occupied.rotate_right(preferred_index);
+            let mut offset = bitmap.trailing_zeros();
+            while offset < len {
+                let index = (preferred_index + offset) % len;
+                if data_array_ref.partial_hash_array[index as usize] == partial_hash {
+                    let entry_ptr = data_array_ref.data[index as usize].as_ptr();
+                    let entry_ref = unsafe { &(*entry_ptr) };
+                    if entry_ref.0.borrow() == key_ref {
+                        return Some((index as usize, entry_ref));
+                    }
                 }
+                bitmap &= !(1_u32 << offset);
+                offset = bitmap.trailing_zeros();
             }
-            from_preferred &= !(1_u32 << current_index);
-            current_index = from_preferred.trailing_zeros();
-        }
-
-        // Look into other slots before the preferred slot.
-        let mut until_preferred = occupied & (preferred_index_bit - 1);
-        let mut current_index = until_preferred.trailing_zeros();
-        while (current_index as usize) < LEN {
-            if data_array_ref.partial_hash_array[current_index as usize] == partial_hash {
-                let entry_ptr = data_array_ref.data[current_index as usize].as_ptr();
-                let entry_ref = unsafe { &(*entry_ptr) };
-                if entry_ref.0.borrow() == key_ref {
-                    return Some((current_index as usize, entry_ref));
+        } else if LEN == 8 {
+            let len = LEN as u32;
+            let preferred_index = u32::from(partial_hash) % len;
+            let mut bitmap = (occupied as u8).rotate_right(preferred_index);
+            let mut offset = bitmap.trailing_zeros();
+            while offset < len {
+                let index = (preferred_index + offset) % len;
+                if data_array_ref.partial_hash_array[index as usize] == partial_hash {
+                    let entry_ptr = data_array_ref.data[index as usize].as_ptr();
+                    let entry_ref = unsafe { &(*entry_ptr) };
+                    if entry_ref.0.borrow() == key_ref {
+                        return Some((index as usize, entry_ref));
+                    }
                 }
+                bitmap &= !(1_u8 << offset);
+                offset = bitmap.trailing_zeros();
             }
-            until_preferred &= !(1_u32 << current_index);
-            current_index = until_preferred.trailing_zeros();
+        } else {
+            unreachable!();
         }
 
         None
