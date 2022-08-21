@@ -351,7 +351,7 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
 - RAM: 1TB
 - Rust: 1.63.0
-- SCC: 0.9.0
+- SCC: 0.9.1
 
 ### Workload
 
@@ -369,39 +369,39 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 |         |  1 thread  |  4 threads | 16 threads | 64 threads |
 |---------|------------|------------|------------|------------|
-| Insert  |   8.983s   |  15.823s   |  42.23s    |  45.651s   |
-| Scan    |   0.148s   |   0.688s   |   2.903s   |  14.127s   |
-| Read    |   3.967s   |   5.061s   |   6.517s   |   8.033s   |
-| Remove  |   5.15s    |   6.415s   |  10.924s   |  24.141s   |
-| InsertR |  10.486s   |  26.254s   |  53.422s   |  56.357s   |
-| Mixed   |  14.576s   |  33.032s   |  30.241s   |  33.765s   |
-| RemoveR |   7.92s    |  12.93s    |  19.607s   |  26.407s   |
+| Insert  |   8.891s   |  15.254s   |  41.336s   |  44.704s   |
+| Scan    |   0.149s   |   0.685s   |   2.974s   |  13.336s   |
+| Read    |   3.924s   |   5.016s   |   6.352s   |   7.809s   |
+| Remove  |   4.551s   |   6.483s   |  10.716s   |  23.336s   |
+| InsertR |  10.389s   |  26.099s   |  53.195s   |  55.457s   |
+| Mixed   |  14.229s   |  31.818s   |  28.635s   |  31.256s   |
+| RemoveR |   7.175s   |  13.221s   |  19.211s   |  28.113s   |
 
 - [HashIndex](#HashIndex)
 
 |         |  1 thread  |  4 threads | 16 threads | 64 threads |
 |---------|------------|------------|------------|------------|
-| Insert  |   9.455s   |  16.342s   |  44.64s    |  51.105s   |
-| Scan    |   0.298s   |   1.361s   |   5.457s   |  22.87s    |
-| Read    |   3.675s   |   4.799s   |   6.143s   |   7.714s   |
-| Remove  |   4.917s   |   7.32s    |  12.323s   |  33.625s   |
-| InsertR |  11.024s   |  25.733s   |  54.258s   |  62.372s   |
-| Mixed   |  15.963s   |  36.317s   |  38.364s   |  41.437s   |
-| RemoveR |   7.608s   |  13.31s    |  20.135s   |  37.109s   |
+| Insert  |   9.143s   |  16.255s   |  43.337s   |  50.957s   |
+| Scan    |   0.298s   |   1.37s    |   5.45s    |  22.296s   |
+| Read    |   3.573s   |   4.796s   |   6.031s   |   7.628s   |
+| Remove  |   4.777s   |   6.923s   |  12.085s   |  33.26s    |
+| InsertR |  10.571s   |  26.069s   |  53.993s   |  62.144s   |
+| Mixed   |  14.823s   |  35.097s   |  37.072s   |  40.236s   |
+| RemoveR |   7.395s   |  13.122s   |  19.728s   |  39.213s   |
 
 - [TreeIndex](#TreeIndex)
 
 |         |  1 thread  |  4 threads | 16 threads | 64 threads |
 |---------|------------|------------|------------|------------|
-| Insert  |  14.647s   |  16.139s   |  18.575s   |  42.535s   |
-| Scan    |   1.23s    |   5.016s   |  20.639s   |  84.051s   |
-| Read    |   3.575s   |   4.178s   |   4.619s   |   5.145s   |
-| Remove  |   5.902s   |   8.594s   |  10.555s   |  10.912s   |
-| InsertR |  20.163s   |  74.159s   |  82.621s   |  59.809s   |
-| Mixed   |  28.002s   | 153.103s   | 426.883s   | 448.8s     |
-| RemoveR |   9.64s    |  22.774s   |  29.326s   |  31.994s   |
+| Insert  |  14.723s   |  16.581s   |  18.709s   |  45.744s   |
+| Scan    |   1.226s   |   5.116s   |  20.692s   |  81.24s    |
+| Read    |   3.674s   |   4.318s   |   4.667s   |   5.196s   |
+| Remove  |   5.946s   |   8.735s   |  10.55s    |  10.068s   |
+| InsertR |  20.228s   |  74.463s   |  76.907s   |  69.789s   |
+| Mixed   |  28.353s   | 157.201s   | 421.862s   | 443.111s   |
+| RemoveR |   9.735s   |  21.811s   |  29.101s   |  36.613s   |
 
-### [HashMap](#HashMap) Performance Comparison with [DashMap](https://github.com/xacrimon/dashmap) and [flurry](https://github.com/jonhoo/flurry)
+### [HashMap](#HashMap) and [HashIndex](#HashIndex) Performance Comparison with [DashMap](https://github.com/xacrimon/dashmap) and [flurry](https://github.com/jonhoo/flurry)
 
 - [Results on Apple M1 (8 cores)](https://github.com/wvwwvwwv/conc-map-bench).
 - [Results on Intel Xeon (88 cores)](https://github.com/wvwwvwwv/conc-map-bench/tree/Intel).
@@ -413,7 +413,7 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 0.9.1
 
-* Performance improvement.
+* [HashMap(#HashMap), [HashSet](#HashSet), and [HashIndex](#HashIndex) performance improvement.
 
 0.9.0
 
