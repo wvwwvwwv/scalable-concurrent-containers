@@ -411,6 +411,10 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 ## Changelog
 
+0.9.1
+
+* Performance improvement.
+
 0.9.0
 
 * API update: `HashMap::new`, `HashIndex::new`, and `HashSet::new`.

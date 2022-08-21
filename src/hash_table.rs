@@ -55,6 +55,7 @@ where
     fn resize_mutex(&self) -> &AtomicU8;
 
     /// Returns the number of entries.
+    #[inline]
     fn num_entries(&self, barrier: &Barrier) -> usize {
         let current_array_ptr = self.cell_array().load(Acquire, barrier);
         let current_array_ref = current_array_ptr.as_ref().unwrap();
@@ -72,6 +73,7 @@ where
     }
 
     /// Returns the number of slots.
+    #[inline]
     fn num_slots(&self, barrier: &Barrier) -> usize {
         let current_array_ptr = self.cell_array().load(Acquire, barrier);
         let current_array_ref = current_array_ptr.as_ref().unwrap();
@@ -79,6 +81,7 @@ where
     }
 
     /// Estimates the number of entries using the given number of cells.
+    #[inline]
     fn estimate(
         array_ref: &CellArray<K, V, LOCK_FREE>,
         sampling_index: usize,
@@ -97,6 +100,7 @@ where
     }
 
     /// Checks whether rebuilding the entire hash table is required.
+    #[inline]
     fn check_rebuild(
         array_ref: &CellArray<K, V, LOCK_FREE>,
         sampling_index: usize,
@@ -143,7 +147,6 @@ where
     }
 
     /// Reads an entry from the [`HashTable`].
-    #[inline]
     fn read_entry<'b, Q, R, F: FnMut(&'b K, &'b V) -> R>(
         &self,
         key_ref: &Q,
@@ -227,7 +230,6 @@ where
     }
 
     /// Removes an entry if the condition is met.
-    #[inline]
     fn remove_entry<Q, F: FnMut(&V) -> bool>(
         &self,
         key_ref: &Q,
@@ -289,7 +291,6 @@ where
     /// It returns an error if locking failed, or returns an [`EntryIterator`] if the key exists,
     /// otherwise `None` is returned.
     #[allow(clippy::type_complexity)]
-    #[inline]
     fn acquire<'h, 'b, Q>(
         &'h self,
         key_ref: &Q,
