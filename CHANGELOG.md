@@ -1,6 +1,6 @@
 # Changelog
 
-0.9.1
+0.9.1 - 0.9.2
 
 * [HashMap](#HashMap), [HashSet](#HashSet), and [HashIndex](#HashIndex) performance improvement.
 
