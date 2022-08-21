@@ -350,15 +350,15 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 - OS: SUSE Linux Enterprise Server 15 SP2
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
 - RAM: 1TB
-- Rust: 1.60.0
-- SCC: 0.7.0
+- Rust: 1.63.0
+- SCC: 0.9.0
 
 ### Workload
 
 - A disjoint **range** of 16M `usize` integers is assigned to each thread.
 - Insert: each thread inserts its own records.
-- Read: each thread reads its own records in the container.
 - Scan: each thread scans the entire container once.
+- Read: each thread reads its own records in the container.
 - Remove: each thread removes its own records from the container.
 - InsertR, RemoveR: each thread additionally operates using keys belonging to a randomly chosen remote thread.
 - Mixed: each thread performs `InsertR` -> `ReadR` -> `RemoveR`.
@@ -369,37 +369,37 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 |         |  1 thread  |  4 threads | 16 threads | 64 threads |
 |---------|------------|------------|------------|------------|
-| Insert  |   9.48s    |  16.178s   |  42.799s   |  45.928s   |
-| Read    |   3.96s    |   5.119s   |   6.569s   |   8.299s   |
-| Scan    |   0.147s   |   0.812s   |   3.02s    |  13.26s    |
-| Remove  |   4.699s   |   6.682s   |  10.923s   |  23.212s   |
-| InsertR |  11.182s   |  27.138s   |  53.489s   |  57.839s   |
-| Mixed   |  14.924s   |  31.285s   |  30.837s   |  33.285s   |
-| RemoveR |   7.058s   |  12.888s   |  18.83s    |  26.969s   |
+| Insert  |   9.133s   |  15.823s   |  42.23s    |  45.651s   |
+| Scan    |   0.147s   |   0.688s   |   2.903s   |  14.127s   |
+| Read    |   4.042s   |   5.061s   |   6.517s   |   8.033s   |
+| Remove  |   4.72s    |   6.415s   |  10.924s   |  24.141s   |
+| InsertR |  10.755s   |  26.254s   |  53.422s   |  56.357s   |
+| Mixed   |  15.066s   |  33.032s   |  30.241s   |  33.765s   |
+| RemoveR |   7.341s   |  12.93s    |  19.607s   |  26.407s   |
 
 - [HashIndex](#HashIndex)
 
 |         |  1 thread  |  4 threads | 16 threads | 64 threads |
 |---------|------------|------------|------------|------------|
-| Insert  |   9.711s   |  16.848s   |  43.537s   |  51.047s   |
-| Read    |   3.594s   |   4.91s    |   6.297s   |   8.149s   |
-| Scan    |   0.267s   |   1.299s   |   5.096s   |  20.333s   |
-| Remove  |   4.793s   |   7.068s   |  12.463s   |  32.599s   |
-| InsertR |  11.408s   |  27.405s   |  54.514s   |  64.536s   |
-| Mixed   |  16.864s   |  35.796s   |  38.818s   |  41.617s   |
-| RemoveR |   7.284s   |  13.311s   |  19.423s   |  38.212s   |
+| Insert  |   9.455s   |  16.342s   |  44.64s    |  51.105s   |
+| Scan    |   0.298s   |   1.361s   |   5.457s   |  22.87s    |
+| Read    |   3.675s   |   4.799s   |   6.143s   |   7.714s   |
+| Remove  |   4.917s   |   7.32s    |  12.323s   |  33.625s   |
+| InsertR |  11.024s   |  25.733s   |  54.258s   |  62.372s   |
+| Mixed   |  15.963s   |  36.317s   |  38.364s   |  41.437s   |
+| RemoveR |   7.608s   |  13.31s    |  20.135s   |  37.109s   |
 
 - [TreeIndex](#TreeIndex)
 
 |         |  1 thread  |  4 threads | 16 threads | 64 threads |
 |---------|------------|------------|------------|------------|
-| Insert  |  14.479s   |  15.995s   |  18.663s   |  48.034s   |
-| Read    |   3.577s   |   4.107s   |   4.549s   |   4.999s   |
-| Scan    |   1.258s   |   5.186s   |  20.982s   |  83.714s   |
-| Remove  |   5.775s   |   8.332s   |   9.951s   |  10.337s   |
-| InsertR |  19.995s   |  73.901s   |  41.952s   |  64.629s   |
-| Mixed   |  27.95s    | 162.835s   | 423.863s   | 446.756s   |
-| RemoveR |   9.33s    |  23.095s   |  28.811s   |  35.342s   |
+| Insert  |  14.647s   |  16.139s   |  18.575s   |  42.535s   |
+| Scan    |   1.23s    |   5.016s   |  20.639s   |  84.051s   |
+| Read    |   3.575s   |   4.178s   |   4.619s   |   5.145s   |
+| Remove  |   5.902s   |   8.594s   |  10.555s   |  10.912s   |
+| InsertR |  20.163s   |  74.159s   |  82.621s   |  59.809s   |
+| Mixed   |  28.002s   | 153.103s   | 426.883s   | 448.8s     |
+| RemoveR |   9.64s    |  22.774s   |  29.326s   |  31.994s   |
 
 ### [HashMap](#HashMap) Performance Comparison with [DashMap](https://github.com/xacrimon/dashmap) and [flurry](https://github.com/jonhoo/flurry)
 
@@ -415,7 +415,6 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 * API update: `HashMap::new`, `HashIndex::new`, and `HashSet::new`.
 * Add `unsafe HashIndex::update` for linearizability.
-* Performance improvement.
 
 0.8.4
 

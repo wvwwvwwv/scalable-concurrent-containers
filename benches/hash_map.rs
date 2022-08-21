@@ -5,44 +5,6 @@ use std::time::Instant;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 
-fn search_slot(c: &mut Criterion) {
-    let preferred_index: usize = rand::random::<usize>() % 32;
-    let mut bitmap: u32 = rand::random::<u32>() | (1_u32 << 16);
-    let mut num_hit = 0;
-    c.bench_function("HashMap: search_slot", |b| {
-        b.iter(|| {
-            let mut occupied = bitmap;
-            if (occupied & (1_u32 << preferred_index)) != 0 {
-                occupied &= !(1_u32 << preferred_index);
-                num_hit += 1;
-            }
-
-            let mut phase1 = occupied & !((1_u32 << preferred_index) - 1);
-            let mut current_index = phase1.trailing_zeros();
-            while (current_index as usize) < 32 {
-                if (phase1 & (1_u32 << current_index)) != 0 {
-                    phase1 &= !(1_u32 << current_index);
-                    num_hit += 1;
-                }
-                current_index = phase1.trailing_zeros();
-            }
-
-            let mut phase2 = occupied & ((1_u32 << preferred_index) - 1);
-            let mut current_index = phase2.trailing_zeros();
-            while (current_index as usize) < 32 {
-                if (phase2 & (1_u32 << current_index)) != 0 {
-                    phase2 &= !(1_u32 << current_index);
-                    num_hit += 1;
-                }
-                current_index = phase2.trailing_zeros();
-            }
-
-            bitmap = bitmap.rotate_left(1);
-        })
-    });
-    assert_ne!(num_hit, 0);
-}
-
 fn insert_cold(c: &mut Criterion) {
     c.bench_function("HashMap: insert, cold", |b| {
         b.iter_custom(|iters| {
@@ -110,7 +72,6 @@ fn read(c: &mut Criterion) {
 
 criterion_group!(
     hash_map,
-    search_slot,
     insert_cold,
     insert_array_warmed_up,
     insert_fully_warmed_up,

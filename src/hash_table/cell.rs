@@ -178,7 +178,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         K: Borrow<Q>,
         Q: Eq + ?Sized,
     {
-        let occupied = if LOCK_FREE {
+        let mut bitmap = if LOCK_FREE {
             data_array_ref.occupied & (!data_array_ref.removed)
         } else {
             data_array_ref.occupied
@@ -189,7 +189,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
 
         let len = LEN as u32;
         let preferred_index = u32::from(partial_hash) % len;
-        if (occupied & (1_u32 << preferred_index)) != 0 {
+        if (bitmap & (1_u32 << preferred_index)) != 0 {
             let entry_ptr = data_array_ref.data[preferred_index as usize].as_ptr();
             let entry_ref = unsafe { &(*entry_ptr) };
             if entry_ref.0.borrow() == key_ref {
@@ -197,36 +197,23 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
             }
         }
 
-        if LEN == 32 {
-            let mut bitmap = occupied.rotate_right(preferred_index);
-            let mut offset = bitmap.trailing_zeros();
-            while offset != len {
-                let index = (preferred_index + offset) % len;
-                if data_array_ref.partial_hash_array[index as usize] == partial_hash {
-                    let entry_ptr = data_array_ref.data[index as usize].as_ptr();
-                    let entry_ref = unsafe { &(*entry_ptr) };
-                    if entry_ref.0.borrow() == key_ref {
-                        return Some((index as usize, entry_ref));
-                    }
+        bitmap = if LEN == 32 {
+            bitmap.rotate_right(preferred_index) & (!1_u32)
+        } else {
+            u32::from((bitmap as u8).rotate_right(preferred_index) & (!1_u8))
+        };
+        let mut offset = bitmap.trailing_zeros();
+        while offset != 32 {
+            let index = (preferred_index + offset) % len;
+            if data_array_ref.partial_hash_array[index as usize] == partial_hash {
+                let entry_ptr = data_array_ref.data[index as usize].as_ptr();
+                let entry_ref = unsafe { &(*entry_ptr) };
+                if entry_ref.0.borrow() == key_ref {
+                    return Some((index as usize, entry_ref));
                 }
-                bitmap &= !(1_u32 << offset);
-                offset = bitmap.trailing_zeros();
             }
-        } else if LEN == 8 {
-            let mut bitmap = (occupied as u8).rotate_right(preferred_index);
-            let mut offset = bitmap.trailing_zeros();
-            while offset != len {
-                let index = (preferred_index + offset) % len;
-                if data_array_ref.partial_hash_array[index as usize] == partial_hash {
-                    let entry_ptr = data_array_ref.data[index as usize].as_ptr();
-                    let entry_ref = unsafe { &(*entry_ptr) };
-                    if entry_ref.0.borrow() == key_ref {
-                        return Some((index as usize, entry_ref));
-                    }
-                }
-                bitmap &= !(1_u8 << offset);
-                offset = bitmap.trailing_zeros();
-            }
+            bitmap &= !(1_u32 << offset);
+            offset = bitmap.trailing_zeros();
         }
 
         None
@@ -575,10 +562,10 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
 
     /// Gets the most optimal free slot index from the given bitmap.
     #[inline]
-    fn get_free_index<const MAX_INDEX: usize>(occupied: u32, preferred_index: usize) -> usize {
-        let mut free_index = (occupied | ((1_u32 << preferred_index) - 1)).trailing_ones() as usize;
-        if free_index == MAX_INDEX {
-            free_index = occupied.trailing_ones() as usize;
+    fn get_free_index<const LEN: usize>(bitmap: u32, preferred_index: usize) -> usize {
+        let mut free_index = (bitmap | ((1_u32 << preferred_index) - 1)).trailing_ones() as usize;
+        if free_index == LEN {
+            free_index = bitmap.trailing_ones() as usize;
         }
         free_index
     }
@@ -805,6 +792,8 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Reader<'b,
 }
 
 /// [`DataArray`] is a fixed size array of key-value pairs.
+///
+/// `LEN` can only be `8` or `32`.
 pub struct DataArray<K: 'static + Eq, V: 'static, const LEN: usize> {
     link: AtomicArc<DataArray<K, V, LINKED_LEN>>,
     occupied: u32,
