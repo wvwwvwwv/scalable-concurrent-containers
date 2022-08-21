@@ -413,7 +413,7 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 0.9.1
 
-* [HashMap(#HashMap), [HashSet](#HashSet), and [HashIndex](#HashIndex) performance improvement.
+* [HashMap](#HashMap), [HashSet](#HashSet), and [HashIndex](#HashIndex) performance improvement.
 
 0.9.0
 
