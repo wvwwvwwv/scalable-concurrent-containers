@@ -230,6 +230,7 @@ where
     }
 
     /// Removes an entry if the condition is met.
+    #[inline]
     fn remove_entry<Q, F: FnMut(&V) -> bool>(
         &self,
         key_ref: &Q,
