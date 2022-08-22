@@ -1,13 +1,21 @@
-use criterion::{criterion_group, criterion_main, Criterion};
-
 use scc::HashIndex;
 
+use std::time::Instant;
+
+use criterion::{criterion_group, criterion_main, Criterion};
+
 fn read(c: &mut Criterion) {
-    let hashindex: HashIndex<usize, usize> = HashIndex::default();
-    assert!(hashindex.insert(1, 1).is_ok());
     c.bench_function("HashIndex: read", |b| {
-        b.iter(|| {
-            hashindex.read(&1, |_, v| assert_eq!(*v, 1));
+        b.iter_custom(|iters| {
+            let hashindex: HashIndex<u64, u64> = HashIndex::with_capacity(iters as usize * 2);
+            for i in 0..iters {
+                assert!(hashindex.insert(i, i).is_ok());
+            }
+            let start = Instant::now();
+            for i in 0..iters {
+                assert_eq!(hashindex.read(&i, |_, v| *v == i), Some(true));
+            }
+            start.elapsed()
         })
     });
 }

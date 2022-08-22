@@ -1,6 +1,5 @@
 use scc::HashMap;
 
-use std::convert::TryInto;
 use std::time::Instant;
 
 use criterion::{criterion_group, criterion_main, Criterion};
@@ -13,68 +12,39 @@ fn insert_cold(c: &mut Criterion) {
             for i in 0..iters {
                 assert!(hashmap.insert(i, i).is_ok());
             }
-            let elapsed = start.elapsed();
-            drop(hashmap);
-            elapsed
+            start.elapsed()
         })
     });
 }
 
-fn insert_array_warmed_up(c: &mut Criterion) {
-    c.bench_function("HashMap: insert, array warmed up", |b| {
+fn insert_warmed_up(c: &mut Criterion) {
+    c.bench_function("HashMap: insert, warmed up", |b| {
         b.iter_custom(|iters| {
-            let hashmap: HashMap<u64, u64> = HashMap::default();
-            let ticket = hashmap.reserve((iters * 2).try_into().unwrap());
-            assert!(ticket.is_some());
+            let hashmap: HashMap<u64, u64> = HashMap::with_capacity(iters as usize * 2);
             let start = Instant::now();
             for i in 0..iters {
                 assert!(hashmap.insert(i, i).is_ok());
             }
-            let elapsed = start.elapsed();
-            drop(ticket);
-            drop(hashmap);
-            elapsed
-        })
-    });
-}
-
-fn insert_fully_warmed_up(c: &mut Criterion) {
-    c.bench_function("HashMap: insert, fully warmed up", |b| {
-        b.iter_custom(|iters| {
-            let hashmap: HashMap<u64, u64> = HashMap::default();
-            let ticket = hashmap.reserve((iters * 2).try_into().unwrap());
-            assert!(ticket.is_some());
-            for i in 0..iters {
-                assert!(hashmap.insert(i, i).is_ok());
-                assert!(hashmap.remove(&i).is_some());
-            }
-            let start = Instant::now();
-            for i in 0..iters {
-                assert!(hashmap.insert(i, i).is_ok());
-            }
-            let elapsed = start.elapsed();
-            drop(ticket);
-            drop(hashmap);
-            elapsed
+            start.elapsed()
         })
     });
 }
 
 fn read(c: &mut Criterion) {
-    let hashmap: HashMap<usize, usize> = HashMap::default();
-    assert!(hashmap.insert(1, 1).is_ok());
     c.bench_function("HashMap: read", |b| {
-        b.iter(|| {
-            hashmap.read(&1, |_, v| assert_eq!(*v, 1));
+        b.iter_custom(|iters| {
+            let hashmap: HashMap<u64, u64> = HashMap::with_capacity(iters as usize * 2);
+            for i in 0..iters {
+                assert!(hashmap.insert(i, i).is_ok());
+            }
+            let start = Instant::now();
+            for i in 0..iters {
+                assert_eq!(hashmap.read(&i, |_, v| *v == i), Some(true));
+            }
+            start.elapsed()
         })
     });
 }
 
-criterion_group!(
-    hash_map,
-    insert_cold,
-    insert_array_warmed_up,
-    insert_fully_warmed_up,
-    read
-);
+criterion_group!(hash_map, insert_cold, insert_warmed_up, read);
 criterion_main!(hash_map);
