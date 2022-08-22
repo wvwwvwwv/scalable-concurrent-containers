@@ -1,19 +1,20 @@
-use super::cell::{Cell, Locker, CELL_LEN};
+use super::cell::{Cell, DataBlock, Locker, CELL_LEN};
 
 use crate::ebr::{AtomicArc, Barrier, Ptr, Tag};
 use crate::wait_queue::AsyncWait;
 
-use std::alloc::{alloc_zeroed, dealloc, Layout};
+use std::alloc::{alloc, alloc_zeroed, dealloc, Layout};
 use std::borrow::Borrow;
 use std::hash::Hash;
-use std::mem::size_of;
+use std::mem::{align_of, size_of};
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 /// [`CellArray`] is a special purpose array being initialized by zero.
 pub struct CellArray<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
-    array_ptr: *const Cell<K, V, LOCK_FREE>,
-    array_ptr_offset: usize,
+    cell_array_ptr: *const Cell<K, V, LOCK_FREE>,
+    cell_array_ptr_offset: usize,
+    data_block_array_ptr: *const DataBlock<K, V>,
     array_capacity: usize,
     log2_capacity: u8,
     cleared: AtomicBool,
@@ -37,23 +38,45 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         let log2_capacity = Self::calculate_log2_array_size(total_cell_capacity);
         let array_capacity = 1_usize << log2_capacity;
         unsafe {
-            let (cell_size, allocation_size, layout) = Self::calculate_layout(array_capacity);
-            let ptr = alloc_zeroed(layout);
+            let (cell_size, cell_array_allocation_size, cell_array_layout) =
+                Self::calculate_memory_layout::<Cell<K, V, LOCK_FREE>>(array_capacity);
+            let cell_array_ptr = alloc_zeroed(cell_array_layout);
             assert!(
-                !ptr.is_null(),
+                !cell_array_ptr.is_null(),
                 "memory allocation failure: {} bytes",
-                allocation_size
+                cell_array_allocation_size
             );
-            let mut array_ptr_offset = ptr.align_offset(cell_size.next_power_of_two());
-            if array_ptr_offset == usize::MAX {
-                array_ptr_offset = 0;
+            let mut cell_array_ptr_offset =
+                cell_array_ptr.align_offset(cell_size.next_power_of_two());
+            if cell_array_ptr_offset == usize::MAX {
+                cell_array_ptr_offset = 0;
             }
-            assert!(array_ptr_offset + cell_size * array_capacity <= allocation_size,);
+            assert!(
+                cell_array_ptr_offset + cell_size * array_capacity <= cell_array_allocation_size,
+            );
+
             #[allow(clippy::cast_ptr_alignment)]
-            let array_ptr = ptr.add(array_ptr_offset).cast::<Cell<K, V, LOCK_FREE>>();
+            let cell_array_ptr = cell_array_ptr
+                .add(cell_array_ptr_offset)
+                .cast::<Cell<K, V, LOCK_FREE>>();
+
+            let data_block_array_layout = Layout::from_size_align(
+                size_of::<DataBlock<K, V>>() * array_capacity,
+                align_of::<[DataBlock<K, V>; 0]>(),
+            )
+            .unwrap();
+
+            let data_block_array_ptr = alloc(data_block_array_layout).cast::<DataBlock<K, V>>();
+            assert!(
+                !data_block_array_ptr.is_null(),
+                "memory allocation failure: {} bytes",
+                data_block_array_layout.size(),
+            );
+
             CellArray {
-                array_ptr,
-                array_ptr_offset,
+                cell_array_ptr,
+                cell_array_ptr_offset,
+                data_block_array_ptr,
                 array_capacity,
                 log2_capacity,
                 cleared: AtomicBool::new(false),
@@ -67,7 +90,14 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     #[inline]
     pub(crate) fn cell(&self, index: usize) -> &Cell<K, V, LOCK_FREE> {
         debug_assert!(index < self.num_cells());
-        unsafe { &(*(self.array_ptr.add(index))) }
+        unsafe { &(*(self.cell_array_ptr.add(index))) }
+    }
+
+    /// Returns a reference to a [`DataBlock`] at the given position.
+    #[inline]
+    pub(crate) fn data_block(&self, index: usize) -> &DataBlock<K, V> {
+        debug_assert!(index < self.num_cells());
+        unsafe { &(*(self.data_block_array_ptr.add(index))) }
     }
 
     /// Returns the recommended sampling size.
@@ -311,9 +341,9 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         log2_capacity as u8
     }
 
-    /// Calculates the layout of the memory block.
-    fn calculate_layout(array_capacity: usize) -> (usize, usize, Layout) {
-        let size_of_cell = size_of::<Cell<K, V, LOCK_FREE>>();
+    /// Calculates the layout of the memory block for an array of [`Cell`].
+    fn calculate_memory_layout<T: Sized>(array_capacity: usize) -> (usize, usize, Layout) {
+        let size_of_cell = size_of::<T>();
         let aligned_size = size_of_cell.next_power_of_two();
         let allocation_size = aligned_size + array_capacity * size_of_cell;
         (size_of_cell, allocation_size, unsafe {
@@ -330,18 +360,26 @@ impl<K: Eq, V, const LOCK_FREE: bool> Drop for CellArray<K, V, LOCK_FREE> {
                 let cell_ref = self.cell(index);
                 if LOCK_FREE || !cell_ref.killed() {
                     unsafe {
-                        cell_ref.kill_and_drop(&barrier);
+                        cell_ref.kill_and_drop(self.data_block(index), &barrier);
                     }
                 }
             }
         }
         unsafe {
             dealloc(
-                (self.array_ptr as *mut Cell<K, V, LOCK_FREE>)
+                (self.cell_array_ptr as *mut Cell<K, V, LOCK_FREE>)
                     .cast::<u8>()
-                    .sub(self.array_ptr_offset),
-                Self::calculate_layout(self.array_capacity).2,
+                    .sub(self.cell_array_ptr_offset),
+                Self::calculate_memory_layout::<Cell<K, V, LOCK_FREE>>(self.array_capacity).2,
             );
+            dealloc(
+                (self.data_block_array_ptr as *mut DataBlock<K, V>).cast::<u8>(),
+                Layout::from_size_align(
+                    size_of::<DataBlock<K, V>>() * self.array_capacity,
+                    align_of::<[DataBlock<K, V>; 0]>(),
+                )
+                .unwrap(),
+            )
         }
     }
 }
