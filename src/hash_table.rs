@@ -146,6 +146,7 @@ where
     }
 
     /// Reads an entry from the [`HashTable`].
+    #[inline]
     fn read_entry<'b, Q, R, F: FnMut(&'b K, &'b V) -> R>(
         &self,
         key_ref: &Q,
