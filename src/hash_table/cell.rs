@@ -26,14 +26,14 @@ const LOCK_MASK: u32 = LOCK | SLOCK_MAX;
 /// [`Cell`] is a small fixed-size hash table that resolves hash conflicts using a linked list
 /// of entry arrays.
 pub(crate) struct Cell<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
+    /// An array of key-value pairs and their metadata.
+    data_array: DataArray<K, V, CELL_LEN>,
+
     /// The state of the [`Cell`].
     state: AtomicU32,
 
     /// The number of valid entries in the [`Cell`].
     num_entries: u32,
-
-    /// An array of key-value pairs and their metadata.
-    data_array: DataArray<K, V, CELL_LEN>,
 
     /// The wait queue of the [`Cell`].
     wait_queue: WaitQueue,
@@ -42,9 +42,9 @@ pub(crate) struct Cell<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
 impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Default for Cell<K, V, LOCK_FREE> {
     fn default() -> Self {
         Cell::<K, V, LOCK_FREE> {
+            data_array: DataArray::new(),
             state: AtomicU32::new(0),
             num_entries: 0,
-            data_array: DataArray::new(),
             wait_queue: WaitQueue::default(),
         }
     }
