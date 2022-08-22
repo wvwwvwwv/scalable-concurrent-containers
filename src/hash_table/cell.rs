@@ -222,6 +222,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
     /// Searches for a next closest valid slot to the given slot in the [`DataArray`].
     ///
     /// If the given slot is valid, it returns the given slot.
+    #[inline]
     fn next_entry<Q, const LEN: usize>(
         data_array_ref: &DataArray<K, V, LEN>,
         current_index: usize,
@@ -260,6 +261,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
 }
 
 impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Cell<K, V, LOCK_FREE> {
+    #[inline]
     fn drop(&mut self) {
         // The [`Cell`] must have been killed.
         debug_assert!(self.killed());
@@ -570,7 +572,8 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         free_index
     }
 
-    /// Removes a key-value pair in the slot.
+    /// Inserts a key-value pair in the slot.
+    #[inline]
     fn insert_entry<const LEN: usize>(
         &self,
         data_array_mut: &mut DataArray<K, V, LEN>,
@@ -595,6 +598,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     }
 
     /// Removes a key-value pair in the slot.
+    #[inline]
     fn erase_entry<const LEN: usize>(
         &self,
         data_array_mut: &mut DataArray<K, V, LEN>,
@@ -623,6 +627,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     }
 
     /// Extracts and removes the key-value pair in the slot.
+    #[inline]
     fn extract_entry<const LEN: usize>(
         &self,
         data_array_mut: &mut DataArray<K, V, LEN>,
@@ -637,12 +642,14 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     }
 
     /// Updates the number of entries.
+    #[inline]
     fn num_entries_updated(&self, num: u32) {
         self.cell_mut().num_entries = num;
     }
 
     /// Returns a mutable reference to the `Cell`.
     #[allow(clippy::mut_from_ref)]
+    #[inline]
     fn cell_mut(&self) -> &mut Cell<K, V, LOCK_FREE> {
         #[allow(clippy::cast_ref_to_mut)]
         unsafe {
@@ -651,6 +658,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     }
 
     /// Tries to lock the [`Cell`].
+    #[inline]
     fn try_lock(
         cell: &'b Cell<K, V, LOCK_FREE>,
         _barrier: &'b Barrier,
@@ -744,6 +752,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
     }
 
     /// Tries to lock the [`Cell`].
+    #[inline]
     fn try_lock(
         cell: &'b Cell<K, V, LOCK_FREE>,
         _barrier: &'b Barrier,

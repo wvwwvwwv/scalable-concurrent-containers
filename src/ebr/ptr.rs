@@ -178,6 +178,7 @@ impl<'b, T> Ptr<'b, T> {
     /// assert_eq!(ptr_without_tag.tag(), Tag::None);
     /// ```
     #[must_use]
+    #[inline]
     pub fn without_tag(self) -> Ptr<'b, T> {
         Ptr::from(Tag::unset_tag(self.instance_ptr))
     }
@@ -215,6 +216,7 @@ impl<'b, T> Ptr<'b, T> {
     }
 
     /// Creates a new [`Ptr`] from a raw pointer.
+    #[inline]
     pub(super) fn from(ptr: *const Underlying<T>) -> Ptr<'b, T> {
         Ptr {
             instance_ptr: ptr,
@@ -223,12 +225,14 @@ impl<'b, T> Ptr<'b, T> {
     }
 
     /// Provides a raw pointer to its [`Underlying`].
+    #[inline]
     pub(super) fn as_underlying_ptr(self) -> *const Underlying<T> {
         self.instance_ptr
     }
 }
 
 impl<'b, T> Clone for Ptr<'b, T> {
+    #[inline]
     fn clone(&self) -> Self {
         Self {
             instance_ptr: self.instance_ptr,
@@ -249,6 +253,7 @@ impl<'b, T> Default for Ptr<'b, T> {
 impl<'b, T> Eq for Ptr<'b, T> {}
 
 impl<'b, T> PartialEq for Ptr<'b, T> {
+    #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.instance_ptr == other.instance_ptr
     }

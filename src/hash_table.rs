@@ -8,7 +8,6 @@ use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
 use crate::wait_queue::AsyncWait;
 
 use std::borrow::Borrow;
-use std::convert::TryInto;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -36,7 +35,7 @@ where
         let mut h = self.hasher().build_hasher();
         key.hash(&mut h);
         let hash = h.finish();
-        (hash, (hash & ((1 << 8) - 1)).try_into().unwrap())
+        (hash, (hash & ((1 << 8) - 1)) as u8)
     }
 
     /// Returns a reference to its [`BuildHasher`].

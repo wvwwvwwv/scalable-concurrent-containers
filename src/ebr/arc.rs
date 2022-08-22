@@ -132,11 +132,13 @@ impl<T: 'static> Arc<T> {
     }
 
     /// Provides a raw pointer to its [`Underlying`].
+    #[inline]
     pub(super) fn as_underlying_ptr(&self) -> *mut Underlying<T> {
         self.instance_ptr.as_ptr()
     }
 
     /// Creates a new [`Arc`] from the given pointer.
+    #[inline]
     pub(super) fn from(ptr: NonNull<Underlying<T>>) -> Arc<T> {
         debug_assert_ne!(
             unsafe {
@@ -151,6 +153,7 @@ impl<T: 'static> Arc<T> {
 
     /// Drops the reference, and returns the underlying pointer if the last reference was
     /// dropped.
+    #[inline]
     pub(super) fn drop_ref(&self) -> Option<*mut Underlying<T>> {
         if self.underlying().drop_ref() {
             Some(self.instance_ptr.as_ptr())
@@ -160,12 +163,14 @@ impl<T: 'static> Arc<T> {
     }
 
     /// Returns a reference to the underlying instance.
+    #[inline]
     fn underlying(&self) -> &Underlying<T> {
         unsafe { self.instance_ptr.as_ref() }
     }
 }
 
 impl<T: 'static> AsRef<T> for Arc<T> {
+    #[inline]
     fn as_ref(&self) -> &T {
         &**self.underlying()
     }
@@ -209,6 +214,7 @@ impl<T: 'static> Drop for Arc<T> {
 impl<'b, T: 'static> TryFrom<Ptr<'b, T>> for Arc<T> {
     type Error = Ptr<'b, T>;
 
+    #[inline]
     fn try_from(ptr: Ptr<'b, T>) -> Result<Self, Self::Error> {
         if let Some(arc) = ptr.get_arc() {
             Ok(arc)

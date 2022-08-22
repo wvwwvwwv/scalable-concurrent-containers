@@ -357,6 +357,7 @@ impl<T: 'static> Clone for AtomicArc<T> {
 }
 
 impl<T> Default for AtomicArc<T> {
+    #[inline]
     fn default() -> Self {
         AtomicArc::null()
     }
