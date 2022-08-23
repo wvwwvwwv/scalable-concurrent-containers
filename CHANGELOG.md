@@ -1,6 +1,6 @@
 # Changelog
 
-0.10.0
+0.10.1
 
 * Significant [HashMap](#HashMap), [HashSet](#HashSet), and [HashIndex](#HashIndex) insert performance improvement by segregating zero and non-zero memory regions.
 

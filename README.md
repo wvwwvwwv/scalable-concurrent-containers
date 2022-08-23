@@ -351,7 +351,7 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
 - RAM: 1TB
 - Rust: 1.63.0
-- SCC: 0.10.0
+- SCC: 0.10.1
 
 ### Workload
 
