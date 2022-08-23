@@ -265,11 +265,11 @@ where
     {
         let (hash, partial_hash) = self.hash(key_ref);
         let barrier = Barrier::new();
-        let (_, _locker, _data_block, iterator) = self
+        let (_, _locker, data_block, iter) = self
             .acquire::<Q>(key_ref, hash, partial_hash, None, &barrier)
             .ok()?;
-        if let Some(iterator) = iterator {
-            let (k, v) = iterator.get();
+        if let Some(iter) = iter {
+            let (k, v) = iter.get(data_block);
 
             // The presence of `locker` prevents the entry from being modified outside it.
             #[allow(clippy::cast_ref_to_mut)]
@@ -304,15 +304,15 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if let Ok((_, _locker, _data_block, iterator)) = self.acquire::<Q>(
+            if let Ok((_, _locker, data_block, iter)) = self.acquire::<Q>(
                 key_ref,
                 hash,
                 partial_hash,
                 Some(async_wait_pinned.mut_ptr()),
                 &Barrier::new(),
             ) {
-                if let Some(iterator) = iterator {
-                    let (k, v) = iterator.get();
+                if let Some(iter) = iter {
+                    let (k, v) = iter.get(data_block);
                     #[allow(clippy::cast_ref_to_mut)]
                     return Some(updater(k, unsafe { &mut *(v as *const V as *mut V) }));
                 }
@@ -345,11 +345,11 @@ where
     ) {
         let (hash, partial_hash) = self.hash(&key);
         let barrier = Barrier::new();
-        if let Ok((_, locker, data_block, iterator)) =
+        if let Ok((_, locker, data_block, iter)) =
             self.acquire::<_>(&key, hash, partial_hash, None, &barrier)
         {
-            if let Some(iterator) = iterator {
-                let (k, v) = iterator.get();
+            if let Some(iter) = iter {
+                let (k, v) = iter.get(data_block);
                 // The presence of `locker` prevents the entry from being modified outside it.
                 #[allow(clippy::cast_ref_to_mut)]
                 updater(k, unsafe { &mut *(v as *const V as *mut V) });
@@ -383,15 +383,15 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if let Ok((_, locker, data_block, iterator)) = self.acquire::<_>(
+            if let Ok((_, locker, data_block, iter)) = self.acquire::<_>(
                 &key,
                 hash,
                 partial_hash,
                 Some(async_wait_pinned.mut_ptr()),
                 &Barrier::new(),
             ) {
-                if let Some(iterator) = iterator {
-                    let (k, v) = iterator.get();
+                if let Some(iter) = iter {
+                    let (k, v) = iter.get(data_block);
                     #[allow(clippy::cast_ref_to_mut)]
                     updater(k, unsafe { &mut *(v as *const V as *mut V) });
                     return;
@@ -684,10 +684,12 @@ where
 
             for cell_index in 0..current_array.num_cells() {
                 if let Some(locker) = Reader::lock(current_array.cell(cell_index), &barrier) {
-                    locker
-                        .cell()
-                        .iter(current_array.data_block(cell_index), &barrier)
-                        .for_each(|((k, v), _)| scanner(k, v));
+                    let data_block = current_array.data_block(cell_index);
+                    let mut iter = locker.cell().iter(&barrier);
+                    while iter.next().is_some() {
+                        let (k, v) = iter.get(data_block);
+                        scanner(k, v);
+                    }
                 }
             }
 
@@ -746,11 +748,10 @@ where
                             &barrier,
                         ) {
                             if let Some(locker) = result {
-                                let mut iterator = locker
-                                    .cell()
-                                    .iter(current_array.data_block(cell_index), &barrier);
-                                while iterator.next().is_some() {
-                                    let (k, v) = iterator.get();
+                                let data_block = current_array.data_block(cell_index);
+                                let mut iter = locker.cell().iter(&barrier);
+                                while iter.next().is_some() {
+                                    let (k, v) = iter.get(data_block);
                                     scanner(k, v);
                                 }
                                 break false;
@@ -887,17 +888,16 @@ where
 
             for cell_index in 0..current_array.num_cells() {
                 if let Some(locker) = Locker::lock(current_array.cell(cell_index), &barrier) {
-                    let mut iterator = locker
-                        .cell()
-                        .iter(current_array.data_block(cell_index), &barrier);
-                    while iterator.next().is_some() {
-                        let (k, v) = iterator.get();
+                    let data_block = current_array.data_block(cell_index);
+                    let mut iter = locker.cell().iter(&barrier);
+                    while iter.next().is_some() {
+                        let (k, v) = iter.get(data_block);
                         #[allow(clippy::cast_ref_to_mut)]
                         let retain = filter(k, unsafe { &mut *(v as *const V as *mut V) });
                         if retain {
                             num_retained = num_retained.saturating_add(1);
                         } else {
-                            locker.erase(&mut iterator);
+                            locker.erase(data_block, &mut iter);
                             num_removed = num_removed.saturating_add(1);
                         }
                     }
@@ -978,18 +978,17 @@ where
                             &barrier,
                         ) {
                             if let Some(locker) = result {
-                                let mut iterator = locker
-                                    .cell()
-                                    .iter(current_array.data_block(cell_index), &barrier);
-                                while iterator.next().is_some() {
-                                    let (k, v) = iterator.get();
+                                let data_block = current_array.data_block(cell_index);
+                                let mut iter = locker.cell().iter(&barrier);
+                                while iter.next().is_some() {
+                                    let (k, v) = iter.get(data_block);
                                     #[allow(clippy::cast_ref_to_mut)]
                                     let retain =
                                         filter(k, unsafe { &mut *(v as *const V as *mut V) });
                                     if retain {
                                         num_retained = num_retained.saturating_add(1);
                                     } else {
-                                        locker.erase(&mut iterator);
+                                        locker.erase(data_block, &mut iter);
                                         num_removed = num_removed.saturating_add(1);
                                     }
                                 }

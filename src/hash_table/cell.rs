@@ -71,12 +71,8 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
 
     /// Iterates the contents of the [`Cell`].
     #[inline]
-    pub(crate) fn iter<'b>(
-        &'b self,
-        data_block: &'b DataBlock<K, V>,
-        barrier: &'b Barrier,
-    ) -> EntryIterator<'b, K, V, LOCK_FREE> {
-        EntryIterator::new(self, data_block, barrier)
+    pub(crate) fn iter<'b>(&'b self, barrier: &'b Barrier) -> EntryIterator<'b, K, V, LOCK_FREE> {
+        EntryIterator::new(self, barrier)
     }
 
     /// Searches for an entry associated with the given key.
@@ -139,7 +135,6 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         {
             return Some(EntryIterator {
                 cell: Some(self),
-                data_block,
                 current_link_ptr: Ptr::null(),
                 prev_link_ptr: Ptr::null(),
                 current_index: index,
@@ -155,7 +150,6 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
             {
                 return Some(EntryIterator {
                     cell: Some(self),
-                    data_block,
                     current_link_ptr,
                     prev_link_ptr,
                     current_index: index,
@@ -245,11 +239,10 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
     /// Searches for a next closest valid slot to the given slot in the [`DataArray`].
     ///
     /// If the given slot is valid, it returns the given slot.
-    fn next_entry<'b, Q, const LEN: usize>(
-        metadata: &'b Metadata<K, V, LEN>,
-        data_array: &'b [MaybeUninit<(K, V)>; LEN],
+    fn next_entry<Q, const LEN: usize>(
+        metadata: &Metadata<K, V, LEN>,
         current_index: usize,
-    ) -> Option<(usize, &'b (K, V), u8)>
+    ) -> Option<(usize, u8)>
     where
         K: Borrow<Q>,
         Q: Eq + ?Sized,
@@ -271,29 +264,15 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
 
         let next_index = bitmap.trailing_zeros() as usize;
         if next_index < CELL_LEN {
-            let entry_ptr = data_array[next_index].as_ptr();
-            return Some((
-                next_index,
-                unsafe { &(*entry_ptr) },
-                metadata.partial_hash_array[next_index],
-            ));
+            return Some((next_index, metadata.partial_hash_array[next_index]));
         }
 
         None
     }
 }
 
-impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Cell<K, V, LOCK_FREE> {
-    #[inline]
-    fn drop(&mut self) {
-        // The [`Cell`] must have been killed.
-        debug_assert!(self.killed());
-    }
-}
-
 pub struct EntryIterator<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
     cell: Option<&'b Cell<K, V, LOCK_FREE>>,
-    data_block: &'b DataBlock<K, V>,
     current_link_ptr: Ptr<'b, Linked<K, V, LINKED_LEN>>,
     prev_link_ptr: Ptr<'b, Linked<K, V, LINKED_LEN>>,
     current_index: usize,
@@ -305,12 +284,10 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K
     #[inline]
     pub(crate) fn new(
         cell: &'b Cell<K, V, LOCK_FREE>,
-        data_block: &'b DataBlock<K, V>,
         barrier: &'b Barrier,
     ) -> EntryIterator<'b, K, V, LOCK_FREE> {
         EntryIterator {
             cell: Some(cell),
-            data_block,
             current_link_ptr: Ptr::null(),
             prev_link_ptr: Ptr::null(),
             current_index: usize::MAX,
@@ -320,11 +297,11 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K
 
     /// Gets a reference to the key-value pair.
     #[inline]
-    pub(crate) fn get(&self) -> &'b (K, V) {
+    pub(crate) fn get(&self, data_block: &'b DataBlock<K, V>) -> &'b (K, V) {
         let entry_ptr = if let Some(data_array_ref) = self.current_link_ptr.as_ref() {
             data_array_ref.data_array[self.current_index].as_ptr()
         } else {
-            self.data_block[self.current_index].as_ptr()
+            data_block[self.current_index].as_ptr()
         };
         unsafe { &(*entry_ptr) }
     }
@@ -374,22 +351,18 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K
 }
 
 impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K, V, LOCK_FREE> {
-    fn next_entry<const LEN: usize>(
-        &mut self,
-        metadata: &'b Metadata<K, V, LEN>,
-        data_array: &'b [MaybeUninit<(K, V)>; LEN],
-    ) -> Option<(&'b (K, V), u8)> {
+    fn next_entry<const LEN: usize>(&mut self, metadata: &'b Metadata<K, V, LEN>) -> Option<u8> {
         // Search for the next valid entry.
         let current_index = if self.current_index == usize::MAX {
             0
         } else {
             self.current_index + 1
         };
-        if let Some((index, entry_ref, hash)) =
-            Cell::<K, V, LOCK_FREE>::next_entry(metadata, data_array, current_index)
+        if let Some((index, partial_hash)) =
+            Cell::<K, V, LOCK_FREE>::next_entry(metadata, current_index)
         {
             self.current_index = index;
-            return Some((entry_ref, hash));
+            return Some(partial_hash);
         }
 
         self.prev_link_ptr = self.current_link_ptr;
@@ -403,17 +376,17 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K
 impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Iterator
     for EntryIterator<'b, K, V, LOCK_FREE>
 {
-    type Item = (&'b (K, V), u8);
+    type Item = u8;
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(&cell) = self.cell.as_ref() {
             if self.current_link_ptr.is_null() {
-                if let Some(result) = self.next_entry(&cell.metadata, self.data_block) {
-                    return Some(result);
+                if let Some(partial_hash) = self.next_entry(&cell.metadata) {
+                    return Some(partial_hash);
                 }
             }
             while let Some(link) = self.current_link_ptr.as_ref() {
-                if let Some(result) = self.next_entry(&link.metadata, &link.data_array) {
-                    return Some(result);
+                if let Some(partial_hash) = self.next_entry(&link.metadata) {
+                    return Some(partial_hash);
                 }
             }
             // Fuse itself.
@@ -569,58 +542,60 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
 
     /// Removes a key-value pair being pointed by the given [`EntryIterator`].
     #[inline]
-    pub(crate) fn erase(&self, iterator: &mut EntryIterator<K, V, LOCK_FREE>) -> Option<(K, V)> {
-        if iterator.current_index == usize::MAX {
+    pub(crate) fn erase(
+        &self,
+        data_block: &'b DataBlock<K, V>,
+        iter: &mut EntryIterator<K, V, LOCK_FREE>,
+    ) -> Option<(K, V)> {
+        if iter.current_index == usize::MAX {
             return None;
         }
-        if let Some(link) = iterator.current_link_ptr.as_ref() {
+        if let Some(link) = iter.current_link_ptr.as_ref() {
             #[allow(clippy::cast_ref_to_mut)]
             let link_mut = unsafe {
                 &mut *(link as *const Linked<K, V, LINKED_LEN> as *mut Linked<K, V, LINKED_LEN>)
             };
-            let result = self.erase_entry(
-                &mut link_mut.metadata,
-                &link.data_array,
-                iterator.current_index,
-            );
+            let result =
+                self.erase_entry(&mut link_mut.metadata, &link.data_array, iter.current_index);
             if (LOCK_FREE && (link.metadata.occupied_bitmap & (!link.metadata.removed_bitmap)) == 0)
                 || (!LOCK_FREE && link.metadata.occupied_bitmap == 0)
             {
-                iterator.unlink_data_array(link);
+                iter.unlink_data_array(link);
             }
             result
         } else {
             self.erase_entry(
                 &mut self.cell_mut().metadata,
-                iterator.data_block,
-                iterator.current_index,
+                data_block,
+                iter.current_index,
             )
         }
     }
 
     /// Extracts the key-value pair being pointed by `self`.
     #[inline]
-    pub(crate) fn extract(&self, iterator: &mut EntryIterator<K, V, LOCK_FREE>) -> (K, V) {
+    pub(crate) fn extract(
+        &self,
+        data_block: &'b DataBlock<K, V>,
+        iter: &mut EntryIterator<K, V, LOCK_FREE>,
+    ) -> (K, V) {
         debug_assert!(!LOCK_FREE);
-        if let Some(link) = iterator.current_link_ptr.as_ref() {
+        if let Some(link) = iter.current_link_ptr.as_ref() {
             #[allow(clippy::cast_ref_to_mut)]
             let link_mut = unsafe {
                 &mut *(link as *const Linked<K, V, LINKED_LEN> as *mut Linked<K, V, LINKED_LEN>)
             };
-            let extracted = self.extract_entry(
-                &mut link_mut.metadata,
-                &link.data_array,
-                iterator.current_index,
-            );
+            let extracted =
+                self.extract_entry(&mut link_mut.metadata, &link.data_array, iter.current_index);
             if link.metadata.occupied_bitmap == 0 {
-                iterator.unlink_data_array(link_mut);
+                iter.unlink_data_array(link_mut);
             }
             extracted
         } else {
             self.extract_entry(
                 &mut self.cell_mut().metadata,
-                iterator.data_block,
-                iterator.current_index,
+                data_block,
+                iter.current_index,
             )
         }
     }
@@ -1022,13 +997,7 @@ mod test {
                 Some(&(task_id, 0))
             );
         }
-        let mut iterated = 0;
-        for entry in cell.iter(&data_block, &epoch_barrier) {
-            assert!(entry.0 .0 < num_tasks);
-            assert_eq!(entry.0 .1, 0);
-            iterated += 1;
-        }
-        assert_eq!(cell.num_entries(), iterated);
+        assert_eq!(cell.num_entries(), cell.iter(&epoch_barrier).count());
 
         let mut xlocker = Locker::lock(&*cell, &epoch_barrier).unwrap();
         xlocker.purge(&epoch_barrier);

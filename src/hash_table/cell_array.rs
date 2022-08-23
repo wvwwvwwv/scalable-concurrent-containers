@@ -159,6 +159,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             return Ok(());
         }
 
+        let old_data_block = old_array.data_block(old_cell_index);
         let shrink = old_array.num_cells() > self.num_cells();
         let ratio = if shrink {
             old_array.num_cells() / self.num_cells()
@@ -175,20 +176,19 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         let mut target_cells: [Option<Locker<K, V, LOCK_FREE>>; size_of::<usize>() * 4] =
             Default::default();
         let mut max_index = 0;
-        let mut iter = cell_locker
-            .cell()
-            .iter(old_array.data_block(old_cell_index), barrier);
-        while let Some(entry) = iter.next() {
-            let (new_cell_index, partial_hash) = if shrink {
+        let mut iter = cell_locker.cell().iter(barrier);
+        while let Some(partial_hash) = iter.next() {
+            let old_entry = iter.get(old_data_block);
+            let new_cell_index = if shrink {
                 debug_assert!(
-                    self.calculate_cell_index(hasher(entry.0 .0.borrow()).0) == target_cell_index
+                    self.calculate_cell_index(hasher(old_entry.0.borrow()).0) == target_cell_index
                 );
-                (target_cell_index, entry.1)
+                target_cell_index
             } else {
-                let (hash, partial_hash) = hasher(entry.0 .0.borrow());
+                let hash = hasher(old_entry.0.borrow()).0;
                 let new_cell_index = self.calculate_cell_index(hash);
                 debug_assert!((new_cell_index - target_cell_index) < ratio);
-                (new_cell_index, partial_hash)
+                new_cell_index
             };
 
             let offset = new_cell_index - target_cell_index;
@@ -208,14 +208,14 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             }
 
             let target_cell = target_cells[offset].as_ref().unwrap();
-            let new_entry = if let Some(entry) = copier(&entry.0 .0, &entry.0 .1) {
+            let new_entry = if let Some(entry) = copier(&old_entry.0, &old_entry.1) {
                 // HashIndex.
                 debug_assert!(LOCK_FREE);
                 entry
             } else {
                 // HashMap.
                 debug_assert!(!LOCK_FREE);
-                cell_locker.extract(&mut iter)
+                cell_locker.extract(old_data_block, &mut iter)
             };
             target_cell.insert(
                 self.data_block(target_cell_index + offset),

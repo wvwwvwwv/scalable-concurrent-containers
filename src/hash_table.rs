@@ -134,8 +134,8 @@ where
         barrier: &Barrier,
     ) -> Result<Option<(K, V)>, (K, V)> {
         match self.acquire::<_>(&key, hash, partial_hash, async_wait, barrier) {
-            Ok((_, locker, data_block, iterator)) => {
-                if iterator.is_some() {
+            Ok((_, locker, data_block, iter)) => {
+                if iter.is_some() {
                     return Ok(Some((key, val)));
                 }
                 locker.insert(data_block, key, val, partial_hash, barrier);
@@ -261,11 +261,11 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let (cell_index, locker, _data_block, iterator) =
+        let (cell_index, locker, data_block, iter) =
             self.acquire::<Q>(key_ref, hash, partial_hash, async_wait, barrier)?;
-        if let Some(mut iterator) = iterator {
-            if condition(&iterator.get().1) {
-                let result = locker.erase(&mut iterator);
+        if let Some(mut iter) = iter {
+            if condition(&iter.get(data_block).1) {
+                let result = locker.erase(data_block, &mut iter);
                 let need_shrink = locker.cell().num_entries() < CELL_LEN / 16;
                 let need_rebuild = LOCK_FREE && locker.cell().need_rebuild();
                 if (cell_index % CELL_LEN) == 0 && (need_shrink || need_rebuild) {
@@ -366,7 +366,7 @@ where
                         Locker::lock(old_array_ref.cell(cell_index), barrier)
                     };
                     if let Some(mut locker) = lock_result {
-                        if let Some(iterator) = locker.cell().get(
+                        if let Some(iter) = locker.cell().get(
                             old_array_ref.data_block(cell_index),
                             key_ref,
                             partial_hash,
@@ -376,7 +376,7 @@ where
                                 cell_index,
                                 locker,
                                 old_array_ref.data_block(cell_index),
-                                Some(iterator),
+                                Some(iter),
                             ));
                         }
                         // Kills the Cell.
@@ -417,12 +417,11 @@ where
             };
             if let Some(locker) = lock_result {
                 let data_block = current_array_ref.data_block(cell_index);
-                if let Some(iterator) =
-                    locker
-                        .cell()
-                        .get(data_block, key_ref, partial_hash, barrier)
+                if let Some(iter) = locker
+                    .cell()
+                    .get(data_block, key_ref, partial_hash, barrier)
                 {
-                    return Ok((cell_index, locker, data_block, Some(iterator)));
+                    return Ok((cell_index, locker, data_block, Some(iter)));
                 }
                 return Ok((cell_index, locker, data_block, None));
             }
