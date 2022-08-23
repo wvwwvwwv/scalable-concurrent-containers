@@ -495,9 +495,9 @@ where
         let mut num_removed: usize = 0;
         let barrier = Barrier::new();
         let mut current_array_ptr = self.array.load(Acquire, &barrier);
-        while let Some(current_array_ref) = current_array_ptr.as_ref() {
-            while !current_array_ref.old_array(&barrier).is_null() {
-                if current_array_ref.partial_rehash::<_, _, _>(
+        while let Some(current_array) = current_array_ptr.as_ref() {
+            while !current_array.old_array(&barrier).is_null() {
+                if current_array.partial_rehash::<_, _, _>(
                     |k| self.hash(k),
                     |k, v| Some((k.clone(), v.clone())),
                     None,
@@ -507,11 +507,11 @@ where
                     break;
                 }
             }
-            for index in 0..current_array_ref.num_cells() {
-                if let Some(locker) = Locker::lock(current_array_ref.cell(index), &barrier) {
+            for index in 0..current_array.num_cells() {
+                if let Some(locker) = Locker::lock(current_array.cell(index), &barrier) {
                     let mut iterator = locker
                         .cell()
-                        .iter(current_array_ref.data_block(index), &barrier);
+                        .iter(current_array.data_block(index), &barrier);
                     while iterator.next().is_some() {
                         locker.erase(&mut iterator);
                         num_removed = num_removed.saturating_add(1);
@@ -887,8 +887,8 @@ where
         if self.current_array_ptr.is_null() {
             // Start scanning.
             let current_array_ptr = self.hash_index.array.load(Acquire, self.barrier_ref);
-            let current_array_ref = current_array_ptr.as_ref().unwrap();
-            let old_array_ptr = current_array_ref.old_array(self.barrier_ref);
+            let current_array = current_array_ptr.as_ref().unwrap();
+            let old_array_ptr = current_array.old_array(self.barrier_ref);
             self.current_array_ptr = if old_array_ptr.is_null() {
                 current_array_ptr
             } else {
@@ -909,23 +909,23 @@ where
                 }
             }
             // Go to the next Cell.
-            let array_ref = self.current_array_ptr.as_ref().unwrap();
+            let array = self.current_array_ptr.as_ref().unwrap();
             self.current_index += 1;
-            if self.current_index == array_ref.num_cells() {
+            if self.current_index == array.num_cells() {
                 let current_array_ptr = self.hash_index.array.load(Acquire, self.barrier_ref);
                 if self.current_array_ptr == current_array_ptr {
                     // Finished scanning the entire array.
                     break;
                 }
-                let current_array_ref = current_array_ptr.as_ref().unwrap();
-                let old_array_ptr = current_array_ref.old_array(self.barrier_ref);
+                let current_array = current_array_ptr.as_ref().unwrap();
+                let old_array_ptr = current_array.old_array(self.barrier_ref);
                 if self.current_array_ptr == old_array_ptr {
                     // Starts scanning the current array.
                     self.current_array_ptr = current_array_ptr;
                     self.current_index = 0;
                     self.current_entry_iterator.replace(EntryIterator::new(
-                        current_array_ref.cell(0),
-                        current_array_ref.data_block(0),
+                        current_array.cell(0),
+                        current_array.data_block(0),
                         self.barrier_ref,
                     ));
                     continue;
@@ -945,8 +945,8 @@ where
                 continue;
             }
             self.current_entry_iterator.replace(EntryIterator::new(
-                array_ref.cell(self.current_index),
-                array_ref.data_block(self.current_index),
+                array.cell(self.current_index),
+                array.data_block(self.current_index),
                 self.barrier_ref,
             ));
         }

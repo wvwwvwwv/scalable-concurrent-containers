@@ -387,7 +387,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> Drop for CellArray<K, V, LOCK_FREE> {
                     align_of::<[DataBlock<K, V>; 0]>(),
                 )
                 .unwrap(),
-            )
+            );
         }
     }
 }

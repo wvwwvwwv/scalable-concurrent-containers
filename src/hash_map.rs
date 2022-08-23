@@ -669,9 +669,9 @@ where
 
         // An acquire fence is required to correctly load the contents of the array.
         let mut current_array_ptr = self.array.load(Acquire, &barrier);
-        while let Some(current_array_ref) = current_array_ptr.as_ref() {
-            while !current_array_ref.old_array(&barrier).is_null() {
-                if current_array_ref.partial_rehash::<_, _, _>(
+        while let Some(current_array) = current_array_ptr.as_ref() {
+            while !current_array.old_array(&barrier).is_null() {
+                if current_array.partial_rehash::<_, _, _>(
                     |key| self.hash(key),
                     |_, _| None,
                     None,
@@ -682,11 +682,11 @@ where
                 }
             }
 
-            for cell_index in 0..current_array_ref.num_cells() {
-                if let Some(locker) = Reader::lock(current_array_ref.cell(cell_index), &barrier) {
+            for cell_index in 0..current_array.num_cells() {
+                if let Some(locker) = Reader::lock(current_array.cell(cell_index), &barrier) {
                     locker
                         .cell()
-                        .iter(current_array_ref.data_block(cell_index), &barrier)
+                        .iter(current_array.data_block(cell_index), &barrier)
                         .for_each(|((k, v), _)| scanner(k, v));
                 }
             }
