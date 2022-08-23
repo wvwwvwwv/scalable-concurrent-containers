@@ -1,7 +1,7 @@
 pub mod cell;
 pub mod cell_array;
 
-use cell::{EntryIterator, Locker, Reader, CELL_LEN};
+use cell::{DataBlock, EntryIterator, Locker, Reader, CELL_LEN};
 use cell_array::CellArray;
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
@@ -134,11 +134,11 @@ where
         barrier: &Barrier,
     ) -> Result<Option<(K, V)>, (K, V)> {
         match self.acquire::<_>(&key, hash, partial_hash, async_wait, barrier) {
-            Ok((_, locker, iterator)) => {
+            Ok((_, locker, data_block, iterator)) => {
                 if iterator.is_some() {
                     return Ok(Some((key, val)));
                 }
-                locker.insert(key, val, partial_hash, barrier);
+                locker.insert(data_block, key, val, partial_hash, barrier);
                 Ok(None)
             }
             Err(_) => Err((key, val)),
@@ -173,7 +173,12 @@ where
                     let cell_index = old_array_ref.calculate_cell_index(hash);
                     if LOCK_FREE {
                         let cell_ref = old_array_ref.cell(cell_index);
-                        if let Some(entry) = cell_ref.search(key_ref, partial_hash, barrier) {
+                        if let Some(entry) = cell_ref.search(
+                            old_array_ref.data_block(cell_index),
+                            key_ref,
+                            partial_hash,
+                            barrier,
+                        ) {
                             return Ok(Some(reader(&entry.0, &entry.1)));
                         }
                     } else {
@@ -187,9 +192,12 @@ where
                             Reader::lock(old_array_ref.cell(cell_index), barrier)
                         };
                         if let Some(locker) = lock_result {
-                            if let Some((key, value)) =
-                                locker.cell().search(key_ref, partial_hash, barrier)
-                            {
+                            if let Some((key, value)) = locker.cell().search(
+                                old_array_ref.data_block(cell_index),
+                                key_ref,
+                                partial_hash,
+                                barrier,
+                            ) {
                                 return Ok(Some(reader(key, value)));
                             }
                         }
@@ -199,7 +207,12 @@ where
             let cell_index = current_array_ref.calculate_cell_index(hash);
             if LOCK_FREE {
                 let cell_ref = current_array_ref.cell(cell_index);
-                if let Some(entry) = cell_ref.search(key_ref, partial_hash, barrier) {
+                if let Some(entry) = cell_ref.search(
+                    current_array_ref.data_block(cell_index),
+                    key_ref,
+                    partial_hash,
+                    barrier,
+                ) {
                     return Ok(Some(reader(&entry.0, &entry.1)));
                 }
             } else {
@@ -213,8 +226,12 @@ where
                     Reader::lock(current_array_ref.cell(cell_index), barrier)
                 };
                 if let Some(locker) = lock_result {
-                    if let Some((key, value)) = locker.cell().search(key_ref, partial_hash, barrier)
-                    {
+                    if let Some((key, value)) = locker.cell().search(
+                        current_array_ref.data_block(cell_index),
+                        key_ref,
+                        partial_hash,
+                        barrier,
+                    ) {
                         return Ok(Some(reader(key, value)));
                     }
                 }
@@ -244,7 +261,7 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let (cell_index, locker, iterator) =
+        let (cell_index, locker, _data_block, iterator) =
             self.acquire::<Q>(key_ref, hash, partial_hash, async_wait, barrier)?;
         if let Some(mut iterator) = iterator {
             if condition(&iterator.get().1) {
@@ -303,6 +320,7 @@ where
         (
             usize,
             Locker<'b, K, V, LOCK_FREE>,
+            &'b DataBlock<K, V>,
             Option<EntryIterator<'b, K, V, LOCK_FREE>>,
         ),
         (),
@@ -348,8 +366,18 @@ where
                         Locker::lock(old_array_ref.cell(cell_index), barrier)
                     };
                     if let Some(mut locker) = lock_result {
-                        if let Some(iterator) = locker.cell().get(key_ref, partial_hash, barrier) {
-                            return Ok((cell_index, locker, Some(iterator)));
+                        if let Some(iterator) = locker.cell().get(
+                            old_array_ref.data_block(cell_index),
+                            key_ref,
+                            partial_hash,
+                            barrier,
+                        ) {
+                            return Ok((
+                                cell_index,
+                                locker,
+                                old_array_ref.data_block(cell_index),
+                                Some(iterator),
+                            ));
                         }
                         // Kills the Cell.
                         current_array_ref.kill_cell::<Q, _, _>(
@@ -388,10 +416,15 @@ where
                 Locker::lock(current_array_ref.cell(cell_index), barrier)
             };
             if let Some(locker) = lock_result {
-                if let Some(iterator) = locker.cell().get(key_ref, partial_hash, barrier) {
-                    return Ok((cell_index, locker, Some(iterator)));
+                let data_block = current_array_ref.data_block(cell_index);
+                if let Some(iterator) =
+                    locker
+                        .cell()
+                        .get(data_block, key_ref, partial_hash, barrier)
+                {
+                    return Ok((cell_index, locker, data_block, Some(iterator)));
                 }
-                return Ok((cell_index, locker, None));
+                return Ok((cell_index, locker, data_block, None));
             }
 
             // Reaching here means that `self.array` is updated.

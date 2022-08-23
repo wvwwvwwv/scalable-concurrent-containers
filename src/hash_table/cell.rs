@@ -14,7 +14,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 pub const CELL_LEN: usize = 32;
 
 /// Data block type.
-pub type DataBlock<K: 'static + Eq, V: 'static> = [MaybeUninit<(K, V)>; CELL_LEN];
+pub type DataBlock<K, V> = [MaybeUninit<(K, V)>; CELL_LEN];
 
 /// The fixed size of the linked [`DataArray`].
 const LINKED_LEN: usize = CELL_LEN / 4;
@@ -217,10 +217,8 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         let mut occupied = self.occupied_bitmap;
         let mut index = occupied.trailing_zeros();
         while (index as usize) < CELL_LEN {
-            let entry_mut_ptr = data_block[index as usize].as_mut_ptr();
-            unsafe {
-                ptr::drop_in_place(entry_mut_ptr);
-            }
+            let entry_mut_ptr = data_block[index as usize].as_ptr() as *mut (K, V);
+            ptr::drop_in_place(entry_mut_ptr);
             occupied &= !(1_u32 << index);
             index = occupied.trailing_zeros();
         }
@@ -597,7 +595,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         }
 
         // Insert a new `DataArray` at the linked list head.
-        let mut new_link = Arc::new(Linked::new());
+        let new_link = Arc::new(Linked::new());
         let new_link_mut = unsafe { &mut *(new_link.as_ptr() as *mut Linked<K, V, LINKED_LEN>) };
         self.insert_entry(
             &new_link.data_array,
@@ -622,6 +620,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
             return None;
         }
         if let Some(link) = iterator.current_link_ptr.as_ref() {
+            #[allow(clippy::cast_ref_to_mut)]
             let link_mut = unsafe {
                 &mut *(link as *const Linked<K, V, LINKED_LEN> as *mut Linked<K, V, LINKED_LEN>)
             };
@@ -652,6 +651,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     pub(crate) fn extract(&self, iterator: &mut EntryIterator<K, V, LOCK_FREE>) -> (K, V) {
         debug_assert!(!LOCK_FREE);
         if let Some(link) = iterator.current_link_ptr.as_ref() {
+            #[allow(clippy::cast_ref_to_mut)]
             let link_mut = unsafe {
                 &mut *(link as *const Linked<K, V, LINKED_LEN> as *mut Linked<K, V, LINKED_LEN>)
             };
@@ -666,7 +666,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
             extracted
         } else {
             self.extract_entry(
-                &iterator.data_block,
+                iterator.data_block,
                 &mut self.cell_mut().occupied_bitmap,
                 iterator.current_index,
             )
@@ -698,6 +698,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     }
 
     /// Inserts a key-value pair in the slot.
+    #[allow(clippy::too_many_arguments)]
     fn insert_entry<const LEN: usize>(
         &self,
         data_array: &[MaybeUninit<(K, V)>; LEN],
@@ -711,7 +712,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         debug_assert!(index < LEN);
 
         unsafe {
-            data_array[index].as_mut_ptr().write((key, value));
+            (data_array[index].as_ptr() as *mut (K, V)).write((key, value));
             partial_hash_array[index] = partial_hash;
 
             if LOCK_FREE {
@@ -747,7 +748,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
             None
         } else {
             *occupied_bitmap &= !(1_u32 << index);
-            let entry_ptr = data_array[index].as_mut_ptr();
+            let entry_ptr = data_array[index].as_ptr() as *mut (K, V);
             #[allow(clippy::uninit_assumed_init)]
             Some(unsafe { ptr::replace(entry_ptr, MaybeUninit::uninit().assume_init()) })
         }
@@ -764,7 +765,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
 
         self.num_entries_updated(self.cell.num_entries - 1);
         *occupied_bitmap &= !(1_u32 << index);
-        let entry_ptr = data_array[index].as_mut_ptr();
+        let entry_ptr = data_array[index].as_ptr() as *mut (K, V);
         unsafe { ptr::read(entry_ptr) }
     }
 
@@ -974,12 +975,14 @@ mod test {
     async fn queue() {
         let num_tasks = CELL_LEN + 2;
         let barrier = Arc::new(sync::Barrier::new(num_tasks));
-        let data_block: DataBlock<usize, usize> = unsafe { MaybeUninit::uninit().assume_init() };
+        let data_block: Arc<DataBlock<usize, usize>> =
+            Arc::new(unsafe { MaybeUninit::uninit().assume_init() });
         let cell: Arc<Cell<usize, usize, true>> = Arc::new(Cell::default());
         let mut data: [u64; 128] = [0; 128];
         let mut task_handles = Vec::with_capacity(num_tasks);
         for task_id in 0..num_tasks {
             let barrier_copied = barrier.clone();
+            let data_block_copied = data_block.clone();
             let cell_copied = cell.clone();
             let data_ptr = AtomicPtr::new(&mut data);
             task_handles.push(tokio::spawn(async move {
@@ -997,6 +1000,7 @@ mod test {
                     assert_eq!(sum % 256, 0);
                     if i == 0 {
                         exclusive_locker.insert(
+                            &data_block_copied,
                             task_id,
                             0,
                             (task_id % CELL_LEN).try_into().unwrap(),
@@ -1007,6 +1011,7 @@ mod test {
                             exclusive_locker
                                 .cell()
                                 .search(
+                                    &data_block_copied,
                                     &task_id,
                                     (task_id % CELL_LEN).try_into().unwrap(),
                                     &barrier
@@ -1021,7 +1026,12 @@ mod test {
                     assert_eq!(
                         read_locker
                             .cell()
-                            .search(&task_id, (task_id % CELL_LEN).try_into().unwrap(), &barrier)
+                            .search(
+                                &data_block_copied,
+                                &task_id,
+                                (task_id % CELL_LEN).try_into().unwrap(),
+                                &barrier
+                            )
                             .unwrap(),
                         &(task_id, 0_usize)
                     );
@@ -1040,6 +1050,7 @@ mod test {
         for task_id in 0..num_tasks {
             assert_eq!(
                 cell.search(
+                    &data_block,
                     &task_id,
                     (task_id % CELL_LEN).try_into().unwrap(),
                     &epoch_barrier
@@ -1048,7 +1059,7 @@ mod test {
             );
         }
         let mut iterated = 0;
-        for entry in cell.iter(&epoch_barrier) {
+        for entry in cell.iter(&data_block, &epoch_barrier) {
             assert!(entry.0 .0 < num_tasks);
             assert_eq!(entry.0 .1, 0);
             iterated += 1;

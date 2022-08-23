@@ -175,7 +175,9 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         let mut target_cells: [Option<Locker<K, V, LOCK_FREE>>; size_of::<usize>() * 4] =
             Default::default();
         let mut max_index = 0;
-        let mut iter = cell_locker.cell().iter(barrier);
+        let mut iter = cell_locker
+            .cell()
+            .iter(old_array.data_block(old_cell_index), barrier);
         while let Some(entry) = iter.next() {
             let (new_cell_index, partial_hash) = if shrink {
                 debug_assert!(
@@ -215,7 +217,13 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                 debug_assert!(!LOCK_FREE);
                 cell_locker.extract(&mut iter)
             };
-            target_cell.insert(new_entry.0, new_entry.1, partial_hash, barrier);
+            target_cell.insert(
+                self.data_block(target_cell_index + offset),
+                new_entry.0,
+                new_entry.1,
+                partial_hash,
+                barrier,
+            );
         }
         cell_locker.purge(barrier);
         Ok(())

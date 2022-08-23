@@ -206,7 +206,7 @@ where
     {
         let (hash, partial_hash) = self.hash(key_ref);
         let barrier = Barrier::new();
-        let (_, _locker, iterator) = self
+        let (_, _locker, _data_block, iterator) = self
             .acquire::<Q>(key_ref, hash, partial_hash, None, &barrier)
             .ok()?;
         if let Some(iterator) = iterator {
@@ -251,7 +251,7 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if let Ok((_, _locker, iterator)) = self.acquire::<Q>(
+            if let Ok((_, _locker, _data_block, iterator)) = self.acquire::<Q>(
                 key_ref,
                 hash,
                 partial_hash,
@@ -509,7 +509,9 @@ where
             }
             for index in 0..current_array_ref.num_cells() {
                 if let Some(locker) = Locker::lock(current_array_ref.cell(index), &barrier) {
-                    let mut iterator = locker.cell().iter(&barrier);
+                    let mut iterator = locker
+                        .cell()
+                        .iter(current_array_ref.data_block(index), &barrier);
                     while iterator.next().is_some() {
                         locker.erase(&mut iterator);
                         num_removed = num_removed.saturating_add(1);
@@ -573,7 +575,9 @@ where
                             &barrier,
                         ) {
                             if let Some(locker) = result {
-                                let mut iterator = locker.cell().iter(&barrier);
+                                let mut iterator = locker
+                                    .cell()
+                                    .iter(current_array.data_block(cell_index), &barrier);
                                 while iterator.next().is_some() {
                                     locker.erase(&mut iterator);
                                     num_removed = num_removed.saturating_add(1);
@@ -891,8 +895,11 @@ where
                 old_array_ptr
             };
             let cell_ref = self.current_array_ptr.as_ref().unwrap().cell(0);
-            self.current_entry_iterator
-                .replace(EntryIterator::new(cell_ref, self.barrier_ref));
+            self.current_entry_iterator.replace(EntryIterator::new(
+                cell_ref,
+                self.current_array_ptr.as_ref().unwrap().data_block(0),
+                self.barrier_ref,
+            ));
         }
         loop {
             if let Some(iterator) = self.current_entry_iterator.as_mut() {
@@ -918,6 +925,7 @@ where
                     self.current_index = 0;
                     self.current_entry_iterator.replace(EntryIterator::new(
                         current_array_ref.cell(0),
+                        current_array_ref.data_block(0),
                         self.barrier_ref,
                     ));
                     continue;
@@ -931,12 +939,14 @@ where
                 self.current_index = 0;
                 self.current_entry_iterator.replace(EntryIterator::new(
                     self.current_array_ptr.as_ref().unwrap().cell(0),
+                    self.current_array_ptr.as_ref().unwrap().data_block(0),
                     self.barrier_ref,
                 ));
                 continue;
             }
             self.current_entry_iterator.replace(EntryIterator::new(
                 array_ref.cell(self.current_index),
+                array_ref.data_block(self.current_index),
                 self.barrier_ref,
             ));
         }

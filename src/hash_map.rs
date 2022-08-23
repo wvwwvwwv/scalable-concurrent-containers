@@ -265,7 +265,7 @@ where
     {
         let (hash, partial_hash) = self.hash(key_ref);
         let barrier = Barrier::new();
-        let (_, _locker, iterator) = self
+        let (_, _locker, _data_block, iterator) = self
             .acquire::<Q>(key_ref, hash, partial_hash, None, &barrier)
             .ok()?;
         if let Some(iterator) = iterator {
@@ -304,7 +304,7 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if let Ok((_, _locker, iterator)) = self.acquire::<Q>(
+            if let Ok((_, _locker, _data_block, iterator)) = self.acquire::<Q>(
                 key_ref,
                 hash,
                 partial_hash,
@@ -345,7 +345,7 @@ where
     ) {
         let (hash, partial_hash) = self.hash(&key);
         let barrier = Barrier::new();
-        if let Ok((_, locker, iterator)) =
+        if let Ok((_, locker, data_block, iterator)) =
             self.acquire::<_>(&key, hash, partial_hash, None, &barrier)
         {
             if let Some(iterator) = iterator {
@@ -355,7 +355,7 @@ where
                 updater(k, unsafe { &mut *(v as *const V as *mut V) });
                 return;
             }
-            locker.insert(key, constructor(), partial_hash, &barrier);
+            locker.insert(data_block, key, constructor(), partial_hash, &barrier);
         };
     }
 
@@ -383,7 +383,7 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if let Ok((_, locker, iterator)) = self.acquire::<_>(
+            if let Ok((_, locker, data_block, iterator)) = self.acquire::<_>(
                 &key,
                 hash,
                 partial_hash,
@@ -396,7 +396,13 @@ where
                     updater(k, unsafe { &mut *(v as *const V as *mut V) });
                     return;
                 }
-                locker.insert(key, constructor(), partial_hash, &Barrier::new());
+                locker.insert(
+                    data_block,
+                    key,
+                    constructor(),
+                    partial_hash,
+                    &Barrier::new(),
+                );
                 return;
             }
             async_wait_pinned.await;
@@ -680,7 +686,7 @@ where
                 if let Some(locker) = Reader::lock(current_array_ref.cell(cell_index), &barrier) {
                     locker
                         .cell()
-                        .iter(&barrier)
+                        .iter(current_array_ref.data_block(cell_index), &barrier)
                         .for_each(|((k, v), _)| scanner(k, v));
                 }
             }
@@ -740,7 +746,9 @@ where
                             &barrier,
                         ) {
                             if let Some(locker) = result {
-                                let mut iterator = locker.cell().iter(&barrier);
+                                let mut iterator = locker
+                                    .cell()
+                                    .iter(current_array.data_block(cell_index), &barrier);
                                 while iterator.next().is_some() {
                                     let (k, v) = iterator.get();
                                     scanner(k, v);
@@ -879,7 +887,9 @@ where
 
             for cell_index in 0..current_array.num_cells() {
                 if let Some(locker) = Locker::lock(current_array.cell(cell_index), &barrier) {
-                    let mut iterator = locker.cell().iter(&barrier);
+                    let mut iterator = locker
+                        .cell()
+                        .iter(current_array.data_block(cell_index), &barrier);
                     while iterator.next().is_some() {
                         let (k, v) = iterator.get();
                         #[allow(clippy::cast_ref_to_mut)]
@@ -968,7 +978,9 @@ where
                             &barrier,
                         ) {
                             if let Some(locker) = result {
-                                let mut iterator = locker.cell().iter(&barrier);
+                                let mut iterator = locker
+                                    .cell()
+                                    .iter(current_array.data_block(cell_index), &barrier);
                                 while iterator.next().is_some() {
                                     let (k, v) = iterator.get();
                                     #[allow(clippy::cast_ref_to_mut)]
