@@ -351,7 +351,7 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 - CPU: Intel(R) Xeon(R) CPU E7-8880 v4 @ 2.20GHz x 4
 - RAM: 1TB
 - Rust: 1.63.0
-- SCC: 0.9.1
+- SCC: 0.10.0
 
 ### Workload
 
@@ -369,44 +369,44 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 |         |  1 thread  |  4 threads | 16 threads | 64 threads |
 |---------|------------|------------|------------|------------|
-| Insert  |   8.891s   |  15.254s   |  41.336s   |  44.704s   |
-| Scan    |   0.149s   |   0.685s   |   2.974s   |  13.336s   |
-| Read    |   3.924s   |   5.016s   |   6.352s   |   7.809s   |
-| Remove  |   4.551s   |   6.483s   |  10.716s   |  23.336s   |
-| InsertR |  10.389s   |  26.099s   |  53.195s   |  55.457s   |
-| Mixed   |  14.229s   |  31.818s   |  28.635s   |  31.256s   |
-| RemoveR |   7.175s   |  13.221s   |  19.211s   |  28.113s   |
+| Insert  |   7.615s   |  10.873s   |  13.687s   |  23.582s   |
+| Scan    |   0.146s   |   0.711s   |   3.35s    |  10.881s   |
+| Read    |   3.973s   |   5.096s   |   6.234s   |   7.902s   |
+| Remove  |   4.607s   |   6.192s   |   8.252s   |  16.634s   |
+| InsertR |   9.015s   |  20.825s   |  23.612s   |  34.309s   |
+| Mixed   |  12.406s   |  26.141s   |  25.821s   |  29.053s   |
+| RemoveR |   6.231s   |  13.644s   |  15.317s   |  23.501s   |
 
 - [HashIndex](#HashIndex)
 
 |         |  1 thread  |  4 threads | 16 threads | 64 threads |
 |---------|------------|------------|------------|------------|
-| Insert  |   9.143s   |  16.255s   |  43.337s   |  50.957s   |
-| Scan    |   0.298s   |   1.37s    |   5.45s    |  22.296s   |
-| Read    |   3.573s   |   4.796s   |   6.031s   |   7.628s   |
-| Remove  |   4.777s   |   6.923s   |  12.085s   |  33.26s    |
-| InsertR |  10.571s   |  26.069s   |  53.993s   |  62.144s   |
-| Mixed   |  14.823s   |  35.097s   |  37.072s   |  40.236s   |
-| RemoveR |   7.395s   |  13.122s   |  19.728s   |  39.213s   |
+| Insert  |   7.626s   |  11.088s   |  14.18s    |  26.74s    |
+| Scan    |   0.151s   |   0.606s   |   2.444s   |  11.125s   |
+| Read    |   3.505s   |   4.82s    |   5.819s   |   7.481s   |
+| Remove  |   4.628s   |   6.78s    |   9.198s   |  21.57s    |
+| InsertR |   9.099s   |  20.905s   |  24.129s   |  37.178s   |
+| Mixed   |  13.087s   |  31.43s    |  34.054s   |  35.209s   |
+| RemoveR |   6.207s   |  13.589s   |  16.268s   |  30.492s   |
 
 - [TreeIndex](#TreeIndex)
 
 |         |  1 thread  |  4 threads | 16 threads | 64 threads |
 |---------|------------|------------|------------|------------|
-| Insert  |  14.723s   |  16.581s   |  18.709s   |  45.744s   |
-| Scan    |   1.226s   |   5.116s   |  20.692s   |  81.24s    |
-| Read    |   3.674s   |   4.318s   |   4.667s   |   5.196s   |
-| Remove  |   5.946s   |   8.735s   |  10.55s    |  10.068s   |
-| InsertR |  20.228s   |  74.463s   |  76.907s   |  69.789s   |
-| Mixed   |  28.353s   | 157.201s   | 421.862s   | 443.111s   |
-| RemoveR |   9.735s   |  21.811s   |  29.101s   |  36.613s   |
+| Insert  |  14.694s   |  16.427s   |  18.76s    |  45.409s   |
+| Scan    |   1.234s   |   4.974s   |  20.689s   |  81.438s   |
+| Read    |   3.733s   |   4.119s   |   4.898s   |   5.178s   |
+| Remove  |   6.114s   |   8.453s   |  10.363s   |  10.497s   |
+| InsertR |  20.341s   |  69.452s   |  82.766s   |  67.623s   |
+| Mixed   |  28.026s   | 180.701s   | 422.104s   | 443.7s     |
+| RemoveR |   9.75s    |  21.534s   |  31.032s   |  50.028s   |
 
 ### [HashMap](#HashMap) and [HashIndex](#HashIndex) Performance Comparison with [DashMap](https://github.com/xacrimon/dashmap) and [flurry](https://github.com/jonhoo/flurry)
 
 - [Results on Apple M1 (8 cores)](https://github.com/wvwwvwwv/conc-map-bench).
 - [Results on Intel Xeon (88 cores)](https://github.com/wvwwvwwv/conc-map-bench/tree/Intel).
 - *Interpret the results cautiously as benchmarks do not represent real world workloads.*
-- [HashMap](#HashMap) outperforms the others *[according to the benchmark test](https://github.com/xacrimon/conc-map-bench)* under highly concurrent or write-heavy workloads.
+- [HashMap](#HashMap) outperforms the others *[according to the benchmark test](https://github.com/xacrimon/conc-map-bench)* under highly concurrent workloads.
 - The benchmark test is forked from [conc-map-bench](https://github.com/xacrimon/conc-map-bench).
 
 ## [Changelog](https://github.com/wvwwvwwv/scalable-concurrent-containers/blob/main/CHANGELOG.md)

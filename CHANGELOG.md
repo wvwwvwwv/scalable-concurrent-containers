@@ -2,7 +2,7 @@
 
 0.10.0
 
-* [HashMap](#HashMap), [HashSet](#HashSet), and [HashIndex](#HashIndex) insert performance improvement by segregating zero and non-zero memory regions.
+* Significant [HashMap](#HashMap), [HashSet](#HashSet), and [HashIndex](#HashIndex) insert performance improvement by segregating zero and non-zero memory regions.
 
 0.9.1
 
