@@ -175,7 +175,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         }
         let mut bitmap = self.metadata.occupied_bitmap;
         let mut index = bitmap.trailing_zeros();
-        while (index as usize) < CELL_LEN {
+        while index != 32 {
             let entry_mut_ptr = data_block[index as usize].as_ptr() as *mut (K, V);
             ptr::drop_in_place(entry_mut_ptr);
             bitmap &= !(1_u32 << index);
@@ -890,7 +890,7 @@ impl<K: 'static + Eq, V: 'static, const LEN: usize> Linked<K, V, LEN> {
 impl<K: 'static + Eq, V: 'static, const LEN: usize> Drop for Linked<K, V, LEN> {
     fn drop(&mut self) {
         let mut index = self.metadata.occupied_bitmap.trailing_zeros();
-        while (index as usize) < LEN {
+        while index != 32 {
             let entry_mut_ptr = self.data_array[index as usize].as_mut_ptr();
             unsafe {
                 ptr::drop_in_place(entry_mut_ptr);

@@ -206,7 +206,7 @@ impl<T: 'static> Drop for Arc<T> {
     fn drop(&mut self) {
         if self.underlying().drop_ref() {
             let barrier = Barrier::new();
-            barrier.reclaim_underlying(self.instance_ptr.as_ptr());
+            barrier.reclaim_link(self.instance_ptr.as_ptr());
         }
     }
 }

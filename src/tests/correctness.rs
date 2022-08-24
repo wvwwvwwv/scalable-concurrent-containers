@@ -1212,6 +1212,36 @@ mod ebr_test {
     }
 
     #[test]
+    fn deferred_incremental() {
+        static EXECUTED: AtomicUsize = AtomicUsize::new(0);
+
+        let iter = 2;
+        for _ in 0..iter {
+            let mut execution_count = 0;
+            let barrier = Barrier::new();
+            barrier.defer_incremental_execute(move || {
+                if execution_count == 2 {
+                    EXECUTED.fetch_add(1, Relaxed);
+                    true
+                } else {
+                    Barrier::new().defer_incremental_execute(move || {
+                        drop(Arc::new(10));
+                        EXECUTED.fetch_add(1, Relaxed);
+                        true
+                    });
+                    execution_count += 1;
+                    false
+                }
+            });
+            drop(barrier);
+        }
+
+        while EXECUTED.load(Relaxed) != 3 * iter {
+            drop(Barrier::new());
+        }
+    }
+
+    #[test]
     fn arc() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
 

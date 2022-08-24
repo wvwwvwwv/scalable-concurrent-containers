@@ -381,10 +381,12 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
 
 impl<K: Eq, V, const LOCK_FREE: bool> Drop for CellArray<K, V, LOCK_FREE> {
     fn drop(&mut self) {
+        const JOB_SIZE: usize = 1_usize << 16;
+
         let num_cleared_cells = self.num_cleared_cells.load(Relaxed);
         if num_cleared_cells != self.array_len {
             let barrier = Barrier::new();
-            let end_index = self.array_len.min(num_cleared_cells + (1_usize << 16));
+            let end_index = self.array_len.min(num_cleared_cells + JOB_SIZE);
             for index in num_cleared_cells..end_index {
                 let cell = self.cell(index);
                 if LOCK_FREE || !cell.killed() {
@@ -396,22 +398,36 @@ impl<K: Eq, V, const LOCK_FREE: bool> Drop for CellArray<K, V, LOCK_FREE> {
 
             // If clearing entries did not end this time, defer the job.
             if end_index != self.array_len {
-                let cell_array_ptr = self.cell_array_ptr;
+                let cell_array_ptr_val = self.cell_array_ptr as usize;
                 let cell_array_ptr_offset = self.cell_array_ptr_offset;
-                let data_block_array_ptr = self.data_block_array_ptr;
+                let data_block_array_ptr_val = self.data_block_array_ptr as usize;
                 let array_len = self.array_len;
-                barrier.defer_execute(move || {
-                    let cell_array = CellArray {
-                        cell_array_ptr,
-                        cell_array_ptr_offset,
-                        data_block_array_ptr,
-                        array_len,
-                        log2_array_len: 0,
-                        num_cleared_cells: AtomicUsize::new(end_index),
-                        old_array: AtomicArc::null(),
-                        rehashing: AtomicUsize::new(0),
-                    };
-                    drop(cell_array);
+                let mut num_cleared_cells = end_index;
+                barrier.defer_incremental_execute(move || {
+                    let barrier = Barrier::new();
+                    let cell_array_ptr = cell_array_ptr_val as *const Cell<K, V, LOCK_FREE>;
+                    let data_block_array_ptr = data_block_array_ptr_val as *const DataBlock<K, V>;
+                    let end_index = array_len.min(num_cleared_cells + JOB_SIZE);
+                    for index in num_cleared_cells..end_index {
+                        let cell = unsafe { &(*(cell_array_ptr.add(index))) };
+                        if LOCK_FREE || !cell.killed() {
+                            unsafe {
+                                cell.drop_entries(&(*(data_block_array_ptr.add(index))), &barrier);
+                            }
+                        }
+                    }
+                    if end_index == array_len {
+                        Self::dealloc_arrays(
+                            cell_array_ptr,
+                            cell_array_ptr_offset,
+                            data_block_array_ptr,
+                            array_len,
+                        );
+                        true
+                    } else {
+                        num_cleared_cells = end_index;
+                        false
+                    }
                 });
 
                 // Do not deallocate its arrays.

@@ -155,6 +155,26 @@ impl Collector {
         }
     }
 
+    /// Reclaims confirmed garbage instances.
+    #[inline]
+    pub(super) fn reclaim_confirmed(&mut self, instance_ptr: *mut dyn Link) {
+        debug_assert_eq!(self.state.load(Relaxed) & Self::INACTIVE, 0);
+        debug_assert_eq!(self.state.load(Relaxed), self.announcement);
+
+        if let Some(mut ptr) = NonNull::new(instance_ptr) {
+            unsafe {
+                if let Some(head) = self.next_instance_link.as_ref() {
+                    ptr.as_mut().set(head.as_ptr());
+                }
+                self.next_instance_link.replace(ptr);
+                self.num_instances += 1;
+                if self.next_epoch_update != 0 {
+                    self.next_epoch_update -= 1;
+                }
+            }
+        }
+    }
+
     /// Tries to scan the [`Collector`] instances to update the global epoch.
     fn try_scan(&mut self) {
         debug_assert_eq!(self.state.load(Relaxed) & Self::INACTIVE, 0);

@@ -1,6 +1,8 @@
 use super::collector::Collector;
-use super::underlying::Underlying;
+use super::underlying::Link;
 use super::Arc;
+
+use std::ptr::null;
 
 /// [`Barrier`] allows the user to read [`AtomicArc`](super::AtomicArc) and keeps the
 /// underlying instance pinned to the thread.
@@ -43,7 +45,8 @@ impl Barrier {
     /// when the method was invoked is dropped, however it is totally non-deterministic when
     /// exactly the closure will be executed.
     ///
-    /// Note that the supplied closure is store in the heap memory.
+    /// Note that the supplied closure is stored in the heap memory, and it has to be `Sync` as it
+    /// can be referred to by another thread.
     ///
     /// # Examples
     ///
@@ -54,8 +57,40 @@ impl Barrier {
     /// barrier.defer_execute(|| println!("deferred"));
     /// ```
     #[inline]
-    pub fn defer_execute<F: 'static + FnOnce()>(&self, f: F) {
+    pub fn defer_execute<F: 'static + FnOnce() + Sync>(&self, f: F) {
         self.reclaim(Arc::new(DeferredClosure { f: Some(f) }));
+    }
+
+    /// Executes the supplied closure incrementally at a later point of time.
+    ///
+    /// It is guaranteed that the closure will be executed when every [`Barrier`] at the moment
+    /// when the method was invoked is dropped, however it is totally non-deterministic when
+    /// exactly the closure will be executed.
+    ///
+    /// Note that the supplied closure is stored in the heap memory, and it has to be `Sync` as it
+    /// can be referred to by another thread.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::Barrier;
+    ///
+    /// let barrier = Barrier::new();
+    /// let mut data = 3;
+    /// barrier.defer_incremental_execute(move || {
+    ///     if data == 0 {
+    ///         return true;
+    ///     }
+    ///     data -= 1;
+    ///     false
+    /// });
+    /// ```
+    #[inline]
+    pub fn defer_incremental_execute<F: 'static + FnMut() -> bool + Sync>(&self, f: F) {
+        let null_dyn: *const DeferredIncrementalClosure<F> = null();
+        let boxed = Box::new(DeferredIncrementalClosure { f, next: null_dyn });
+        self.reclaim_link(Box::into_raw(boxed) as *const DeferredIncrementalClosure<F>
+            as *mut DeferredIncrementalClosure<F>);
     }
 
     /// Reclaims an [`Arc`].
@@ -72,16 +107,16 @@ impl Barrier {
     #[inline]
     pub fn reclaim<T: 'static>(&self, arc: Arc<T>) {
         if let Some(ptr) = arc.drop_ref() {
-            self.reclaim_underlying(ptr);
+            self.reclaim_link(ptr);
         }
         std::mem::forget(arc);
     }
 
-    /// Reclaims the underlying instance of an [`Arc`] or [`AtomicArc`](super::AtomicArc).
+    /// Reclaims the supplied instance.
     #[inline]
-    pub(super) fn reclaim_underlying<T: 'static>(&self, underlying: *mut Underlying<T>) {
+    pub(super) fn reclaim_link(&self, link: *mut dyn Link) {
         unsafe {
-            (*self.collector_ptr).reclaim(underlying);
+            (*self.collector_ptr).reclaim(link);
         }
     }
 }
@@ -102,15 +137,41 @@ impl Drop for Barrier {
     }
 }
 
-struct DeferredClosure<F: 'static + FnOnce()> {
+struct DeferredClosure<F: 'static + FnOnce() + Sync> {
     f: Option<F>,
 }
 
-impl<F: 'static + FnOnce()> Drop for DeferredClosure<F> {
+impl<F: 'static + FnOnce() + Sync> Drop for DeferredClosure<F> {
     #[inline]
     fn drop(&mut self) {
         if let Some(f) = self.f.take() {
             f();
         }
+    }
+}
+
+struct DeferredIncrementalClosure<F: 'static + FnMut() -> bool + Sync> {
+    f: F,
+    next: *const dyn Link,
+}
+
+impl<F: 'static + FnMut() -> bool + Sync> Link for DeferredIncrementalClosure<F> {
+    fn set(&mut self, next_ptr: *const dyn Link) {
+        self.next = next_ptr;
+    }
+    fn free(&mut self) -> *mut dyn Link {
+        let next = self.next as *mut dyn Link;
+        if (self.f)() {
+            // Finished, thus drop `self`.
+            unsafe { Box::from_raw(self as *mut Self) };
+        } else {
+            // Push itself into the garbage queue.
+            let null_dyn: *const DeferredIncrementalClosure<F> = null();
+            self.next = null_dyn;
+            unsafe {
+                (*Collector::current()).reclaim_confirmed(self as *mut Self);
+            }
+        }
+        next
     }
 }
