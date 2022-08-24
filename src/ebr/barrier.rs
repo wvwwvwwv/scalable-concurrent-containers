@@ -63,12 +63,18 @@ impl Barrier {
 
     /// Executes the supplied closure incrementally at a later point of time.
     ///
+    /// The closure will be repeatedly invoked until it returns `true`. The closure is able to keep
+    /// its internal state by capturing `mut` variables, thus making itself as a state machine;
+    /// this implies that the closure is able to emulate incremental execution of arbitrary
+    /// `'static` and `Sync` code.
+    ///
     /// It is guaranteed that the closure will be executed when every [`Barrier`] at the moment
     /// when the method was invoked is dropped, however it is totally non-deterministic when
     /// exactly the closure will be executed.
     ///
     /// Note that the supplied closure is stored in the heap memory, and it has to be `Sync` as it
-    /// can be referred to by another thread.
+    /// can be referred to by another thread. Furthermore, the closure can be invoked at any
+    /// arbitrary moment of time once after it was invoked for the first time.
     ///
     /// # Examples
     ///

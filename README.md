@@ -294,6 +294,18 @@ assert_eq!(*ptr.as_ref().unwrap(), 17);
 barrier.defer_execute(|| println!("deferred"));
 drop(barrier);
 
+// The closure will be repeatedly invoked until it returns `true`.
+let barrier = Barrier::new();
+let mut data = 3;
+barrier.defer_incremental_execute(move || {
+    if data == 0 {
+        return true;
+    }
+    data -= 1;
+    false
+});
+drop(barrier);
+
 // If the thread is expected to lie dormant for a while, call `suspend()` to allow other threads
 // to reclaim its own retired instances.
 suspend();

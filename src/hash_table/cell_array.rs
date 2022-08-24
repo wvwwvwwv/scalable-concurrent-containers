@@ -381,7 +381,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
 
 impl<K: Eq, V, const LOCK_FREE: bool> Drop for CellArray<K, V, LOCK_FREE> {
     fn drop(&mut self) {
-        const JOB_SIZE: usize = 1_usize << 16;
+        const JOB_SIZE: usize = 1_usize << 12;
 
         let num_cleared_cells = self.num_cleared_cells.load(Relaxed);
         if num_cleared_cells != self.array_len {

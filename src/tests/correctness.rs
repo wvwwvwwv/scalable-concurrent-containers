@@ -58,7 +58,7 @@ mod hashmap_test {
         static CNT: AtomicUsize = AtomicUsize::new(0);
         let hashmap: HashMap<usize, R> = HashMap::default();
 
-        let workload_size = 1_usize << 22;
+        let workload_size = 1_usize << 18;
 
         for _ in 0..2 {
             for k in 0..workload_size {
@@ -416,7 +416,7 @@ mod hashmap_test {
         static CNT: AtomicUsize = AtomicUsize::new(0);
         let hashindex: HashIndex<usize, R> = HashIndex::default();
 
-        let workload_size = 1_usize << 22;
+        let workload_size = 1_usize << 18;
 
         for _ in 0..2 {
             for k in 0..workload_size {
