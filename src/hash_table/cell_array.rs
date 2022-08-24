@@ -7,25 +7,22 @@ use std::alloc::{alloc, alloc_zeroed, dealloc, Layout};
 use std::borrow::Borrow;
 use std::hash::Hash;
 use std::mem::{align_of, size_of};
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 /// [`CellArray`] is a special purpose array being initialized by zero.
 pub struct CellArray<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
     cell_array_ptr: *const Cell<K, V, LOCK_FREE>,
     cell_array_ptr_offset: usize,
     data_block_array_ptr: *const DataBlock<K, V>,
-    array_capacity: usize,
-    log2_capacity: u8,
-    cleared: AtomicBool,
+    array_len: usize,
+    log2_array_len: u8,
+    num_cleared_cells: AtomicUsize,
     old_array: AtomicArc<CellArray<K, V, LOCK_FREE>>,
     rehashing: AtomicUsize,
 }
 
 impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FREE> {
-    /// The number of `Cells` a task has to relocate on a single call to `partial_rehash`.
-    const UNIT_SIZE: usize = CELL_LEN;
-
     /// Creates a new Array of given capacity.
     ///
     /// `total_cell_capacity` is the desired number entries, not the number of [`Cell`]
@@ -35,11 +32,11 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         total_cell_capacity: usize,
         old_array: AtomicArc<CellArray<K, V, LOCK_FREE>>,
     ) -> CellArray<K, V, LOCK_FREE> {
-        let log2_capacity = Self::calculate_log2_array_size(total_cell_capacity);
-        let array_capacity = 1_usize << log2_capacity;
+        let log2_array_len = Self::calculate_log2_array_size(total_cell_capacity);
+        let array_len = 1_usize << log2_array_len;
         unsafe {
             let (cell_size, cell_array_allocation_size, cell_array_layout) =
-                Self::calculate_memory_layout::<Cell<K, V, LOCK_FREE>>(array_capacity);
+                Self::calculate_memory_layout::<Cell<K, V, LOCK_FREE>>(array_len);
             let cell_array_ptr = alloc_zeroed(cell_array_layout);
             assert!(
                 !cell_array_ptr.is_null(),
@@ -51,9 +48,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             if cell_array_ptr_offset == usize::MAX {
                 cell_array_ptr_offset = 0;
             }
-            assert!(
-                cell_array_ptr_offset + cell_size * array_capacity <= cell_array_allocation_size,
-            );
+            assert!(cell_array_ptr_offset + cell_size * array_len <= cell_array_allocation_size,);
 
             #[allow(clippy::cast_ptr_alignment)]
             let cell_array_ptr = cell_array_ptr
@@ -61,7 +56,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                 .cast::<Cell<K, V, LOCK_FREE>>();
 
             let data_block_array_layout = Layout::from_size_align(
-                size_of::<DataBlock<K, V>>() * array_capacity,
+                size_of::<DataBlock<K, V>>() * array_len,
                 align_of::<[DataBlock<K, V>; 0]>(),
             )
             .unwrap();
@@ -77,9 +72,9 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                 cell_array_ptr,
                 cell_array_ptr_offset,
                 data_block_array_ptr,
-                array_capacity,
-                log2_capacity,
-                cleared: AtomicBool::new(false),
+                array_len,
+                log2_array_len,
+                num_cleared_cells: AtomicUsize::new(0),
                 old_array,
                 rehashing: AtomicUsize::new(0),
             }
@@ -103,19 +98,19 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     /// Returns the recommended sampling size.
     #[inline]
     pub(crate) fn sample_size(&self) -> usize {
-        (self.log2_capacity as usize).next_power_of_two()
+        (self.log2_array_len as usize).next_power_of_two()
     }
 
     /// Returns the number of [`Cell`] instances in the [`CellArray`].
     #[inline]
     pub(crate) fn num_cells(&self) -> usize {
-        self.array_capacity
+        self.array_len
     }
 
     /// Returns the number of total entries.
     #[inline]
     pub(crate) fn num_entries(&self) -> usize {
-        self.array_capacity * CELL_LEN
+        self.array_len * CELL_LEN
     }
 
     /// Returns a [`Ptr`] to the old array.
@@ -131,7 +126,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     #[allow(clippy::cast_possible_truncation)]
     #[inline]
     pub(crate) fn calculate_cell_index(&self, hash: u64) -> usize {
-        hash.wrapping_shr(64 - u32::from(self.log2_capacity)) as usize
+        hash.wrapping_shr(64 - u32::from(self.log2_array_len)) as usize
     }
 
     /// Kills the [`Cell`].
@@ -251,20 +246,19 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             let old_array_size = old_array_ref.num_cells();
             let mut current = old_array_ref.rehashing.load(Relaxed);
             loop {
-                if current >= old_array_size
-                    || (current & (Self::UNIT_SIZE - 1)) == Self::UNIT_SIZE - 1
-                {
-                    // Only `UNIT_SIZE - 1` threads are allowed to rehash `Cells` at a moment.
+                if current >= old_array_size || (current & (CELL_LEN - 1)) == CELL_LEN - 1 {
+                    // Only `CELL_LEN - 1` threads are allowed to rehash `Cells` atl
+                    // a moment.
                     return Ok(self.old_array.is_null(Relaxed));
                 }
                 match old_array_ref.rehashing.compare_exchange(
                     current,
-                    current + Self::UNIT_SIZE + 1,
+                    current + CELL_LEN + 1,
                     Relaxed,
                     Relaxed,
                 ) {
                     Ok(_) => {
-                        current &= !(Self::UNIT_SIZE - 1);
+                        current &= !(CELL_LEN - 1);
                         break;
                     }
                     Err(result) => current = result,
@@ -276,11 +270,11 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                 if success {
                     // Keep the index as it is.
                     let current = old_array_ref.rehashing.fetch_sub(1, Relaxed) - 1;
-                    if (current & (Self::UNIT_SIZE - 1) == 0) && current >= old_array_size {
+                    if (current & (CELL_LEN - 1) == 0) && current >= old_array_size {
                         // The last one trying to relocate old entries gets rid of the old array.
                         if let Some(old_array) = self.old_array.swap((None, Tag::None), Relaxed).0 {
                             if !LOCK_FREE {
-                                old_array.cleared.store(true, Relaxed);
+                                old_array.num_cleared_cells.store(old_array_size, Relaxed);
                             }
                             barrier.reclaim(old_array);
                         }
@@ -292,7 +286,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                         let new = if current <= prev {
                             current - 1
                         } else {
-                            let ref_cnt = current & (Self::UNIT_SIZE - 1);
+                            let ref_cnt = current & (CELL_LEN - 1);
                             prev | (ref_cnt - 1)
                         };
                         match old_array_ref
@@ -306,12 +300,12 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                 }
             });
 
-            for old_cell_index in current..(current + Self::UNIT_SIZE).min(old_array_size) {
-                let old_cell_ref = old_array_ref.cell(old_cell_index);
+            for old_cell_index in current..(current + CELL_LEN).min(old_array_size) {
+                let old_cell = old_array_ref.cell(old_cell_index);
                 let lock_result = if let Some(&async_wait) = async_wait.as_ref() {
-                    Locker::try_lock_or_wait(old_cell_ref, async_wait, barrier)?
+                    Locker::try_lock_or_wait(old_cell, async_wait, barrier)?
                 } else {
-                    Locker::lock(old_cell_ref, barrier)
+                    Locker::lock(old_cell, barrier)
                 };
                 if let Some(mut locker) = lock_result {
                     self.kill_cell::<Q, F, C>(
@@ -358,37 +352,78 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             Layout::from_size_align_unchecked(allocation_size, 1)
         })
     }
-}
 
-impl<K: Eq, V, const LOCK_FREE: bool> Drop for CellArray<K, V, LOCK_FREE> {
-    fn drop(&mut self) {
-        if !self.cleared.load(Relaxed) {
-            let barrier = Barrier::new();
-            for index in 0..self.num_cells() {
-                let cell_ref = self.cell(index);
-                if LOCK_FREE || !cell_ref.killed() {
-                    unsafe {
-                        cell_ref.kill_and_drop(self.data_block(index), &barrier);
-                    }
-                }
-            }
-        }
+    /// Deallocates data arrays.
+    fn dealloc_arrays(
+        cell_array_ptr: *const Cell<K, V, LOCK_FREE>,
+        cell_array_ptr_offset: usize,
+        data_block_array_ptr: *const DataBlock<K, V>,
+        len: usize,
+    ) {
         unsafe {
             dealloc(
-                (self.cell_array_ptr as *mut Cell<K, V, LOCK_FREE>)
+                (cell_array_ptr as *mut Cell<K, V, LOCK_FREE>)
                     .cast::<u8>()
-                    .sub(self.cell_array_ptr_offset),
-                Self::calculate_memory_layout::<Cell<K, V, LOCK_FREE>>(self.array_capacity).2,
+                    .sub(cell_array_ptr_offset),
+                Self::calculate_memory_layout::<Cell<K, V, LOCK_FREE>>(len).2,
             );
             dealloc(
-                (self.data_block_array_ptr as *mut DataBlock<K, V>).cast::<u8>(),
+                (data_block_array_ptr as *mut DataBlock<K, V>).cast::<u8>(),
                 Layout::from_size_align(
-                    size_of::<DataBlock<K, V>>() * self.array_capacity,
+                    size_of::<DataBlock<K, V>>() * len,
                     align_of::<[DataBlock<K, V>; 0]>(),
                 )
                 .unwrap(),
             );
         }
+    }
+}
+
+impl<K: Eq, V, const LOCK_FREE: bool> Drop for CellArray<K, V, LOCK_FREE> {
+    fn drop(&mut self) {
+        let num_cleared_cells = self.num_cleared_cells.load(Relaxed);
+        if num_cleared_cells != self.array_len {
+            let barrier = Barrier::new();
+            let end_index = self.array_len.min(num_cleared_cells + (1_usize << 16));
+            for index in num_cleared_cells..end_index {
+                let cell = self.cell(index);
+                if LOCK_FREE || !cell.killed() {
+                    unsafe {
+                        cell.drop_entries(self.data_block(index), &barrier);
+                    }
+                }
+            }
+
+            // If clearing entries did not end this time, defer the job.
+            if end_index != self.array_len {
+                let cell_array_ptr = self.cell_array_ptr;
+                let cell_array_ptr_offset = self.cell_array_ptr_offset;
+                let data_block_array_ptr = self.data_block_array_ptr;
+                let array_len = self.array_len;
+                barrier.defer_execute(move || {
+                    let cell_array = CellArray {
+                        cell_array_ptr,
+                        cell_array_ptr_offset,
+                        data_block_array_ptr,
+                        array_len,
+                        log2_array_len: 0,
+                        num_cleared_cells: AtomicUsize::new(end_index),
+                        old_array: AtomicArc::null(),
+                        rehashing: AtomicUsize::new(0),
+                    };
+                    drop(cell_array);
+                });
+
+                // Do not deallocate its arrays.
+                return;
+            }
+        }
+        Self::dealloc_arrays(
+            self.cell_array_ptr,
+            self.cell_array_ptr_offset,
+            self.data_block_array_ptr,
+            self.array_len,
+        );
     }
 }
 
@@ -420,7 +455,7 @@ mod test {
         assert_eq!(array.num_cells(), 1024 * 1024);
         let after_alloc = Instant::now();
         println!("allocation took {:?}", after_alloc - start);
-        array.cleared.store(true, Relaxed);
+        array.num_cleared_cells.store(array.array_len, Relaxed);
         drop(array);
         let after_dealloc = Instant::now();
         println!("deallocation took {:?}", after_dealloc - after_alloc);

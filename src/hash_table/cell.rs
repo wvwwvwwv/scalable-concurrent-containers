@@ -8,7 +8,7 @@ use std::sync::atomic::fence;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-/// The fixed size of the main [`DataArray`].
+/// The fixed size of the bitmap.
 ///
 /// The size cannot exceed `32`.
 pub const CELL_LEN: usize = 32;
@@ -16,7 +16,7 @@ pub const CELL_LEN: usize = 32;
 /// Data block type.
 pub type DataBlock<K, V> = [MaybeUninit<(K, V)>; CELL_LEN];
 
-/// The fixed size of the linked [`DataArray`].
+/// The fixed size of the linked data array.
 const LINKED_LEN: usize = CELL_LEN / 4;
 
 /// State bits.
@@ -163,16 +163,16 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         None
     }
 
-    /// Kills the [`Cell`] and drops entries in the given [`DataBlock`].
+    /// Drops entries in the given [`DataBlock`].
+    ///
+    /// The [`Cell`] and the [`DataBlock`] should never be used afterwards.
     #[inline]
-    pub(crate) unsafe fn kill_and_drop(&self, data_block: &DataBlock<K, V>, barrier: &Barrier) {
+    pub(crate) unsafe fn drop_entries(&self, data_block: &DataBlock<K, V>, barrier: &Barrier) {
         if !self.metadata.link.load(Acquire, barrier).is_null() {
             if let Some(link) = self.metadata.link.swap((None, Tag::None), Relaxed).0 {
                 barrier.reclaim(link);
             }
         }
-        self.state.store(KILLED, Relaxed);
-
         let mut bitmap = self.metadata.occupied_bitmap;
         let mut index = bitmap.trailing_zeros();
         while (index as usize) < CELL_LEN {
@@ -183,7 +183,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         }
     }
 
-    /// Searches the given [`DataArray`] for an entry matching the key.
+    /// Searches the given data array for an entry matching the key.
     #[allow(clippy::cast_possible_truncation)]
     fn search_array<'b, Q, const LEN: usize>(
         metadata: &'b Metadata<K, V, LEN>,
@@ -236,7 +236,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         None
     }
 
-    /// Searches for a next closest valid slot to the given slot in the [`DataArray`].
+    /// Searches for a next closest valid slot to the given slot in the bitmap.
     ///
     /// If the given slot is valid, it returns the given slot.
     fn next_entry<Q, const LEN: usize>(
@@ -519,7 +519,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                 link.metadata.link.load(Acquire, barrier).as_raw() as *mut Linked<K, V, LINKED_LEN>;
         }
 
-        // Insert a new `DataArray` at the linked list head.
+        // Insert a new `Linked` at the linked list head.
         let new_link = Arc::new(Linked::new());
         let new_link_mut = unsafe { &mut *(new_link.as_ptr() as *mut Linked<K, V, LINKED_LEN>) };
         self.insert_entry(
@@ -870,7 +870,7 @@ impl<K: 'static + Eq, V: 'static, const LEN: usize> Default for Metadata<K, V, L
     }
 }
 
-/// [`DataArray`] is a fixed size array of key-value pairs.
+/// [`Linked`] is a fixed size array of key-value pairs.
 ///
 /// `LEN` can only be `8` or `32`.
 pub(crate) struct Linked<K: 'static + Eq, V: 'static, const LEN: usize> {

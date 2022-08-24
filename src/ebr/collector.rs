@@ -136,6 +136,7 @@ impl Collector {
     }
 
     /// Reclaims garbage instances.
+    #[inline]
     pub(super) fn reclaim(&mut self, instance_ptr: *mut dyn Link) {
         debug_assert_eq!(self.state.load(Relaxed) & Self::INACTIVE, 0);
         debug_assert_eq!(self.state.load(Relaxed), self.announcement);
@@ -264,11 +265,13 @@ impl Collector {
     }
 
     /// Returns the [`Collector`] attached to the current thread.
+    #[inline]
     pub(super) fn current() -> *mut Collector {
         TLS.with(|tls| tls.collector_ptr)
     }
 
     /// Passes its garbage instances to a free flowing [`Collector`].
+    #[inline]
     pub(super) fn pass_garbage() -> bool {
         TLS.with(|tls| {
             let collector = unsafe { &mut (*tls.collector_ptr) };

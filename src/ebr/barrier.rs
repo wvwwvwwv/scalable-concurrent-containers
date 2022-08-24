@@ -78,6 +78,7 @@ impl Barrier {
     }
 
     /// Reclaims the underlying instance of an [`Arc`] or [`AtomicArc`](super::AtomicArc).
+    #[inline]
     pub(super) fn reclaim_underlying<T: 'static>(&self, underlying: *mut Underlying<T>) {
         unsafe {
             (*self.collector_ptr).reclaim(underlying);
@@ -106,6 +107,7 @@ struct DeferredClosure<F: 'static + FnOnce()> {
 }
 
 impl<F: 'static + FnOnce()> Drop for DeferredClosure<F> {
+    #[inline]
     fn drop(&mut self) {
         if let Some(f) = self.f.take() {
             f();

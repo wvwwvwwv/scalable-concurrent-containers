@@ -57,12 +57,12 @@ where
     #[inline]
     fn num_entries(&self, barrier: &Barrier) -> usize {
         let current_array_ptr = self.cell_array().load(Acquire, barrier);
-        let current_array_ref = current_array_ptr.as_ref().unwrap();
+        let current_array = current_array_ptr.as_ref().unwrap();
         let mut num_entries = 0;
-        for i in 0..current_array_ref.num_cells() {
-            num_entries += current_array_ref.cell(i).num_entries();
+        for i in 0..current_array.num_cells() {
+            num_entries += current_array.cell(i).num_entries();
         }
-        let old_array_ptr = current_array_ref.old_array(barrier);
+        let old_array_ptr = current_array.old_array(barrier);
         if let Some(old_array_ref) = old_array_ptr.as_ref() {
             for i in 0..old_array_ref.num_cells() {
                 num_entries += old_array_ref.cell(i).num_entries();
@@ -75,8 +75,8 @@ where
     #[inline]
     fn num_slots(&self, barrier: &Barrier) -> usize {
         let current_array_ptr = self.cell_array().load(Acquire, barrier);
-        let current_array_ref = current_array_ptr.as_ref().unwrap();
-        current_array_ref.num_entries()
+        let current_array = current_array_ptr.as_ref().unwrap();
+        current_array.num_entries()
     }
 
     /// Estimates the number of entries using the given number of cells.
@@ -172,8 +172,8 @@ where
                 )? {
                     let cell_index = old_array_ref.calculate_cell_index(hash);
                     if LOCK_FREE {
-                        let cell_ref = old_array_ref.cell(cell_index);
-                        if let Some(entry) = cell_ref.search(
+                        let cell = old_array_ref.cell(cell_index);
+                        if let Some(entry) = cell.search(
                             old_array_ref.data_block(cell_index),
                             key_ref,
                             partial_hash,
@@ -206,8 +206,8 @@ where
             }
             let cell_index = current_array_ref.calculate_cell_index(hash);
             if LOCK_FREE {
-                let cell_ref = current_array_ref.cell(cell_index);
-                if let Some(entry) = cell_ref.search(
+                let cell = current_array_ref.cell(cell_index);
+                if let Some(entry) = cell.search(
                     current_array_ref.data_block(cell_index),
                     key_ref,
                     partial_hash,
@@ -346,9 +346,9 @@ where
         loop {
             // An acquire fence is required to correctly load the contents of the array.
             let current_array_ptr = self.cell_array().load(Acquire, barrier);
-            let current_array_ref = current_array_ptr.as_ref().unwrap();
-            if let Some(old_array_ref) = current_array_ref.old_array(barrier).as_ref() {
-                if !current_array_ref.partial_rehash::<Q, _, _>(
+            let current_array = current_array_ptr.as_ref().unwrap();
+            if let Some(old_array_ref) = current_array.old_array(barrier).as_ref() {
+                if !current_array.partial_rehash::<Q, _, _>(
                     |key| self.hash(key),
                     &Self::copier,
                     async_wait,
@@ -380,7 +380,7 @@ where
                             ));
                         }
                         // Kills the Cell.
-                        current_array_ref.kill_cell::<Q, _, _>(
+                        current_array.kill_cell::<Q, _, _>(
                             &mut locker,
                             old_array_ref,
                             cell_index,
@@ -392,17 +392,17 @@ where
                     }
                 }
             }
-            let cell_index = current_array_ref.calculate_cell_index(hash);
+            let cell_index = current_array.calculate_cell_index(hash);
 
             // Try to resize the array.
-            let num_entries = current_array_ref.cell(cell_index).num_entries();
+            let num_entries = current_array.cell(cell_index).num_entries();
             if cell_index % CELL_LEN == 0 && check_resize && num_entries >= CELL_LEN {
                 // Trigger resize if the estimated load factor is greater than 7/8.
                 check_resize = false;
                 self.try_enlarge(
-                    current_array_ref,
-                    current_array_ref.num_cells(),
-                    current_array_ref.sample_size(),
+                    current_array,
+                    current_array.num_cells(),
+                    current_array.sample_size(),
                     cell_index,
                     num_entries,
                     barrier,
@@ -411,12 +411,12 @@ where
             }
 
             let lock_result = if let Some(&async_wait) = async_wait.as_ref() {
-                Locker::try_lock_or_wait(current_array_ref.cell(cell_index), async_wait, barrier)?
+                Locker::try_lock_or_wait(current_array.cell(cell_index), async_wait, barrier)?
             } else {
-                Locker::lock(current_array_ref.cell(cell_index), barrier)
+                Locker::lock(current_array.cell(cell_index), barrier)
             };
             if let Some(locker) = lock_result {
-                let data_block = current_array_ref.data_block(cell_index);
+                let data_block = current_array.data_block(cell_index);
                 if let Some(iter) = locker
                     .cell()
                     .get(data_block, key_ref, partial_hash, barrier)
@@ -534,8 +534,8 @@ where
                 *resize = self.resize_mutex().fetch_sub(1, Release) == 2_u8;
             });
 
-            let current_array_ref = self.cell_array().load(Acquire, barrier).as_ref().unwrap();
-            if !current_array_ref.old_array(barrier).is_null() {
+            let current_array = self.cell_array().load(Acquire, barrier).as_ref().unwrap();
+            if !current_array.old_array(barrier).is_null() {
                 // With a deprecated array present, it cannot be resized.
                 continue;
             }
@@ -543,12 +543,12 @@ where
             // The resizing policies are as follows.
             //  - The load factor reaches 7/8, then the array grows up to 32x.
             //  - The load factor reaches 1/16, then the array shrinks to fit.
-            let capacity = current_array_ref.num_entries();
-            let num_cells = current_array_ref.num_cells();
+            let capacity = current_array.num_entries();
+            let num_cells = current_array.num_cells();
             let num_cells_to_sample = (num_cells / 8).max(2).min(4096);
             let mut rebuild = false;
             let estimated_num_entries =
-                Self::estimate(current_array_ref, sampling_index, num_cells_to_sample);
+                Self::estimate(current_array, sampling_index, num_cells_to_sample);
             sampling_index = sampling_index.wrapping_add(num_cells_to_sample);
             let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
                 let max_capacity = 1_usize << (std::mem::size_of::<usize>() * 8 - 1);
@@ -577,7 +577,7 @@ where
             } else {
                 if LOCK_FREE {
                     rebuild =
-                        Self::check_rebuild(current_array_ref, sampling_index, num_cells_to_sample);
+                        Self::check_rebuild(current_array, sampling_index, num_cells_to_sample);
                 }
                 capacity
             };

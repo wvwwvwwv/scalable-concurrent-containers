@@ -8,6 +8,7 @@ mod benchmark {
 
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hash};
+    use std::ptr::addr_of;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
     use std::sync::{Arc, Barrier};
@@ -44,7 +45,7 @@ mod benchmark {
 
     trait BenchmarkOperation<
         K: Clone + Eq + Hash + Ord + Send + Sync,
-        V: Clone + Send + Sync + Unpin,
+        V: Clone + Send + Sync,
         H: BuildHasher,
     >
     {
@@ -54,11 +55,8 @@ mod benchmark {
         fn remove_test(&self, k: &K) -> bool;
     }
 
-    impl<
-            K: Clone + Eq + Hash + Ord + Send + Sync,
-            V: Clone + Send + Sync + Unpin,
-            H: BuildHasher,
-        > BenchmarkOperation<K, V, H> for HashMap<K, V, H>
+    impl<K: Clone + Eq + Hash + Ord + Send + Sync, V: Clone + Send + Sync, H: BuildHasher>
+        BenchmarkOperation<K, V, H> for HashMap<K, V, H>
     {
         #[inline(always)]
         fn insert_test(&self, k: K, v: V) -> bool {
@@ -71,7 +69,11 @@ mod benchmark {
         #[inline(always)]
         fn scan_test(&self) -> usize {
             let mut scanned = 0;
-            self.scan(|_, _| scanned += 1);
+            self.scan(|_, v| {
+                if addr_of!(v) as usize != 0 {
+                    scanned += 1;
+                }
+            });
             scanned
         }
 
@@ -83,7 +85,7 @@ mod benchmark {
 
     impl<
             K: Clone + Eq + Hash + Ord + Send + Sync,
-            V: Clone + Send + Sync + Unpin,
+            V: Clone + Send + Sync,
             H: 'static + BuildHasher,
         > BenchmarkOperation<K, V, H> for HashIndex<K, V, H>
     {
@@ -98,7 +100,9 @@ mod benchmark {
         #[inline(always)]
         fn scan_test(&self) -> usize {
             let barrier = ebr::Barrier::new();
-            self.iter(&barrier).count()
+            self.iter(&barrier)
+                .filter(|(_, v)| addr_of!(v) as usize != 0)
+                .count()
         }
         #[inline(always)]
         fn remove_test(&self, k: &K) -> bool {
@@ -106,11 +110,8 @@ mod benchmark {
         }
     }
 
-    impl<
-            K: Clone + Eq + Hash + Ord + Send + Sync,
-            V: Clone + Send + Sync + Unpin,
-            H: BuildHasher,
-        > BenchmarkOperation<K, V, H> for TreeIndex<K, V>
+    impl<K: Clone + Eq + Hash + Ord + Send + Sync, V: Clone + Send + Sync, H: BuildHasher>
+        BenchmarkOperation<K, V, H> for TreeIndex<K, V>
     {
         #[inline(always)]
         fn insert_test(&self, k: K, v: V) -> bool {
@@ -122,8 +123,10 @@ mod benchmark {
         }
         #[inline(always)]
         fn scan_test(&self) -> usize {
-            let ebr_barrier = ebr::Barrier::new();
-            self.iter(&ebr_barrier).count()
+            let barrier = ebr::Barrier::new();
+            self.iter(&barrier)
+                .filter(|(_, v)| addr_of!(v) as usize != 0)
+                .count()
         }
         #[inline(always)]
         fn remove_test(&self, k: &K) -> bool {
@@ -151,7 +154,7 @@ mod benchmark {
 
     fn perform<
         K: Clone + ConvertFromUsize + Eq + Hash + Ord + Send + Sync,
-        V: Clone + ConvertFromUsize + Send + Sync + Unpin,
+        V: Clone + ConvertFromUsize + Send + Sync,
         C: BenchmarkOperation<K, V, RandomState> + 'static + Send + Sync,
     >(
         num_threads: usize,
@@ -256,9 +259,7 @@ mod benchmark {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn hashmap_benchmark<
-        T: 'static + ConvertFromUsize + Clone + Eq + Hash + Ord + Send + Sync + Unpin,
-    >(
+    fn hashmap_benchmark<T: 'static + ConvertFromUsize + Clone + Eq + Hash + Ord + Send + Sync>(
         workload_size: usize,
         num_threads: Vec<usize>,
     ) {
@@ -404,7 +405,7 @@ mod benchmark {
 
     #[allow(clippy::too_many_lines)]
     fn hashindex_benchmark<
-        T: 'static + ConvertFromUsize + Clone + Eq + Hash + Ord + Send + Sync + Unpin,
+        T: 'static + ConvertFromUsize + Clone + Eq + Hash + Ord + Send + Sync,
     >(
         workload_size: usize,
         num_threads: Vec<usize>,
@@ -550,9 +551,7 @@ mod benchmark {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn treeindex_benchmark<
-        T: 'static + ConvertFromUsize + Clone + Hash + Ord + Send + Sync + Unpin,
-    >(
+    fn treeindex_benchmark<T: 'static + ConvertFromUsize + Clone + Hash + Ord + Send + Sync>(
         workload_size: usize,
         num_threads: Vec<usize>,
     ) {
