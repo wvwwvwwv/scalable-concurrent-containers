@@ -88,6 +88,9 @@ pub use atomic_arc::AtomicArc;
 mod barrier;
 pub use barrier::Barrier;
 
+mod collectible;
+pub use collectible::Collectible;
+
 mod ptr;
 pub use ptr::Ptr;
 

@@ -1,7 +1,10 @@
 use std::mem::ManuallyDrop;
 use std::ops::Deref;
+use std::ptr::NonNull;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{self, Relaxed};
+
+use super::Collectible;
 
 /// [`Underlying`] stores an instance of type `T`, and a link to the next [`Underlying`].
 pub(super) struct Underlying<T> {
@@ -105,30 +108,15 @@ impl<T> Deref for Underlying<T> {
     }
 }
 
-impl<T> Link for Underlying<T> {
-    fn set(&mut self, next_ptr: *const dyn Link) {
-        self.next_or_refcnt.next = next_ptr;
+impl<T> Collectible for Underlying<T> {
+    fn next_ptr_mut(&mut self) -> &mut Option<NonNull<dyn Collectible>> {
+        unsafe { &mut self.next_or_refcnt.next }
     }
-    fn free(&mut self) -> *mut dyn Link {
-        let next = unsafe { self.next_or_refcnt.next as *mut dyn Link };
-        unsafe { Box::from_raw(self as *mut Underlying<T>) };
-        next
-    }
-}
-
-/// The [`Link`] trait defines necessary methods for an instance to be reclaimed by the EBR
-/// garbage collector.
-pub(super) trait Link {
-    /// Sets the next [`Link`] instance.
-    fn set(&mut self, next_ptr: *const dyn Link);
-
-    /// Drops itself, frees the memory, and returns the next [`Link`] attached to it.
-    fn free(&mut self) -> *mut dyn Link;
 }
 
 /// [`LinkOrRefCnt`] is a union of a dynamic pointer to [`Link`] and a reference count.
 pub(super) union LinkOrRefCnt {
-    next: *const dyn Link,
+    next: Option<NonNull<dyn Collectible>>,
     refcnt: ManuallyDrop<(AtomicUsize, usize)>,
 }
 

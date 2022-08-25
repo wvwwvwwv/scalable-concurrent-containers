@@ -1,5 +1,5 @@
-use super::underlying::{Link, Underlying};
-use super::{Barrier, Ptr};
+use super::underlying::Underlying;
+use super::{Barrier, Collectible, Ptr};
 
 use std::ops::Deref;
 use std::ptr::{addr_of, NonNull};
@@ -126,7 +126,7 @@ impl<T: 'static> Arc<T> {
     #[inline]
     pub unsafe fn drop_in_place(mut self) {
         if self.underlying().drop_ref() {
-            self.instance_ptr.as_mut().free();
+            self.instance_ptr.as_mut().drop_and_free();
             std::mem::forget(self);
         }
     }
@@ -206,7 +206,7 @@ impl<T: 'static> Drop for Arc<T> {
     fn drop(&mut self) {
         if self.underlying().drop_ref() {
             let barrier = Barrier::new();
-            barrier.reclaim_link(self.instance_ptr.as_ptr());
+            barrier.collect(self.instance_ptr.as_ptr());
         }
     }
 }

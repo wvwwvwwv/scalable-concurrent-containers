@@ -1,8 +1,6 @@
+use super::collectible::{DeferredClosure, DeferredIncrementalClosure};
 use super::collector::Collector;
-use super::underlying::Link;
-use super::Arc;
-
-use std::ptr::null;
+use super::{Arc, Collectible};
 
 /// [`Barrier`] allows the user to read [`AtomicArc`](super::AtomicArc) and keeps the
 /// underlying instance pinned to the thread.
@@ -39,6 +37,38 @@ impl Barrier {
         Barrier { collector_ptr }
     }
 
+    /// Defers dropping and memory reclamation of the supplied instance of a type implementing
+    /// [`Collectible`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::{Barrier, Collectible};
+    /// use std::ptr::NonNull;
+    ///
+    /// #[derive(Default)]
+    /// struct C(usize, Option<NonNull<dyn Collectible>>);
+    ///
+    /// impl Collectible for C {
+    ///     fn next_ptr_mut(&mut self) -> &mut Option<NonNull<dyn Collectible>> {
+    ///         &mut self.1
+    ///     }
+    /// }
+    ///
+    /// let boxed: Box<C> = Box::new(C(7, None));
+    ///
+    /// let static_ref: &'static C = unsafe { std::mem::transmute(&*boxed) };
+    ///
+    /// let barrier = Barrier::new();
+    /// barrier.defer(boxed);
+    ///
+    /// assert_eq!(static_ref.0, 7);
+    /// ```
+    #[inline]
+    pub fn defer(&self, collectible: Box<dyn Collectible>) {
+        self.collect(Box::into_raw(collectible) as *mut dyn Collectible);
+    }
+
     /// Executes the supplied closure at a later point of time.
     ///
     /// It is guaranteed that the closure will be executed when every [`Barrier`] at the moment
@@ -58,7 +88,7 @@ impl Barrier {
     /// ```
     #[inline]
     pub fn defer_execute<F: 'static + FnOnce() + Sync>(&self, f: F) {
-        self.reclaim(Arc::new(DeferredClosure { f: Some(f) }));
+        self.defer(Box::new(DeferredClosure::new(f)));
     }
 
     /// Executes the supplied closure incrementally at a later point of time.
@@ -93,10 +123,7 @@ impl Barrier {
     /// ```
     #[inline]
     pub fn defer_incremental_execute<F: 'static + FnMut() -> bool + Sync>(&self, f: F) {
-        let null_dyn: *const DeferredIncrementalClosure<F> = null();
-        let boxed = Box::new(DeferredIncrementalClosure { f, next: null_dyn });
-        self.reclaim_link(Box::into_raw(boxed) as *const DeferredIncrementalClosure<F>
-            as *mut DeferredIncrementalClosure<F>);
+        self.defer(Box::new(DeferredIncrementalClosure::new(f)));
     }
 
     /// Reclaims an [`Arc`].
@@ -113,14 +140,14 @@ impl Barrier {
     #[inline]
     pub fn reclaim<T: 'static>(&self, arc: Arc<T>) {
         if let Some(ptr) = arc.drop_ref() {
-            self.reclaim_link(ptr);
+            self.collect(ptr);
         }
         std::mem::forget(arc);
     }
 
     /// Reclaims the supplied instance.
     #[inline]
-    pub(super) fn reclaim_link(&self, link: *mut dyn Link) {
+    pub(super) fn collect(&self, link: *mut dyn Collectible) {
         unsafe {
             (*self.collector_ptr).reclaim(link);
         }
@@ -140,44 +167,5 @@ impl Drop for Barrier {
         unsafe {
             (*self.collector_ptr).end_barrier();
         }
-    }
-}
-
-struct DeferredClosure<F: 'static + FnOnce() + Sync> {
-    f: Option<F>,
-}
-
-impl<F: 'static + FnOnce() + Sync> Drop for DeferredClosure<F> {
-    #[inline]
-    fn drop(&mut self) {
-        if let Some(f) = self.f.take() {
-            f();
-        }
-    }
-}
-
-struct DeferredIncrementalClosure<F: 'static + FnMut() -> bool + Sync> {
-    f: F,
-    next: *const dyn Link,
-}
-
-impl<F: 'static + FnMut() -> bool + Sync> Link for DeferredIncrementalClosure<F> {
-    fn set(&mut self, next_ptr: *const dyn Link) {
-        self.next = next_ptr;
-    }
-    fn free(&mut self) -> *mut dyn Link {
-        let next = self.next as *mut dyn Link;
-        if (self.f)() {
-            // Finished, thus drop `self`.
-            unsafe { Box::from_raw(self as *mut Self) };
-        } else {
-            // Push itself into the garbage queue.
-            let null_dyn: *const DeferredIncrementalClosure<F> = null();
-            self.next = null_dyn;
-            unsafe {
-                (*Collector::current()).reclaim_confirmed(self as *mut Self);
-            }
-        }
-        next
     }
 }

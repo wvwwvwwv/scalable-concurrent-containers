@@ -1,6 +1,11 @@
 # Changelog
 
-0.10.1
+0.10.3
+
+* Implement `ebr::Barrier::defer`.
+* Make `ebr::Collectible` public to enable implementation of unmanaged handles.
+
+0.10.2
 
 * Fix [#82](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/82).
 * Implement `ebr::Barrier::defer_incremental_execute'.

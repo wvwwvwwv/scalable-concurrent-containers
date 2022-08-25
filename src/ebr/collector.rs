@@ -1,5 +1,4 @@
-use super::tag::Tag;
-use super::underlying::Link;
+use super::{Collectible, Tag};
 
 use std::panic;
 use std::ptr;
@@ -16,11 +15,11 @@ pub(super) struct Collector {
     next_epoch_update: u8,
     num_readers: u32,
     num_instances: usize,
-    previous_instance_link: Option<NonNull<dyn Link>>,
-    current_instance_link: Option<NonNull<dyn Link>>,
-    next_instance_link: Option<NonNull<dyn Link>>,
+    previous_instance_link: Option<NonNull<dyn Collectible>>,
+    current_instance_link: Option<NonNull<dyn Collectible>>,
+    next_instance_link: Option<NonNull<dyn Collectible>>,
     next_collector: *mut Collector,
-    link: *const dyn Link,
+    link: Option<NonNull<dyn Collectible>>,
 }
 
 impl Collector {
@@ -36,7 +35,6 @@ impl Collector {
 
     /// Allocates a new [`Collector`].
     fn alloc() -> *mut Collector {
-        let null_ptr: *const Collector = ptr::null();
         let boxed = Box::new(Collector {
             state: AtomicU8::new(Self::INACTIVE),
             announcement: 0,
@@ -47,7 +45,7 @@ impl Collector {
             current_instance_link: None,
             next_instance_link: None,
             next_collector: ptr::null_mut(),
-            link: null_ptr,
+            link: None,
         });
         let ptr = Box::into_raw(boxed);
         let mut current = ANCHOR.load(Relaxed);
@@ -137,15 +135,13 @@ impl Collector {
 
     /// Reclaims garbage instances.
     #[inline]
-    pub(super) fn reclaim(&mut self, instance_ptr: *mut dyn Link) {
+    pub(super) fn reclaim(&mut self, instance_ptr: *mut dyn Collectible) {
         debug_assert_eq!(self.state.load(Relaxed) & Self::INACTIVE, 0);
         debug_assert_eq!(self.state.load(Relaxed), self.announcement);
 
         if let Some(mut ptr) = NonNull::new(instance_ptr) {
             unsafe {
-                if let Some(head) = self.current_instance_link.as_ref() {
-                    ptr.as_mut().set(head.as_ptr());
-                }
+                *ptr.as_mut().next_ptr_mut() = self.current_instance_link.take();
                 self.current_instance_link.replace(ptr);
                 self.num_instances += 1;
                 if self.next_epoch_update != 0 {
@@ -157,15 +153,13 @@ impl Collector {
 
     /// Reclaims confirmed garbage instances.
     #[inline]
-    pub(super) fn reclaim_confirmed(&mut self, instance_ptr: *mut dyn Link) {
+    pub(super) fn reclaim_confirmed(&mut self, instance_ptr: *mut dyn Collectible) {
         debug_assert_eq!(self.state.load(Relaxed) & Self::INACTIVE, 0);
         debug_assert_eq!(self.state.load(Relaxed), self.announcement);
 
         if let Some(mut ptr) = NonNull::new(instance_ptr) {
             unsafe {
-                if let Some(head) = self.next_instance_link.as_ref() {
-                    ptr.as_mut().set(head.as_ptr());
-                }
+                *ptr.as_mut().next_ptr_mut() = self.next_instance_link.take();
                 self.next_instance_link.replace(ptr);
                 self.num_instances += 1;
                 if self.next_epoch_update != 0 {
@@ -273,14 +267,14 @@ impl Collector {
         self.next_instance_link = self.previous_instance_link.take();
         self.previous_instance_link = self.current_instance_link.take();
         while let Some(mut instance_ptr) = garbage_link.take() {
-            let next = unsafe { instance_ptr.as_mut().free() };
+            garbage_link = unsafe { *instance_ptr.as_mut().next_ptr_mut() };
+            unsafe { instance_ptr.as_mut().drop_and_free() };
 
             // `self.num_instances` may have been updated when the instance is dropped, therefore
             // `load(self.num_instances)` must not pass through dropping the instance.
             std::sync::atomic::compiler_fence(Acquire);
 
             self.num_instances -= 1;
-            garbage_link = NonNull::new(next);
         }
     }
 
@@ -324,15 +318,9 @@ impl Drop for Collector {
     }
 }
 
-impl Link for Collector {
-    fn set(&mut self, next_ptr: *const dyn Link) {
-        self.link = next_ptr;
-    }
-
-    fn free(&mut self) -> *mut dyn Link {
-        let next = self.link as *mut dyn Link;
-        unsafe { Box::from_raw(self as *mut Collector) };
-        next
+impl Collectible for Collector {
+    fn next_ptr_mut(&mut self) -> &mut Option<NonNull<dyn Collectible>> {
+        &mut self.link
     }
 }
 
