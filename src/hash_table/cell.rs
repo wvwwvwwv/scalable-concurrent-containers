@@ -138,7 +138,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
                 current_link_ptr: Ptr::null(),
                 prev_link_ptr: Ptr::null(),
                 current_index: index,
-                barrier_ref: barrier,
+                barrier,
             });
         }
 
@@ -153,7 +153,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
                     current_link_ptr,
                     prev_link_ptr,
                     current_index: index,
-                    barrier_ref: barrier,
+                    barrier,
                 });
             }
             prev_link_ptr = current_link_ptr;
@@ -170,7 +170,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
     pub(crate) unsafe fn drop_entries(&self, data_block: &DataBlock<K, V>, barrier: &Barrier) {
         if !self.metadata.link.load(Acquire, barrier).is_null() {
             if let Some(link) = self.metadata.link.swap((None, Tag::None), Relaxed).0 {
-                barrier.reclaim(link);
+                link.release(barrier);
             }
         }
         let mut bitmap = self.metadata.occupied_bitmap;
@@ -276,7 +276,7 @@ pub struct EntryIterator<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool>
     current_link_ptr: Ptr<'b, Linked<K, V, LINKED_LEN>>,
     prev_link_ptr: Ptr<'b, Linked<K, V, LINKED_LEN>>,
     current_index: usize,
-    barrier_ref: &'b Barrier,
+    barrier: &'b Barrier,
 }
 
 impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K, V, LOCK_FREE> {
@@ -291,7 +291,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K
             current_link_ptr: Ptr::null(),
             prev_link_ptr: Ptr::null(),
             current_index: usize::MAX,
-            barrier_ref: barrier,
+            barrier,
         }
     }
 
@@ -311,10 +311,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K
     /// It should only be invoked when the caller is holding a [`Locker`] on the [`Cell`].
     fn unlink_data_array(&mut self, data_array_ref: &Linked<K, V, LINKED_LEN>) {
         let next_data_array = if LOCK_FREE {
-            data_array_ref
-                .metadata
-                .link
-                .get_arc(Relaxed, self.barrier_ref)
+            data_array_ref.metadata.link.get_arc(Relaxed, self.barrier)
         } else {
             data_array_ref
                 .metadata
@@ -324,7 +321,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K
         };
         self.current_link_ptr = next_data_array
             .as_ref()
-            .map_or_else(Ptr::null, |n| n.ptr(self.barrier_ref));
+            .map_or_else(Ptr::null, |n| n.ptr(self.barrier));
         let old_data_array = if let Some(prev_data_array_ref) = self.prev_link_ptr.as_ref() {
             prev_data_array_ref
                 .metadata
@@ -340,7 +337,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K
             None
         };
         if let Some(data_array) = old_data_array {
-            self.barrier_ref.reclaim(data_array);
+            data_array.release(self.barrier);
         }
         if self.current_link_ptr.is_null() {
             self.cell.take();
@@ -366,7 +363,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K
         }
 
         self.prev_link_ptr = self.current_link_ptr;
-        self.current_link_ptr = metadata.link.load(Acquire, self.barrier_ref);
+        self.current_link_ptr = metadata.link.load(Acquire, self.barrier);
         self.current_index = usize::MAX;
 
         None
@@ -610,7 +607,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         self.num_entries_updated(0);
         if !self.cell.metadata.link.load(Acquire, barrier).is_null() {
             if let Some(data_array) = self.cell.metadata.link.swap((None, Tag::None), Relaxed).0 {
-                barrier.reclaim(data_array);
+                data_array.release(barrier);
             }
         }
     }

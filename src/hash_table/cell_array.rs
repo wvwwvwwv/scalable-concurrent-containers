@@ -276,7 +276,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                             if !LOCK_FREE {
                                 old_array.num_cleared_cells.store(old_array_size, Relaxed);
                             }
-                            barrier.reclaim(old_array);
+                            old_array.release(barrier);
                         }
                     }
                 } else {

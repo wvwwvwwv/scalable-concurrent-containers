@@ -91,7 +91,36 @@ impl<T: 'static> Arc<T> {
         addr_of!(**self.underlying())
     }
 
-    /// Drops the underlying instance if the last reference is dropped.
+    /// Releases the strong reference by passing `self` to the given [`Barrier`].
+    ///
+    /// Returns `true` if the last reference was released.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::{Arc, Barrier};
+    ///
+    /// let arc: Arc<usize> = Arc::new(47);
+    /// let arc_clone = arc.clone();
+    /// let barrier = Barrier::new();
+    /// assert!(!arc.release(&barrier));
+    /// assert!(arc_clone.release(&barrier));
+    /// ```
+    #[allow(clippy::must_use_candidate)]
+    #[inline]
+    pub fn release(self, barrier: &Barrier) -> bool {
+        let released = if let Some(ptr) = self.drop_ref() {
+            barrier.collect(ptr);
+            true
+        } else {
+            false
+        };
+        std::mem::forget(self);
+        released
+    }
+
+    /// Releases the strong reference and drops the instance immediately if it was the last
+    /// reference to the instance.
     ///
     /// The instance is not passed to the garbage collector when the last reference is dropped,
     /// instead the method drops the instance immediately. The semantics is the same as that of
@@ -117,18 +146,26 @@ impl<T: 'static> Arc<T> {
     /// }
     ///
     /// let arc: Arc<T> = Arc::new(T(&DROPPED));
+    /// let arc_clone = arc.clone();
     ///
     /// unsafe {
-    ///     arc.drop_in_place();
+    ///     assert!(!arc.release_immediate());
+    ///     assert!(!DROPPED.load(Relaxed));
+    ///     assert!(arc_clone.release_immediate());
+    ///     assert!(DROPPED.load(Relaxed));
     /// }
-    /// assert!(DROPPED.load(Relaxed));
     /// ```
+    #[allow(clippy::must_use_candidate)]
     #[inline]
-    pub unsafe fn drop_in_place(mut self) {
-        if self.underlying().drop_ref() {
+    pub unsafe fn release_immediate(mut self) -> bool {
+        let dropped = if self.underlying().drop_ref() {
             self.instance_ptr.as_mut().drop_and_free();
-            std::mem::forget(self);
-        }
+            true
+        } else {
+            false
+        };
+        std::mem::forget(self);
+        dropped
     }
 
     /// Provides a raw pointer to its [`Underlying`].

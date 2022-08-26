@@ -178,7 +178,7 @@ where
                     internal_node.finish_split(barrier);
                     old_root.commit(barrier);
                 }
-                barrier.reclaim(old_root);
+                old_root.release(barrier);
             };
 
             (key, value)
@@ -229,7 +229,7 @@ where
             match root.compare_exchange(root_ptr, (None, Tag::None), Acquire, Acquire, barrier) {
                 Ok((old_root, _)) => {
                     if let Some(old_root) = old_root {
-                        barrier.reclaim(old_root);
+                        old_root.release(barrier);
                     }
                     return Ok(true);
                 }

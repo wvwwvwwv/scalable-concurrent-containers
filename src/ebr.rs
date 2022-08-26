@@ -116,7 +116,7 @@ mod underlying;
 /// {
 ///     let arc: Arc<usize> = Arc::new(47);
 ///     let barrier = Barrier::new();
-///     barrier.reclaim(arc);
+///     arc.release(&barrier);
 ///     assert!(!suspend());
 /// }
 ///
@@ -124,7 +124,7 @@ mod underlying;
 ///
 /// let new_arc: Arc<usize> = Arc::new(17);
 /// let barrier = Barrier::new();
-/// barrier.reclaim(new_arc);
+/// new_arc.release(&barrier);
 /// ```
 #[inline]
 #[must_use]

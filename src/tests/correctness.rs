@@ -1304,7 +1304,7 @@ mod ebr_test {
         assert_eq!(arc_arc.0.load(Relaxed), 14);
 
         unsafe {
-            arc_arc.drop_in_place();
+            arc_arc.release_immediate();
         }
         assert!(DESTROYED.load(Relaxed));
     }

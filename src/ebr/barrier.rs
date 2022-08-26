@@ -1,6 +1,6 @@
 use super::collectible::{DeferredClosure, DeferredIncrementalClosure};
 use super::collector::Collector;
-use super::{Arc, Collectible};
+use super::Collectible;
 
 /// [`Barrier`] allows the user to read [`AtomicArc`](super::AtomicArc) and keeps the
 /// underlying instance pinned to the thread.
@@ -124,25 +124,6 @@ impl Barrier {
     #[inline]
     pub fn defer_incremental_execute<F: 'static + FnMut() -> bool + Sync>(&self, f: F) {
         self.defer(Box::new(DeferredIncrementalClosure::new(f)));
-    }
-
-    /// Reclaims an [`Arc`].
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::ebr::{Arc, Barrier};
-    ///
-    /// let arc: Arc<usize> = Arc::new(47);
-    /// let barrier = Barrier::new();
-    /// barrier.reclaim(arc);
-    /// ```
-    #[inline]
-    pub fn reclaim<T: 'static>(&self, arc: Arc<T>) {
-        if let Some(ptr) = arc.drop_ref() {
-            self.collect(ptr);
-        }
-        std::mem::forget(arc);
     }
 
     /// Reclaims the supplied instance.

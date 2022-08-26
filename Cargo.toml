@@ -2,7 +2,7 @@
 name = "scc"
 description = "High performance containers and utilities for concurrent and asynchronous programming"
 documentation = "https://docs.rs/scc"
-version = "0.10.2"
+version = "0.11.0"
 authors = ["wvwwvwwv <wvwwvwwv@me.com>"]
 edition = "2021"
 readme = "README.md"
