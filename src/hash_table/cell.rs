@@ -868,8 +868,6 @@ impl<K: 'static + Eq, V: 'static, const LEN: usize> Default for Metadata<K, V, L
 }
 
 /// [`Linked`] is a fixed size array of key-value pairs.
-///
-/// `LEN` can only be `8` or `32`.
 pub(crate) struct Linked<K: 'static + Eq, V: 'static, const LEN: usize> {
     metadata: Metadata<K, V, LEN>,
     data_array: [MaybeUninit<(K, V)>; LEN],

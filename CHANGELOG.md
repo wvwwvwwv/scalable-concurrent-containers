@@ -10,7 +10,7 @@
 0.10.2
 
 * Fix [#82](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/82).
-* Implement `ebr::Barrier::defer_incremental_execute'.
+* Implement `ebr::Barrier::defer_incremental_execute`.
 
 0.10.1
 
