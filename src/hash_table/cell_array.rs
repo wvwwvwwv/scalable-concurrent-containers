@@ -377,16 +377,18 @@ impl<K: Eq, V, const LOCK_FREE: bool> Drop for CellArray<K, V, LOCK_FREE> {
     fn drop(&mut self) {
         const JOB_SIZE: usize = 1_usize << 12;
 
-        let num_empty_cells = if LOCK_FREE {
+        let num_cleared_cells = if LOCK_FREE {
             // No instances are dropped when the array is reachable.
             0
         } else {
             self.next_cell_to_kill.load(Relaxed)
         };
-        if num_empty_cells < self.array_len {
+        if num_cleared_cells < self.array_len {
             let barrier = Barrier::new();
-            let end_index = self.array_len.min(num_empty_cells + JOB_SIZE);
-            for index in num_empty_cells..end_index {
+            let end_index = self
+                .array_len
+                .min((num_cleared_cells + JOB_SIZE).next_power_of_two());
+            for index in num_cleared_cells..end_index {
                 let cell = self.cell(index);
                 if LOCK_FREE || !cell.killed() {
                     unsafe {
@@ -396,9 +398,25 @@ impl<K: Eq, V, const LOCK_FREE: bool> Drop for CellArray<K, V, LOCK_FREE> {
             }
 
             // If clearing entries was not finished, defer the job.
-            //
-            // This allocates heap memory, and may lead to an out-of-memory error.
             if end_index != self.array_len {
+                // This allocates heap memory, and may lead to an out-of-memory error or panic.
+                let _unwind_guard = scopeguard::guard_on_unwind((), |_| {
+                    for index in end_index..self.array_len {
+                        let cell = self.cell(index);
+                        if LOCK_FREE || !cell.killed() {
+                            unsafe {
+                                cell.drop_entries(self.data_block(index), &barrier);
+                            }
+                        }
+                    }
+                    Self::dealloc_arrays(
+                        self.cell_array_ptr,
+                        self.cell_array_ptr_offset,
+                        self.data_block_array_ptr,
+                        self.array_len,
+                    );
+                });
+
                 let cell_array_ptr_val = self.cell_array_ptr as usize;
                 let cell_array_ptr_offset = self.cell_array_ptr_offset;
                 let data_block_array_ptr_val = self.data_block_array_ptr as usize;
