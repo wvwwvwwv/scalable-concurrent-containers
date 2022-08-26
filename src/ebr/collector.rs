@@ -268,7 +268,7 @@ impl Collector {
         self.previous_instance_link = self.current_instance_link.take();
         while let Some(mut instance_ptr) = garbage_link.take() {
             garbage_link = unsafe { *instance_ptr.as_mut().next_ptr_mut() };
-            unsafe { instance_ptr.as_mut().drop_and_free() };
+            unsafe { instance_ptr.as_mut().drop_and_dealloc() };
 
             // `self.num_instances` may have been updated when the instance is dropped, therefore
             // `load(self.num_instances)` must not pass through dropping the instance.

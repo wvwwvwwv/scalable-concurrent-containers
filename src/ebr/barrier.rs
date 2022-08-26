@@ -37,7 +37,7 @@ impl Barrier {
         Barrier { collector_ptr }
     }
 
-    /// Defers dropping and memory reclamation of the supplied instance of a type implementing
+    /// Defers dropping and memory reclamation of the supplied [`Box`] of a type implementing
     /// [`Collectible`].
     ///
     /// # Examples
@@ -46,7 +46,6 @@ impl Barrier {
     /// use scc::ebr::{Barrier, Collectible};
     /// use std::ptr::NonNull;
     ///
-    /// #[derive(Default)]
     /// struct C(usize, Option<NonNull<dyn Collectible>>);
     ///
     /// impl Collectible for C {

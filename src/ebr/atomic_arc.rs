@@ -1,4 +1,4 @@
-use super::underlying::Underlying;
+use super::ref_counted::RefCounted;
 use super::{Arc, Barrier, Ptr, Tag};
 
 use std::mem::forget;
@@ -11,7 +11,7 @@ use std::sync::atomic::Ordering::{self, Acquire, Relaxed};
 /// on the pointer to it.
 #[derive(Debug)]
 pub struct AtomicArc<T: 'static> {
-    instance_ptr: AtomicPtr<Underlying<T>>,
+    instance_ptr: AtomicPtr<RefCounted<T>>,
 }
 
 impl<T: 'static> AtomicArc<T> {
@@ -26,7 +26,7 @@ impl<T: 'static> AtomicArc<T> {
     /// ```
     #[inline]
     pub fn new(t: T) -> AtomicArc<T> {
-        let boxed = Box::new(Underlying::new(t));
+        let boxed = Box::new(RefCounted::new(t));
         AtomicArc {
             instance_ptr: AtomicPtr::new(Box::into_raw(boxed)),
         }
@@ -45,7 +45,7 @@ impl<T: 'static> AtomicArc<T> {
     #[must_use]
     #[inline]
     pub fn from(arc: Arc<T>) -> AtomicArc<T> {
-        let ptr = arc.as_underlying_ptr();
+        let ptr = arc.get_underlying_ptr();
         forget(arc);
         AtomicArc {
             instance_ptr: AtomicPtr::new(ptr),
@@ -129,12 +129,12 @@ impl<T: 'static> AtomicArc<T> {
         let desired = Tag::update_tag(
             new.0
                 .as_ref()
-                .map_or_else(ptr::null_mut, Arc::as_underlying_ptr),
+                .map_or_else(ptr::null_mut, Arc::get_underlying_ptr),
             new.1,
-        ) as *mut Underlying<T>;
+        ) as *mut RefCounted<T>;
         let prev = self.instance_ptr.swap(desired, order);
         let tag = Tag::into_tag(prev);
-        let prev_ptr = Tag::unset_tag(prev) as *mut Underlying<T>;
+        let prev_ptr = Tag::unset_tag(prev) as *mut RefCounted<T>;
         forget(new);
         (NonNull::new(prev_ptr).map(Arc::from), tag)
     }
@@ -178,7 +178,7 @@ impl<T: 'static> AtomicArc<T> {
     ) -> bool {
         let mut current = self.instance_ptr.load(Relaxed);
         while condition(Tag::into_tag(current)) {
-            let desired = Tag::update_tag(current, tag) as *mut Underlying<T>;
+            let desired = Tag::update_tag(current, tag) as *mut RefCounted<T>;
             if let Err(actual) = self
                 .instance_ptr
                 .compare_exchange(current, desired, order, Relaxed)
@@ -239,9 +239,9 @@ impl<T: 'static> AtomicArc<T> {
         let desired = Tag::update_tag(
             new.0
                 .as_ref()
-                .map_or_else(ptr::null_mut, Arc::as_underlying_ptr),
+                .map_or_else(ptr::null_mut, Arc::get_underlying_ptr),
             new.1,
-        ) as *mut Underlying<T>;
+        ) as *mut RefCounted<T>;
         match self.instance_ptr.compare_exchange(
             current.as_underlying_ptr() as *mut _,
             desired,
@@ -250,7 +250,7 @@ impl<T: 'static> AtomicArc<T> {
         ) {
             Ok(prev) => {
                 let prev_arc =
-                    NonNull::new(Tag::unset_tag(prev) as *mut Underlying<T>).map(Arc::from);
+                    NonNull::new(Tag::unset_tag(prev) as *mut RefCounted<T>).map(Arc::from);
                 forget(new);
                 Ok((prev_arc, Ptr::from(desired)))
             }
@@ -314,7 +314,7 @@ impl<T: 'static> AtomicArc<T> {
     #[inline]
     pub fn get_arc(&self, order: Ordering, _barrier: &Barrier) -> Option<Arc<T>> {
         let mut ptr = Tag::unset_tag(self.instance_ptr.load(order));
-        while let Some(underlying_ptr) = NonNull::new(ptr as *mut Underlying<T>) {
+        while let Some(underlying_ptr) = NonNull::new(ptr as *mut RefCounted<T>) {
             if unsafe { underlying_ptr.as_ref() }.try_add_ref(Acquire) {
                 return Some(Arc::from(underlying_ptr));
             }
@@ -342,7 +342,7 @@ impl<T: 'static> AtomicArc<T> {
     #[inline]
     pub fn try_into_arc(self, order: Ordering) -> Option<Arc<T>> {
         let ptr = self.instance_ptr.swap(ptr::null_mut(), order);
-        if let Some(underlying_ptr) = NonNull::new(Tag::unset_tag(ptr) as *mut Underlying<T>) {
+        if let Some(underlying_ptr) = NonNull::new(Tag::unset_tag(ptr) as *mut RefCounted<T>) {
             return Some(Arc::from(underlying_ptr));
         }
         None
@@ -368,7 +368,7 @@ impl<T: 'static> Drop for AtomicArc<T> {
     fn drop(&mut self) {
         if let Some(ptr) = NonNull::new(Tag::unset_tag(
             self.instance_ptr.swap(ptr::null_mut(), Relaxed),
-        ) as *mut Underlying<T>)
+        ) as *mut RefCounted<T>)
         {
             drop(Arc::from(ptr));
         }

@@ -1,13 +1,15 @@
-use super::underlying::Underlying;
+use super::ref_counted::RefCounted;
 use super::{Barrier, Collectible, Ptr};
 
 use std::ops::Deref;
 use std::ptr::{addr_of, NonNull};
 
 /// [`Arc`] is a reference-counted handle to an instance.
+///
+/// The instance is passed to the EBR garbage collector when the last strong reference is dropped.
 #[derive(Debug)]
 pub struct Arc<T: 'static> {
-    instance_ptr: NonNull<Underlying<T>>,
+    instance_ptr: NonNull<RefCounted<T>>,
 }
 
 impl<T: 'static> Arc<T> {
@@ -22,7 +24,7 @@ impl<T: 'static> Arc<T> {
     /// ```
     #[inline]
     pub fn new(t: T) -> Arc<T> {
-        let boxed = Box::new(Underlying::new(t));
+        let boxed = Box::new(RefCounted::new(t));
         Arc {
             instance_ptr: unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) },
         }
@@ -123,8 +125,9 @@ impl<T: 'static> Arc<T> {
     /// reference to the instance.
     ///
     /// The instance is not passed to the garbage collector when the last reference is dropped,
-    /// instead the method drops the instance immediately. The semantics is the same as that of
-    /// [`std::sync::Arc`].
+    /// instead the method drops the instance immediately.
+    ///
+    /// Returns `true` if the last reference was released and the instance was dropped.
     ///
     /// # Safety
     ///
@@ -149,17 +152,17 @@ impl<T: 'static> Arc<T> {
     /// let arc_clone = arc.clone();
     ///
     /// unsafe {
-    ///     assert!(!arc.release_immediate());
+    ///     assert!(!arc.release_drop_in_place());
     ///     assert!(!DROPPED.load(Relaxed));
-    ///     assert!(arc_clone.release_immediate());
+    ///     assert!(arc_clone.release_drop_in_place());
     ///     assert!(DROPPED.load(Relaxed));
     /// }
     /// ```
     #[allow(clippy::must_use_candidate)]
     #[inline]
-    pub unsafe fn release_immediate(mut self) -> bool {
+    pub unsafe fn release_drop_in_place(mut self) -> bool {
         let dropped = if self.underlying().drop_ref() {
-            self.instance_ptr.as_mut().drop_and_free();
+            self.instance_ptr.as_mut().drop_and_dealloc();
             true
         } else {
             false
@@ -170,13 +173,13 @@ impl<T: 'static> Arc<T> {
 
     /// Provides a raw pointer to its [`Underlying`].
     #[inline]
-    pub(super) fn as_underlying_ptr(&self) -> *mut Underlying<T> {
+    pub(super) fn get_underlying_ptr(&self) -> *mut RefCounted<T> {
         self.instance_ptr.as_ptr()
     }
 
     /// Creates a new [`Arc`] from the given pointer.
     #[inline]
-    pub(super) fn from(ptr: NonNull<Underlying<T>>) -> Arc<T> {
+    pub(super) fn from(ptr: NonNull<RefCounted<T>>) -> Arc<T> {
         debug_assert_ne!(
             unsafe {
                 ptr.as_ref()
@@ -191,7 +194,7 @@ impl<T: 'static> Arc<T> {
     /// Drops the reference, and returns the underlying pointer if the last reference was
     /// dropped.
     #[inline]
-    pub(super) fn drop_ref(&self) -> Option<*mut Underlying<T>> {
+    pub(super) fn drop_ref(&self) -> Option<*mut RefCounted<T>> {
         if self.underlying().drop_ref() {
             Some(self.instance_ptr.as_ptr())
         } else {
@@ -201,7 +204,7 @@ impl<T: 'static> Arc<T> {
 
     /// Returns a reference to the underlying instance.
     #[inline]
-    fn underlying(&self) -> &Underlying<T> {
+    fn underlying(&self) -> &RefCounted<T> {
         unsafe { self.instance_ptr.as_ref() }
     }
 }

@@ -17,7 +17,7 @@ A collection of high performance containers and utilities for concurrent and asy
 - [EBR](#EBR) implements epoch-based reclamation.
 - [LinkedList](#LinkedList) is a type trait implementing a lock-free concurrent singly linked list.
 
-_See [Performance](#Performance) for benchmark results for the containers and comparison with other concurrent maps_.
+_See [Performance](#Performance) for benchmark results for the containers._
 
 ## HashMap
 
@@ -355,12 +355,12 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 ## Performance
 
-[HashMap](#HashMap) and [HashIndex](#HashIndex) Performance Comparison with [DashMap](https://github.com/xacrimon/dashmap) and [flurry](https://github.com/jonhoo/flurry)
+Comparison with [DashMap](https://github.com/xacrimon/dashmap) and [flurry](https://github.com/jonhoo/flurry).
 
 - [Results on Apple M1 (8 cores)](https://github.com/wvwwvwwv/conc-map-bench).
 - [Results on Intel Xeon (88 cores)](https://github.com/wvwwvwwv/conc-map-bench/tree/Intel).
 - *Interpret the results cautiously as benchmarks do not represent real world workloads.*
 - [HashMap](#HashMap) outperforms the others *[according to the benchmark test](https://github.com/xacrimon/conc-map-bench)* under highly concurrent workloads.
-- The benchmark test is forked from [conc-map-bench](https://github.com/xacrimon/conc-map-bench).
+- The benchmark test a fork of [conc-map-bench](https://github.com/xacrimon/conc-map-bench).
 
 ## [Changelog](https://github.com/wvwwvwwv/scalable-concurrent-containers/blob/main/CHANGELOG.md)

@@ -3,7 +3,7 @@
 0.11.0
 
 * Replace `ebr::Barrer::reclaim` with `ebr::Arc::release`.
-* Rename `ebr::Arc::drop_in_place` `ebr::Arc::release_immediate`.
+* Rename `ebr::Arc::drop_in_place` `ebr::Arc::release_drop_in_place`.
 * Implement `ebr::Barrier::defer`.
 * Make `ebr::Collectible` public to enable implementation of unmanaged handles.
 

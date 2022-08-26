@@ -6,17 +6,18 @@ use std::sync::atomic::Ordering::{self, Relaxed};
 
 use super::Collectible;
 
-/// [`Underlying`] stores an instance of type `T`, and a link to the next [`Underlying`].
-pub(super) struct Underlying<T> {
+/// [`RefCounted`] stores an instance of type `T`, and a union of the link to the next
+/// [`RefCounted`] or the reference counter.
+pub(super) struct RefCounted<T> {
     instance: T,
     next_or_refcnt: LinkOrRefCnt,
 }
 
-impl<T> Underlying<T> {
+impl<T> RefCounted<T> {
     // Creates a new underlying instance.
     #[inline]
-    pub(super) fn new(t: T) -> Underlying<T> {
-        Underlying {
+    pub(super) fn new(t: T) -> RefCounted<T> {
+        RefCounted {
             instance: t,
             next_or_refcnt: LinkOrRefCnt::default(),
         }
@@ -99,7 +100,7 @@ impl<T> Underlying<T> {
     }
 }
 
-impl<T> Deref for Underlying<T> {
+impl<T> Deref for RefCounted<T> {
     type Target = T;
 
     #[inline]
@@ -108,7 +109,7 @@ impl<T> Deref for Underlying<T> {
     }
 }
 
-impl<T> Collectible for Underlying<T> {
+impl<T> Collectible for RefCounted<T> {
     fn next_ptr_mut(&mut self) -> &mut Option<NonNull<dyn Collectible>> {
         unsafe { &mut self.next_or_refcnt.next }
     }

@@ -45,7 +45,7 @@ pub trait Collectible {
     ///
     /// If the instance of the `Self` type is not created via [`Box::new`] or the like, this method
     /// has to be implemented for the type.
-    fn drop_and_free(&mut self) {
+    fn drop_and_dealloc(&mut self) {
         unsafe { Box::from_raw(self as *mut Self) };
     }
 }
@@ -72,7 +72,7 @@ impl<F: 'static + FnOnce() + Sync> Collectible for DeferredClosure<F> {
     fn next_ptr_mut(&mut self) -> &mut Option<NonNull<dyn Collectible>> {
         &mut self.link
     }
-    fn drop_and_free(&mut self) {
+    fn drop_and_dealloc(&mut self) {
         if let Some(f) = self.f.take() {
             f();
         }
@@ -99,7 +99,7 @@ impl<F: 'static + FnMut() -> bool + Sync> Collectible for DeferredIncrementalClo
     fn next_ptr_mut(&mut self) -> &mut Option<NonNull<dyn Collectible>> {
         &mut self.link
     }
-    fn drop_and_free(&mut self) {
+    fn drop_and_dealloc(&mut self) {
         if (self.f)() {
             // Finished, thus drop `self`.
             unsafe { Box::from_raw(self as *mut Self) };

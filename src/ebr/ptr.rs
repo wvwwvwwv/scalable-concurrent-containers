@@ -1,4 +1,4 @@
-use super::underlying::Underlying;
+use super::ref_counted::RefCounted;
 use super::{Arc, Tag};
 
 use std::marker::PhantomData;
@@ -9,7 +9,7 @@ use std::{ops::Deref, ptr, ptr::NonNull};
 /// [`Ptr`] points to an instance.
 #[derive(Debug)]
 pub struct Ptr<'b, T> {
-    instance_ptr: *const Underlying<T>,
+    instance_ptr: *const RefCounted<T>,
     _phantom: PhantomData<&'b T>,
 }
 
@@ -205,7 +205,7 @@ impl<'b, T> Ptr<'b, T> {
     #[inline]
     pub fn get_arc(self) -> Option<Arc<T>> {
         unsafe {
-            if let Some(ptr) = NonNull::new(Tag::unset_tag(self.instance_ptr) as *mut Underlying<T>)
+            if let Some(ptr) = NonNull::new(Tag::unset_tag(self.instance_ptr) as *mut RefCounted<T>)
             {
                 if ptr.as_ref().try_add_ref(Relaxed) {
                     return Some(Arc::from(ptr));
@@ -217,7 +217,7 @@ impl<'b, T> Ptr<'b, T> {
 
     /// Creates a new [`Ptr`] from a raw pointer.
     #[inline]
-    pub(super) fn from(ptr: *const Underlying<T>) -> Ptr<'b, T> {
+    pub(super) fn from(ptr: *const RefCounted<T>) -> Ptr<'b, T> {
         Ptr {
             instance_ptr: ptr,
             _phantom: std::marker::PhantomData,
@@ -226,7 +226,7 @@ impl<'b, T> Ptr<'b, T> {
 
     /// Provides a raw pointer to its [`Underlying`].
     #[inline]
-    pub(super) fn as_underlying_ptr(self) -> *const Underlying<T> {
+    pub(super) fn as_underlying_ptr(self) -> *const RefCounted<T> {
         self.instance_ptr
     }
 }

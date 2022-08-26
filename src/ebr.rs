@@ -98,7 +98,7 @@ mod tag;
 pub use tag::Tag;
 
 mod collector;
-mod underlying;
+mod ref_counted;
 
 /// Suspends the garbage collector of the current thread.
 ///

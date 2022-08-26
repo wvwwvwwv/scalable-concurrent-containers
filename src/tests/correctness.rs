@@ -1295,17 +1295,21 @@ mod ebr_test {
     fn arc_arc_send() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
 
-        let arc_arc = Arc::new(A(AtomicUsize::new(14), 14, &DESTROYED));
-        let arc_arc_cloned = arc_arc.clone();
+        let arc = Arc::new(A(AtomicUsize::new(14), 14, &DESTROYED));
+        let arc_clone = arc.clone();
         let thread = std::thread::spawn(move || {
-            assert_eq!(arc_arc_cloned.0.load(Relaxed), 14);
+            assert_eq!(arc_clone.0.load(Relaxed), 14);
+            unsafe {
+                assert!(!arc_clone.release_drop_in_place());
+            }
         });
         assert!(thread.join().is_ok());
-        assert_eq!(arc_arc.0.load(Relaxed), 14);
+        assert_eq!(arc.0.load(Relaxed), 14);
 
         unsafe {
-            arc_arc.release_immediate();
+            assert!(arc.release_drop_in_place());
         }
+
         assert!(DESTROYED.load(Relaxed));
     }
 
