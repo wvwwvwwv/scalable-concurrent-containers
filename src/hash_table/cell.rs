@@ -559,6 +559,15 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
             {
                 iter.unlink_data_array(link);
             }
+            debug_assert!(
+                self.cell.num_entries != 0
+                    || self
+                        .cell
+                        .metadata
+                        .link
+                        .load(Relaxed, iter.barrier)
+                        .is_null()
+            );
             result
         } else {
             self.erase_entry(

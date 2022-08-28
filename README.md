@@ -360,7 +360,7 @@ Comparison with [DashMap](https://github.com/xacrimon/dashmap) and [flurry](http
 - [Results on Apple M1 (8 cores)](https://github.com/wvwwvwwv/conc-map-bench).
 - [Results on Intel Xeon (88 cores)](https://github.com/wvwwvwwv/conc-map-bench/tree/Intel).
 - *Interpret the results cautiously as benchmarks do not represent real world workloads.*
-- [HashMap](#HashMap) outperforms the others *[according to the benchmark test](https://github.com/xacrimon/conc-map-bench)* under highly concurrent workloads.
+- [HashMap](#HashMap) and [HashIndex](#HashIndex) outperform the others *[according to the benchmark test](https://github.com/xacrimon/conc-map-bench)* under highly concurrent workloads.
 - The benchmark test a fork of [conc-map-bench](https://github.com/xacrimon/conc-map-bench).
 
 ## [Changelog](https://github.com/wvwwvwwv/scalable-concurrent-containers/blob/main/CHANGELOG.md)
