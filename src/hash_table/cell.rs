@@ -4,9 +4,8 @@ use crate::wait_queue::{AsyncWait, WaitQueue};
 use std::borrow::Borrow;
 use std::mem::MaybeUninit;
 use std::ptr;
-use std::sync::atomic::fence;
-use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use std::sync::atomic::{fence, AtomicU32};
 
 /// The fixed size of the bitmap.
 ///

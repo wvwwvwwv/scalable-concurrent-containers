@@ -1,6 +1,5 @@
-use super::collectible::{DeferredClosure, DeferredIncrementalClosure};
+use super::collectible::{Collectible, DeferredClosure, DeferredIncrementalClosure};
 use super::collector::Collector;
-use super::Collectible;
 
 /// [`Barrier`] allows the user to read [`AtomicArc`](super::AtomicArc) and keeps the
 /// underlying instance pinned to the thread.
@@ -127,9 +126,9 @@ impl Barrier {
 
     /// Reclaims the supplied instance.
     #[inline]
-    pub(super) fn collect(&self, link: *mut dyn Collectible) {
+    pub(super) fn collect(&self, collectible: *mut dyn Collectible) {
         unsafe {
-            (*self.collector_ptr).reclaim(link);
+            (*self.collector_ptr).reclaim(collectible);
         }
     }
 }

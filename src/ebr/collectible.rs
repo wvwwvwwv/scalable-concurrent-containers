@@ -1,5 +1,3 @@
-use super::collector::Collector;
-
 use std::ptr::NonNull;
 
 /// [`Collectible`] defines key methods for `Self` to be reclaimed by the EBR garbage collector.
@@ -36,7 +34,6 @@ use std::ptr::NonNull;
 /// // passed to a `Barrier` survives.
 /// assert_eq!(static_ref.0, "Lazy");
 /// ```
-
 pub trait Collectible {
     /// Returns a mutable reference to the next [`Collectible`] pointer.
     fn next_ptr_mut(&mut self) -> &mut Option<NonNull<dyn Collectible>>;
@@ -45,8 +42,12 @@ pub trait Collectible {
     ///
     /// If the instance of the `Self` type is not created via [`Box::new`] or the like, this method
     /// has to be implemented for the type.
-    fn drop_and_dealloc(&mut self) {
+    ///
+    /// Returns `true` if the instance has been completely dropped and deallocated. If a further
+    /// clean-up is needed, it returns `false` without deallocating the instance.
+    fn drop_and_dealloc(&mut self) -> bool {
         unsafe { Box::from_raw(self as *mut Self) };
+        true
     }
 }
 
@@ -72,11 +73,12 @@ impl<F: 'static + FnOnce() + Sync> Collectible for DeferredClosure<F> {
     fn next_ptr_mut(&mut self) -> &mut Option<NonNull<dyn Collectible>> {
         &mut self.link
     }
-    fn drop_and_dealloc(&mut self) {
+    fn drop_and_dealloc(&mut self) -> bool {
         if let Some(f) = self.f.take() {
             f();
         }
         unsafe { Box::from_raw(self as *mut Self) };
+        true
     }
 }
 
@@ -99,15 +101,13 @@ impl<F: 'static + FnMut() -> bool + Sync> Collectible for DeferredIncrementalClo
     fn next_ptr_mut(&mut self) -> &mut Option<NonNull<dyn Collectible>> {
         &mut self.link
     }
-    fn drop_and_dealloc(&mut self) {
+    fn drop_and_dealloc(&mut self) -> bool {
         if (self.f)() {
             // Finished, thus drop `self`.
             unsafe { Box::from_raw(self as *mut Self) };
+            true
         } else {
-            // Push itself into the garbage queue.
-            unsafe {
-                (*Collector::current()).reclaim_confirmed(self as *mut Self);
-            }
+            false
         }
     }
 }

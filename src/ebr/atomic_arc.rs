@@ -2,8 +2,7 @@ use super::ref_counted::RefCounted;
 use super::{Arc, Barrier, Ptr, Tag};
 
 use std::mem::forget;
-use std::ptr;
-use std::ptr::NonNull;
+use std::ptr::{self, NonNull};
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{self, Acquire, Relaxed};
 
@@ -280,8 +279,8 @@ impl<T: 'static> AtomicArc<T> {
     pub fn clone(&self, order: Ordering, _barrier: &Barrier) -> AtomicArc<T> {
         unsafe {
             let mut ptr = self.instance_ptr.load(order);
-            while let Some(underlying_ref) = (Tag::unset_tag(ptr)).as_ref() {
-                if underlying_ref.try_add_ref(Acquire) {
+            while let Some(underlying) = (Tag::unset_tag(ptr)).as_ref() {
+                if underlying.try_add_ref(Acquire) {
                     return Self {
                         instance_ptr: AtomicPtr::new(ptr),
                     };

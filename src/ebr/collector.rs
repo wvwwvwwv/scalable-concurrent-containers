@@ -1,11 +1,9 @@
 use super::{Collectible, Tag};
 
 use std::panic;
-use std::ptr;
-use std::ptr::NonNull;
-use std::sync::atomic::fence;
+use std::ptr::{self, NonNull};
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release, SeqCst};
-use std::sync::atomic::{AtomicPtr, AtomicU8};
+use std::sync::atomic::{fence, AtomicPtr, AtomicU8};
 
 /// [`Collector`] is a garbage collector that reclaims thread-locally unreachable instances
 /// when they are globally unreachable.
@@ -151,24 +149,6 @@ impl Collector {
         }
     }
 
-    /// Reclaims confirmed garbage instances.
-    #[inline]
-    pub(super) fn reclaim_confirmed(&mut self, instance_ptr: *mut dyn Collectible) {
-        debug_assert_eq!(self.state.load(Relaxed) & Self::INACTIVE, 0);
-        debug_assert_eq!(self.state.load(Relaxed), self.announcement);
-
-        if let Some(mut ptr) = NonNull::new(instance_ptr) {
-            unsafe {
-                *ptr.as_mut().next_ptr_mut() = self.next_instance_link.take();
-                self.next_instance_link.replace(ptr);
-                self.num_instances += 1;
-                if self.next_epoch_update != 0 {
-                    self.next_epoch_update -= 1;
-                }
-            }
-        }
-    }
-
     /// Tries to scan the [`Collector`] instances to update the global epoch.
     fn try_scan(&mut self) {
         debug_assert_eq!(self.state.load(Relaxed) & Self::INACTIVE, 0);
@@ -199,9 +179,9 @@ impl Collector {
             let known_epoch = self.state.load(Relaxed);
             let mut update_global_epoch = true;
             let mut prev_collector_ptr: *mut Collector = ptr::null_mut();
-            while let Some(other_collector_ref) = unsafe { collector_ptr.as_ref() } {
-                if !ptr::eq(self, other_collector_ref) {
-                    let other_state = other_collector_ref.state.load(Relaxed);
+            while let Some(other_collector) = unsafe { collector_ptr.as_ref() } {
+                if !ptr::eq(self, other_collector) {
+                    let other_state = other_collector.state.load(Relaxed);
                     if (other_state & Self::INVALID) != 0 {
                         // The collector is obsolete.
                         let reclaimable = unsafe { prev_collector_ptr.as_mut() }.map_or_else(
@@ -211,7 +191,7 @@ impl Collector {
                                         debug_assert!(Tag::into_tag(p) == Tag::First);
                                         if ptr::eq(Tag::unset_tag(p), collector_ptr) {
                                             Some(Tag::update_tag(
-                                                other_collector_ref.next_collector,
+                                                other_collector.next_collector,
                                                 Tag::First,
                                             )
                                                 as *mut Collector)
@@ -221,15 +201,14 @@ impl Collector {
                                     })
                                     .is_ok()
                             },
-                            |prev_collector_ref| {
-                                (*prev_collector_ref).next_collector =
-                                    other_collector_ref.next_collector;
+                            |prev_collector| {
+                                (*prev_collector).next_collector = other_collector.next_collector;
                                 true
                             },
                         );
                         if reclaimable {
-                            collector_ptr = other_collector_ref.next_collector;
-                            let ptr = other_collector_ref as *const Collector as *mut Collector;
+                            collector_ptr = other_collector.next_collector;
+                            let ptr = other_collector as *const Collector as *mut Collector;
                             self.reclaim(ptr);
                             continue;
                         }
@@ -240,7 +219,7 @@ impl Collector {
                     }
                 }
                 prev_collector_ptr = collector_ptr;
-                collector_ptr = other_collector_ref.next_collector;
+                collector_ptr = other_collector.next_collector;
             }
             if update_global_epoch {
                 // It is a new era; a fence is required.
@@ -266,15 +245,32 @@ impl Collector {
         let mut garbage_link = self.next_instance_link.take();
         self.next_instance_link = self.previous_instance_link.take();
         self.previous_instance_link = self.current_instance_link.take();
+        let mut thread_collector = None;
         while let Some(mut instance_ptr) = garbage_link.take() {
             garbage_link = unsafe { *instance_ptr.as_mut().next_ptr_mut() };
-            unsafe { instance_ptr.as_mut().drop_and_dealloc() };
+            let deallocated = unsafe { instance_ptr.as_mut().drop_and_dealloc() };
 
-            // `self.num_instances` may have been updated when the instance is dropped, therefore
-            // `load(self.num_instances)` must not pass through dropping the instance.
+            // `self` may have been updated when the instance is deallocated, therefore any `load`
+            // after it must not pass through deallocating the instance.
             std::sync::atomic::compiler_fence(Acquire);
-
             self.num_instances -= 1;
+
+            if !deallocated {
+                // The instance has yet to be completely dropped.
+                //
+                // Push the instance into the `Collector` of the current thread which may differ
+                // from `self` if the thread associated with `self` has been joined.
+                unsafe {
+                    let collector = thread_collector
+                        .get_or_insert_with(|| Self::current().as_mut().unwrap_unchecked());
+                    *instance_ptr.as_mut().next_ptr_mut() = collector.next_instance_link.take();
+                    collector.next_instance_link.replace(instance_ptr);
+                    collector.num_instances += 1;
+                    if collector.next_epoch_update != 0 {
+                        collector.next_epoch_update -= 1;
+                    }
+                }
+            }
         }
     }
 
@@ -333,15 +329,15 @@ static EPOCH: AtomicU8 = AtomicU8::new(0);
 /// The global anchor for thread-local instances of [`Collector`].
 static ANCHOR: AtomicPtr<Collector> = AtomicPtr::new(ptr::null_mut());
 
-/// A wrapper of [`Collector`] for a thread to properly cleanup collected instances.
+/// A wrapper of [`Collector`] for a thread to properly clean up collected instances.
 struct ThreadLocal {
     collector_ptr: *mut Collector,
 }
 
 impl Drop for ThreadLocal {
     fn drop(&mut self) {
-        if let Some(collector_ref) = unsafe { self.collector_ptr.as_mut() } {
-            collector_ref.state.fetch_or(Collector::INVALID, Release);
+        if let Some(collector) = unsafe { self.collector_ptr.as_mut() } {
+            collector.state.fetch_or(Collector::INVALID, Release);
         }
     }
 }
