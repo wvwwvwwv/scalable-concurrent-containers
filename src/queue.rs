@@ -306,7 +306,6 @@ impl<T: 'static + Clone> Clone for Queue<T> {
         let barrier = Barrier::new();
         let mut current = self.oldest.load(Acquire, &barrier);
         while let Some(entry) = current.as_ref() {
-            // TODO: optimize it.
             let next = entry.next.load(Acquire, &barrier);
             let _result = cloned.push_if_internal((**entry).clone(), |_| true, &barrier);
             current = next;

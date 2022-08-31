@@ -569,7 +569,6 @@ where
     fn clone(&self) -> Self {
         let cloned = Self::default();
         for (k, v) in self.iter(&Barrier::new()) {
-            // TODO: optimized it.
             let _reuslt = cloned.insert(k.clone(), v.clone());
         }
         cloned

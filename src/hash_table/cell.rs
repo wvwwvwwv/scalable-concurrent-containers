@@ -654,6 +654,8 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     }
 
     /// Removes a key-value pair in the slot.
+    ///
+    /// If `LOCK_FREE` is true, the entry instance stays intact, and only the bitmap is updated.
     fn erase_entry<const LEN: usize>(
         &self,
         metadata: &'b mut Metadata<K, V, LEN>,
