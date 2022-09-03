@@ -1,5 +1,9 @@
 # Changelog
 
+0.11.1
+
+* Adjust `HashIndex` parameters to suppress latency spikes.
+
 0.11.0
 
 * Replace `ebr::Barrer::reclaim` with `ebr::Arc::release`.
@@ -14,11 +18,11 @@
 
 0.10.1
 
-* Significant [HashMap](#HashMap), [HashSet](#HashSet), and [HashIndex](#HashIndex) insert performance improvement by segregating zero and non-zero memory regions.
+* Significant `HashMap`, `HashSet`, and `HashIndex` insert performance improvement by segregating zero and non-zero memory regions.
 
 0.9.1
 
-* [HashMap](#HashMap), [HashSet](#HashSet), and [HashIndex](#HashIndex) performance improvement.
+* `HashMap`, `HashSet`, and `HashIndex` performance improvement.
 
 0.9.0
 
@@ -45,5 +49,5 @@
 0.8.0
 
 * Add `ebr::suspend` which enables garbage instances in a dormant thread to be reclaimed by other threads.
-* Minor [Queue](#Queue) API update.
-* Reduce [HashMap](#HashMap) memory usage.
+* Minor `Queue` API update.
+* Reduce `HashMap` memory usage.

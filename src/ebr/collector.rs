@@ -119,7 +119,7 @@ impl Collector {
                     }
                 }
             } else {
-                self.next_epoch_update -= 1;
+                self.next_epoch_update = self.next_epoch_update.saturating_sub(1);
             }
 
             // What has happened cannot happen after the thread setting itself inactive.
@@ -142,9 +142,7 @@ impl Collector {
                 *ptr.as_mut().next_ptr_mut() = self.current_instance_link.take();
                 self.current_instance_link.replace(ptr);
                 self.num_instances += 1;
-                if self.next_epoch_update != 0 {
-                    self.next_epoch_update -= 1;
-                }
+                self.next_epoch_update = self.next_epoch_update.saturating_sub(1);
             }
         }
     }
@@ -266,9 +264,7 @@ impl Collector {
                     *instance_ptr.as_mut().next_ptr_mut() = collector.next_instance_link.take();
                     collector.next_instance_link.replace(instance_ptr);
                     collector.num_instances += 1;
-                    if collector.next_epoch_update != 0 {
-                        collector.next_epoch_update -= 1;
-                    }
+                    collector.next_epoch_update = collector.next_epoch_update.saturating_sub(1);
                 }
             }
         }

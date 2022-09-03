@@ -63,9 +63,21 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
     }
 
     /// Returns `true` if the [`Cell`] requires to be rebuilt.
+    ///
+    /// If `LOCK_FREE == true`, removed entries are not dropped occupying the slots, therefore
+    /// rebuilding the [`Cell`] might be needed to keep the data structure as small as possible.
     #[inline]
     pub(crate) fn need_rebuild(&self) -> bool {
         self.metadata.removed_bitmap == (u32::MAX >> (32 - CELL_LEN))
+    }
+
+    /// Returns `true` if the [`Cell`] needs further cleanup process.
+    ///
+    /// In case a [`Cell`] is destroyed along with its `CellArray`, there might be instances stored
+    /// in the [`Cell`] that need to be dropped.
+    #[inline]
+    pub(crate) fn need_cleanup(&self) -> bool {
+        (LOCK_FREE && self.metadata.occupied_bitmap != 0) || (!LOCK_FREE && self.num_entries() != 0)
     }
 
     /// Iterates the contents of the [`Cell`].

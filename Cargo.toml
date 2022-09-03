@@ -2,7 +2,7 @@
 name = "scc"
 description = "High performance containers and utilities for concurrent and asynchronous programming"
 documentation = "https://docs.rs/scc"
-version = "0.11.0"
+version = "0.11.1"
 authors = ["wvwwvwwv <wvwwvwwv@me.com>"]
 edition = "2021"
 readme = "README.md"
@@ -20,7 +20,7 @@ futures = "^0.3"
 loom = "^0.5"
 proptest = "^1.0"
 rand = "^0.8"
-tokio = { version = "^1.20", features = ["full"] }
+tokio = { version = "^1.21", features = ["full"] }
 
 [[bench]]
 name = "ebr"

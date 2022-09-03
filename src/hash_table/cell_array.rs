@@ -358,7 +358,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         let barrier = Barrier::new();
         for index in start..end {
             let cell = unsafe { &(*(cell_ptr.add(index))) };
-            if LOCK_FREE || cell.num_entries() != 0 {
+            if cell.need_cleanup() {
                 unsafe {
                     cell.drop_entries(&(*(data_block_ptr.add(index))), &barrier);
                 }
@@ -395,7 +395,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
 
 impl<K: Eq, V, const LOCK_FREE: bool> Drop for CellArray<K, V, LOCK_FREE> {
     fn drop(&mut self) {
-        const JOB_SIZE: usize = 1_usize << 12;
+        const JOB_SIZE: usize = 1_usize << 16;
 
         let num_cleared_cells = if LOCK_FREE {
             // No instances are dropped when the array is reachable.
