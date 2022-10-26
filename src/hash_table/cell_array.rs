@@ -352,11 +352,10 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         cell_ptr: *const Cell<K, V, LOCK_FREE>,
         data_block_ptr: *const DataBlock<K, V>,
         start: usize,
-        end: usize,
         array_len: usize,
-    ) -> bool {
+    ) {
         let barrier = Barrier::new();
-        for index in start..end {
+        for index in start..array_len {
             let cell = unsafe { &(*(cell_ptr.add(index))) };
             if cell.need_cleanup() {
                 unsafe {
@@ -364,7 +363,6 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                 }
             }
         }
-        end == array_len
     }
 
     /// Deallocates data arrays.
@@ -395,8 +393,6 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
 
 impl<K: Eq, V, const LOCK_FREE: bool> Drop for CellArray<K, V, LOCK_FREE> {
     fn drop(&mut self) {
-        const JOB_SIZE: usize = 1_usize << 16;
-
         let num_cleared_cells = if LOCK_FREE {
             // No instances are dropped when the array is reachable.
             0
@@ -404,63 +400,12 @@ impl<K: Eq, V, const LOCK_FREE: bool> Drop for CellArray<K, V, LOCK_FREE> {
             self.num_cleared_cells.load(Relaxed)
         };
         if num_cleared_cells < self.array_len {
-            let barrier = Barrier::new();
-            let end = self
-                .array_len
-                .min((num_cleared_cells + JOB_SIZE).next_power_of_two());
-            if !Self::clear_cells(
+            Self::clear_cells(
                 self.cell_ptr,
                 self.data_block_ptr,
                 num_cleared_cells,
-                end,
                 self.array_len,
-            ) {
-                // This allocates heap memory, and thus may lead to an out-of-memory error or panic.
-                let _unwind_guard = scopeguard::guard_on_unwind((), |_| {
-                    Self::clear_cells(
-                        self.cell_ptr,
-                        self.data_block_ptr,
-                        end,
-                        self.array_len,
-                        self.array_len,
-                    );
-                    Self::dealloc_arrays(
-                        self.cell_ptr,
-                        self.cell_ptr_offset,
-                        self.data_block_ptr,
-                        self.array_len,
-                    );
-                });
-
-                let cell_ptr_val = self.cell_ptr as usize;
-                let cell_ptr_offset = self.cell_ptr_offset;
-                let data_block_ptr_val = self.data_block_ptr as usize;
-                let array_len = self.array_len;
-                let mut num_cleared_cells = end;
-                barrier.defer_incremental_execute(move || {
-                    let end = array_len.min(num_cleared_cells + JOB_SIZE);
-                    if Self::clear_cells(
-                        cell_ptr_val as *const Cell<K, V, LOCK_FREE>,
-                        data_block_ptr_val as *const DataBlock<K, V>,
-                        num_cleared_cells,
-                        end,
-                        array_len,
-                    ) {
-                        Self::dealloc_arrays(
-                            cell_ptr_val as *const Cell<K, V, LOCK_FREE>,
-                            cell_ptr_offset,
-                            data_block_ptr_val as *const DataBlock<K, V>,
-                            array_len,
-                        );
-                        true
-                    } else {
-                        num_cleared_cells = end;
-                        false
-                    }
-                });
-
-                return;
-            }
+            );
         }
         Self::dealloc_arrays(
             self.cell_ptr,
