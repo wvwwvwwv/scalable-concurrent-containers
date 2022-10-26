@@ -315,7 +315,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             }
 
             // Successfully rehashed all the `Cells` in the range.
-            (*rehashing_guard).1 = true;
+            rehashing_guard.1 = true;
         }
         Ok(self.old_array.is_null(Relaxed))
     }

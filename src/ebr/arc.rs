@@ -216,7 +216,7 @@ impl<T: 'static> Arc<T> {
 impl<T: 'static> AsRef<T> for Arc<T> {
     #[inline]
     fn as_ref(&self) -> &T {
-        &**self.underlying()
+        self.underlying()
     }
 }
 
@@ -241,7 +241,7 @@ impl<T: 'static> Deref for Arc<T> {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        &**self.underlying()
+        self.underlying()
     }
 }
 

@@ -166,7 +166,7 @@ where
             if let Some(old_array_ref) = current_array_ref.old_array(barrier).as_ref() {
                 if !current_array_ref.partial_rehash::<Q, _, _>(
                     |key| self.hash(key),
-                    &Self::copier,
+                    Self::copier,
                     async_wait,
                     barrier,
                 )? {
@@ -350,7 +350,7 @@ where
             if let Some(old_array_ref) = current_array.old_array(barrier).as_ref() {
                 if !current_array.partial_rehash::<Q, _, _>(
                     |key| self.hash(key),
-                    &Self::copier,
+                    Self::copier,
                     async_wait,
                     barrier,
                 )? {
@@ -545,7 +545,7 @@ where
             //  - The load factor reaches 1/16, then the array shrinks to fit.
             let capacity = current_array.num_entries();
             let num_cells = current_array.num_cells();
-            let num_cells_to_sample = (num_cells / 8).max(2).min(4096);
+            let num_cells_to_sample = (num_cells / 8).clamp(2, 4096);
             let mut rebuild = false;
             let estimated_num_entries =
                 Self::estimate(current_array, sampling_index, num_cells_to_sample);

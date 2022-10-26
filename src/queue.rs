@@ -463,7 +463,7 @@ impl<T: 'static + Display> Display for Entry<T> {
     #[inline]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(instance) = self.instance.as_ref() {
-            write!(f, "Some({})", instance)
+            write!(f, "Some({instance})")
         } else {
             write!(f, "None")
         }

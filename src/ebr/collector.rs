@@ -200,7 +200,7 @@ impl Collector {
                                     .is_ok()
                             },
                             |prev_collector| {
-                                (*prev_collector).next_collector = other_collector.next_collector;
+                                prev_collector.next_collector = other_collector.next_collector;
                                 true
                             },
                         );

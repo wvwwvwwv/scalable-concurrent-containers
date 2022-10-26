@@ -15,7 +15,7 @@ keywords = ["async", "concurrent", "ebr", "hashmap", "tree"]
 scopeguard = "^1.1"
 
 [dev-dependencies]
-criterion = "^0.3"
+criterion = "^0.4"
 futures = "^0.3"
 loom = "^0.5"
 proptest = "^1.0"
