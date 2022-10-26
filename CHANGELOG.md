@@ -1,5 +1,9 @@
 # Changelog
 
+0.11.2
+
+* `HashIndex` and `HashMap` cleanup entries immediately when the instance is dropped.
+
 0.11.1
 
 * Adjust `HashIndex` parameters to suppress latency spikes.
