@@ -16,7 +16,7 @@ pub struct Queue<T: 'static> {
 }
 
 impl<T: 'static> Queue<T> {
-    /// Pushes a new instance of `T`.
+    /// Pushes an instance of `T`.
     ///
     /// Returns an [`Arc`] holding a strong reference to the newly pushed entry.
     ///
@@ -39,7 +39,7 @@ impl<T: 'static> Queue<T> {
         }
     }
 
-    /// Pushes a new instance of `T` if the newest entry satisfies the given condition.
+    /// Pushes an instance of `T` if the newest entry satisfies the given condition.
     ///
     /// # Errors
     ///
@@ -301,6 +301,7 @@ impl<T: 'static> Queue<T> {
 }
 
 impl<T: 'static + Clone> Clone for Queue<T> {
+    #[inline]
     fn clone(&self) -> Self {
         let cloned = Self::default();
         let barrier = Barrier::new();
@@ -397,7 +398,7 @@ impl<T: 'static> Entry<T> {
     }
 
     /// Extracts the inner instance of `T`.
-    unsafe fn take_inner(&mut self) -> T {
+    pub(super) unsafe fn take_inner(&mut self) -> T {
         self.instance.take().unwrap()
     }
 
