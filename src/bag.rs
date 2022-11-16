@@ -1,11 +1,23 @@
 //! [`Bag`] is a lock-free concurrent unordered set.
+//!
+//! Work-in-progress.
 
 use super::Queue;
 
 use std::fmt::{self, Debug};
+use std::mem::MaybeUninit;
+
+const STORAGE_LEN: usize = std::mem::size_of::<usize>() * 4;
 
 /// [`Bag`] is a lock-free concurrent unordered set.
 pub struct Bag<T: 'static> {
+    /// Primary storage.
+    _storage: [MaybeUninit<T>; STORAGE_LEN],
+
+    /// Primary storage metadata.
+    _metadata: usize,
+
+    /// Fallback storage.
     queue: Queue<T>,
 }
 
@@ -71,6 +83,8 @@ impl<T: 'static + Clone> Clone for Bag<T> {
     #[inline]
     fn clone(&self) -> Self {
         Bag {
+            _storage: unsafe { MaybeUninit::uninit().assume_init() },
+            _metadata: 0,
             queue: self.queue.clone(),
         }
     }
@@ -87,6 +101,8 @@ impl<T: 'static> Default for Bag<T> {
     #[inline]
     fn default() -> Self {
         Self {
+            _storage: unsafe { MaybeUninit::uninit().assume_init() },
+            _metadata: 0,
             queue: Queue::default(),
         }
     }

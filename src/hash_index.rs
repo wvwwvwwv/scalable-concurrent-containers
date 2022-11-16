@@ -508,9 +508,10 @@ where
                 }
             }
             for index in 0..current_array.num_cells() {
-                if let Some(locker) = Locker::lock(current_array.cell(index), &barrier) {
+                let cell = current_array.cell(index);
+                if let Some(mut locker) = Locker::lock(cell, &barrier) {
                     let data_block = current_array.data_block(index);
-                    let mut iter = locker.cell().iter(&barrier);
+                    let mut iter = cell.iter(&barrier);
                     while iter.next().is_some() {
                         locker.erase(data_block, &mut iter);
                         num_removed = num_removed.saturating_add(1);
@@ -568,14 +569,13 @@ where
                     let mut async_wait_pinned = Pin::new(&mut async_wait);
                     {
                         let barrier = Barrier::new();
-                        if let Ok(result) = Locker::try_lock_or_wait(
-                            current_array.cell(cell_index),
-                            async_wait_pinned.mut_ptr(),
-                            &barrier,
-                        ) {
-                            if let Some(locker) = result {
+                        let cell = current_array.cell(cell_index);
+                        if let Ok(result) =
+                            Locker::try_lock_or_wait(cell, async_wait_pinned.mut_ptr(), &barrier)
+                        {
+                            if let Some(mut locker) = result {
                                 let data_block = current_array.data_block(cell_index);
-                                let mut iter = locker.cell().iter(&barrier);
+                                let mut iter = cell.iter(&barrier);
                                 while iter.next().is_some() {
                                     locker.erase(data_block, &mut iter);
                                     num_removed = num_removed.saturating_add(1);

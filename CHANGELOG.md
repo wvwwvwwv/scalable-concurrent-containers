@@ -1,5 +1,9 @@
 # Changelog
 
+0.11.3
+
+* Fix [#84](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/84).
+
 0.11.2
 
 * `HashIndex` and `HashMap` cleanup entries immediately when the instance is dropped.

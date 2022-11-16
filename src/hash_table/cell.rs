@@ -178,7 +178,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
     ///
     /// The [`Cell`] and the [`DataBlock`] should never be used afterwards.
     #[inline]
-    pub(crate) unsafe fn drop_entries(&self, data_block: &DataBlock<K, V>, barrier: &Barrier) {
+    pub(crate) unsafe fn drop_entries(&mut self, data_block: &DataBlock<K, V>, barrier: &Barrier) {
         if !self.metadata.link.load(Acquire, barrier).is_null() {
             if let Some(link) = self.metadata.link.swap((None, Tag::None), Relaxed).0 {
                 link.release(barrier);
@@ -258,7 +258,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         K: Borrow<Q>,
         Q: Eq + ?Sized,
     {
-        if current_index >= CELL_LEN {
+        if current_index >= LEN {
             return None;
         }
 
@@ -274,7 +274,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         }
 
         let next_index = bitmap.trailing_zeros() as usize;
-        if next_index < CELL_LEN {
+        if next_index < LEN {
             return Some((next_index, metadata.partial_hash_array[next_index]));
         }
 
@@ -405,7 +405,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Iterator
 }
 
 pub struct Locker<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
-    cell: &'b Cell<K, V, LOCK_FREE>,
+    cell: &'b mut Cell<K, V, LOCK_FREE>,
 }
 
 impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
@@ -446,91 +446,99 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         })
     }
 
-    /// Returns a reference to the [`Cell`].
+    /// Returns the number of entries in the [`Cell`].
     #[inline]
-    pub(crate) fn cell(&self) -> &'b Cell<K, V, LOCK_FREE> {
-        self.cell
+    pub(crate) fn num_entries(&self) -> usize {
+        self.cell.num_entries()
+    }
+
+    /// Returns `true` if the [`Cell`] requires to be rebuilt.
+    #[inline]
+    pub(crate) fn need_rebuild(&self) -> bool {
+        self.cell.need_rebuild()
     }
 
     /// Inserts a new key-value pair into the [`Cell`] without a uniqueness check.
     #[inline]
     pub(crate) fn insert(
-        &'b self,
-        data_block: &'b DataBlock<K, V>,
+        &mut self,
+        data_block: &DataBlock<K, V>,
         key: K,
         value: V,
         partial_hash: u8,
-        barrier: &'b Barrier,
+        barrier: &Barrier,
     ) {
         assert!(self.cell.num_entries != u32::MAX, "array overflow");
 
         let preferred_index = partial_hash as usize % CELL_LEN;
         if (self.cell.metadata.occupied_bitmap & (1_u32 << preferred_index)) == 0 {
-            self.insert_entry(
-                &mut self.cell_mut().metadata,
+            Self::insert_entry(
+                &mut self.cell.metadata,
                 data_block,
                 preferred_index,
                 key,
                 value,
                 partial_hash,
             );
+            self.cell.num_entries += 1;
             return;
         }
         let free_index =
             Self::get_free_index::<CELL_LEN>(self.cell.metadata.occupied_bitmap, preferred_index);
         if free_index != CELL_LEN {
-            self.insert_entry(
-                &mut self.cell_mut().metadata,
+            Self::insert_entry(
+                &mut self.cell.metadata,
                 data_block,
                 free_index,
                 key,
                 value,
                 partial_hash,
             );
+            self.cell.num_entries += 1;
             return;
         }
 
         let preferred_index = partial_hash as usize % LINKED_LEN;
         let mut link_ptr = self.cell.metadata.link.load(Acquire, barrier).as_raw()
             as *mut Linked<K, V, LINKED_LEN>;
-        while let Some(link) = unsafe { link_ptr.as_mut() } {
-            #[allow(clippy::cast_ref_to_mut)]
-            let link_mut = unsafe {
-                &mut *(link as *const Linked<K, V, LINKED_LEN> as *mut Linked<K, V, LINKED_LEN>)
-            };
-            if (link.metadata.occupied_bitmap & (1_u32 << preferred_index)) == 0 {
-                self.insert_entry(
+        while let Some(link_mut) = unsafe { link_ptr.as_mut() } {
+            if (link_mut.metadata.occupied_bitmap & (1_u32 << preferred_index)) == 0 {
+                Self::insert_entry(
                     &mut link_mut.metadata,
-                    &link.data_array,
+                    &link_mut.data_array,
                     preferred_index,
                     key,
                     value,
                     partial_hash,
                 );
+                self.cell.num_entries += 1;
                 return;
             }
-            let free_index =
-                Self::get_free_index::<LINKED_LEN>(link.metadata.occupied_bitmap, preferred_index);
+            let free_index = Self::get_free_index::<LINKED_LEN>(
+                link_mut.metadata.occupied_bitmap,
+                preferred_index,
+            );
             if free_index != LINKED_LEN {
-                self.insert_entry(
+                Self::insert_entry(
                     &mut link_mut.metadata,
-                    &link.data_array,
+                    &link_mut.data_array,
                     free_index,
                     key,
                     value,
                     partial_hash,
                 );
+                self.cell.num_entries += 1;
                 return;
             }
 
-            link_ptr =
-                link.metadata.link.load(Acquire, barrier).as_raw() as *mut Linked<K, V, LINKED_LEN>;
+            link_ptr = link_mut.metadata.link.load(Acquire, barrier).as_raw()
+                as *mut Linked<K, V, LINKED_LEN>;
         }
 
         // Insert a new `Linked` at the linked list head.
         let new_link = Arc::new(Linked::new());
         let new_link_mut = unsafe { &mut *(new_link.as_ptr() as *mut Linked<K, V, LINKED_LEN>) };
-        self.insert_entry(
+        Self::insert_entry(
             &mut new_link_mut.metadata,
             &new_link.data_array,
             preferred_index,
@@ -546,73 +554,81 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
             .metadata
             .link
             .swap((Some(new_link), Tag::None), Release);
+        self.cell.num_entries += 1;
     }
 
     /// Removes a key-value pair being pointed by the given [`EntryIterator`].
     #[inline]
     pub(crate) fn erase(
-        &self,
-        data_block: &'b DataBlock<K, V>,
+        &mut self,
+        data_block: &DataBlock<K, V>,
         iter: &mut EntryIterator<K, V, LOCK_FREE>,
     ) -> Option<(K, V)> {
         if iter.current_index == usize::MAX {
             return None;
         }
-        if let Some(link) = iter.current_link_ptr.as_ref() {
-            #[allow(clippy::cast_ref_to_mut)]
-            let link_mut = unsafe {
-                &mut *(link as *const Linked<K, V, LINKED_LEN> as *mut Linked<K, V, LINKED_LEN>)
-            };
-            let result =
-                self.erase_entry(&mut link_mut.metadata, &link.data_array, iter.current_index);
-            if (LOCK_FREE && (link.metadata.occupied_bitmap & (!link.metadata.removed_bitmap)) == 0)
-                || (!LOCK_FREE && link.metadata.occupied_bitmap == 0)
-            {
-                iter.unlink_data_array(link);
+
+        self.cell.num_entries -= 1;
+        let link_ptr = iter.current_link_ptr.as_raw() as *mut Linked<K, V, LINKED_LEN>;
+        if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
+            if LOCK_FREE {
+                debug_assert_eq!(
+                    link_mut.metadata.removed_bitmap & (1_u32 << iter.current_index),
+                    0
+                );
+                link_mut.metadata.removed_bitmap |= 1_u32 << iter.current_index;
+            } else {
+                debug_assert_ne!(
+                    link_mut.metadata.occupied_bitmap & (1_u32 << iter.current_index),
+                    0
+                );
+                link_mut.metadata.occupied_bitmap &= !(1_u32 << iter.current_index);
+                return Some(unsafe { link_mut.data_array[iter.current_index].as_ptr().read() });
             }
-            debug_assert!(
-                self.cell.num_entries != 0
-                    || self
-                        .cell
-                        .metadata
-                        .link
-                        .load(Relaxed, iter.barrier)
-                        .is_null()
+        } else if LOCK_FREE {
+            debug_assert_eq!(
+                self.cell.metadata.removed_bitmap & (1_u32 << iter.current_index),
+                0
             );
-            result
+            self.cell.metadata.removed_bitmap |= 1_u32 << iter.current_index;
         } else {
-            self.erase_entry(
-                &mut self.cell_mut().metadata,
-                data_block,
-                iter.current_index,
-            )
+            debug_assert_ne!(
+                self.cell.metadata.occupied_bitmap & (1_u32 << iter.current_index),
+                0
+            );
+            self.cell.metadata.occupied_bitmap &= !(1_u32 << iter.current_index);
+            return Some(unsafe { data_block[iter.current_index].as_ptr().read() });
         }
+
+        None
     }
 
     /// Extracts the key-value pair being pointed by `self`.
     #[inline]
     pub(crate) fn extract(
-        &self,
-        data_block: &'b DataBlock<K, V>,
+        &mut self,
+        data_block: &DataBlock<K, V>,
         iter: &mut EntryIterator<K, V, LOCK_FREE>,
     ) -> (K, V) {
         debug_assert!(!LOCK_FREE);
-        if let Some(link) = iter.current_link_ptr.as_ref() {
-            #[allow(clippy::cast_ref_to_mut)]
-            let link_mut = unsafe {
-                &mut *(link as *const Linked<K, V, LINKED_LEN> as *mut Linked<K, V, LINKED_LEN>)
-            };
-            let extracted =
-                self.extract_entry(&mut link_mut.metadata, &link.data_array, iter.current_index);
-            if link.metadata.occupied_bitmap == 0 {
+        let link_ptr = iter.current_link_ptr.as_raw() as *mut Linked<K, V, LINKED_LEN>;
+        if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
+            let extracted = Self::extract_entry(
+                &mut link_mut.metadata,
+                &link_mut.data_array,
+                iter.current_index,
+                &mut self.cell.num_entries,
+            );
+            if link_mut.metadata.occupied_bitmap == 0 {
                 iter.unlink_data_array(link_mut);
             }
             extracted
         } else {
-            self.extract_entry(
-                &mut self.cell_mut().metadata,
+            Self::extract_entry(
+                &mut self.cell.metadata,
                 data_block,
                 iter.current_index,
+                &mut self.cell.num_entries,
             )
         }
     }
@@ -621,107 +637,14 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     #[inline]
     pub(crate) fn purge(&mut self, barrier: &Barrier) {
         if LOCK_FREE {
-            self.cell_mut().metadata.removed_bitmap = self.cell.metadata.occupied_bitmap;
+            self.cell.metadata.removed_bitmap = self.cell.metadata.occupied_bitmap;
         }
         self.cell.state.fetch_or(KILLED, Release);
-        self.num_entries_updated(0);
+        self.cell.num_entries = 0;
         if !self.cell.metadata.link.load(Acquire, barrier).is_null() {
             if let Some(data_array) = self.cell.metadata.link.swap((None, Tag::None), Relaxed).0 {
                 data_array.release(barrier);
             }
-        }
-    }
-
-    /// Gets the most optimal free slot index from the given bitmap.
-    fn get_free_index<const LEN: usize>(bitmap: u32, preferred_index: usize) -> usize {
-        let mut free_index = (bitmap | ((1_u32 << preferred_index) - 1)).trailing_ones() as usize;
-        if free_index == LEN {
-            free_index = bitmap.trailing_ones() as usize;
-        }
-        free_index
-    }
-
-    /// Inserts a key-value pair in the slot.
-    #[allow(clippy::too_many_arguments)]
-    fn insert_entry<const LEN: usize>(
-        &self,
-        metadata: &mut Metadata<K, V, LEN>,
-        data_array: &[MaybeUninit<(K, V)>; LEN],
-        index: usize,
-        key: K,
-        value: V,
-        partial_hash: u8,
-    ) {
-        debug_assert!(index < LEN);
-
-        unsafe {
-            (data_array[index].as_ptr() as *mut (K, V)).write((key, value));
-            metadata.partial_hash_array[index] = partial_hash;
-            if LOCK_FREE {
-                fence(Release);
-            }
-            metadata.occupied_bitmap |= 1_u32 << index;
-        }
-        self.num_entries_updated(self.cell.num_entries + 1);
-    }
-
-    /// Removes a key-value pair in the slot.
-    ///
-    /// If `LOCK_FREE` is true, the entry instance stays intact, and only the bitmap is updated.
-    fn erase_entry<const LEN: usize>(
-        &self,
-        metadata: &'b mut Metadata<K, V, LEN>,
-        data_array: &'b [MaybeUninit<(K, V)>; LEN],
-        index: usize,
-    ) -> Option<(K, V)> {
-        debug_assert!(index < LEN);
-
-        if metadata.occupied_bitmap & (1_u32 << index) == 0 {
-            return None;
-        }
-
-        if LOCK_FREE && (metadata.removed_bitmap & (1_u32 << index)) != 0 {
-            return None;
-        }
-
-        self.num_entries_updated(self.cell.num_entries - 1);
-        if LOCK_FREE {
-            metadata.removed_bitmap |= 1_u32 << index;
-            None
-        } else {
-            metadata.occupied_bitmap &= !(1_u32 << index);
-            let entry_ptr = data_array[index].as_ptr() as *mut (K, V);
-            #[allow(clippy::uninit_assumed_init)]
-            Some(unsafe { ptr::replace(entry_ptr, MaybeUninit::uninit().assume_init()) })
-        }
-    }
-
-    /// Extracts and removes the key-value pair in the slot.
-    fn extract_entry<const LEN: usize>(
-        &self,
-        metadata: &'b mut Metadata<K, V, LEN>,
-        data_array: &'b [MaybeUninit<(K, V)>; LEN],
-        index: usize,
-    ) -> (K, V) {
-        debug_assert!(index < LEN);
-
-        self.num_entries_updated(self.cell.num_entries - 1);
-        metadata.occupied_bitmap &= !(1_u32 << index);
-        let entry_ptr = data_array[index].as_ptr() as *mut (K, V);
-        unsafe { ptr::read(entry_ptr) }
-    }
-
-    /// Updates the number of entries.
-    fn num_entries_updated(&self, num: u32) {
-        self.cell_mut().num_entries = num;
-    }
-
-    /// Returns a mutable reference to the `Cell`.
-    #[allow(clippy::mut_from_ref)]
-    fn cell_mut(&self) -> &mut Cell<K, V, LOCK_FREE> {
-        #[allow(clippy::cast_ref_to_mut)]
-        unsafe {
-            &mut *(self.cell as *const _ as *mut Cell<K, V, LOCK_FREE>)
         }
     }
 
@@ -739,10 +662,62 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
             .compare_exchange(current, current | LOCK, Acquire, Relaxed)
             .is_ok()
         {
-            Ok(Some(Locker { cell }))
+            Ok(Some(Locker {
+                // The `Locker` owns the cell, so it is safe to convert the reference into a
+                // mutable one.
+                #[allow(clippy::cast_ref_to_mut)]
+                cell: unsafe {
+                    &mut *(cell as *const Cell<K, V, LOCK_FREE> as *mut Cell<K, V, LOCK_FREE>)
+                },
+            }))
         } else {
             Err(())
         }
+    }
+
+    /// Gets the most optimal free slot index from the given bitmap.
+    fn get_free_index<const LEN: usize>(bitmap: u32, preferred_index: usize) -> usize {
+        let mut free_index = (bitmap | ((1_u32 << preferred_index) - 1)).trailing_ones() as usize;
+        if free_index == LEN {
+            free_index = bitmap.trailing_ones() as usize;
+        }
+        free_index
+    }
+
+    /// Inserts a key-value pair in the slot.
+    fn insert_entry<const LEN: usize>(
+        metadata: &mut Metadata<K, V, LEN>,
+        data_array: &[MaybeUninit<(K, V)>; LEN],
+        index: usize,
+        key: K,
+        value: V,
+        partial_hash: u8,
+    ) {
+        debug_assert!(index < LEN);
+
+        unsafe {
+            (data_array[index].as_ptr() as *mut (K, V)).write((key, value));
+            metadata.partial_hash_array[index] = partial_hash;
+            if LOCK_FREE {
+                fence(Release);
+            }
+            metadata.occupied_bitmap |= 1_u32 << index;
+        }
+    }
+
+    /// Extracts and removes the key-value pair in the slot.
+    fn extract_entry<const LEN: usize>(
+        metadata: &mut Metadata<K, V, LEN>,
+        data_array: &[MaybeUninit<(K, V)>; LEN],
+        index: usize,
+        num_entries_field: &mut u32,
+    ) -> (K, V) {
+        debug_assert!(index < LEN);
+
+        *num_entries_field -= 1;
+        metadata.occupied_bitmap &= !(1_u32 << index);
+        let entry_ptr = data_array[index].as_ptr() as *mut (K, V);
+        unsafe { ptr::read(entry_ptr) }
     }
 }
 
@@ -945,7 +920,7 @@ mod test {
                 barrier_copied.wait().await;
                 let barrier = Barrier::new();
                 for i in 0..2048 {
-                    let exclusive_locker = Locker::lock(&*cell_copied, &barrier).unwrap();
+                    let mut exclusive_locker = Locker::lock(&*cell_copied, &barrier).unwrap();
                     let mut sum: u64 = 0;
                     for j in 0..128 {
                         unsafe {
@@ -964,8 +939,7 @@ mod test {
                         );
                     } else {
                         assert_eq!(
-                            exclusive_locker
-                                .cell()
+                            cell_copied
                                 .search(
                                     &data_block_copied,
                                     &task_id,

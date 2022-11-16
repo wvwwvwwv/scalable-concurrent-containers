@@ -132,6 +132,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn kill_cell<Q, F: Fn(&Q) -> (u64, u8), C: Fn(&K, &V) -> Option<(K, V)>>(
         &self,
+        cell: &Cell<K, V, LOCK_FREE>,
         cell_locker: &mut Locker<K, V, LOCK_FREE>,
         old_array: &CellArray<K, V, LOCK_FREE>,
         old_cell_index: usize,
@@ -144,9 +145,9 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        if cell_locker.cell().killed() {
+        if cell.killed() {
             return Ok(());
-        } else if cell_locker.cell().num_entries() == 0 {
+        } else if cell.num_entries() == 0 {
             cell_locker.purge(barrier);
             return Ok(());
         }
@@ -168,7 +169,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         let mut target_cells: [Option<Locker<K, V, LOCK_FREE>>; size_of::<usize>() * 4] =
             Default::default();
         let mut max_index = 0;
-        let mut iter = cell_locker.cell().iter(barrier);
+        let mut iter = cell.iter(barrier);
         while let Some(partial_hash) = iter.next() {
             let old_entry = iter.get(old_data_block);
             let new_cell_index = if shrink {
@@ -199,7 +200,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                 max_index += 1;
             }
 
-            let target_cell = target_cells[offset].as_ref().unwrap();
+            let target_cell = target_cells[offset].as_mut().unwrap();
             let new_entry = if let Some(entry) = copier(&old_entry.0, &old_entry.1) {
                 // HashIndex.
                 debug_assert!(LOCK_FREE);
@@ -303,6 +304,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                 };
                 if let Some(mut locker) = lock_result {
                     self.kill_cell::<Q, F, C>(
+                        old_cell,
                         &mut locker,
                         old_array_ref,
                         old_cell_index,
@@ -356,7 +358,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     ) {
         let barrier = Barrier::new();
         for index in start..array_len {
-            let cell = unsafe { &(*(cell_ptr.add(index))) };
+            let cell = unsafe { &mut (*(cell_ptr.add(index) as *mut Cell<K, V, LOCK_FREE>)) };
             if cell.need_cleanup() {
                 unsafe {
                     cell.drop_entries(&(*(data_block_ptr.add(index))), &barrier);

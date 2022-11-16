@@ -345,7 +345,7 @@ where
     ) {
         let (hash, partial_hash) = self.hash(&key);
         let barrier = Barrier::new();
-        if let Ok((_, locker, data_block, iter)) =
+        if let Ok((_, mut locker, data_block, iter)) =
             self.acquire::<_>(&key, hash, partial_hash, None, &barrier)
         {
             if let Some(iter) = iter {
@@ -383,27 +383,24 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if let Ok((_, locker, data_block, iter)) = self.acquire::<_>(
-                &key,
-                hash,
-                partial_hash,
-                Some(async_wait_pinned.mut_ptr()),
-                &Barrier::new(),
-            ) {
-                if let Some(iter) = iter {
-                    let (k, v) = iter.get(data_block);
-                    #[allow(clippy::cast_ref_to_mut)]
-                    updater(k, unsafe { &mut *(v as *const V as *mut V) });
-                    return;
-                }
-                locker.insert(
-                    data_block,
-                    key,
-                    constructor(),
+            {
+                let barrier = Barrier::new();
+                if let Ok((_, mut locker, data_block, iter)) = self.acquire::<_>(
+                    &key,
+                    hash,
                     partial_hash,
-                    &Barrier::new(),
-                );
-                return;
+                    Some(async_wait_pinned.mut_ptr()),
+                    &barrier,
+                ) {
+                    if let Some(iter) = iter {
+                        let (k, v) = iter.get(data_block);
+                        #[allow(clippy::cast_ref_to_mut)]
+                        updater(k, unsafe { &mut *(v as *const V as *mut V) });
+                    } else {
+                        locker.insert(data_block, key, constructor(), partial_hash, &barrier);
+                    }
+                    return;
+                };
             }
             async_wait_pinned.await;
         }
@@ -887,9 +884,10 @@ where
             debug_assert!(current_array.old_array(&barrier).is_null());
 
             for cell_index in 0..current_array.num_cells() {
-                if let Some(locker) = Locker::lock(current_array.cell(cell_index), &barrier) {
+                let cell = current_array.cell(cell_index);
+                if let Some(mut locker) = Locker::lock(cell, &barrier) {
                     let data_block = current_array.data_block(cell_index);
-                    let mut iter = locker.cell().iter(&barrier);
+                    let mut iter = cell.iter(&barrier);
                     while iter.next().is_some() {
                         let (k, v) = iter.get(data_block);
                         #[allow(clippy::cast_ref_to_mut)]
@@ -972,14 +970,13 @@ where
                     let mut async_wait_pinned = Pin::new(&mut async_wait);
                     {
                         let barrier = Barrier::new();
-                        if let Ok(result) = Locker::try_lock_or_wait(
-                            current_array.cell(cell_index),
-                            async_wait_pinned.mut_ptr(),
-                            &barrier,
-                        ) {
-                            if let Some(locker) = result {
+                        let cell = current_array.cell(cell_index);
+                        if let Ok(result) =
+                            Locker::try_lock_or_wait(cell, async_wait_pinned.mut_ptr(), &barrier)
+                        {
+                            if let Some(mut locker) = result {
                                 let data_block = current_array.data_block(cell_index);
-                                let mut iter = locker.cell().iter(&barrier);
+                                let mut iter = cell.iter(&barrier);
                                 while iter.next().is_some() {
                                     let (k, v) = iter.get(data_block);
                                     #[allow(clippy::cast_ref_to_mut)]

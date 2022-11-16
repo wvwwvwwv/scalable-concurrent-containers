@@ -11,7 +11,6 @@ A collection of high performance containers and utilities for concurrent and asy
 - [HashSet](#HashSet) is a concurrent and asynchronous hash set.
 - [HashIndex](#HashIndex) is a read-optimized concurrent and asynchronous hash map.
 - [TreeIndex](#TreeIndex) is a read-optimized concurrent and asynchronous B+ tree.
-- [Bag](#Bag) is a concurrent lock-free unordered set.
 - [Queue](#Queue) is a concurrent lock-free first-in-first-out queue.
 
 #### Utilities for Concurrent Programming
@@ -212,11 +211,6 @@ assert_eq!(treeindex.range(1..1, &barrier).count(), 0);
 assert_eq!(treeindex.range(4..8, &barrier).count(), 4);
 assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 ```
-
-
-## Bag
-
-Work-in-progress.
 
 
 ## Queue
