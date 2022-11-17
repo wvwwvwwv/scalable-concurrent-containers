@@ -662,10 +662,10 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
             .compare_exchange(current, current | LOCK, Acquire, Relaxed)
             .is_ok()
         {
+            // The `Locker` owns the cell, so it is safe to convert the reference into a
+            // mutable one.
+            #[allow(clippy::cast_ref_to_mut)]
             Ok(Some(Locker {
-                // The `Locker` owns the cell, so it is safe to convert the reference into a
-                // mutable one.
-                #[allow(clippy::cast_ref_to_mut)]
                 cell: unsafe {
                     &mut *(cell as *const Cell<K, V, LOCK_FREE> as *mut Cell<K, V, LOCK_FREE>)
                 },
