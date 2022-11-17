@@ -145,9 +145,8 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        if cell.killed() {
-            return Ok(());
-        } else if cell.num_entries() == 0 {
+        debug_assert!(!cell.killed());
+        if cell.num_entries() == 0 {
             cell_locker.purge(barrier);
             return Ok(());
         }
@@ -186,15 +185,11 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
 
             let offset = new_cell_index - target_cell_index;
             while max_index <= offset {
+                let target_cell = self.cell(max_index + target_cell_index);
                 let locker = if let Some(&async_wait) = async_wait.as_ref() {
-                    Locker::try_lock_or_wait(
-                        self.cell(max_index + target_cell_index),
-                        async_wait,
-                        barrier,
-                    )?
-                    .unwrap()
+                    Locker::try_lock_or_wait(target_cell, async_wait, barrier)?.unwrap()
                 } else {
-                    Locker::lock(self.cell(max_index + target_cell_index), barrier).unwrap()
+                    Locker::lock(target_cell, barrier).unwrap()
                 };
                 target_cells[max_index].replace(locker);
                 max_index += 1;
