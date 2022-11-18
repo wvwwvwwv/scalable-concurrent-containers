@@ -1,3 +1,4 @@
+use crate::check_copy::{IsCopy, NotCopy};
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 use crate::wait_queue::{AsyncWait, WaitQueue};
 
@@ -69,15 +70,6 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
     #[inline]
     pub(crate) fn need_rebuild(&self) -> bool {
         self.metadata.removed_bitmap == (u32::MAX >> (32 - CELL_LEN))
-    }
-
-    /// Returns `true` if the [`Cell`] needs further cleanup process.
-    ///
-    /// In case a [`Cell`] is destroyed along with its `CellArray`, there might be instances stored
-    /// in the [`Cell`] that need to be dropped.
-    #[inline]
-    pub(crate) fn need_cleanup(&self) -> bool {
-        (LOCK_FREE && self.metadata.occupied_bitmap != 0) || (!LOCK_FREE && self.num_entries() != 0)
     }
 
     /// Iterates the contents of the [`Cell`].
@@ -184,13 +176,15 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
                 link.release(barrier);
             }
         }
-        let mut bitmap = self.metadata.occupied_bitmap;
-        let mut index = bitmap.trailing_zeros();
-        while index != 32 {
-            let entry_mut_ptr = data_block[index as usize].as_ptr() as *mut (K, V);
-            ptr::drop_in_place(entry_mut_ptr);
-            bitmap &= !(1_u32 << index);
-            index = bitmap.trailing_zeros();
+        if !IsCopy::<(K, V)>::VALUE && self.metadata.occupied_bitmap != 0 {
+            let mut bitmap = self.metadata.occupied_bitmap;
+            let mut index = bitmap.trailing_zeros();
+            while index != 32 {
+                let entry_mut_ptr = data_block[index as usize].as_ptr() as *mut (K, V);
+                ptr::drop_in_place(entry_mut_ptr);
+                bitmap &= !(1_u32 << index);
+                index = bitmap.trailing_zeros();
+            }
         }
     }
 
@@ -881,14 +875,16 @@ impl<K: 'static + Eq, V: 'static, const LEN: usize> Linked<K, V, LEN> {
 
 impl<K: 'static + Eq, V: 'static, const LEN: usize> Drop for Linked<K, V, LEN> {
     fn drop(&mut self) {
-        let mut index = self.metadata.occupied_bitmap.trailing_zeros();
-        while index != 32 {
-            let entry_mut_ptr = self.data_array[index as usize].as_mut_ptr();
-            unsafe {
-                ptr::drop_in_place(entry_mut_ptr);
+        if !IsCopy::<(K, V)>::VALUE {
+            let mut index = self.metadata.occupied_bitmap.trailing_zeros();
+            while index != 32 {
+                let entry_mut_ptr = self.data_array[index as usize].as_mut_ptr();
+                unsafe {
+                    ptr::drop_in_place(entry_mut_ptr);
+                }
+                self.metadata.occupied_bitmap &= !(1_u32 << index);
+                index = self.metadata.occupied_bitmap.trailing_zeros();
             }
-            self.metadata.occupied_bitmap &= !(1_u32 << index);
-            index = self.metadata.occupied_bitmap.trailing_zeros();
         }
     }
 }

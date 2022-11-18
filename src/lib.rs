@@ -35,6 +35,7 @@ pub use tree_index::TreeIndex;
 
 pub mod ebr;
 
+mod check_copy;
 mod hash_table;
 mod wait_queue;
 

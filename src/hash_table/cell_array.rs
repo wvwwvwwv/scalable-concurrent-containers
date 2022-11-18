@@ -1,5 +1,6 @@
 use super::cell::{Cell, DataBlock, Locker, CELL_LEN};
 
+use crate::check_copy::{IsCopy, NotCopy};
 use crate::ebr::{AtomicArc, Barrier, Ptr, Tag};
 use crate::wait_queue::AsyncWait;
 
@@ -343,73 +344,45 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             Layout::from_size_align_unchecked(allocation_size, 1)
         })
     }
+}
 
-    /// Clears cells for dropping the [`CellArray`].
-    fn clear_cells(
-        cell_ptr: *const Cell<K, V, LOCK_FREE>,
-        data_block_ptr: *const DataBlock<K, V>,
-        start: usize,
-        array_len: usize,
-    ) {
-        let barrier = Barrier::new();
-        for index in start..array_len {
-            let cell = unsafe { &mut (*(cell_ptr.add(index) as *mut Cell<K, V, LOCK_FREE>)) };
-            if cell.need_cleanup() {
+impl<K: Eq, V, const LOCK_FREE: bool> Drop for CellArray<K, V, LOCK_FREE> {
+    fn drop(&mut self) {
+        let num_cleared_cells = if LOCK_FREE && !IsCopy::<(K, V)>::VALUE {
+            // No instances are dropped when the array is reachable.
+            0
+        } else {
+            // If `T: Copy`, `drop` does not need to be explicitly called, however, still any
+            // linked lists should be cleaned up.
+            self.num_cleared_cells.load(Relaxed)
+        };
+
+        if num_cleared_cells < self.array_len {
+            let barrier = Barrier::new();
+            for index in num_cleared_cells..self.array_len {
                 unsafe {
-                    cell.drop_entries(&(*(data_block_ptr.add(index))), &barrier);
+                    let cell = &mut (*(self.cell_ptr.add(index) as *mut Cell<K, V, LOCK_FREE>));
+                    cell.drop_entries(&(*(self.data_block_ptr.add(index))), &barrier);
                 }
             }
         }
-    }
 
-    /// Deallocates data arrays.
-    fn dealloc_arrays(
-        cell_ptr: *const Cell<K, V, LOCK_FREE>,
-        cell_ptr_offset: u32,
-        data_block_ptr: *const DataBlock<K, V>,
-        len: usize,
-    ) {
         unsafe {
             dealloc(
-                (cell_ptr as *mut Cell<K, V, LOCK_FREE>)
+                (self.cell_ptr as *mut Cell<K, V, LOCK_FREE>)
                     .cast::<u8>()
-                    .sub(cell_ptr_offset as usize),
-                Self::calculate_memory_layout::<Cell<K, V, LOCK_FREE>>(len).2,
+                    .sub(self.cell_ptr_offset as usize),
+                Self::calculate_memory_layout::<Cell<K, V, LOCK_FREE>>(self.array_len).2,
             );
             dealloc(
-                (data_block_ptr as *mut DataBlock<K, V>).cast::<u8>(),
+                (self.data_block_ptr as *mut DataBlock<K, V>).cast::<u8>(),
                 Layout::from_size_align(
-                    size_of::<DataBlock<K, V>>() * len,
+                    size_of::<DataBlock<K, V>>() * self.array_len,
                     align_of::<[DataBlock<K, V>; 0]>(),
                 )
                 .unwrap(),
             );
         }
-    }
-}
-
-impl<K: Eq, V, const LOCK_FREE: bool> Drop for CellArray<K, V, LOCK_FREE> {
-    fn drop(&mut self) {
-        let num_cleared_cells = if LOCK_FREE {
-            // No instances are dropped when the array is reachable.
-            0
-        } else {
-            self.num_cleared_cells.load(Relaxed)
-        };
-        if num_cleared_cells < self.array_len {
-            Self::clear_cells(
-                self.cell_ptr,
-                self.data_block_ptr,
-                num_cleared_cells,
-                self.array_len,
-            );
-        }
-        Self::dealloc_arrays(
-            self.cell_ptr,
-            self.cell_ptr_offset,
-            self.data_block_ptr,
-            self.array_len,
-        );
     }
 }
 

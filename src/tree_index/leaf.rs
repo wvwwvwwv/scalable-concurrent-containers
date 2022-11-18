@@ -1,3 +1,4 @@
+use crate::check_copy::{IsCopy, NotCopy};
 use crate::ebr::{Arc, AtomicArc, Barrier};
 use crate::LinkedList;
 
@@ -679,11 +680,13 @@ where
     V: 'static + Clone + Sync,
 {
     fn drop(&mut self) {
-        let metadata = self.metadata.load(Acquire);
-        for i in 0..DIMENSION.num_entries {
-            let rank = DIMENSION.state(metadata, i);
-            if rank != Dimension::uninit_state() {
-                self.take(i);
+        if !IsCopy::<(K, V)>::VALUE {
+            let metadata = self.metadata.load(Acquire);
+            for i in 0..DIMENSION.num_entries {
+                let rank = DIMENSION.state(metadata, i);
+                if rank != Dimension::uninit_state() {
+                    self.take(i);
+                }
             }
         }
     }

@@ -1,8 +1,13 @@
 # Changelog
 
+0.11.4
+
+* Optimize performance for `T: Copy`.
+
 0.11.3
 
 * Fix [#84](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/84).
+* 0.11.2 and any older versions have a serious correctness problem with Rust 1.65.0 and newer.
 
 0.11.2
 
