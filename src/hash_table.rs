@@ -1,7 +1,7 @@
 pub mod cell;
 pub mod cell_array;
 
-use cell::{DataBlock, EntryIterator, Locker, Reader, CELL_LEN};
+use cell::{DataBlock, EntryPtr, Locker, Reader, CELL_LEN};
 use cell_array::CellArray;
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
@@ -266,8 +266,8 @@ where
         if let Some(mut iter) = iter {
             if condition(&iter.get(data_block).1) {
                 let result = locker.erase(data_block, &mut iter);
-                let need_shrink = locker.num_entries() < CELL_LEN / 16;
-                let need_rebuild = LOCK_FREE && locker.need_rebuild();
+                let need_shrink = locker.cell().num_entries() < CELL_LEN / 16;
+                let need_rebuild = LOCK_FREE && locker.cell().need_rebuild();
                 if (cell_index % CELL_LEN) == 0 && (need_shrink || need_rebuild) {
                     drop(locker);
                     if let Some(current_array_ref) =
@@ -304,9 +304,9 @@ where
         Ok((None, false))
     }
 
-    /// Acquires a [`Locker`] and [`EntryIterator`].
+    /// Acquires a [`Locker`] and [`EntryPtr`].
     ///
-    /// It returns an error if locking failed, or returns an [`EntryIterator`] if the key exists,
+    /// It returns an error if locking failed, or returns an [`EntryPtr`] if the key exists,
     /// otherwise `None` is returned.
     #[allow(clippy::type_complexity)]
     fn acquire<'h, 'b, Q>(
@@ -321,7 +321,7 @@ where
             usize,
             Locker<'b, K, V, LOCK_FREE>,
             &'b DataBlock<K, V>,
-            Option<EntryIterator<'b, K, V, LOCK_FREE>>,
+            Option<EntryPtr<'b, K, V, LOCK_FREE>>,
         ),
         (),
     >
@@ -356,14 +356,14 @@ where
                 )? {
                     check_resize = false;
                     let cell_index = old_array_ref.calculate_cell_index(hash);
-                    let cell = old_array_ref.cell(cell_index);
+                    let cell = old_array_ref.cell_mut(cell_index);
                     let lock_result = if let Some(&async_wait) = async_wait.as_ref() {
                         Locker::try_lock_or_wait(cell, async_wait, barrier)?
                     } else {
                         Locker::lock(cell, barrier)
                     };
                     if let Some(mut locker) = lock_result {
-                        if let Some(iter) = cell.get(
+                        if let Some(entry_ptr) = locker.get(
                             old_array_ref.data_block(cell_index),
                             key_ref,
                             partial_hash,
@@ -373,12 +373,11 @@ where
                                 cell_index,
                                 locker,
                                 old_array_ref.data_block(cell_index),
-                                Some(iter),
+                                Some(entry_ptr),
                             ));
                         }
                         // Kills the Cell.
                         current_array.kill_cell::<Q, _, _>(
-                            cell,
                             &mut locker,
                             old_array_ref,
                             cell_index,
@@ -408,7 +407,7 @@ where
                 continue;
             }
 
-            let cell = current_array.cell(cell_index);
+            let cell = current_array.cell_mut(cell_index);
             let lock_result = if let Some(&async_wait) = async_wait.as_ref() {
                 Locker::try_lock_or_wait(cell, async_wait, barrier)?
             } else {
@@ -416,8 +415,8 @@ where
             };
             if let Some(locker) = lock_result {
                 let data_block = current_array.data_block(cell_index);
-                if let Some(iter) = cell.get(data_block, key_ref, partial_hash, barrier) {
-                    return Ok((cell_index, locker, data_block, Some(iter)));
+                if let Some(entry_ptr) = locker.get(data_block, key_ref, partial_hash, barrier) {
+                    return Ok((cell_index, locker, data_block, Some(entry_ptr)));
                 }
                 return Ok((cell_index, locker, data_block, None));
             }

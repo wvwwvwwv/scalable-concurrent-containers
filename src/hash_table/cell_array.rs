@@ -1,4 +1,4 @@
-use super::cell::{Cell, DataBlock, Locker, CELL_LEN};
+use super::cell::{Cell, DataBlock, EntryPtr, Locker, CELL_LEN};
 
 use crate::check_copy::{IsCopy, NotCopy};
 use crate::ebr::{AtomicArc, Barrier, Ptr, Tag};
@@ -86,6 +86,14 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         unsafe { &(*(self.cell_ptr.add(index))) }
     }
 
+    /// Returns a mutable reference to a [`Cell`] at the given position.
+    #[allow(clippy::mut_from_ref)]
+    #[inline]
+    pub(crate) fn cell_mut(&self, index: usize) -> &mut Cell<K, V, LOCK_FREE> {
+        debug_assert!(index < self.num_cells());
+        unsafe { &mut (*(self.cell_ptr.add(index) as *mut Cell<K, V, LOCK_FREE>)) }
+    }
+
     /// Returns a reference to a [`DataBlock`] at the given position.
     #[inline]
     pub(crate) fn data_block(&self, index: usize) -> &DataBlock<K, V> {
@@ -133,7 +141,6 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn kill_cell<Q, F: Fn(&Q) -> (u64, u8), C: Fn(&K, &V) -> Option<(K, V)>>(
         &self,
-        cell: &Cell<K, V, LOCK_FREE>,
         cell_locker: &mut Locker<K, V, LOCK_FREE>,
         old_array: &CellArray<K, V, LOCK_FREE>,
         old_cell_index: usize,
@@ -146,8 +153,8 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        debug_assert!(!cell.killed());
-        if cell.num_entries() == 0 {
+        debug_assert!(!cell_locker.cell().killed());
+        if cell_locker.cell().num_entries() == 0 {
             cell_locker.purge(barrier);
             return Ok(());
         }
@@ -169,9 +176,9 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         let mut target_cells: [Option<Locker<K, V, LOCK_FREE>>; size_of::<usize>() * 4] =
             Default::default();
         let mut max_index = 0;
-        let mut iter = cell.iter(barrier);
-        while let Some(partial_hash) = iter.next() {
-            let old_entry = iter.get(old_data_block);
+        let mut entry_ptr = EntryPtr::new(barrier);
+        while entry_ptr.next(cell_locker.cell()) {
+            let old_entry = entry_ptr.get(old_data_block);
             let new_cell_index = if shrink {
                 debug_assert!(
                     self.calculate_cell_index(hasher(old_entry.0.borrow()).0) == target_cell_index
@@ -186,7 +193,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
 
             let offset = new_cell_index - target_cell_index;
             while max_index <= offset {
-                let target_cell = self.cell(max_index + target_cell_index);
+                let target_cell = self.cell_mut(max_index + target_cell_index);
                 let locker = if let Some(&async_wait) = async_wait.as_ref() {
                     Locker::try_lock_or_wait(target_cell, async_wait, barrier)?.unwrap()
                 } else {
@@ -197,6 +204,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             }
 
             let target_cell = target_cells[offset].as_mut().unwrap();
+            let partial_hash = entry_ptr.partial_hash(cell_locker.cell());
             let new_entry = if let Some(entry) = copier(&old_entry.0, &old_entry.1) {
                 // HashIndex.
                 debug_assert!(LOCK_FREE);
@@ -204,7 +212,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             } else {
                 // HashMap.
                 debug_assert!(!LOCK_FREE);
-                cell_locker.extract(old_data_block, &mut iter)
+                cell_locker.extract(old_data_block, &mut entry_ptr)
             };
             target_cell.insert(
                 self.data_block(target_cell_index + offset),
@@ -292,7 +300,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             });
 
             for old_cell_index in current..(current + CELL_LEN).min(old_array_size) {
-                let old_cell = old_array_ref.cell(old_cell_index);
+                let old_cell = old_array_ref.cell_mut(old_cell_index);
                 let lock_result = if let Some(&async_wait) = async_wait.as_ref() {
                     Locker::try_lock_or_wait(old_cell, async_wait, barrier)?
                 } else {
@@ -300,7 +308,6 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                 };
                 if let Some(mut locker) = lock_result {
                     self.kill_cell::<Q, F, C>(
-                        old_cell,
                         &mut locker,
                         old_array_ref,
                         old_cell_index,

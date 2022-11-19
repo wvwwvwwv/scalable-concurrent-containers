@@ -1,7 +1,7 @@
 //! [`HashIndex`] is a read-optimized concurrent and asynchronous hash map.
 
 use super::ebr::{Arc, AtomicArc, Barrier, Ptr};
-use super::hash_table::cell::{EntryIterator, Locker};
+use super::hash_table::cell::{Cell, EntryPtr, Locker};
 use super::hash_table::cell_array::CellArray;
 use super::hash_table::HashTable;
 use super::wait_queue::AsyncWait;
@@ -206,15 +206,12 @@ where
     {
         let (hash, partial_hash) = self.hash(key_ref);
         let barrier = Barrier::new();
-        let (_, _locker, data_block, iter) = self
+        let (_, mut locker, data_block, entry_ptr) = self
             .acquire::<Q>(key_ref, hash, partial_hash, None, &barrier)
             .ok()?;
-        if let Some(iter) = iter {
-            let (k, v) = iter.get(data_block);
-
-            // The presence of `locker` prevents the entry from being modified outside it.
-            #[allow(clippy::cast_ref_to_mut)]
-            return Some(updater(k, &mut *(v as *const V as *mut V)));
+        if let Some(mut entry_ptr) = entry_ptr {
+            let (k, v) = entry_ptr.get_mut(data_block, &mut locker);
+            return Some(updater(k, v));
         }
         None
     }
@@ -251,17 +248,16 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if let Ok((_, _locker, data_block, iter)) = self.acquire::<Q>(
+            if let Ok((_, mut locker, data_block, entry_ptr)) = self.acquire::<Q>(
                 key_ref,
                 hash,
                 partial_hash,
                 Some(async_wait_pinned.mut_ptr()),
                 &Barrier::new(),
             ) {
-                if let Some(iter) = iter {
-                    let (k, v) = iter.get(data_block);
-                    #[allow(clippy::cast_ref_to_mut)]
-                    return Some(updater(k, &mut *(v as *const V as *mut V)));
+                if let Some(mut entry_ptr) = entry_ptr {
+                    let (k, v) = entry_ptr.get_mut(data_block, &mut locker);
+                    return Some(updater(k, v));
                 }
                 return None;
             }
@@ -508,12 +504,12 @@ where
                 }
             }
             for index in 0..current_array.num_cells() {
-                let cell = current_array.cell(index);
+                let cell = current_array.cell_mut(index);
                 if let Some(mut locker) = Locker::lock(cell, &barrier) {
                     let data_block = current_array.data_block(index);
-                    let mut iter = cell.iter(&barrier);
-                    while iter.next().is_some() {
-                        locker.erase(data_block, &mut iter);
+                    let mut entry_ptr = EntryPtr::new(&barrier);
+                    while entry_ptr.next(locker.cell()) {
+                        locker.erase(data_block, &mut entry_ptr);
                         num_removed = num_removed.saturating_add(1);
                     }
                 }
@@ -569,15 +565,15 @@ where
                     let mut async_wait_pinned = Pin::new(&mut async_wait);
                     {
                         let barrier = Barrier::new();
-                        let cell = current_array.cell(cell_index);
-                        if let Ok(result) =
+                        let cell = current_array.cell_mut(cell_index);
+                        if let Ok(locker) =
                             Locker::try_lock_or_wait(cell, async_wait_pinned.mut_ptr(), &barrier)
                         {
-                            if let Some(mut locker) = result {
+                            if let Some(mut locker) = locker {
                                 let data_block = current_array.data_block(cell_index);
-                                let mut iter = cell.iter(&barrier);
-                                while iter.next().is_some() {
-                                    locker.erase(data_block, &mut iter);
+                                let mut entry_ptr = EntryPtr::new(&barrier);
+                                while entry_ptr.next(locker.cell()) {
+                                    locker.erase(data_block, &mut entry_ptr);
                                     num_removed = num_removed.saturating_add(1);
                                 }
                                 break false;
@@ -705,7 +701,8 @@ where
             hash_index: self,
             current_array_ptr: Ptr::null(),
             current_index: 0,
-            current_entry_iter: None,
+            current_cell: None,
+            current_entry_ptr: EntryPtr::new(barrier),
             barrier,
         }
     }
@@ -868,7 +865,8 @@ where
     hash_index: &'h HashIndex<K, V, H>,
     current_array_ptr: Ptr<'b, CellArray<K, V, true>>,
     current_index: usize,
-    current_entry_iter: Option<EntryIterator<'b, K, V, true>>,
+    current_cell: Option<&'b Cell<K, V, true>>,
+    current_entry_ptr: EntryPtr<'b, K, V, true>,
     barrier: &'b Barrier,
 }
 
@@ -892,8 +890,8 @@ where
                 old_array_ptr
             };
             let array = self.current_array_ptr.as_ref().unwrap();
-            self.current_entry_iter
-                .replace(EntryIterator::new(array.cell(0), self.barrier));
+            self.current_cell.replace(array.cell(0));
+            self.current_entry_ptr = EntryPtr::new(self.barrier);
             array
         } else {
             self.current_array_ptr.as_ref().unwrap()
@@ -901,10 +899,13 @@ where
 
         // Go to the next Cell.
         loop {
-            if let Some(iter) = self.current_entry_iter.as_mut() {
+            if let Some(cell) = self.current_cell.take() {
                 // Go to the next entry in the Cell.
-                if iter.next().is_some() {
-                    let (k, v) = iter.get(array.data_block(self.current_index));
+                if self.current_entry_ptr.next(cell) {
+                    let (k, v) = self
+                        .current_entry_ptr
+                        .get(array.data_block(self.current_index));
+                    self.current_cell.replace(cell);
                     return Some((k, v));
                 }
             }
@@ -922,8 +923,8 @@ where
                     array = current_array;
                     self.current_array_ptr = current_array_ptr;
                     self.current_index = 0;
-                    self.current_entry_iter
-                        .replace(EntryIterator::new(array.cell(0), self.barrier));
+                    self.current_cell.replace(array.cell(0));
+                    self.current_entry_ptr = EntryPtr::new(self.barrier);
                     continue;
                 }
                 // Start from the very beginning.
@@ -935,14 +936,12 @@ where
 
                 array = self.current_array_ptr.as_ref().unwrap();
                 self.current_index = 0;
-                self.current_entry_iter
-                    .replace(EntryIterator::new(array.cell(0), self.barrier));
+                self.current_cell.replace(array.cell(0));
+                self.current_entry_ptr = EntryPtr::new(self.barrier);
                 continue;
             }
-            self.current_entry_iter.replace(EntryIterator::new(
-                array.cell(self.current_index),
-                self.barrier,
-            ));
+            self.current_cell.replace(array.cell(self.current_index));
+            self.current_entry_ptr = EntryPtr::new(self.barrier);
         }
         None
     }

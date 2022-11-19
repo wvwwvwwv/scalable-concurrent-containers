@@ -72,12 +72,6 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         self.metadata.removed_bitmap == (u32::MAX >> (32 - CELL_LEN))
     }
 
-    /// Iterates the contents of the [`Cell`].
-    #[inline]
-    pub(crate) fn iter<'b>(&'b self, barrier: &'b Barrier) -> EntryIterator<'b, K, V, LOCK_FREE> {
-        EntryIterator::new(self, barrier)
-    }
-
     /// Searches for an entry associated with the given key.
     #[inline]
     pub(crate) fn search<'b, Q>(
@@ -114,58 +108,6 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         None
     }
 
-    /// Gets an [`EntryIterator`] pointing to an entry associated with the given key.
-    ///
-    /// The returned [`EntryIterator`] always points to a valid entry.
-    #[inline]
-    pub(crate) fn get<'b, Q>(
-        &'b self,
-        data_block: &'b DataBlock<K, V>,
-        key_ref: &Q,
-        partial_hash: u8,
-        barrier: &'b Barrier,
-    ) -> Option<EntryIterator<'b, K, V, LOCK_FREE>>
-    where
-        K: Borrow<Q>,
-        Q: Eq + ?Sized,
-    {
-        if self.num_entries == 0 {
-            return None;
-        }
-
-        if let Some((index, _)) =
-            Self::search_array(&self.metadata, data_block, key_ref, partial_hash)
-        {
-            return Some(EntryIterator {
-                cell: Some(self),
-                current_link_ptr: Ptr::null(),
-                prev_link_ptr: Ptr::null(),
-                current_index: index,
-                barrier,
-            });
-        }
-
-        let mut current_link_ptr = self.metadata.link.load(Acquire, barrier);
-        let mut prev_link_ptr = Ptr::null();
-        while let Some(link) = current_link_ptr.as_ref() {
-            if let Some((index, _)) =
-                Self::search_array(&link.metadata, &link.data_array, key_ref, partial_hash)
-            {
-                return Some(EntryIterator {
-                    cell: Some(self),
-                    current_link_ptr,
-                    prev_link_ptr,
-                    current_index: index,
-                    barrier,
-                });
-            }
-            prev_link_ptr = current_link_ptr;
-            current_link_ptr = link.metadata.link.load(Acquire, barrier);
-        }
-
-        None
-    }
-
     /// Drops entries in the given [`DataBlock`].
     ///
     /// The [`Cell`] and the [`DataBlock`] should never be used afterwards.
@@ -186,6 +128,54 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
                 index = bitmap.trailing_zeros();
             }
         }
+    }
+
+    /// Gets an [`EntryPtr`] pointing to an entry associated with the given key.
+    #[inline]
+    fn get<'b, Q>(
+        &self,
+        data_block: &'b DataBlock<K, V>,
+        key_ref: &Q,
+        partial_hash: u8,
+        barrier: &'b Barrier,
+    ) -> Option<EntryPtr<'b, K, V, LOCK_FREE>>
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
+        if self.num_entries == 0 {
+            return None;
+        }
+
+        if let Some((index, _)) =
+            Self::search_array(&self.metadata, data_block, key_ref, partial_hash)
+        {
+            return Some(EntryPtr {
+                current_link_ptr: Ptr::null(),
+                prev_link_ptr: Ptr::null(),
+                current_index: index,
+                barrier,
+            });
+        }
+
+        let mut current_link_ptr = self.metadata.link.load(Acquire, barrier);
+        let mut prev_link_ptr = Ptr::null();
+        while let Some(link) = current_link_ptr.as_ref() {
+            if let Some((index, _)) =
+                Self::search_array(&link.metadata, &link.data_array, key_ref, partial_hash)
+            {
+                return Some(EntryPtr {
+                    current_link_ptr,
+                    prev_link_ptr,
+                    current_index: index,
+                    barrier,
+                });
+            }
+            prev_link_ptr = current_link_ptr;
+            current_link_ptr = link.metadata.link.load(Acquire, barrier);
+        }
+
+        None
     }
 
     /// Searches the given data array for an entry matching the key.
@@ -241,13 +231,13 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         None
     }
 
-    /// Searches for a next closest valid slot to the given slot in the bitmap.
+    /// Searches for a next closest valid entry slot number from the current one in the bitmap.
     ///
-    /// If the given slot is valid, it returns the given slot.
+    /// If the specified slot is valid, it returns the specified one.
     fn next_entry<Q, const LEN: usize>(
         metadata: &Metadata<K, V, LEN>,
         current_index: usize,
-    ) -> Option<(usize, u8)>
+    ) -> Option<usize>
     where
         K: Borrow<Q>,
         Q: Eq + ?Sized,
@@ -269,40 +259,60 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
 
         let next_index = bitmap.trailing_zeros() as usize;
         if next_index < LEN {
-            return Some((next_index, metadata.partial_hash_array[next_index]));
+            return Some(next_index);
         }
 
         None
     }
 }
 
-pub struct EntryIterator<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
-    cell: Option<&'b Cell<K, V, LOCK_FREE>>,
+pub struct EntryPtr<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
     current_link_ptr: Ptr<'b, Linked<K, V, LINKED_LEN>>,
     prev_link_ptr: Ptr<'b, Linked<K, V, LINKED_LEN>>,
     current_index: usize,
     barrier: &'b Barrier,
 }
 
-impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K, V, LOCK_FREE> {
-    /// Creates a new [`EntryIterator`].
+impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
+    /// Creates a new [`EntryPtr`].
     #[inline]
-    pub(crate) fn new(
-        cell: &'b Cell<K, V, LOCK_FREE>,
-        barrier: &'b Barrier,
-    ) -> EntryIterator<'b, K, V, LOCK_FREE> {
-        EntryIterator {
-            cell: Some(cell),
+    pub(crate) fn new(barrier: &'b Barrier) -> EntryPtr<'b, K, V, LOCK_FREE> {
+        EntryPtr {
             current_link_ptr: Ptr::null(),
             prev_link_ptr: Ptr::null(),
-            current_index: usize::MAX,
+            current_index: CELL_LEN,
             barrier,
         }
     }
 
-    /// Gets a reference to the key-value pair.
+    /// Moves the iterator to point to the next valid entry.
+    ///
+    /// Returns `true` if it successfully found the next valid entry.
+    #[inline]
+    pub(crate) fn next(&mut self, cell: &Cell<K, V, LOCK_FREE>) -> bool {
+        if self.current_index != usize::MAX {
+            if self.current_link_ptr.is_null() && self.next_entry(&cell.metadata) {
+                return true;
+            }
+            while let Some(link) = self.current_link_ptr.as_ref() {
+                if self.next_entry(&link.metadata) {
+                    return true;
+                }
+            }
+
+            // Fuse itself.
+            self.current_index = usize::MAX;
+        }
+
+        false
+    }
+
+    /// Gets a reference to the entry.
+    ///
+    /// The [`EntryPtr`] must point to a valid entry.
     #[inline]
     pub(crate) fn get(&self, data_block: &'b DataBlock<K, V>) -> &'b (K, V) {
+        debug_assert_ne!(self.current_index, usize::MAX);
         let entry_ptr = if let Some(data_array_ref) = self.current_link_ptr.as_ref() {
             data_array_ref.data_array[self.current_index].as_ptr()
         } else {
@@ -311,10 +321,46 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K
         unsafe { &(*entry_ptr) }
     }
 
+    /// Gets a mutable reference to the entry.
+    ///
+    /// The [`EntryPtr`] must point to a valid entry, and the associated [`Cell`] must be locked.
+    #[allow(clippy::mut_from_ref)]
+    #[inline]
+    pub(crate) fn get_mut(
+        &mut self,
+        data_block: &'b DataBlock<K, V>,
+        _locker: &mut Locker<K, V, LOCK_FREE>,
+    ) -> &'b mut (K, V) {
+        debug_assert_ne!(self.current_index, usize::MAX);
+        let entry_ptr = if let Some(data_array_ref) = self.current_link_ptr.as_ref() {
+            data_array_ref.data_array[self.current_index].as_ptr() as *mut (K, V)
+        } else {
+            data_block[self.current_index].as_ptr() as *mut (K, V)
+        };
+        unsafe { &mut (*entry_ptr) }
+    }
+
+    /// Gets the partial hash value of the entry.
+    ///
+    /// The [`EntryPtr`] must point to a valid entry.
+    #[inline]
+    pub(crate) fn partial_hash(&self, cell: &Cell<K, V, LOCK_FREE>) -> u8 {
+        debug_assert_ne!(self.current_index, usize::MAX);
+        if let Some(data_array_ref) = self.current_link_ptr.as_ref() {
+            data_array_ref.metadata.partial_hash_array[self.current_index]
+        } else {
+            cell.metadata.partial_hash_array[self.current_index]
+        }
+    }
+
     /// Tries to remove the current data array from the linked list.
     ///
     /// It should only be invoked when the caller is holding a [`Locker`] on the [`Cell`].
-    fn unlink_data_array(&mut self, data_array_ref: &Linked<K, V, LINKED_LEN>) {
+    fn unlink_data_array(
+        &mut self,
+        locker: &Locker<K, V, LOCK_FREE>,
+        data_array_ref: &Linked<K, V, LINKED_LEN>,
+    ) {
         let next_data_array = if LOCK_FREE {
             data_array_ref.metadata.link.get_arc(Relaxed, self.barrier)
         } else {
@@ -324,6 +370,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K
                 .swap((None, Tag::None), Relaxed)
                 .0
         };
+
         self.current_link_ptr = next_data_array
             .as_ref()
             .map_or_else(Ptr::null, |n| n.ptr(self.barrier));
@@ -333,68 +380,45 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K
                 .link
                 .swap((next_data_array, Tag::None), Relaxed)
                 .0
-        } else if let Some(cell) = self.cell.as_ref() {
-            cell.metadata
+        } else {
+            locker
+                .cell
+                .metadata
                 .link
                 .swap((next_data_array, Tag::None), Relaxed)
                 .0
-        } else {
-            None
         };
         if let Some(data_array) = old_data_array {
             data_array.release(self.barrier);
         }
+
         if self.current_link_ptr.is_null() {
-            self.cell.take();
-        } else {
+            // Fuse the iterator.
             self.current_index = usize::MAX;
+        } else {
+            // Go to the next `Link`.
+            self.current_index = LINKED_LEN;
         }
     }
-}
 
-impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryIterator<'b, K, V, LOCK_FREE> {
-    fn next_entry<const LEN: usize>(&mut self, metadata: &'b Metadata<K, V, LEN>) -> Option<u8> {
+    /// Moves the [`EntryPointer`] to the next valid entry in the [`Cell`].
+    fn next_entry<const LEN: usize>(&mut self, metadata: &Metadata<K, V, LEN>) -> bool {
         // Search for the next valid entry.
-        let current_index = if self.current_index == usize::MAX {
+        let current_index = if self.current_index == LEN {
             0
         } else {
             self.current_index + 1
         };
-        if let Some((index, partial_hash)) =
-            Cell::<K, V, LOCK_FREE>::next_entry(metadata, current_index)
-        {
+        if let Some(index) = Cell::<K, V, LOCK_FREE>::next_entry(metadata, current_index) {
             self.current_index = index;
-            return Some(partial_hash);
+            return true;
         }
 
         self.prev_link_ptr = self.current_link_ptr;
         self.current_link_ptr = metadata.link.load(Acquire, self.barrier);
-        self.current_index = usize::MAX;
+        self.current_index = LINKED_LEN;
 
-        None
-    }
-}
-
-impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Iterator
-    for EntryIterator<'b, K, V, LOCK_FREE>
-{
-    type Item = u8;
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some(&cell) = self.cell.as_ref() {
-            if self.current_link_ptr.is_null() {
-                if let Some(partial_hash) = self.next_entry(&cell.metadata) {
-                    return Some(partial_hash);
-                }
-            }
-            while let Some(link) = self.current_link_ptr.as_ref() {
-                if let Some(partial_hash) = self.next_entry(&link.metadata) {
-                    return Some(partial_hash);
-                }
-            }
-            // Fuse itself.
-            self.cell.take();
-        }
-        None
+        false
     }
 }
 
@@ -406,17 +430,18 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     /// Locks the [`Cell`].
     #[inline]
     pub(crate) fn lock(
-        cell: &'b Cell<K, V, LOCK_FREE>,
+        cell: &'b mut Cell<K, V, LOCK_FREE>,
         barrier: &'b Barrier,
     ) -> Option<Locker<'b, K, V, LOCK_FREE>> {
+        let cell_ptr = cell as *mut Cell<K, V, LOCK_FREE>;
         loop {
-            if let Ok(locker) = Self::try_lock(cell, barrier) {
+            if let Ok(locker) = Self::try_lock(unsafe { &mut *cell_ptr }, barrier) {
                 return locker;
             }
-            if let Ok(locker) = cell.wait_queue.wait_sync(|| {
+            if let Ok(locker) = unsafe { &*cell_ptr }.wait_queue.wait_sync(|| {
                 // Mark that there is a waiting thread.
                 cell.state.fetch_or(WAITING, Release);
-                Self::try_lock(cell, barrier)
+                Self::try_lock(unsafe { &mut *cell_ptr }, barrier)
             }) {
                 return locker;
             }
@@ -426,30 +451,45 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     /// Tries to lock the [`Cell`], and if it fails, pushes an [`AsyncWait`].
     #[inline]
     pub(crate) fn try_lock_or_wait(
-        cell: &'b Cell<K, V, LOCK_FREE>,
+        cell: &'b mut Cell<K, V, LOCK_FREE>,
         async_wait: *mut AsyncWait,
         barrier: &'b Barrier,
     ) -> Result<Option<Locker<'b, K, V, LOCK_FREE>>, ()> {
-        if let Ok(locker) = Self::try_lock(cell, barrier) {
+        let cell_ptr = cell as *mut Cell<K, V, LOCK_FREE>;
+        if let Ok(locker) = Self::try_lock(unsafe { &mut *cell_ptr }, barrier) {
             return Ok(locker);
         }
-        cell.wait_queue.push_async_entry(async_wait, || {
-            // Mark that there is a waiting thread.
-            cell.state.fetch_or(WAITING, Release);
-            Self::try_lock(cell, barrier)
-        })
+        unsafe { &*cell_ptr }
+            .wait_queue
+            .push_async_entry(async_wait, || {
+                // Mark that there is a waiting thread.
+                cell.state.fetch_or(WAITING, Release);
+                Self::try_lock(cell, barrier)
+            })
     }
 
-    /// Returns the number of entries in the [`Cell`].
+    /// Returns a reference to the [`Cell`].
     #[inline]
-    pub(crate) fn num_entries(&self) -> usize {
-        self.cell.num_entries()
+    pub(crate) fn cell(&self) -> &Cell<K, V, LOCK_FREE> {
+        self.cell
     }
 
-    /// Returns `true` if the [`Cell`] requires to be rebuilt.
+    /// Gets an [`EntryPtr`] pointing to an entry associated with the given key.
+    ///
+    /// The returned [`EntryPtr`] always points to a valid entry.
     #[inline]
-    pub(crate) fn need_rebuild(&self) -> bool {
-        self.cell.need_rebuild()
+    pub(crate) fn get<Q>(
+        &self,
+        data_block: &'b DataBlock<K, V>,
+        key_ref: &Q,
+        partial_hash: u8,
+        barrier: &'b Barrier,
+    ) -> Option<EntryPtr<'b, K, V, LOCK_FREE>>
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
+        self.cell.get(data_block, key_ref, partial_hash, barrier)
     }
 
     /// Inserts a new key-value pair into the [`Cell`] without a uniqueness check.
@@ -551,47 +591,47 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         self.cell.num_entries += 1;
     }
 
-    /// Removes a key-value pair being pointed by the given [`EntryIterator`].
+    /// Removes the key-value pair being pointed by the given [`EntryPtr`].
     #[inline]
     pub(crate) fn erase(
         &mut self,
         data_block: &DataBlock<K, V>,
-        iter: &mut EntryIterator<K, V, LOCK_FREE>,
+        entry_ptr: &mut EntryPtr<K, V, LOCK_FREE>,
     ) -> Option<(K, V)> {
-        if iter.current_index == usize::MAX {
-            return None;
-        }
+        debug_assert_ne!(entry_ptr.current_index, usize::MAX);
 
         self.cell.num_entries -= 1;
-        let link_ptr = iter.current_link_ptr.as_raw() as *mut Linked<K, V, LINKED_LEN>;
+        let link_ptr = entry_ptr.current_link_ptr.as_raw() as *mut Linked<K, V, LINKED_LEN>;
         if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
             if LOCK_FREE {
                 debug_assert_eq!(
-                    link_mut.metadata.removed_bitmap & (1_u32 << iter.current_index),
+                    link_mut.metadata.removed_bitmap & (1_u32 << entry_ptr.current_index),
                     0
                 );
-                link_mut.metadata.removed_bitmap |= 1_u32 << iter.current_index;
+                link_mut.metadata.removed_bitmap |= 1_u32 << entry_ptr.current_index;
             } else {
                 debug_assert_ne!(
-                    link_mut.metadata.occupied_bitmap & (1_u32 << iter.current_index),
+                    link_mut.metadata.occupied_bitmap & (1_u32 << entry_ptr.current_index),
                     0
                 );
-                link_mut.metadata.occupied_bitmap &= !(1_u32 << iter.current_index);
-                return Some(unsafe { link_mut.data_array[iter.current_index].as_ptr().read() });
+                link_mut.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
+                return Some(unsafe {
+                    link_mut.data_array[entry_ptr.current_index].as_ptr().read()
+                });
             }
         } else if LOCK_FREE {
             debug_assert_eq!(
-                self.cell.metadata.removed_bitmap & (1_u32 << iter.current_index),
+                self.cell.metadata.removed_bitmap & (1_u32 << entry_ptr.current_index),
                 0
             );
-            self.cell.metadata.removed_bitmap |= 1_u32 << iter.current_index;
+            self.cell.metadata.removed_bitmap |= 1_u32 << entry_ptr.current_index;
         } else {
             debug_assert_ne!(
-                self.cell.metadata.occupied_bitmap & (1_u32 << iter.current_index),
+                self.cell.metadata.occupied_bitmap & (1_u32 << entry_ptr.current_index),
                 0
             );
-            self.cell.metadata.occupied_bitmap &= !(1_u32 << iter.current_index);
-            return Some(unsafe { data_block[iter.current_index].as_ptr().read() });
+            self.cell.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
+            return Some(unsafe { data_block[entry_ptr.current_index].as_ptr().read() });
         }
 
         None
@@ -602,7 +642,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     pub(crate) fn extract(
         &mut self,
         data_block: &DataBlock<K, V>,
-        iter: &mut EntryIterator<K, V, LOCK_FREE>,
+        iter: &mut EntryPtr<K, V, LOCK_FREE>,
     ) -> (K, V) {
         debug_assert!(!LOCK_FREE);
         let link_ptr = iter.current_link_ptr.as_raw() as *mut Linked<K, V, LINKED_LEN>;
@@ -614,7 +654,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                 &mut self.cell.num_entries,
             );
             if link_mut.metadata.occupied_bitmap == 0 {
-                iter.unlink_data_array(link_mut);
+                iter.unlink_data_array(self, link_mut);
             }
             extracted
         } else {
@@ -644,7 +684,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
 
     /// Tries to lock the [`Cell`].
     fn try_lock(
-        cell: &'b Cell<K, V, LOCK_FREE>,
+        cell: &'b mut Cell<K, V, LOCK_FREE>,
         _barrier: &'b Barrier,
     ) -> Result<Option<Locker<'b, K, V, LOCK_FREE>>, ()> {
         let current = cell.state.load(Relaxed) & (!LOCK_MASK);
@@ -656,14 +696,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
             .compare_exchange(current, current | LOCK, Acquire, Relaxed)
             .is_ok()
         {
-            // The `Locker` owns the cell, so it is safe to convert the reference into a
-            // mutable one.
-            #[allow(clippy::cast_ref_to_mut)]
-            Ok(Some(Locker {
-                cell: unsafe {
-                    &mut *(cell as *const Cell<K, V, LOCK_FREE> as *mut Cell<K, V, LOCK_FREE>)
-                },
-            }))
+            Ok(Some(Locker { cell }))
         } else {
             Err(())
         }
@@ -904,7 +937,7 @@ mod test {
         let barrier = Arc::new(sync::Barrier::new(num_tasks));
         let data_block: Arc<DataBlock<usize, usize>> =
             Arc::new(unsafe { MaybeUninit::uninit().assume_init() });
-        let cell: Arc<Cell<usize, usize, true>> = Arc::new(Cell::default());
+        let mut cell: Arc<Cell<usize, usize, true>> = Arc::new(Cell::default());
         let mut data: [u64; 128] = [0; 128];
         let mut task_handles = Vec::with_capacity(num_tasks);
         for task_id in 0..num_tasks {
@@ -914,9 +947,11 @@ mod test {
             let data_ptr = AtomicPtr::new(&mut data);
             task_handles.push(tokio::spawn(async move {
                 barrier_copied.wait().await;
+                let cell_mut =
+                    unsafe { &mut *(cell_copied.as_ptr() as *mut Cell<usize, usize, true>) };
                 let barrier = Barrier::new();
                 for i in 0..2048 {
-                    let mut exclusive_locker = Locker::lock(&*cell_copied, &barrier).unwrap();
+                    let mut exclusive_locker = Locker::lock(cell_mut, &barrier).unwrap();
                     let mut sum: u64 = 0;
                     for j in 0..128 {
                         unsafe {
@@ -935,7 +970,8 @@ mod test {
                         );
                     } else {
                         assert_eq!(
-                            cell_copied
+                            exclusive_locker
+                                .cell()
                                 .search(
                                     &data_block_copied,
                                     &task_id,
@@ -984,14 +1020,20 @@ mod test {
                 Some(&(task_id, 0))
             );
         }
-        assert_eq!(cell.num_entries(), cell.iter(&epoch_barrier).count());
 
-        let mut xlocker = Locker::lock(&*cell, &epoch_barrier).unwrap();
+        let mut count = 0;
+        let mut entry_ptr = EntryPtr::new(&epoch_barrier);
+        while entry_ptr.next(&cell) {
+            count += 1;
+        }
+        assert_eq!(cell.num_entries(), count);
+
+        let mut xlocker = Locker::lock(unsafe { cell.get_mut().unwrap() }, &epoch_barrier).unwrap();
         xlocker.purge(&epoch_barrier);
         drop(xlocker);
 
         assert!(cell.killed());
         assert_eq!(cell.num_entries(), 0);
-        assert!(Locker::lock(&*cell, &epoch_barrier).is_none());
+        assert!(Locker::lock(unsafe { cell.get_mut().unwrap() }, &epoch_barrier).is_none());
     }
 }
