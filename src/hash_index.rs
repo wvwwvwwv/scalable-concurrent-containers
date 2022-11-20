@@ -207,10 +207,10 @@ where
     {
         let (hash, partial_hash) = self.hash(key_ref);
         let barrier = Barrier::new();
-        let (_, mut locker, data_block, entry_ptr) = self
+        let (_, mut locker, data_block, mut entry_ptr) = self
             .acquire::<Q>(key_ref, hash, partial_hash, None, &barrier)
             .ok()?;
-        if let Some(mut entry_ptr) = entry_ptr {
+        if entry_ptr.is_valid() {
             let (k, v) = entry_ptr.get_mut(data_block, &mut locker);
             return Some(updater(k, v));
         }
@@ -249,14 +249,14 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if let Ok((_, mut locker, data_block, entry_ptr)) = self.acquire::<Q>(
+            if let Ok((_, mut locker, data_block, mut entry_ptr)) = self.acquire::<Q>(
                 key_ref,
                 hash,
                 partial_hash,
                 Some(async_wait_pinned.mut_ptr()),
                 &Barrier::new(),
             ) {
-                if let Some(mut entry_ptr) = entry_ptr {
+                if entry_ptr.is_valid() {
                     let (k, v) = entry_ptr.get_mut(data_block, &mut locker);
                     return Some(updater(k, v));
                 }
@@ -496,7 +496,7 @@ where
             while !current_array.old_array(&barrier).is_null() {
                 if current_array.partial_rehash::<_, _, _>(
                     |k| self.hash(k),
-                    |k, v| Some((k.clone(), v.clone())),
+                    Self::copier,
                     None,
                     &barrier,
                 ) == Ok(true)
@@ -509,7 +509,7 @@ where
                 if let Some(mut locker) = Locker::lock(cell, &barrier) {
                     let data_block = current_array.data_block(index);
                     let mut entry_ptr = EntryPtr::new(&barrier);
-                    while entry_ptr.next(locker.cell()) {
+                    while entry_ptr.next(locker.cell(), &barrier) {
                         locker.erase(data_block, &mut entry_ptr);
                         num_removed = num_removed.saturating_add(1);
                     }
@@ -550,7 +550,7 @@ where
                 let mut async_wait_pinned = Pin::new(&mut async_wait);
                 if current_array.partial_rehash::<_, _, _>(
                     |key| self.hash(key),
-                    |_, _| None,
+                    Self::copier,
                     Some(async_wait_pinned.mut_ptr()),
                     &Barrier::new(),
                 ) == Ok(true)
@@ -573,7 +573,7 @@ where
                             if let Some(mut locker) = locker {
                                 let data_block = current_array.data_block(cell_index);
                                 let mut entry_ptr = EntryPtr::new(&barrier);
-                                while entry_ptr.next(locker.cell()) {
+                                while entry_ptr.next(locker.cell(), &barrier) {
                                     locker.erase(data_block, &mut entry_ptr);
                                     num_removed = num_removed.saturating_add(1);
                                 }
@@ -836,8 +836,8 @@ where
         &self.build_hasher
     }
     #[inline]
-    fn copier(key: &K, val: &V) -> Option<(K, V)> {
-        Some((key.clone(), val.clone()))
+    fn copier(key: &K, val: &V) -> (K, V) {
+        (key.clone(), val.clone())
     }
     #[inline]
     fn cell_array(&self) -> &AtomicArc<CellArray<K, V, true>> {
@@ -901,7 +901,7 @@ where
         loop {
             if let Some(cell) = self.current_cell.take() {
                 // Go to the next entry in the Cell.
-                if self.current_entry_ptr.next(cell) {
+                if self.current_entry_ptr.next(cell, self.barrier) {
                     let (k, v) = self
                         .current_entry_ptr
                         .get(array.data_block(self.current_index));

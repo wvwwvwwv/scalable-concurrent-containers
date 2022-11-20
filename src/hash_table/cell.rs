@@ -138,24 +138,23 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         key_ref: &Q,
         partial_hash: u8,
         barrier: &'b Barrier,
-    ) -> Option<EntryPtr<'b, K, V, LOCK_FREE>>
+    ) -> EntryPtr<'b, K, V, LOCK_FREE>
     where
         K: Borrow<Q>,
         Q: Eq + ?Sized,
     {
         if self.num_entries == 0 {
-            return None;
+            return EntryPtr::new(barrier);
         }
 
         if let Some((index, _)) =
             Self::search_array(&self.metadata, data_block, key_ref, partial_hash)
         {
-            return Some(EntryPtr {
+            return EntryPtr {
                 current_link_ptr: Ptr::null(),
                 prev_link_ptr: Ptr::null(),
                 current_index: index,
-                barrier,
-            });
+            };
         }
 
         let mut current_link_ptr = self.metadata.link.load(Acquire, barrier);
@@ -164,18 +163,17 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
             if let Some((index, _)) =
                 Self::search_array(&link.metadata, &link.data_array, key_ref, partial_hash)
             {
-                return Some(EntryPtr {
+                return EntryPtr {
                     current_link_ptr,
                     prev_link_ptr,
                     current_index: index,
-                    barrier,
-                });
+                };
             }
             prev_link_ptr = current_link_ptr;
             current_link_ptr = link.metadata.link.load(Acquire, barrier);
         }
 
-        None
+        EntryPtr::new(barrier)
     }
 
     /// Searches the given data array for an entry matching the key.
@@ -270,32 +268,36 @@ pub struct EntryPtr<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
     current_link_ptr: Ptr<'b, Linked<K, V, LINKED_LEN>>,
     prev_link_ptr: Ptr<'b, Linked<K, V, LINKED_LEN>>,
     current_index: usize,
-    barrier: &'b Barrier,
 }
 
 impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
     /// Creates a new [`EntryPtr`].
     #[inline]
-    pub(crate) fn new(barrier: &'b Barrier) -> EntryPtr<'b, K, V, LOCK_FREE> {
+    pub(crate) fn new(_barrier: &'b Barrier) -> EntryPtr<'b, K, V, LOCK_FREE> {
         EntryPtr {
             current_link_ptr: Ptr::null(),
             prev_link_ptr: Ptr::null(),
             current_index: CELL_LEN,
-            barrier,
         }
+    }
+
+    /// Returns `true` if the [`EntryPtr`] points to a valid entry or fused.
+    #[inline]
+    pub(crate) fn is_valid(&self) -> bool {
+        self.current_index != CELL_LEN
     }
 
     /// Moves the [`EntryPtr`] to point to the next valid entry.
     ///
     /// Returns `true` if it successfully found the next valid entry.
     #[inline]
-    pub(crate) fn next(&mut self, cell: &Cell<K, V, LOCK_FREE>) -> bool {
+    pub(crate) fn next(&mut self, cell: &Cell<K, V, LOCK_FREE>, barrier: &'b Barrier) -> bool {
         if self.current_index != usize::MAX {
-            if self.current_link_ptr.is_null() && self.next_entry(&cell.metadata) {
+            if self.current_link_ptr.is_null() && self.next_entry(&cell.metadata, barrier) {
                 return true;
             }
             while let Some(link) = self.current_link_ptr.as_ref() {
-                if self.next_entry(&link.metadata) {
+                if self.next_entry(&link.metadata, barrier) {
                     return true;
                 }
             }
@@ -313,8 +315,8 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryPtr<'b, K, V, 
     #[inline]
     pub(crate) fn get(&self, data_block: &'b DataBlock<K, V>) -> &'b (K, V) {
         debug_assert_ne!(self.current_index, usize::MAX);
-        let entry_ptr = if let Some(data_array_ref) = self.current_link_ptr.as_ref() {
-            data_array_ref.data_array[self.current_index].as_ptr()
+        let entry_ptr = if let Some(data_array) = self.current_link_ptr.as_ref() {
+            data_array.data_array[self.current_index].as_ptr()
         } else {
             data_block[self.current_index].as_ptr()
         };
@@ -332,8 +334,8 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryPtr<'b, K, V, 
         _locker: &mut Locker<K, V, LOCK_FREE>,
     ) -> &'b mut (K, V) {
         debug_assert_ne!(self.current_index, usize::MAX);
-        let entry_ptr = if let Some(data_array_ref) = self.current_link_ptr.as_ref() {
-            data_array_ref.data_array[self.current_index].as_ptr() as *mut (K, V)
+        let entry_ptr = if let Some(data_array) = self.current_link_ptr.as_ref() {
+            data_array.data_array[self.current_index].as_ptr() as *mut (K, V)
         } else {
             data_block[self.current_index].as_ptr() as *mut (K, V)
         };
@@ -346,8 +348,8 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryPtr<'b, K, V, 
     #[inline]
     pub(crate) fn partial_hash(&self, cell: &Cell<K, V, LOCK_FREE>) -> u8 {
         debug_assert_ne!(self.current_index, usize::MAX);
-        if let Some(data_array_ref) = self.current_link_ptr.as_ref() {
-            data_array_ref.metadata.partial_hash_array[self.current_index]
+        if let Some(data_array) = self.current_link_ptr.as_ref() {
+            data_array.metadata.partial_hash_array[self.current_index]
         } else {
             cell.metadata.partial_hash_array[self.current_index]
         }
@@ -359,23 +361,20 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryPtr<'b, K, V, 
     fn unlink_data_array(
         &mut self,
         locker: &Locker<K, V, LOCK_FREE>,
-        data_array_ref: &Linked<K, V, LINKED_LEN>,
+        data_array: &Linked<K, V, LINKED_LEN>,
+        barrier: &'b Barrier,
     ) {
         let next_data_array = if LOCK_FREE {
-            data_array_ref.metadata.link.get_arc(Relaxed, self.barrier)
+            data_array.metadata.link.get_arc(Relaxed, barrier)
         } else {
-            data_array_ref
-                .metadata
-                .link
-                .swap((None, Tag::None), Relaxed)
-                .0
+            data_array.metadata.link.swap((None, Tag::None), Relaxed).0
         };
 
         self.current_link_ptr = next_data_array
             .as_ref()
-            .map_or_else(Ptr::null, |n| n.ptr(self.barrier));
-        let old_data_array = if let Some(prev_data_array_ref) = self.prev_link_ptr.as_ref() {
-            prev_data_array_ref
+            .map_or_else(Ptr::null, |n| n.ptr(barrier));
+        let old_data_array = if let Some(prev_data_array) = self.prev_link_ptr.as_ref() {
+            prev_data_array
                 .metadata
                 .link
                 .swap((next_data_array, Tag::None), Relaxed)
@@ -389,7 +388,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryPtr<'b, K, V, 
                 .0
         };
         if let Some(data_array) = old_data_array {
-            data_array.release(self.barrier);
+            data_array.release(barrier);
         }
 
         if self.current_link_ptr.is_null() {
@@ -402,7 +401,11 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryPtr<'b, K, V, 
     }
 
     /// Moves the [`EntryPointer`] to the next valid entry in the [`Cell`].
-    fn next_entry<const LEN: usize>(&mut self, metadata: &Metadata<K, V, LEN>) -> bool {
+    fn next_entry<const LEN: usize>(
+        &mut self,
+        metadata: &Metadata<K, V, LEN>,
+        barrier: &'b Barrier,
+    ) -> bool {
         // Search for the next valid entry.
         let current_index = if self.current_index == LEN {
             0
@@ -415,7 +418,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryPtr<'b, K, V, 
         }
 
         self.prev_link_ptr = self.current_link_ptr;
-        self.current_link_ptr = metadata.link.load(Acquire, self.barrier);
+        self.current_link_ptr = metadata.link.load(Acquire, barrier);
         self.current_index = LINKED_LEN;
 
         false
@@ -476,7 +479,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
 
     /// Gets an [`EntryPtr`] pointing to an entry associated with the given key.
     ///
-    /// The returned [`EntryPtr`] always points to a valid entry.
+    /// The returned [`EntryPtr`] points to a valid entry if the key is found.
     #[inline]
     pub(crate) fn get<Q>(
         &self,
@@ -484,7 +487,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         key_ref: &Q,
         partial_hash: u8,
         barrier: &'b Barrier,
-    ) -> Option<EntryPtr<'b, K, V, LOCK_FREE>>
+    ) -> EntryPtr<'b, K, V, LOCK_FREE>
     where
         K: Borrow<Q>,
         Q: Eq + ?Sized,
@@ -637,31 +640,32 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         None
     }
 
-    /// Extracts the key-value pair being pointed by `self`.
+    /// Extracts the key-value pair being pointed by the [`EntryPtr`].
     #[inline]
-    pub(crate) fn extract(
+    pub(crate) fn extract<'e>(
         &mut self,
         data_block: &DataBlock<K, V>,
-        iter: &mut EntryPtr<K, V, LOCK_FREE>,
+        entry_ptr: &mut EntryPtr<'e, K, V, LOCK_FREE>,
+        barrier: &'e Barrier,
     ) -> (K, V) {
         debug_assert!(!LOCK_FREE);
-        let link_ptr = iter.current_link_ptr.as_raw() as *mut Linked<K, V, LINKED_LEN>;
+        let link_ptr = entry_ptr.current_link_ptr.as_raw() as *mut Linked<K, V, LINKED_LEN>;
         if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
             let extracted = Self::extract_entry(
                 &mut link_mut.metadata,
                 &link_mut.data_array,
-                iter.current_index,
+                entry_ptr.current_index,
                 &mut self.cell.num_entries,
             );
             if link_mut.metadata.occupied_bitmap == 0 {
-                iter.unlink_data_array(self, link_mut);
+                entry_ptr.unlink_data_array(self, link_mut, barrier);
             }
             extracted
         } else {
             Self::extract_entry(
                 &mut self.cell.metadata,
                 data_block,
-                iter.current_index,
+                entry_ptr.current_index,
                 &mut self.cell.num_entries,
             )
         }
@@ -1023,7 +1027,7 @@ mod test {
 
         let mut count = 0;
         let mut entry_ptr = EntryPtr::new(&epoch_barrier);
-        while entry_ptr.next(&cell) {
+        while entry_ptr.next(&cell, &epoch_barrier) {
             count += 1;
         }
         assert_eq!(cell.num_entries(), count);

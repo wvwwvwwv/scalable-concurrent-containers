@@ -1,5 +1,10 @@
 # Changelog
 
+0.11.5
+
+* Fix [#84](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/84) completely.
+* Micro-optimization.
+
 0.11.4
 
 * Optimize performance for `T: Copy`.

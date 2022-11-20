@@ -42,7 +42,7 @@ where
     fn hasher(&self) -> &H;
 
     /// Copying function.
-    fn copier(key: &K, val: &V) -> Option<(K, V)>;
+    fn copier(key: &K, val: &V) -> (K, V);
 
     /// Returns a reference to the [`CellArray`] pointer.
     fn cell_array(&self) -> &AtomicArc<CellArray<K, V, LOCK_FREE>>;
@@ -69,9 +69,9 @@ where
             num_entries += current_array.cell(i).num_entries();
         }
         let old_array_ptr = current_array.old_array(barrier);
-        if let Some(old_array_ref) = old_array_ptr.as_ref() {
-            for i in 0..old_array_ref.num_cells() {
-                num_entries += old_array_ref.cell(i).num_entries();
+        if let Some(old_array) = old_array_ptr.as_ref() {
+            for i in 0..old_array.num_cells() {
+                num_entries += old_array.cell(i).num_entries();
             }
         }
         num_entries
@@ -87,37 +87,37 @@ where
     /// Estimates the number of entries using the given number of cells.
     #[inline]
     fn estimate(
-        array_ref: &CellArray<K, V, LOCK_FREE>,
+        array: &CellArray<K, V, LOCK_FREE>,
         sampling_index: usize,
         num_cells_to_sample: usize,
     ) -> usize {
         let mut num_entries = 0;
-        let start = if sampling_index + num_cells_to_sample >= array_ref.num_cells() {
+        let start = if sampling_index + num_cells_to_sample >= array.num_cells() {
             0
         } else {
             sampling_index
         };
         for i in start..(start + num_cells_to_sample) {
-            num_entries += array_ref.cell(i).num_entries();
+            num_entries += array.cell(i).num_entries();
         }
-        num_entries * (array_ref.num_cells() / num_cells_to_sample)
+        num_entries * (array.num_cells() / num_cells_to_sample)
     }
 
     /// Checks whether rebuilding the entire hash table is required.
     #[inline]
     fn check_rebuild(
-        array_ref: &CellArray<K, V, LOCK_FREE>,
+        array: &CellArray<K, V, LOCK_FREE>,
         sampling_index: usize,
         num_cells_to_sample: usize,
     ) -> bool {
         let mut num_cells_to_rebuild = 0;
-        let start = if sampling_index + num_cells_to_sample >= array_ref.num_cells() {
+        let start = if sampling_index + num_cells_to_sample >= array.num_cells() {
             0
         } else {
             sampling_index
         };
         for i in start..(start + num_cells_to_sample) {
-            if array_ref.cell(i).need_rebuild() {
+            if array.cell(i).need_rebuild() {
                 num_cells_to_rebuild += 1;
                 if num_cells_to_rebuild > num_cells_to_sample / 2 {
                     return true;
@@ -139,8 +139,8 @@ where
         barrier: &Barrier,
     ) -> Result<Option<(K, V)>, (K, V)> {
         match self.acquire::<_>(&key, hash, partial_hash, async_wait, barrier) {
-            Ok((_, mut locker, data_block, iter)) => {
-                if iter.is_some() {
+            Ok((_, mut locker, data_block, entry_ptr)) => {
+                if entry_ptr.is_valid() {
                     return Ok(Some((key, val)));
                 }
                 locker.insert(data_block, key, val, partial_hash, barrier);
@@ -167,19 +167,19 @@ where
     {
         // An acquire fence is required to correctly load the contents of the array.
         let mut current_array_ptr = self.cell_array().load(Acquire, barrier);
-        while let Some(current_array_ref) = current_array_ptr.as_ref() {
-            if let Some(old_array_ref) = current_array_ref.old_array(barrier).as_ref() {
-                if !current_array_ref.partial_rehash::<Q, _, _>(
+        while let Some(current_array) = current_array_ptr.as_ref() {
+            if let Some(old_array) = current_array.old_array(barrier).as_ref() {
+                if !current_array.partial_rehash::<Q, _, _>(
                     |key| self.hash(key),
                     Self::copier,
                     async_wait,
                     barrier,
                 )? {
-                    let cell_index = old_array_ref.calculate_cell_index(hash);
+                    let cell_index = old_array.calculate_cell_index(hash);
+                    let cell = old_array.cell(cell_index);
                     if LOCK_FREE {
-                        let cell = old_array_ref.cell(cell_index);
                         if let Some(entry) = cell.search(
-                            old_array_ref.data_block(cell_index),
+                            old_array.data_block(cell_index),
                             key_ref,
                             partial_hash,
                             barrier,
@@ -188,17 +188,13 @@ where
                         }
                     } else {
                         let lock_result = if let Some(&async_wait) = async_wait.as_ref() {
-                            Reader::try_lock_or_wait(
-                                old_array_ref.cell(cell_index),
-                                async_wait,
-                                barrier,
-                            )?
+                            Reader::try_lock_or_wait(cell, async_wait, barrier)?
                         } else {
-                            Reader::lock(old_array_ref.cell(cell_index), barrier)
+                            Reader::lock(cell, barrier)
                         };
                         if let Some(locker) = lock_result {
                             if let Some((key, value)) = locker.cell().search(
-                                old_array_ref.data_block(cell_index),
+                                old_array.data_block(cell_index),
                                 key_ref,
                                 partial_hash,
                                 barrier,
@@ -209,11 +205,11 @@ where
                     }
                 }
             }
-            let cell_index = current_array_ref.calculate_cell_index(hash);
+            let cell_index = current_array.calculate_cell_index(hash);
+            let cell = current_array.cell(cell_index);
             if LOCK_FREE {
-                let cell = current_array_ref.cell(cell_index);
                 if let Some(entry) = cell.search(
-                    current_array_ref.data_block(cell_index),
+                    current_array.data_block(cell_index),
                     key_ref,
                     partial_hash,
                     barrier,
@@ -222,17 +218,13 @@ where
                 }
             } else {
                 let lock_result = if let Some(&async_wait) = async_wait.as_ref() {
-                    Reader::try_lock_or_wait(
-                        current_array_ref.cell(cell_index),
-                        async_wait,
-                        barrier,
-                    )?
+                    Reader::try_lock_or_wait(cell, async_wait, barrier)?
                 } else {
-                    Reader::lock(current_array_ref.cell(cell_index), barrier)
+                    Reader::lock(cell, barrier)
                 };
                 if let Some(locker) = lock_result {
                     if let Some((key, value)) = locker.cell().search(
-                        current_array_ref.data_block(cell_index),
+                        current_array.data_block(cell_index),
                         key_ref,
                         partial_hash,
                         barrier,
@@ -266,45 +258,39 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let (cell_index, mut locker, data_block, iter) =
+        let (cell_index, mut locker, data_block, mut entry_ptr) =
             self.acquire::<Q>(key_ref, hash, partial_hash, async_wait, barrier)?;
-        if let Some(mut iter) = iter {
-            if condition(&iter.get(data_block).1) {
-                let result = locker.erase(data_block, &mut iter);
-                let need_shrink = locker.cell().num_entries() < CELL_LEN / 16;
-                let need_rebuild = LOCK_FREE && locker.cell().need_rebuild();
-                if (cell_index % CELL_LEN) == 0 && (need_shrink || need_rebuild) {
-                    drop(locker);
-                    if let Some(current_array_ref) =
-                        self.cell_array().load(Acquire, barrier).as_ref()
-                    {
-                        let array_size = current_array_ref.num_cells();
-                        let sample_size = current_array_ref.sample_size();
-                        if current_array_ref.old_array(barrier).is_null() {
-                            if need_shrink
-                                && current_array_ref.num_entries() > self.minimum_capacity()
-                            {
-                                self.try_shrink(
-                                    current_array_ref,
-                                    array_size,
-                                    sample_size,
-                                    cell_index,
-                                    barrier,
-                                );
-                            } else if need_rebuild {
-                                self.try_rebuild(
-                                    current_array_ref,
-                                    array_size,
-                                    sample_size,
-                                    cell_index,
-                                    barrier,
-                                );
-                            }
+        if entry_ptr.is_valid() && condition(&entry_ptr.get(data_block).1) {
+            let result = locker.erase(data_block, &mut entry_ptr);
+            let need_shrink = locker.cell().num_entries() < CELL_LEN / 16;
+            let need_rebuild = LOCK_FREE && locker.cell().need_rebuild();
+            if (cell_index % CELL_LEN) == 0 && (need_shrink || need_rebuild) {
+                drop(locker);
+                if let Some(current_array) = self.cell_array().load(Acquire, barrier).as_ref() {
+                    let array_size = current_array.num_cells();
+                    let sample_size = current_array.sample_size();
+                    if current_array.old_array(barrier).is_null() {
+                        if need_shrink && current_array.num_entries() > self.minimum_capacity() {
+                            self.try_shrink(
+                                current_array,
+                                array_size,
+                                sample_size,
+                                cell_index,
+                                barrier,
+                            );
+                        } else if need_rebuild {
+                            self.try_rebuild(
+                                current_array,
+                                array_size,
+                                sample_size,
+                                cell_index,
+                                barrier,
+                            );
                         }
                     }
                 }
-                return Ok((result, true));
             }
+            return Ok((result, true));
         }
         Ok((None, false))
     }
@@ -326,7 +312,7 @@ where
             usize,
             Locker<'b, K, V, LOCK_FREE>,
             &'b DataBlock<K, V>,
-            Option<EntryPtr<'b, K, V, LOCK_FREE>>,
+            EntryPtr<'b, K, V, LOCK_FREE>,
         ),
         (),
     >
@@ -351,7 +337,7 @@ where
         loop {
             // An acquire fence is required to correctly load the contents of the array.
             let current_array = self.current_array_unchecked(barrier);
-            if let Some(old_array_ref) = current_array.old_array(barrier).as_ref() {
+            if let Some(old_array) = current_array.old_array(barrier).as_ref() {
                 if !current_array.partial_rehash::<Q, _, _>(
                     |key| self.hash(key),
                     Self::copier,
@@ -359,31 +345,25 @@ where
                     barrier,
                 )? {
                     check_resize = false;
-                    let cell_index = old_array_ref.calculate_cell_index(hash);
-                    let cell = old_array_ref.cell_mut(cell_index);
+                    let cell_index = old_array.calculate_cell_index(hash);
+                    let cell = old_array.cell_mut(cell_index);
                     let lock_result = if let Some(&async_wait) = async_wait.as_ref() {
                         Locker::try_lock_or_wait(cell, async_wait, barrier)?
                     } else {
                         Locker::lock(cell, barrier)
                     };
                     if let Some(mut locker) = lock_result {
-                        if let Some(entry_ptr) = locker.get(
-                            old_array_ref.data_block(cell_index),
-                            key_ref,
-                            partial_hash,
-                            barrier,
-                        ) {
-                            return Ok((
-                                cell_index,
-                                locker,
-                                old_array_ref.data_block(cell_index),
-                                Some(entry_ptr),
-                            ));
+                        let data_block = old_array.data_block(cell_index);
+                        let entry_ptr = locker.get(data_block, key_ref, partial_hash, barrier);
+                        if entry_ptr.is_valid() {
+                            return Ok((cell_index, locker, data_block, entry_ptr));
                         }
+
                         // Kills the Cell.
                         current_array.kill_cell::<Q, _, _>(
                             &mut locker,
-                            old_array_ref,
+                            data_block,
+                            old_array.num_cells(),
                             cell_index,
                             &|key| self.hash(key),
                             &Self::copier,
@@ -393,11 +373,12 @@ where
                     }
                 }
             }
+
             let cell_index = current_array.calculate_cell_index(hash);
+            let cell = current_array.cell_mut(cell_index);
 
             // Try to resize the array.
-            let num_entries = current_array.cell(cell_index).num_entries();
-            if cell_index % CELL_LEN == 0 && check_resize && num_entries >= CELL_LEN {
+            if cell_index % CELL_LEN == 0 && check_resize && cell.num_entries() >= CELL_LEN {
                 // Trigger resize if the estimated load factor is greater than 7/8.
                 check_resize = false;
                 self.try_enlarge(
@@ -405,13 +386,12 @@ where
                     current_array.num_cells(),
                     current_array.sample_size(),
                     cell_index,
-                    num_entries,
+                    cell.num_entries(),
                     barrier,
                 );
                 continue;
             }
 
-            let cell = current_array.cell_mut(cell_index);
             let lock_result = if let Some(&async_wait) = async_wait.as_ref() {
                 Locker::try_lock_or_wait(cell, async_wait, barrier)?
             } else {
@@ -419,10 +399,8 @@ where
             };
             if let Some(locker) = lock_result {
                 let data_block = current_array.data_block(cell_index);
-                if let Some(entry_ptr) = locker.get(data_block, key_ref, partial_hash, barrier) {
-                    return Ok((cell_index, locker, data_block, Some(entry_ptr)));
-                }
-                return Ok((cell_index, locker, data_block, None));
+                let entry_ptr = locker.get(data_block, key_ref, partial_hash, barrier);
+                return Ok((cell_index, locker, data_block, entry_ptr));
             }
 
             // Reaching here means that `self.array` is updated.
@@ -433,7 +411,7 @@ where
     #[inline]
     fn try_enlarge(
         &self,
-        array_ref: &CellArray<K, V, LOCK_FREE>,
+        array: &CellArray<K, V, LOCK_FREE>,
         array_size: usize,
         sample_size: usize,
         cell_index: usize,
@@ -443,7 +421,7 @@ where
         let threshold = sample_size * (CELL_LEN / 8) * 7;
         if num_entries > threshold
             || (1..sample_size).any(|i| {
-                num_entries += array_ref.cell((cell_index + i) % array_size).num_entries();
+                num_entries += array.cell((cell_index + i) % array_size).num_entries();
                 num_entries > threshold
             })
         {
@@ -455,7 +433,7 @@ where
     #[inline]
     fn try_shrink(
         &self,
-        array_ref: &CellArray<K, V, LOCK_FREE>,
+        array: &CellArray<K, V, LOCK_FREE>,
         array_size: usize,
         sample_size: usize,
         cell_index: usize,
@@ -464,7 +442,7 @@ where
         let threshold = sample_size * CELL_LEN / 16;
         let mut num_entries = 0;
         if !(1..sample_size).any(|i| {
-            num_entries += array_ref.cell((cell_index + i) % array_size).num_entries();
+            num_entries += array.cell((cell_index + i) % array_size).num_entries();
             num_entries >= threshold
         }) {
             self.resize(barrier);
@@ -475,7 +453,7 @@ where
     #[inline]
     fn try_rebuild(
         &self,
-        array_ref: &CellArray<K, V, LOCK_FREE>,
+        array: &CellArray<K, V, LOCK_FREE>,
         array_size: usize,
         sample_size: usize,
         cell_index: usize,
@@ -484,7 +462,7 @@ where
         let threshold = sample_size / 2;
         let mut num_cells_to_rebuild = 1;
         if (1..sample_size).any(|i| {
-            if array_ref.cell((cell_index + i) % array_size).need_rebuild() {
+            if array.cell((cell_index + i) % array_size).need_rebuild() {
                 num_cells_to_rebuild += 1;
                 num_cells_to_rebuild > threshold
             } else {
