@@ -53,11 +53,17 @@ where
     /// Returns a reference to the resizing mutex.
     fn resize_mutex(&self) -> &AtomicU8;
 
+    /// Returns a reference to the current array without checking the pointer.
+    #[inline]
+    fn current_array_unchecked<'b>(&self, barrier: &'b Barrier) -> &'b CellArray<K, V, LOCK_FREE> {
+        let current_array_ptr = self.cell_array().load(Acquire, barrier);
+        unsafe { current_array_ptr.as_ref().unwrap_unchecked() }
+    }
+
     /// Returns the number of entries.
     #[inline]
     fn num_entries(&self, barrier: &Barrier) -> usize {
-        let current_array_ptr = self.cell_array().load(Acquire, barrier);
-        let current_array = current_array_ptr.as_ref().unwrap();
+        let current_array = self.current_array_unchecked(barrier);
         let mut num_entries = 0;
         for i in 0..current_array.num_cells() {
             num_entries += current_array.cell(i).num_entries();
@@ -74,8 +80,7 @@ where
     /// Returns the number of slots.
     #[inline]
     fn num_slots(&self, barrier: &Barrier) -> usize {
-        let current_array_ptr = self.cell_array().load(Acquire, barrier);
-        let current_array = current_array_ptr.as_ref().unwrap();
+        let current_array = self.current_array_unchecked(barrier);
         current_array.num_entries()
     }
 
@@ -345,8 +350,7 @@ where
         //    If the array is deprecated while inserting the key, it falls into case 1.
         loop {
             // An acquire fence is required to correctly load the contents of the array.
-            let current_array_ptr = self.cell_array().load(Acquire, barrier);
-            let current_array = current_array_ptr.as_ref().unwrap();
+            let current_array = self.current_array_unchecked(barrier);
             if let Some(old_array_ref) = current_array.old_array(barrier).as_ref() {
                 if !current_array.partial_rehash::<Q, _, _>(
                     |key| self.hash(key),
@@ -529,7 +533,7 @@ where
                 *resize = self.resize_mutex().fetch_sub(1, Release) == 2_u8;
             });
 
-            let current_array = self.cell_array().load(Acquire, barrier).as_ref().unwrap();
+            let current_array = self.current_array_unchecked(barrier);
             if !current_array.old_array(barrier).is_null() {
                 // With a deprecated array present, it cannot be resized.
                 continue;

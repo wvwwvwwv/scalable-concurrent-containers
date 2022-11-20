@@ -285,7 +285,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryPtr<'b, K, V, 
         }
     }
 
-    /// Moves the iterator to point to the next valid entry.
+    /// Moves the [`EntryPtr`] to point to the next valid entry.
     ///
     /// Returns `true` if it successfully found the next valid entry.
     #[inline]
@@ -393,7 +393,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryPtr<'b, K, V, 
         }
 
         if self.current_link_ptr.is_null() {
-            // Fuse the iterator.
+            // Fuse the pointer.
             self.current_index = usize::MAX;
         } else {
             // Go to the next `Link`.

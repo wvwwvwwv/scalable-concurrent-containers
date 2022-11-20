@@ -240,7 +240,7 @@ pub trait LinkedList: 'static + Sized {
                     return Ok(updated);
                 }
                 Err((passed, actual)) => {
-                    entry = passed.unwrap();
+                    entry = unsafe { passed.unwrap_unchecked() };
                     next_ptr = actual;
                 }
             }

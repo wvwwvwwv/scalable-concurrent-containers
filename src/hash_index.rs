@@ -1,6 +1,6 @@
 //! [`HashIndex`] is a read-optimized concurrent and asynchronous hash map.
 
-use super::ebr::{Arc, AtomicArc, Barrier, Ptr};
+use super::ebr::{Arc, AtomicArc, Barrier};
 use super::hash_table::cell::{Cell, EntryPtr, Locker};
 use super::hash_table::cell_array::CellArray;
 use super::hash_table::HashTable;
@@ -12,6 +12,7 @@ use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
 use std::iter::FusedIterator;
 use std::pin::Pin;
+use std::ptr;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering::Acquire;
 
@@ -699,7 +700,7 @@ where
     pub fn iter<'h, 'b>(&'h self, barrier: &'b Barrier) -> Visitor<'h, 'b, K, V, H> {
         Visitor {
             hash_index: self,
-            current_array_ptr: Ptr::null(),
+            current_array: None,
             current_index: 0,
             current_cell: None,
             current_entry_ptr: EntryPtr::new(barrier),
@@ -863,7 +864,7 @@ where
     H: BuildHasher,
 {
     hash_index: &'h HashIndex<K, V, H>,
-    current_array_ptr: Ptr<'b, CellArray<K, V, true>>,
+    current_array: Option<&'b CellArray<K, V, true>>,
     current_index: usize,
     current_cell: Option<&'b Cell<K, V, true>>,
     current_entry_ptr: EntryPtr<'b, K, V, true>,
@@ -879,22 +880,21 @@ where
     type Item = (&'b K, &'b V);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut array = if self.current_array_ptr.is_null() {
+        let mut array = if let Some(array) = self.current_array.as_ref().copied() {
+            array
+        } else {
             // Start scanning.
-            let current_array_ptr = self.hash_index.array.load(Acquire, self.barrier);
-            let current_array = current_array_ptr.as_ref().unwrap();
+            let current_array = self.hash_index.current_array_unchecked(self.barrier);
             let old_array_ptr = current_array.old_array(self.barrier);
-            self.current_array_ptr = if old_array_ptr.is_null() {
-                current_array_ptr
+            let array = if let Some(old_array) = old_array_ptr.as_ref() {
+                old_array
             } else {
-                old_array_ptr
+                current_array
             };
-            let array = self.current_array_ptr.as_ref().unwrap();
+            self.current_array.replace(array);
             self.current_cell.replace(array.cell(0));
             self.current_entry_ptr = EntryPtr::new(self.barrier);
             array
-        } else {
-            self.current_array_ptr.as_ref().unwrap()
         };
 
         // Go to the next Cell.
@@ -911,30 +911,39 @@ where
             }
             self.current_index += 1;
             if self.current_index == array.num_cells() {
-                let current_array_ptr = self.hash_index.array.load(Acquire, self.barrier);
-                if self.current_array_ptr == current_array_ptr {
+                let current_array = self.hash_index.current_array_unchecked(self.barrier);
+                if self
+                    .current_array
+                    .as_ref()
+                    .copied()
+                    .map_or(false, |a| ptr::eq(a, current_array))
+                {
                     // Finished scanning the entire array.
                     break;
                 }
-                let current_array = current_array_ptr.as_ref().unwrap();
                 let old_array_ptr = current_array.old_array(self.barrier);
-                if self.current_array_ptr == old_array_ptr {
-                    // Starts scanning the current array.
+                if self
+                    .current_array
+                    .as_ref()
+                    .copied()
+                    .map_or(false, |a| ptr::eq(a, old_array_ptr.as_raw()))
+                {
+                    // Start scanning the current array.
                     array = current_array;
-                    self.current_array_ptr = current_array_ptr;
+                    self.current_array.replace(array);
                     self.current_index = 0;
                     self.current_cell.replace(array.cell(0));
                     self.current_entry_ptr = EntryPtr::new(self.barrier);
                     continue;
                 }
-                // Start from the very beginning.
-                self.current_array_ptr = if old_array_ptr.is_null() {
-                    current_array_ptr
-                } else {
-                    old_array_ptr
-                };
 
-                array = self.current_array_ptr.as_ref().unwrap();
+                // Start from the very beginning.
+                array = if let Some(old_array) = old_array_ptr.as_ref() {
+                    old_array
+                } else {
+                    current_array
+                };
+                self.current_array.replace(array);
                 self.current_index = 0;
                 self.current_cell.replace(array.cell(0));
                 self.current_entry_ptr = EntryPtr::new(self.barrier);

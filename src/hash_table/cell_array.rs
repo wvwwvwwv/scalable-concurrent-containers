@@ -194,16 +194,19 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             let offset = new_cell_index - target_cell_index;
             while max_index <= offset {
                 let target_cell = self.cell_mut(max_index + target_cell_index);
-                let locker = if let Some(&async_wait) = async_wait.as_ref() {
-                    Locker::try_lock_or_wait(target_cell, async_wait, barrier)?.unwrap()
-                } else {
-                    Locker::lock(target_cell, barrier).unwrap()
+                let locker = unsafe {
+                    if let Some(&async_wait) = async_wait.as_ref() {
+                        Locker::try_lock_or_wait(target_cell, async_wait, barrier)?
+                            .unwrap_unchecked()
+                    } else {
+                        Locker::lock(target_cell, barrier).unwrap_unchecked()
+                    }
                 };
                 target_cells[max_index].replace(locker);
                 max_index += 1;
             }
 
-            let target_cell = target_cells[offset].as_mut().unwrap();
+            let target_cell = unsafe { target_cells[offset].as_mut().unwrap_unchecked() };
             let partial_hash = entry_ptr.partial_hash(cell_locker.cell());
             let new_entry = if let Some(entry) = copier(&old_entry.0, &old_entry.1) {
                 // HashIndex.

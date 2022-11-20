@@ -255,7 +255,7 @@ impl<T: 'static> Queue<T> {
         }
 
         // Extract the instance from the temporary entry.
-        Err(unsafe { new_entry.get_mut().unwrap().take_inner() })
+        Err(unsafe { new_entry.get_mut().unwrap_unchecked().take_inner() })
     }
 
     /// Cleans up logically removed entries that are attached to `oldest`.
@@ -399,7 +399,7 @@ impl<T: 'static> Entry<T> {
 
     /// Extracts the inner instance of `T`.
     pub(super) unsafe fn take_inner(&mut self) -> T {
-        self.instance.take().unwrap()
+        self.instance.take().unwrap_unchecked()
     }
 
     /// Creates a new [`Entry`].
@@ -413,14 +413,14 @@ impl<T: 'static> Entry<T> {
 
 impl<T: 'static> AsRef<T> for Entry<T> {
     fn as_ref(&self) -> &T {
-        self.instance.as_ref().unwrap()
+        unsafe { self.instance.as_ref().unwrap_unchecked() }
     }
 }
 
 impl<T: 'static> AsMut<T> for Entry<T> {
     #[inline]
     fn as_mut(&mut self) -> &mut T {
-        self.instance.as_mut().unwrap()
+        unsafe { self.instance.as_mut().unwrap_unchecked() }
     }
 }
 
@@ -449,14 +449,14 @@ impl<T: 'static> Deref for Entry<T> {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        self.instance.as_ref().unwrap()
+        unsafe { self.instance.as_ref().unwrap_unchecked() }
     }
 }
 
 impl<T: 'static> DerefMut for Entry<T> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.instance.as_mut().unwrap()
+        unsafe { self.instance.as_mut().unwrap_unchecked() }
     }
 }
 
