@@ -257,16 +257,16 @@ where
     /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
     /// ```
     #[inline]
-    pub fn update<Q, F, R>(&self, key_ref: &Q, updater: F) -> Option<R>
+    pub fn update<Q, F, R>(&self, key: &Q, updater: F) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
         F: FnOnce(&K, &mut V) -> R,
     {
-        let (hash, partial_hash) = self.hash(key_ref);
+        let (hash, partial_hash) = self.hash(key);
         let barrier = Barrier::new();
         let (_, mut locker, data_block, mut entry_ptr) = self
-            .acquire::<Q>(key_ref, hash, partial_hash, None, &barrier)
+            .acquire::<Q>(key, hash, partial_hash, None, &barrier)
             .ok()?;
         if entry_ptr.is_valid() {
             let (k, v) = entry_ptr.get_mut(data_block, &mut locker);
@@ -291,18 +291,18 @@ where
     /// let future_update = hashmap.update_async(&1, |_, v| { *v = 2; *v });
     /// ```
     #[inline]
-    pub async fn update_async<Q, F, R>(&self, key_ref: &Q, updater: F) -> Option<R>
+    pub async fn update_async<Q, F, R>(&self, key: &Q, updater: F) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
         F: FnOnce(&K, &mut V) -> R,
     {
-        let (hash, partial_hash) = self.hash(key_ref);
+        let (hash, partial_hash) = self.hash(key);
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             if let Ok((_, mut locker, data_block, mut entry_ptr)) = self.acquire::<Q>(
-                key_ref,
+                key,
                 hash,
                 partial_hash,
                 Some(async_wait_pinned.mut_ptr()),
@@ -413,12 +413,12 @@ where
     /// assert_eq!(hashmap.remove(&1).unwrap(), (1, 0));
     /// ```
     #[inline]
-    pub fn remove<Q>(&self, key_ref: &Q) -> Option<(K, V)>
+    pub fn remove<Q>(&self, key: &Q) -> Option<(K, V)>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.remove_if(key_ref, |_| true)
+        self.remove_if(key, |_| true)
     }
 
     /// Removes a key-value pair if the key exists.
@@ -435,12 +435,12 @@ where
     /// let future_remove = hashmap.remove_async(&11);
     /// ```
     #[inline]
-    pub async fn remove_async<Q>(&self, key_ref: &Q) -> Option<(K, V)>
+    pub async fn remove_async<Q>(&self, key: &Q) -> Option<(K, V)>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.remove_if_async(key_ref, |_| true).await
+        self.remove_if_async(key, |_| true).await
     }
 
     /// Removes a key-value pair if the key exists and the given condition is met.
@@ -457,18 +457,14 @@ where
     /// assert_eq!(hashmap.remove_if(&1, |v| *v == 0).unwrap(), (1, 0));
     /// ```
     #[inline]
-    pub fn remove_if<Q, F: FnMut(&V) -> bool>(
-        &self,
-        key_ref: &Q,
-        mut condition: F,
-    ) -> Option<(K, V)>
+    pub fn remove_if<Q, F: FnMut(&V) -> bool>(&self, key: &Q, mut condition: F) -> Option<(K, V)>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let (hash, partial_hash) = self.hash(key_ref);
+        let (hash, partial_hash) = self.hash(key);
         self.remove_entry::<Q, _>(
-            key_ref,
+            key,
             hash,
             partial_hash,
             &mut condition,
@@ -495,19 +491,19 @@ where
     #[inline]
     pub async fn remove_if_async<Q, F: FnMut(&V) -> bool>(
         &self,
-        key_ref: &Q,
+        key: &Q,
         mut condition: F,
     ) -> Option<(K, V)>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let (hash, partial_hash) = self.hash(key_ref);
+        let (hash, partial_hash) = self.hash(key);
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             if let Ok(result) = self.remove_entry::<Q, F>(
-                key_ref,
+                key,
                 hash,
                 partial_hash,
                 &mut condition,
@@ -536,14 +532,13 @@ where
     /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 10);
     /// ```
     #[inline]
-    pub fn read<Q, R, F: FnMut(&K, &V) -> R>(&self, key_ref: &Q, mut reader: F) -> Option<R>
+    pub fn read<Q, R, F: FnMut(&K, &V) -> R>(&self, key: &Q, mut reader: F) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let barrier = Barrier::new();
-        let (hash, partial_hash) = self.hash(key_ref);
-        self.read_entry::<Q, R, F>(key_ref, hash, partial_hash, &mut reader, None, &barrier)
+        let (hash, partial_hash) = self.hash(key);
+        self.read_entry::<Q, R, F>(key, hash, partial_hash, &mut reader, None, &Barrier::new())
             .ok()
             .and_then(|r| r)
     }
@@ -563,21 +558,17 @@ where
     /// let future_read = hashmap.read_async(&11, |_, v| *v);
     /// ```
     #[inline]
-    pub async fn read_async<Q, R, F: FnMut(&K, &V) -> R>(
-        &self,
-        key_ref: &Q,
-        mut reader: F,
-    ) -> Option<R>
+    pub async fn read_async<Q, R, F: FnMut(&K, &V) -> R>(&self, key: &Q, mut reader: F) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let (hash, partial_hash) = self.hash(key_ref);
+        let (hash, partial_hash) = self.hash(key);
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             if let Ok(result) = self.read_entry::<Q, R, _>(
-                key_ref,
+                key,
                 hash,
                 partial_hash,
                 &mut reader,

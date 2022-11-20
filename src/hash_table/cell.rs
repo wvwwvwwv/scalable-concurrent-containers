@@ -77,7 +77,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
     pub(crate) fn search<'b, Q>(
         &'b self,
         data_block: &'b DataBlock<K, V>,
-        key_ref: &Q,
+        key: &Q,
         partial_hash: u8,
         barrier: &'b Barrier,
     ) -> Option<&'b (K, V)>
@@ -90,7 +90,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         }
 
         if let Some((_, entry_ref)) =
-            Self::search_array(&self.metadata, data_block, key_ref, partial_hash)
+            Self::search_array(&self.metadata, data_block, key, partial_hash)
         {
             return Some(entry_ref);
         }
@@ -98,7 +98,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         let mut link_ptr = self.metadata.link.load(Acquire, barrier);
         while let Some(link) = link_ptr.as_ref() {
             if let Some((_, entry_ref)) =
-                Self::search_array(&link.metadata, &link.data_array, key_ref, partial_hash)
+                Self::search_array(&link.metadata, &link.data_array, key, partial_hash)
             {
                 return Some(entry_ref);
             }
@@ -135,7 +135,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
     fn get<'b, Q>(
         &self,
         data_block: &'b DataBlock<K, V>,
-        key_ref: &Q,
+        key: &Q,
         partial_hash: u8,
         barrier: &'b Barrier,
     ) -> EntryPtr<'b, K, V, LOCK_FREE>
@@ -147,8 +147,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
             return EntryPtr::new(barrier);
         }
 
-        if let Some((index, _)) =
-            Self::search_array(&self.metadata, data_block, key_ref, partial_hash)
+        if let Some((index, _)) = Self::search_array(&self.metadata, data_block, key, partial_hash)
         {
             return EntryPtr {
                 current_link_ptr: Ptr::null(),
@@ -161,7 +160,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         let mut prev_link_ptr = Ptr::null();
         while let Some(link) = current_link_ptr.as_ref() {
             if let Some((index, _)) =
-                Self::search_array(&link.metadata, &link.data_array, key_ref, partial_hash)
+                Self::search_array(&link.metadata, &link.data_array, key, partial_hash)
             {
                 return EntryPtr {
                     current_link_ptr,
@@ -181,7 +180,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
     fn search_array<'b, Q, const LEN: usize>(
         metadata: &'b Metadata<K, V, LEN>,
         data_array: &'b [MaybeUninit<(K, V)>; LEN],
-        key_ref: &Q,
+        key: &Q,
         partial_hash: u8,
     ) -> Option<(usize, &'b (K, V))>
     where
@@ -202,7 +201,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         if (bitmap & (1_u32 << preferred_index)) != 0 {
             let entry_ptr = data_array[preferred_index as usize].as_ptr();
             let entry_ref = unsafe { &(*entry_ptr) };
-            if entry_ref.0.borrow() == key_ref {
+            if entry_ref.0.borrow() == key {
                 return Some((preferred_index as usize, entry_ref));
             }
         }
@@ -218,7 +217,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
             if metadata.partial_hash_array[index as usize] == partial_hash {
                 let entry_ptr = data_array[index as usize].as_ptr();
                 let entry_ref = unsafe { &(*entry_ptr) };
-                if entry_ref.0.borrow() == key_ref {
+                if entry_ref.0.borrow() == key {
                     return Some((index as usize, entry_ref));
                 }
             }
@@ -484,7 +483,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     pub(crate) fn get<Q>(
         &self,
         data_block: &'b DataBlock<K, V>,
-        key_ref: &Q,
+        key: &Q,
         partial_hash: u8,
         barrier: &'b Barrier,
     ) -> EntryPtr<'b, K, V, LOCK_FREE>
@@ -492,7 +491,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         K: Borrow<Q>,
         Q: Eq + ?Sized,
     {
-        self.cell.get(data_block, key_ref, partial_hash, barrier)
+        self.cell.get(data_block, key, partial_hash, barrier)
     }
 
     /// Inserts a new key-value pair into the [`Cell`] without a uniqueness check.

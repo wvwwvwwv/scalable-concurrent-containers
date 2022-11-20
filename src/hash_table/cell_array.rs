@@ -27,7 +27,6 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     /// Creates a new [`CellArray`] of the given capacity.
     ///
     /// `total_cell_capacity` is the desired number entries, not the number of [`Cell`] instances.
-    #[inline]
     pub(crate) fn new(
         total_cell_capacity: usize,
         old_array: AtomicArc<CellArray<K, V, LOCK_FREE>>,
@@ -163,9 +162,9 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
 
         let shrink = old_array_num_cells > self.num_cells();
         let ratio = if shrink {
-            old_array_num_cells / self.num_cells()
+            old_array_num_cells / self.array_len
         } else {
-            self.num_cells() / old_array_num_cells
+            self.array_len / old_array_num_cells
         };
         let target_cell_index = if shrink {
             old_cell_index / ratio

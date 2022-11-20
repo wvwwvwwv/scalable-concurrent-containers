@@ -156,12 +156,12 @@ where
     /// assert_eq!(hashset.remove(&1).unwrap(), 1);
     /// ```
     #[inline]
-    pub fn remove<Q>(&self, key_ref: &Q) -> Option<K>
+    pub fn remove<Q>(&self, key: &Q) -> Option<K>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.map.remove(key_ref).map(|(k, _)| k)
+        self.map.remove(key).map(|(k, _)| k)
     }
 
     /// Removes a key if the key exists.
@@ -178,13 +178,13 @@ where
     /// let future_remove = hashset.remove_async(&11);
     /// ```
     #[inline]
-    pub async fn remove_async<Q>(&self, key_ref: &Q) -> Option<K>
+    pub async fn remove_async<Q>(&self, key: &Q) -> Option<K>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
         self.map
-            .remove_if_async(key_ref, |_| true)
+            .remove_if_async(key, |_| true)
             .await
             .map(|(k, _)| k)
     }
@@ -205,12 +205,12 @@ where
     /// assert_eq!(hashset.remove_if(&1, || true).unwrap(), 1);
     /// ```
     #[inline]
-    pub fn remove_if<Q, F: FnMut() -> bool>(&self, key_ref: &Q, mut condition: F) -> Option<K>
+    pub fn remove_if<Q, F: FnMut() -> bool>(&self, key: &Q, mut condition: F) -> Option<K>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.map.remove_if(key_ref, |_| condition()).map(|(k, _)| k)
+        self.map.remove_if(key, |_| condition()).map(|(k, _)| k)
     }
 
     /// Removes a key if the key exists and the given condition is met.
@@ -229,7 +229,7 @@ where
     #[inline]
     pub async fn remove_if_async<Q, F: FnMut() -> bool>(
         &self,
-        key_ref: &Q,
+        key: &Q,
         mut condition: F,
     ) -> Option<K>
     where
@@ -237,7 +237,7 @@ where
         Q: Eq + Hash + ?Sized,
     {
         self.map
-            .remove_if_async(key_ref, |_| condition())
+            .remove_if_async(key, |_| condition())
             .await
             .map(|(k, _)| k)
     }
@@ -258,12 +258,12 @@ where
     /// assert!(hashset.read(&1, |_| true).unwrap());
     /// ```
     #[inline]
-    pub fn read<Q, R, F: FnMut(&K) -> R>(&self, key_ref: &Q, mut reader: F) -> Option<R>
+    pub fn read<Q, R, F: FnMut(&K) -> R>(&self, key: &Q, mut reader: F) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.map.read(key_ref, |k, _| reader(k))
+        self.map.read(key, |k, _| reader(k))
     }
 
     /// Reads a key.
@@ -281,12 +281,12 @@ where
     /// let future_read = hashset.read_async(&11, |k| *k);
     /// ```
     #[inline]
-    pub async fn read_async<Q, R, F: FnMut(&K) -> R>(&self, key_ref: &Q, mut reader: F) -> Option<R>
+    pub async fn read_async<Q, R, F: FnMut(&K) -> R>(&self, key: &Q, mut reader: F) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.map.read_async(key_ref, |k, _| reader(k)).await
+        self.map.read_async(key, |k, _| reader(k)).await
     }
 
     /// Checks if the key exists.

@@ -154,10 +154,10 @@ where
     #[inline]
     fn read_entry<'b, Q, R, F: FnMut(&'b K, &'b V) -> R>(
         &self,
-        key_ref: &Q,
+        key: &Q,
         hash: u64,
         partial_hash: u8,
-        reader: &mut F,
+        read_op: &mut F,
         async_wait: Option<*mut AsyncWait>,
         barrier: &'b Barrier,
     ) -> Result<Option<R>, ()>
@@ -180,11 +180,11 @@ where
                     if LOCK_FREE {
                         if let Some(entry) = cell.search(
                             old_array.data_block(cell_index),
-                            key_ref,
+                            key,
                             partial_hash,
                             barrier,
                         ) {
-                            return Ok(Some(reader(&entry.0, &entry.1)));
+                            return Ok(Some(read_op(&entry.0, &entry.1)));
                         }
                     } else {
                         let lock_result = if let Some(&async_wait) = async_wait.as_ref() {
@@ -192,29 +192,30 @@ where
                         } else {
                             Reader::lock(cell, barrier)
                         };
-                        if let Some(locker) = lock_result {
-                            if let Some((key, value)) = locker.cell().search(
+                        if let Some(reader) = lock_result {
+                            if let Some((key, value)) = reader.cell().search(
                                 old_array.data_block(cell_index),
-                                key_ref,
+                                key,
                                 partial_hash,
                                 barrier,
                             ) {
-                                return Ok(Some(reader(key, value)));
+                                return Ok(Some(read_op(key, value)));
                             }
                         }
                     }
                 }
             }
+
             let cell_index = current_array.calculate_cell_index(hash);
             let cell = current_array.cell(cell_index);
             if LOCK_FREE {
                 if let Some(entry) = cell.search(
                     current_array.data_block(cell_index),
-                    key_ref,
+                    key,
                     partial_hash,
                     barrier,
                 ) {
-                    return Ok(Some(reader(&entry.0, &entry.1)));
+                    return Ok(Some(read_op(&entry.0, &entry.1)));
                 }
             } else {
                 let lock_result = if let Some(&async_wait) = async_wait.as_ref() {
@@ -222,24 +223,27 @@ where
                 } else {
                     Reader::lock(cell, barrier)
                 };
-                if let Some(locker) = lock_result {
-                    if let Some((key, value)) = locker.cell().search(
+                if let Some(reader) = lock_result {
+                    if let Some((key, value)) = reader.cell().search(
                         current_array.data_block(cell_index),
-                        key_ref,
+                        key,
                         partial_hash,
                         barrier,
                     ) {
-                        return Ok(Some(reader(key, value)));
+                        return Ok(Some(read_op(key, value)));
                     }
                 }
             }
+
             let new_current_array_ptr = self.cell_array().load(Acquire, barrier);
             if new_current_array_ptr == current_array_ptr {
                 break;
             }
+
             // The pointer value has changed.
             current_array_ptr = new_current_array_ptr;
         }
+
         Ok(None)
     }
 
@@ -247,7 +251,7 @@ where
     #[inline]
     fn remove_entry<Q, F: FnMut(&V) -> bool>(
         &self,
-        key_ref: &Q,
+        key: &Q,
         hash: u64,
         partial_hash: u8,
         condition: &mut F,
@@ -259,7 +263,7 @@ where
         Q: Eq + Hash + ?Sized,
     {
         let (cell_index, mut locker, data_block, mut entry_ptr) =
-            self.acquire::<Q>(key_ref, hash, partial_hash, async_wait, barrier)?;
+            self.acquire::<Q>(key, hash, partial_hash, async_wait, barrier)?;
         if entry_ptr.is_valid() && condition(&entry_ptr.get(data_block).1) {
             let result = locker.erase(data_block, &mut entry_ptr);
             let need_shrink = locker.cell().num_entries() < CELL_LEN / 16;
@@ -302,7 +306,7 @@ where
     #[allow(clippy::type_complexity)]
     fn acquire<'h, 'b, Q>(
         &'h self,
-        key_ref: &Q,
+        key: &Q,
         hash: u64,
         partial_hash: u8,
         async_wait: Option<*mut AsyncWait>,
@@ -354,12 +358,12 @@ where
                     };
                     if let Some(mut locker) = lock_result {
                         let data_block = old_array.data_block(cell_index);
-                        let entry_ptr = locker.get(data_block, key_ref, partial_hash, barrier);
+                        let entry_ptr = locker.get(data_block, key, partial_hash, barrier);
                         if entry_ptr.is_valid() {
                             return Ok((cell_index, locker, data_block, entry_ptr));
                         }
 
-                        // Kills the Cell.
+                        // Kills the `Cell`.
                         current_array.kill_cell::<Q, _, _>(
                             &mut locker,
                             data_block,
@@ -399,7 +403,7 @@ where
             };
             if let Some(locker) = lock_result {
                 let data_block = current_array.data_block(cell_index);
-                let entry_ptr = locker.get(data_block, key_ref, partial_hash, barrier);
+                let entry_ptr = locker.get(data_block, key, partial_hash, barrier);
                 return Ok((cell_index, locker, data_block, entry_ptr));
             }
 
