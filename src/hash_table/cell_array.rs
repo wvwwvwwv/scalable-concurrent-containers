@@ -230,6 +230,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     /// Relocates a fixed number of `Cells` from the old array to the current array.
     ///
     /// Returns `true` if `old_array` is null.
+    #[inline]
     pub(crate) fn partial_rehash<Q, F: Fn(&Q) -> (u64, u8), C: Fn(&K, &V) -> (K, V)>(
         &self,
         hasher: F,
