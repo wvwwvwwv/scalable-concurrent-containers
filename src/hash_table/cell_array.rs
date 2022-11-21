@@ -8,6 +8,7 @@ use std::alloc::{alloc, alloc_zeroed, dealloc, Layout};
 use std::borrow::Borrow;
 use std::hash::Hash;
 use std::mem::{align_of, size_of};
+use std::ptr::NonNull;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -147,7 +148,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         old_cell_index: usize,
         hasher: &F,
         copier: &C,
-        async_wait: Option<*mut AsyncWait>,
+        async_wait: Option<NonNull<AsyncWait>>,
         barrier: &Barrier,
     ) -> Result<(), ()>
     where
@@ -235,7 +236,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         &self,
         hasher: F,
         copier: C,
-        async_wait: Option<*mut AsyncWait>,
+        async_wait: Option<NonNull<AsyncWait>>,
         barrier: &Barrier,
     ) -> Result<bool, ()>
     where

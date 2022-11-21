@@ -9,7 +9,7 @@ use crate::wait_queue::AsyncWait;
 
 use std::borrow::Borrow;
 use std::hash::{BuildHasher, Hash, Hasher};
-use std::ptr;
+use std::ptr::{self, NonNull};
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
@@ -137,10 +137,10 @@ where
         val: V,
         hash: u64,
         partial_hash: u8,
-        async_wait: Option<*mut AsyncWait>,
+        async_wait: Option<NonNull<AsyncWait>>,
         barrier: &Barrier,
     ) -> Result<Option<(K, V)>, (K, V)> {
-        match self.acquire::<_>(&key, hash, partial_hash, async_wait, barrier) {
+        match self.acquire_entry::<_>(&key, hash, partial_hash, async_wait, barrier) {
             Ok((_, mut locker, data_block, entry_ptr)) => {
                 if entry_ptr.is_valid() {
                     return Ok(Some((key, val)));
@@ -160,7 +160,7 @@ where
         hash: u64,
         partial_hash: u8,
         read_op: &mut F,
-        async_wait: Option<*mut AsyncWait>,
+        async_wait: Option<NonNull<AsyncWait>>,
         barrier: &'b Barrier,
     ) -> Result<Option<R>, ()>
     where
@@ -233,7 +233,7 @@ where
         hash: u64,
         partial_hash: u8,
         read_op: &mut F,
-        async_wait: Option<*mut AsyncWait>,
+        async_wait: Option<NonNull<AsyncWait>>,
         barrier: &'b Barrier,
     ) -> Result<Option<R>, ()>
     where
@@ -286,7 +286,7 @@ where
         hash: u64,
         partial_hash: u8,
         condition: &mut F,
-        async_wait: Option<*mut AsyncWait>,
+        async_wait: Option<NonNull<AsyncWait>>,
         barrier: &Barrier,
     ) -> Result<(Option<(K, V)>, bool), ()>
     where
@@ -294,7 +294,7 @@ where
         Q: Eq + Hash + ?Sized,
     {
         let (cell_index, mut locker, data_block, mut entry_ptr) =
-            self.acquire::<Q>(key, hash, partial_hash, async_wait, barrier)?;
+            self.acquire_entry::<Q>(key, hash, partial_hash, async_wait, barrier)?;
         if entry_ptr.is_valid() && condition(&entry_ptr.get(data_block).1) {
             let result = locker.erase(data_block, &mut entry_ptr);
             let need_shrink = locker.cell().num_entries() < CELL_LEN / 16;
@@ -330,18 +330,18 @@ where
         Ok((None, false))
     }
 
-    /// Acquires a [`Locker`] and [`EntryPtr`].
+    /// Acquires a [`Locker`] and [`EntryPtr`] corresponding to the key.
     ///
     /// It returns an error if locking failed, or returns an [`EntryPtr`] if the key exists,
     /// otherwise `None` is returned.
     #[allow(clippy::type_complexity)]
     #[inline]
-    fn acquire<'h, 'b, Q>(
+    fn acquire_entry<'h, 'b, Q>(
         &'h self,
         key: &Q,
         hash: u64,
         partial_hash: u8,
-        async_wait: Option<*mut AsyncWait>,
+        async_wait: Option<NonNull<AsyncWait>>,
         barrier: &'b Barrier,
     ) -> Result<
         (
@@ -419,7 +419,8 @@ where
             // Reaching here means that `self.array` is updated.
         }
     }
-    /// Acquires an entry in the old array in the [`HashTable`].
+    /// Acquires a [`Locker`] and [`EntryPtr`] corresponding to the key in the old array of the
+    /// [`HashTable`].
     #[allow(clippy::type_complexity)]
     fn acquire_old_entry<'h, 'b, Q>(
         &'h self,
@@ -427,7 +428,7 @@ where
         key: &Q,
         hash: u64,
         partial_hash: u8,
-        async_wait: Option<*mut AsyncWait>,
+        async_wait: Option<NonNull<AsyncWait>>,
         barrier: &'b Barrier,
     ) -> Result<
         Option<(

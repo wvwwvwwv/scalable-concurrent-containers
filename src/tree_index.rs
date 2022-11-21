@@ -18,6 +18,7 @@ use std::iter::FusedIterator;
 use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::ops::RangeBounds;
 use std::pin::Pin;
+use std::ptr::NonNull;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 
 /// Scalable concurrent B+ tree.
@@ -160,7 +161,12 @@ where
             let need_await = {
                 let barrier = Barrier::new();
                 if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
-                    match root_ref.insert(key, value, Some(async_wait_pinned.mut_ptr()), &barrier) {
+                    match root_ref.insert(
+                        key,
+                        value,
+                        NonNull::new(async_wait_pinned.mut_ptr()),
+                        &barrier,
+                    ) {
                         Ok(r) => match r {
                             InsertResult::Success => return Ok(()),
                             InsertResult::Frozen(k, v) | InsertResult::Retry(k, v) => {
@@ -182,7 +188,7 @@ where
                                 !matches!(
                                     Node::remove_root(
                                         &self.root,
-                                        Some(async_wait_pinned.mut_ptr()),
+                                        NonNull::new(async_wait_pinned.mut_ptr()),
                                         &barrier
                                     ),
                                     Ok(true)
@@ -341,7 +347,7 @@ where
                     match root_ref.remove_if::<_, _>(
                         key_ref,
                         &mut condition,
-                        Some(async_wait_pinned.mut_ptr()),
+                        NonNull::new(async_wait_pinned.mut_ptr()),
                         &barrier,
                     ) {
                         Ok(r) => match r {
@@ -354,7 +360,7 @@ where
                                 if matches!(
                                     Node::remove_root(
                                         &self.root,
-                                        Some(async_wait_pinned.mut_ptr()),
+                                        NonNull::new(async_wait_pinned.mut_ptr()),
                                         &barrier
                                     ),
                                     Ok(true)

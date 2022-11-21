@@ -6,6 +6,7 @@ use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
 use crate::wait_queue::AsyncWait;
 
 use std::borrow::Borrow;
+use std::ptr::NonNull;
 use std::sync::atomic::Ordering::{self, Acquire, Relaxed, Release};
 
 /// [`Type`] indicates the type of a [`Node`].
@@ -33,26 +34,30 @@ where
     V: 'static + Clone + Send + Sync,
 {
     /// Creates a new [`InternalNode`].
-    pub(crate) fn new_internal_node() -> Node<K, V> {
+    #[inline]
+    pub(super) fn new_internal_node() -> Node<K, V> {
         Node {
             node: Type::Internal(InternalNode::new()),
         }
     }
 
     /// Creates a new [`LeafNode`].
-    pub(crate) fn new_leaf_node() -> Node<K, V> {
+    #[inline]
+    pub(super) fn new_leaf_node() -> Node<K, V> {
         Node {
             node: Type::Leaf(LeafNode::new()),
         }
     }
 
     /// Returns a reference to the node internal.
-    pub(crate) fn node(&self) -> &Type<K, V> {
+    #[inline]
+    pub(super) fn node(&self) -> &Type<K, V> {
         &self.node
     }
 
     /// Returns the depth of the node.
-    pub(crate) fn depth(&self, depth: usize, barrier: &Barrier) -> usize {
+    #[inline]
+    pub(super) fn depth(&self, depth: usize, barrier: &Barrier) -> usize {
         match &self.node {
             Type::Internal(internal_node) => internal_node.depth(depth, barrier),
             Type::Leaf(_) => depth,
@@ -60,7 +65,8 @@ where
     }
 
     /// Checks if the node has retired.
-    pub(crate) fn retired(&self, mo: Ordering) -> bool {
+    #[inline]
+    pub(super) fn retired(&self, mo: Ordering) -> bool {
         match &self.node {
             Type::Internal(internal_node) => internal_node.retired(mo),
             Type::Leaf(leaf_node) => leaf_node.retired(mo),
@@ -68,7 +74,8 @@ where
     }
 
     /// Searches for an entry associated with the given key.
-    pub(crate) fn search<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> Option<&'b V>
+    #[inline]
+    pub(super) fn search<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> Option<&'b V>
     where
         K: 'b + Borrow<Q>,
         Q: Ord + ?Sized,
@@ -82,7 +89,8 @@ where
     /// Returns the minimum key-value pair.
     ///
     /// This method is not linearizable.
-    pub(crate) fn min<'b>(&self, barrier: &'b Barrier) -> Option<Scanner<'b, K, V>> {
+    #[inline]
+    pub(super) fn min<'b>(&self, barrier: &'b Barrier) -> Option<Scanner<'b, K, V>> {
         match &self.node {
             Type::Internal(internal_node) => internal_node.min(barrier),
             Type::Leaf(leaf_node) => leaf_node.min(barrier),
@@ -93,7 +101,8 @@ where
     /// maximum key among those keys smaller than or equal to the given key.
     ///
     /// This method is not linearizable.
-    pub(crate) fn max_le_appr<'b, Q>(
+    #[inline]
+    pub(super) fn max_le_appr<'b, Q>(
         &self,
         key: &Q,
         barrier: &'b Barrier,
@@ -109,11 +118,12 @@ where
     }
 
     /// Inserts a key-value pair.
-    pub(crate) fn insert(
+    #[inline]
+    pub(super) fn insert(
         &self,
         key: K,
         value: V,
-        async_wait: Option<*mut AsyncWait>,
+        async_wait: Option<NonNull<AsyncWait>>,
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
         match &self.node {
@@ -123,11 +133,12 @@ where
     }
 
     /// Removes an entry associated with the given key.
-    pub(crate) fn remove_if<Q, F: FnMut(&V) -> bool>(
+    #[inline]
+    pub(super) fn remove_if<Q, F: FnMut(&V) -> bool>(
         &self,
         key: &Q,
         condition: &mut F,
-        async_wait: Option<*mut AsyncWait>,
+        async_wait: Option<NonNull<AsyncWait>>,
         barrier: &Barrier,
     ) -> Result<RemoveResult, bool>
     where
@@ -145,7 +156,8 @@ where
     }
 
     /// Splits the current root node.
-    pub(crate) fn split_root<const ASYNC: bool>(
+    #[inline]
+    pub(super) fn split_root<const ASYNC: bool>(
         key: K,
         value: V,
         root: &AtomicArc<Node<K, V>>,
@@ -192,9 +204,10 @@ where
     /// # Errors
     ///
     /// Returns an error if a conflict is detected.
-    pub(crate) fn remove_root(
+    #[inline]
+    pub(super) fn remove_root(
         root: &AtomicArc<Node<K, V>>,
-        async_wait: Option<*mut AsyncWait>,
+        async_wait: Option<NonNull<AsyncWait>>,
         barrier: &Barrier,
     ) -> Result<bool, ()> {
         let root_ptr = root.load(Acquire, barrier);
@@ -243,7 +256,8 @@ where
     }
 
     /// Commits an on-going structural change.
-    pub(crate) fn commit(&self, barrier: &Barrier) {
+    #[inline]
+    pub(super) fn commit(&self, barrier: &Barrier) {
         match &self.node {
             Type::Internal(internal_node) => internal_node.commit(barrier),
             Type::Leaf(leaf_node) => leaf_node.commit(barrier),
@@ -251,7 +265,8 @@ where
     }
 
     /// Rolls back an on-going structural change.
-    pub(crate) fn rollback(&self, barrier: &Barrier) {
+    #[inline]
+    pub(super) fn rollback(&self, barrier: &Barrier) {
         match &self.node {
             Type::Internal(internal_node) => internal_node.rollback(barrier),
             Type::Leaf(leaf_node) => leaf_node.rollback(barrier),
@@ -261,7 +276,8 @@ where
     /// Cleans up logically deleted [`LeafNode`] instances in the linked list.
     ///
     /// If the target leaf node does not exist in the sub-tree, returns `false`.
-    pub(crate) fn cleanup_link<'b, Q>(
+    #[inline]
+    pub(super) fn cleanup_link<'b, Q>(
         &self,
         key: &Q,
         traverse_max: bool,

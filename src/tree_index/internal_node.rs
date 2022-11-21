@@ -7,7 +7,7 @@ use crate::wait_queue::{AsyncWait, WaitQueue};
 
 use std::borrow::Borrow;
 use std::cmp::Ordering::{Equal, Greater, Less};
-use std::ptr::addr_of;
+use std::ptr::{addr_of, NonNull};
 use std::sync::atomic::Ordering::{self, Acquire, Relaxed, Release};
 
 /// Internal node.
@@ -41,7 +41,8 @@ where
     V: 'static + Clone + Send + Sync,
 {
     /// Creates a new empty internal node.
-    pub(crate) fn new() -> InternalNode<K, V> {
+    #[inline]
+    pub(super) fn new() -> InternalNode<K, V> {
         InternalNode {
             children: Leaf::new(),
             unbounded_child: AtomicArc::null(),
@@ -51,7 +52,8 @@ where
     }
 
     /// Returns the depth of the node.
-    pub(crate) fn depth(&self, depth: usize, barrier: &Barrier) -> usize {
+    #[inline]
+    pub(super) fn depth(&self, depth: usize, barrier: &Barrier) -> usize {
         let unbounded_ptr = self.unbounded_child.load(Relaxed, barrier);
         if let Some(unbounded_ref) = unbounded_ptr.as_ref() {
             return unbounded_ref.depth(depth + 1, barrier);
@@ -60,12 +62,14 @@ where
     }
 
     /// Returns `true` if the [`InternalNode`] has retired.
-    pub(crate) fn retired(&self, mo: Ordering) -> bool {
+    #[inline]
+    pub(super) fn retired(&self, mo: Ordering) -> bool {
         self.unbounded_child.tag(mo) == RETIRED
     }
 
     /// Searches for an entry associated with the given key.
-    pub(crate) fn search<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> Option<&'b V>
+    #[inline]
+    pub(super) fn search<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> Option<&'b V>
     where
         K: 'b + Borrow<Q>,
         Q: Ord + ?Sized,
@@ -93,7 +97,8 @@ where
     }
 
     /// Returns the minimum key entry.
-    pub(crate) fn min<'b>(&self, barrier: &'b Barrier) -> Option<Scanner<'b, K, V>> {
+    #[inline]
+    pub(super) fn min<'b>(&self, barrier: &'b Barrier) -> Option<Scanner<'b, K, V>> {
         loop {
             let mut retry = false;
             let scanner = Scanner::new(&self.children);
@@ -132,7 +137,8 @@ where
     ///
     /// It returns `None` if all the keys in the [`InternalNode`] is equal to or greater than the
     /// given key.
-    pub(crate) fn max_le_appr<'b, Q>(
+    #[inline]
+    pub(super) fn max_le_appr<'b, Q>(
         &self,
         key: &Q,
         barrier: &'b Barrier,
@@ -179,11 +185,12 @@ where
     }
 
     /// Inserts a key-value pair.
-    pub(crate) fn insert(
+    #[inline]
+    pub(super) fn insert(
         &self,
         mut key: K,
         mut value: V,
-        async_wait: Option<*mut AsyncWait>,
+        async_wait: Option<NonNull<AsyncWait>>,
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
         loop {
@@ -287,11 +294,12 @@ where
     /// # Errors
     ///
     /// Returns an error if a retry is required with a boolean flag indicating that an entry has been removed.
-    pub(crate) fn remove_if<Q, F: FnMut(&V) -> bool>(
+    #[inline]
+    pub(super) fn remove_if<Q, F: FnMut(&V) -> bool>(
         &self,
         key: &Q,
         condition: &mut F,
-        async_wait: Option<*mut AsyncWait>,
+        async_wait: Option<NonNull<AsyncWait>>,
         barrier: &Barrier,
     ) -> Result<RemoveResult, bool>
     where
@@ -351,7 +359,7 @@ where
     ///
     /// Returns an error if retry is required.
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-    pub(crate) fn split_node(
+    pub(super) fn split_node(
         &self,
         key: K,
         value: V,
@@ -359,7 +367,7 @@ where
         full_node_ptr: Ptr<Node<K, V>>,
         full_node: &AtomicArc<Node<K, V>>,
         root_split: bool,
-        async_wait: Option<*mut AsyncWait>,
+        async_wait: Option<NonNull<AsyncWait>>,
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
         let target = full_node_ptr.as_ref().unwrap();
@@ -611,7 +619,8 @@ where
     }
 
     /// Finishes splitting the [`InternalNode`].
-    pub(crate) fn finish_split(&self, barrier: &Barrier) {
+    #[inline]
+    pub(super) fn finish_split(&self, barrier: &Barrier) {
         let (change, _) = self.latch.swap((None, Tag::None), Release);
         self.wait_queue.signal();
         if let Some(change) = change {
@@ -620,7 +629,8 @@ where
     }
 
     /// Commits an on-going structural change recursively.
-    pub(crate) fn commit(&self, barrier: &Barrier) {
+    #[inline]
+    pub(super) fn commit(&self, barrier: &Barrier) {
         // Mark the internal node retired to prevent further locking attempts.
         let (change, _) = self.latch.swap((None, RETIRED), Release);
         self.wait_queue.signal();
@@ -633,7 +643,8 @@ where
     }
 
     /// Rolls back the ongoing split operation recursively.
-    pub(crate) fn rollback(&self, barrier: &Barrier) {
+    #[inline]
+    pub(super) fn rollback(&self, barrier: &Barrier) {
         let (change, _) = self.latch.swap((None, Tag::None), Release);
         self.wait_queue.signal();
         if let Some(change) = change {
@@ -647,7 +658,8 @@ where
     /// Cleans up logically deleted [`LeafNode`] instances in the linked list.
     ///
     /// If the target leaf node does not exist in the sub-tree, returns `false`.
-    pub(crate) fn cleanup_link<'b, Q>(
+    #[inline]
+    pub(super) fn cleanup_link<'b, Q>(
         &self,
         key: &Q,
         traverse_max: bool,
@@ -671,8 +683,10 @@ where
         }
         false
     }
+
     /// Waits for the lock on the [`LeafNode`] to be released.
-    pub(super) fn wait(&self, async_wait: Option<*mut AsyncWait>, barrier: &Barrier) {
+    #[inline]
+    pub(super) fn wait(&self, async_wait: Option<NonNull<AsyncWait>>, barrier: &Barrier) {
         let waiter = || {
             let ptr = self.latch.load(Relaxed, barrier);
             if !ptr.is_null() || ptr.tag() == LOCKED {
@@ -814,7 +828,8 @@ where
     V: Clone + Send + Sync,
 {
     /// Acquires exclusive lock on the [`InternalNode`].
-    pub fn try_lock(
+    #[inline]
+    pub(super) fn try_lock(
         internal_node: &'n InternalNode<K, V>,
         barrier: &'n Barrier,
     ) -> Option<Locker<'n, K, V>> {
@@ -835,6 +850,7 @@ where
     K: Clone + Ord + Send + Sync,
     V: Clone + Send + Sync,
 {
+    #[inline]
     fn drop(&mut self) {
         debug_assert_eq!(self.internal_node.latch.tag(Relaxed), LOCKED);
         self.internal_node.latch.swap((None, Tag::None), Release);

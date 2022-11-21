@@ -4,7 +4,7 @@ use crate::wait_queue::{AsyncWait, WaitQueue};
 
 use std::borrow::Borrow;
 use std::mem::MaybeUninit;
-use std::ptr;
+use std::ptr::{self, NonNull};
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{fence, AtomicU32};
 
@@ -454,7 +454,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     #[inline]
     pub(crate) fn try_lock_or_wait(
         cell: &'b mut Cell<K, V, LOCK_FREE>,
-        async_wait: *mut AsyncWait,
+        async_wait: NonNull<AsyncWait>,
         barrier: &'b Barrier,
     ) -> Result<Option<Locker<'b, K, V, LOCK_FREE>>, ()> {
         let cell_ptr = cell as *mut Cell<K, V, LOCK_FREE>;
@@ -804,7 +804,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
     #[inline]
     pub(crate) fn try_lock_or_wait(
         cell: &'b Cell<K, V, LOCK_FREE>,
-        async_wait: *mut AsyncWait,
+        async_wait: NonNull<AsyncWait>,
         barrier: &'b Barrier,
     ) -> Result<Option<Reader<'b, K, V, LOCK_FREE>>, ()> {
         if let Ok(reader) = Self::try_lock(cell, barrier) {

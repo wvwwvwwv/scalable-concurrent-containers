@@ -183,7 +183,8 @@ where
     V: 'static + Clone + Sync,
 {
     /// Creates a new [`Leaf`].
-    pub fn new() -> Leaf<K, V> {
+    #[inline]
+    pub(super) fn new() -> Leaf<K, V> {
         Leaf {
             entry_array: unsafe { MaybeUninit::uninit().assume_init() },
             link: AtomicArc::null(),
@@ -192,7 +193,8 @@ where
     }
 
     /// Thaws the [`Leaf`].
-    pub fn thaw(&self) -> bool {
+    #[inline]
+    pub(super) fn thaw(&self) -> bool {
         self.metadata
             .fetch_update(Relaxed, Relaxed, |p| {
                 if Dimension::frozen(p) {
@@ -205,12 +207,14 @@ where
     }
 
     /// Returns `true` if the [`Leaf`] has retired.
-    pub fn retired(&self) -> bool {
+    #[inline]
+    pub(super) fn retired(&self) -> bool {
         Dimension::retired(self.metadata.load(Relaxed))
     }
 
     /// Returns a reference to the max key.
-    pub fn max(&self) -> Option<(&K, &V)> {
+    #[inline]
+    pub(super) fn max(&self) -> Option<(&K, &V)> {
         let metadata = self.metadata.load(Acquire);
         let mut max_rank = 0;
         let mut max_index = DIMENSION.num_entries;
@@ -228,7 +232,8 @@ where
     }
 
     /// Inserts a key value pair.
-    pub fn insert(&self, key: K, value: V) -> InsertResult<K, V> {
+    #[inline]
+    pub(super) fn insert(&self, key: K, value: V) -> InsertResult<K, V> {
         let mut metadata = self.metadata.load(Acquire);
         while !Dimension::retired(metadata) {
             if Dimension::frozen(metadata) {
@@ -271,7 +276,12 @@ where
     }
 
     /// Removes the key if the condition is met.
-    pub fn remove_if<Q, F: FnMut(&V) -> bool>(&self, key: &Q, condition: &mut F) -> RemoveResult
+    #[inline]
+    pub(super) fn remove_if<Q, F: FnMut(&V) -> bool>(
+        &self,
+        key: &Q,
+        condition: &mut F,
+    ) -> RemoveResult
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
@@ -354,7 +364,8 @@ where
     }
 
     /// Returns a value associated with the key.
-    pub fn search<Q>(&self, key: &Q) -> Option<&V>
+    #[inline]
+    pub(super) fn search<Q>(&self, key: &Q) -> Option<&V>
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
@@ -364,7 +375,8 @@ where
     }
 
     /// Returns the index and a pointer to the key-value pair that is smaller than the given key.
-    pub fn max_less<Q>(&self, metadata: usize, key: &Q) -> (usize, *const (K, V))
+    #[inline]
+    pub(super) fn max_less<Q>(&self, metadata: usize, key: &Q) -> (usize, *const (K, V))
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
@@ -405,7 +417,8 @@ where
     ///
     /// It additionally returns the current version of its metadata in order for the caller to
     /// validate the sanity of the result.
-    pub fn min_greater_equal<Q>(&self, key: &Q) -> (Option<(&K, &V)>, usize)
+    #[inline]
+    pub(super) fn min_greater_equal<Q>(&self, key: &Q) -> (Option<(&K, &V)>, usize)
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
@@ -442,13 +455,15 @@ where
     }
 
     /// Compares the given metadata value with the current one.
-    pub fn validate(&self, metadata: usize) -> bool {
+    #[inline]
+    pub(super) fn validate(&self, metadata: usize) -> bool {
         // `Relaxed` is sufficient as long as the caller has read-acquired its contents.
         self.metadata.load(Relaxed) == metadata
     }
 
     /// Returns the index and a pointer to the corresponding entry of the next higher ranked entry.
-    pub fn next(&self, index: usize, metadata: usize) -> (usize, *const (K, V)) {
+    #[inline]
+    pub(super) fn next(&self, index: usize, metadata: usize) -> (usize, *const (K, V)) {
         let current_entry_rank = if index < DIMENSION.num_entries {
             DIMENSION.state(metadata, index)
         } else {
@@ -483,7 +498,8 @@ where
     /// Freezes the [`Leaf`] temporarily.
     ///
     /// A frozen [`Leaf`] cannot store more entries, and on-going insertion is cancelled.
-    pub fn freeze(&self) -> bool {
+    #[inline]
+    pub(super) fn freeze(&self) -> bool {
         self.metadata
             .fetch_update(AcqRel, Acquire, |p| {
                 if Dimension::frozen(p) {
@@ -496,7 +512,8 @@ where
     }
 
     /// Freezes the [`Leaf`] and distribute entries to two new leaves.
-    pub fn freeze_and_distribute(
+    #[inline]
+    pub(super) fn freeze_and_distribute(
         &self,
         low_key_leaf: &mut Option<Arc<Leaf<K, V>>>,
         high_key_leaf: &mut Option<Arc<Leaf<K, V>>>,
@@ -679,6 +696,7 @@ where
     K: 'static + Clone + Ord + Sync,
     V: 'static + Clone + Sync,
 {
+    #[inline]
     fn drop(&mut self) {
         if !IsCopy::<(K, V)>::VALUE {
             let metadata = self.metadata.load(Acquire);
@@ -698,6 +716,7 @@ where
     K: 'static + Clone + Ord + Sync,
     V: 'static + Clone + Sync,
 {
+    #[inline]
     fn link_ref(&self) -> &AtomicArc<Leaf<K, V>> {
         &self.link
     }
@@ -721,7 +740,8 @@ where
     V: 'static + Clone + Sync,
 {
     /// Creates a new [`Scanner`].
-    pub fn new(leaf: &'l Leaf<K, V>) -> Scanner<'l, K, V> {
+    #[inline]
+    pub(super) fn new(leaf: &'l Leaf<K, V>) -> Scanner<'l, K, V> {
         Scanner {
             leaf,
             metadata: leaf.metadata.load(Acquire),
@@ -732,7 +752,8 @@ where
     /// Returns a [`Scanner`] pointing to the max-less entry if there is one.
     ///
     /// If there is no key that is smaller than the given key, it returns a default [`Scanner`].
-    pub fn max_less<Q>(leaf: &'l Leaf<K, V>, key: &Q) -> Option<Scanner<'l, K, V>>
+    #[inline]
+    pub(super) fn max_less<Q>(leaf: &'l Leaf<K, V>, key: &Q) -> Option<Scanner<'l, K, V>>
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
@@ -752,12 +773,14 @@ where
     }
 
     /// Returns the metadata that the [`Scanner`] is currently using.
-    pub fn metadata(&self) -> usize {
+    #[inline]
+    pub(super) fn metadata(&self) -> usize {
         self.metadata
     }
 
     /// Returns a reference to the entry that the scanner is currently pointing to
-    pub fn get(&self) -> Option<(&'l K, &'l V)> {
+    #[inline]
+    pub(super) fn get(&self) -> Option<(&'l K, &'l V)> {
         if self.entry_ptr.is_null() {
             return None;
         }
@@ -765,12 +788,14 @@ where
     }
 
     /// Returns the maximum key entry.
-    pub fn max_entry(&self) -> Option<(&'l K, &'l V)> {
+    #[inline]
+    pub(super) fn max_entry(&self) -> Option<(&'l K, &'l V)> {
         self.leaf.max()
     }
 
     /// Traverses the linked list.
-    pub fn jump<'b, Q>(
+    #[inline]
+    pub(super) fn jump<'b, Q>(
         &self,
         min_allowed_key: Option<&Q>,
         barrier: &'b Barrier,
@@ -822,6 +847,8 @@ where
     V: Clone + Sync,
 {
     type Item = (&'l K, &'l V);
+
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         self.proceed();
         self.get()

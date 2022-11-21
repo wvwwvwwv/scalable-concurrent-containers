@@ -1,6 +1,6 @@
 use std::future::Future;
 use std::pin::Pin;
-use std::ptr::addr_of_mut;
+use std::ptr::{addr_of_mut, NonNull};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{AcqRel, Relaxed};
 use std::sync::{Condvar, Mutex};
@@ -51,10 +51,10 @@ impl WaitQueue {
     #[inline]
     pub(crate) fn push_async_entry<T, F: FnOnce() -> Result<T, ()>>(
         &self,
-        async_wait: *mut AsyncWait,
+        mut async_wait: NonNull<AsyncWait>,
         f: F,
     ) -> Result<T, ()> {
-        let async_wait_mut = unsafe { &mut *async_wait };
+        let async_wait_mut = unsafe { async_wait.as_mut() };
         debug_assert!(async_wait_mut.mutex.is_none());
 
         let mut current = self.wait_queue.load(Relaxed);
@@ -63,7 +63,7 @@ impl WaitQueue {
 
         while let Err(actual) = self.wait_queue.compare_exchange(
             current,
-            (async_wait as usize) | ASYNC,
+            (async_wait.as_ptr() as usize) | ASYNC,
             AcqRel,
             Relaxed,
         ) {
