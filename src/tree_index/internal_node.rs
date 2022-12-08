@@ -422,18 +422,12 @@ where
                     Arc::new(Node::new_internal_node()),
                     Arc::new(Node::new_internal_node()),
                 );
-                let low_key_nodes =
-                    if let Type::Internal(low_key_internal_node) = &internal_nodes.0.node() {
-                        low_key_internal_node
-                    } else {
-                        unreachable!()
-                    };
-                let high_key_nodes =
-                    if let Type::Internal(high_key_internal_node) = &internal_nodes.1.node() {
-                        high_key_internal_node
-                    } else {
-                        unreachable!()
-                    };
+                let Type::Internal(low_key_nodes) = &internal_nodes.0.node() else {
+                    unreachable!()
+                };
+                let Type::Internal(high_key_nodes) = &internal_nodes.1.node() else {
+                    unreachable!()
+                };
 
                 // Builds a list of valid nodes.
                 #[allow(clippy::type_complexity)]

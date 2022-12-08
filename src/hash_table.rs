@@ -336,8 +336,8 @@ where
     /// otherwise `None` is returned.
     #[allow(clippy::type_complexity)]
     #[inline]
-    fn acquire_entry<'h, 'b, Q>(
-        &'h self,
+    fn acquire_entry<'b, Q>(
+        &self,
         key: &Q,
         hash: u64,
         partial_hash: u8,
@@ -422,8 +422,8 @@ where
     /// Acquires a [`Locker`] and [`EntryPtr`] corresponding to the key in the old array of the
     /// [`HashTable`].
     #[allow(clippy::type_complexity)]
-    fn acquire_old_entry<'h, 'b, Q>(
-        &'h self,
+    fn acquire_old_entry<'b, Q>(
+        &self,
         current_array: &CellArray<K, V, LOCK_FREE>,
         key: &Q,
         hash: u64,

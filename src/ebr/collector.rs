@@ -108,13 +108,14 @@ impl Collector {
 
         if self.num_readers == 1 {
             if self.next_epoch_update == 0 {
-                self.next_epoch_update = Self::CADENCE;
                 if self.num_instances != 0 || Tag::into_tag(ANCHOR.load(Relaxed)) != Tag::First {
                     self.try_scan();
-                    if self.num_instances != 0 {
-                        self.next_epoch_update = self.next_epoch_update.min(64);
-                    }
                 }
+                self.next_epoch_update = if self.num_instances == 0 {
+                    Self::CADENCE
+                } else {
+                    Self::CADENCE / 4
+                };
             } else {
                 self.next_epoch_update = self.next_epoch_update.saturating_sub(1);
             }
@@ -280,29 +281,32 @@ impl Collector {
     /// Returns the [`Collector`] attached to the current thread.
     #[inline]
     pub(super) fn current() -> *mut Collector {
-        TLS.with(|tls| tls.collector_ptr)
+        TLS.with(|tls| {
+            let mut collector_ptr = tls.collector_ptr.load(Relaxed);
+            if collector_ptr.is_null() {
+                collector_ptr = Collector::alloc();
+                tls.collector_ptr.store(collector_ptr, Relaxed);
+            }
+            collector_ptr
+        })
     }
 
-    /// Passes its garbage instances to a free flowing [`Collector`].
+    /// Passes its garbage instances to other threads.
     #[inline]
     pub(super) fn pass_garbage() -> bool {
         TLS.with(|tls| {
-            let collector = unsafe { &mut (*tls.collector_ptr) };
-            if collector.num_readers == 0 {
-                if collector.num_instances != 0 {
-                    let new_collector = unsafe { &mut (*Collector::alloc()) };
-                    new_collector.num_instances = collector.num_instances;
-                    new_collector.previous_instance_link = collector.previous_instance_link.take();
-                    new_collector.current_instance_link = collector.current_instance_link.take();
-                    new_collector.next_instance_link = collector.next_instance_link.take();
-                    new_collector.state.fetch_or(Collector::INVALID, Release);
-                    mark_gc_enforced();
-                    collector.num_instances = 0;
+            let collector_ptr = tls.collector_ptr.load(Relaxed);
+            if let Some(collector) = unsafe { collector_ptr.as_mut() } {
+                if collector.num_readers != 0 {
+                    return false;
                 }
-                true
-            } else {
-                false
+                if collector.num_instances != 0 {
+                    collector.state.fetch_or(Collector::INVALID, Release);
+                    tls.collector_ptr.store(ptr::null_mut(), Relaxed);
+                    mark_scan_enforced();
+                }
             }
+            true
         })
     }
 }
@@ -335,20 +339,20 @@ static ANCHOR: AtomicPtr<Collector> = AtomicPtr::new(ptr::null_mut());
 
 /// A wrapper of [`Collector`] for a thread to properly clean up collected instances.
 struct ThreadLocal {
-    collector_ptr: *mut Collector,
+    collector_ptr: AtomicPtr<Collector>,
 }
 
 impl Drop for ThreadLocal {
     fn drop(&mut self) {
-        if let Some(collector) = unsafe { self.collector_ptr.as_mut() } {
+        if let Some(collector) = unsafe { self.collector_ptr.load(Relaxed).as_mut() } {
             collector.state.fetch_or(Collector::INVALID, Release);
-            mark_gc_enforced();
+            mark_scan_enforced();
         }
     }
 }
 
 /// Marks `ANCHOR` that there is a potentially unreachable `Collector`.
-fn mark_gc_enforced() {
+fn mark_scan_enforced() {
     // `Tag::Second` indicates that there is a garbage `Collector`.
     let _result = ANCHOR.fetch_update(Release, Relaxed, |p| {
         let new_tag = match Tag::into_tag(p) {
@@ -361,5 +365,5 @@ fn mark_gc_enforced() {
 }
 
 thread_local! {
-    static TLS: ThreadLocal = ThreadLocal { collector_ptr: Collector::alloc() };
+    static TLS: ThreadLocal = ThreadLocal { collector_ptr: AtomicPtr::default() };
 }

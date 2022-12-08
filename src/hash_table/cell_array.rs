@@ -40,8 +40,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             let cell_array_ptr = alloc_zeroed(cell_array_layout);
             assert!(
                 !cell_array_ptr.is_null(),
-                "memory allocation failure: {} bytes",
-                cell_array_allocation_size
+                "memory allocation failure: {cell_array_allocation_size} bytes",
             );
             let cell_array_ptr_offset = cell_array_ptr as usize % cell_size.next_power_of_two();
             assert!(cell_array_ptr_offset + cell_size * array_len <= cell_array_allocation_size,);

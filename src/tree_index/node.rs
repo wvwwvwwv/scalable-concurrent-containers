@@ -178,10 +178,7 @@ where
                 None,
                 barrier,
             );
-            let (key, value) = match result {
-                Ok(InsertResult::Retry(k, v)) => (k, v),
-                _ => unreachable!(),
-            };
+            let Ok(InsertResult::Retry(key, value)) = result else { unreachable!() };
 
             // Updates the pointer before unlocking the root.
             let new_root = Arc::new(new_root);

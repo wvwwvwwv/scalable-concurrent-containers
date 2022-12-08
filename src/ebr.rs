@@ -106,12 +106,12 @@ mod ref_counted;
 /// its garbage instances to a free flowing garbage container that can be cleaned up by other
 /// threads.
 ///
-/// Note that the method allocates heap memory if the thread has garbage instances.
-///
 /// # Examples
 ///
 /// ```
 /// use scc::ebr::{suspend, Arc, Barrier};
+///
+/// assert!(suspend());
 ///
 /// {
 ///     let arc: Arc<usize> = Arc::new(47);
