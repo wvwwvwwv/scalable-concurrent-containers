@@ -1,5 +1,9 @@
 # Changelog
 
+0.12.0
+
+* More aggressive EBR garbage collection.
+
 0.11.5
 
 * Fix [#84](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/84) completely.

@@ -51,12 +51,10 @@ impl Collector {
             unsafe {
                 (*ptr).next_collector = Tag::unset_tag(current) as *mut Collector;
             }
-            let new = if let Tag::First = Tag::into_tag(current) {
-                // It keeps the tag intact.
-                Tag::update_tag(ptr, Tag::First) as *mut Collector
-            } else {
-                ptr
-            };
+
+            // It keeps the tag intact.
+            let tag = Tag::into_tag(current);
+            let new = Tag::update_tag(ptr, tag) as *mut Collector;
             if let Err(actual) = ANCHOR.compare_exchange(current, new, Release, Relaxed) {
                 current = actual;
             } else {
@@ -111,11 +109,10 @@ impl Collector {
         if self.num_readers == 1 {
             if self.next_epoch_update == 0 {
                 self.next_epoch_update = Self::CADENCE;
-                if self.num_instances != 0 && Tag::into_tag(ANCHOR.load(Relaxed)) != Tag::First {
+                if self.num_instances != 0 || Tag::into_tag(ANCHOR.load(Relaxed)) != Tag::First {
                     self.try_scan();
                     if self.num_instances != 0 {
-                        // If garbage instances remain, the cadence is reduced to a quarter.
-                        self.next_epoch_update /= 4;
+                        self.next_epoch_update = self.next_epoch_update.min(64);
                     }
                 }
             } else {
@@ -154,21 +151,30 @@ impl Collector {
 
         // Only one thread that acquires the anchor lock is allowed to scan the thread-local
         // collectors.
-        let lock_result = ANCHOR.fetch_update(Acquire, Acquire, |p| {
-            if Tag::into_tag(p) == Tag::First {
-                None
-            } else {
-                Some(Tag::update_tag(p, Tag::First) as *mut Collector)
-            }
-        });
+        let lock_result = ANCHOR
+            .fetch_update(Acquire, Acquire, |p| {
+                let tag = Tag::into_tag(p);
+                if tag == Tag::First || tag == Tag::Both {
+                    None
+                } else {
+                    Some(Tag::update_tag(p, Tag::First) as *mut Collector)
+                }
+            })
+            .map(|p| Tag::unset_tag(p) as *mut Collector);
         if let Ok(mut collector_ptr) = lock_result {
             #[allow(clippy::blocks_in_if_conditions)]
             let _scope = scopeguard::guard(&ANCHOR, |a| {
                 // Unlock the anchor.
                 while a
                     .fetch_update(Release, Relaxed, |p| {
-                        debug_assert!(Tag::into_tag(p) == Tag::First);
-                        Some(Tag::unset_tag(p) as *mut Collector)
+                        let tag = Tag::into_tag(p);
+                        debug_assert!(tag == Tag::First || tag == Tag::Both);
+                        let new_tag = if tag == Tag::Both {
+                            Tag::Second
+                        } else {
+                            Tag::None
+                        };
+                        Some(Tag::update_tag(p, new_tag) as *mut Collector)
                     })
                     .is_err()
                 {}
@@ -186,11 +192,12 @@ impl Collector {
                             || {
                                 ANCHOR
                                     .fetch_update(Release, Relaxed, |p| {
-                                        debug_assert!(Tag::into_tag(p) == Tag::First);
+                                        let tag = Tag::into_tag(p);
+                                        debug_assert!(tag == Tag::First || tag == Tag::Both);
                                         if ptr::eq(Tag::unset_tag(p), collector_ptr) {
                                             Some(Tag::update_tag(
                                                 other_collector.next_collector,
-                                                Tag::First,
+                                                tag,
                                             )
                                                 as *mut Collector)
                                         } else {
@@ -289,6 +296,7 @@ impl Collector {
                     new_collector.current_instance_link = collector.current_instance_link.take();
                     new_collector.next_instance_link = collector.next_instance_link.take();
                     new_collector.state.fetch_or(Collector::INVALID, Release);
+                    mark_gc_enforced();
                     collector.num_instances = 0;
                 }
                 true
@@ -334,8 +342,22 @@ impl Drop for ThreadLocal {
     fn drop(&mut self) {
         if let Some(collector) = unsafe { self.collector_ptr.as_mut() } {
             collector.state.fetch_or(Collector::INVALID, Release);
+            mark_gc_enforced();
         }
     }
+}
+
+/// Marks `ANCHOR` that there is a potentially unreachable `Collector`.
+fn mark_gc_enforced() {
+    // `Tag::Second` indicates that there is a garbage `Collector`.
+    let _result = ANCHOR.fetch_update(Release, Relaxed, |p| {
+        let new_tag = match Tag::into_tag(p) {
+            Tag::None => Tag::Second,
+            Tag::First => Tag::Both,
+            Tag::Second | Tag::Both => return None,
+        };
+        Some(Tag::update_tag(p, new_tag) as *mut _)
+    });
 }
 
 thread_local! {
