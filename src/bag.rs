@@ -1,6 +1,7 @@
 //! [`Bag`] is a lock-free concurrent unordered set.
 //!
 //! Work-in-progress.
+#![allow(dead_code)]
 
 use super::Queue;
 
