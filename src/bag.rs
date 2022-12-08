@@ -27,7 +27,7 @@ impl<T: 'static> Bag<T> {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use scc::Bag;
     ///
     /// let bag: Bag<usize> = Bag::default();
@@ -43,7 +43,7 @@ impl<T: 'static> Bag<T> {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use scc::Bag;
     ///
     /// let bag: Bag<usize> = Bag::default();
@@ -65,7 +65,7 @@ impl<T: 'static> Bag<T> {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use scc::Bag;
     ///
     /// let bag: Bag<usize> = Bag::default();
