@@ -1,6 +1,6 @@
 //! [`HashMap`] is a concurrent and asynchronous hash map.
 
-use super::ebr::{Arc, AtomicArc, Barrier};
+use super::ebr::{Arc, AtomicArc, Barrier, Tag};
 use super::hash_table::cell::{EntryPtr, Locker, Reader};
 use super::hash_table::cell_array::CellArray;
 use super::hash_table::HashTable;
@@ -1216,6 +1216,25 @@ where
             resize_mutex: AtomicU8::new(0),
             build_hasher: RandomState::new(),
         }
+    }
+}
+
+impl<K, V, H> Drop for HashMap<K, V, H>
+where
+    K: 'static + Eq + Hash + Sync,
+    V: 'static + Sync,
+    H: BuildHasher,
+{
+    #[inline]
+    fn drop(&mut self) {
+        self.array
+            .swap((None, Tag::None), Relaxed)
+            .0
+            .map(|a| unsafe {
+                // The entire array does not need to wait for an epoch change as no references will
+                // remain outside the lifetime of the `HashMap`.
+                a.release_drop_in_place()
+            });
     }
 }
 

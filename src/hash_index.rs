@@ -877,6 +877,7 @@ where
 {
     type Item = (&'b K, &'b V);
 
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         let mut array = if let Some(array) = self.current_array.as_ref().copied() {
             array

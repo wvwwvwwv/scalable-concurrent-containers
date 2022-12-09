@@ -398,6 +398,7 @@ impl<T: 'static> Entry<T> {
     }
 
     /// Extracts the inner instance of `T`.
+    #[inline]
     pub(super) unsafe fn take_inner(&mut self) -> T {
         self.instance.take().unwrap_unchecked()
     }
@@ -412,6 +413,7 @@ impl<T: 'static> Entry<T> {
 }
 
 impl<T: 'static> AsRef<T> for Entry<T> {
+    #[inline]
     fn as_ref(&self) -> &T {
         unsafe { self.instance.as_ref().unwrap_unchecked() }
     }
@@ -474,6 +476,7 @@ impl<T: 'static + Display> Display for Entry<T> {
 impl<T: Eq + 'static> Eq for Entry<T> {}
 
 impl<T: PartialEq + 'static> PartialEq for Entry<T> {
+    #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.instance == other.instance
     }

@@ -158,6 +158,7 @@ impl<'b, T> Ptr<'b, T> {
     /// let ptr_with_tag = ptr.with_tag(Tag::First);
     /// assert_eq!(ptr_with_tag.tag(), Tag::First);
     /// ```
+    #[inline]
     #[must_use]
     pub fn with_tag(self, tag: Tag) -> Ptr<'b, T> {
         Ptr::from(Tag::update_tag(self.instance_ptr, tag))
@@ -177,8 +178,8 @@ impl<'b, T> Ptr<'b, T> {
     /// let ptr_without_tag = ptr.without_tag();
     /// assert_eq!(ptr_without_tag.tag(), Tag::None);
     /// ```
-    #[must_use]
     #[inline]
+    #[must_use]
     pub fn without_tag(self) -> Ptr<'b, T> {
         Ptr::from(Tag::unset_tag(self.instance_ptr))
     }
@@ -201,8 +202,8 @@ impl<'b, T> Ptr<'b, T> {
     ///
     /// assert!(ptr.get_arc().is_none());
     /// ```
-    #[must_use]
     #[inline]
+    #[must_use]
     pub fn get_arc(self) -> Option<Arc<T>> {
         unsafe {
             if let Some(ptr) = NonNull::new(Tag::unset_tag(self.instance_ptr) as *mut RefCounted<T>)

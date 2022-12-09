@@ -68,6 +68,7 @@ where
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     /// ```
+    #[inline]
     #[must_use]
     pub fn new() -> TreeIndex<K, V> {
         TreeIndex {
@@ -632,6 +633,7 @@ where
     K: 'static + Clone + Ord + Send + Sync,
     V: 'static + Clone + Send + Sync,
 {
+    #[inline]
     fn new(root: &'t AtomicArc<Node<K, V>>, barrier: &'b Barrier) -> Visitor<'t, 'b, K, V> {
         Visitor::<'t, 'b, K, V> {
             root,
@@ -647,6 +649,8 @@ where
     V: 'static + Clone + Send + Sync,
 {
     type Item = (&'b K, &'b V);
+
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         // Starts scanning.
         if self.leaf_scanner.is_none() {
@@ -710,6 +714,7 @@ where
     V: 'static + Clone + Send + Sync,
     R: RangeBounds<K>,
 {
+    #[inline]
     fn new(
         root: &'t AtomicArc<Node<K, V>>,
         range: R,
@@ -725,6 +730,7 @@ where
         }
     }
 
+    #[inline]
     fn next_unbounded(&mut self) -> Option<(&'b K, &'b V)> {
         // Start scanning.
         if self.leaf_scanner.is_none() {
@@ -808,6 +814,8 @@ where
     R: RangeBounds<K>,
 {
     type Item = (&'b K, &'b V);
+
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         while let Some((key_ref, value_ref)) = self.next_unbounded() {
             if self.check_lower_bound {

@@ -41,8 +41,8 @@ impl<T: 'static> AtomicArc<T> {
     /// let arc: Arc<usize> = Arc::new(10);
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::from(arc);
     /// ```
-    #[must_use]
     #[inline]
+    #[must_use]
     pub fn from(arc: Arc<T>) -> AtomicArc<T> {
         let ptr = arc.get_underlying_ptr();
         forget(arc);
@@ -60,8 +60,8 @@ impl<T: 'static> AtomicArc<T> {
     ///
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::null();
     /// ```
-    #[must_use]
     #[inline]
+    #[must_use]
     pub fn null() -> AtomicArc<T> {
         AtomicArc {
             instance_ptr: AtomicPtr::default(),
