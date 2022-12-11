@@ -1,13 +1,12 @@
 use super::cell::{Cell, DataBlock, EntryPtr, Locker, CELL_LEN};
 
-use crate::check_copy::{IsCopy, NotCopy};
 use crate::ebr::{AtomicArc, Barrier, Ptr, Tag};
 use crate::wait_queue::AsyncWait;
 
 use std::alloc::{alloc, alloc_zeroed, dealloc, Layout};
 use std::borrow::Borrow;
 use std::hash::Hash;
-use std::mem::{align_of, size_of};
+use std::mem::{align_of, needs_drop, size_of};
 use std::ptr::NonNull;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
@@ -357,7 +356,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
 
 impl<K: Eq, V, const LOCK_FREE: bool> Drop for CellArray<K, V, LOCK_FREE> {
     fn drop(&mut self) {
-        let num_cleared_cells = if LOCK_FREE && !IsCopy::<(K, V)>::VALUE {
+        let num_cleared_cells = if LOCK_FREE && needs_drop::<(K, V)>() {
             // No instances are dropped when the array is reachable.
             0
         } else {

@@ -1,5 +1,9 @@
 # Changelog
 
+0.12.1
+
+* Proper optimization for `T: Copy` and `!needs_drop::<T>()`.
+
 0.12.0
 
 * More aggressive EBR garbage collection.

@@ -1,9 +1,8 @@
-use crate::check_copy::{IsCopy, NotCopy};
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 use crate::wait_queue::{AsyncWait, WaitQueue};
 
 use std::borrow::Borrow;
-use std::mem::MaybeUninit;
+use std::mem::{needs_drop, MaybeUninit};
 use std::ptr::{self, NonNull};
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{fence, AtomicU32};
@@ -118,7 +117,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
                 link.release(barrier);
             }
         }
-        if !IsCopy::<(K, V)>::VALUE && self.metadata.occupied_bitmap != 0 {
+        if needs_drop::<(K, V)>() && self.metadata.occupied_bitmap != 0 {
             let mut bitmap = self.metadata.occupied_bitmap;
             let mut index = bitmap.trailing_zeros();
             while index != 32 {
@@ -911,7 +910,7 @@ impl<K: 'static + Eq, V: 'static, const LEN: usize> Linked<K, V, LEN> {
 
 impl<K: 'static + Eq, V: 'static, const LEN: usize> Drop for Linked<K, V, LEN> {
     fn drop(&mut self) {
-        if !IsCopy::<(K, V)>::VALUE {
+        if needs_drop::<(K, V)>() {
             let mut index = self.metadata.occupied_bitmap.trailing_zeros();
             while index != 32 {
                 let entry_mut_ptr = self.data_array[index as usize].as_mut_ptr();

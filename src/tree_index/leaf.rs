@@ -1,10 +1,9 @@
-use crate::check_copy::{IsCopy, NotCopy};
 use crate::ebr::{Arc, AtomicArc, Barrier};
 use crate::LinkedList;
 
 use std::borrow::Borrow;
 use std::cmp::Ordering;
-use std::mem::{size_of, MaybeUninit};
+use std::mem::{needs_drop, size_of, MaybeUninit};
 use std::ptr::{self, addr_of};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
@@ -698,7 +697,7 @@ where
 {
     #[inline]
     fn drop(&mut self) {
-        if !IsCopy::<(K, V)>::VALUE {
+        if needs_drop::<(K, V)>() {
             let metadata = self.metadata.load(Acquire);
             for i in 0..DIMENSION.num_entries {
                 let rank = DIMENSION.state(metadata, i);
