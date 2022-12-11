@@ -346,13 +346,13 @@ where
     ///
     /// Returns `true` if no old array is attached to the current one.
     #[inline]
-    fn move_entry<'b, Q>(
+    fn move_entry<Q>(
         &self,
         current_array: &CellArray<K, V, LOCK_FREE>,
         old_array: &CellArray<K, V, LOCK_FREE>,
         hash: u64,
         async_wait: Option<NonNull<AsyncWait>>,
-        barrier: &'b Barrier,
+        barrier: &Barrier,
     ) -> Result<bool, ()>
     where
         K: Borrow<Q>,
