@@ -1,5 +1,7 @@
 //! [`HashMap`] is a concurrent and asynchronous hash map.
 
+use crate::hash_table::cell::Cell;
+
 use super::ebr::{Arc, AtomicArc, Barrier, Tag};
 use super::hash_table::cell::{EntryPtr, Locker, Reader};
 use super::hash_table::cell_array::CellArray;
@@ -190,10 +192,9 @@ where
     /// ```
     #[inline]
     pub fn insert(&self, key: K, val: V) -> Result<(), (K, V)> {
-        let (hash, partial_hash) = self.hash(&key);
-        if let Ok(Some((k, v))) =
-            self.insert_entry(key, val, hash, partial_hash, None, &Barrier::new())
-        {
+        let barrier = Barrier::new();
+        let hash = self.hash(key.borrow());
+        if let Ok(Some((k, v))) = self.insert_entry(key, val, hash, None, &barrier) {
             Err((k, v))
         } else {
             Ok(())
@@ -218,7 +219,7 @@ where
     /// ```
     #[inline]
     pub async fn insert_async(&self, mut key: K, mut val: V) -> Result<(), (K, V)> {
-        let (hash, partial_hash) = self.hash(&key);
+        let hash = self.hash(key.borrow());
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
@@ -226,7 +227,6 @@ where
                 key,
                 val,
                 hash,
-                partial_hash,
                 NonNull::new(async_wait_pinned.mut_ptr()),
                 &Barrier::new(),
             ) {
@@ -264,10 +264,9 @@ where
         Q: Eq + Hash + ?Sized,
         F: FnOnce(&K, &mut V) -> R,
     {
-        let (hash, partial_hash) = self.hash(key);
         let barrier = Barrier::new();
-        let (_, mut locker, data_block, mut entry_ptr) = self
-            .acquire_entry::<Q>(key, hash, partial_hash, None, &barrier)
+        let (mut locker, data_block, mut entry_ptr) = self
+            .acquire_entry::<Q>(key, self.hash(key.borrow()), None, &barrier)
             .ok()?;
         if entry_ptr.is_valid() {
             let (k, v) = entry_ptr.get_mut(data_block, &mut locker);
@@ -298,14 +297,13 @@ where
         Q: Eq + Hash + ?Sized,
         F: FnOnce(&K, &mut V) -> R,
     {
-        let (hash, partial_hash) = self.hash(key);
+        let hash = self.hash(key);
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if let Ok((_, mut locker, data_block, mut entry_ptr)) = self.acquire_entry::<Q>(
+            if let Ok((mut locker, data_block, mut entry_ptr)) = self.acquire_entry::<Q>(
                 key,
                 hash,
-                partial_hash,
                 NonNull::new(async_wait_pinned.mut_ptr()),
                 &Barrier::new(),
             ) {
@@ -340,17 +338,23 @@ where
         constructor: FI,
         updater: FU,
     ) {
-        let (hash, partial_hash) = self.hash(&key);
         let barrier = Barrier::new();
-        if let Ok((_, mut locker, data_block, mut entry_ptr)) =
-            self.acquire_entry::<_>(&key, hash, partial_hash, None, &barrier)
+        let hash = self.hash(key.borrow());
+        if let Ok((mut locker, data_block, mut entry_ptr)) =
+            self.acquire_entry::<_>(&key, hash, None, &barrier)
         {
             if entry_ptr.is_valid() {
                 let (k, v) = entry_ptr.get_mut(data_block, &mut locker);
                 updater(k, v);
                 return;
             }
-            locker.insert(data_block, key, constructor(), partial_hash, &barrier);
+            locker.insert(
+                data_block,
+                key,
+                constructor(),
+                Cell::<K, V, false>::partial_hash(hash),
+                &barrier,
+            );
         };
     }
 
@@ -374,16 +378,15 @@ where
         constructor: FI,
         updater: FU,
     ) {
-        let (hash, partial_hash) = self.hash(&key);
+        let hash = self.hash(key.borrow());
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             {
                 let barrier = Barrier::new();
-                if let Ok((_, mut locker, data_block, mut entry_ptr)) = self.acquire_entry::<_>(
+                if let Ok((mut locker, data_block, mut entry_ptr)) = self.acquire_entry::<_>(
                     &key,
                     hash,
-                    partial_hash,
                     NonNull::new(async_wait_pinned.mut_ptr()),
                     &barrier,
                 ) {
@@ -391,7 +394,13 @@ where
                         let (k, v) = entry_ptr.get_mut(data_block, &mut locker);
                         updater(k, v);
                     } else {
-                        locker.insert(data_block, key, constructor(), partial_hash, &barrier);
+                        locker.insert(
+                            data_block,
+                            key,
+                            constructor(),
+                            Cell::<K, V, false>::partial_hash(hash),
+                            &barrier,
+                        );
                     }
                     return;
                 };
@@ -463,11 +472,9 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let (hash, partial_hash) = self.hash(key);
         self.remove_entry::<Q, _>(
             key,
-            hash,
-            partial_hash,
+            self.hash(key.borrow()),
             &mut condition,
             None,
             &Barrier::new(),
@@ -499,14 +506,13 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let (hash, partial_hash) = self.hash(key);
+        let hash = self.hash(key);
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             if let Ok(result) = self.remove_entry::<Q, F>(
                 key,
                 hash,
-                partial_hash,
                 &mut condition,
                 NonNull::new(async_wait_pinned.mut_ptr()),
                 &Barrier::new(),
@@ -538,8 +544,7 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let (hash, partial_hash) = self.hash(key);
-        self.read_entry::<Q, R, F>(key, hash, partial_hash, &mut reader, None, &Barrier::new())
+        self.read_entry::<Q, R, F>(key, self.hash(key), &mut reader, None, &Barrier::new())
             .ok()
             .and_then(|r| r)
     }
@@ -564,14 +569,13 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let (hash, partial_hash) = self.hash(key);
+        let hash = self.hash(key);
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             if let Ok(result) = self.read_entry::<Q, R, _>(
                 key,
                 hash,
-                partial_hash,
                 &mut reader,
                 NonNull::new(async_wait_pinned.mut_ptr()),
                 &Barrier::new(),

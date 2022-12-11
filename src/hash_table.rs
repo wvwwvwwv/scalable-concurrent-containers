@@ -13,6 +13,8 @@ use std::ptr::{self, NonNull};
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
+use self::cell::Cell;
+
 /// `HashTable` defines common functions for hash table implementations.
 pub(super) trait HashTable<K, V, H, const LOCK_FREE: bool>
 where
@@ -28,15 +30,14 @@ where
 
     /// Returns the hash value of the given key.
     #[inline]
-    fn hash<Q>(&self, key: &Q) -> (u64, u8)
+    fn hash<Q>(&self, key: &Q) -> u64
     where
         K: Borrow<Q>,
         Q: Hash + ?Sized,
     {
         let mut h = self.hasher().build_hasher();
         key.hash(&mut h);
-        let hash = h.finish();
-        (hash, (hash & ((1 << 8) - 1)) as u8)
+        h.finish()
     }
 
     /// Returns a reference to its [`BuildHasher`].
@@ -136,16 +137,21 @@ where
         key: K,
         val: V,
         hash: u64,
-        partial_hash: u8,
         async_wait: Option<NonNull<AsyncWait>>,
         barrier: &Barrier,
     ) -> Result<Option<(K, V)>, (K, V)> {
-        match self.acquire_entry::<_>(&key, hash, partial_hash, async_wait, barrier) {
-            Ok((_, mut locker, data_block, entry_ptr)) => {
+        match self.acquire_entry::<_>(&key, hash, async_wait, barrier) {
+            Ok((mut locker, data_block, entry_ptr)) => {
                 if entry_ptr.is_valid() {
                     return Ok(Some((key, val)));
                 }
-                locker.insert(data_block, key, val, partial_hash, barrier);
+                locker.insert(
+                    data_block,
+                    key,
+                    val,
+                    Cell::<K, V, LOCK_FREE>::partial_hash(hash),
+                    barrier,
+                );
                 Ok(None)
             }
             Err(_) => Err((key, val)),
@@ -158,7 +164,6 @@ where
         &self,
         key: &Q,
         hash: u64,
-        partial_hash: u8,
         read_op: &mut F,
         async_wait: Option<NonNull<AsyncWait>>,
         barrier: &'b Barrier,
@@ -169,29 +174,16 @@ where
     {
         let mut current_array = self.current_array_unchecked(barrier);
         loop {
-            if !current_array.old_array(barrier).is_null() {
-                if let Some(result) = self.read_old_entry(
-                    current_array,
-                    key,
-                    hash,
-                    partial_hash,
-                    read_op,
-                    async_wait,
-                    barrier,
-                )? {
-                    return Ok(Some(result));
-                }
-            }
+            if let Some(old_array) = current_array.old_array(barrier).as_ref() {
+                self.move_entry(current_array, old_array, hash, async_wait, barrier)?;
+            };
 
             let cell_index = current_array.calculate_cell_index(hash);
             let cell = current_array.cell(cell_index);
             if LOCK_FREE {
-                if let Some(entry) = cell.search(
-                    current_array.data_block(cell_index),
-                    key,
-                    partial_hash,
-                    barrier,
-                ) {
+                if let Some(entry) =
+                    cell.search(current_array.data_block(cell_index), key, hash, barrier)
+                {
                     return Ok(Some(read_op(&entry.0, &entry.1)));
                 }
             } else {
@@ -204,7 +196,7 @@ where
                     if let Some((key, value)) = reader.cell().search(
                         current_array.data_block(cell_index),
                         key,
-                        partial_hash,
+                        hash,
                         barrier,
                     ) {
                         return Ok(Some(read_op(key, value)));
@@ -224,67 +216,12 @@ where
         Ok(None)
     }
 
-    /// Reads an entry in the old array in the [`HashTable`].
-    #[allow(clippy::too_many_arguments)]
-    fn read_old_entry<'b, Q, R, F: FnMut(&'b K, &'b V) -> R>(
-        &self,
-        current_array: &CellArray<K, V, LOCK_FREE>,
-        key: &Q,
-        hash: u64,
-        partial_hash: u8,
-        read_op: &mut F,
-        async_wait: Option<NonNull<AsyncWait>>,
-        barrier: &'b Barrier,
-    ) -> Result<Option<R>, ()>
-    where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
-    {
-        if let Some(old_array) = current_array.old_array(barrier).as_ref() {
-            if !current_array.partial_rehash::<Q, _, _>(
-                |key| self.hash(key),
-                Self::copier,
-                async_wait,
-                barrier,
-            )? {
-                let cell_index = old_array.calculate_cell_index(hash);
-                let cell = old_array.cell(cell_index);
-                if LOCK_FREE {
-                    if let Some(entry) =
-                        cell.search(old_array.data_block(cell_index), key, partial_hash, barrier)
-                    {
-                        return Ok(Some(read_op(&entry.0, &entry.1)));
-                    }
-                } else {
-                    let lock_result = if let Some(&async_wait) = async_wait.as_ref() {
-                        Reader::try_lock_or_wait(cell, async_wait, barrier)?
-                    } else {
-                        Reader::lock(cell, barrier)
-                    };
-                    if let Some(reader) = lock_result {
-                        if let Some((key, value)) = reader.cell().search(
-                            old_array.data_block(cell_index),
-                            key,
-                            partial_hash,
-                            barrier,
-                        ) {
-                            return Ok(Some(read_op(key, value)));
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(None)
-    }
-
     /// Removes an entry if the condition is met.
     #[inline]
     fn remove_entry<Q, F: FnMut(&V) -> bool>(
         &self,
         key: &Q,
         hash: u64,
-        partial_hash: u8,
         condition: &mut F,
         async_wait: Option<NonNull<AsyncWait>>,
         barrier: &Barrier,
@@ -293,41 +230,45 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let (cell_index, mut locker, data_block, mut entry_ptr) =
-            self.acquire_entry::<Q>(key, hash, partial_hash, async_wait, barrier)?;
-        if entry_ptr.is_valid() && condition(&entry_ptr.get(data_block).1) {
-            let result = locker.erase(data_block, &mut entry_ptr);
-            let need_shrink = locker.cell().num_entries() < CELL_LEN / 16;
-            let need_rebuild = LOCK_FREE && locker.cell().need_rebuild();
-            if (cell_index % CELL_LEN) == 0 && (need_shrink || need_rebuild) {
-                drop(locker);
-                if let Some(current_array) = self.cell_array().load(Acquire, barrier).as_ref() {
-                    let array_size = current_array.num_cells();
-                    let sample_size = current_array.sample_size();
-                    if current_array.old_array(barrier).is_null() {
-                        if need_shrink && current_array.num_entries() > self.minimum_capacity() {
-                            self.try_shrink(
-                                current_array,
-                                array_size,
-                                sample_size,
-                                cell_index,
-                                barrier,
-                            );
-                        } else if need_rebuild {
-                            self.try_rebuild(
-                                current_array,
-                                array_size,
-                                sample_size,
-                                cell_index,
-                                barrier,
-                            );
+        loop {
+            // The reasoning behind this loop can be found in `acquire_entry`.
+            let current_array = self.current_array_unchecked(barrier);
+            let no_old_array = if let Some(old_array) = current_array.old_array(barrier).as_ref() {
+                self.move_entry(current_array, old_array, hash, async_wait, barrier)?
+            } else {
+                true
+            };
+
+            let cell_index = current_array.calculate_cell_index(hash);
+            let cell = current_array.cell_mut(cell_index);
+            let lock_result = if let Some(&async_wait) = async_wait.as_ref() {
+                Locker::try_lock_or_wait(cell, async_wait, barrier)?
+            } else {
+                Locker::lock(cell, barrier)
+            };
+            if let Some(mut locker) = lock_result {
+                let data_block = current_array.data_block(cell_index);
+                let mut entry_ptr = locker.get(data_block, key, hash, barrier);
+                if entry_ptr.is_valid() && condition(&entry_ptr.get(data_block).1) {
+                    let result = locker.erase(data_block, &mut entry_ptr);
+                    if no_old_array && cell_index % CELL_LEN == 0 {
+                        let need_shrink = locker.cell().num_entries() < CELL_LEN / 16;
+                        let need_rebuild = LOCK_FREE && locker.cell().need_rebuild();
+                        if need_shrink || need_rebuild {
+                            drop(locker);
+                            if need_shrink && current_array.num_entries() > self.minimum_capacity()
+                            {
+                                self.try_shrink(current_array, cell_index, barrier);
+                            } else if need_rebuild {
+                                self.try_rebuild(current_array, cell_index, barrier);
+                            }
                         }
                     }
+                    return Ok((result, true));
                 }
+                return Ok((None, false));
             }
-            return Ok((result, true));
         }
-        Ok((None, false))
     }
 
     /// Acquires a [`Locker`] and [`EntryPtr`] corresponding to the key.
@@ -340,12 +281,10 @@ where
         &self,
         key: &Q,
         hash: u64,
-        partial_hash: u8,
         async_wait: Option<NonNull<AsyncWait>>,
         barrier: &'b Barrier,
     ) -> Result<
         (
-            usize,
             Locker<'b, K, V, LOCK_FREE>,
             &'b DataBlock<K, V>,
             EntryPtr<'b, K, V, LOCK_FREE>,
@@ -373,18 +312,9 @@ where
         loop {
             // An acquire fence is required to correctly load the contents of the array.
             let current_array = self.current_array_unchecked(barrier);
-            if !current_array.old_array(barrier).is_null() {
-                check_resize = false;
-                if let Some(result) = self.acquire_old_entry(
-                    current_array,
-                    key,
-                    hash,
-                    partial_hash,
-                    async_wait,
-                    barrier,
-                )? {
-                    return Ok(result);
-                }
+            if let Some(old_array) = current_array.old_array(barrier).as_ref() {
+                check_resize =
+                    self.move_entry(current_array, old_array, hash, async_wait, barrier)?;
             }
 
             let cell_index = current_array.calculate_cell_index(hash);
@@ -392,16 +322,8 @@ where
 
             // Try to resize the array.
             if cell_index % CELL_LEN == 0 && check_resize && cell.num_entries() >= CELL_LEN {
-                // Trigger resize if the estimated load factor is greater than 7/8.
                 check_resize = false;
-                self.try_enlarge(
-                    current_array,
-                    current_array.num_cells(),
-                    current_array.sample_size(),
-                    cell_index,
-                    cell.num_entries(),
-                    barrier,
-                );
+                self.try_enlarge(current_array, cell_index, cell.num_entries(), barrier);
                 continue;
             }
 
@@ -412,90 +334,77 @@ where
             };
             if let Some(locker) = lock_result {
                 let data_block = current_array.data_block(cell_index);
-                let entry_ptr = locker.get(data_block, key, partial_hash, barrier);
-                return Ok((cell_index, locker, data_block, entry_ptr));
+                let entry_ptr = locker.get(data_block, key, hash, barrier);
+                return Ok((locker, data_block, entry_ptr));
             }
 
             // Reaching here means that `self.array` is updated.
         }
     }
-    /// Acquires a [`Locker`] and [`EntryPtr`] corresponding to the key in the old array of the
-    /// [`HashTable`].
-    #[allow(clippy::type_complexity)]
-    fn acquire_old_entry<'b, Q>(
+
+    /// Moves an entry in the old array to the current one.
+    ///
+    /// Returns `true` if no old array is attached to the current one.
+    #[inline]
+    fn move_entry<'b, Q>(
         &self,
         current_array: &CellArray<K, V, LOCK_FREE>,
-        key: &Q,
+        old_array: &CellArray<K, V, LOCK_FREE>,
         hash: u64,
-        partial_hash: u8,
         async_wait: Option<NonNull<AsyncWait>>,
         barrier: &'b Barrier,
-    ) -> Result<
-        Option<(
-            usize,
-            Locker<'b, K, V, LOCK_FREE>,
-            &'b DataBlock<K, V>,
-            EntryPtr<'b, K, V, LOCK_FREE>,
-        )>,
-        (),
-    >
+    ) -> Result<bool, ()>
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        if let Some(old_array) = current_array.old_array(barrier).as_ref() {
-            if !current_array.partial_rehash::<Q, _, _>(
-                |key| self.hash(key),
-                Self::copier,
-                async_wait,
-                barrier,
-            )? {
-                let cell_index = old_array.calculate_cell_index(hash);
-                let cell = old_array.cell_mut(cell_index);
-                let lock_result = if let Some(&async_wait) = async_wait.as_ref() {
-                    Locker::try_lock_or_wait(cell, async_wait, barrier)?
-                } else {
-                    Locker::lock(cell, barrier)
-                };
-                if let Some(mut locker) = lock_result {
-                    let data_block = old_array.data_block(cell_index);
-                    let entry_ptr = locker.get(data_block, key, partial_hash, barrier);
-                    if entry_ptr.is_valid() {
-                        return Ok(Some((cell_index, locker, data_block, entry_ptr)));
-                    }
-
-                    // Kills the `Cell`.
-                    current_array.kill_cell::<Q, _, _>(
-                        &mut locker,
-                        data_block,
-                        old_array.num_cells(),
-                        cell_index,
-                        &|key| self.hash(key),
-                        &Self::copier,
-                        async_wait,
-                        barrier,
-                    )?;
-                }
+        if !current_array.partial_rehash::<Q, _, _>(
+            |key| self.hash(key),
+            Self::copier,
+            async_wait,
+            barrier,
+        )? {
+            let cell_index = old_array.calculate_cell_index(hash);
+            let cell = old_array.cell_mut(cell_index);
+            let lock_result = if let Some(&async_wait) = async_wait.as_ref() {
+                Locker::try_lock_or_wait(cell, async_wait, barrier)?
+            } else {
+                Locker::lock(cell, barrier)
+            };
+            if let Some(mut locker) = lock_result {
+                let data_block = old_array.data_block(cell_index);
+                current_array.kill_cell::<Q, _, _>(
+                    &mut locker,
+                    data_block,
+                    old_array.num_cells(),
+                    cell_index,
+                    &|key| self.hash(key),
+                    &Self::copier,
+                    async_wait,
+                    barrier,
+                )?;
             }
+            return Ok(false);
         }
-        Ok(None)
+        Ok(true)
     }
 
-    /// Tries to enlarge the array.
+    /// Tries to enlarge the array if the estimated load factor is greater than `7/8`.
     #[inline]
     fn try_enlarge(
         &self,
         array: &CellArray<K, V, LOCK_FREE>,
-        array_size: usize,
-        sample_size: usize,
         cell_index: usize,
         mut num_entries: usize,
         barrier: &Barrier,
     ) {
+        let sample_size = array.sample_size();
         let threshold = sample_size * (CELL_LEN / 8) * 7;
         if num_entries > threshold
             || (1..sample_size).any(|i| {
-                num_entries += array.cell((cell_index + i) % array_size).num_entries();
+                num_entries += array
+                    .cell((cell_index + i) % array.num_cells())
+                    .num_entries();
                 num_entries > threshold
             })
         {
@@ -503,40 +412,39 @@ where
         }
     }
 
-    /// Tries to shrink the array.
+    /// Tries to shrink the array if the load factor is estimated at around `1/16`.
     #[inline]
-    fn try_shrink(
-        &self,
-        array: &CellArray<K, V, LOCK_FREE>,
-        array_size: usize,
-        sample_size: usize,
-        cell_index: usize,
-        barrier: &Barrier,
-    ) {
+    fn try_shrink(&self, array: &CellArray<K, V, LOCK_FREE>, cell_index: usize, barrier: &Barrier) {
+        let sample_size = array.sample_size();
         let threshold = sample_size * CELL_LEN / 16;
         let mut num_entries = 0;
         if !(1..sample_size).any(|i| {
-            num_entries += array.cell((cell_index + i) % array_size).num_entries();
+            num_entries += array
+                .cell((cell_index + i) % array.num_cells())
+                .num_entries();
             num_entries >= threshold
         }) {
             self.resize(barrier);
         }
     }
 
-    /// Tries to rebuild the array.
+    /// Tries to rebuild the array if there are no usable entry slots in at least half of the
+    /// `Cells` in the sampling range.
     #[inline]
     fn try_rebuild(
         &self,
         array: &CellArray<K, V, LOCK_FREE>,
-        array_size: usize,
-        sample_size: usize,
         cell_index: usize,
         barrier: &Barrier,
     ) {
+        let sample_size = array.sample_size();
         let threshold = sample_size / 2;
         let mut num_cells_to_rebuild = 1;
         if (1..sample_size).any(|i| {
-            if array.cell((cell_index + i) % array_size).need_rebuild() {
+            if array
+                .cell((cell_index + i) % array.num_cells())
+                .need_rebuild()
+            {
                 num_cells_to_rebuild += 1;
                 num_cells_to_rebuild > threshold
             } else {

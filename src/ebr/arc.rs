@@ -158,8 +158,8 @@ impl<T: 'static> Arc<T> {
     ///     assert!(DROPPED.load(Relaxed));
     /// }
     /// ```
-    #[allow(clippy::must_use_candidate)]
     #[inline]
+    #[must_use]
     pub unsafe fn release_drop_in_place(mut self) -> bool {
         let dropped = if self.underlying().drop_ref() {
             if !self.instance_ptr.as_mut().drop_and_dealloc() {

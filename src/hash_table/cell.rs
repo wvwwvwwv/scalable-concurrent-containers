@@ -50,6 +50,13 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Default for Cell<K, V, 
 }
 
 impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
+    /// Returns the partial hash value of the given hash.
+    #[inline]
+    #[allow(clippy::cast_possible_truncation)]
+    pub(crate) fn partial_hash(hash: u64) -> u8 {
+        (hash % (1 << 8)) as u8
+    }
+
     /// Returns true if the [`Cell`] has been killed.
     #[inline]
     pub(crate) fn killed(&self) -> bool {
@@ -77,7 +84,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         &'b self,
         data_block: &'b DataBlock<K, V>,
         key: &Q,
-        partial_hash: u8,
+        hash: u64,
         barrier: &'b Barrier,
     ) -> Option<&'b (K, V)>
     where
@@ -88,6 +95,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
             return None;
         }
 
+        let partial_hash = Self::partial_hash(hash);
         if let Some((_, entry_ref)) =
             Self::search_array(&self.metadata, data_block, key, partial_hash)
         {
@@ -135,7 +143,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         &self,
         data_block: &'b DataBlock<K, V>,
         key: &Q,
-        partial_hash: u8,
+        hash: u64,
         barrier: &'b Barrier,
     ) -> EntryPtr<'b, K, V, LOCK_FREE>
     where
@@ -146,6 +154,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
             return EntryPtr::new(barrier);
         }
 
+        let partial_hash = Self::partial_hash(hash);
         if let Some((index, _)) = Self::search_array(&self.metadata, data_block, key, partial_hash)
         {
             return EntryPtr {
@@ -483,14 +492,14 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         &self,
         data_block: &'b DataBlock<K, V>,
         key: &Q,
-        partial_hash: u8,
+        hash: u64,
         barrier: &'b Barrier,
     ) -> EntryPtr<'b, K, V, LOCK_FREE>
     where
         K: Borrow<Q>,
         Q: Eq + ?Sized,
     {
-        self.cell.get(data_block, key, partial_hash, barrier)
+        self.cell.get(data_block, key, hash, barrier)
     }
 
     /// Inserts a new key-value pair into the [`Cell`] without a uniqueness check.

@@ -138,7 +138,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     /// It returns an error if locking failed.
     #[allow(clippy::too_many_arguments)]
     #[inline]
-    pub(crate) fn kill_cell<Q, F: Fn(&Q) -> (u64, u8), C: Fn(&K, &V) -> (K, V)>(
+    pub(crate) fn kill_cell<Q, F: Fn(&Q) -> u64, C: Fn(&K, &V) -> (K, V)>(
         &self,
         cell_locker: &mut Locker<K, V, LOCK_FREE>,
         old_data_block: &DataBlock<K, V>,
@@ -180,7 +180,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             let old_entry = entry_ptr.get(old_data_block);
             let (new_cell_index, partial_hash) = if shrink {
                 debug_assert!(
-                    self.calculate_cell_index(hasher(old_entry.0.borrow()).0) == target_cell_index
+                    self.calculate_cell_index(hasher(old_entry.0.borrow())) == target_cell_index
                 );
                 (
                     target_cell_index,
@@ -188,9 +188,9 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                 )
             } else {
                 let hash = hasher(old_entry.0.borrow());
-                let new_cell_index = self.calculate_cell_index(hash.0);
+                let new_cell_index = self.calculate_cell_index(hash);
                 debug_assert!((new_cell_index - target_cell_index) < ratio);
-                (new_cell_index, hash.1)
+                (new_cell_index, Cell::<K, V, LOCK_FREE>::partial_hash(hash))
             };
 
             let offset = new_cell_index - target_cell_index;
@@ -230,7 +230,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     ///
     /// Returns `true` if `old_array` is null.
     #[inline]
-    pub(crate) fn partial_rehash<Q, F: Fn(&Q) -> (u64, u8), C: Fn(&K, &V) -> (K, V)>(
+    pub(crate) fn partial_rehash<Q, F: Fn(&Q) -> u64, C: Fn(&K, &V) -> (K, V)>(
         &self,
         hasher: F,
         copier: C,
