@@ -45,6 +45,7 @@ pub trait Collectible {
     ///
     /// Returns `true` if the instance has been completely dropped and deallocated. If a further
     /// clean-up is needed, it returns `false` without deallocating the instance.
+    #[inline]
     fn drop_and_dealloc(&mut self) -> bool {
         unsafe { Box::from_raw(self as *mut Self) };
         true
@@ -70,9 +71,12 @@ impl<F: 'static + FnOnce() + Sync> DeferredClosure<F> {
 }
 
 impl<F: 'static + FnOnce() + Sync> Collectible for DeferredClosure<F> {
+    #[inline]
     fn next_ptr_mut(&mut self) -> &mut Option<NonNull<dyn Collectible>> {
         &mut self.link
     }
+
+    #[inline]
     fn drop_and_dealloc(&mut self) -> bool {
         if let Some(f) = self.f.take() {
             f();
@@ -98,9 +102,12 @@ impl<F: 'static + FnMut() -> bool + Sync> DeferredIncrementalClosure<F> {
 }
 
 impl<F: 'static + FnMut() -> bool + Sync> Collectible for DeferredIncrementalClosure<F> {
+    #[inline]
     fn next_ptr_mut(&mut self) -> &mut Option<NonNull<dyn Collectible>> {
         &mut self.link
     }
+
+    #[inline]
     fn drop_and_dealloc(&mut self) -> bool {
         if (self.f)() {
             // Finished, thus drop `self`.

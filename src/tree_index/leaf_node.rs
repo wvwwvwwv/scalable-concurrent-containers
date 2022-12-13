@@ -466,7 +466,7 @@ where
             if let Some(origin_leaf) = change.origin_leaf.swap((None, Tag::None), Relaxed).0 {
                 // Make the origin leaf unreachable before making the new leaves updatable.
                 origin_leaf.delete_self(Relaxed);
-                origin_leaf.release(barrier);
+                let _ = origin_leaf.release(barrier);
             }
             let low_key_leaf = change.low_key_leaf.load(Relaxed, barrier).as_ref().unwrap();
             let high_key_leaf = change
@@ -502,7 +502,7 @@ where
         let (change, _) = self.latch.swap((None, RETIRED), Release);
         self.wait_queue.signal();
         if let Some(change) = change {
-            change.release(barrier);
+            let _ = change.release(barrier);
         }
     }
 
@@ -540,7 +540,7 @@ where
         let (change, _) = self.latch.swap((None, Tag::None), Release);
         self.wait_queue.signal();
         if let Some(change) = change {
-            change.release(barrier);
+            let _ = change.release(barrier);
         }
     }
 
@@ -764,11 +764,11 @@ where
         let (change, _) = self.latch.swap((None, Tag::None), Release);
         self.wait_queue.signal();
         if let Some(change) = change {
-            change.release(barrier);
+            let _ = change.release(barrier);
         }
 
         if let Some(unused_leaf) = unused_leaf {
-            unused_leaf.release(barrier);
+            let _ = unused_leaf.release(barrier);
         }
 
         // Since a new leaf has been inserted, the caller can retry.
@@ -797,7 +797,7 @@ where
                     // The pointer is nullified after the metadata of `self.children` is updated so
                     // that readers are able to retry when they find it being `null`.
                     if let Some(leaf) = entry.1.swap((None, Tag::None), Release).0 {
-                        leaf.release(barrier);
+                        let _ = leaf.release(barrier);
                         if let Some(prev_leaf) = prev_valid_leaf.as_ref() {
                             // One jump is sufficient.
                             Scanner::new(*prev_leaf).jump(None, barrier);
@@ -825,7 +825,7 @@ where
                         if let Some(obsolete_leaf) =
                             self.unbounded_child.swap((None, RETIRED), Release).0
                         {
-                            obsolete_leaf.release(barrier);
+                            let _ = obsolete_leaf.release(barrier);
                             uncleaned_leaf = true;
                         }
                         true

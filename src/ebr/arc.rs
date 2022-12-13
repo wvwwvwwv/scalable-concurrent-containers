@@ -108,8 +108,8 @@ impl<T: 'static> Arc<T> {
     /// assert!(!arc.release(&barrier));
     /// assert!(arc_clone.release(&barrier));
     /// ```
-    #[allow(clippy::must_use_candidate)]
     #[inline]
+    #[must_use]
     pub fn release(self, barrier: &Barrier) -> bool {
         let released = if let Some(ptr) = self.drop_ref() {
             barrier.collect(ptr);

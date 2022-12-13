@@ -2,6 +2,7 @@
 
 0.12.1
 
+* `HashMap::read`, `HashIndex::read`, and `HashIndex::read_with` accept `FnOnce`.
 * Proper optimization for `T: Copy` and `!needs_drop::<T>()`.
 
 0.12.0

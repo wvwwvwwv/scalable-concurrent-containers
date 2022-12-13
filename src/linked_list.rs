@@ -306,7 +306,7 @@ pub trait LinkedList: 'static + Sized {
                 Relaxed,
                 barrier,
             ) {
-                prev.release(barrier);
+                let _ = prev.release(barrier);
             }
         }
 

@@ -24,6 +24,13 @@ pub struct CellArray<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
 }
 
 impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FREE> {
+    /// Returns the partial hash value of the given hash.
+    #[inline]
+    #[allow(clippy::cast_possible_truncation)]
+    pub(crate) fn partial_hash(hash: u64) -> u8 {
+        (hash % (1 << 8)) as u8
+    }
+
     /// Creates a new [`CellArray`] of the given capacity.
     ///
     /// `total_cell_capacity` is the desired number entries, not the number of [`Cell`] instances.
@@ -140,10 +147,9 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     #[inline]
     pub(crate) fn kill_cell<Q, F: Fn(&Q) -> u64, C: Fn(&K, &V) -> (K, V)>(
         &self,
-        cell_locker: &mut Locker<K, V, LOCK_FREE>,
-        old_data_block: &DataBlock<K, V>,
-        old_array_num_cells: usize,
+        old_cell_locker: &mut Locker<K, V, LOCK_FREE>,
         old_cell_index: usize,
+        old_array: &CellArray<K, V, LOCK_FREE>,
         hasher: &F,
         copier: &C,
         async_wait: Option<NonNull<AsyncWait>>,
@@ -153,17 +159,17 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        debug_assert!(!cell_locker.cell().killed());
-        if cell_locker.cell().num_entries() == 0 {
-            cell_locker.purge(barrier);
+        debug_assert!(!old_cell_locker.cell().killed());
+        if old_cell_locker.cell().num_entries() == 0 {
+            old_cell_locker.purge(barrier);
             return Ok(());
         }
 
-        let shrink = old_array_num_cells > self.num_cells();
+        let shrink = old_array.num_cells() > self.num_cells();
         let ratio = if shrink {
-            old_array_num_cells / self.array_len
+            old_array.num_cells() / self.array_len
         } else {
-            self.array_len / old_array_num_cells
+            self.array_len / old_array.num_cells()
         };
         let target_cell_index = if shrink {
             old_cell_index / ratio
@@ -176,7 +182,8 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             Default::default();
         let mut max_index = 0;
         let mut entry_ptr = EntryPtr::new(barrier);
-        while entry_ptr.next(cell_locker.cell(), barrier) {
+        let old_data_block = old_array.data_block(old_cell_index);
+        while entry_ptr.next(old_cell_locker.cell(), barrier) {
             let old_entry = entry_ptr.get(old_data_block);
             let (new_cell_index, partial_hash) = if shrink {
                 debug_assert!(
@@ -184,13 +191,16 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                 );
                 (
                     target_cell_index,
-                    entry_ptr.partial_hash(cell_locker.cell()),
+                    entry_ptr.partial_hash(old_cell_locker.cell()),
                 )
             } else {
                 let hash = hasher(old_entry.0.borrow());
                 let new_cell_index = self.calculate_cell_index(hash);
                 debug_assert!((new_cell_index - target_cell_index) < ratio);
-                (new_cell_index, Cell::<K, V, LOCK_FREE>::partial_hash(hash))
+                (
+                    new_cell_index,
+                    CellArray::<K, V, LOCK_FREE>::partial_hash(hash),
+                )
             };
 
             let offset = new_cell_index - target_cell_index;
@@ -212,7 +222,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             let new_entry = if LOCK_FREE {
                 copier(&old_entry.0, &old_entry.1)
             } else {
-                cell_locker.extract(old_data_block, &mut entry_ptr, barrier)
+                old_cell_locker.extract(old_data_block, &mut entry_ptr, barrier)
             };
             target_cell.insert(
                 self.data_block(target_cell_index + offset),
@@ -222,7 +232,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                 barrier,
             );
         }
-        cell_locker.purge(barrier);
+        old_cell_locker.purge(barrier);
         Ok(())
     }
 
@@ -275,7 +285,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                     if (current & (CELL_LEN - 1) == 0) && current >= old_array_num_cells {
                         // The last one trying to relocate old entries gets rid of the old array.
                         if let Some(old_array) = self.old_array.swap((None, Tag::None), Relaxed).0 {
-                            old_array.release(barrier);
+                            let _ = old_array.release(barrier);
                         }
                     }
                 } else {
@@ -309,9 +319,8 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                 if let Some(mut locker) = lock_result {
                     self.kill_cell::<Q, F, C>(
                         &mut locker,
-                        old_array.data_block(old_cell_index),
-                        old_array_num_cells,
                         old_cell_index,
+                        old_array,
                         &hasher,
                         &copier,
                         async_wait,

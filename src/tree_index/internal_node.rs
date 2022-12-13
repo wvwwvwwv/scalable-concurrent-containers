@@ -605,7 +605,7 @@ where
         if let Some(unused_node) = unused_node {
             // Clean up the split operation by committing it.
             unused_node.commit(barrier);
-            unused_node.release(barrier);
+            let _ = unused_node.release(barrier);
         }
 
         // Since a new node has been inserted, the caller can retry.
@@ -618,7 +618,7 @@ where
         let (change, _) = self.latch.swap((None, Tag::None), Release);
         self.wait_queue.signal();
         if let Some(change) = change {
-            change.release(barrier);
+            let _ = change.release(barrier);
         }
     }
 
@@ -645,7 +645,7 @@ where
             if let Some(origin) = change.origin_node.swap((None, Tag::None), Relaxed).0 {
                 origin.rollback(barrier);
             }
-            change.release(barrier);
+            let _ = change.release(barrier);
         }
     }
 
@@ -716,7 +716,7 @@ where
                     // Once the key is removed, it is safe to deallocate the node as the validation
                     // loop ensures the absence of readers.
                     if let Some(node) = node.swap((None, Tag::None), Release).0 {
-                        node.release(barrier);
+                        let _ = node.release(barrier);
                         node_deleted = true;
                     }
                 } else {
@@ -738,13 +738,13 @@ where
                             .0
                         {
                             debug_assert!(obsolete_node.retired(Relaxed));
-                            obsolete_node.release(barrier);
+                            let _ = obsolete_node.release(barrier);
                             node_deleted = true;
                         }
                         let result = self.children.remove_if(key.borrow(), &mut |_| true);
                         debug_assert_ne!(result, RemoveResult::Fail);
                         if let Some(node) = max_key_child.swap((None, Tag::None), Release).0 {
-                            node.release(barrier);
+                            let _ = node.release(barrier);
                             node_deleted = true;
                         }
                         false
@@ -753,7 +753,7 @@ where
                             self.unbounded_child.swap((None, RETIRED), Release).0
                         {
                             debug_assert!(obsolete_node.retired(Relaxed));
-                            obsolete_node.release(barrier);
+                            let _ = obsolete_node.release(barrier);
                             node_deleted = true;
                         }
                         true

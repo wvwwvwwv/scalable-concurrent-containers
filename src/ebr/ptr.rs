@@ -23,8 +23,8 @@ impl<'b, T> Ptr<'b, T> {
     ///
     /// let ptr: Ptr<usize> = Ptr::null();
     /// ```
-    #[must_use]
     #[inline]
+    #[must_use]
     pub fn null() -> Ptr<'b, T> {
         Ptr {
             instance_ptr: ptr::null(),
@@ -42,8 +42,8 @@ impl<'b, T> Ptr<'b, T> {
     /// let ptr: Ptr<usize> = Ptr::null();
     /// assert!(ptr.is_null());
     /// ```
-    #[must_use]
     #[inline]
+    #[must_use]
     pub fn is_null(&self) -> bool {
         Tag::unset_tag(self.instance_ptr).is_null()
     }
@@ -61,8 +61,8 @@ impl<'b, T> Ptr<'b, T> {
     /// let ptr = atomic_arc.load(Relaxed, &barrier);
     /// assert_eq!(*ptr.as_ref().unwrap(), 21);
     /// ```
-    #[must_use]
     #[inline]
+    #[must_use]
     pub fn as_ref(&self) -> Option<&'b T> {
         unsafe { Tag::unset_tag(self.instance_ptr).as_ref().map(Deref::deref) }
     }
@@ -80,8 +80,8 @@ impl<'b, T> Ptr<'b, T> {
     /// let ptr = arc.ptr(&barrier);
     /// assert_eq!(unsafe { *ptr.as_raw() }, 29);
     /// ```
-    #[must_use]
     #[inline]
+    #[must_use]
     pub fn as_raw(&self) -> *const T {
         unsafe {
             Tag::unset_tag(self.instance_ptr)
@@ -100,8 +100,8 @@ impl<'b, T> Ptr<'b, T> {
     /// let ptr: Ptr<usize> = Ptr::null();
     /// assert_eq!(ptr.tag(), Tag::None);
     /// ```
-    #[must_use]
     #[inline]
+    #[must_use]
     pub fn tag(&self) -> Tag {
         Tag::into_tag(self.instance_ptr)
     }

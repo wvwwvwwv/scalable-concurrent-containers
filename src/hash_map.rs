@@ -1,7 +1,5 @@
 //! [`HashMap`] is a concurrent and asynchronous hash map.
 
-use crate::hash_table::cell::Cell;
-
 use super::ebr::{Arc, AtomicArc, Barrier, Tag};
 use super::hash_table::cell::{EntryPtr, Locker, Reader};
 use super::hash_table::cell_array::CellArray;
@@ -352,7 +350,7 @@ where
                 data_block,
                 key,
                 constructor(),
-                Cell::<K, V, false>::partial_hash(hash),
+                CellArray::<K, V, false>::partial_hash(hash),
                 &barrier,
             );
         };
@@ -398,7 +396,7 @@ where
                             data_block,
                             key,
                             constructor(),
-                            Cell::<K, V, false>::partial_hash(hash),
+                            CellArray::<K, V, false>::partial_hash(hash),
                             &barrier,
                         );
                     }
@@ -539,14 +537,15 @@ where
     /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 10);
     /// ```
     #[inline]
-    pub fn read<Q, R, F: FnMut(&K, &V) -> R>(&self, key: &Q, mut reader: F) -> Option<R>
+    pub fn read<Q, R, F: FnOnce(&K, &V) -> R>(&self, key: &Q, reader: F) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.read_entry::<Q, R, F>(key, self.hash(key), &mut reader, None, &Barrier::new())
+        self.read_entry::<Q>(key, self.hash(key), None, &Barrier::new())
             .ok()
-            .and_then(|r| r)
+            .flatten()
+            .map(|(k, v)| reader(k, v))
     }
 
     /// Reads a key-value pair.
@@ -564,7 +563,7 @@ where
     /// let future_read = hashmap.read_async(&11, |_, v| *v);
     /// ```
     #[inline]
-    pub async fn read_async<Q, R, F: FnMut(&K, &V) -> R>(&self, key: &Q, mut reader: F) -> Option<R>
+    pub async fn read_async<Q, R, F: FnOnce(&K, &V) -> R>(&self, key: &Q, reader: F) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
@@ -573,14 +572,13 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if let Ok(result) = self.read_entry::<Q, R, _>(
+            if let Ok(result) = self.read_entry::<Q>(
                 key,
                 hash,
-                &mut reader,
                 NonNull::new(async_wait_pinned.mut_ptr()),
                 &Barrier::new(),
             ) {
-                return result;
+                return result.map(|(k, v)| reader(k, v));
             }
             async_wait_pinned.await;
         }

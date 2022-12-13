@@ -110,6 +110,7 @@ impl<T> Deref for RefCounted<T> {
 }
 
 impl<T> Collectible for RefCounted<T> {
+    #[inline]
     fn next_ptr_mut(&mut self) -> &mut Option<NonNull<dyn Collectible>> {
         unsafe { &mut self.next_or_refcnt.next }
     }

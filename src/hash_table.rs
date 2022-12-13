@@ -13,8 +13,6 @@ use std::ptr::{self, NonNull};
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-use self::cell::Cell;
-
 /// `HashTable` defines common functions for hash table implementations.
 pub(super) trait HashTable<K, V, H, const LOCK_FREE: bool>
 where
@@ -149,7 +147,7 @@ where
                     data_block,
                     key,
                     val,
-                    Cell::<K, V, LOCK_FREE>::partial_hash(hash),
+                    CellArray::<K, V, LOCK_FREE>::partial_hash(hash),
                     barrier,
                 );
                 Ok(None)
@@ -160,14 +158,13 @@ where
 
     /// Reads an entry from the [`HashTable`].
     #[inline]
-    fn read_entry<'b, Q, R, F: FnMut(&'b K, &'b V) -> R>(
+    fn read_entry<'b, Q>(
         &self,
         key: &Q,
         hash: u64,
-        read_op: &mut F,
         async_wait: Option<NonNull<AsyncWait>>,
         barrier: &'b Barrier,
-    ) -> Result<Option<R>, ()>
+    ) -> Result<Option<(&'b K, &'b V)>, ()>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
@@ -181,10 +178,13 @@ where
             let cell_index = current_array.calculate_cell_index(hash);
             let cell = current_array.cell(cell_index);
             if LOCK_FREE {
-                if let Some(entry) =
-                    cell.search(current_array.data_block(cell_index), key, hash, barrier)
-                {
-                    return Ok(Some(read_op(&entry.0, &entry.1)));
+                if let Some(entry) = cell.search(
+                    current_array.data_block(cell_index),
+                    key,
+                    CellArray::<K, V, LOCK_FREE>::partial_hash(hash),
+                    barrier,
+                ) {
+                    return Ok(Some((&entry.0, &entry.1)));
                 }
             } else {
                 let lock_result = if let Some(&async_wait) = async_wait.as_ref() {
@@ -196,10 +196,10 @@ where
                     if let Some((key, value)) = reader.cell().search(
                         current_array.data_block(cell_index),
                         key,
-                        hash,
+                        CellArray::<K, V, LOCK_FREE>::partial_hash(hash),
                         barrier,
                     ) {
-                        return Ok(Some(read_op(key, value)));
+                        return Ok(Some((key, value)));
                     }
                 }
             }
@@ -248,7 +248,12 @@ where
             };
             if let Some(mut locker) = lock_result {
                 let data_block = current_array.data_block(cell_index);
-                let mut entry_ptr = locker.get(data_block, key, hash, barrier);
+                let mut entry_ptr = locker.get(
+                    data_block,
+                    key,
+                    CellArray::<K, V, LOCK_FREE>::partial_hash(hash),
+                    barrier,
+                );
                 if entry_ptr.is_valid() && condition(&entry_ptr.get(data_block).1) {
                     let result = locker.erase(data_block, &mut entry_ptr);
                     if no_old_array && cell_index % CELL_LEN == 0 {
@@ -334,7 +339,12 @@ where
             };
             if let Some(locker) = lock_result {
                 let data_block = current_array.data_block(cell_index);
-                let entry_ptr = locker.get(data_block, key, hash, barrier);
+                let entry_ptr = locker.get(
+                    data_block,
+                    key,
+                    CellArray::<K, V, LOCK_FREE>::partial_hash(hash),
+                    barrier,
+                );
                 return Ok((locker, data_block, entry_ptr));
             }
 
@@ -372,12 +382,10 @@ where
                 Locker::lock(cell, barrier)
             };
             if let Some(mut locker) = lock_result {
-                let data_block = old_array.data_block(cell_index);
                 current_array.kill_cell::<Q, _, _>(
                     &mut locker,
-                    data_block,
-                    old_array.num_cells(),
                     cell_index,
+                    old_array,
                     &|key| self.hash(key),
                     &Self::copier,
                     async_wait,

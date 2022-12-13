@@ -388,15 +388,16 @@ where
     /// assert_eq!(hashindex.read(&1, |_, v| *v).unwrap(), 10);
     /// ```
     #[inline]
-    pub fn read<Q, R, F: Fn(&K, &V) -> R>(&self, key: &Q, mut reader: F) -> Option<R>
+    pub fn read<Q, R, F: FnOnce(&K, &V) -> R>(&self, key: &Q, reader: F) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
         let barrier = Barrier::new();
-        self.read_entry::<Q, R, F>(key, self.hash(key), &mut reader, None, &barrier)
+        self.read_entry::<Q>(key, self.hash(key), None, &barrier)
             .ok()
-            .and_then(|r| r)
+            .flatten()
+            .map(|(k, v)| reader(k, v))
     }
 
     /// Reads a key-value pair using the supplied [`Barrier`].
@@ -420,19 +421,20 @@ where
     /// assert_eq!(*value_ref, 10);
     /// ```
     #[inline]
-    pub fn read_with<'b, Q, R, F: FnMut(&'b K, &'b V) -> R>(
+    pub fn read_with<'b, Q, R, F: FnOnce(&'b K, &'b V) -> R>(
         &self,
         key: &Q,
-        mut reader: F,
+        reader: F,
         barrier: &'b Barrier,
     ) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.read_entry::<Q, R, F>(key, self.hash(key), &mut reader, None, barrier)
+        self.read_entry::<Q>(key, self.hash(key), None, barrier)
             .ok()
-            .and_then(|r| r)
+            .flatten()
+            .map(|(k, v)| reader(k, v))
     }
 
     /// Checks if the key exists.

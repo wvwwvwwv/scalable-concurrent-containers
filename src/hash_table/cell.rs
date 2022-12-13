@@ -50,13 +50,6 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Default for Cell<K, V, 
 }
 
 impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
-    /// Returns the partial hash value of the given hash.
-    #[inline]
-    #[allow(clippy::cast_possible_truncation)]
-    pub(crate) fn partial_hash(hash: u64) -> u8 {
-        (hash % (1 << 8)) as u8
-    }
-
     /// Returns true if the [`Cell`] has been killed.
     #[inline]
     pub(crate) fn killed(&self) -> bool {
@@ -84,7 +77,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         &'b self,
         data_block: &'b DataBlock<K, V>,
         key: &Q,
-        hash: u64,
+        partial_hash: u8,
         barrier: &'b Barrier,
     ) -> Option<&'b (K, V)>
     where
@@ -95,7 +88,6 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
             return None;
         }
 
-        let partial_hash = Self::partial_hash(hash);
         if let Some((_, entry_ref)) =
             Self::search_array(&self.metadata, data_block, key, partial_hash)
         {
@@ -122,7 +114,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
     pub(crate) unsafe fn drop_entries(&mut self, data_block: &DataBlock<K, V>, barrier: &Barrier) {
         if !self.metadata.link.load(Acquire, barrier).is_null() {
             if let Some(link) = self.metadata.link.swap((None, Tag::None), Relaxed).0 {
-                link.release(barrier);
+                let _ = link.release(barrier);
             }
         }
         if needs_drop::<(K, V)>() && self.metadata.occupied_bitmap != 0 {
@@ -143,7 +135,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         &self,
         data_block: &'b DataBlock<K, V>,
         key: &Q,
-        hash: u64,
+        partial_hash: u8,
         barrier: &'b Barrier,
     ) -> EntryPtr<'b, K, V, LOCK_FREE>
     where
@@ -154,7 +146,6 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
             return EntryPtr::new(barrier);
         }
 
-        let partial_hash = Self::partial_hash(hash);
         if let Some((index, _)) = Self::search_array(&self.metadata, data_block, key, partial_hash)
         {
             return EntryPtr {
@@ -204,29 +195,28 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
             fence(Acquire);
         }
 
-        let len = LEN as u32;
-        let preferred_index = u32::from(partial_hash) % len;
+        let preferred_index = usize::from(partial_hash) % LEN;
         if (bitmap & (1_u32 << preferred_index)) != 0 {
-            let entry_ptr = data_array[preferred_index as usize].as_ptr();
+            let entry_ptr = data_array[preferred_index].as_ptr();
             let entry_ref = unsafe { &(*entry_ptr) };
             if entry_ref.0.borrow() == key {
-                return Some((preferred_index as usize, entry_ref));
+                return Some((preferred_index, entry_ref));
             }
         }
 
-        bitmap = if LEN == 32 {
-            bitmap.rotate_right(preferred_index) & (!1_u32)
+        bitmap = if LEN == CELL_LEN {
+            bitmap.rotate_right(preferred_index as u32) & (!1_u32)
         } else {
-            u32::from((bitmap as u8).rotate_right(preferred_index) & (!1_u8))
+            u32::from((bitmap as u8).rotate_right(preferred_index as u32) & (!1_u8))
         };
         let mut offset = bitmap.trailing_zeros();
         while offset != 32 {
-            let index = (preferred_index + offset) % len;
-            if metadata.partial_hash_array[index as usize] == partial_hash {
-                let entry_ptr = data_array[index as usize].as_ptr();
+            let index = (preferred_index + offset as usize) % LEN;
+            if metadata.partial_hash_array[index] == partial_hash {
+                let entry_ptr = data_array[index].as_ptr();
                 let entry_ref = unsafe { &(*entry_ptr) };
                 if entry_ref.0.borrow() == key {
-                    return Some((index as usize, entry_ref));
+                    return Some((index, entry_ref));
                 }
             }
             bitmap &= !(1_u32 << offset);
@@ -395,7 +385,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryPtr<'b, K, V, 
                 .0
         };
         if let Some(data_array) = old_data_array {
-            data_array.release(barrier);
+            let _ = data_array.release(barrier);
         }
 
         if self.current_link_ptr.is_null() {
@@ -492,14 +482,14 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         &self,
         data_block: &'b DataBlock<K, V>,
         key: &Q,
-        hash: u64,
+        partial_hash: u8,
         barrier: &'b Barrier,
     ) -> EntryPtr<'b, K, V, LOCK_FREE>
     where
         K: Borrow<Q>,
         Q: Eq + ?Sized,
     {
-        self.cell.get(data_block, key, hash, barrier)
+        self.cell.get(data_block, key, partial_hash, barrier)
     }
 
     /// Inserts a new key-value pair into the [`Cell`] without a uniqueness check.
@@ -688,7 +678,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         self.cell.num_entries = 0;
         if !self.cell.metadata.link.load(Acquire, barrier).is_null() {
             if let Some(data_array) = self.cell.metadata.link.swap((None, Tag::None), Relaxed).0 {
-                data_array.release(barrier);
+                let _ = data_array.release(barrier);
             }
         }
     }
