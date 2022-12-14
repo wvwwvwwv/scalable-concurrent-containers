@@ -14,7 +14,7 @@ use std::sync::atomic::Ordering::Relaxed;
 /// [`CellArray`] is a special purpose array being initialized by zero.
 pub struct CellArray<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
     cell_ptr: *const Cell<K, V, LOCK_FREE>,
-    data_block_ptr: *const DataBlock<K, V>,
+    data_block_ptr: *const DataBlock<K, V, CELL_LEN>,
     array_len: usize,
     hash_offset: u16,
     sample_size: u16,
@@ -59,12 +59,13 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             let cell_array_ptr_offset = cell_array_ptr_offset as u32;
 
             let data_block_array_layout = Layout::from_size_align(
-                size_of::<DataBlock<K, V>>() * array_len,
-                align_of::<[DataBlock<K, V>; 0]>(),
+                size_of::<DataBlock<K, V, CELL_LEN>>() * array_len,
+                align_of::<[DataBlock<K, V, CELL_LEN>; 0]>(),
             )
             .unwrap();
 
-            let data_block_array_ptr = alloc(data_block_array_layout).cast::<DataBlock<K, V>>();
+            let data_block_array_ptr =
+                alloc(data_block_array_layout).cast::<DataBlock<K, V, CELL_LEN>>();
             assert!(
                 !data_block_array_ptr.is_null(),
                 "memory allocation failure: {} bytes",
@@ -101,7 +102,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
 
     /// Returns a reference to a [`DataBlock`] at the given position.
     #[inline]
-    pub(crate) fn data_block(&self, index: usize) -> &DataBlock<K, V> {
+    pub(crate) fn data_block(&self, index: usize) -> &DataBlock<K, V, CELL_LEN> {
         debug_assert!(index < self.num_cells());
         unsafe { &(*(self.data_block_ptr.add(index))) }
     }
@@ -392,10 +393,10 @@ impl<K: Eq, V, const LOCK_FREE: bool> Drop for CellArray<K, V, LOCK_FREE> {
                 Self::calculate_memory_layout::<Cell<K, V, LOCK_FREE>>(self.array_len).2,
             );
             dealloc(
-                (self.data_block_ptr as *mut DataBlock<K, V>).cast::<u8>(),
+                (self.data_block_ptr as *mut DataBlock<K, V, CELL_LEN>).cast::<u8>(),
                 Layout::from_size_align(
-                    size_of::<DataBlock<K, V>>() * self.array_len,
-                    align_of::<[DataBlock<K, V>; 0]>(),
+                    size_of::<DataBlock<K, V, CELL_LEN>>() * self.array_len,
+                    align_of::<[DataBlock<K, V, CELL_LEN>; 0]>(),
                 )
                 .unwrap(),
             );

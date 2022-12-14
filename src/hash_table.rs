@@ -291,7 +291,7 @@ where
     ) -> Result<
         (
             Locker<'b, K, V, LOCK_FREE>,
-            &'b DataBlock<K, V>,
+            &'b DataBlock<K, V, CELL_LEN>,
             EntryPtr<'b, K, V, LOCK_FREE>,
         ),
         (),
