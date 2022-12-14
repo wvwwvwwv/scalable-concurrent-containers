@@ -233,7 +233,7 @@ where
         loop {
             // The reasoning behind this loop can be found in `acquire_entry`.
             let current_array = self.current_array_unchecked(barrier);
-            let no_old_array = if let Some(old_array) = current_array.old_array(barrier).as_ref() {
+            let shrinkable = if let Some(old_array) = current_array.old_array(barrier).as_ref() {
                 self.move_entry(current_array, old_array, hash, async_wait, barrier)?
             } else {
                 true
@@ -256,17 +256,15 @@ where
                 );
                 if entry_ptr.is_valid() && condition(&entry_ptr.get(data_block).1) {
                     let result = locker.erase(data_block, &mut entry_ptr);
-                    if no_old_array && cell_index % CELL_LEN == 0 {
-                        let need_shrink = locker.cell().num_entries() < CELL_LEN / 16;
-                        let need_rebuild = LOCK_FREE && locker.cell().need_rebuild();
-                        if need_shrink || need_rebuild {
+                    if shrinkable && cell_index % CELL_LEN == 0 {
+                        if locker.cell().num_entries() < CELL_LEN / 16
+                            && current_array.num_entries() > self.minimum_capacity()
+                        {
                             drop(locker);
-                            if need_shrink && current_array.num_entries() > self.minimum_capacity()
-                            {
-                                self.try_shrink(current_array, cell_index, barrier);
-                            } else if need_rebuild {
-                                self.try_rebuild(current_array, cell_index, barrier);
-                            }
+                            self.try_shrink(current_array, cell_index, barrier);
+                        } else if LOCK_FREE && locker.cell().need_rebuild() {
+                            drop(locker);
+                            self.try_rebuild(current_array, cell_index, barrier);
                         }
                     }
                     return Ok((result, true));
@@ -300,8 +298,6 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        let mut check_resize = true;
-
         // It is guaranteed that the thread reads a consistent snapshot of the current and old
         // array pair by a release memory barrier in the resize function, hence the following
         // procedure is correct.
@@ -318,18 +314,15 @@ where
             // An acquire fence is required to correctly load the contents of the array.
             let current_array = self.current_array_unchecked(barrier);
             if let Some(old_array) = current_array.old_array(barrier).as_ref() {
-                check_resize =
-                    self.move_entry(current_array, old_array, hash, async_wait, barrier)?;
+                self.move_entry(current_array, old_array, hash, async_wait, barrier)?;
             }
 
             let cell_index = current_array.calculate_cell_index(hash);
             let cell = current_array.cell_mut(cell_index);
 
             // Try to resize the array.
-            if cell_index % CELL_LEN == 0 && check_resize && cell.num_entries() >= CELL_LEN {
-                check_resize = false;
+            if cell_index % CELL_LEN == 0 && cell.num_entries() >= CELL_LEN - 1 {
                 self.try_enlarge(current_array, cell_index, cell.num_entries(), barrier);
-                continue;
             }
 
             let lock_result = if let Some(&async_wait) = async_wait.as_ref() {
@@ -438,7 +431,6 @@ where
 
     /// Tries to rebuild the array if there are no usable entry slots in at least half of the
     /// `Cells` in the sampling range.
-    #[inline]
     fn try_rebuild(
         &self,
         array: &CellArray<K, V, LOCK_FREE>,
@@ -549,7 +541,7 @@ where
                 capacity
             };
 
-            // Array::new may not be able to allocate the requested number of cells.
+            // `CellArray::new` may not be able to allocate the requested number of cells.
             if new_capacity != capacity || (LOCK_FREE && rebuild) {
                 self.cell_array().swap(
                     (

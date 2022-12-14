@@ -198,8 +198,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
 
         let preferred_index = usize::from(partial_hash) % LEN;
         if (bitmap & (1_u32 << preferred_index)) != 0 {
-            let entry_ptr = data_block[preferred_index].as_ptr();
-            let entry_ref = unsafe { &(*entry_ptr) };
+            let entry_ref = unsafe { &(*data_block[preferred_index].as_ptr()) };
             if entry_ref.0.borrow() == key {
                 return Some((preferred_index, entry_ref));
             }
@@ -214,8 +213,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         while offset != 32 {
             let index = (preferred_index + offset as usize) % LEN;
             if metadata.partial_hash_array[index] == partial_hash {
-                let entry_ptr = data_block[index].as_ptr();
-                let entry_ref = unsafe { &(*entry_ptr) };
+                let entry_ref = unsafe { &(*data_block[index].as_ptr()) };
                 if entry_ref.0.borrow() == key {
                     return Some((index, entry_ref));
                 }
