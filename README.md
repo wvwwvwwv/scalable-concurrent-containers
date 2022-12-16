@@ -356,7 +356,7 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 ## Performance
 
-Comparison with [DashMap](https://github.com/xacrimon/dashmap) and [flurry](https://github.com/jonhoo/flurry).
+Comparison with [DashMap](https://github.com/xacrimon/dashmap).
 
 - [Results on Apple M1 (8 cores)](https://github.com/wvwwvwwv/conc-map-bench).
 - [Results on Intel Xeon (88 cores)](https://github.com/wvwwvwwv/conc-map-bench/tree/Intel).
