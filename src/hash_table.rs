@@ -20,11 +20,8 @@ where
     V: 'static + Sync,
     H: BuildHasher,
 {
-    /// Returns the default capacity.
-    #[inline]
-    fn default_capacity() -> usize {
-        CELL_LEN * 2
-    }
+    /// The default capacity.
+    const DEFAULT_CAPACITY: usize = CELL_LEN * 2;
 
     /// Returns the hash value of the given key.
     #[inline]

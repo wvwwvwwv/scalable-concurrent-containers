@@ -68,10 +68,10 @@ where
     pub fn with_hasher(build_hasher: H) -> HashIndex<K, V, H> {
         HashIndex {
             array: AtomicArc::from(Arc::new(CellArray::<K, V, true>::new(
-                Self::default_capacity(),
+                Self::DEFAULT_CAPACITY,
                 AtomicArc::null(),
             ))),
-            minimum_capacity: Self::default_capacity(),
+            minimum_capacity: Self::DEFAULT_CAPACITY,
             resize_mutex: AtomicU8::new(0),
             build_hasher,
         }
@@ -95,7 +95,7 @@ where
     /// ```
     #[inline]
     pub fn with_capacity_and_hasher(capacity: usize, build_hasher: H) -> HashIndex<K, V, H> {
-        let initial_capacity = capacity.max(Self::default_capacity());
+        let initial_capacity = capacity.max(Self::DEFAULT_CAPACITY);
         HashIndex {
             array: AtomicArc::from(Arc::new(CellArray::<K, V, true>::new(
                 initial_capacity,
@@ -764,7 +764,7 @@ where
     #[inline]
     #[must_use]
     pub fn with_capacity(capacity: usize) -> HashIndex<K, V, RandomState> {
-        let initial_capacity = capacity.max(Self::default_capacity());
+        let initial_capacity = capacity.max(Self::DEFAULT_CAPACITY);
         HashIndex {
             array: AtomicArc::from(Arc::new(CellArray::<K, V, true>::new(
                 initial_capacity,
@@ -800,10 +800,10 @@ where
     fn default() -> Self {
         HashIndex {
             array: AtomicArc::from(Arc::new(CellArray::<K, V, true>::new(
-                Self::default_capacity(),
+                Self::DEFAULT_CAPACITY,
                 AtomicArc::null(),
             ))),
-            minimum_capacity: Self::default_capacity(),
+            minimum_capacity: Self::DEFAULT_CAPACITY,
             resize_mutex: AtomicU8::new(0),
             build_hasher: RandomState::new(),
         }
