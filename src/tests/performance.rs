@@ -279,10 +279,7 @@ mod benchmark {
             };
             let (duration, total_num_operations) =
                 perform(num_threads, 0, hashmap.clone(), insert.clone());
-            println!(
-                "hashmap-insert-local: {}, {:?}, {}",
-                num_threads, duration, total_num_operations
-            );
+            println!("hashmap-insert-local: {num_threads}, {duration:?}, {total_num_operations}");
             assert_eq!(hashmap.len(), workload_size * num_threads);
 
             // 2. scan
@@ -298,10 +295,7 @@ mod benchmark {
             };
             let (duration, total_num_operations) =
                 perform(num_threads, 0, hashmap.clone(), scan.clone());
-            println!(
-                "hashmap-scan: {}, {:?}, {}",
-                num_threads, duration, total_num_operations
-            );
+            println!("hashmap-scan: {num_threads}, {duration:?}, {total_num_operations}");
 
             // 3. read-local
             let read = Workload {
@@ -316,10 +310,7 @@ mod benchmark {
             };
             let (duration, total_num_operations) =
                 perform(num_threads, 0, hashmap.clone(), read.clone());
-            println!(
-                "hashmap-read-local: {}, {:?}, {}",
-                num_threads, duration, total_num_operations
-            );
+            println!("hashmap-read-local: {num_threads}, {duration:?}, {total_num_operations}");
 
             // 4. remove-local
             let remove = Workload {
@@ -334,10 +325,7 @@ mod benchmark {
             };
             let (duration, total_num_operations) =
                 perform(num_threads, 0, hashmap.clone(), remove.clone());
-            println!(
-                "hashmap-remove-local: {}, {:?}, {}",
-                num_threads, duration, total_num_operations
-            );
+            println!("hashmap-remove-local: {num_threads}, {duration:?}, {total_num_operations}");
             assert_eq!(hashmap.len(), 0);
 
             // 5. insert-local-remote
@@ -354,8 +342,7 @@ mod benchmark {
             let (duration, total_num_operations) =
                 perform(num_threads, 0, hashmap.clone(), insert.clone());
             println!(
-                "hashmap-insert-local-remote: {}, {:?}, {}",
-                num_threads, duration, total_num_operations
+                "hashmap-insert-local-remote: {num_threads}, {duration:?}, {total_num_operations}"
             );
             assert_eq!(hashmap.len(), workload_size * num_threads);
 
@@ -376,10 +363,7 @@ mod benchmark {
                 hashmap.clone(),
                 mixed.clone(),
             );
-            println!(
-                "hashmap-mixed: {}, {:?}, {}",
-                num_threads, duration, total_num_operations
-            );
+            println!("hashmap-mixed: {num_threads}, {duration:?}, {total_num_operations}");
             assert_eq!(hashmap.len(), workload_size * num_threads);
 
             // 7. remove-local-remote
@@ -396,8 +380,7 @@ mod benchmark {
             let (duration, total_num_operations) =
                 perform(num_threads, 0, hashmap.clone(), remove.clone());
             println!(
-                "hashmap-remove-local-remote: {}, {:?}, {}",
-                num_threads, duration, total_num_operations
+                "hashmap-remove-local-remote: {num_threads}, {duration:?}, {total_num_operations}"
             );
             assert_eq!(hashmap.len(), 0);
         }
@@ -426,10 +409,7 @@ mod benchmark {
             };
             let (duration, total_num_operations) =
                 perform(num_threads, 0, hashindex.clone(), insert.clone());
-            println!(
-                "hashindex-insert-local: {}, {:?}, {}",
-                num_threads, duration, total_num_operations
-            );
+            println!("hashindex-insert-local: {num_threads}, {duration:?}, {total_num_operations}");
             assert_eq!(hashindex.len(), workload_size * num_threads);
 
             // 2. scan
@@ -445,10 +425,7 @@ mod benchmark {
             };
             let (duration, total_num_operations) =
                 perform(num_threads, 0, hashindex.clone(), scan.clone());
-            println!(
-                "hashindex-scan: {}, {:?}, {}",
-                num_threads, duration, total_num_operations
-            );
+            println!("hashindex-scan: {num_threads}, {duration:?}, {total_num_operations}");
 
             // 3. read-local
             let read = Workload {
@@ -463,10 +440,7 @@ mod benchmark {
             };
             let (duration, total_num_operations) =
                 perform(num_threads, 0, hashindex.clone(), read.clone());
-            println!(
-                "hashindex-read-local: {}, {:?}, {}",
-                num_threads, duration, total_num_operations
-            );
+            println!("hashindex-read-local: {num_threads}, {duration:?}, {total_num_operations}");
 
             // 4. remove-local
             let remove = Workload {
@@ -481,10 +455,7 @@ mod benchmark {
             };
             let (duration, total_num_operations) =
                 perform(num_threads, 0, hashindex.clone(), remove.clone());
-            println!(
-                "hashindex-remove-local: {}, {:?}, {}",
-                num_threads, duration, total_num_operations
-            );
+            println!("hashindex-remove-local: {num_threads}, {duration:?}, {total_num_operations}");
             assert_eq!(hashindex.len(), 0);
 
             // 5. insert-local-remote
@@ -501,8 +472,7 @@ mod benchmark {
             let (duration, total_num_operations) =
                 perform(num_threads, 0, hashindex.clone(), insert.clone());
             println!(
-                "hashindex-insert-local-remote: {}, {:?}, {}",
-                num_threads, duration, total_num_operations
+                "hashindex-insert-local-remote: {num_threads}, {duration:?}, {total_num_operations}"
             );
             assert_eq!(hashindex.len(), workload_size * num_threads);
 
@@ -523,10 +493,7 @@ mod benchmark {
                 hashindex.clone(),
                 mixed.clone(),
             );
-            println!(
-                "hashindex-mixed: {}, {:?}, {}",
-                num_threads, duration, total_num_operations
-            );
+            println!("hashindex-mixed: {num_threads}, {duration:?}, {total_num_operations}");
             assert_eq!(hashindex.len(), workload_size * num_threads);
 
             // 7. remove-local-remote
@@ -543,8 +510,7 @@ mod benchmark {
             let (duration, total_num_operations) =
                 perform(num_threads, 0, hashindex.clone(), remove.clone());
             println!(
-                "hashindex-remove-local-remote: {}, {:?}, {}",
-                num_threads, duration, total_num_operations
+                "hashindex-remove-local-remote: {num_threads}, {duration:?}, {total_num_operations}"
             );
             assert_eq!(hashindex.len(), 0);
         }
@@ -593,10 +559,7 @@ mod benchmark {
             };
             let (duration, total_num_operations) =
                 perform(num_threads, 0, treeindex.clone(), scan.clone());
-            println!(
-                "treeindex-scan: {}, {:?}, {}",
-                num_threads, duration, total_num_operations
-            );
+            println!("treeindex-scan: {num_threads}, {duration:?}, {total_num_operations}");
 
             // 3. read-local
             let read = Workload {
@@ -611,10 +574,7 @@ mod benchmark {
             };
             let (duration, total_num_operations) =
                 perform(num_threads, 0, treeindex.clone(), read.clone());
-            println!(
-                "treeindex-read-local: {}, {:?}, {}",
-                num_threads, duration, total_num_operations
-            );
+            println!("treeindex-read-local: {num_threads}, {duration:?}, {total_num_operations}");
 
             // 4. remove-local
             let remove = Workload {
@@ -629,10 +589,7 @@ mod benchmark {
             };
             let (duration, total_num_operations) =
                 perform(num_threads, 0, treeindex.clone(), remove.clone());
-            println!(
-                "treeindex-remove-local: {}, {:?}, {}",
-                num_threads, duration, total_num_operations
-            );
+            println!("treeindex-remove-local: {num_threads}, {duration:?}, {total_num_operations}");
             assert_eq!(treeindex.len(), 0);
 
             // 5. insert-local-remote
@@ -674,10 +631,7 @@ mod benchmark {
                 treeindex.clone(),
                 mixed.clone(),
             );
-            println!(
-                "treeindex-mixed: {}, {:?}, {}",
-                num_threads, duration, total_num_operations
-            );
+            println!("treeindex-mixed: {num_threads}, {duration:?}, {total_num_operations}");
 
             // 7. remove-local-remote
             let remove = Workload {
@@ -693,8 +647,7 @@ mod benchmark {
             let (duration, total_num_operations) =
                 perform(num_threads, 0, treeindex.clone(), remove.clone());
             println!(
-                "treeindex-remove-local-remote: {}, {:?}, {}",
-                num_threads, duration, total_num_operations
+                "treeindex-remove-local-remote: {num_threads}, {duration:?}, {total_num_operations}"
             );
         }
     }
@@ -887,10 +840,7 @@ mod benchmark_async {
             };
             let (duration, total_num_operations) =
                 hashmap_perform(num_tasks, 0, hashmap.clone(), insert.clone()).await;
-            println!(
-                "hashmap-insert-local: {}, {:?}, {}",
-                num_tasks, duration, total_num_operations
-            );
+            println!("hashmap-insert-local: {num_tasks}, {duration:?}, {total_num_operations}");
             assert_eq!(hashmap.len(), workload_size * num_tasks);
 
             // 2. scan
@@ -906,10 +856,7 @@ mod benchmark_async {
             };
             let (duration, total_num_operations) =
                 hashmap_perform(num_tasks, 0, hashmap.clone(), scan.clone()).await;
-            println!(
-                "hashmap-scan: {}, {:?}, {}",
-                num_tasks, duration, total_num_operations
-            );
+            println!("hashmap-scan: {num_tasks}, {duration:?}, {total_num_operations}");
 
             // 3. read-local
             let read = Workload {
@@ -924,10 +871,7 @@ mod benchmark_async {
             };
             let (duration, total_num_operations) =
                 hashmap_perform(num_tasks, 0, hashmap.clone(), read.clone()).await;
-            println!(
-                "hashmap-read-local: {}, {:?}, {}",
-                num_tasks, duration, total_num_operations
-            );
+            println!("hashmap-read-local: {num_tasks}, {duration:?}, {total_num_operations}");
 
             // 4. remove-local
             let remove = Workload {
@@ -942,10 +886,7 @@ mod benchmark_async {
             };
             let (duration, total_num_operations) =
                 hashmap_perform(num_tasks, 0, hashmap.clone(), remove.clone()).await;
-            println!(
-                "hashmap-remove-local: {}, {:?}, {}",
-                num_tasks, duration, total_num_operations
-            );
+            println!("hashmap-remove-local: {num_tasks}, {duration:?}, {total_num_operations}");
             assert_eq!(hashmap.len(), 0);
 
             // 5. insert-local-remote
@@ -962,8 +903,7 @@ mod benchmark_async {
             let (duration, total_num_operations) =
                 hashmap_perform(num_tasks, 0, hashmap.clone(), insert.clone()).await;
             println!(
-                "hashmap-insert-local-remote: {}, {:?}, {}",
-                num_tasks, duration, total_num_operations
+                "hashmap-insert-local-remote: {num_tasks}, {duration:?}, {total_num_operations}"
             );
             assert_eq!(hashmap.len(), workload_size * num_tasks);
 
@@ -985,10 +925,7 @@ mod benchmark_async {
                 mixed.clone(),
             )
             .await;
-            println!(
-                "hashmap-mixed: {}, {:?}, {}",
-                num_tasks, duration, total_num_operations
-            );
+            println!("hashmap-mixed: {num_tasks}, {duration:?}, {total_num_operations}");
             assert_eq!(hashmap.len(), workload_size * num_tasks);
 
             // 7. remove-local-remote
@@ -1005,8 +942,7 @@ mod benchmark_async {
             let (duration, total_num_operations) =
                 hashmap_perform(num_tasks, 0, hashmap.clone(), remove.clone()).await;
             println!(
-                "hashmap-remove-local-remote: {}, {:?}, {}",
-                num_tasks, duration, total_num_operations
+                "hashmap-remove-local-remote: {num_tasks}, {duration:?}, {total_num_operations}"
             );
             assert_eq!(hashmap.len(), 0);
         }
@@ -1134,10 +1070,7 @@ mod benchmark_async {
             };
             let (duration, total_num_operations) =
                 hashindex_perform(num_tasks, 0, hashindex.clone(), insert.clone()).await;
-            println!(
-                "hashindex-insert-local: {}, {:?}, {}",
-                num_tasks, duration, total_num_operations
-            );
+            println!("hashindex-insert-local: {num_tasks}, {duration:?}, {total_num_operations}");
             assert_eq!(hashindex.len(), workload_size * num_tasks);
 
             // 2. scan
@@ -1153,10 +1086,7 @@ mod benchmark_async {
             };
             let (duration, total_num_operations) =
                 hashindex_perform(num_tasks, 0, hashindex.clone(), scan.clone()).await;
-            println!(
-                "hashindex-scan: {}, {:?}, {}",
-                num_tasks, duration, total_num_operations
-            );
+            println!("hashindex-scan: {num_tasks}, {duration:?}, {total_num_operations}");
 
             // 3. read-local
             let read = Workload {
@@ -1171,10 +1101,7 @@ mod benchmark_async {
             };
             let (duration, total_num_operations) =
                 hashindex_perform(num_tasks, 0, hashindex.clone(), read.clone()).await;
-            println!(
-                "hashindex-read-local: {}, {:?}, {}",
-                num_tasks, duration, total_num_operations
-            );
+            println!("hashindex-read-local: {num_tasks}, {duration:?}, {total_num_operations}");
 
             // 4. remove-local
             let remove = Workload {
@@ -1189,10 +1116,7 @@ mod benchmark_async {
             };
             let (duration, total_num_operations) =
                 hashindex_perform(num_tasks, 0, hashindex.clone(), remove.clone()).await;
-            println!(
-                "hashindex-remove-local: {}, {:?}, {}",
-                num_tasks, duration, total_num_operations
-            );
+            println!("hashindex-remove-local: {num_tasks}, {duration:?}, {total_num_operations}");
             assert_eq!(hashindex.len(), 0);
 
             // 5. insert-local-remote
@@ -1209,8 +1133,7 @@ mod benchmark_async {
             let (duration, total_num_operations) =
                 hashindex_perform(num_tasks, 0, hashindex.clone(), insert.clone()).await;
             println!(
-                "hashindex-insert-local-remote: {}, {:?}, {}",
-                num_tasks, duration, total_num_operations
+                "hashindex-insert-local-remote: {num_tasks}, {duration:?}, {total_num_operations}"
             );
             assert_eq!(hashindex.len(), workload_size * num_tasks);
 
@@ -1232,10 +1155,7 @@ mod benchmark_async {
                 mixed.clone(),
             )
             .await;
-            println!(
-                "hashindex-mixed: {}, {:?}, {}",
-                num_tasks, duration, total_num_operations
-            );
+            println!("hashindex-mixed: {num_tasks}, {duration:?}, {total_num_operations}");
             assert_eq!(hashindex.len(), workload_size * num_tasks);
 
             // 7. remove-local-remote
@@ -1252,8 +1172,7 @@ mod benchmark_async {
             let (duration, total_num_operations) =
                 hashindex_perform(num_tasks, 0, hashindex.clone(), remove.clone()).await;
             println!(
-                "hashindex-remove-local-remote: {}, {:?}, {}",
-                num_tasks, duration, total_num_operations
+                "hashindex-remove-local-remote: {num_tasks}, {duration:?}, {total_num_operations}"
             );
             assert_eq!(hashindex.len(), 0);
         }
@@ -1402,10 +1321,7 @@ mod benchmark_async {
             };
             let (duration, total_num_operations) =
                 treeindex_perform(num_tasks, 0, treeindex.clone(), scan.clone()).await;
-            println!(
-                "treeindex-scan: {}, {:?}, {}",
-                num_tasks, duration, total_num_operations,
-            );
+            println!("treeindex-scan: {num_tasks}, {duration:?}, {total_num_operations}",);
 
             // 3. read-local
             let read = Workload {
@@ -1420,10 +1336,7 @@ mod benchmark_async {
             };
             let (duration, total_num_operations) =
                 treeindex_perform(num_tasks, 0, treeindex.clone(), read.clone()).await;
-            println!(
-                "treeindex-read-local: {}, {:?}, {}",
-                num_tasks, duration, total_num_operations,
-            );
+            println!("treeindex-read-local: {num_tasks}, {duration:?}, {total_num_operations}",);
 
             // 4. remove-local
             let remove = Workload {
@@ -1438,10 +1351,7 @@ mod benchmark_async {
             };
             let (duration, total_num_operations) =
                 treeindex_perform(num_tasks, 0, treeindex.clone(), remove.clone()).await;
-            println!(
-                "treeindex-remove-local: {}, {:?}, {}",
-                num_tasks, duration, total_num_operations,
-            );
+            println!("treeindex-remove-local: {num_tasks}, {duration:?}, {total_num_operations}",);
             assert_eq!(treeindex.len(), 0);
 
             // 5. insert-local-remote
@@ -1484,10 +1394,7 @@ mod benchmark_async {
                 mixed.clone(),
             )
             .await;
-            println!(
-                "treeindex-mixed: {}, {:?}, {}",
-                num_tasks, duration, total_num_operations,
-            );
+            println!("treeindex-mixed: {num_tasks}, {duration:?}, {total_num_operations}",);
             assert_eq!(treeindex.len(), workload_size * num_tasks);
 
             // 7. remove-local-remote
@@ -1504,8 +1411,7 @@ mod benchmark_async {
             let (duration, total_num_operations) =
                 treeindex_perform(num_tasks, 0, treeindex.clone(), remove.clone()).await;
             println!(
-                "treeindex-remove-local-remote: {}, {:?}, {}",
-                num_tasks, duration, total_num_operations,
+                "treeindex-remove-local-remote: {num_tasks}, {duration:?}, {total_num_operations}",
             );
             assert_eq!(treeindex.len(), 0);
         }

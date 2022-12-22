@@ -1,13 +1,12 @@
 use super::cell::{Cell, DataBlock, EntryPtr, Locker, CELL_LEN};
 
 use crate::ebr::{AtomicArc, Barrier, Ptr, Tag};
-use crate::wait_queue::AsyncWait;
+use crate::wait_queue::DeriveAsyncWait;
 
 use std::alloc::{alloc, alloc_zeroed, dealloc, Layout};
 use std::borrow::Borrow;
 use std::hash::Hash;
 use std::mem::{align_of, needs_drop, size_of};
-use std::ptr::NonNull;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -146,19 +145,20 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     /// It returns an error if locking failed.
     #[allow(clippy::too_many_arguments)]
     #[inline]
-    pub(crate) fn kill_cell<Q, F: Fn(&Q) -> u64, C: Fn(&K, &V) -> (K, V)>(
+    pub(crate) fn kill_cell<Q, F: Fn(&Q) -> u64, C: Fn(&K, &V) -> (K, V), D>(
         &self,
         old_cell_locker: &mut Locker<K, V, LOCK_FREE>,
         old_cell_index: usize,
         old_array: &CellArray<K, V, LOCK_FREE>,
         hasher: &F,
         copier: &C,
-        async_wait: Option<NonNull<AsyncWait>>,
+        async_wait: &mut D,
         barrier: &Barrier,
     ) -> Result<(), ()>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
+        D: DeriveAsyncWait,
     {
         debug_assert!(!old_cell_locker.cell().killed());
         if old_cell_locker.cell().num_entries() == 0 {
@@ -208,7 +208,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             while max_index <= offset {
                 let target_cell = self.cell_mut(max_index + target_cell_index);
                 let locker = unsafe {
-                    if let Some(&async_wait) = async_wait.as_ref() {
+                    if let Some(async_wait) = async_wait.derive() {
                         Locker::try_lock_or_wait(target_cell, async_wait, barrier)?
                             .unwrap_unchecked()
                     } else {
@@ -241,16 +241,17 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     ///
     /// Returns `true` if `old_array` is null.
     #[inline]
-    pub(crate) fn partial_rehash<Q, F: Fn(&Q) -> u64, C: Fn(&K, &V) -> (K, V)>(
+    pub(crate) fn partial_rehash<Q, F: Fn(&Q) -> u64, C: Fn(&K, &V) -> (K, V), D>(
         &self,
         hasher: F,
         copier: C,
-        async_wait: Option<NonNull<AsyncWait>>,
+        async_wait: &mut D,
         barrier: &Barrier,
     ) -> Result<bool, ()>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
+        D: DeriveAsyncWait,
     {
         if let Some(old_array) = self.old_array(barrier).as_ref() {
             // Assign itself a range of `Cells` to rehash.
@@ -312,13 +313,13 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
 
             for old_cell_index in current..(current + CELL_LEN).min(old_array_num_cells) {
                 let old_cell = old_array.cell_mut(old_cell_index);
-                let lock_result = if let Some(&async_wait) = async_wait.as_ref() {
+                let lock_result = if let Some(async_wait) = async_wait.derive() {
                     Locker::try_lock_or_wait(old_cell, async_wait, barrier)?
                 } else {
                     Locker::lock(old_cell, barrier)
                 };
                 if let Some(mut locker) = lock_result {
-                    self.kill_cell::<Q, F, C>(
+                    self.kill_cell::<Q, F, C, D>(
                         &mut locker,
                         old_cell_index,
                         old_array,

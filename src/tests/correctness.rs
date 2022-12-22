@@ -394,7 +394,7 @@ mod hashmap_test {
                 hashmap.upsert(Data::new(d, checker.clone()), || Data::new(d, checker.clone()), |_, v| *v = Data::new(d + 2, checker.clone()));
             }
             let result = hashmap.clear();
-            assert_eq!(result, range as usize);
+            assert_eq!(result, range);
             assert_eq!(checker.load(Relaxed), 0);
 
             for d in key..(key + range) {
@@ -983,8 +983,8 @@ mod treeindex_test {
                         .filter(|i| tree_copied.remove_if(i, |v| *v == thread_id))
                         .count();
                     assert_eq!(removed_again, 0);
-                    assert_eq!(found, removed, "{} {} {}", inserted, found, removed);
-                    assert_eq!(inserted, found, "{} {} {}", inserted, found, removed);
+                    assert_eq!(found, removed, "{inserted} {found} {removed}");
+                    assert_eq!(inserted, found, "{inserted} {found} {removed}");
                 }
             }));
         }

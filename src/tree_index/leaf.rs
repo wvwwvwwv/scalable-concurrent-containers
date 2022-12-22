@@ -1014,7 +1014,7 @@ mod test {
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn update() {
         let num_excess = 3;
-        let num_tasks = (DIMENSION.num_entries + num_excess) as usize;
+        let num_tasks = DIMENSION.num_entries + num_excess;
         for _ in 0..256 {
             let barrier = Arc::new(sync::Barrier::new(num_tasks));
             let leaf: Arc<Leaf<usize, usize>> = Arc::new(Leaf::new());

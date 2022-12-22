@@ -1,6 +1,6 @@
 use std::future::Future;
 use std::pin::Pin;
-use std::ptr::{addr_of_mut, NonNull};
+use std::ptr::addr_of_mut;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{AcqRel, Relaxed};
 use std::sync::{Condvar, Mutex};
@@ -51,34 +51,33 @@ impl WaitQueue {
     #[inline]
     pub(crate) fn push_async_entry<T, F: FnOnce() -> Result<T, ()>>(
         &self,
-        mut async_wait: NonNull<AsyncWait>,
+        async_wait: &mut AsyncWait,
         f: F,
     ) -> Result<T, ()> {
-        let async_wait_mut = unsafe { async_wait.as_mut() };
-        debug_assert!(async_wait_mut.mutex.is_none());
+        debug_assert!(async_wait.mutex.is_none());
 
         let mut current = self.wait_queue.load(Relaxed);
-        async_wait_mut.next = current;
-        async_wait_mut.mutex.replace(Mutex::new((false, None)));
+        async_wait.next = current;
+        async_wait.mutex.replace(Mutex::new((false, None)));
 
         while let Err(actual) = self.wait_queue.compare_exchange(
             current,
-            (async_wait.as_ptr() as usize) | ASYNC,
+            (async_wait as *mut AsyncWait as usize) | ASYNC,
             AcqRel,
             Relaxed,
         ) {
             current = actual;
-            async_wait_mut.next = current;
+            async_wait.next = current;
         }
 
         // Execute the closure.
         if let Ok(result) = f() {
             self.signal();
-            if async_wait_mut.try_wait() {
-                async_wait_mut.mutex.take();
+            if async_wait.try_wait() {
+                async_wait.mutex.take();
                 return Ok(result);
             }
-            // Another task is waking up `async_wait_mut`: dispose of `result`.
+            // Another task is waking up `async_wait`: dispose of `result`.
         }
 
         // The caller has to await.
@@ -92,18 +91,38 @@ impl WaitQueue {
         while (current & (!ASYNC)) != 0 {
             if (current & ASYNC) == 0 {
                 // Synchronous.
-                let entry_ref = unsafe { &*SyncWait::reinterpret(current) };
+                let entry_ref = unsafe { &*(current as *mut SyncWait) };
                 let next = entry_ref.next;
                 entry_ref.signal();
                 current = next;
             } else {
                 // Asynchronous.
-                let entry_ref = unsafe { &*AsyncWait::reinterpret(current & (!ASYNC)) };
+                let entry_ref = unsafe { &*((current & (!ASYNC)) as *mut AsyncWait) };
                 let next = entry_ref.next;
                 entry_ref.signal();
                 current = next;
             }
         }
+    }
+}
+
+/// [`DeriveAsyncWait`] derives a mutable reference to [`AsyncWait`].
+pub(crate) trait DeriveAsyncWait {
+    /// Returns a mutable reference to [`AsyncWait`] if available.
+    fn derive(&mut self) -> Option<&mut AsyncWait>;
+}
+
+impl DeriveAsyncWait for Pin<&mut AsyncWait> {
+    #[inline]
+    fn derive(&mut self) -> Option<&mut AsyncWait> {
+        unsafe { Some(self.as_mut().get_unchecked_mut()) }
+    }
+}
+
+impl DeriveAsyncWait for () {
+    #[inline]
+    fn derive(&mut self) -> Option<&mut AsyncWait> {
+        None
     }
 }
 
@@ -115,12 +134,6 @@ pub(crate) struct AsyncWait {
 }
 
 impl AsyncWait {
-    /// Returns its pointer value.
-    #[inline]
-    pub(crate) fn mut_ptr(&mut self) -> *mut AsyncWait {
-        addr_of_mut!(*self)
-    }
-
     /// Sends a signal.
     fn signal(&self) {
         if let Some(mutex) = self.mutex.as_ref() {
@@ -146,16 +159,12 @@ impl AsyncWait {
         }
         false
     }
-
-    /// Reinterprets `usize` as `*mut AsyncWait`.
-    unsafe fn reinterpret(val: usize) -> *mut AsyncWait {
-        val as *mut AsyncWait
-    }
 }
 
 impl Future for AsyncWait {
     type Output = ();
 
+    #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if let Some(mutex) = self.mutex.as_ref() {
             if let Ok(mut locked) = mutex.lock() {
@@ -206,10 +215,5 @@ impl SyncWait {
         let mut completed = self.mutex.lock().unwrap();
         *completed = true;
         self.condvar.notify_one();
-    }
-
-    /// Reinterpret `usize` as `*mut SyncWait`.
-    unsafe fn reinterpret(val: usize) -> *mut SyncWait {
-        val as *mut SyncWait
     }
 }

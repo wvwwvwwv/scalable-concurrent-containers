@@ -3,10 +3,9 @@ use super::leaf::{InsertResult, RemoveResult, Scanner};
 use super::leaf_node::{self, LeafNode};
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
-use crate::wait_queue::AsyncWait;
+use crate::wait_queue::DeriveAsyncWait;
 
 use std::borrow::Borrow;
-use std::ptr::NonNull;
 use std::sync::atomic::Ordering::{self, Acquire, Relaxed, Release};
 
 /// [`Type`] indicates the type of a [`Node`].
@@ -119,11 +118,11 @@ where
 
     /// Inserts a key-value pair.
     #[inline]
-    pub(super) fn insert(
+    pub(super) fn insert<D: DeriveAsyncWait>(
         &self,
         key: K,
         value: V,
-        async_wait: Option<NonNull<AsyncWait>>,
+        async_wait: &mut D,
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
         match &self.node {
@@ -134,30 +133,31 @@ where
 
     /// Removes an entry associated with the given key.
     #[inline]
-    pub(super) fn remove_if<Q, F: FnMut(&V) -> bool>(
+    pub(super) fn remove_if<Q, F: FnMut(&V) -> bool, D>(
         &self,
         key: &Q,
         condition: &mut F,
-        async_wait: Option<NonNull<AsyncWait>>,
+        async_wait: &mut D,
         barrier: &Barrier,
     ) -> Result<RemoveResult, bool>
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
+        D: DeriveAsyncWait,
     {
         match &self.node {
             Type::Internal(internal_node) => {
-                internal_node.remove_if::<_, _>(key, condition, async_wait, barrier)
+                internal_node.remove_if::<_, _, _>(key, condition, async_wait, barrier)
             }
             Type::Leaf(leaf_node) => {
-                leaf_node.remove_if::<_, _>(key, condition, async_wait, barrier)
+                leaf_node.remove_if::<_, _, _>(key, condition, async_wait, barrier)
             }
         }
     }
 
     /// Splits the current root node.
     #[inline]
-    pub(super) fn split_root<const ASYNC: bool>(
+    pub(super) fn split_root(
         key: K,
         value: V,
         root: &AtomicArc<Node<K, V>>,
@@ -175,7 +175,7 @@ where
                 root.load(Relaxed, barrier),
                 &internal_node.unbounded_child,
                 true,
-                None,
+                &mut (),
                 barrier,
             );
             let Ok(InsertResult::Retry(key, value)) = result else { unreachable!() };
@@ -202,9 +202,9 @@ where
     ///
     /// Returns an error if a conflict is detected.
     #[inline]
-    pub(super) fn remove_root(
+    pub(super) fn remove_root<D: DeriveAsyncWait>(
         root: &AtomicArc<Node<K, V>>,
-        async_wait: Option<NonNull<AsyncWait>>,
+        async_wait: &mut D,
         barrier: &Barrier,
     ) -> Result<bool, ()> {
         let root_ptr = root.load(Acquire, barrier);

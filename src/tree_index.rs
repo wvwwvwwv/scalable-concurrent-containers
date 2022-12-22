@@ -18,7 +18,6 @@ use std::iter::FusedIterator;
 use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::ops::RangeBounds;
 use std::pin::Pin;
-use std::ptr::NonNull;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 
 /// Scalable concurrent B+ tree.
@@ -98,7 +97,7 @@ where
         loop {
             let barrier = Barrier::new();
             if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
-                match root_ref.insert(key, value, None, &barrier) {
+                match root_ref.insert(key, value, &mut (), &barrier) {
                     Ok(r) => match r {
                         InsertResult::Success => return Ok(()),
                         InsertResult::Frozen(k, v) | InsertResult::Retry(k, v) => {
@@ -108,7 +107,7 @@ where
                         }
                         InsertResult::Duplicate(k, v) => return Err((k, v)),
                         InsertResult::Full(k, v) => {
-                            let (k, v) = Node::split_root::<false>(k, v, &self.root, &barrier);
+                            let (k, v) = Node::split_root(k, v, &self.root, &barrier);
                             key = k;
                             value = v;
                             continue;
@@ -116,7 +115,7 @@ where
                         InsertResult::Retired(k, v) => {
                             key = k;
                             value = v;
-                            let _result = Node::remove_root(&self.root, None, &barrier);
+                            let _result = Node::remove_root(&self.root, &mut (), &barrier);
                         }
                     },
                     Err((k, v)) => {
@@ -162,12 +161,7 @@ where
             let need_await = {
                 let barrier = Barrier::new();
                 if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
-                    match root_ref.insert(
-                        key,
-                        value,
-                        NonNull::new(async_wait_pinned.mut_ptr()),
-                        &barrier,
-                    ) {
+                    match root_ref.insert(key, value, &mut async_wait_pinned, &barrier) {
                         Ok(r) => match r {
                             InsertResult::Success => return Ok(()),
                             InsertResult::Frozen(k, v) | InsertResult::Retry(k, v) => {
@@ -178,7 +172,7 @@ where
                             }
                             InsertResult::Duplicate(k, v) => return Err((k, v)),
                             InsertResult::Full(k, v) => {
-                                let (k, v) = Node::split_root::<true>(k, v, &self.root, &barrier);
+                                let (k, v) = Node::split_root(k, v, &self.root, &barrier);
                                 key = k;
                                 value = v;
                                 continue;
@@ -187,11 +181,7 @@ where
                                 key = k;
                                 value = v;
                                 !matches!(
-                                    Node::remove_root(
-                                        &self.root,
-                                        NonNull::new(async_wait_pinned.mut_ptr()),
-                                        &barrier
-                                    ),
+                                    Node::remove_root(&self.root, &mut async_wait_pinned, &barrier),
                                     Ok(true)
                                 )
                             }
@@ -288,7 +278,7 @@ where
         loop {
             let barrier = Barrier::new();
             if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
-                match root_ref.remove_if::<_, _>(key_ref, &mut condition, None, &barrier) {
+                match root_ref.remove_if::<_, _, _>(key_ref, &mut condition, &mut (), &barrier) {
                     Ok(r) => match r {
                         RemoveResult::Success => return true,
                         RemoveResult::Cleanup => {
@@ -296,7 +286,8 @@ where
                             return true;
                         }
                         RemoveResult::Retired => {
-                            if matches!(Node::remove_root(&self.root, None, &barrier), Ok(true)) {
+                            if matches!(Node::remove_root(&self.root, &mut (), &barrier), Ok(true))
+                            {
                                 return true;
                             }
                             has_been_removed = true;
@@ -345,10 +336,10 @@ where
             {
                 let barrier = Barrier::new();
                 if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
-                    match root_ref.remove_if::<_, _>(
+                    match root_ref.remove_if::<_, _, _>(
                         key_ref,
                         &mut condition,
-                        NonNull::new(async_wait_pinned.mut_ptr()),
+                        &mut async_wait_pinned,
                         &barrier,
                     ) {
                         Ok(r) => match r {
@@ -359,11 +350,7 @@ where
                             }
                             RemoveResult::Retired => {
                                 if matches!(
-                                    Node::remove_root(
-                                        &self.root,
-                                        NonNull::new(async_wait_pinned.mut_ptr()),
-                                        &barrier
-                                    ),
+                                    Node::remove_root(&self.root, &mut async_wait_pinned, &barrier),
                                     Ok(true)
                                 ) {
                                     return true;

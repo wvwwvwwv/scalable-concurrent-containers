@@ -2,12 +2,12 @@ use super::leaf::{InsertResult, RemoveResult, Scanner, DIMENSION};
 use super::Leaf;
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
-use crate::wait_queue::{AsyncWait, WaitQueue};
+use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
 use crate::LinkedList;
 
 use std::borrow::Borrow;
 use std::cmp::Ordering::{Equal, Greater, Less};
-use std::ptr::{addr_of, NonNull};
+use std::ptr::addr_of;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{self, AcqRel, Acquire, Relaxed, Release};
 
@@ -192,11 +192,11 @@ where
     ///
     /// Returns an error if a retry is required.
     #[inline]
-    pub(super) fn insert(
+    pub(super) fn insert<D: DeriveAsyncWait>(
         &self,
         key: K,
         value: V,
-        async_wait: Option<NonNull<AsyncWait>>,
+        async_wait: &mut D,
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
         loop {
@@ -290,11 +290,11 @@ where
     ///
     /// Returns an error if a retry is required with a boolean flag indicating that an entry has been removed.
     #[inline]
-    pub(super) fn remove_if<Q, F: FnMut(&V) -> bool>(
+    pub(super) fn remove_if<Q, F: FnMut(&V) -> bool, D: DeriveAsyncWait>(
         &self,
         key: &Q,
         condition: &mut F,
-        async_wait: Option<NonNull<AsyncWait>>,
+        async_wait: &mut D,
         barrier: &Barrier,
     ) -> Result<RemoveResult, bool>
     where
@@ -586,7 +586,7 @@ where
 
     /// Waits for the lock on the [`LeafNode`] to be released.
     #[inline]
-    pub(super) fn wait(&self, async_wait: Option<NonNull<AsyncWait>>, barrier: &Barrier) {
+    pub(super) fn wait<D: DeriveAsyncWait>(&self, async_wait: &mut D, barrier: &Barrier) {
         let waiter = || {
             let ptr = self.latch.load(Relaxed, barrier);
             if !ptr.is_null() || ptr.tag() == LOCKED {
@@ -596,7 +596,7 @@ where
             Ok(())
         };
 
-        if let Some(&async_wait) = async_wait.as_ref() {
+        if let Some(async_wait) = async_wait.derive() {
             let _result = self.wait_queue.push_async_entry(async_wait, waiter);
         } else {
             let _result = self.wait_queue.wait_sync(waiter);
@@ -609,14 +609,14 @@ where
     ///
     /// Returns an error if retry is required.
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-    fn split_leaf(
+    fn split_leaf<D: DeriveAsyncWait>(
         &self,
         key: K,
         value: V,
         full_leaf_key: Option<&K>,
         full_leaf_ptr: Ptr<Leaf<K, V>>,
         full_leaf: &AtomicArc<Leaf<K, V>>,
-        async_wait: Option<NonNull<AsyncWait>>,
+        async_wait: &mut D,
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
         let new_leaves = if let Ok((_, ptr)) = self.latch.compare_exchange(
@@ -955,7 +955,7 @@ mod test {
             leaf_node.insert(
                 "MY GOODNESS!".to_owned(),
                 "OH MY GOD!!".to_owned(),
-                None,
+                &mut (),
                 &barrier
             ),
             Ok(InsertResult::Success)
@@ -964,7 +964,7 @@ mod test {
             leaf_node.insert(
                 "GOOD DAY".to_owned(),
                 "OH MY GOD!!".to_owned(),
-                None,
+                &mut (),
                 &barrier
             ),
             Ok(InsertResult::Success)
@@ -978,23 +978,28 @@ mod test {
             "OH MY GOD!!"
         );
         assert!(matches!(
-            leaf_node.remove_if::<_, _>("GOOD DAY", &mut |v| v == "OH MY", None, &barrier),
+            leaf_node.remove_if::<_, _, _>("GOOD DAY", &mut |v| v == "OH MY", &mut (), &barrier),
             Ok(RemoveResult::Fail)
         ));
         assert!(matches!(
-            leaf_node.remove_if::<_, _>("GOOD DAY", &mut |v| v == "OH MY GOD!!", None, &barrier),
+            leaf_node.remove_if::<_, _, _>(
+                "GOOD DAY",
+                &mut |v| v == "OH MY GOD!!",
+                &mut (),
+                &barrier
+            ),
             Ok(RemoveResult::Success)
         ));
         assert!(matches!(
-            leaf_node.remove_if::<_, _>("GOOD", &mut |v| v == "OH MY", None, &barrier),
+            leaf_node.remove_if::<_, _, _>("GOOD", &mut |v| v == "OH MY", &mut (), &barrier),
             Ok(RemoveResult::Fail)
         ));
         assert!(matches!(
-            leaf_node.remove_if::<_, _>("MY GOODNESS!", &mut |_| true, None, &barrier),
+            leaf_node.remove_if::<_, _, _>("MY GOODNESS!", &mut |_| true, &mut (), &barrier),
             Ok(RemoveResult::Retired)
         ));
         assert!(matches!(
-            leaf_node.insert("HI".to_owned(), "HO".to_owned(), None, &barrier),
+            leaf_node.insert("HI".to_owned(), "HO".to_owned(), &mut (), &barrier),
             Ok(InsertResult::Retired(..))
         ));
     }
@@ -1004,9 +1009,9 @@ mod test {
         let barrier = Barrier::new();
         let leaf_node: LeafNode<usize, usize> = LeafNode::new();
         for k in 0..1024 {
-            let mut result = leaf_node.insert(k, k, None, &barrier);
+            let mut result = leaf_node.insert(k, k, &mut (), &barrier);
             if result.is_err() {
-                result = leaf_node.insert(k, k, None, &barrier);
+                result = leaf_node.insert(k, k, &mut (), &barrier);
             }
             match result.unwrap() {
                 InsertResult::Success => {
@@ -1021,20 +1026,20 @@ mod test {
                     for r in 0..(k - 1) {
                         assert_eq!(leaf_node.search(&r, &barrier), Some(&r));
                         assert!(leaf_node
-                            .remove_if::<_, _>(&r, &mut |_| true, None, &barrier)
+                            .remove_if::<_, _, _>(&r, &mut |_| true, &mut (), &barrier)
                             .is_ok());
                         assert_eq!(leaf_node.search(&r, &barrier), None);
                     }
                     assert_eq!(leaf_node.search(&(k - 1), &barrier), Some(&(k - 1)));
                     assert_eq!(
-                        leaf_node.remove_if::<_, _>(&(k - 1), &mut |_| true, None, &barrier),
+                        leaf_node.remove_if::<_, _, _>(&(k - 1), &mut |_| true, &mut (), &barrier),
                         Ok(RemoveResult::Retired)
                     );
                     assert_eq!(leaf_node.search(&(k - 1), &barrier), None);
                     break;
                 }
                 InsertResult::Retry(..) => {
-                    assert!(leaf_node.insert(k, k, None, &barrier).is_ok());
+                    assert!(leaf_node.insert(k, k, &mut (), &barrier).is_ok());
                 }
             }
         }
@@ -1048,7 +1053,7 @@ mod test {
         for _ in 0..16 {
             let leaf_node = Arc::new(LeafNode::new());
             assert!(leaf_node
-                .insert(usize::MAX, usize::MAX, None, &Barrier::new())
+                .insert(usize::MAX, usize::MAX, &mut (), &Barrier::new())
                 .is_ok());
             let mut task_handles = Vec::with_capacity(num_tasks);
             for task_id in 0..num_tasks {
@@ -1061,10 +1066,10 @@ mod test {
                     let range = (task_id * workload_size)..((task_id + 1) * workload_size);
                     for id in range.clone() {
                         loop {
-                            if let Ok(r) = leaf_node_cloned.insert(id, id, None, &barrier) {
+                            if let Ok(r) = leaf_node_cloned.insert(id, id, &mut (), &barrier) {
                                 match r {
                                     InsertResult::Success => {
-                                        match leaf_node_cloned.insert(id, id, None, &barrier) {
+                                        match leaf_node_cloned.insert(id, id, &mut (), &barrier) {
                                             Ok(InsertResult::Duplicate(..)) | Err(_) => (),
                                             _ => unreachable!(),
                                         }
@@ -1098,10 +1103,10 @@ mod test {
                         }
                         let mut removed = false;
                         loop {
-                            match leaf_node_cloned.remove_if::<_, _>(
+                            match leaf_node_cloned.remove_if::<_, _, _>(
                                 &id,
                                 &mut |_| true,
-                                None,
+                                &mut (),
                                 &barrier,
                             ) {
                                 Ok(r) => match r {
@@ -1116,9 +1121,12 @@ mod test {
                             }
                         }
                         assert!(leaf_node_cloned.search(&id, &barrier).is_none(), "{}", id);
-                        if let Ok(RemoveResult::Success) =
-                            leaf_node_cloned.remove_if::<_, _>(&id, &mut |_| true, None, &barrier)
-                        {
+                        if let Ok(RemoveResult::Success) = leaf_node_cloned.remove_if::<_, _, _>(
+                            &id,
+                            &mut |_| true,
+                            &mut (),
+                            &barrier,
+                        ) {
                             unreachable!()
                         }
                     }
@@ -1129,7 +1137,7 @@ mod test {
                 assert!(r.is_ok());
             }
             assert!(leaf_node
-                .remove_if::<_, _>(&usize::MAX, &mut |_| true, None, &Barrier::new())
+                .remove_if::<_, _, _>(&usize::MAX, &mut |_| true, &mut (), &Barrier::new())
                 .is_ok());
         }
     }
@@ -1152,7 +1160,7 @@ mod test {
                         {
                             barrier_clone.wait().await;
                             let barrier = Barrier::new();
-                            match leaf_node_clone.insert(k, k, None, &barrier) {
+                            match leaf_node_clone.insert(k, k, &mut (), &barrier) {
                                 Ok(InsertResult::Success) => {
                                     assert!(!inserted_clone.swap(true, Relaxed));
                                 }
@@ -1169,7 +1177,7 @@ mod test {
                                 if i != k {
                                     if let Ok(
                                         InsertResult::Full(_, _) | InsertResult::Retired(_, _),
-                                    ) = leaf_node_clone.insert(i, i, None, &barrier)
+                                    ) = leaf_node_clone.insert(i, i, &mut (), &barrier)
                                     {
                                         leaf_node_clone.rollback(&barrier);
                                     }
@@ -1190,10 +1198,10 @@ mod test {
                                     assert_eq!(*k_ref, *v_ref);
                                     assert!(*k_ref <= k);
                                 }
-                                let _result = leaf_node_clone.remove_if::<_, _>(
+                                let _result = leaf_node_clone.remove_if::<_, _, _>(
                                     &i,
                                     &mut |v| *v != k,
-                                    None,
+                                    &mut (),
                                     &barrier,
                                 );
                                 assert_eq!(leaf_node_clone.search(&k, &barrier).unwrap(), &k);

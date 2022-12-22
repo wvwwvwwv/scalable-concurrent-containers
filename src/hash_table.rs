@@ -5,11 +5,11 @@ use cell::{DataBlock, EntryPtr, Locker, Reader, CELL_LEN};
 use cell_array::CellArray;
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
-use crate::wait_queue::AsyncWait;
+use crate::wait_queue::DeriveAsyncWait;
 
 use std::borrow::Borrow;
 use std::hash::{BuildHasher, Hash, Hasher};
-use std::ptr::{self, NonNull};
+use std::ptr;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
@@ -127,15 +127,15 @@ where
 
     /// Inserts an entry into the [`HashTable`].
     #[inline]
-    fn insert_entry(
+    fn insert_entry<D: DeriveAsyncWait>(
         &self,
         key: K,
         val: V,
         hash: u64,
-        async_wait: Option<NonNull<AsyncWait>>,
+        async_wait: &mut D,
         barrier: &Barrier,
     ) -> Result<Option<(K, V)>, (K, V)> {
-        match self.acquire_entry::<_>(&key, hash, async_wait, barrier) {
+        match self.acquire_entry::<_, _>(&key, hash, async_wait, barrier) {
             Ok((mut locker, data_block, entry_ptr)) => {
                 if entry_ptr.is_valid() {
                     return Ok(Some((key, val)));
@@ -155,16 +155,17 @@ where
 
     /// Reads an entry from the [`HashTable`].
     #[inline]
-    fn read_entry<'b, Q>(
+    fn read_entry<'b, Q, D>(
         &self,
         key: &Q,
         hash: u64,
-        async_wait: Option<NonNull<AsyncWait>>,
+        async_wait: &mut D,
         barrier: &'b Barrier,
     ) -> Result<Option<(&'b K, &'b V)>, ()>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
+        D: DeriveAsyncWait,
     {
         let mut current_array = self.current_array_unchecked(barrier);
         loop {
@@ -184,7 +185,7 @@ where
                     return Ok(Some((&entry.0, &entry.1)));
                 }
             } else {
-                let lock_result = if let Some(&async_wait) = async_wait.as_ref() {
+                let lock_result = if let Some(async_wait) = async_wait.derive() {
                     Reader::try_lock_or_wait(cell, async_wait, barrier)?
                 } else {
                     Reader::lock(cell, barrier)
@@ -215,17 +216,18 @@ where
 
     /// Removes an entry if the condition is met.
     #[inline]
-    fn remove_entry<Q, F: FnMut(&V) -> bool>(
+    fn remove_entry<Q, F: FnMut(&V) -> bool, D>(
         &self,
         key: &Q,
         hash: u64,
         condition: &mut F,
-        async_wait: Option<NonNull<AsyncWait>>,
+        async_wait: &mut D,
         barrier: &Barrier,
     ) -> Result<(Option<(K, V)>, bool), ()>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
+        D: DeriveAsyncWait,
     {
         loop {
             // The reasoning behind this loop can be found in `acquire_entry`.
@@ -238,7 +240,7 @@ where
 
             let cell_index = current_array.calculate_cell_index(hash);
             let cell = current_array.cell_mut(cell_index);
-            let lock_result = if let Some(&async_wait) = async_wait.as_ref() {
+            let lock_result = if let Some(async_wait) = async_wait.derive() {
                 Locker::try_lock_or_wait(cell, async_wait, barrier)?
             } else {
                 Locker::lock(cell, barrier)
@@ -277,11 +279,11 @@ where
     /// otherwise `None` is returned.
     #[allow(clippy::type_complexity)]
     #[inline]
-    fn acquire_entry<'b, Q>(
+    fn acquire_entry<'b, Q, D>(
         &self,
         key: &Q,
         hash: u64,
-        async_wait: Option<NonNull<AsyncWait>>,
+        async_wait: &mut D,
         barrier: &'b Barrier,
     ) -> Result<
         (
@@ -294,6 +296,7 @@ where
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
+        D: DeriveAsyncWait,
     {
         // It is guaranteed that the thread reads a consistent snapshot of the current and old
         // array pair by a release memory barrier in the resize function, hence the following
@@ -322,7 +325,7 @@ where
                 self.try_enlarge(current_array, cell_index, cell.num_entries(), barrier);
             }
 
-            let lock_result = if let Some(&async_wait) = async_wait.as_ref() {
+            let lock_result = if let Some(async_wait) = async_wait.derive() {
                 Locker::try_lock_or_wait(cell, async_wait, barrier)?
             } else {
                 Locker::lock(cell, barrier)
@@ -346,19 +349,20 @@ where
     ///
     /// Returns `true` if no old array is attached to the current one.
     #[inline]
-    fn move_entry<Q>(
+    fn move_entry<Q, D>(
         &self,
         current_array: &CellArray<K, V, LOCK_FREE>,
         old_array: &CellArray<K, V, LOCK_FREE>,
         hash: u64,
-        async_wait: Option<NonNull<AsyncWait>>,
+        async_wait: &mut D,
         barrier: &Barrier,
     ) -> Result<bool, ()>
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
+        D: DeriveAsyncWait,
     {
-        if !current_array.partial_rehash::<Q, _, _>(
+        if !current_array.partial_rehash::<Q, _, _, D>(
             |key| self.hash(key),
             Self::copier,
             async_wait,
@@ -366,13 +370,13 @@ where
         )? {
             let cell_index = old_array.calculate_cell_index(hash);
             let cell = old_array.cell_mut(cell_index);
-            let lock_result = if let Some(&async_wait) = async_wait.as_ref() {
+            let lock_result = if let Some(async_wait) = async_wait.derive() {
                 Locker::try_lock_or_wait(cell, async_wait, barrier)?
             } else {
                 Locker::lock(cell, barrier)
             };
             if let Some(mut locker) = lock_result {
-                current_array.kill_cell::<Q, _, _>(
+                current_array.kill_cell::<Q, _, _, _>(
                     &mut locker,
                     cell_index,
                     old_array,
