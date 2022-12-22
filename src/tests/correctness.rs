@@ -1363,14 +1363,19 @@ mod ebr_test {
     fn atomic_arc_send() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
 
-        let atomic_arc = AtomicArc::new(A(AtomicUsize::new(14), 14, &DESTROYED));
-        let atomic_arc_cloned = atomic_arc.clone(Relaxed, &Barrier::new());
+        let atomic_arc = AtomicArc::new(A(AtomicUsize::new(17), 17, &DESTROYED));
+        assert!(!DESTROYED.load(Relaxed));
+
         let thread = std::thread::spawn(move || {
             let barrier = Barrier::new();
-            let ptr = atomic_arc_cloned.load(Relaxed, &barrier);
-            assert_eq!(ptr.as_ref().unwrap().0.load(Relaxed), 14);
+            let ptr = atomic_arc.load(Relaxed, &barrier);
+            assert_eq!(ptr.as_ref().unwrap().0.load(Relaxed), 17);
         });
         assert!(thread.join().is_ok());
+
+        while !DESTROYED.load(Relaxed) {
+            drop(Barrier::new());
+        }
     }
 
     #[test]

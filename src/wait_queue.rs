@@ -1,6 +1,5 @@
 use std::future::Future;
 use std::pin::Pin;
-use std::ptr::addr_of_mut;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{AcqRel, Relaxed};
 use std::sync::{Condvar, Mutex};
@@ -25,13 +24,16 @@ impl WaitQueue {
     pub(crate) fn wait_sync<T, F: FnOnce() -> Result<T, ()>>(&self, f: F) -> Result<T, ()> {
         let mut current = self.wait_queue.load(Relaxed);
         let mut entry = SyncWait::new(current);
+        let mut entry_mut = Pin::new(&mut entry);
 
-        while let Err(actual) =
-            self.wait_queue
-                .compare_exchange(current, addr_of_mut!(entry) as usize, AcqRel, Relaxed)
-        {
+        while let Err(actual) = self.wait_queue.compare_exchange(
+            current,
+            entry_mut.as_mut().get_mut() as *mut SyncWait as usize,
+            AcqRel,
+            Relaxed,
+        ) {
             current = actual;
-            entry.next = current;
+            entry_mut.next = current;
         }
 
         // Execute the closure.
@@ -40,7 +42,7 @@ impl WaitQueue {
             self.signal();
         }
 
-        entry.wait();
+        entry_mut.wait();
         result
     }
 
@@ -89,19 +91,19 @@ impl WaitQueue {
     pub(crate) fn signal(&self) {
         let mut current = self.wait_queue.swap(0, AcqRel);
         while (current & (!ASYNC)) != 0 {
-            if (current & ASYNC) == 0 {
+            current = if (current & ASYNC) == 0 {
                 // Synchronous.
                 let entry_ref = unsafe { &*(current as *mut SyncWait) };
                 let next = entry_ref.next;
                 entry_ref.signal();
-                current = next;
+                next
             } else {
                 // Asynchronous.
                 let entry_ref = unsafe { &*((current & (!ASYNC)) as *mut AsyncWait) };
                 let next = entry_ref.next;
                 entry_ref.signal();
-                current = next;
-            }
+                next
+            };
         }
     }
 }
@@ -127,6 +129,10 @@ impl DeriveAsyncWait for () {
 }
 
 /// [`AsyncWait`] is inserted into [`WaitQueue`] for the caller to await until woken up.
+///
+/// [`AsyncWait`] has to be pinned outside in order to use it correctly. The type is `Unpin`,
+/// therefore it can be moved, however the [`DeriveAsyncWait`] trait forces [`AsyncWait`] to be
+/// pinned.
 #[derive(Debug, Default)]
 pub(crate) struct AsyncWait {
     next: usize,

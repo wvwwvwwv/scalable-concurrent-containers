@@ -2,7 +2,7 @@ use super::{Collectible, Tag};
 
 use std::panic;
 use std::ptr::{self, NonNull};
-use std::sync::atomic::Ordering::{Acquire, Relaxed, Release, SeqCst};
+use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release, SeqCst};
 use std::sync::atomic::{fence, AtomicPtr, AtomicU8};
 
 /// [`Collector`] is a garbage collector that reclaims thread-locally unreachable instances
@@ -11,8 +11,8 @@ pub(super) struct Collector {
     state: AtomicU8,
     announcement: u8,
     next_epoch_update: u8,
+    has_garbage: bool,
     num_readers: u32,
-    num_instances: usize,
     previous_instance_link: Option<NonNull<dyn Collectible>>,
     current_instance_link: Option<NonNull<dyn Collectible>>,
     next_instance_link: Option<NonNull<dyn Collectible>>,
@@ -30,39 +30,6 @@ impl Collector {
 
     /// A bit field representing a thread state where the thread has been terminated.
     const INVALID: u8 = 1_u8 << 3;
-
-    /// Allocates a new [`Collector`].
-    fn alloc() -> *mut Collector {
-        let boxed = Box::new(Collector {
-            state: AtomicU8::new(Self::INACTIVE),
-            announcement: 0,
-            next_epoch_update: Self::CADENCE,
-            num_readers: 0,
-            num_instances: 0,
-            previous_instance_link: None,
-            current_instance_link: None,
-            next_instance_link: None,
-            next_collector: ptr::null_mut(),
-            link: None,
-        });
-        let ptr = Box::into_raw(boxed);
-        let mut current = ANCHOR.load(Relaxed);
-        loop {
-            unsafe {
-                (*ptr).next_collector = Tag::unset_tag(current) as *mut Collector;
-            }
-
-            // It keeps the tag intact.
-            let tag = Tag::into_tag(current);
-            let new = Tag::update_tag(ptr, tag) as *mut Collector;
-            if let Err(actual) = ANCHOR.compare_exchange(current, new, Release, Relaxed) {
-                current = actual;
-            } else {
-                break;
-            }
-        }
-        ptr
-    }
 
     /// Acknowledges a new [`Barrier`] being instantiated.
     ///
@@ -108,13 +75,13 @@ impl Collector {
 
         if self.num_readers == 1 {
             if self.next_epoch_update == 0 {
-                if self.num_instances != 0 || Tag::into_tag(ANCHOR.load(Relaxed)) != Tag::First {
+                if self.has_garbage || Tag::into_tag(ANCHOR.load(Relaxed)) != Tag::First {
                     self.try_scan();
                 }
-                self.next_epoch_update = if self.num_instances == 0 {
-                    Self::CADENCE
-                } else {
+                self.next_epoch_update = if self.has_garbage {
                     Self::CADENCE / 4
+                } else {
+                    Self::CADENCE
                 };
             } else {
                 self.next_epoch_update = self.next_epoch_update.saturating_sub(1);
@@ -132,17 +99,82 @@ impl Collector {
     /// Reclaims garbage instances.
     #[inline]
     pub(super) fn reclaim(&mut self, instance_ptr: *mut dyn Collectible) {
-        debug_assert_eq!(self.state.load(Relaxed) & Self::INACTIVE, 0);
-        debug_assert_eq!(self.state.load(Relaxed), self.announcement);
-
         if let Some(mut ptr) = NonNull::new(instance_ptr) {
             unsafe {
                 *ptr.as_mut().next_ptr_mut() = self.current_instance_link.take();
                 self.current_instance_link.replace(ptr);
-                self.num_instances += 1;
-                self.next_epoch_update = self.next_epoch_update.saturating_sub(1);
+                self.next_epoch_update = self
+                    .next_epoch_update
+                    .saturating_sub(1)
+                    .min(Self::CADENCE / 4);
+                self.has_garbage = true;
             }
         }
+    }
+
+    /// Returns the [`Collector`] attached to the current thread.
+    #[inline]
+    pub(super) fn current() -> *mut Collector {
+        TLS.with(|tls| {
+            let mut collector_ptr = tls.collector_ptr.load(Relaxed);
+            if collector_ptr.is_null() {
+                collector_ptr = Collector::alloc();
+                tls.collector_ptr.store(collector_ptr, Relaxed);
+            }
+            collector_ptr
+        })
+    }
+
+    /// Passes its garbage instances to other threads.
+    #[inline]
+    pub(super) fn pass_garbage() -> bool {
+        TLS.with(|tls| {
+            let collector_ptr = tls.collector_ptr.load(Relaxed);
+            if let Some(collector) = unsafe { collector_ptr.as_mut() } {
+                if collector.num_readers != 0 {
+                    return false;
+                }
+                if collector.has_garbage {
+                    collector.state.fetch_or(Collector::INVALID, Release);
+                    tls.collector_ptr.store(ptr::null_mut(), Relaxed);
+                    mark_scan_enforced();
+                }
+            }
+            true
+        })
+    }
+
+    /// Allocates a new [`Collector`].
+    fn alloc() -> *mut Collector {
+        let boxed = Box::new(Collector {
+            state: AtomicU8::new(Self::INACTIVE),
+            announcement: 0,
+            next_epoch_update: Self::CADENCE,
+            has_garbage: false,
+            num_readers: 0,
+            previous_instance_link: None,
+            current_instance_link: None,
+            next_instance_link: None,
+            next_collector: ptr::null_mut(),
+            link: None,
+        });
+        let ptr = Box::into_raw(boxed);
+        let mut current = ANCHOR.load(Relaxed);
+        loop {
+            unsafe {
+                (*ptr).next_collector = Tag::unset_tag(current) as *mut Collector;
+            }
+
+            // It keeps the tag intact.
+            let tag = Tag::into_tag(current);
+            let new = Tag::update_tag(ptr, tag) as *mut Collector;
+            if let Err(actual) = ANCHOR.compare_exchange(current, new, Release, Relaxed) {
+                current = actual;
+            } else {
+                break;
+            }
+        }
+        ptr
     }
 
     /// Tries to scan the [`Collector`] instances to update the global epoch.
@@ -251,17 +283,16 @@ impl Collector {
         let mut garbage_link = self.next_instance_link.take();
         self.next_instance_link = self.previous_instance_link.take();
         self.previous_instance_link = self.current_instance_link.take();
+        self.has_garbage =
+            self.next_instance_link.is_some() || self.previous_instance_link.is_some();
         let mut thread_collector = None;
         while let Some(mut instance_ptr) = garbage_link.take() {
             garbage_link = unsafe { *instance_ptr.as_mut().next_ptr_mut() };
-            let deallocated = unsafe { instance_ptr.as_mut().drop_and_dealloc() };
+            if !unsafe { instance_ptr.as_mut().drop_and_dealloc() } {
+                // `self` may have been updated when the instance is deallocated, therefore any
+                // `load` after it must not pass through deallocating the instance.
+                std::sync::atomic::compiler_fence(AcqRel);
 
-            // `self` may have been updated when the instance is deallocated, therefore any `load`
-            // after it must not pass through deallocating the instance.
-            std::sync::atomic::compiler_fence(Acquire);
-            self.num_instances -= 1;
-
-            if !deallocated {
                 // The instance has yet to be completely dropped.
                 //
                 // Push the instance into the `Collector` of the current thread which may differ
@@ -269,60 +300,27 @@ impl Collector {
                 unsafe {
                     let collector = thread_collector
                         .get_or_insert_with(|| Self::current().as_mut().unwrap_unchecked());
-                    *instance_ptr.as_mut().next_ptr_mut() = collector.next_instance_link.take();
-                    collector.next_instance_link.replace(instance_ptr);
-                    collector.num_instances += 1;
-                    collector.next_epoch_update = collector.next_epoch_update.saturating_sub(1);
+                    collector.reclaim(instance_ptr.as_ptr());
                 }
             }
         }
     }
-
-    /// Returns the [`Collector`] attached to the current thread.
-    #[inline]
-    pub(super) fn current() -> *mut Collector {
-        TLS.with(|tls| {
-            let mut collector_ptr = tls.collector_ptr.load(Relaxed);
-            if collector_ptr.is_null() {
-                collector_ptr = Collector::alloc();
-                tls.collector_ptr.store(collector_ptr, Relaxed);
-            }
-            collector_ptr
-        })
-    }
-
-    /// Passes its garbage instances to other threads.
-    #[inline]
-    pub(super) fn pass_garbage() -> bool {
-        TLS.with(|tls| {
-            let collector_ptr = tls.collector_ptr.load(Relaxed);
-            if let Some(collector) = unsafe { collector_ptr.as_mut() } {
-                if collector.num_readers != 0 {
-                    return false;
-                }
-                if collector.num_instances != 0 {
-                    collector.state.fetch_or(Collector::INVALID, Release);
-                    tls.collector_ptr.store(ptr::null_mut(), Relaxed);
-                    mark_scan_enforced();
-                }
-            }
-            true
-        })
-    }
 }
 
 impl Drop for Collector {
+    #[inline]
     fn drop(&mut self) {
         self.state.store(0, Relaxed);
         self.announcement = 0;
         self.epoch_updated();
         self.epoch_updated();
         self.epoch_updated();
-        debug_assert_eq!(self.num_instances, 0);
+        debug_assert!(!self.has_garbage);
     }
 }
 
 impl Collectible for Collector {
+    #[inline]
     fn next_ptr_mut(&mut self) -> &mut Option<NonNull<dyn Collectible>> {
         &mut self.link
     }
@@ -343,6 +341,7 @@ struct ThreadLocal {
 }
 
 impl Drop for ThreadLocal {
+    #[inline]
     fn drop(&mut self) {
         if let Some(collector) = unsafe { self.collector_ptr.load(Relaxed).as_mut() } {
             collector.state.fetch_or(Collector::INVALID, Release);

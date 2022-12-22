@@ -1,5 +1,9 @@
 # Changelog
 
+0.12.3
+
+* Minor `ebr` optimization.
+
 0.12.2
 
 * `Hash*::remove*` accept `FnOnce`.

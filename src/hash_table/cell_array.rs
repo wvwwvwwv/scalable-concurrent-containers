@@ -24,8 +24,8 @@ pub struct CellArray<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
 
 impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FREE> {
     /// Returns the partial hash value of the given hash.
-    #[inline]
     #[allow(clippy::cast_possible_truncation)]
+    #[inline]
     pub(crate) fn partial_hash(hash: u64) -> u8 {
         (hash % (1 << 8)) as u8
     }
