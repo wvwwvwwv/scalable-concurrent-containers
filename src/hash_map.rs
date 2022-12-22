@@ -452,7 +452,7 @@ where
     /// assert_eq!(hashmap.remove_if(&1, |v| *v == 0).unwrap(), (1, 0));
     /// ```
     #[inline]
-    pub fn remove_if<Q, F: FnMut(&V) -> bool>(&self, key: &Q, mut condition: F) -> Option<(K, V)>
+    pub fn remove_if<Q, F: FnOnce(&V) -> bool>(&self, key: &Q, condition: F) -> Option<(K, V)>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
@@ -460,7 +460,7 @@ where
         self.remove_entry::<Q, _, _>(
             key,
             self.hash(key.borrow()),
-            &mut condition,
+            condition,
             &mut (),
             &Barrier::new(),
         )
@@ -482,7 +482,7 @@ where
     /// let future_remove = hashmap.remove_if_async(&11, |_| true);
     /// ```
     #[inline]
-    pub async fn remove_if_async<Q, F: FnMut(&V) -> bool>(
+    pub async fn remove_if_async<Q, F: FnOnce(&V) -> bool>(
         &self,
         key: &Q,
         mut condition: F,
@@ -495,15 +495,16 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if let Ok(result) = self.remove_entry::<Q, F, _>(
+            match self.remove_entry::<Q, F, _>(
                 key,
                 hash,
-                &mut condition,
+                condition,
                 &mut async_wait_pinned,
                 &Barrier::new(),
             ) {
-                return result.0;
-            }
+                Ok(r) => return r.0,
+                Err(c) => condition = c,
+            };
             async_wait_pinned.await;
         }
     }

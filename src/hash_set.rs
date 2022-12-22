@@ -205,7 +205,7 @@ where
     /// assert_eq!(hashset.remove_if(&1, || true).unwrap(), 1);
     /// ```
     #[inline]
-    pub fn remove_if<Q, F: FnMut() -> bool>(&self, key: &Q, mut condition: F) -> Option<K>
+    pub fn remove_if<Q, F: FnOnce() -> bool>(&self, key: &Q, condition: F) -> Option<K>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
@@ -227,11 +227,7 @@ where
     /// let future_remove = hashset.remove_if_async(&11, || true);
     /// ```
     #[inline]
-    pub async fn remove_if_async<Q, F: FnMut() -> bool>(
-        &self,
-        key: &Q,
-        mut condition: F,
-    ) -> Option<K>
+    pub async fn remove_if_async<Q, F: FnOnce() -> bool>(&self, key: &Q, condition: F) -> Option<K>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
@@ -258,7 +254,7 @@ where
     /// assert!(hashset.read(&1, |_| true).unwrap());
     /// ```
     #[inline]
-    pub fn read<Q, R, F: FnMut(&K) -> R>(&self, key: &Q, mut reader: F) -> Option<R>
+    pub fn read<Q, R, F: FnOnce(&K) -> R>(&self, key: &Q, reader: F) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
@@ -281,7 +277,7 @@ where
     /// let future_read = hashset.read_async(&11, |k| *k);
     /// ```
     #[inline]
-    pub async fn read_async<Q, R, F: FnMut(&K) -> R>(&self, key: &Q, mut reader: F) -> Option<R>
+    pub async fn read_async<Q, R, F: FnOnce(&K) -> R>(&self, key: &Q, reader: F) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,

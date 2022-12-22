@@ -315,20 +315,14 @@ where
     /// assert!(hashindex.remove_if(&1, |v| *v == 0));
     /// ```
     #[inline]
-    pub fn remove_if<Q, F: FnMut(&V) -> bool>(&self, key: &Q, mut condition: F) -> bool
+    pub fn remove_if<Q, F: FnOnce(&V) -> bool>(&self, key: &Q, condition: F) -> bool
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.remove_entry::<Q, _, _>(
-            key,
-            self.hash(key),
-            &mut condition,
-            &mut (),
-            &Barrier::new(),
-        )
-        .ok()
-        .map_or(false, |(_, r)| r)
+        self.remove_entry::<Q, _, _>(key, self.hash(key), condition, &mut (), &Barrier::new())
+            .ok()
+            .map_or(false, |(_, r)| r)
     }
 
     /// Removes a key-value pair if the key exists and the given condition is met.
@@ -345,7 +339,7 @@ where
     /// let future_remove = hashindex.remove_if_async(&11, |_| true);
     /// ```
     #[inline]
-    pub async fn remove_if_async<Q, F: FnMut(&V) -> bool>(&self, key: &Q, mut condition: F) -> bool
+    pub async fn remove_if_async<Q, F: FnOnce(&V) -> bool>(&self, key: &Q, mut condition: F) -> bool
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
@@ -354,15 +348,16 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if let Ok(result) = self.remove_entry::<Q, F, _>(
+            match self.remove_entry::<Q, F, _>(
                 key,
                 hash,
-                &mut condition,
+                condition,
                 &mut async_wait_pinned,
                 &Barrier::new(),
             ) {
-                return result.1;
-            }
+                Ok(r) => return r.1,
+                Err(c) => condition = c,
+            };
             async_wait_pinned.await;
         }
     }

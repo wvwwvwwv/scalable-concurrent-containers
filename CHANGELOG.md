@@ -1,5 +1,9 @@
 # Changelog
 
+0.12.2
+
+* `Hash*::remove*` accept `FnOnce`.
+
 0.12.1
 
 * `HashMap::read`, `HashIndex::read`, and `HashIndex::read_with` accept `FnOnce`.

@@ -216,14 +216,14 @@ where
 
     /// Removes an entry if the condition is met.
     #[inline]
-    fn remove_entry<Q, F: FnMut(&V) -> bool, D>(
+    fn remove_entry<Q, F: FnOnce(&V) -> bool, D>(
         &self,
         key: &Q,
         hash: u64,
-        condition: &mut F,
+        condition: F,
         async_wait: &mut D,
         barrier: &Barrier,
-    ) -> Result<(Option<(K, V)>, bool), ()>
+    ) -> Result<(Option<(K, V)>, bool), F>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
@@ -233,7 +233,10 @@ where
             // The reasoning behind this loop can be found in `acquire_entry`.
             let current_array = self.current_array_unchecked(barrier);
             let shrinkable = if let Some(old_array) = current_array.old_array(barrier).as_ref() {
-                self.move_entry(current_array, old_array, hash, async_wait, barrier)?
+                match self.move_entry(current_array, old_array, hash, async_wait, barrier) {
+                    Ok(r) => r,
+                    Err(_) => break,
+                }
             } else {
                 true
             };
@@ -241,7 +244,10 @@ where
             let cell_index = current_array.calculate_cell_index(hash);
             let cell = current_array.cell_mut(cell_index);
             let lock_result = if let Some(async_wait) = async_wait.derive() {
-                Locker::try_lock_or_wait(cell, async_wait, barrier)?
+                match Locker::try_lock_or_wait(cell, async_wait, barrier) {
+                    Ok(l) => l,
+                    Err(_) => break,
+                }
             } else {
                 Locker::lock(cell, barrier)
             };
@@ -271,6 +277,7 @@ where
                 return Ok((None, false));
             }
         }
+        Err(condition)
     }
 
     /// Acquires a [`Locker`] and [`EntryPtr`] corresponding to the key.
