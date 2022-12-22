@@ -135,7 +135,7 @@ where
         async_wait: &mut D,
         barrier: &Barrier,
     ) -> Result<Option<(K, V)>, (K, V)> {
-        match self.acquire_entry::<_, _>(&key, hash, async_wait, barrier) {
+        match self.acquire_entry(&key, hash, async_wait, barrier) {
             Ok((mut locker, data_block, entry_ptr)) => {
                 if entry_ptr.is_valid() {
                     return Ok(Some((key, val)));
@@ -216,14 +216,15 @@ where
 
     /// Removes an entry if the condition is met.
     #[inline]
-    fn remove_entry<Q, F: FnOnce(&V) -> bool, D>(
+    fn remove_entry<Q, F: FnOnce(&V) -> bool, D, R, P: FnOnce(Option<Option<(K, V)>>) -> R>(
         &self,
         key: &Q,
         hash: u64,
         condition: F,
+        post_processor: P,
         async_wait: &mut D,
         barrier: &Barrier,
-    ) -> Result<(Option<(K, V)>, bool), F>
+    ) -> Result<R, F>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
@@ -272,9 +273,9 @@ where
                             self.try_rebuild(current_array, cell_index, barrier);
                         }
                     }
-                    return Ok((result, true));
+                    return Ok(post_processor(Some(result)));
                 }
-                return Ok((None, false));
+                return Ok(post_processor(None));
             }
         }
         Err(condition)

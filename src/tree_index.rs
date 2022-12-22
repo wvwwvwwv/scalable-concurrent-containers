@@ -214,6 +214,8 @@ where
 
     /// Removes a key-value pair.
     ///
+    /// It returns `false` if the key does not exist.
+    ///
     /// # Examples
     ///
     /// ```

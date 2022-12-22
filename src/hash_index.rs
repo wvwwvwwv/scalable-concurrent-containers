@@ -199,7 +199,7 @@ where
     {
         let barrier = Barrier::new();
         let (mut locker, data_block, mut entry_ptr) = self
-            .acquire_entry::<Q, _>(key, self.hash(key), &mut (), &barrier)
+            .acquire_entry(key, self.hash(key), &mut (), &barrier)
             .ok()?;
         if entry_ptr.is_valid() {
             let (k, v) = entry_ptr.get_mut(data_block, &mut locker);
@@ -241,7 +241,7 @@ where
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             if let Ok((mut locker, data_block, mut entry_ptr)) =
-                self.acquire_entry::<Q, _>(key, hash, &mut async_wait_pinned, &Barrier::new())
+                self.acquire_entry(key, hash, &mut async_wait_pinned, &Barrier::new())
             {
                 if entry_ptr.is_valid() {
                     let (k, v) = entry_ptr.get_mut(data_block, &mut locker);
@@ -255,7 +255,8 @@ where
 
     /// Removes a key-value pair if the key exists.
     ///
-    /// This method only marks the entry unreachable, and the memory will be reclaimed later.
+    /// It returns `false` if the key does not exist. This method only marks the entry unreachable,
+    /// and the memory will be reclaimed later.
     ///
     /// # Examples
     ///
@@ -320,9 +321,16 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.remove_entry::<Q, _, _>(key, self.hash(key), condition, &mut (), &Barrier::new())
-            .ok()
-            .map_or(false, |(_, r)| r)
+        self.remove_entry(
+            key,
+            self.hash(key),
+            condition,
+            |r| r.is_some(),
+            &mut (),
+            &Barrier::new(),
+        )
+        .ok()
+        .map_or(false, |r| r)
     }
 
     /// Removes a key-value pair if the key exists and the given condition is met.
@@ -348,14 +356,15 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            match self.remove_entry::<Q, F, _>(
+            match self.remove_entry(
                 key,
                 hash,
                 condition,
+                |r| r.is_some(),
                 &mut async_wait_pinned,
                 &Barrier::new(),
             ) {
-                Ok(r) => return r.1,
+                Ok(r) => return r,
                 Err(c) => condition = c,
             };
             async_wait_pinned.await;
@@ -386,7 +395,7 @@ where
         Q: Eq + Hash + ?Sized,
     {
         let barrier = Barrier::new();
-        self.read_entry::<Q, _>(key, self.hash(key), &mut (), &barrier)
+        self.read_entry(key, self.hash(key), &mut (), &barrier)
             .ok()
             .flatten()
             .map(|(k, v)| reader(k, v))
@@ -423,7 +432,7 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.read_entry::<Q, _>(key, self.hash(key), &mut (), barrier)
+        self.read_entry(key, self.hash(key), &mut (), barrier)
             .ok()
             .flatten()
             .map(|(k, v)| reader(k, v))

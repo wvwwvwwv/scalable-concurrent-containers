@@ -144,6 +144,8 @@ where
 
     /// Removes a key if the key exists.
     ///
+    /// It returns `None` if the key does not exist.
+    ///
     /// # Examples
     ///
     /// ```
