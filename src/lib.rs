@@ -13,6 +13,7 @@
 //! * [`LinkedList`]: lock-free concurrent linked list type trait.
 
 mod bag;
+pub use bag::Bag;
 
 pub mod hash_map;
 pub use hash_map::HashMap;

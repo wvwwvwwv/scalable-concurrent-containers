@@ -7,17 +7,17 @@
 A collection of high performance containers and utilities for concurrent and asynchronous programming.
 
 #### Features
-- Zero spin-locks, busy-waiting, or the like.
-- Zero dependencies on other crates.
 - Asynchronous and synchronous methods work in tandem.
 - Formally verified [EBR](#EBR) implementation.
+- Zero dependencies on other crates.
+- Zero spin-locks and busy-waiting.
 
 #### Concurrent and Asynchronous Containers
 - [HashMap](#HashMap) is a concurrent and asynchronous hash map.
 - [HashSet](#HashSet) is a concurrent and asynchronous hash set.
 - [HashIndex](#HashIndex) is a read-optimized concurrent and asynchronous hash map.
 - [TreeIndex](#TreeIndex) is a read-optimized concurrent and asynchronous B+ tree.
-- [Queue](#Queue) is a concurrent lock-free first-in-first-out queue.
+- [Queue](#Queue) is a generic concurrent lock-free first-in-first-out queue.
 
 #### Utilities for Concurrent Programming
 - [EBR](#EBR) implements epoch-based reclamation.
@@ -366,8 +366,7 @@ Comparison with [DashMap](https://github.com/xacrimon/dashmap).
 
 - [Results on Apple M1 (8 cores)](https://github.com/wvwwvwwv/conc-map-bench).
 - [Results on Intel Xeon (VM, 40 cores)](https://github.com/wvwwvwwv/conc-map-bench/tree/Intel).
-- *Interpret the results cautiously as benchmarks do not represent real world workloads.*
-- [HashMap](#HashMap) and [HashIndex](#HashIndex) outperform *[according to the benchmark test](https://github.com/xacrimon/conc-map-bench)* under highly concurrent workloads.
 - The benchmark test a fork of [conc-map-bench](https://github.com/xacrimon/conc-map-bench).
+- *Interpret the results cautiously as benchmarks do not represent real world workloads.*
 
 ## [Changelog](https://github.com/wvwwvwwv/scalable-concurrent-containers/blob/main/CHANGELOG.md)

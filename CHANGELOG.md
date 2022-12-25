@@ -1,5 +1,9 @@
 # Changelog
 
+0.12.4
+
+* Remove `scopeguard`.
+
 0.12.3
 
 * Minor `ebr` optimization.

@@ -209,16 +209,16 @@ impl SyncWait {
     /// Waits for a signal.
     fn wait(&self) {
         #[allow(clippy::mutex_atomic)]
-        let mut completed = self.mutex.lock().unwrap();
+        let mut completed = unsafe { self.mutex.lock().unwrap_unchecked() };
         while !*completed {
-            completed = self.condvar.wait(completed).unwrap();
+            completed = unsafe { self.condvar.wait(completed).unwrap_unchecked() };
         }
     }
 
     /// Sends a signal.
     fn signal(&self) {
         #[allow(clippy::mutex_atomic)]
-        let mut completed = self.mutex.lock().unwrap();
+        let mut completed = unsafe { self.mutex.lock().unwrap_unchecked() };
         *completed = true;
         self.condvar.notify_one();
     }
