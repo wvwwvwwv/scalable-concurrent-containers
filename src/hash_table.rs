@@ -500,7 +500,7 @@ where
         let mut resize = true;
         while resize {
             let _mutex_guard = ExitGuard::new(&mut resize, |resize| {
-                **resize = self.resize_mutex().fetch_sub(1, Release) == 2_u8;
+                *resize = self.resize_mutex().fetch_sub(1, Release) == 2_u8;
             });
 
             let current_array = self.current_array_unchecked(barrier);

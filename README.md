@@ -6,6 +6,12 @@
 
 A collection of high performance containers and utilities for concurrent and asynchronous programming.
 
+#### Features
+- Zero spin-locks, busy-waiting, or the like.
+- Zero dependencies on other crates.
+- Asynchronous and synchronous methods work in tandem.
+- Formally verified [EBR](#EBR) implementation.
+
 #### Concurrent and Asynchronous Containers
 - [HashMap](#HashMap) is a concurrent and asynchronous hash map.
 - [HashSet](#HashSet) is a concurrent and asynchronous hash set.

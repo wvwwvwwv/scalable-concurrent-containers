@@ -282,7 +282,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
 
             // The guard ensures dropping one reference in `old_array.rehashing`.
             let mut rehashing_guard = ExitGuard::new((current, false), |(prev, success)| {
-                if *success {
+                if success {
                     // Keep the index as it is.
                     let current = old_array.num_cleared_cells.fetch_sub(1, Relaxed) - 1;
                     if (current & (CELL_LEN - 1) == 0) && current >= old_array_num_cells {
@@ -295,11 +295,11 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
                     // On failure, `rehashing` reverts to its previous state.
                     let mut current = old_array.num_cleared_cells.load(Relaxed);
                     loop {
-                        let new = if current <= *prev {
+                        let new = if current <= prev {
                             current - 1
                         } else {
                             let ref_cnt = current & (CELL_LEN - 1);
-                            *prev | (ref_cnt - 1)
+                            prev | (ref_cnt - 1)
                         };
                         match old_array
                             .num_cleared_cells
