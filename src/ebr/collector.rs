@@ -1,5 +1,7 @@
 use super::{Collectible, Tag};
 
+use crate::exit_guard::ExitGuard;
+
 use std::panic;
 use std::ptr::{self, NonNull};
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release, SeqCst};
@@ -196,7 +198,7 @@ impl Collector {
             .map(|p| Tag::unset_tag(p) as *mut Collector);
         if let Ok(mut collector_ptr) = lock_result {
             #[allow(clippy::blocks_in_if_conditions)]
-            let _scope = scopeguard::guard(&ANCHOR, |a| {
+            let _guard = ExitGuard::new(&ANCHOR, |a| {
                 // Unlock the anchor.
                 while a
                     .fetch_update(Release, Relaxed, |p| {

@@ -5,6 +5,7 @@ use cell::{DataBlock, EntryPtr, Locker, Reader, CELL_LEN};
 use cell_array::CellArray;
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
+use crate::exit_guard::ExitGuard;
 use crate::wait_queue::DeriveAsyncWait;
 
 use std::borrow::Borrow;
@@ -498,8 +499,8 @@ where
         let mut sampling_index = 0;
         let mut resize = true;
         while resize {
-            let _mutex_guard = scopeguard::guard(&mut resize, |resize| {
-                *resize = self.resize_mutex().fetch_sub(1, Release) == 2_u8;
+            let _mutex_guard = ExitGuard::new(&mut resize, |resize| {
+                **resize = self.resize_mutex().fetch_sub(1, Release) == 2_u8;
             });
 
             let current_array = self.current_array_unchecked(barrier);

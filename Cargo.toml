@@ -11,9 +11,6 @@ license = "Apache-2.0"
 categories = ["asynchronous", "concurrency", "data-structures", "memory-management"]
 keywords = ["async", "concurrent", "ebr", "hashmap", "tree"]
 
-[dependencies]
-scopeguard = "^1.1"
-
 [dev-dependencies]
 criterion = "^0.4"
 futures = "^0.3"
