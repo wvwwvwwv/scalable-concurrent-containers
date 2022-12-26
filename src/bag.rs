@@ -120,6 +120,11 @@ impl<T: 'static> Bag<T> {
     /// ```
     #[inline]
     pub fn pop(&self) -> Option<T> {
+        // Try to pop a slot from the backup storage.
+        if let Some(e) = self.queue.pop() {
+            return unsafe { Some((*(e.as_ptr() as *mut Entry<T>)).take_inner()) };
+        }
+
         let mut metadata = self.metadata.load(Relaxed);
         'after_read_metadata: loop {
             // Looking for an instantiated, yet unowned entry.
@@ -162,13 +167,8 @@ impl<T: 'static> Bag<T> {
             }
 
             // All the entries are vacant or owned.
-            break;
+            return None;
         }
-
-        // Try to pop a slot from the backup storage.
-        self.queue
-            .pop()
-            .map(|e| unsafe { (*(e.as_ptr() as *mut Entry<T>)).take_inner() })
     }
 
     /// Returns `true` if the [`Bag`] is empty.
