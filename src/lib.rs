@@ -14,9 +14,6 @@
 //! * [`ebr`]: epoch-based reclamation.
 //! * [`LinkedList`]: lock-free concurrent linked list type trait.
 
-mod bag;
-pub use bag::Bag;
-
 pub mod hash_map;
 pub use hash_map::HashMap;
 
@@ -29,8 +26,13 @@ pub use hash_set::HashSet;
 mod linked_list;
 pub use linked_list::LinkedList;
 
+mod bag;
+pub use bag::Bag;
+
 mod queue;
 pub use queue::Queue;
+
+mod channel;
 
 pub mod tree_index;
 pub use tree_index::TreeIndex;
