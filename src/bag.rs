@@ -1,4 +1,4 @@
-//! [`Bag`] is a lock-free concurrent unordered set.
+//! [`Bag`] is a lock-free concurrent unordered instance container.
 
 use super::queue::Entry;
 use super::Queue;
@@ -190,8 +190,7 @@ impl<T: 'static> Bag<T> {
     #[inline]
     pub fn is_empty(&self) -> bool {
         let metadata = self.metadata.load(Acquire);
-        let instance_bitmap = Self::instance_bitmap(metadata);
-        if instance_bitmap.trailing_zeros() != 32 {
+        if Self::instance_bitmap(metadata) != 0 {
             return false;
         }
         self.queue.is_empty()
@@ -234,7 +233,7 @@ impl<T: 'static> Drop for Bag<T> {
     #[inline]
     fn drop(&mut self) {
         if needs_drop::<T>() {
-            let mut instance_bitmap = Self::instance_bitmap(self.metadata.load(Relaxed));
+            let mut instance_bitmap = Self::instance_bitmap(self.metadata.load(Acquire));
             loop {
                 let index = instance_bitmap.trailing_zeros();
                 if index == 32 {
