@@ -3,8 +3,10 @@
 //! Concurrent and asynchronous containers.
 //!
 //! * [`HashMap`]: concurrent and asynchronous hash map.
+//! * [`HashSet`]: concurrent and asynchronous hash set.
 //! * [`HashIndex`]: concurrent and asynchronous hash map optimized for read.
 //! * [`TreeIndex`]: concurrent and asynchronous B+ tree optimized for read.
+//! * [`Bag`]: lock-free concurrent unordered instance container.
 //! * [`Queue`]: lock-free concurrent queue.
 //!
 //! Utilities.
@@ -39,4 +41,5 @@ mod exit_guard;
 mod hash_table;
 mod wait_queue;
 
+#[cfg(test)]
 mod tests;

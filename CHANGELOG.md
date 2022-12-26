@@ -1,5 +1,9 @@
 # Changelog
 
+1.0.0
+
+* Implement `Bag`.
+
 0.12.4
 
 * Remove `scopeguard`.

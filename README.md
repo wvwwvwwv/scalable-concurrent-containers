@@ -17,21 +17,20 @@ A collection of high performance containers and utilities for concurrent and asy
 - [HashSet](#HashSet) is a concurrent and asynchronous hash set.
 - [HashIndex](#HashIndex) is a read-optimized concurrent and asynchronous hash map.
 - [TreeIndex](#TreeIndex) is a read-optimized concurrent and asynchronous B+ tree.
-- [Queue](#Queue) is a generic concurrent lock-free first-in-first-out queue.
+- [Bag](#Bag) is a concurrent lock-free unordered collection of instances.
+- [Queue](#Queue) is an [EBR](#EBR) backed concurrent lock-free first-in-first-out queue.
 
 #### Utilities for Concurrent Programming
 - [EBR](#EBR) implements epoch-based reclamation.
 - [LinkedList](#LinkedList) is a type trait implementing a lock-free concurrent singly linked list.
 
-_See [Performance](#Performance) for benchmark results for the containers._
-
 ## HashMap
 
-[HashMap](#HashMap) is a scalable in-memory unique key-value container that is targeted at highly concurrent write-heavy workloads. It uses [EBR](#EBR) for its hash table memory management in order to implement non-blocking resizing and fine-granular locking without static data sharding; *it is not a lock-free data structure, and each access to a single key is serialized by a bucket-level mutex*. [HashMap](#HashMap) is optimized for frequently updated large data sets, such as the lock table in database management software.
+[HashMap](#HashMap) is a scalable hash map that is targeted at highly concurrent write-heavy workloads. It uses [EBR](#EBR) for its hash table memory management in order to implement non-blocking resizing and fine-granular locking without static data sharding; *it is not a lock-free data structure, and each access to a single key is serialized by a bucket-level mutex*. [HashMap](#HashMap) is optimized for update-heavy workloads, such as the lock table in database management software.
 
 ### Examples
 
-A unique key can be inserted along with its corresponding value, and then the inserted entry can be updated, read, and removed synchronously or asynchronously.
+A unique key can be inserted along with its corresponding value. The inserted entry can be updated, read, and removed synchronously or asynchronously.
 
 ```rust
 use scc::HashMap;
@@ -47,7 +46,7 @@ let future_insert = hashmap.insert_async(2, 1);
 let future_remove = hashmap.remove_async(&1);
 ```
 
-It supports `upsert` as in database management software; it tries to insert the given key-value pair, and if the key exists, it updates the value field with the supplied closure.
+The `upsert` method inserts a new entry if the key does not exist, or updates the value field.
 
 ```rust
 use scc::HashMap;
@@ -62,7 +61,7 @@ assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 3);
 let future_upsert = hashmap.upsert_async(2, || 1, |_, v| *v = 3);
 ```
 
-There is no method to confine the lifetime of references derived from an [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html), and it is illegal to let them live as long as the [HashMap](#HashMap). Therefore [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, it provides a number of methods as substitutes for [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html): `for_each`, `for_each_async`, `scan`, `scan_async`, `retain`, and `retain_async`.
+There is no method to confine the lifetime of references derived from an [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html), and it is illegal to let them live as long as the [HashMap](#HashMap). Therefore [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, it provides a number of methods to iterate over entries: `for_each`, `for_each_async`, `scan`, `scan_async`, `retain`, and `retain_async`.
 
 ```rust
 use scc::HashMap;
@@ -77,19 +76,20 @@ let mut acc = 0;
 hashmap.for_each(|k, v_mut| { acc += *k; *v_mut = 2; });
 assert_eq!(acc, 3);
 
-// `for_each` can modify the entries.
+// `for_each` allows entry modification.
 assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
 assert_eq!(hashmap.read(&2, |_, v| *v).unwrap(), 2);
 
 assert!(hashmap.insert(3, 2).is_ok());
 
-// Inside `retain`, an `ebr::Barrier` protects the entry array.
+// `retain` enables entry removal.
 assert_eq!(hashmap.retain(|k, v| *k == 1 && *v == 0), (1, 2));
 
-// It is possible to scan the entries asynchronously.
+// Asynchronous iteration over entries using `scan_async` and `for_each_async`.
 let future_scan = hashmap.scan_async(|k, v| println!("{k} {v}"));
 let future_for_each = hashmap.for_each_async(|k, v_mut| { *v_mut = *k; });
 ```
+
 
 ## HashSet
 
@@ -97,7 +97,7 @@ let future_for_each = hashmap.for_each_async(|k, v_mut| { *v_mut = *k; });
 
 ### Examples
 
-All the [HashSet](#HashSet) methods do not receive a value argument.
+All the [HashSet](#HashSet) methods identical to that of [HashMap](#HashMap) except that they do not receive a value argument.
 
 ```rust
 use scc::HashSet;
@@ -111,6 +111,7 @@ assert!(hashset.read(&1, |_| true).unwrap());
 let future_insert = hashset.insert_async(2);
 let future_remove = hashset.remove_async(&1);
 ```
+
 
 ## HashIndex
 
@@ -157,13 +158,14 @@ drop(hashindex);
 assert_eq!(entry_ref, (&1, &0));
 ```
 
+
 ## TreeIndex
 
 [TreeIndex](#TreeIndex) is a B+ tree variant optimized for read operations. The `ebr` module enables it to implement lock-free read and scan methods.
 
 ### Examples
 
-Key-value pairs can be inserted, read, and removed, and the `read` method is lock-free.
+Key-value pairs can be inserted, read, and removed.
 
 ```rust
 use scc::TreeIndex;
@@ -171,6 +173,8 @@ use scc::TreeIndex;
 let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
 
 assert!(treeindex.insert(1, 2).is_ok());
+
+// `read` is lock-free.
 assert_eq!(treeindex.read(&1, |_, v| *v).unwrap(), 2);
 assert!(treeindex.remove(&1));
 
@@ -178,7 +182,7 @@ let future_insert = treeindex.insert_async(2, 3);
 let future_remove = treeindex.remove_if_async(&1, |v| *v == 2);
 ```
 
-Key-value pairs can be scanned and the `scan` method is lock-free.
+Key-value pairs can be scanned.
 
 ```rust
 use scc::ebr::Barrier;
@@ -192,6 +196,7 @@ assert!(treeindex.insert(3, 13).is_ok());
 
 let barrier = Barrier::new();
 
+// `visitor` iterates over entries without acquiring a lock.
 let mut visitor = treeindex.iter(&barrier);
 assert_eq!(visitor.next().unwrap(), (&1, &10));
 assert_eq!(visitor.next().unwrap(), (&2, &11));
@@ -219,9 +224,27 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 ```
 
 
+## Bag
+
+[Bag](#Bag) is a concurrent lock-free unordered collection of instances. [Bag](#Bag) is completely opaque, therefore pushed instances cannot be read until they are popped. [Bag](#Bag) is especially efficient if the number of contained instances can be maintained under `size_of::<usize> * 4`.
+
+### Examples
+
+```rust
+use scc::Bag;
+
+let bag: Bag<usize> = Bag::default();
+
+bag.push(1);
+assert!(!bag.is_empty());
+assert_eq!(bag.pop(), Some(1));
+assert!(bag.is_empty());
+```
+
+
 ## Queue
 
-[Queue](#Queue) is a concurrent lock-free first-in-first-out queue.
+[Queue](#Queue) is an [EBR](#EBR) backed concurrent lock-free first-in-first-out queue.
 
 ### Examples
 
@@ -238,9 +261,10 @@ assert_eq!(queue.pop().map(|e| **e), Some(2));
 assert!(queue.pop().is_none());
 ```
 
+
 ## EBR
 
-The `ebr` module implements epoch-based reclamation and various types of auxiliary data structures to make use of it. Its epoch-based reclamation algorithm is similar to that implemented in [crossbeam_epoch](https://docs.rs/crossbeam-epoch/), however users may find it easier to use as the lifetime of an instance is safely managed. For instance, `ebr::AtomicArc` and `ebr::Arc` hold a strong reference to the underlying instance, and the instance is automatically passed to the garbage collector when the reference count drops to zero.
+The `ebr` module implements epoch-based reclamation and various types of auxiliary data structures to make use of it safely. Its epoch-based reclamation algorithm is similar to that implemented in [crossbeam_epoch](https://docs.rs/crossbeam-epoch/), however users may find it easier to use as the lifetime of an instance is safely managed. For instance, `ebr::AtomicArc` and `ebr::Arc` hold a strong reference to the underlying instance, and the instance is automatically passed to the garbage collector when the reference count drops to zero.
 
 ### Examples
 
@@ -317,6 +341,7 @@ drop(barrier);
 // to reclaim its own retired instances.
 suspend();
 ```
+
 
 ## LinkedList
 
