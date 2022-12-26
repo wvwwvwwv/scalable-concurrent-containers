@@ -30,7 +30,7 @@ A collection of high performance containers and utilities for concurrent and asy
 
 ## HashMap
 
-[HashMap](#HashMap) is a scalable hash map that is targeted at highly concurrent write-heavy workloads. It uses [EBR](#EBR) for its hash table memory management in order to implement non-blocking resizing and fine-granular locking without static data sharding; *it is not a lock-free data structure, and each access to a single key is serialized by a bucket-level mutex*. [HashMap](#HashMap) is optimized for update-heavy workloads, such as the lock table in database management software.
+[HashMap](#HashMap) is a concurrent hash map that is targeted at highly concurrent write-heavy workloads. It uses [EBR](#EBR) for its hash table memory management in order to implement non-blocking resizing and fine-granular locking without static data sharding; *it is not a lock-free data structure, and each access to a single key is serialized by a bucket-level mutex*.
 
 ### Examples
 
@@ -230,7 +230,7 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 
 ## Bag
 
-[Bag](#Bag) is a concurrent lock-free unordered collection of instances. [Bag](#Bag) is completely opaque, therefore pushed instances cannot be read until they are popped. [Bag](#Bag) is especially efficient if the number of contained instances can be maintained under `size_of::<usize> * 4`.
+[Bag](#Bag) is a concurrent lock-free unordered collection of instances. [Bag](#Bag) is completely opaque, disallowing access to contained instances until they are popped. [Bag](#Bag) is especially efficient if the number of contained instances can be maintained under `size_of::<usize> * 4`.
 
 ### Examples
 
