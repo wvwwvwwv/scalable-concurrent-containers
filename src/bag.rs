@@ -20,20 +20,7 @@ const STORAGE_LEN: usize = size_of::<usize>() * 4;
 #[derive(Debug)]
 pub struct Bag<T: 'static> {
     /// Primary storage.
-    storage: [MaybeUninit<T>; STORAGE_LEN],
-
-    /// Primary storage metadata.
-    ///
-    /// The layout of the metadata is,
-    /// - Upper `size_of::<usize>() * 4` bits = instantiation bitmap.
-    /// - Lower `size_of::<usize>() * 4` bits = owned state bitmap.
-    ///
-    /// The metadata represents four possible states of a storage slot.
-    /// - !instantiated && !owned: initial state.
-    /// - !instantiated && owned: owned for instantiating.
-    /// - instantiated && !owned: valid and reachable.
-    /// - instantiated && owned: owned for moving out the instance.
-    metadata: AtomicUsize,
+    primary_storage: PrimaryStorage<T>,
 
     /// Fallback storage.
     stack: Stack<T>,
@@ -53,6 +40,99 @@ impl<T: 'static> Bag<T> {
     /// ```
     #[inline]
     pub fn push(&self, val: T) {
+        if let Some(val) = self.primary_storage.push(val) {
+            self.stack.push(val);
+        }
+    }
+
+    /// Pops an instance in the [`Bag`] if not empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::Bag;
+    ///
+    /// let bag: Bag<usize> = Bag::default();
+    ///
+    /// bag.push(37);
+    ///
+    /// assert_eq!(bag.pop(), Some(37));
+    /// assert!(bag.pop().is_none());
+    /// ```
+    #[inline]
+    pub fn pop(&self) -> Option<T> {
+        if let Some(e) = self.stack.pop() {
+            return unsafe { Some((*(e.as_ptr() as *mut Entry<T>)).take_inner()) };
+        }
+        self.primary_storage.pop()
+    }
+
+    /// Returns `true` if the [`Bag`] is empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::Bag;
+    ///
+    /// let bag: Bag<usize> = Bag::default();
+    /// assert!(bag.is_empty());
+    ///
+    /// bag.push(7);
+    /// assert!(!bag.is_empty());
+    ///
+    /// assert_eq!(bag.pop(), Some(7));
+    /// assert!(bag.is_empty());
+    /// ```
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        if self.primary_storage.is_empty() {
+            self.stack.is_empty()
+        } else {
+            false
+        }
+    }
+}
+
+impl<T: 'static> Default for Bag<T> {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            primary_storage: PrimaryStorage::new(),
+            stack: Stack::default(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PrimaryStorage<T: 'static> {
+    /// Storage.
+    storage: [MaybeUninit<T>; STORAGE_LEN],
+
+    /// Storage metadata.
+    ///
+    /// The layout of the metadata is,
+    /// - Upper `size_of::<usize>() * 4` bits = instantiation bitmap.
+    /// - Lower `size_of::<usize>() * 4` bits = owned state bitmap.
+    ///
+    /// The metadata represents four possible states of a storage slot.
+    /// - !instantiated && !owned: initial state.
+    /// - !instantiated && owned: owned for instantiating.
+    /// - instantiated && !owned: valid and reachable.
+    /// - instantiated && owned: owned for moving out the instance.
+    metadata: AtomicUsize,
+}
+
+impl<T: 'static> PrimaryStorage<T> {
+    /// Creates a new [`FixedArray`].
+    fn new() -> PrimaryStorage<T> {
+        PrimaryStorage {
+            storage: unsafe { MaybeUninit::uninit().assume_init() },
+            metadata: AtomicUsize::new(0),
+        }
+    }
+
+    /// Pushes a new value.
+    fn push(&self, val: T) -> Option<T> {
         let mut metadata = self.metadata.load(Relaxed);
         'after_read_metadata: loop {
             // Looking for a free slot.
@@ -81,7 +161,7 @@ impl<T: 'static> Bag<T> {
                                 Some(new)
                             });
                             debug_assert!(result.is_ok());
-                            return;
+                            return None;
                         }
                         Err(prev) => {
                             // Metadata has changed.
@@ -97,34 +177,12 @@ impl<T: 'static> Bag<T> {
             }
 
             // No free slots or all the entries are owned.
-            break;
+            return Some(val);
         }
-
-        // Push the instance into the backup storage.
-        self.stack.push(val);
     }
 
-    /// Pops an instance in the [`Bag`] if not empty.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::Bag;
-    ///
-    /// let bag: Bag<usize> = Bag::default();
-    ///
-    /// bag.push(37);
-    ///
-    /// assert_eq!(bag.pop(), Some(37));
-    /// assert!(bag.pop().is_none());
-    /// ```
-    #[inline]
-    pub fn pop(&self) -> Option<T> {
-        // Try to pop a slot from the backup storage.
-        if let Some(e) = self.stack.pop() {
-            return unsafe { Some((*(e.as_ptr() as *mut Entry<T>)).take_inner()) };
-        }
-
+    /// Pops a value.
+    fn pop(&self) -> Option<T> {
         let mut metadata = self.metadata.load(Relaxed);
         'after_read_metadata: loop {
             // Looking for an instantiated, yet unowned entry.
@@ -171,29 +229,10 @@ impl<T: 'static> Bag<T> {
         }
     }
 
-    /// Returns `true` if the [`Bag`] is empty.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::Bag;
-    ///
-    /// let bag: Bag<usize> = Bag::default();
-    /// assert!(bag.is_empty());
-    ///
-    /// bag.push(7);
-    /// assert!(!bag.is_empty());
-    ///
-    /// assert_eq!(bag.pop(), Some(7));
-    /// assert!(bag.is_empty());
-    /// ```
-    #[inline]
-    pub fn is_empty(&self) -> bool {
+    /// Returns `true` if empty.
+    fn is_empty(&self) -> bool {
         let metadata = self.metadata.load(Acquire);
-        if Self::instance_bitmap(metadata) != 0 {
-            return false;
-        }
-        self.stack.is_empty()
+        Self::instance_bitmap(metadata) == 0
     }
 
     #[allow(clippy::cast_possible_truncation)]
@@ -207,29 +246,7 @@ impl<T: 'static> Bag<T> {
     }
 }
 
-impl<T: 'static + Clone> Clone for Bag<T> {
-    #[inline]
-    fn clone(&self) -> Self {
-        Bag {
-            storage: unsafe { MaybeUninit::uninit().assume_init() },
-            metadata: AtomicUsize::new(0),
-            stack: self.stack.clone(),
-        }
-    }
-}
-
-impl<T: 'static> Default for Bag<T> {
-    #[inline]
-    fn default() -> Self {
-        Self {
-            storage: unsafe { MaybeUninit::uninit().assume_init() },
-            metadata: AtomicUsize::new(0),
-            stack: Stack::default(),
-        }
-    }
-}
-
-impl<T: 'static> Drop for Bag<T> {
+impl<T: 'static> Drop for PrimaryStorage<T> {
     #[inline]
     fn drop(&mut self) {
         if needs_drop::<T>() {

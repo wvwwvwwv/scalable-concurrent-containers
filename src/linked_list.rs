@@ -36,6 +36,7 @@ pub trait LinkedList: 'static + Sized {
     /// assert!(head.delete_self(Relaxed));
     /// assert!(!head.is_clear(Relaxed));
     /// ```
+    #[inline]
     fn is_clear(&self, order: Ordering) -> bool {
         self.link_ref().tag(order) == Tag::None
     }
@@ -62,6 +63,7 @@ pub trait LinkedList: 'static + Sized {
     /// let head: L = L::default();
     /// assert!(head.mark(Relaxed));
     /// ```
+    #[inline]
     fn mark(&self, order: Ordering) -> bool {
         self.link_ref()
             .update_tag_if(Tag::First, |t| t == Tag::None, order)
@@ -92,6 +94,7 @@ pub trait LinkedList: 'static + Sized {
     /// assert!(head.unmark(Relaxed));
     /// assert!(!head.is_marked(Relaxed));
     /// ```
+    #[inline]
     fn unmark(&self, order: Ordering) -> bool {
         self.link_ref()
             .update_tag_if(Tag::None, |t| t == Tag::First, order)
@@ -119,6 +122,7 @@ pub trait LinkedList: 'static + Sized {
     /// assert!(head.mark(Relaxed));
     /// assert!(head.is_marked(Relaxed));
     /// ```
+    #[inline]
     fn is_marked(&self, order: Ordering) -> bool {
         self.link_ref().tag(order) == Tag::First
     }
@@ -151,6 +155,7 @@ pub trait LinkedList: 'static + Sized {
     /// tail.delete_self(Relaxed);
     /// assert!(head.next_ptr(Relaxed, &barrier).as_ref().is_none());
     /// ```
+    #[inline]
     fn delete_self(&self, order: Ordering) -> bool {
         self.link_ref()
             .update_tag_if(Tag::Second, |t| t != Tag::Second, order)
@@ -178,6 +183,7 @@ pub trait LinkedList: 'static + Sized {
     /// entry.delete_self(Relaxed);
     /// assert!(entry.is_deleted(Relaxed));
     /// ```
+    #[inline]
     fn is_deleted(&self, order: Ordering) -> bool {
         self.link_ref().tag(order) == Tag::Second
     }
@@ -218,6 +224,7 @@ pub trait LinkedList: 'static + Sized {
     /// assert!(!head.is_marked(Relaxed));
     /// assert!(head.push_back(Arc::new(L::default()), false, Relaxed, &barrier).is_err());
     /// ```
+    #[inline]
     fn push_back<'b>(
         &self,
         mut entry: Arc<Self>,
@@ -281,6 +288,7 @@ pub trait LinkedList: 'static + Sized {
     /// assert_eq!(next_ptr.as_ref().unwrap().1, 1);
     /// assert!(head.is_marked(Relaxed));
     /// ```
+    #[inline]
     fn next_ptr<'b>(&self, order: Ordering, barrier: &'b Barrier) -> Ptr<'b, Self> {
         let self_next_ptr = self.link_ref().load(order, barrier);
         let self_tag = self_next_ptr.tag();
