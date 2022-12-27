@@ -4,7 +4,7 @@ use crate::LinkedList;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::mem::{needs_drop, size_of, MaybeUninit};
-use std::ptr::{self, addr_of};
+use std::ptr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
@@ -61,36 +61,36 @@ pub struct Dimension {
 
 impl Dimension {
     /// Checks if the [`Leaf`] is frozen.
-    fn frozen(metadata: usize) -> bool {
+    const fn frozen(metadata: usize) -> bool {
         metadata & (1_usize << (usize::BITS - 2)) != 0
     }
 
     /// Makes the metadata represent a frozen state.
-    fn freeze(metadata: usize) -> usize {
+    const fn freeze(metadata: usize) -> usize {
         metadata | (1_usize << (usize::BITS - 2))
     }
 
     /// Updates the metadata to represent a non-frozen state.
-    fn thaw(metadata: usize) -> usize {
+    const fn thaw(metadata: usize) -> usize {
         metadata & (!(1_usize << (usize::BITS - 2)))
     }
 
     /// Checks if the [`Leaf`] is retired.
-    fn retired(metadata: usize) -> bool {
+    const fn retired(metadata: usize) -> bool {
         metadata & (1_usize << (usize::BITS - 1)) != 0
     }
 
     /// Makes the metadata represent a retired state.
-    fn retire(metadata: usize) -> usize {
+    const fn retire(metadata: usize) -> usize {
         metadata | (1_usize << (usize::BITS - 1))
     }
     /// Returns a bit mask for an entry.
-    fn state_mask(&self, index: usize) -> usize {
+    const fn state_mask(&self, index: usize) -> usize {
         ((1_usize << self.num_bits_per_entry) - 1) << (index * self.num_bits_per_entry)
     }
 
     /// Returns the state of an entry.
-    fn state(&self, metadata: usize, index: usize) -> usize {
+    const fn state(&self, metadata: usize, index: usize) -> usize {
         (metadata >> (index * self.num_bits_per_entry)) % (1_usize << self.num_bits_per_entry)
     }
 
@@ -100,13 +100,12 @@ impl Dimension {
     }
 
     /// Returns a removed state of an entry.
-    fn removed_state(&self) -> usize {
+    const fn removed_state(&self) -> usize {
         (1_usize << self.num_bits_per_entry) - 1
     }
 
     /// Augments the state to the given metadata.
-    fn augment(&self, metadata: usize, index: usize, state: usize) -> usize {
-        debug_assert_eq!(state & ((1_usize << self.num_bits_per_entry) - 1), state);
+    const fn augment(&self, metadata: usize, index: usize, state: usize) -> usize {
         (metadata & (!self.state_mask(index))) | (state << (index * self.num_bits_per_entry))
     }
 }
@@ -676,27 +675,15 @@ where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        let entry_ref = unsafe { &*self.entry_array[index].as_ptr() };
-        (*entry_ref.0.borrow()).cmp(key)
+        self.read(index).0.borrow().cmp(key)
     }
 
     fn take(&self, index: usize) -> (K, V) {
-        unsafe {
-            let entry_array_ptr = addr_of!(self.entry_array);
-            let entry_array_mut_ptr = entry_array_ptr as *mut EntryArray<K, V>;
-            let entry_array_mut_ref = &mut (*entry_array_mut_ptr);
-            let entry_ptr = entry_array_mut_ref[index].as_mut_ptr();
-            ptr::read(entry_ptr)
-        }
+        unsafe { self.entry_array[index].as_ptr().read() }
     }
 
     fn write(&self, index: usize, key: K, value: V) {
-        unsafe {
-            let entry_array_ptr = addr_of!(self.entry_array);
-            let entry_array_mut_ptr = entry_array_ptr as *mut EntryArray<K, V>;
-            let entry_array_mut_ref = &mut (*entry_array_mut_ptr);
-            entry_array_mut_ref[index].as_mut_ptr().write((key, value));
-        }
+        unsafe { (self.entry_array[index].as_ptr() as *mut (K, V)).write((key, value)) }
     }
 
     fn read(&self, index: usize) -> (&K, &V) {
@@ -716,6 +703,9 @@ where
             let metadata = self.metadata.load(Acquire);
             for i in 0..DIMENSION.num_entries {
                 let rank = DIMENSION.state(metadata, i);
+                if rank == 0 && (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
+                    break;
+                }
                 if rank != Dimension::uninit_state() {
                     self.take(i);
                 }
