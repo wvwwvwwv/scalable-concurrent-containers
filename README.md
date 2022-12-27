@@ -20,12 +20,13 @@ A collection of high performance containers and utilities for concurrent and asy
 - [HashIndex](#HashIndex) is a read-optimized concurrent and asynchronous hash map.
 - [TreeIndex](#TreeIndex) is a read-optimized concurrent and asynchronous B+ tree.
 - [Bag](#Bag) is a concurrent lock-free unordered collection of instances.
-- [Queue](#Queue) is an [EBR](#EBR) backed concurrent lock-free first-in-first-out queue.
 
 #### Utilities for Concurrent Programming
 
 - [EBR](#EBR) implements epoch-based reclamation.
 - [LinkedList](#LinkedList) is a type trait implementing a lock-free concurrent singly linked list.
+- [Queue](#Queue) is an [EBR](#EBR) backed concurrent lock-free first-in-first-out container.
+- [Stack](#Stack) is an [EBR](#EBR) backed concurrent lock-free last-in-first-out container.
 
 
 ## HashMap
@@ -248,7 +249,7 @@ assert!(bag.is_empty());
 
 ## Queue
 
-[Queue](#Queue) is an [EBR](#EBR) backed concurrent lock-free first-in-first-out queue.
+[Queue](#Queue) is an [EBR](#EBR) backed concurrent lock-free first-in-first-out container.
 
 ### Examples
 
@@ -263,6 +264,25 @@ assert!(queue.push_if(3, |e| e.map_or(false, |x| *x == 1)).is_err());
 assert_eq!(queue.pop().map(|e| **e), Some(1));
 assert_eq!(queue.pop().map(|e| **e), Some(2));
 assert!(queue.pop().is_none());
+```
+
+
+## Stack
+
+[Stack](#Stack) is an [EBR](#EBR) backed concurrent lock-free last-in-first-out container.
+
+### Examples
+
+```rust
+use scc::Stack;
+
+let stack: Stack<usize> = Stack::default();
+
+stack.push(1);
+stack.push(2);
+assert_eq!(stack.pop().map(|e| **e), Some(2));
+assert_eq!(stack.pop().map(|e| **e), Some(1));
+assert!(stack.pop().is_none());
 ```
 
 

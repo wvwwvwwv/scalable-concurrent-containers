@@ -1,5 +1,7 @@
 use super::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 
+use std::fmt::{self, Debug, Display};
+use std::ops::{Deref, DerefMut};
 use std::sync::atomic::Ordering::{self, Relaxed, Release};
 
 /// [`LinkedList`] is a type trait implementing a lock-free singly linked list.
@@ -311,5 +313,115 @@ pub trait LinkedList: 'static + Sized {
         }
 
         next_valid_ptr
+    }
+}
+
+/// [`Entry`] stores an instance of `T` and a link to the next entry.
+pub struct Entry<T: 'static> {
+    /// `instance` is always `Some` unless [`Self::into_inner`] is called.
+    instance: Option<T>,
+
+    /// `next` points to the next entry in a linked list.
+    next: AtomicArc<Self>,
+}
+
+impl<T: 'static> Entry<T> {
+    /// Creates a new [`Entry`].
+    #[inline]
+    pub(super) fn new(val: T) -> Entry<T> {
+        Entry {
+            instance: Some(val),
+            next: AtomicArc::default(),
+        }
+    }
+
+    /// Extracts the inner instance of `T`.
+    #[inline]
+    pub(super) unsafe fn take_inner(&mut self) -> T {
+        self.instance.take().unwrap_unchecked()
+    }
+
+    /// Returns a reference to `next`.
+    #[inline]
+    pub(super) fn next(&self) -> &AtomicArc<Self> {
+        &self.next
+    }
+}
+
+impl<T: 'static> AsRef<T> for Entry<T> {
+    #[inline]
+    fn as_ref(&self) -> &T {
+        unsafe { self.instance.as_ref().unwrap_unchecked() }
+    }
+}
+
+impl<T: 'static> AsMut<T> for Entry<T> {
+    #[inline]
+    fn as_mut(&mut self) -> &mut T {
+        unsafe { self.instance.as_mut().unwrap_unchecked() }
+    }
+}
+
+impl<T: 'static + Clone> Clone for Entry<T> {
+    #[inline]
+    fn clone(&self) -> Self {
+        Self {
+            instance: self.instance.clone(),
+            next: AtomicArc::default(),
+        }
+    }
+}
+
+impl<T: 'static + Debug> Debug for Entry<T> {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Entry")
+            .field("instance", &self.instance)
+            .field("next", &self.next)
+            .field("removed", &self.is_deleted(Relaxed))
+            .finish()
+    }
+}
+
+impl<T: 'static> Deref for Entry<T> {
+    type Target = T;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        unsafe { self.instance.as_ref().unwrap_unchecked() }
+    }
+}
+
+impl<T: 'static> DerefMut for Entry<T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { self.instance.as_mut().unwrap_unchecked() }
+    }
+}
+
+impl<T: 'static + Display> Display for Entry<T> {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(instance) = self.instance.as_ref() {
+            write!(f, "Some({instance})")
+        } else {
+            write!(f, "None")
+        }
+    }
+}
+
+impl<T: Eq + 'static> Eq for Entry<T> {}
+
+impl<T: 'static> LinkedList for Entry<T> {
+    #[inline]
+    fn link_ref(&self) -> &AtomicArc<Self> {
+        &self.next
+    }
+}
+
+impl<T: PartialEq + 'static> PartialEq for Entry<T> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.instance == other.instance
     }
 }

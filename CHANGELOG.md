@@ -1,5 +1,11 @@
 # Changelog
 
+1.0.1
+
+* Add `Stack`.
+* API update: replace `Queue::Entry` with `<linked_list::Entry as LinkedList>`.
+* Fix memory ordering in `Bag::drop`.
+
 1.0.0
 
 * Implement `Bag`.

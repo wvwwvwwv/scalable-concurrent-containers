@@ -7,7 +7,8 @@
 //! * [`HashIndex`]: concurrent and asynchronous hash map optimized for read.
 //! * [`TreeIndex`]: concurrent and asynchronous B+ tree optimized for read.
 //! * [`Bag`]: lock-free concurrent unordered instance container.
-//! * [`Queue`]: lock-free concurrent queue.
+//! * [`Queue`]: lock-free concurrent container.
+//! * [`Stack`]: lock-free concurrent container.
 //!
 //! Utilities.
 //!
@@ -31,6 +32,9 @@ pub use bag::Bag;
 
 mod queue;
 pub use queue::Queue;
+
+mod stack;
+pub use stack::Stack;
 
 mod channel;
 

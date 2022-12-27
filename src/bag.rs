@@ -1,7 +1,7 @@
 //! [`Bag`] is a lock-free concurrent unordered instance container.
 
-use super::queue::Entry;
-use super::Queue;
+use super::linked_list::Entry;
+use super::Stack;
 
 use std::mem::{needs_drop, size_of, MaybeUninit};
 use std::ptr::drop_in_place;
@@ -14,7 +14,7 @@ const STORAGE_LEN: usize = size_of::<usize>() * 4;
 /// [`Bag`] is a lock-free concurrent unordered instance container.
 ///
 /// [`Bag`] is a linearizable concurrent instance container where `size_of::<usize>() * 4`
-/// instances are stored in a fixed-size array, and the rest are managed by its backup [`Queue`];
+/// instances are stored in a fixed-size array, and the rest are managed by its backup container
 /// which makes a [`Bag`] especially efficient if the expected number of instances does not exceed
 /// `size_of::<usize>() * 4`.
 #[derive(Debug)]
@@ -36,7 +36,7 @@ pub struct Bag<T: 'static> {
     metadata: AtomicUsize,
 
     /// Fallback storage.
-    queue: Queue<T>,
+    stack: Stack<T>,
 }
 
 impl<T: 'static> Bag<T> {
@@ -101,7 +101,7 @@ impl<T: 'static> Bag<T> {
         }
 
         // Push the instance into the backup storage.
-        self.queue.push(val);
+        self.stack.push(val);
     }
 
     /// Pops an instance in the [`Bag`] if not empty.
@@ -121,7 +121,7 @@ impl<T: 'static> Bag<T> {
     #[inline]
     pub fn pop(&self) -> Option<T> {
         // Try to pop a slot from the backup storage.
-        if let Some(e) = self.queue.pop() {
+        if let Some(e) = self.stack.pop() {
             return unsafe { Some((*(e.as_ptr() as *mut Entry<T>)).take_inner()) };
         }
 
@@ -193,7 +193,7 @@ impl<T: 'static> Bag<T> {
         if Self::instance_bitmap(metadata) != 0 {
             return false;
         }
-        self.queue.is_empty()
+        self.stack.is_empty()
     }
 
     #[allow(clippy::cast_possible_truncation)]
@@ -213,7 +213,7 @@ impl<T: 'static + Clone> Clone for Bag<T> {
         Bag {
             storage: unsafe { MaybeUninit::uninit().assume_init() },
             metadata: AtomicUsize::new(0),
-            queue: self.queue.clone(),
+            stack: self.stack.clone(),
         }
     }
 }
@@ -224,7 +224,7 @@ impl<T: 'static> Default for Bag<T> {
         Self {
             storage: unsafe { MaybeUninit::uninit().assume_init() },
             metadata: AtomicUsize::new(0),
-            queue: Queue::default(),
+            stack: Stack::default(),
         }
     }
 }

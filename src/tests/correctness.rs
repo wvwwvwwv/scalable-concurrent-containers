@@ -1224,9 +1224,9 @@ mod queue_test {
     async fn mpmc() {
         const NUM_TASKS: usize = 12;
         const NUM_PRODUCERS: usize = NUM_TASKS / 2;
+        let queue: Arc<Queue<R>> = Arc::new(Queue::default());
         let workload_size = 256;
-        for _ in 0..256 {
-            let queue: Arc<Queue<R>> = Arc::new(Queue::default());
+        for _ in 0..16 {
             let num_popped: Arc<AtomicUsize> = Arc::new(AtomicUsize::default());
             let mut task_handles = Vec::with_capacity(NUM_TASKS);
             let barrier = Arc::new(AsyncBarrier::new(NUM_TASKS));
@@ -1263,8 +1263,82 @@ mod queue_test {
             for r in futures::future::join_all(task_handles).await {
                 assert!(r.is_ok());
             }
-            assert!(queue.is_empty());
         }
+        assert!(queue.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod stack_test {
+    use crate::Stack;
+
+    use std::sync::Arc;
+
+    use tokio::sync::Barrier as AsyncBarrier;
+
+    #[derive(Debug)]
+    struct R(usize, usize);
+    impl R {
+        fn new(task_id: usize, seq: usize) -> R {
+            R(task_id, seq)
+        }
+    }
+
+    #[test]
+    fn clone() {
+        let stack = Stack::default();
+        stack.push(37);
+        stack.push(3);
+        stack.push(1);
+
+        let cloned = stack.clone();
+
+        assert_eq!(stack.pop().map(|e| **e), Some(1));
+        assert_eq!(stack.pop().map(|e| **e), Some(3));
+        assert_eq!(stack.pop().map(|e| **e), Some(37));
+        assert!(stack.pop().is_none());
+
+        assert_eq!(cloned.pop().map(|e| **e), Some(1));
+        assert_eq!(cloned.pop().map(|e| **e), Some(3));
+        assert_eq!(cloned.pop().map(|e| **e), Some(37));
+        assert!(cloned.pop().is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    async fn mpmc() {
+        const NUM_TASKS: usize = 12;
+        let stack: Arc<Stack<R>> = Arc::new(Stack::default());
+        let workload_size = 256;
+        for _ in 0..16 {
+            let mut task_handles = Vec::with_capacity(NUM_TASKS);
+            let barrier = Arc::new(AsyncBarrier::new(NUM_TASKS));
+            for task_id in 0..NUM_TASKS {
+                let barrier_cloned = barrier.clone();
+                let stack_cloned = stack.clone();
+                task_handles.push(tokio::task::spawn(async move {
+                    barrier_cloned.wait().await;
+                    for seq in 0..workload_size {
+                        assert_eq!(stack_cloned.push(R::new(task_id, seq)).1, seq);
+                    }
+                    let mut last_popped = usize::MAX;
+                    let mut cnt = 0;
+                    while cnt < workload_size {
+                        while let Ok(Some(popped)) = stack_cloned.pop_if(|e| e.0 == task_id) {
+                            assert_eq!(popped.0, task_id);
+                            assert!(last_popped > popped.1);
+                            last_popped = popped.1;
+                            cnt += 1;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                }));
+            }
+
+            for r in futures::future::join_all(task_handles).await {
+                assert!(r.is_ok());
+            }
+        }
+        assert!(stack.is_empty());
     }
 }
 

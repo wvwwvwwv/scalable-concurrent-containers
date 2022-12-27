@@ -1,12 +1,14 @@
-//! [`Queue`] is a lock-free concurrent first-in-first-out queue.
+//! [`Queue`] is a lock-free concurrent first-in-first-out container.
+
+use crate::LinkedList;
 
 use super::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
+use super::linked_list::Entry;
 
-use std::fmt::{self, Debug, Display};
-use std::ops::{Deref, DerefMut};
+use std::fmt::{self, Debug};
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
-/// [`Queue`] is a lock-free concurrent first-in-first-out queue.
+/// [`Queue`] is a lock-free concurrent first-in-first-out container.
 pub struct Queue<T: 'static> {
     /// `oldest` points to the oldest entry in the [`Queue`].
     oldest: AtomicArc<Entry<T>>,
@@ -94,7 +96,7 @@ impl<T: 'static> Queue<T> {
         }
     }
 
-    /// Pops the oldest entry if the oldest entry satisfies the given condition.
+    /// Pops the oldest entry if the entry satisfies the given condition.
     ///
     /// Returns `None` if the [`Queue`] is empty.
     ///
@@ -125,10 +127,10 @@ impl<T: 'static> Queue<T> {
         let mut current = self.oldest.load(Acquire, &barrier);
         while !current.is_null() {
             if let Some(oldest_entry) = current.get_arc() {
-                if !oldest_entry.is_removed() && !cond(&*oldest_entry) {
+                if !oldest_entry.is_deleted(Relaxed) && !cond(&*oldest_entry) {
                     return Err(oldest_entry);
                 }
-                if oldest_entry.remove() {
+                if oldest_entry.delete_self(Relaxed) {
                     self.cleanup_oldest(&barrier);
                     return Ok(Some(oldest_entry));
                 }
@@ -161,7 +163,7 @@ impl<T: 'static> Queue<T> {
         let barrier = Barrier::new();
         let mut current = self.oldest.load(Acquire, &barrier);
         while let Some(oldest_entry) = current.as_ref() {
-            if oldest_entry.is_removed() {
+            if oldest_entry.is_deleted(Relaxed) {
                 current = self.cleanup_oldest(&barrier);
                 continue;
             }
@@ -210,7 +212,7 @@ impl<T: 'static> Queue<T> {
         let mut new_entry = Arc::new(Entry::new(val));
         loop {
             let result = if let Some(newest_entry) = newest_ptr.as_ref() {
-                newest_entry.next.compare_exchange(
+                newest_entry.next().compare_exchange(
                     Ptr::null(),
                     (Some(new_entry.clone()), Tag::None),
                     AcqRel,
@@ -262,10 +264,10 @@ impl<T: 'static> Queue<T> {
     fn cleanup_oldest<'b>(&self, barrier: &'b Barrier) -> Ptr<'b, Entry<T>> {
         let oldest_ptr = self.oldest.load(Acquire, barrier);
         if let Some(oldest_entry) = oldest_ptr.as_ref() {
-            if oldest_entry.is_removed() {
+            if oldest_entry.is_deleted(Relaxed) {
                 match self.oldest.compare_exchange(
                     oldest_ptr,
-                    (oldest_entry.next.get_arc(Acquire, barrier), Tag::None),
+                    (oldest_entry.next_ptr(Acquire, barrier).get_arc(), Tag::None),
                     AcqRel,
                     Acquire,
                     barrier,
@@ -290,7 +292,7 @@ impl<T: 'static> Queue<T> {
     fn traverse<'b>(start: Ptr<'b, Entry<T>>, barrier: &'b Barrier) -> Ptr<'b, Entry<T>> {
         let mut current = start;
         while let Some(entry) = current.as_ref() {
-            let next = entry.next.load(Acquire, barrier);
+            let next = entry.next_ptr(Acquire, barrier);
             if next.is_null() {
                 break;
             }
@@ -307,7 +309,7 @@ impl<T: 'static + Clone> Clone for Queue<T> {
         let barrier = Barrier::new();
         let mut current = self.oldest.load(Acquire, &barrier);
         while let Some(entry) = current.as_ref() {
-            let next = entry.next.load(Acquire, &barrier);
+            let next = entry.next_ptr(Acquire, &barrier);
             let _result = cloned.push_if_internal((**entry).clone(), |_| true, &barrier);
             current = next;
         }
@@ -322,7 +324,7 @@ impl<T: 'static + Debug> Debug for Queue<T> {
         let barrier = Barrier::new();
         let mut current = self.oldest.load(Acquire, &barrier);
         while let Some(entry) = current.as_ref() {
-            let next = entry.next.load(Acquire, &barrier);
+            let next = entry.next_ptr(Acquire, &barrier);
             d.entry(entry);
             current = next;
         }
@@ -337,147 +339,5 @@ impl<T: 'static> Default for Queue<T> {
             oldest: AtomicArc::default(),
             newest: AtomicArc::default(),
         }
-    }
-}
-
-/// [`Entry`] stores an instance of `T` and a link to the next entry.
-pub struct Entry<T: 'static> {
-    /// `instance` is always `Some` until [`Self::into_inner`] is called.
-    instance: Option<T>,
-
-    /// `next` points to the next entry in a linked list.
-    next: AtomicArc<Self>,
-}
-
-impl<T: 'static> Entry<T> {
-    /// Tries to remove the entry from its associated [`Queue`].
-    ///
-    /// The entry is only logically removed from the [`Queue`] and it will be popped from the
-    /// [`Queue`] on a subsequent call to [`Queue::pop`] or [`Queue::peek`] when the entry becomes
-    /// the oldest one in the [`Queue`]. `false` is returned if the entry has already been removed.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::Queue;
-    ///
-    /// let queue: Queue<usize> = Queue::default();
-    ///
-    /// let entry = queue.push(7);
-    /// queue.push(11);
-    ///
-    /// assert!(entry.remove());
-    /// assert!(!entry.remove());
-    ///
-    /// assert_eq!(queue.peek(|v| **v), Some(11));
-    /// ```
-    #[inline]
-    pub fn remove(&self) -> bool {
-        self.next
-            .update_tag_if(Tag::First, |t| t == Tag::None, Release)
-    }
-
-    /// Checks if the entry has been removed.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::Queue;
-    ///
-    /// let queue: Queue<usize> = Queue::default();
-    ///
-    /// let entry = queue.push(7);
-    /// assert!(!entry.is_removed());
-    ///
-    /// assert_eq!(queue.pop().map(|e| **e), Some(7));
-    /// assert!(entry.is_removed());
-    /// ```
-    #[inline]
-    pub fn is_removed(&self) -> bool {
-        self.next.tag(Relaxed) == Tag::First
-    }
-
-    /// Extracts the inner instance of `T`.
-    #[inline]
-    pub(super) unsafe fn take_inner(&mut self) -> T {
-        self.instance.take().unwrap_unchecked()
-    }
-
-    /// Creates a new [`Entry`].
-    fn new(val: T) -> Entry<T> {
-        Entry {
-            instance: Some(val),
-            next: AtomicArc::default(),
-        }
-    }
-}
-
-impl<T: 'static> AsRef<T> for Entry<T> {
-    #[inline]
-    fn as_ref(&self) -> &T {
-        unsafe { self.instance.as_ref().unwrap_unchecked() }
-    }
-}
-
-impl<T: 'static> AsMut<T> for Entry<T> {
-    #[inline]
-    fn as_mut(&mut self) -> &mut T {
-        unsafe { self.instance.as_mut().unwrap_unchecked() }
-    }
-}
-
-impl<T: 'static + Debug> Debug for Entry<T> {
-    #[inline]
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Entry")
-            .field("instance", &self.instance)
-            .field("next", &self.next)
-            .finish()
-    }
-}
-
-impl<T: 'static + Clone> Clone for Entry<T> {
-    #[inline]
-    fn clone(&self) -> Self {
-        Self {
-            instance: self.instance.clone(),
-            next: AtomicArc::default(),
-        }
-    }
-}
-
-impl<T: 'static> Deref for Entry<T> {
-    type Target = T;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        unsafe { self.instance.as_ref().unwrap_unchecked() }
-    }
-}
-
-impl<T: 'static> DerefMut for Entry<T> {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { self.instance.as_mut().unwrap_unchecked() }
-    }
-}
-
-impl<T: 'static + Display> Display for Entry<T> {
-    #[inline]
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(instance) = self.instance.as_ref() {
-            write!(f, "Some({instance})")
-        } else {
-            write!(f, "None")
-        }
-    }
-}
-
-impl<T: Eq + 'static> Eq for Entry<T> {}
-
-impl<T: PartialEq + 'static> PartialEq for Entry<T> {
-    #[inline]
-    fn eq(&self, other: &Self) -> bool {
-        self.instance == other.instance
     }
 }
