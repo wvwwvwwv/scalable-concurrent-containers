@@ -158,7 +158,35 @@ impl<T: 'static> Stack<T> {
     #[inline]
     pub fn peek<R, F: FnOnce(&Entry<T>) -> R>(&self, reader: F) -> Option<R> {
         let barrier = Barrier::new();
-        self.cleanup_newest(self.newest.load(Acquire, &barrier), &barrier)
+        self.peek_with(reader, &barrier)
+    }
+
+    /// Peeks the newest entry with the supplied [`Barrier`].
+    ///
+    /// Returns `None` if the [`Stack`] is empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::Barrier;
+    /// use scc::Stack;
+    ///
+    /// let stack: Stack<usize> = Stack::default();
+    ///
+    /// assert!(stack.peek_with(|v| **v, &Barrier::new()).is_none());
+    ///
+    /// stack.push(37);
+    /// stack.push(3);
+    ///
+    /// assert_eq!(stack.peek_with(|v| **v, &Barrier::new()), Some(3));
+    /// ```
+    #[inline]
+    pub fn peek_with<'b, R, F: FnOnce(&'b Entry<T>) -> R>(
+        &self,
+        reader: F,
+        barrier: &'b Barrier,
+    ) -> Option<R> {
+        self.cleanup_newest(self.newest.load(Acquire, barrier), barrier)
             .as_ref()
             .map(reader)
     }

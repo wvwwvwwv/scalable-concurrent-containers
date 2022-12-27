@@ -5,6 +5,7 @@
 * Add `Stack`.
 * API update 1: remove `Bag::clone`.
 * API update 2: replace `Queue::Entry` with `<linked_list::Entry as LinkedList>`.
+* Optimize `Bag`.
 * Fix memory ordering in `Bag::drop`.
 
 1.0.0

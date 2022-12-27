@@ -1,7 +1,7 @@
 //! [`Bag`] is a lock-free concurrent unordered instance container.
 
-use super::linked_list::Entry;
-use super::Stack;
+use super::ebr::Barrier;
+use super::{LinkedList, Stack};
 
 use std::mem::{needs_drop, size_of, MaybeUninit};
 use std::ptr::drop_in_place;
@@ -20,10 +20,10 @@ const STORAGE_LEN: usize = size_of::<usize>() * 4;
 #[derive(Debug)]
 pub struct Bag<T: 'static> {
     /// Primary storage.
-    primary_storage: PrimaryStorage<T>,
+    primary_storage: Storage<T>,
 
     /// Fallback storage.
-    stack: Stack<T>,
+    stack: Stack<Storage<T>>,
 }
 
 impl<T: 'static> Bag<T> {
@@ -40,8 +40,15 @@ impl<T: 'static> Bag<T> {
     /// ```
     #[inline]
     pub fn push(&self, val: T) {
-        if let Some(val) = self.primary_storage.push(val) {
-            self.stack.push(val);
+        if let Some(val) = self.primary_storage.push(val, true) {
+            let barrier = Barrier::new();
+            if let Some(storage) = self.stack.peek_with(|e| &**e, &barrier) {
+                if let Some(val) = storage.push(val, false) {
+                    self.stack.push(Storage::with_val(val));
+                }
+                return;
+            }
+            self.stack.push(Storage::with_val(val));
         }
     }
 
@@ -61,10 +68,19 @@ impl<T: 'static> Bag<T> {
     /// ```
     #[inline]
     pub fn pop(&self) -> Option<T> {
-        if let Some(e) = self.stack.pop() {
-            return unsafe { Some((*(e.as_ptr() as *mut Entry<T>)).take_inner()) };
+        let barrier = Barrier::new();
+        let mut current = self.stack.peek_with(|e| e, &barrier);
+        while let Some(e) = current {
+            let (val_opt, empty) = e.pop();
+            if empty {
+                e.delete_self(Relaxed);
+            }
+            if let Some(val) = val_opt {
+                return Some(val);
+            }
+            current = e.next_ptr(Acquire, &barrier).as_ref();
         }
-        self.primary_storage.pop()
+        self.primary_storage.pop().0
     }
 
     /// Returns `true` if the [`Bag`] is empty.
@@ -97,14 +113,14 @@ impl<T: 'static> Default for Bag<T> {
     #[inline]
     fn default() -> Self {
         Self {
-            primary_storage: PrimaryStorage::new(),
+            primary_storage: Storage::new(),
             stack: Stack::default(),
         }
     }
 }
 
 #[derive(Debug)]
-struct PrimaryStorage<T: 'static> {
+struct Storage<T: 'static> {
     /// Storage.
     storage: [MaybeUninit<T>; STORAGE_LEN],
 
@@ -122,21 +138,36 @@ struct PrimaryStorage<T: 'static> {
     metadata: AtomicUsize,
 }
 
-impl<T: 'static> PrimaryStorage<T> {
-    /// Creates a new [`FixedArray`].
-    fn new() -> PrimaryStorage<T> {
-        PrimaryStorage {
+impl<T: 'static> Storage<T> {
+    /// Creates a new [`Storage`].
+    fn new() -> Storage<T> {
+        Storage {
             storage: unsafe { MaybeUninit::uninit().assume_init() },
             metadata: AtomicUsize::new(0),
         }
     }
 
+    /// Creates a new [`Storage`] with one inserted.
+    fn with_val(val: T) -> Storage<T> {
+        let mut storage = Storage::<T> {
+            storage: unsafe { MaybeUninit::uninit().assume_init() },
+            metadata: AtomicUsize::new(1_usize << STORAGE_LEN),
+        };
+        unsafe {
+            storage.storage[0].as_mut_ptr().write(val);
+        }
+        storage
+    }
+
     /// Pushes a new value.
-    fn push(&self, val: T) -> Option<T> {
+    fn push(&self, val: T, allow_empty: bool) -> Option<T> {
         let mut metadata = self.metadata.load(Relaxed);
         'after_read_metadata: loop {
             // Looking for a free slot.
             let mut instance_bitmap = Self::instance_bitmap(metadata);
+            if !allow_empty && instance_bitmap == 0 {
+                return Some(val);
+            }
             let owned_bitmap = Self::owned_bitmap(metadata);
             let mut index = instance_bitmap.trailing_ones() as usize;
             while index != STORAGE_LEN {
@@ -156,12 +187,23 @@ impl<T: 'static> PrimaryStorage<T> {
                             let result = self.metadata.fetch_update(Release, Relaxed, |m| {
                                 debug_assert_ne!(m & (1_usize << index), 0);
                                 debug_assert_eq!(m & (1_usize << (index + STORAGE_LEN)), 0);
-                                let new = (m & (!(1_usize << index)))
-                                    | (1_usize << (index + STORAGE_LEN));
-                                Some(new)
+                                if !allow_empty && Self::instance_bitmap(m) == 0 {
+                                    // Disallowed to push a value into an empty array.
+                                    None
+                                } else {
+                                    let new = (m & (!(1_usize << index)))
+                                        | (1_usize << (index + STORAGE_LEN));
+                                    Some(new)
+                                }
                             });
-                            debug_assert!(result.is_ok());
-                            return None;
+                            if result.is_ok() {
+                                return None;
+                            }
+
+                            // The array was empty, thus rolling back the change.
+                            let val = unsafe { self.storage[index].as_ptr().read() };
+                            self.metadata.fetch_and(!(1_usize << index), Relaxed);
+                            return Some(val);
                         }
                         Err(prev) => {
                             // Metadata has changed.
@@ -182,15 +224,15 @@ impl<T: 'static> PrimaryStorage<T> {
     }
 
     /// Pops a value.
-    fn pop(&self) -> Option<T> {
+    fn pop(&self) -> (Option<T>, bool) {
         let mut metadata = self.metadata.load(Relaxed);
         'after_read_metadata: loop {
             // Looking for an instantiated, yet unowned entry.
-            let mut instance_bitmap = Self::instance_bitmap(metadata);
+            let instance_bitmap = Self::instance_bitmap(metadata);
             let owned_bitmap = Self::owned_bitmap(metadata);
-            let mut index = instance_bitmap.trailing_zeros() as usize;
+            let mut index = instance_bitmap.trailing_zeros();
             while index != 32 {
-                debug_assert!(index < STORAGE_LEN);
+                debug_assert!((index as usize) < STORAGE_LEN);
                 if (owned_bitmap & (1_u32 << index)) == 0 {
                     // Mark the slot `owned`.
                     let new = metadata | (1_usize << index);
@@ -200,16 +242,22 @@ impl<T: 'static> PrimaryStorage<T> {
                     {
                         Ok(_) => {
                             // Now the desired slot is owned by the thread.
-                            let inst = unsafe { self.storage[index].as_ptr().read() };
+                            let inst = unsafe { self.storage[index as usize].as_ptr().read() };
+                            let mut empty = false;
                             let result = self.metadata.fetch_update(Relaxed, Relaxed, |m| {
                                 debug_assert_ne!(m & (1_usize << index), 0);
-                                debug_assert_ne!(m & (1_usize << (index + STORAGE_LEN)), 0);
+                                debug_assert_ne!(
+                                    m & (1_usize << (index as usize + STORAGE_LEN)),
+                                    0
+                                );
                                 let new = m
-                                    & (!((1_usize << index) | (1_usize << (index + STORAGE_LEN))));
+                                    & (!((1_usize << index)
+                                        | (1_usize << (index as usize + STORAGE_LEN))));
+                                empty = Self::instance_bitmap(new) == 0;
                                 Some(new)
                             });
                             debug_assert!(result.is_ok());
-                            return Some(inst);
+                            return (Some(inst), empty);
                         }
                         Err(prev) => {
                             // Metadata has changed.
@@ -220,12 +268,12 @@ impl<T: 'static> PrimaryStorage<T> {
                 }
 
                 // Looking for another valid slot.
-                instance_bitmap &= !(1_u32 << index);
-                index = instance_bitmap.trailing_zeros() as usize;
+                index = (instance_bitmap & (u32::MAX.wrapping_shl(index).wrapping_shl(1)))
+                    .trailing_zeros();
             }
 
             // All the entries are vacant or owned.
-            return None;
+            return (None, instance_bitmap == 0);
         }
     }
 
@@ -246,7 +294,7 @@ impl<T: 'static> PrimaryStorage<T> {
     }
 }
 
-impl<T: 'static> Drop for PrimaryStorage<T> {
+impl<T: 'static> Drop for Storage<T> {
     #[inline]
     fn drop(&mut self) {
         if needs_drop::<T>() {

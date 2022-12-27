@@ -1,9 +1,7 @@
 //! [`Queue`] is a lock-free concurrent first-in-first-out container.
 
-use crate::LinkedList;
-
 use super::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
-use super::linked_list::Entry;
+use super::linked_list::{Entry, LinkedList};
 
 use std::fmt::{self, Debug};
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
@@ -161,10 +159,38 @@ impl<T: 'static> Queue<T> {
     #[inline]
     pub fn peek<R, F: FnOnce(&Entry<T>) -> R>(&self, reader: F) -> Option<R> {
         let barrier = Barrier::new();
-        let mut current = self.oldest.load(Acquire, &barrier);
+        self.peek_with(reader, &barrier)
+    }
+
+    /// Peeks the oldest entry with the supplied [`Barrier`].
+    ///
+    /// Returns `None` if the [`Queue`] is empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::Barrier;
+    /// use scc::Queue;
+    ///
+    /// let queue: Queue<usize> = Queue::default();
+    ///
+    /// assert!(queue.peek_with(|v| **v, &Barrier::new()).is_none());
+    ///
+    /// queue.push(37);
+    /// queue.push(3);
+    ///
+    /// assert_eq!(queue.peek_with(|v| **v, &Barrier::new()), Some(37));
+    /// ```
+    #[inline]
+    pub fn peek_with<'b, R, F: FnOnce(&'b Entry<T>) -> R>(
+        &self,
+        reader: F,
+        barrier: &'b Barrier,
+    ) -> Option<R> {
+        let mut current = self.oldest.load(Acquire, barrier);
         while let Some(oldest_entry) = current.as_ref() {
             if oldest_entry.is_deleted(Relaxed) {
-                current = self.cleanup_oldest(&barrier);
+                current = self.cleanup_oldest(barrier);
                 continue;
             }
             return Some(reader(oldest_entry));
