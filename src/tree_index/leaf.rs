@@ -91,11 +91,11 @@ impl Dimension {
 
     /// Returns the state of an entry.
     fn state(&self, metadata: usize, index: usize) -> usize {
-        (metadata & self.state_mask(index)) >> (index * self.num_bits_per_entry)
+        (metadata >> (index * self.num_bits_per_entry)) % (1_usize << self.num_bits_per_entry)
     }
 
     /// Returns an uninitialized state of an entry.
-    fn uninit_state() -> usize {
+    const fn uninit_state() -> usize {
         0
     }
 
@@ -219,6 +219,9 @@ where
         let mut max_index = DIMENSION.num_entries;
         for i in 0..DIMENSION.num_entries {
             let rank = DIMENSION.state(metadata, i);
+            if rank == 0 && (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
+                break;
+            }
             if rank > max_rank && rank != DIMENSION.removed_state() {
                 max_rank = rank;
                 max_index = i;
@@ -293,6 +296,9 @@ where
         let mut min_max_rank = DIMENSION.removed_state();
         for i in 0..DIMENSION.num_entries {
             let rank = DIMENSION.state(metadata, i);
+            if rank == 0 && (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
+                break;
+            }
             if rank > max_min_rank && rank < min_max_rank {
                 match self.compare(i, key) {
                     Ordering::Less => {
@@ -385,6 +391,9 @@ where
         let mut min_max_rank = DIMENSION.removed_state();
         for i in 0..DIMENSION.num_entries {
             let rank = DIMENSION.state(metadata, i);
+            if rank == 0 && (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
+                break;
+            }
             if rank > max_min_rank && rank < min_max_rank {
                 match self.compare(i, key) {
                     Ordering::Less => {
@@ -428,6 +437,9 @@ where
         let mut min_max_rank = DIMENSION.removed_state();
         for i in 0..DIMENSION.num_entries {
             let rank = DIMENSION.state(metadata, i);
+            if rank == 0 && (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
+                break;
+            }
             if rank > max_min_rank && rank < min_max_rank {
                 match self.compare(i, key) {
                     Ordering::Less => {
@@ -568,6 +580,9 @@ where
         let mut min_max_rank = DIMENSION.removed_state();
         for i in 0..DIMENSION.num_entries {
             let rank = DIMENSION.state(metadata, i);
+            if rank == 0 && (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
+                break;
+            }
             if rank > max_min_rank && rank < min_max_rank {
                 match self.compare(i, key) {
                     Ordering::Less => {

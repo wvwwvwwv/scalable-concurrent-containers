@@ -2,7 +2,7 @@
 name = "scc"
 description = "High performance containers and utilities for concurrent and asynchronous programming"
 documentation = "https://docs.rs/scc"
-version = "1.0.1"
+version = "1.0.2"
 authors = ["wvwwvwwv <wvwwvwwv@me.com>"]
 edition = "2021"
 readme = "README.md"
@@ -18,6 +18,10 @@ loom = "^0.5"
 proptest = "^1.0"
 rand = "^0.8"
 tokio = { version = "^1.23", features = ["full"] }
+
+[[bench]]
+name = "bag"
+harness = false
 
 [[bench]]
 name = "ebr"

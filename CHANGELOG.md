@@ -1,5 +1,9 @@
 # Changelog
 
+1.0.2
+
+* `TreeIndex` performance optimized.
+
 1.0.1
 
 * Add `Stack`.

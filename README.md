@@ -135,7 +135,7 @@ assert!(hashindex.insert(1, 0).is_ok());
 assert_eq!(hashindex.read(&1, |_, v| *v).unwrap(), 0);
 
 let future_insert = hashindex.insert_async(2, 1);
-let future_remove = hashindex.remove_if(&1, |_| true);
+let future_remove = hashindex.remove_if_async(&1, |_| true);
 ```
 
 An [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is implemented for [HashIndex](#HashIndex), because any derived references can survive as long as the associated `ebr::Barrier` lives.
