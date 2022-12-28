@@ -2,7 +2,7 @@
 
 1.0.2
 
-* `TreeIndex` performance optimized.
+* Optimize `TreeIndex`.
 
 1.0.1
 

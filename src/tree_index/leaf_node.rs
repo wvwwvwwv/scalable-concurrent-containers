@@ -194,8 +194,8 @@ where
     #[inline]
     pub(super) fn insert<D: DeriveAsyncWait>(
         &self,
-        key: K,
-        value: V,
+        mut key: K,
+        mut value: V,
         async_wait: &mut D,
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
@@ -206,13 +206,13 @@ where
                 if let Some(child_ref) = child_ptr.as_ref() {
                     if self.children.validate(metadata) {
                         // Data race resolution - see `LeafNode::search`.
-                        match child_ref.insert(key, value) {
-                            InsertResult::Success => return Ok(InsertResult::Success),
-                            InsertResult::Duplicate(k, v) => {
-                                return Ok(InsertResult::Duplicate(k, v));
-                            }
+                        let insert_result = child_ref.insert(key, value);
+                        match insert_result {
+                            InsertResult::Success
+                            | InsertResult::Duplicate(..)
+                            | InsertResult::Retry(..) => return Ok(insert_result),
                             InsertResult::Full(k, v) | InsertResult::Retired(k, v) => {
-                                return self.split_leaf(
+                                let split_result = self.split_leaf(
                                     k,
                                     v,
                                     Some(child_key),
@@ -220,14 +220,19 @@ where
                                     child,
                                     async_wait,
                                     barrier,
-                                );
+                                )?;
+                                if let InsertResult::Retry(k, v) = split_result {
+                                    key = k;
+                                    value = v;
+                                    continue;
+                                }
+                                return Ok(split_result);
                             }
                             InsertResult::Frozen(k, v) => {
                                 // The `Leaf` is being split: retry.
                                 self.wait(async_wait, barrier);
                                 return Err((k, v));
                             }
-                            InsertResult::Retry(..) => unreachable!(),
                         };
                     }
                 }
@@ -257,13 +262,13 @@ where
                 if !self.children.validate(metadata) {
                     continue;
                 }
-                match unbounded.insert(key, value) {
-                    InsertResult::Success => return Ok(InsertResult::Success),
-                    InsertResult::Duplicate(k, v) => {
-                        return Ok(InsertResult::Duplicate(k, v));
-                    }
+                let insert_result = unbounded.insert(key, value);
+                match insert_result {
+                    InsertResult::Success
+                    | InsertResult::Duplicate(..)
+                    | InsertResult::Retry(..) => return Ok(insert_result),
                     InsertResult::Full(k, v) | InsertResult::Retired(k, v) => {
-                        return self.split_leaf(
+                        let split_result = self.split_leaf(
                             k,
                             v,
                             None,
@@ -271,13 +276,18 @@ where
                             &self.unbounded_child,
                             async_wait,
                             barrier,
-                        );
+                        )?;
+                        if let InsertResult::Retry(k, v) = split_result {
+                            key = k;
+                            value = v;
+                            continue;
+                        }
+                        return Ok(split_result);
                     }
                     InsertResult::Frozen(k, v) => {
                         self.wait(async_wait, barrier);
                         return Err((k, v));
                     }
-                    InsertResult::Retry(..) => unreachable!(),
                 };
             }
             return Ok(InsertResult::Retired(key, value));
@@ -423,29 +433,33 @@ where
         debug_assert!(num_entries >= 2);
 
         let low_key_leaf_array_size = num_entries / 2;
-        for (index, entry) in entry_array.iter().enumerate() {
-            if let Some(entry) = entry {
-                match (index + 1).cmp(&low_key_leaf_array_size) {
+        for (i, entry) in entry_array.iter().enumerate() {
+            if let Some((k, v)) = entry {
+                match (i + 1).cmp(&low_key_leaf_array_size) {
                     Less => {
-                        low_key_leaf_node
-                            .children
-                            .insert(entry.0.unwrap().clone(), entry.1.clone(Relaxed, barrier));
+                        low_key_leaf_node.children.insert_unchecked(
+                            k.unwrap().clone(),
+                            v.clone(Relaxed, barrier),
+                            i,
+                        );
                     }
                     Equal => {
-                        middle_key.replace(entry.0.unwrap().clone());
+                        middle_key.replace(k.unwrap().clone());
                         low_key_leaf_node
                             .unbounded_child
-                            .swap((entry.1.get_arc(Relaxed, barrier), Tag::None), Relaxed);
+                            .swap((v.get_arc(Relaxed, barrier), Tag::None), Relaxed);
                     }
                     Greater => {
-                        if let Some(key) = entry.0 {
-                            high_key_leaf_node
-                                .children
-                                .insert(key.clone(), entry.1.clone(Relaxed, barrier));
+                        if let Some(k) = k.cloned() {
+                            high_key_leaf_node.children.insert_unchecked(
+                                k,
+                                v.clone(Relaxed, barrier),
+                                i - low_key_leaf_array_size,
+                            );
                         } else {
                             high_key_leaf_node
                                 .unbounded_child
-                                .swap((entry.1.get_arc(Relaxed, barrier), Tag::None), Relaxed);
+                                .swap((v.get_arc(Relaxed, barrier), Tag::None), Relaxed);
                         }
                     }
                 }

@@ -200,13 +200,13 @@ where
                 if let Some(child_ref) = child_ptr.as_ref() {
                     if self.children.validate(metadata) {
                         // Data race resolution - see `LeafNode::search`.
-                        match child_ref.insert(key, value, async_wait, barrier)? {
-                            InsertResult::Success => return Ok(InsertResult::Success),
-                            InsertResult::Duplicate(k, v) => {
-                                return Ok(InsertResult::Duplicate(k, v));
-                            }
+                        let insert_result = child_ref.insert(key, value, async_wait, barrier)?;
+                        match insert_result {
+                            InsertResult::Success
+                            | InsertResult::Duplicate(..)
+                            | InsertResult::Frozen(..) => return Ok(insert_result),
                             InsertResult::Full(k, v) => {
-                                return self.split_node(
+                                let split_result = self.split_node(
                                     k,
                                     v,
                                     Some(child_key),
@@ -215,9 +215,14 @@ where
                                     false,
                                     async_wait,
                                     barrier,
-                                );
+                                )?;
+                                if let InsertResult::Retry(k, v) = split_result {
+                                    key = k;
+                                    value = v;
+                                    continue;
+                                }
+                                return Ok(split_result);
                             }
-                            InsertResult::Frozen(..) => unreachable!(),
                             InsertResult::Retired(k, v) => {
                                 debug_assert!(child_ref.retired(Relaxed));
                                 if self.coalesce(barrier) == RemoveResult::Retired {
@@ -248,13 +253,13 @@ where
                 if !self.children.validate(metadata) {
                     continue;
                 }
-                match unbounded.insert(key, value, async_wait, barrier)? {
-                    InsertResult::Success => return Ok(InsertResult::Success),
-                    InsertResult::Duplicate(k, v) => {
-                        return Ok(InsertResult::Duplicate(k, v));
-                    }
+                let insert_result = unbounded.insert(key, value, async_wait, barrier)?;
+                match insert_result {
+                    InsertResult::Success
+                    | InsertResult::Duplicate(..)
+                    | InsertResult::Frozen(..) => return Ok(insert_result),
                     InsertResult::Full(k, v) => {
-                        return self.split_node(
+                        let split_result = self.split_node(
                             k,
                             v,
                             None,
@@ -263,9 +268,14 @@ where
                             false,
                             async_wait,
                             barrier,
-                        );
+                        )?;
+                        if let InsertResult::Retry(k, v) = split_result {
+                            key = k;
+                            value = v;
+                            continue;
+                        }
+                        return Ok(split_result);
                     }
-                    InsertResult::Frozen(..) => unreachable!(),
                     InsertResult::Retired(k, v) => {
                         debug_assert!(unbounded.retired(Relaxed));
                         if self.coalesce(barrier) == RemoveResult::Retired {
@@ -493,31 +503,33 @@ where
                 debug_assert!(num_entries >= 2);
 
                 let low_key_node_array_size = num_entries / 2;
-                for (index, entry) in entry_array.iter().enumerate() {
-                    if let Some(entry) = entry {
-                        match (index + 1).cmp(&low_key_node_array_size) {
+                for (i, entry) in entry_array.iter().enumerate() {
+                    if let Some((k, v)) = entry {
+                        match (i + 1).cmp(&low_key_node_array_size) {
                             Less => {
-                                low_key_nodes.children.insert(
-                                    entry.0.unwrap().clone(),
-                                    entry.1.clone(Relaxed, barrier),
+                                low_key_nodes.children.insert_unchecked(
+                                    k.unwrap().clone(),
+                                    v.clone(Relaxed, barrier),
+                                    i,
                                 );
                             }
                             Equal => {
-                                new_nodes.middle_key.replace(entry.0.unwrap().clone());
+                                new_nodes.middle_key.replace(k.unwrap().clone());
                                 low_key_nodes
                                     .unbounded_child
-                                    .swap((entry.1.get_arc(Relaxed, barrier), Tag::None), Relaxed);
+                                    .swap((v.get_arc(Relaxed, barrier), Tag::None), Relaxed);
                             }
                             Greater => {
-                                if let Some(key) = entry.0 {
-                                    high_key_nodes
-                                        .children
-                                        .insert(key.clone(), entry.1.clone(Relaxed, barrier));
-                                } else {
-                                    high_key_nodes.unbounded_child.swap(
-                                        (entry.1.get_arc(Relaxed, barrier), Tag::None),
-                                        Relaxed,
+                                if let Some(k) = k.cloned() {
+                                    high_key_nodes.children.insert_unchecked(
+                                        k,
+                                        v.clone(Relaxed, barrier),
+                                        i - low_key_node_array_size,
                                     );
+                                } else {
+                                    high_key_nodes
+                                        .unbounded_child
+                                        .swap((v.get_arc(Relaxed, barrier), Tag::None), Relaxed);
                                 }
                             }
                         };

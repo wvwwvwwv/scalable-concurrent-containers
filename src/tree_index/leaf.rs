@@ -157,12 +157,6 @@ where
     K: 'static + Clone + Ord + Sync,
     V: 'static + Clone + Sync,
 {
-    /// The array of key-value pairs.
-    entry_array: EntryArray<K, V>,
-
-    /// A pointer that points to the next adjacent [`Leaf`].
-    link: AtomicArc<Leaf<K, V>>,
-
     /// The metadata that manages the contents.
     ///
     /// The state of each entry is as follows.
@@ -173,6 +167,12 @@ where
     /// The entry state transitions as follows.
     /// * Uninit -> removed -> rank -> removed.
     metadata: AtomicUsize,
+
+    /// The array of key-value pairs.
+    entry_array: EntryArray<K, V>,
+
+    /// A pointer that points to the next adjacent [`Leaf`].
+    link: AtomicArc<Leaf<K, V>>,
 }
 
 impl<K, V> Leaf<K, V>
@@ -184,9 +184,9 @@ where
     #[inline]
     pub(super) fn new() -> Leaf<K, V> {
         Leaf {
+            metadata: AtomicUsize::new(0),
             entry_array: unsafe { MaybeUninit::uninit().assume_init() },
             link: AtomicArc::null(),
-            metadata: AtomicUsize::new(0),
         }
     }
 
@@ -218,7 +218,9 @@ where
         let mut max_index = DIMENSION.num_entries;
         for i in 0..DIMENSION.num_entries {
             let rank = DIMENSION.state(metadata, i);
-            if rank == 0 && (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
+            if rank == Dimension::uninit_state()
+                && (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0
+            {
                 break;
             }
             if rank > max_rank && rank != DIMENSION.removed_state() {
@@ -276,6 +278,18 @@ where
         InsertResult::Retired(key, value)
     }
 
+    /// Inserts a key value pair at the specified position without checking the metadata.
+    ///
+    /// `rank` is calculated as `index + 1`.
+    #[inline]
+    pub(super) fn insert_unchecked(&self, key: K, value: V, index: usize) {
+        debug_assert!(index < DIMENSION.num_entries);
+        let metadata = self.metadata.load(Relaxed);
+        let new_metadata = DIMENSION.augment(metadata, index, index + 1);
+        self.write(index, key, value);
+        self.metadata.store(new_metadata, Release);
+    }
+
     /// Removes the key if the condition is met.
     #[inline]
     pub(super) fn remove_if<Q, F: FnMut(&V) -> bool>(
@@ -295,7 +309,9 @@ where
         let mut min_max_rank = DIMENSION.removed_state();
         for i in 0..DIMENSION.num_entries {
             let rank = DIMENSION.state(metadata, i);
-            if rank == 0 && (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
+            if rank == Dimension::uninit_state()
+                && (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0
+            {
                 break;
             }
             if rank > max_min_rank && rank < min_max_rank {
@@ -390,7 +406,9 @@ where
         let mut min_max_rank = DIMENSION.removed_state();
         for i in 0..DIMENSION.num_entries {
             let rank = DIMENSION.state(metadata, i);
-            if rank == 0 && (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
+            if rank == Dimension::uninit_state()
+                && (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0
+            {
                 break;
             }
             if rank > max_min_rank && rank < min_max_rank {
@@ -436,7 +454,9 @@ where
         let mut min_max_rank = DIMENSION.removed_state();
         for i in 0..DIMENSION.num_entries {
             let rank = DIMENSION.state(metadata, i);
-            if rank == 0 && (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
+            if rank == Dimension::uninit_state()
+                && (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0
+            {
                 break;
             }
             if rank > max_min_rank && rank < min_max_rank {
@@ -487,7 +507,12 @@ where
                     continue;
                 }
                 let rank = DIMENSION.state(metadata, i);
-                if rank == Dimension::uninit_state() || rank == DIMENSION.removed_state() {
+                if rank == Dimension::uninit_state() {
+                    if (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
+                        break;
+                    }
+                    continue;
+                } else if rank == DIMENSION.removed_state() {
                     continue;
                 }
                 debug_assert_ne!(rank, current_entry_rank);
@@ -535,33 +560,23 @@ where
                 Some(Dimension::freeze(p))
             }
         }) {
-            let mut iterated = 0;
             let scanner = Scanner {
                 leaf: self,
                 metadata: prev,
                 entry_index: DIMENSION.num_entries,
                 entry_ptr: ptr::null(),
             };
-            for entry in scanner {
-                let result = if iterated < DIMENSION.num_entries / 2 {
-                    if low_key_leaf.is_none() {
-                        low_key_leaf.replace(Arc::new(Leaf::new()));
-                    }
-                    iterated += 1;
+            let boundary = DIMENSION.num_entries / 2;
+            for (i, (k, v)) in scanner.enumerate() {
+                if i < DIMENSION.num_entries / 2 {
                     low_key_leaf
-                        .as_ref()
-                        .unwrap()
-                        .insert(entry.0.clone(), entry.1.clone())
+                        .get_or_insert_with(|| Arc::new(Leaf::new()))
+                        .insert_unchecked(k.clone(), v.clone(), i);
                 } else {
-                    if high_key_leaf.is_none() {
-                        high_key_leaf.replace(Arc::new(Leaf::new()));
-                    }
                     high_key_leaf
-                        .as_ref()
-                        .unwrap()
-                        .insert(entry.0.clone(), entry.1.clone())
+                        .get_or_insert_with(|| Arc::new(Leaf::new()))
+                        .insert_unchecked(k.clone(), v.clone(), i - boundary);
                 };
-                debug_assert!(matches!(result, InsertResult::Success));
             }
             true
         } else {
@@ -579,7 +594,9 @@ where
         let mut min_max_rank = DIMENSION.removed_state();
         for i in 0..DIMENSION.num_entries {
             let rank = DIMENSION.state(metadata, i);
-            if rank == 0 && (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
+            if rank == Dimension::uninit_state()
+                && (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0
+            {
                 break;
             }
             if rank > max_min_rank && rank < min_max_rank {
@@ -612,7 +629,12 @@ where
             let mut min_max_rank = DIMENSION.removed_state();
             for i in 0..DIMENSION.num_entries {
                 let rank = DIMENSION.state(metadata, i);
-                if rank == Dimension::uninit_state() || rank == DIMENSION.removed_state() {
+                if rank == Dimension::uninit_state() {
+                    if (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
+                        break;
+                    }
+                    continue;
+                } else if rank == DIMENSION.removed_state() {
                     continue;
                 }
                 if rank > max_min_rank && rank < min_max_rank {
@@ -703,12 +725,13 @@ where
             let metadata = self.metadata.load(Acquire);
             for i in 0..DIMENSION.num_entries {
                 let rank = DIMENSION.state(metadata, i);
-                if rank == 0 && (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
-                    break;
+                if rank == Dimension::uninit_state() {
+                    if (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
+                        break;
+                    }
+                    continue;
                 }
-                if rank != Dimension::uninit_state() {
-                    self.take(i);
-                }
+                self.take(i);
             }
         }
     }
