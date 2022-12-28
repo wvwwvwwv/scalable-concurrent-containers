@@ -350,7 +350,7 @@ impl<T: 'static> AtomicArc<T> {
 
 impl<T: 'static> Clone for AtomicArc<T> {
     #[inline]
-    fn clone<'b>(&self) -> AtomicArc<T> {
+    fn clone(&self) -> AtomicArc<T> {
         self.clone(Relaxed, &Barrier::new())
     }
 }
@@ -374,4 +374,5 @@ impl<T: 'static> Drop for AtomicArc<T> {
     }
 }
 
-unsafe impl<T: 'static> Send for AtomicArc<T> {}
+unsafe impl<T: 'static + Send> Send for AtomicArc<T> {}
+unsafe impl<T: 'static + Sync> Sync for AtomicArc<T> {}

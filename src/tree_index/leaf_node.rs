@@ -7,7 +7,7 @@ use crate::LinkedList;
 
 use std::borrow::Borrow;
 use std::cmp::Ordering::{Equal, Greater, Less};
-use std::ptr::{self, addr_of};
+use std::ptr;
 use std::sync::atomic::Ordering::{self, AcqRel, Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicPtr, AtomicU8};
 
@@ -28,13 +28,13 @@ where
     /// A child [`Leaf`] that has no upper key bound.
     ///
     /// It stores the maximum key in the node, and key-value pairs are firstly pushed to this
-    /// [`Leaf`].
+    /// [`Leaf`] until split.
     unbounded_child: AtomicArc<Leaf<K, V>>,
 
     /// On-going split operation.
     split_op: StructuralChange<K, V>,
 
-    /// Latch of the [`LeafNode`].
+    /// The latch protecting the [`LeafNode`].
     latch: AtomicU8,
 
     /// `wait_queue` for `latch`.
@@ -368,12 +368,14 @@ where
         // It is safe to keep the pointers to the new leaf nodes in this full leaf node since the
         // whole split operation is protected under a single `ebr::Barrier`, and the pointers are
         // only dereferenced during the operation.
-        self.split_op
-            .low_key_leaf_node
-            .swap(addr_of!(*low_key_leaf_node) as *mut _, Relaxed);
-        self.split_op
-            .high_key_leaf_node
-            .swap(addr_of!(*high_key_leaf_node) as *mut _, Relaxed);
+        self.split_op.low_key_leaf_node.swap(
+            low_key_leaf_node as *const LeafNode<K, V> as *mut _,
+            Relaxed,
+        );
+        self.split_op.high_key_leaf_node.swap(
+            high_key_leaf_node as *const LeafNode<K, V> as *mut _,
+            Relaxed,
+        );
 
         // Builds a list of valid leaves
         #[allow(clippy::type_complexity)]
@@ -505,23 +507,20 @@ where
             unsafe { self.split_op.low_key_leaf_node.load(Relaxed).as_ref() }
         {
             low_key_leaf_node.split_op.reset();
-            low_key_leaf_node.latch.store(0, Release);
-            low_key_leaf_node.wait_queue.signal();
+            low_key_leaf_node.unlock();
         }
 
         if let Some(high_key_leaf_node) =
             unsafe { self.split_op.high_key_leaf_node.load(Relaxed).as_ref() }
         {
             high_key_leaf_node.split_op.reset();
-            high_key_leaf_node.latch.store(0, Release);
-            high_key_leaf_node.wait_queue.signal();
+            high_key_leaf_node.unlock();
         }
 
         self.split_op.reset();
 
         // Mark the leaf node retired to prevent further locking attempts.
-        self.latch.store(u8::MAX, Release);
-        self.wait_queue.signal();
+        self.retire();
     }
 
     /// Rolls back the ongoing split operation.
@@ -561,8 +560,7 @@ where
         self.split_op.reset();
 
         // Unlock the leaf node.
-        self.latch.store(0, Release);
-        self.wait_queue.signal();
+        self.unlock();
     }
 
     /// Cleans up logically deleted [`LeafNode`] instances in the linked list.
@@ -627,8 +625,8 @@ where
     ///
     /// # Errors
     ///
-    /// Returns an error if retry is required.
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    /// Returns an error if a retry is required.
+    #[allow(clippy::too_many_arguments)]
     fn split_leaf<D: DeriveAsyncWait>(
         &self,
         key: K,
@@ -639,18 +637,16 @@ where
         async_wait: &mut D,
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
-        if self.latch.compare_exchange(0, 1, Acquire, Relaxed).is_err() {
+        if !self.try_lock() {
             self.wait(async_wait);
             return Err((key, value));
         }
         if self.retired(Relaxed) {
-            self.latch.store(0, Release);
-            self.wait_queue.signal();
+            self.unlock();
             return Ok(InsertResult::Retired(key, value));
         }
         if full_leaf_ptr != full_leaf.load(Relaxed, barrier) {
-            self.latch.store(0, Release);
-            self.wait_queue.signal();
+            self.unlock();
             return Err((key, value));
         }
 
@@ -769,12 +765,11 @@ where
                 .0
         };
 
-        // Resets `split_op`.
+        // Reset `split_op`.
         self.split_op.reset();
 
-        // Unlocks the leaf node.
-        self.latch.store(0, Release);
-        self.wait_queue.signal();
+        // Unlock the leaf node.
+        self.unlock();
 
         if let Some(unused_leaf) = unused_leaf {
             let _ = unused_leaf.release(barrier);
@@ -886,6 +881,25 @@ where
         }
         false
     }
+
+    /// Tries to lock the [`LeafNode`].
+    fn try_lock(&self) -> bool {
+        self.latch.compare_exchange(0, 1, Acquire, Relaxed).is_ok()
+    }
+
+    /// Unlocks the [`LeafNode`].
+    fn unlock(&self) {
+        debug_assert_eq!(self.latch.load(Relaxed), 1);
+        self.latch.store(0, Release);
+        self.wait_queue.signal();
+    }
+
+    /// Retires itself.
+    fn retire(&self) {
+        debug_assert_eq!(self.latch.load(Relaxed), 1);
+        self.latch.store(u8::MAX, Release);
+        self.wait_queue.signal();
+    }
 }
 
 /// [`Locker`] holds exclusive access to a [`Leaf`].
@@ -905,11 +919,7 @@ where
     /// Acquires exclusive lock on the [`LeafNode`].
     #[inline]
     pub(super) fn try_lock(leaf_node: &'n LeafNode<K, V>) -> Option<Locker<'n, K, V>> {
-        if leaf_node
-            .latch
-            .compare_exchange(0, 1, Acquire, Relaxed)
-            .is_ok()
-        {
+        if leaf_node.try_lock() {
             Some(Locker { leaf_node })
         } else {
             None
@@ -924,9 +934,7 @@ where
 {
     #[inline]
     fn drop(&mut self) {
-        debug_assert_eq!(self.leaf_node.latch.load(Relaxed), 1);
-        self.leaf_node.latch.store(0, Release);
-        self.leaf_node.wait_queue.signal();
+        self.leaf_node.unlock();
     }
 }
 

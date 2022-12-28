@@ -25,13 +25,13 @@ where
     /// A child [`Node`] that has no upper key bound.
     ///
     /// It stores the maximum key in the node, and key-value pairs are firstly pushed to this
-    /// [`Node`].
+    /// [`Node`] until split.
     pub(super) unbounded_child: AtomicArc<Node<K, V>>,
 
     /// On-going split operation.
     split_op: StructuralChange<K, V>,
 
-    /// Latch of the [`InternalNode`].
+    /// The latch protecting the [`InternalNode`].
     latch: AtomicU8,
 
     /// `wait_queue` for `latch`.
@@ -372,7 +372,7 @@ where
     ///
     /// # Errors
     ///
-    /// Returns an error if retry is required.
+    /// Returns an error if a retry is required.
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub(super) fn split_node<D: DeriveAsyncWait>(
         &self,
@@ -386,7 +386,7 @@ where
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
         let target = full_node_ptr.as_ref().unwrap();
-        if self.latch.compare_exchange(0, 1, Acquire, Relaxed).is_err() {
+        if !self.try_lock() {
             target.rollback(barrier);
             self.wait(async_wait);
             return Err((key, value));
@@ -394,15 +394,18 @@ where
         debug_assert!(!self.retired(Relaxed));
 
         if full_node_ptr != full_node.load(Relaxed, barrier) {
-            self.latch.store(0, Release);
-            self.wait_queue.signal();
+            self.unlock();
             target.rollback(barrier);
             return Err((key, value));
         }
 
-        self.split_op
+        let prev = self
+            .split_op
             .origin_node
-            .swap((full_node.get_arc(Relaxed, barrier), Tag::None), Relaxed);
+            .swap((full_node.get_arc(Relaxed, barrier), Tag::None), Relaxed)
+            .0;
+        debug_assert!(prev.is_none());
+
         if let Some(full_node_key) = full_node_key {
             self.split_op
                 .origin_node_key
@@ -674,7 +677,7 @@ where
     #[inline]
     pub(super) fn finish_split(&self) {
         self.split_op.reset();
-        self.latch.store(0, Release);
+        self.unlock();
         self.wait_queue.signal();
     }
 
@@ -684,8 +687,7 @@ where
         let origin = self.split_op.reset();
 
         // Mark the internal node retired to prevent further locking attempts.
-        self.latch.store(u8::MAX, Release);
-        self.wait_queue.signal();
+        self.retire();
         if let Some(origin) = origin {
             origin.commit(barrier);
         }
@@ -695,8 +697,7 @@ where
     #[inline]
     pub(super) fn rollback(&self, barrier: &Barrier) {
         let origin = self.split_op.reset();
-        self.latch.store(0, Release);
-        self.wait_queue.signal();
+        self.unlock();
         if let Some(origin) = origin {
             origin.rollback(barrier);
         }
@@ -857,6 +858,25 @@ where
         }
         false
     }
+
+    /// Tries to lock the [`InternalNode`].
+    fn try_lock(&self) -> bool {
+        self.latch.compare_exchange(0, 1, Acquire, Relaxed).is_ok()
+    }
+
+    /// Unlocks the [`InternalNode`].
+    fn unlock(&self) {
+        debug_assert_eq!(self.latch.load(Relaxed), 1);
+        self.latch.store(0, Release);
+        self.wait_queue.signal();
+    }
+
+    /// Retires itself.
+    fn retire(&self) {
+        debug_assert_eq!(self.latch.load(Relaxed), 1);
+        self.latch.store(u8::MAX, Release);
+        self.wait_queue.signal();
+    }
 }
 
 /// [`Locker`] holds exclusive access to a [`InternalNode`].
@@ -876,11 +896,7 @@ where
     /// Acquires exclusive lock on the [`InternalNode`].
     #[inline]
     pub(super) fn try_lock(internal_node: &'n InternalNode<K, V>) -> Option<Locker<'n, K, V>> {
-        if internal_node
-            .latch
-            .compare_exchange(0, 1, Acquire, Relaxed)
-            .is_ok()
-        {
+        if internal_node.try_lock() {
             Some(Locker { internal_node })
         } else {
             None
@@ -895,9 +911,7 @@ where
 {
     #[inline]
     fn drop(&mut self) {
-        debug_assert_eq!(self.internal_node.latch.load(Relaxed), 1);
-        self.internal_node.latch.store(0, Release);
-        self.internal_node.wait_queue.signal();
+        self.internal_node.unlock();
     }
 }
 
