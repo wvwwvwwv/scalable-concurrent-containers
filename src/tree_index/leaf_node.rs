@@ -7,15 +7,12 @@ use crate::LinkedList;
 
 use std::borrow::Borrow;
 use std::cmp::Ordering::{Equal, Greater, Less};
-use std::ptr::addr_of;
-use std::sync::atomic::AtomicPtr;
+use std::ptr::{self, addr_of};
 use std::sync::atomic::Ordering::{self, AcqRel, Acquire, Relaxed, Release};
+use std::sync::atomic::{AtomicPtr, AtomicU8};
 
 /// [`Tag::First`] indicates the corresponding node has retired.
 pub const RETIRED: Tag = Tag::First;
-
-/// [`Tag::Second`] indicates the corresponding node is locked.
-pub const LOCKED: Tag = Tag::Second;
 
 /// [`LeafNode`] contains a list of instances of `K, V` [`Leaf`].
 ///
@@ -34,9 +31,11 @@ where
     /// [`Leaf`].
     unbounded_child: AtomicArc<Leaf<K, V>>,
 
-    /// `latch` acts as a mutex of the [`LeafNode`] that also stores the information about an
-    /// on-going structural change.
-    latch: AtomicArc<StructuralChange<K, V>>,
+    /// On-going split operation.
+    split_op: StructuralChange<K, V>,
+
+    /// Latch of the [`LeafNode`].
+    latch: AtomicU8,
 
     /// `wait_queue` for `latch`.
     wait_queue: WaitQueue,
@@ -53,7 +52,8 @@ where
         LeafNode {
             children: Leaf::new(),
             unbounded_child: AtomicArc::null(),
-            latch: AtomicArc::null(),
+            split_op: StructuralChange::default(),
+            latch: AtomicU8::new(0),
             wait_queue: WaitQueue::default(),
         }
     }
@@ -230,7 +230,7 @@ where
                             }
                             InsertResult::Frozen(k, v) => {
                                 // The `Leaf` is being split: retry.
-                                self.wait(async_wait, barrier);
+                                self.wait(async_wait);
                                 return Err((k, v));
                             }
                         };
@@ -285,7 +285,7 @@ where
                         return Ok(split_result);
                     }
                     InsertResult::Frozen(k, v) => {
-                        self.wait(async_wait, barrier);
+                        self.wait(async_wait);
                         return Err((k, v));
                     }
                 };
@@ -322,7 +322,7 @@ where
                         if result == RemoveResult::Frozen {
                             // When a `Leaf` is frozen, its entries may be being copied to new
                             // `Leaves`.
-                            self.wait(async_wait, barrier);
+                            self.wait(async_wait);
                             return Err(false);
                         } else if result == RemoveResult::Retired {
                             return Ok(self.coalesce(barrier));
@@ -342,7 +342,7 @@ where
                 }
                 let result = unbounded.remove_if(key, condition);
                 if result == RemoveResult::Frozen {
-                    self.wait(async_wait, barrier);
+                    self.wait(async_wait);
                     return Err(false);
                 } else if result == RemoveResult::Retired {
                     return Ok(self.coalesce(barrier));
@@ -354,25 +354,24 @@ where
     }
 
     /// Splits itself into the given leaf nodes, and returns the middle key value.
-    pub(super) fn split_leaf_node(
-        &self,
+    pub(super) fn split_leaf_node<'b>(
+        &'b self,
         low_key_leaf_node: &LeafNode<K, V>,
         high_key_leaf_node: &LeafNode<K, V>,
-        barrier: &Barrier,
-    ) -> Option<K> {
+        barrier: &'b Barrier,
+    ) -> &'b K {
         let mut middle_key = None;
-        let new_leaves = self.latch.load(Relaxed, barrier).as_ref().unwrap();
 
-        low_key_leaf_node.latch.swap((None, LOCKED), Relaxed);
-        high_key_leaf_node.latch.swap((None, LOCKED), Relaxed);
+        low_key_leaf_node.latch.store(1, Relaxed);
+        high_key_leaf_node.latch.store(1, Relaxed);
 
         // It is safe to keep the pointers to the new leaf nodes in this full leaf node since the
         // whole split operation is protected under a single `ebr::Barrier`, and the pointers are
         // only dereferenced during the operation.
-        new_leaves
+        self.split_op
             .low_key_leaf_node
             .swap(addr_of!(*low_key_leaf_node) as *mut _, Relaxed);
-        new_leaves
+        self.split_op
             .high_key_leaf_node
             .swap(addr_of!(*high_key_leaf_node) as *mut _, Relaxed);
 
@@ -381,27 +380,30 @@ where
         let mut entry_array: [Option<(Option<&K>, AtomicArc<Leaf<K, V>>)>;
             DIMENSION.num_entries + 2] = Default::default();
         let mut num_entries = 0;
-        let low_key_leaf_ref = new_leaves
+        let low_key_leaf_ref = self
+            .split_op
             .low_key_leaf
             .load(Relaxed, barrier)
             .as_ref()
             .unwrap();
-        let middle_key_ref = low_key_leaf_ref.max().unwrap().0;
+        let middle_key_ref = low_key_leaf_ref.max_key().unwrap();
         for entry in Scanner::new(&self.children) {
-            if new_leaves
-                .origin_leaf_key
-                .as_ref()
-                .map_or_else(|| false, |key| entry.0.borrow() == key)
-            {
+            if unsafe {
+                self.split_op
+                    .origin_leaf_key
+                    .load(Relaxed)
+                    .as_ref()
+                    .map_or_else(|| false, |key| entry.0.borrow() == key)
+            } {
                 entry_array[num_entries].replace((
                     Some(middle_key_ref),
-                    new_leaves.low_key_leaf.clone(Relaxed, barrier),
+                    self.split_op.low_key_leaf.clone(Relaxed, barrier),
                 ));
                 num_entries += 1;
-                if !new_leaves.high_key_leaf.load(Relaxed, barrier).is_null() {
+                if !self.split_op.high_key_leaf.load(Relaxed, barrier).is_null() {
                     entry_array[num_entries].replace((
                         Some(entry.0),
-                        new_leaves.high_key_leaf.clone(Relaxed, barrier),
+                        self.split_op.high_key_leaf.clone(Relaxed, barrier),
                     ));
                     num_entries += 1;
                 }
@@ -410,25 +412,25 @@ where
                 num_entries += 1;
             }
         }
-        #[allow(clippy::branches_sharing_code)]
-        if new_leaves.origin_leaf_key.is_some() {
-            // If the origin is a bounded node, assign the unbounded leaf as the high key node's
-            // unbounded.
-            entry_array[num_entries].replace((None, self.unbounded_child.clone(Relaxed, barrier)));
-            num_entries += 1;
-        } else {
+
+        if self.split_op.origin_leaf_key.load(Relaxed).is_null() {
             // If the origin is an unbounded node, assign the high key node to the high key node's
             // unbounded.
             entry_array[num_entries].replace((
                 Some(middle_key_ref),
-                new_leaves.low_key_leaf.clone(Relaxed, barrier),
+                self.split_op.low_key_leaf.clone(Relaxed, barrier),
             ));
             num_entries += 1;
-            if !new_leaves.high_key_leaf.load(Relaxed, barrier).is_null() {
+            if !self.split_op.high_key_leaf.load(Relaxed, barrier).is_null() {
                 entry_array[num_entries]
-                    .replace((None, new_leaves.high_key_leaf.clone(Relaxed, barrier)));
+                    .replace((None, self.split_op.high_key_leaf.clone(Relaxed, barrier)));
                 num_entries += 1;
             }
+        } else {
+            // If the origin is a bounded node, assign the unbounded leaf as the high key node's
+            // unbounded.
+            entry_array[num_entries].replace((None, self.unbounded_child.clone(Relaxed, barrier)));
+            num_entries += 1;
         }
         debug_assert!(num_entries >= 2);
 
@@ -444,7 +446,7 @@ where
                         );
                     }
                     Equal => {
-                        middle_key.replace(k.unwrap().clone());
+                        middle_key.replace(k.unwrap());
                         low_key_leaf_node
                             .unbounded_child
                             .swap((v.get_arc(Relaxed, barrier), Tag::None), Relaxed);
@@ -468,94 +470,99 @@ where
             }
         }
 
-        debug_assert!(middle_key.is_some());
-        middle_key
+        middle_key.unwrap()
     }
 
     /// Commits an on-going structural change.
     #[inline]
     pub(super) fn commit(&self, barrier: &Barrier) {
         // Unfreeze both leaves.
-        if let Some(change) = self.latch.load(Relaxed, barrier).as_ref() {
-            if let Some(origin_leaf) = change.origin_leaf.swap((None, Tag::None), Relaxed).0 {
-                // Make the origin leaf unreachable before making the new leaves updatable.
-                origin_leaf.delete_self(Relaxed);
-                let _ = origin_leaf.release(barrier);
-            }
-            let low_key_leaf = change.low_key_leaf.load(Relaxed, barrier).as_ref().unwrap();
-            let high_key_leaf = change
-                .high_key_leaf
-                .load(Relaxed, barrier)
-                .as_ref()
-                .unwrap();
-            let unfrozen = low_key_leaf.thaw();
-            debug_assert!(unfrozen);
-            let unfrozen = high_key_leaf.thaw();
-            debug_assert!(unfrozen);
-
-            // It is safe to dereference those pointers since the whole split operation is under a
-            // single `ebr::Barrier`.
-            if let Some(low_key_leaf_node) =
-                unsafe { change.low_key_leaf_node.load(Relaxed).as_ref() }
-            {
-                let locked = low_key_leaf_node.latch.swap((None, Tag::None), Relaxed).1;
-                debug_assert_eq!(locked, LOCKED);
-                low_key_leaf_node.wait_queue.signal();
-            }
-
-            if let Some(high_key_leaf_node) =
-                unsafe { change.high_key_leaf_node.load(Relaxed).as_ref() }
-            {
-                let locked = high_key_leaf_node.latch.swap((None, Tag::None), Relaxed).1;
-                debug_assert_eq!(locked, LOCKED);
-                high_key_leaf_node.wait_queue.signal();
-            }
+        if let Some(origin_leaf) = self.split_op.origin_leaf.swap((None, Tag::None), Relaxed).0 {
+            // Make the origin leaf unreachable before making the new leaves updatable.
+            origin_leaf.delete_self(Relaxed);
+            let _ = origin_leaf.release(barrier);
         }
+        let low_key_leaf = self
+            .split_op
+            .low_key_leaf
+            .load(Relaxed, barrier)
+            .as_ref()
+            .unwrap();
+        let high_key_leaf = self
+            .split_op
+            .high_key_leaf
+            .load(Relaxed, barrier)
+            .as_ref()
+            .unwrap();
+        let unfrozen = low_key_leaf.thaw();
+        debug_assert!(unfrozen);
+        let unfrozen = high_key_leaf.thaw();
+        debug_assert!(unfrozen);
+
+        // It is safe to dereference those pointers since the whole split operation is under a
+        // single `ebr::Barrier`.
+        if let Some(low_key_leaf_node) =
+            unsafe { self.split_op.low_key_leaf_node.load(Relaxed).as_ref() }
+        {
+            low_key_leaf_node.split_op.reset();
+            low_key_leaf_node.latch.store(0, Release);
+            low_key_leaf_node.wait_queue.signal();
+        }
+
+        if let Some(high_key_leaf_node) =
+            unsafe { self.split_op.high_key_leaf_node.load(Relaxed).as_ref() }
+        {
+            high_key_leaf_node.split_op.reset();
+            high_key_leaf_node.latch.store(0, Release);
+            high_key_leaf_node.wait_queue.signal();
+        }
+
+        self.split_op.reset();
 
         // Mark the leaf node retired to prevent further locking attempts.
-        let (change, _) = self.latch.swap((None, RETIRED), Release);
+        self.latch.store(u8::MAX, Release);
         self.wait_queue.signal();
-        if let Some(change) = change {
-            let _ = change.release(barrier);
-        }
     }
 
     /// Rolls back the ongoing split operation.
     #[inline]
     pub(super) fn rollback(&self, barrier: &Barrier) {
-        if let Some(change) = self.latch.load(Relaxed, barrier).as_ref() {
-            let low_key_leaf = change.low_key_leaf.load(Relaxed, barrier).as_ref().unwrap();
-            let high_key_leaf = change
-                .high_key_leaf
-                .load(Relaxed, barrier)
-                .as_ref()
-                .unwrap();
+        let low_key_leaf = self
+            .split_op
+            .low_key_leaf
+            .load(Relaxed, barrier)
+            .as_ref()
+            .unwrap();
+        let high_key_leaf = self
+            .split_op
+            .high_key_leaf
+            .load(Relaxed, barrier)
+            .as_ref()
+            .unwrap();
 
-            // Roll back the linked list state.
-            //
-            // `high_key_leaf` must be deleted first in order for `Scanners` not to omit entries.
-            let deleted = high_key_leaf.delete_self(Relaxed);
-            debug_assert!(deleted);
-            let deleted = low_key_leaf.delete_self(Relaxed);
-            debug_assert!(deleted);
+        // Roll back the linked list state.
+        //
+        // `high_key_leaf` must be deleted first in order for `Scanners` not to omit entries.
+        let deleted = high_key_leaf.delete_self(Relaxed);
+        debug_assert!(deleted);
+        let deleted = low_key_leaf.delete_self(Relaxed);
+        debug_assert!(deleted);
 
-            if let Some(origin_leaf) = change.origin_leaf.swap((None, Tag::None), Relaxed).0 {
-                // Unfreeze the origin.
-                let unfrozen = origin_leaf.thaw();
-                debug_assert!(unfrozen);
+        if let Some(origin_leaf) = self.split_op.origin_leaf.swap((None, Tag::None), Relaxed).0 {
+            // Unfreeze the origin.
+            let unfrozen = origin_leaf.thaw();
+            debug_assert!(unfrozen);
 
-                // Remove the mark from the full leaf node.
-                let unmarked = origin_leaf.unmark(Release);
-                debug_assert!(unmarked);
-            }
+            // Remove the mark from the full leaf node.
+            let unmarked = origin_leaf.unmark(Release);
+            debug_assert!(unmarked);
         }
+
+        self.split_op.reset();
 
         // Unlock the leaf node.
-        let (change, _) = self.latch.swap((None, Tag::None), Release);
+        self.latch.store(0, Release);
         self.wait_queue.signal();
-        if let Some(change) = change {
-            let _ = change.release(barrier);
-        }
     }
 
     /// Cleans up logically deleted [`LeafNode`] instances in the linked list.
@@ -600,10 +607,9 @@ where
 
     /// Waits for the lock on the [`LeafNode`] to be released.
     #[inline]
-    pub(super) fn wait<D: DeriveAsyncWait>(&self, async_wait: &mut D, barrier: &Barrier) {
+    pub(super) fn wait<D: DeriveAsyncWait>(&self, async_wait: &mut D) {
         let waiter = || {
-            let ptr = self.latch.load(Relaxed, barrier);
-            if !ptr.is_null() || ptr.tag() == LOCKED {
+            if self.latch.load(Relaxed) == 1 {
                 // The `LeafNode` is being split or locked.
                 return Err(());
             }
@@ -633,47 +639,32 @@ where
         async_wait: &mut D,
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
-        let new_leaves = if let Ok((_, ptr)) = self.latch.compare_exchange(
-            Ptr::null(),
-            (
-                Some(Arc::new(StructuralChange {
-                    origin_leaf_key: None,
-                    origin_leaf: full_leaf.clone(Relaxed, barrier),
-                    low_key_leaf: AtomicArc::null(),
-                    high_key_leaf: AtomicArc::null(),
-                    low_key_leaf_node: AtomicPtr::default(),
-                    high_key_leaf_node: AtomicPtr::default(),
-                })),
-                Tag::None,
-            ),
-            Acquire,
-            Relaxed,
-            barrier,
-        ) {
-            ptr.as_ref().unwrap()
-        } else {
-            self.wait(async_wait, barrier);
+        if self.latch.compare_exchange(0, 1, Acquire, Relaxed).is_err() {
+            self.wait(async_wait);
             return Err((key, value));
-        };
-
+        }
         if self.retired(Relaxed) {
-            let (change, _) = self.latch.swap((None, Tag::None), Relaxed);
+            self.latch.store(0, Release);
             self.wait_queue.signal();
-            drop(change);
             return Ok(InsertResult::Retired(key, value));
         }
         if full_leaf_ptr != full_leaf.load(Relaxed, barrier) {
-            let (change, _) = self.latch.swap((None, Tag::None), Relaxed);
+            self.latch.store(0, Release);
             self.wait_queue.signal();
-            drop(change);
             return Err((key, value));
         }
 
+        let prev = self
+            .split_op
+            .origin_leaf
+            .swap((full_leaf.get_arc(Relaxed, barrier), Tag::None), Relaxed)
+            .0;
+        debug_assert!(prev.is_none());
+
         if let Some(full_leaf_key) = full_leaf_key {
-            let ptr = addr_of!(new_leaves.origin_leaf_key) as *mut Option<K>;
-            unsafe {
-                ptr.write(Some(full_leaf_key.clone()));
-            }
+            self.split_op
+                .origin_leaf_key
+                .store(full_leaf_key as *const K as *mut K, Relaxed);
         }
 
         let target = full_leaf_ptr.as_ref().unwrap();
@@ -685,17 +676,17 @@ where
         debug_assert!(result);
 
         if let Some(low_key_leaf) = low_key_leaf_arc.take() {
-            new_leaves
+            self.split_op
                 .low_key_leaf
                 .swap((Some(low_key_leaf), Tag::None), Relaxed);
             if let Some(high_key_leaf) = high_key_leaf_arc.take() {
-                new_leaves
+                self.split_op
                     .high_key_leaf
                     .swap((Some(high_key_leaf), Tag::None), Relaxed);
             }
         } else {
             // No valid keys in the full leaf.
-            new_leaves
+            self.split_op
                 .low_key_leaf
                 .swap((Some(Arc::new(Leaf::new())), Tag::None), Relaxed);
         }
@@ -703,8 +694,8 @@ where
         // When a new leaf is added to the linked list, the leaf is marked to let `Scanners`
         // acknowledge that the newly added leaf may contain keys that are smaller than those
         // having been `scanned`.
-        let low_key_leaf_ptr = new_leaves.low_key_leaf.load(Relaxed, barrier);
-        let high_key_leaf_ptr = new_leaves.high_key_leaf.load(Relaxed, barrier);
+        let low_key_leaf_ptr = self.split_op.low_key_leaf.load(Relaxed, barrier);
+        let high_key_leaf_ptr = self.split_op.high_key_leaf.load(Relaxed, barrier);
         let unused_leaf = if let Some(high_key_leaf) = high_key_leaf_ptr.as_ref() {
             // From here, `Scanners` can reach the new leaves.
             let result =
@@ -716,7 +707,7 @@ where
 
             // Take the max key value stored in the low key leaf as the leaf key.
             let low_key_leaf = low_key_leaf_ptr.as_ref().unwrap();
-            let max_key = low_key_leaf.max().unwrap().0;
+            let max_key = low_key_leaf.max_key().unwrap();
 
             // Need to freeze the leaf before trying to make it reachable.
             let frozen = low_key_leaf.freeze();
@@ -724,7 +715,7 @@ where
 
             match self.children.insert(
                 max_key.clone(),
-                new_leaves.low_key_leaf.clone(Relaxed, barrier),
+                self.split_op.low_key_leaf.clone(Relaxed, barrier),
             ) {
                 InsertResult::Success => (),
                 InsertResult::Duplicate(..)
@@ -751,7 +742,11 @@ where
             debug_assert!(unfrozen);
 
             // Replace the full leaf with the high-key leaf.
-            let high_key_leaf = new_leaves.high_key_leaf.swap((None, Tag::None), Relaxed).0;
+            let high_key_leaf = self
+                .split_op
+                .high_key_leaf
+                .swap((None, Tag::None), Relaxed)
+                .0;
             full_leaf.swap((high_key_leaf, Tag::None), Release).0
         } else {
             // From here, `Scanners` can reach the new leaf.
@@ -768,18 +763,18 @@ where
 
             full_leaf
                 .swap(
-                    new_leaves.low_key_leaf.swap((None, Tag::None), Release),
+                    self.split_op.low_key_leaf.swap((None, Tag::None), Release),
                     Release,
                 )
                 .0
         };
 
+        // Resets `split_op`.
+        self.split_op.reset();
+
         // Unlocks the leaf node.
-        let (change, _) = self.latch.swap((None, Tag::None), Release);
+        self.latch.store(0, Release);
         self.wait_queue.signal();
-        if let Some(change) = change {
-            let _ = change.release(barrier);
-        }
 
         if let Some(unused_leaf) = unused_leaf {
             let _ = unused_leaf.release(barrier);
@@ -797,7 +792,7 @@ where
     {
         let mut uncleaned_leaf = false;
         let mut prev_valid_leaf = None;
-        while let Some(lock) = Locker::try_lock(self, barrier) {
+        while let Some(lock) = Locker::try_lock(self) {
             prev_valid_leaf.take();
             for entry in Scanner::new(&self.children) {
                 let leaf_ptr = entry.1.load(Relaxed, barrier);
@@ -909,13 +904,10 @@ where
 {
     /// Acquires exclusive lock on the [`LeafNode`].
     #[inline]
-    pub(super) fn try_lock(
-        leaf_node: &'n LeafNode<K, V>,
-        barrier: &'n Barrier,
-    ) -> Option<Locker<'n, K, V>> {
+    pub(super) fn try_lock(leaf_node: &'n LeafNode<K, V>) -> Option<Locker<'n, K, V>> {
         if leaf_node
             .latch
-            .compare_exchange(Ptr::null(), (None, LOCKED), Acquire, Relaxed, barrier)
+            .compare_exchange(0, 1, Acquire, Relaxed)
             .is_ok()
         {
             Some(Locker { leaf_node })
@@ -932,24 +924,60 @@ where
 {
     #[inline]
     fn drop(&mut self) {
-        debug_assert_eq!(self.leaf_node.latch.tag(Relaxed), LOCKED);
-        self.leaf_node.latch.swap((None, Tag::None), Release);
+        debug_assert_eq!(self.leaf_node.latch.load(Relaxed), 1);
+        self.leaf_node.latch.store(0, Release);
         self.leaf_node.wait_queue.signal();
     }
 }
 
-/// [`StructuralChange`] stores intermediate results during a split/merge operation.
+/// [`StructuralChange`] stores intermediate results during a split operation.
+///
+/// `AtomicPtr` members may point to values under the protection of the [`Barrier`] used for the
+/// split operation.
 pub struct StructuralChange<K, V>
 where
     K: 'static + Clone + Ord + Send + Sync,
     V: 'static + Clone + Send + Sync,
 {
-    origin_leaf_key: Option<K>,
+    origin_leaf_key: AtomicPtr<K>,
     origin_leaf: AtomicArc<Leaf<K, V>>,
     low_key_leaf: AtomicArc<Leaf<K, V>>,
     high_key_leaf: AtomicArc<Leaf<K, V>>,
     low_key_leaf_node: AtomicPtr<LeafNode<K, V>>,
     high_key_leaf_node: AtomicPtr<LeafNode<K, V>>,
+}
+
+impl<K, V> StructuralChange<K, V>
+where
+    K: 'static + Clone + Ord + Send + Sync,
+    V: 'static + Clone + Send + Sync,
+{
+    fn reset(&self) {
+        self.origin_leaf_key.store(ptr::null_mut(), Relaxed);
+        self.origin_leaf.swap((None, Tag::None), Relaxed);
+        self.low_key_leaf.swap((None, Tag::None), Relaxed);
+        self.high_key_leaf.swap((None, Tag::None), Relaxed);
+        self.low_key_leaf_node.store(ptr::null_mut(), Relaxed);
+        self.high_key_leaf_node.store(ptr::null_mut(), Relaxed);
+    }
+}
+
+impl<K, V> Default for StructuralChange<K, V>
+where
+    K: 'static + Clone + Ord + Send + Sync,
+    V: 'static + Clone + Send + Sync,
+{
+    #[inline]
+    fn default() -> Self {
+        Self {
+            origin_leaf_key: AtomicPtr::default(),
+            origin_leaf: AtomicArc::null(),
+            low_key_leaf: AtomicArc::null(),
+            high_key_leaf: AtomicArc::null(),
+            low_key_leaf_node: AtomicPtr::default(),
+            high_key_leaf_node: AtomicPtr::default(),
+        }
+    }
 }
 
 #[cfg(test)]

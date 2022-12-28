@@ -751,10 +751,10 @@ where
                     self.check_upper_bound = match self.range.end_bound() {
                         Excluded(key) => leaf_scanner
                             .max_entry()
-                            .map_or(false, |max_entry| max_entry.0.cmp(key) != Ordering::Less),
+                            .map_or(false, |max_key| max_key.cmp(key) != Ordering::Less),
                         Included(key) => leaf_scanner
                             .max_entry()
-                            .map_or(false, |max_entry| max_entry.0.cmp(key) == Ordering::Greater),
+                            .map_or(false, |max_key| max_key.cmp(key) == Ordering::Greater),
                         Unbounded => false,
                     };
                     if let Some(result) = leaf_scanner.get() {
@@ -781,10 +781,10 @@ where
                     self.check_upper_bound = match self.range.end_bound() {
                         Excluded(key) => new_scanner
                             .max_entry()
-                            .map_or(false, |max_entry| max_entry.0.cmp(key) != Ordering::Less),
+                            .map_or(false, |max_key| max_key.cmp(key) != Ordering::Less),
                         Included(key) => new_scanner
                             .max_entry()
-                            .map_or(false, |max_entry| max_entry.0.cmp(key) == Ordering::Greater),
+                            .map_or(false, |max_key| max_key.cmp(key) == Ordering::Greater),
                         Unbounded => false,
                     };
                     self.leaf_scanner.replace(new_scanner);

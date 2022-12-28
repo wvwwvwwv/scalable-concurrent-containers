@@ -184,7 +184,7 @@ where
             let new_root = Arc::new(new_root);
             if let Some(old_root) = root.swap((Some(new_root.clone()), Tag::None), Release).0 {
                 if let Type::Internal(internal_node) = &new_root.node {
-                    internal_node.finish_split(barrier);
+                    internal_node.finish_split();
                     old_root.commit(barrier);
                 }
                 let _ = old_root.release(barrier);
@@ -213,17 +213,17 @@ where
             let mut leaf_node_locker = None;
             match &root_ref.node {
                 Type::Internal(internal_node) => {
-                    if let Some(locker) = internal_node::Locker::try_lock(internal_node, barrier) {
+                    if let Some(locker) = internal_node::Locker::try_lock(internal_node) {
                         internal_node_locker.replace(locker);
                     } else {
-                        internal_node.wait(async_wait, barrier);
+                        internal_node.wait(async_wait);
                     }
                 }
                 Type::Leaf(leaf_node) => {
-                    if let Some(locker) = leaf_node::Locker::try_lock(leaf_node, barrier) {
+                    if let Some(locker) = leaf_node::Locker::try_lock(leaf_node) {
                         leaf_node_locker.replace(locker);
                     } else {
-                        leaf_node.wait(async_wait, barrier);
+                        leaf_node.wait(async_wait);
                     }
                 }
             };

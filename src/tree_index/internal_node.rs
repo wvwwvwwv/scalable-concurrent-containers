@@ -1,5 +1,5 @@
 use super::leaf::{InsertResult, Leaf, RemoveResult, Scanner, DIMENSION};
-use super::leaf_node::{LOCKED, RETIRED};
+use super::leaf_node::RETIRED;
 use super::node::{Node, Type};
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
@@ -7,8 +7,9 @@ use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
 
 use std::borrow::Borrow;
 use std::cmp::Ordering::{Equal, Greater, Less};
-use std::ptr::addr_of;
+use std::ptr;
 use std::sync::atomic::Ordering::{self, Acquire, Relaxed, Release};
+use std::sync::atomic::{AtomicPtr, AtomicU8};
 
 /// Internal node.
 ///
@@ -27,9 +28,11 @@ where
     /// [`Node`].
     pub(super) unbounded_child: AtomicArc<Node<K, V>>,
 
-    /// `latch` acts as a mutex of the [`InternalNode`] that also stores the information about an
-    /// on-going structural change.
-    latch: AtomicArc<StructuralChange<K, V>>,
+    /// On-going split operation.
+    split_op: StructuralChange<K, V>,
+
+    /// Latch of the [`InternalNode`].
+    latch: AtomicU8,
 
     /// `wait_queue` for `latch`.
     wait_queue: WaitQueue,
@@ -46,7 +49,8 @@ where
         InternalNode {
             children: Leaf::new(),
             unbounded_child: AtomicArc::null(),
-            latch: AtomicArc::null(),
+            split_op: StructuralChange::default(),
+            latch: AtomicU8::new(0),
             wait_queue: WaitQueue::default(),
         }
     }
@@ -382,52 +386,31 @@ where
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
         let target = full_node_ptr.as_ref().unwrap();
-        let new_nodes = if let Ok((_, ptr)) = self.latch.compare_exchange(
-            Ptr::null(),
-            (
-                Some(Arc::new(StructuralChange {
-                    origin_node_key: None,
-                    origin_node: full_node.clone(Relaxed, barrier),
-                    low_key_node: AtomicArc::null(),
-                    middle_key: None,
-                    high_key_node: AtomicArc::null(),
-                })),
-                Tag::None,
-            ),
-            Acquire,
-            Relaxed,
-            barrier,
-        ) {
-            debug_assert!(!self.retired(Relaxed));
-            if full_node_ptr != full_node.load(Relaxed, barrier) {
-                let (change, _) = self.latch.swap((None, Tag::None), Relaxed);
-                self.wait_queue.signal();
-                drop(change);
-                target.rollback(barrier);
-                return Err((key, value));
-            }
-            unsafe { &mut *(ptr.as_raw() as *mut StructuralChange<K, V>) }
-        } else {
+        if self.latch.compare_exchange(0, 1, Acquire, Relaxed).is_err() {
             target.rollback(barrier);
-            self.wait(async_wait, barrier);
+            self.wait(async_wait);
             return Err((key, value));
-        };
+        }
+        debug_assert!(!self.retired(Relaxed));
 
+        if full_node_ptr != full_node.load(Relaxed, barrier) {
+            self.latch.store(0, Release);
+            self.wait_queue.signal();
+            target.rollback(barrier);
+            return Err((key, value));
+        }
+
+        self.split_op
+            .origin_node
+            .swap((full_node.get_arc(Relaxed, barrier), Tag::None), Relaxed);
         if let Some(full_node_key) = full_node_key {
-            let ptr = addr_of!(new_nodes.origin_node_key) as *mut Option<K>;
-            unsafe {
-                ptr.write(Some(full_node_key.clone()));
-            }
+            self.split_op
+                .origin_node_key
+                .store(full_node_key as *const K as *mut K, Relaxed);
         }
 
         match target.node() {
             Type::Internal(full_internal_node) => {
-                let new_children = full_internal_node
-                    .latch
-                    .load(Relaxed, barrier)
-                    .as_ref()
-                    .unwrap();
-
                 // Copies nodes except for the known full node to the newly allocated internal node entries.
                 let internal_nodes = (
                     Arc::new(Node::new_internal_node()),
@@ -446,25 +429,46 @@ where
                     DIMENSION.num_entries + 2] = Default::default();
                 let mut num_entries = 0;
                 for entry in Scanner::new(&full_internal_node.children) {
-                    if new_children
-                        .origin_node_key
-                        .as_ref()
-                        .map_or_else(|| false, |key| entry.0.borrow() == key)
-                    {
-                        let low_key_node_shared = new_children.low_key_node.load(Relaxed, barrier);
-                        if !low_key_node_shared.is_null() {
+                    if unsafe {
+                        full_internal_node
+                            .split_op
+                            .origin_node_key
+                            .load(Relaxed)
+                            .as_ref()
+                            .map_or_else(|| false, |key| entry.0.borrow() == key)
+                    } {
+                        let low_key_node_ptr = full_internal_node
+                            .split_op
+                            .low_key_node
+                            .load(Relaxed, barrier);
+                        if !low_key_node_ptr.is_null() {
                             entry_array[num_entries].replace((
-                                Some(new_children.middle_key.as_ref().unwrap()),
-                                new_children.low_key_node.clone(Relaxed, barrier),
+                                Some(unsafe {
+                                    full_internal_node
+                                        .split_op
+                                        .middle_key
+                                        .load(Relaxed)
+                                        .as_ref()
+                                        .unwrap()
+                                }),
+                                full_internal_node
+                                    .split_op
+                                    .low_key_node
+                                    .clone(Relaxed, barrier),
                             ));
                             num_entries += 1;
                         }
-                        let high_key_node_shared =
-                            new_children.high_key_node.load(Relaxed, barrier);
-                        if !high_key_node_shared.is_null() {
+                        let high_key_node_ptr = full_internal_node
+                            .split_op
+                            .high_key_node
+                            .load(Relaxed, barrier);
+                        if !high_key_node_ptr.is_null() {
                             entry_array[num_entries].replace((
                                 Some(entry.0),
-                                new_children.high_key_node.clone(Relaxed, barrier),
+                                full_internal_node
+                                    .split_op
+                                    .high_key_node
+                                    .clone(Relaxed, barrier),
                             ));
                             num_entries += 1;
                         }
@@ -474,7 +478,50 @@ where
                         num_entries += 1;
                     }
                 }
-                if new_children.origin_node_key.is_some() {
+                if full_internal_node
+                    .split_op
+                    .origin_node_key
+                    .load(Relaxed)
+                    .is_null()
+                {
+                    // If the origin is an unbounded node, assign the high key node to the high key
+                    // node's unbounded.
+                    let low_key_node_ptr = full_internal_node
+                        .split_op
+                        .low_key_node
+                        .load(Relaxed, barrier);
+                    if !low_key_node_ptr.is_null() {
+                        entry_array[num_entries].replace((
+                            Some(unsafe {
+                                full_internal_node
+                                    .split_op
+                                    .middle_key
+                                    .load(Relaxed)
+                                    .as_ref()
+                                    .unwrap()
+                            }),
+                            full_internal_node
+                                .split_op
+                                .low_key_node
+                                .clone(Relaxed, barrier),
+                        ));
+                        num_entries += 1;
+                    }
+                    let high_key_node_ptr = full_internal_node
+                        .split_op
+                        .high_key_node
+                        .load(Relaxed, barrier);
+                    if !high_key_node_ptr.is_null() {
+                        entry_array[num_entries].replace((
+                            None,
+                            full_internal_node
+                                .split_op
+                                .high_key_node
+                                .clone(Relaxed, barrier),
+                        ));
+                        num_entries += 1;
+                    }
+                } else {
                     // If the origin is a bounded node, assign the unbounded node to the high key
                     // node's unbounded.
                     entry_array[num_entries].replace((
@@ -482,23 +529,6 @@ where
                         full_internal_node.unbounded_child.clone(Relaxed, barrier),
                     ));
                     num_entries += 1;
-                } else {
-                    // If the origin is an unbounded node, assign the high key node to the high key
-                    // node's unbounded.
-                    let low_key_node_shared = new_children.low_key_node.load(Relaxed, barrier);
-                    if !low_key_node_shared.is_null() {
-                        entry_array[num_entries].replace((
-                            Some(new_children.middle_key.as_ref().unwrap()),
-                            new_children.low_key_node.clone(Relaxed, barrier),
-                        ));
-                        num_entries += 1;
-                    }
-                    let high_key_node_shared = new_children.high_key_node.load(Relaxed, barrier);
-                    if !high_key_node_shared.is_null() {
-                        entry_array[num_entries]
-                            .replace((None, new_children.high_key_node.clone(Relaxed, barrier)));
-                        num_entries += 1;
-                    }
                 }
                 debug_assert!(num_entries >= 2);
 
@@ -514,7 +544,11 @@ where
                                 );
                             }
                             Equal => {
-                                new_nodes.middle_key.replace(k.unwrap().clone());
+                                if let Some(&k) = k.as_ref() {
+                                    self.split_op
+                                        .middle_key
+                                        .store(k as *const K as *mut K, Relaxed);
+                                }
                                 low_key_nodes
                                     .unbounded_child
                                     .swap((v.get_arc(Relaxed, barrier), Tag::None), Relaxed);
@@ -539,10 +573,10 @@ where
                 }
 
                 // Turns the new nodes into internal nodes.
-                new_nodes
+                self.split_op
                     .low_key_node
                     .swap((Some(internal_nodes.0), Tag::None), Relaxed);
-                new_nodes
+                self.split_op
                     .high_key_node
                     .swap((Some(internal_nodes.1), Tag::None), Relaxed);
             }
@@ -564,19 +598,21 @@ where
                     } else {
                         None
                     };
-                full_leaf_node
-                    .split_leaf_node(
+
+                self.split_op.middle_key.store(
+                    full_leaf_node.split_leaf_node(
                         low_key_leaf_node.unwrap(),
                         high_key_leaf_node.unwrap(),
                         barrier,
-                    )
-                    .map(|middle_key| new_nodes.middle_key.replace(middle_key));
+                    ) as *const K as *mut K,
+                    Relaxed,
+                );
 
                 // Turns the new leaves into leaf nodes.
-                new_nodes
+                self.split_op
                     .low_key_node
                     .swap((Some(leaf_nodes.0), Tag::None), Relaxed);
-                new_nodes
+                self.split_op
                     .high_key_node
                     .swap((Some(leaf_nodes.1), Tag::None), Relaxed);
             }
@@ -584,16 +620,22 @@ where
 
         // Inserts the newly allocated internal nodes into the main array.
         match self.children.insert(
-            new_nodes.middle_key.take().unwrap(),
-            new_nodes.low_key_node.clone(Relaxed, barrier),
+            unsafe {
+                self.split_op
+                    .middle_key
+                    .load(Relaxed)
+                    .as_ref()
+                    .unwrap()
+                    .clone()
+            },
+            self.split_op.low_key_node.clone(Relaxed, barrier),
         ) {
             InsertResult::Success => (),
             InsertResult::Duplicate(..) | InsertResult::Frozen(..) | InsertResult::Retry(..) => {
                 unreachable!()
             }
-            InsertResult::Full(middle_key, _) | InsertResult::Retired(middle_key, _) => {
+            InsertResult::Full(..) | InsertResult::Retired(..) => {
                 // Insertion failed: expects that the parent splits this node.
-                new_nodes.middle_key.replace(middle_key);
                 return Ok(InsertResult::Full(key, value));
             }
         };
@@ -601,7 +643,10 @@ where
         // Replace the full node with the high-key node.
         let unused_node = full_node
             .swap(
-                (new_nodes.high_key_node.get_arc(Relaxed, barrier), Tag::None),
+                (
+                    self.split_op.high_key_node.get_arc(Relaxed, barrier),
+                    Tag::None,
+                ),
                 Release,
             )
             .0;
@@ -612,7 +657,7 @@ where
         }
 
         // Unlock the node.
-        self.finish_split(barrier);
+        self.finish_split();
 
         // Drop the deprecated nodes.
         if let Some(unused_node) = unused_node {
@@ -627,38 +672,33 @@ where
 
     /// Finishes splitting the [`InternalNode`].
     #[inline]
-    pub(super) fn finish_split(&self, barrier: &Barrier) {
-        let (change, _) = self.latch.swap((None, Tag::None), Release);
+    pub(super) fn finish_split(&self) {
+        self.split_op.reset();
+        self.latch.store(0, Release);
         self.wait_queue.signal();
-        if let Some(change) = change {
-            let _ = change.release(barrier);
-        }
     }
 
     /// Commits an on-going structural change recursively.
     #[inline]
     pub(super) fn commit(&self, barrier: &Barrier) {
+        let origin = self.split_op.reset();
+
         // Mark the internal node retired to prevent further locking attempts.
-        let (change, _) = self.latch.swap((None, RETIRED), Release);
+        self.latch.store(u8::MAX, Release);
         self.wait_queue.signal();
-        if let Some(change) = change {
-            let obsolete_node_ptr = change.origin_node.load(Relaxed, barrier);
-            if let Some(obsolete_node_ref) = obsolete_node_ptr.as_ref() {
-                obsolete_node_ref.commit(barrier);
-            };
+        if let Some(origin) = origin {
+            origin.commit(barrier);
         }
     }
 
     /// Rolls back the ongoing split operation recursively.
     #[inline]
     pub(super) fn rollback(&self, barrier: &Barrier) {
-        let (change, _) = self.latch.swap((None, Tag::None), Release);
+        let origin = self.split_op.reset();
+        self.latch.store(0, Release);
         self.wait_queue.signal();
-        if let Some(change) = change {
-            if let Some(origin) = change.origin_node.swap((None, Tag::None), Relaxed).0 {
-                origin.rollback(barrier);
-            }
-            let _ = change.release(barrier);
+        if let Some(origin) = origin {
+            origin.rollback(barrier);
         }
     }
 
@@ -693,10 +733,9 @@ where
 
     /// Waits for the lock on the [`LeafNode`] to be released.
     #[inline]
-    pub(super) fn wait<D: DeriveAsyncWait>(&self, async_wait: &mut D, barrier: &Barrier) {
+    pub(super) fn wait<D: DeriveAsyncWait>(&self, async_wait: &mut D) {
         let waiter = || {
-            let ptr = self.latch.load(Relaxed, barrier);
-            if !ptr.is_null() || ptr.tag() == LOCKED {
+            if self.latch.load(Relaxed) == 1 {
                 // The `InternalNode` is being split or locked.
                 return Err(());
             }
@@ -717,7 +756,7 @@ where
         Q: Ord + ?Sized,
     {
         let mut node_deleted = false;
-        while let Some(lock) = Locker::try_lock(self, barrier) {
+        while let Some(lock) = Locker::try_lock(self) {
             let mut max_key_entry = None;
             for (key, node) in Scanner::new(&self.children) {
                 let node_ptr = node.load(Relaxed, barrier);
@@ -836,13 +875,10 @@ where
 {
     /// Acquires exclusive lock on the [`InternalNode`].
     #[inline]
-    pub(super) fn try_lock(
-        internal_node: &'n InternalNode<K, V>,
-        barrier: &'n Barrier,
-    ) -> Option<Locker<'n, K, V>> {
+    pub(super) fn try_lock(internal_node: &'n InternalNode<K, V>) -> Option<Locker<'n, K, V>> {
         if internal_node
             .latch
-            .compare_exchange(Ptr::null(), (None, LOCKED), Acquire, Relaxed, barrier)
+            .compare_exchange(0, 1, Acquire, Relaxed)
             .is_ok()
         {
             Some(Locker { internal_node })
@@ -859,23 +895,57 @@ where
 {
     #[inline]
     fn drop(&mut self) {
-        debug_assert_eq!(self.internal_node.latch.tag(Relaxed), LOCKED);
-        self.internal_node.latch.swap((None, Tag::None), Release);
+        debug_assert_eq!(self.internal_node.latch.load(Relaxed), 1);
+        self.internal_node.latch.store(0, Release);
         self.internal_node.wait_queue.signal();
     }
 }
 
-/// [`StructuralChange`] stores intermediate results during a split/merge operation.
+/// [`StructuralChange`] stores intermediate results during a split operation.
+///
+/// `AtomicPtr` members may point to values under the protection of the [`Barrier`] used for the
+/// split operation.
 struct StructuralChange<K, V>
 where
     K: 'static + Clone + Ord + Send + Sync,
     V: 'static + Clone + Send + Sync,
 {
-    origin_node_key: Option<K>,
+    origin_node_key: AtomicPtr<K>,
     origin_node: AtomicArc<Node<K, V>>,
     low_key_node: AtomicArc<Node<K, V>>,
-    middle_key: Option<K>,
+    middle_key: AtomicPtr<K>,
     high_key_node: AtomicArc<Node<K, V>>,
+}
+
+impl<K, V> StructuralChange<K, V>
+where
+    K: 'static + Clone + Ord + Send + Sync,
+    V: 'static + Clone + Send + Sync,
+{
+    fn reset(&self) -> Option<Arc<Node<K, V>>> {
+        self.origin_node_key.store(ptr::null_mut(), Relaxed);
+        self.low_key_node.swap((None, Tag::None), Relaxed);
+        self.middle_key.store(ptr::null_mut(), Relaxed);
+        self.high_key_node.swap((None, Tag::None), Relaxed);
+        self.origin_node.swap((None, Tag::None), Relaxed).0
+    }
+}
+
+impl<K, V> Default for StructuralChange<K, V>
+where
+    K: 'static + Clone + Ord + Send + Sync,
+    V: 'static + Clone + Send + Sync,
+{
+    #[inline]
+    fn default() -> Self {
+        Self {
+            origin_node_key: AtomicPtr::default(),
+            origin_node: AtomicArc::null(),
+            low_key_node: AtomicArc::null(),
+            middle_key: AtomicPtr::default(),
+            high_key_node: AtomicArc::null(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -894,11 +964,13 @@ mod test {
                 node: Type::Internal(InternalNode {
                     children: Leaf::new(),
                     unbounded_child: AtomicArc::new(Node::new_leaf_node()),
-                    latch: AtomicArc::null(),
+                    split_op: StructuralChange::default(),
+                    latch: AtomicU8::new(0),
                     wait_queue: WaitQueue::default(),
                 }),
             }),
-            latch: AtomicArc::null(),
+            split_op: StructuralChange::default(),
+            latch: AtomicU8::new(0),
             wait_queue: WaitQueue::default(),
         }
     }

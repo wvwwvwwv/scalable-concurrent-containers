@@ -4,7 +4,6 @@ use crate::LinkedList;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::mem::{needs_drop, size_of, MaybeUninit};
-use std::ptr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
@@ -146,7 +145,10 @@ pub const DIMENSION: Dimension = match size_of::<usize>() {
 };
 
 /// Each constructed entry in an `EntryArray` is never dropped until the [`Leaf`] is dropped.
-pub type EntryArray<K, V> = [MaybeUninit<(K, V)>; DIMENSION.num_entries];
+pub type EntryArray<K, V> = (
+    [MaybeUninit<K>; DIMENSION.num_entries],
+    [MaybeUninit<V>; DIMENSION.num_entries],
+);
 
 /// [`Leaf`] is an ordered array of key-value pairs.
 ///
@@ -160,12 +162,12 @@ where
     /// The metadata that manages the contents.
     ///
     /// The state of each entry is as follows.
-    /// * 0: uninit.
-    /// * 1-ARRAY_SIZE: rank.
-    /// * ARRAY_SIZE + 1: removed.
+    /// * 0: `uninit`.
+    /// * 1-ARRAY_SIZE: `rank`.
+    /// * ARRAY_SIZE + 1: `removed`.
     ///
     /// The entry state transitions as follows.
-    /// * Uninit -> removed -> rank -> removed.
+    /// * `uninit` -> `removed` -> `rank` -> `removed`.
     metadata: AtomicUsize,
 
     /// The array of key-value pairs.
@@ -212,7 +214,7 @@ where
 
     /// Returns a reference to the max key.
     #[inline]
-    pub(super) fn max(&self) -> Option<(&K, &V)> {
+    pub(super) fn max_key(&self) -> Option<&K> {
         let metadata = self.metadata.load(Acquire);
         let mut max_rank = 0;
         let mut max_index = DIMENSION.num_entries;
@@ -229,7 +231,7 @@ where
             }
         }
         if max_rank > 0 {
-            return Some(self.read(max_index));
+            return Some(self.key_at(max_index));
         }
         None
     }
@@ -329,7 +331,7 @@ where
                     Ordering::Equal => {
                         // Found the key.
                         loop {
-                            if !condition(self.read(i).1) {
+                            if !condition(self.value_at(i)) {
                                 // The given condition is not met.
                                 return RemoveResult::Fail;
                             }
@@ -391,12 +393,12 @@ where
         Q: Ord + ?Sized,
     {
         let metadata = self.metadata.load(Acquire);
-        self.search_slot(key, metadata).map(|i| self.read(i).1)
+        self.search_slot(key, metadata).map(|i| self.value_at(i))
     }
 
-    /// Returns the index and a pointer to the key-value pair that is smaller than the given key.
+    /// Returns the index of the key-value pair that is smaller than the given key.
     #[inline]
-    pub(super) fn max_less<Q>(&self, metadata: usize, key: &Q) -> (usize, *const (K, V))
+    pub(super) fn max_less<Q>(&self, metadata: usize, key: &Q) -> usize
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
@@ -430,12 +432,7 @@ where
                 }
             }
         }
-        if max_min_index != DIMENSION.num_entries {
-            return (max_min_index, unsafe {
-                &*self.entry_array[max_min_index].as_ptr()
-            });
-        }
-        (usize::MAX, ptr::null())
+        max_min_index
     }
 
     /// Returns the minimum entry among those that are not `Ordering::Less` than the given key.
@@ -473,13 +470,16 @@ where
                         }
                     }
                     Ordering::Equal => {
-                        return (Some(self.read(i)), metadata);
+                        return (Some((self.key_at(i), self.value_at(i))), metadata);
                     }
                 }
             }
         }
         if min_max_rank != DIMENSION.removed_state() {
-            return (Some(self.read(min_max_index)), metadata);
+            return (
+                Some((self.key_at(min_max_index), self.value_at(min_max_index))),
+                metadata,
+            );
         }
         (None, metadata)
     }
@@ -489,45 +489,6 @@ where
     pub(super) fn validate(&self, metadata: usize) -> bool {
         // `Relaxed` is sufficient as long as the caller has read-acquired its contents.
         self.metadata.load(Relaxed) == metadata
-    }
-
-    /// Returns the index and a pointer to the corresponding entry of the next higher ranked entry.
-    #[inline]
-    pub(super) fn next(&self, index: usize, metadata: usize) -> (usize, *const (K, V)) {
-        let current_entry_rank = if index < DIMENSION.num_entries {
-            DIMENSION.state(metadata, index)
-        } else {
-            0
-        };
-        if current_entry_rank < DIMENSION.num_entries {
-            let mut next_rank = DIMENSION.removed_state();
-            let mut next_index = DIMENSION.num_entries;
-            for i in 0..DIMENSION.num_entries {
-                if i == index {
-                    continue;
-                }
-                let rank = DIMENSION.state(metadata, i);
-                if rank == Dimension::uninit_state() {
-                    if (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
-                        break;
-                    }
-                    continue;
-                } else if rank == DIMENSION.removed_state() {
-                    continue;
-                }
-                debug_assert_ne!(rank, current_entry_rank);
-                if current_entry_rank < rank && rank < next_rank {
-                    next_rank = rank;
-                    next_index = i;
-                }
-            }
-            if next_rank != DIMENSION.removed_state() {
-                return (next_index, unsafe {
-                    &*self.entry_array[next_index].as_ptr()
-                });
-            }
-        }
-        (usize::MAX, ptr::null())
     }
 
     /// Freezes the [`Leaf`] temporarily.
@@ -564,7 +525,6 @@ where
                 leaf: self,
                 metadata: prev,
                 entry_index: DIMENSION.num_entries,
-                entry_ptr: ptr::null(),
             };
             let boundary = DIMENSION.num_entries / 2;
             for (i, (k, v)) in scanner.enumerate() {
@@ -622,7 +582,7 @@ where
 
     /// Post-processing after reserving a free slot.
     fn post_insert(&self, free_slot_index: usize, mut metadata: usize) -> InsertResult<K, V> {
-        let key_ref = self.read(free_slot_index).0;
+        let key = self.key_at(free_slot_index);
         loop {
             let mut new_metadata = metadata;
             let mut max_min_rank = 0;
@@ -638,7 +598,7 @@ where
                     continue;
                 }
                 if rank > max_min_rank && rank < min_max_rank {
-                    match self.compare(i, key_ref) {
+                    match self.compare(i, key) {
                         Ordering::Less => {
                             if max_min_rank < rank {
                                 max_min_rank = rank;
@@ -692,25 +652,70 @@ where
         }
     }
 
-    fn compare<Q>(&self, index: usize, key: &Q) -> std::cmp::Ordering
+    fn compare<Q>(&self, index: usize, key: &Q) -> Ordering
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        self.read(index).0.borrow().cmp(key)
+        self.key_at(index).borrow().cmp(key)
     }
 
     fn take(&self, index: usize) -> (K, V) {
-        unsafe { self.entry_array[index].as_ptr().read() }
+        unsafe {
+            (
+                self.entry_array.0[index].as_ptr().read(),
+                self.entry_array.1[index].as_ptr().read(),
+            )
+        }
     }
 
     fn write(&self, index: usize, key: K, value: V) {
-        unsafe { (self.entry_array[index].as_ptr() as *mut (K, V)).write((key, value)) }
+        unsafe {
+            (self.entry_array.0[index].as_ptr() as *mut K).write(key);
+            (self.entry_array.1[index].as_ptr() as *mut V).write(value);
+        }
     }
 
-    fn read(&self, index: usize) -> (&K, &V) {
-        let entry_ref = unsafe { &*self.entry_array[index].as_ptr() };
-        (&entry_ref.0, &entry_ref.1)
+    fn key_at(&self, index: usize) -> &K {
+        unsafe { &*self.entry_array.0[index].as_ptr() }
+    }
+
+    fn value_at(&self, index: usize) -> &V {
+        unsafe { &*self.entry_array.1[index].as_ptr() }
+    }
+
+    /// Returns the index of the corresponding entry of the next higher ranked entry.
+    fn next(index: usize, metadata: usize) -> usize {
+        debug_assert_ne!(index, usize::MAX);
+        let current_entry_rank = if index == DIMENSION.num_entries {
+            0
+        } else {
+            DIMENSION.state(metadata, index)
+        };
+        let mut next_index = DIMENSION.num_entries;
+        if current_entry_rank < DIMENSION.num_entries {
+            let mut next_rank = DIMENSION.removed_state();
+            for i in 0..DIMENSION.num_entries {
+                if i == index {
+                    continue;
+                }
+                let rank = DIMENSION.state(metadata, i);
+                if rank == Dimension::uninit_state() {
+                    if (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
+                        break;
+                    }
+                    continue;
+                } else if rank == DIMENSION.removed_state() {
+                    continue;
+                }
+                debug_assert_ne!(rank, current_entry_rank);
+                if current_entry_rank < rank && rank < next_rank {
+                    next_rank = rank;
+                    next_index = i;
+                }
+            }
+        }
+        next_index
     }
 }
 
@@ -758,7 +763,6 @@ where
     leaf: &'l Leaf<K, V>,
     metadata: usize,
     entry_index: usize,
-    entry_ptr: *const (K, V),
 }
 
 impl<'l, K, V> Scanner<'l, K, V>
@@ -773,12 +777,9 @@ where
             leaf,
             metadata: leaf.metadata.load(Acquire),
             entry_index: DIMENSION.num_entries,
-            entry_ptr: ptr::null(),
         }
     }
     /// Returns a [`Scanner`] pointing to the max-less entry if there is one.
-    ///
-    /// If there is no key that is smaller than the given key, it returns a default [`Scanner`].
     #[inline]
     pub(super) fn max_less<Q>(leaf: &'l Leaf<K, V>, key: &Q) -> Option<Scanner<'l, K, V>>
     where
@@ -786,15 +787,14 @@ where
         Q: Ord + ?Sized,
     {
         let metadata = leaf.metadata.load(Acquire);
-        let (index, ptr) = leaf.max_less(metadata, key);
-        if ptr.is_null() {
+        let index = leaf.max_less(metadata, key);
+        if index == DIMENSION.num_entries {
             None
         } else {
             Some(Scanner {
                 leaf,
                 metadata,
                 entry_index: index,
-                entry_ptr: ptr,
             })
         }
     }
@@ -808,16 +808,19 @@ where
     /// Returns a reference to the entry that the scanner is currently pointing to
     #[inline]
     pub(super) fn get(&self) -> Option<(&'l K, &'l V)> {
-        if self.entry_ptr.is_null() {
+        if self.entry_index >= DIMENSION.num_entries {
             return None;
         }
-        unsafe { Some((&(*self.entry_ptr).0, &(*self.entry_ptr).1)) }
+        Some((
+            self.leaf.key_at(self.entry_index),
+            self.leaf.value_at(self.entry_index),
+        ))
     }
 
-    /// Returns the maximum key entry.
+    /// Returns a reference to the max key.
     #[inline]
-    pub(super) fn max_entry(&self) -> Option<(&'l K, &'l V)> {
-        self.leaf.max()
+    pub(super) fn max_entry(&self) -> Option<&'l K> {
+        self.leaf.max_key()
     }
 
     /// Traverses the linked list.
@@ -858,13 +861,16 @@ where
     }
 
     fn proceed(&mut self) {
-        self.entry_ptr = ptr::null();
         if self.entry_index == usize::MAX {
             return;
         }
-        let (index, ptr) = self.leaf.next(self.entry_index, self.metadata);
-        self.entry_index = index;
-        self.entry_ptr = ptr;
+        let index = Leaf::<K, V>::next(self.entry_index, self.metadata);
+        if index == DIMENSION.num_entries {
+            // Fuse the iterator.
+            self.entry_index = usize::MAX;
+        } else {
+            self.entry_index = index;
+        }
     }
 }
 
@@ -1003,13 +1009,14 @@ mod test {
                 assert!(matches!(leaf.insert(i, i), InsertResult::Success));
                 if i != 0 {
                     let result = leaf.max_less(leaf.metadata.load(Relaxed), &i);
-                    assert_eq!(unsafe { *result.1 }, (i - 1, i - 1));
+                    assert_eq!(*leaf.key_at(result), i - 1);
+                    assert_eq!(*leaf.value_at(result), i - 1);
                 }
             }
             if insert == 0 {
-                assert_eq!(leaf.max(), None);
+                assert_eq!(leaf.max_key(), None);
             } else {
-                assert_eq!(leaf.max(), Some((&(insert - 1), &(insert - 1))));
+                assert_eq!(leaf.max_key(), Some(&(insert - 1)));
             }
             for i in 0..insert {
                 assert!(matches!(leaf.insert(i, i), InsertResult::Duplicate(..)));
