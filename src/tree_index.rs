@@ -750,10 +750,10 @@ where
                     // Need to check the upper bound.
                     self.check_upper_bound = match self.range.end_bound() {
                         Excluded(key) => leaf_scanner
-                            .max_entry()
+                            .max_key()
                             .map_or(false, |max_key| max_key.cmp(key) != Ordering::Less),
                         Included(key) => leaf_scanner
-                            .max_entry()
+                            .max_key()
                             .map_or(false, |max_key| max_key.cmp(key) == Ordering::Greater),
                         Unbounded => false,
                     };
@@ -780,10 +780,10 @@ where
                 if let Some(entry) = new_scanner.get() {
                     self.check_upper_bound = match self.range.end_bound() {
                         Excluded(key) => new_scanner
-                            .max_entry()
+                            .max_key()
                             .map_or(false, |max_key| max_key.cmp(key) != Ordering::Less),
                         Included(key) => new_scanner
-                            .max_entry()
+                            .max_key()
                             .map_or(false, |max_key| max_key.cmp(key) == Ordering::Greater),
                         Unbounded => false,
                     };

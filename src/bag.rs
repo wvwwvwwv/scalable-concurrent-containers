@@ -3,20 +3,20 @@
 use super::ebr::Barrier;
 use super::{LinkedList, Stack};
 
-use std::mem::{needs_drop, size_of, MaybeUninit};
+use std::mem::{needs_drop, MaybeUninit};
 use std::ptr::drop_in_place;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 /// The length of the fixed-size array in a [`Bag`].
-const STORAGE_LEN: usize = size_of::<usize>() * 4;
+const STORAGE_LEN: u32 = usize::BITS / 2;
 
 /// [`Bag`] is a lock-free concurrent unordered instance container.
 ///
-/// [`Bag`] is a linearizable concurrent instance container where `size_of::<usize>() * 4`
-/// instances are stored in a fixed-size array, and the rest are managed by its backup container
-/// which makes a [`Bag`] especially efficient if the expected number of instances does not exceed
-/// `size_of::<usize>() * 4`.
+/// [`Bag`] is a linearizable concurrent instance container where `usize::BITS / 2` instances are
+/// stored in a fixed-size array, and the rest are managed by its backup container which makes a
+/// [`Bag`] especially efficient if the expected number of instances does not exceed
+/// `usize::BITS / 2`.
 #[derive(Debug)]
 pub struct Bag<T: 'static> {
     /// Primary storage.
@@ -122,13 +122,13 @@ impl<T: 'static> Default for Bag<T> {
 #[derive(Debug)]
 struct Storage<T: 'static> {
     /// Storage.
-    storage: [MaybeUninit<T>; STORAGE_LEN],
+    storage: [MaybeUninit<T>; STORAGE_LEN as usize],
 
     /// Storage metadata.
     ///
     /// The layout of the metadata is,
-    /// - Upper `size_of::<usize>() * 4` bits = instantiation bitmap.
-    /// - Lower `size_of::<usize>() * 4` bits = owned state bitmap.
+    /// - Upper `usize::BITS / 2` bits = instantiation bitmap.
+    /// - Lower `usize::BITS / 2` bits = owned state bitmap.
     ///
     /// The metadata represents four possible states of a storage slot.
     /// - !instantiated && !owned: initial state.
@@ -169,7 +169,7 @@ impl<T: 'static> Storage<T> {
                 return Some(val);
             }
             let owned_bitmap = Self::owned_bitmap(metadata);
-            let mut index = instance_bitmap.trailing_ones() as usize;
+            let mut index = instance_bitmap.trailing_ones();
             while index != STORAGE_LEN {
                 debug_assert!(index < STORAGE_LEN);
                 if (owned_bitmap & (1_u32 << index)) == 0 {
@@ -182,7 +182,7 @@ impl<T: 'static> Storage<T> {
                         Ok(_) => {
                             // Now the free slot is owned by the thread.
                             unsafe {
-                                (self.storage[index].as_ptr() as *mut T).write(val);
+                                (self.storage[index as usize].as_ptr() as *mut T).write(val);
                             }
                             let result = self.metadata.fetch_update(Release, Relaxed, |m| {
                                 debug_assert_ne!(m & (1_usize << index), 0);
@@ -201,7 +201,7 @@ impl<T: 'static> Storage<T> {
                             }
 
                             // The array was empty, thus rolling back the change.
-                            let val = unsafe { self.storage[index].as_ptr().read() };
+                            let val = unsafe { self.storage[index as usize].as_ptr().read() };
                             self.metadata.fetch_and(!(1_usize << index), Relaxed);
                             return Some(val);
                         }
@@ -215,7 +215,7 @@ impl<T: 'static> Storage<T> {
 
                 // Looking for another free slot.
                 instance_bitmap |= 1_u32 << index;
-                index = instance_bitmap.trailing_ones() as usize;
+                index = instance_bitmap.trailing_ones();
             }
 
             // No free slots or all the entries are owned.
@@ -232,7 +232,7 @@ impl<T: 'static> Storage<T> {
             let owned_bitmap = Self::owned_bitmap(metadata);
             let mut index = instance_bitmap.trailing_zeros();
             while index != 32 {
-                debug_assert!((index as usize) < STORAGE_LEN);
+                debug_assert!(index < STORAGE_LEN);
                 if (owned_bitmap & (1_u32 << index)) == 0 {
                     // Mark the slot `owned`.
                     let new = metadata | (1_usize << index);
@@ -246,13 +246,9 @@ impl<T: 'static> Storage<T> {
                             let mut empty = false;
                             let result = self.metadata.fetch_update(Relaxed, Relaxed, |m| {
                                 debug_assert_ne!(m & (1_usize << index), 0);
-                                debug_assert_ne!(
-                                    m & (1_usize << (index as usize + STORAGE_LEN)),
-                                    0
-                                );
+                                debug_assert_ne!(m & (1_usize << (index + STORAGE_LEN)), 0);
                                 let new = m
-                                    & (!((1_usize << index)
-                                        | (1_usize << (index as usize + STORAGE_LEN))));
+                                    & (!((1_usize << index) | (1_usize << (index + STORAGE_LEN))));
                                 empty = Self::instance_bitmap(new) == 0;
                                 Some(new)
                             });
@@ -285,7 +281,7 @@ impl<T: 'static> Storage<T> {
 
     #[allow(clippy::cast_possible_truncation)]
     fn instance_bitmap(metadata: usize) -> u32 {
-        metadata.wrapping_shr(STORAGE_LEN as u32) as u32
+        metadata.wrapping_shr(STORAGE_LEN) as u32
     }
 
     #[allow(clippy::cast_possible_truncation)]

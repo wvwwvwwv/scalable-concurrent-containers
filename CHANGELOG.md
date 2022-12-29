@@ -1,5 +1,9 @@
 # Changelog
 
+1.0.3
+
+* Add `From<ebr::Tag> for u8`.
+
 1.0.2
 
 * Optimize `TreeIndex`.

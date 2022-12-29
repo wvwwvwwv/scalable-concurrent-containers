@@ -180,7 +180,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             old_cell_index * ratio
         };
 
-        let mut target_cells: [Option<Locker<K, V, LOCK_FREE>>; size_of::<usize>() * 4] =
+        let mut target_cells: [Option<Locker<K, V, LOCK_FREE>>; usize::BITS as usize / 2] =
             Default::default();
         let mut max_index = 0;
         let mut entry_ptr = EntryPtr::new(barrier);
@@ -350,7 +350,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
 
         // 2^lb_capacity * C::cell_size() >= capacity
         debug_assert!(log2_capacity > 0);
-        debug_assert!(log2_capacity < (std::mem::size_of::<usize>() * 8));
+        debug_assert!(log2_capacity < (usize::BITS as usize));
         debug_assert!((1_usize << log2_capacity) * CELL_LEN >= adjusted_total_cell_capacity);
         log2_capacity as u8
     }

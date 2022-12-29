@@ -520,7 +520,7 @@ where
                 Self::estimate(current_array, sampling_index, num_cells_to_sample);
             sampling_index = sampling_index.wrapping_add(num_cells_to_sample);
             let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
-                let max_capacity = 1_usize << (std::mem::size_of::<usize>() * 8 - 1);
+                let max_capacity = 1_usize << (usize::BITS - 1);
                 if capacity == max_capacity {
                     // Do not resize if the capacity cannot be increased.
                     capacity

@@ -3,7 +3,7 @@ use crate::LinkedList;
 
 use std::borrow::Borrow;
 use std::cmp::Ordering;
-use std::mem::{needs_drop, size_of, MaybeUninit};
+use std::mem::{needs_drop, MaybeUninit};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
@@ -115,13 +115,13 @@ impl Dimension {
 /// * B = The minimum number of bits to express the state of an entry.
 /// * 2 = The number of special states of an entry: uninit, removed.
 /// * 2 = The number of special states of a [`Leaf`]: frozen, retired.
-/// * U = `size_of::<usize>() * 8`.
+/// * U = `usize::BITS`.
 /// * Eq1 = M + 2 <= 2^B: B bits represent at least M + 2 states.
 /// * Eq2 = B * M + 2 <= U: M entries + 2 special state.
 /// * Eq3 = Ceil(Log2(M + 2)) * M + 2 <= U: derived from Eq1 and Eq2.
 ///
 /// Therefore, when U = 64 => M = 14 / B = 4, and U = 32 => M = 7 / B = 4.
-pub const DIMENSION: Dimension = match size_of::<usize>() {
+pub const DIMENSION: Dimension = match usize::BITS / 8 {
     1 => Dimension {
         num_entries: 2,
         num_bits_per_entry: 2,
@@ -220,12 +220,11 @@ where
         let mut max_index = DIMENSION.num_entries;
         for i in 0..DIMENSION.num_entries {
             let rank = DIMENSION.state(metadata, i);
-            if rank == Dimension::uninit_state()
-                && (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0
-            {
-                break;
-            }
-            if rank > max_rank && rank != DIMENSION.removed_state() {
+            if rank == Dimension::uninit_state() {
+                if (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
+                    break;
+                }
+            } else if rank != DIMENSION.removed_state() && rank > max_rank {
                 max_rank = rank;
                 max_index = i;
             }
@@ -307,16 +306,15 @@ where
         if Dimension::frozen(metadata) {
             return RemoveResult::Frozen;
         }
-        let mut max_min_rank = 0;
         let mut min_max_rank = DIMENSION.removed_state();
+        let mut max_min_rank = 0;
         for i in 0..DIMENSION.num_entries {
             let rank = DIMENSION.state(metadata, i);
-            if rank == Dimension::uninit_state()
-                && (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0
-            {
-                break;
-            }
-            if rank > max_min_rank && rank < min_max_rank {
+            if rank == Dimension::uninit_state() {
+                if (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
+                    break;
+                }
+            } else if rank < min_max_rank && rank > max_min_rank {
                 match self.compare(i, key) {
                     Ordering::Less => {
                         if max_min_rank < rank {
@@ -403,17 +401,16 @@ where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
+        let mut min_max_rank = DIMENSION.removed_state();
         let mut max_min_rank = 0;
         let mut max_min_index = DIMENSION.num_entries;
-        let mut min_max_rank = DIMENSION.removed_state();
         for i in 0..DIMENSION.num_entries {
             let rank = DIMENSION.state(metadata, i);
-            if rank == Dimension::uninit_state()
-                && (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0
-            {
-                break;
-            }
-            if rank > max_min_rank && rank < min_max_rank {
+            if rank == Dimension::uninit_state() {
+                if (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
+                    break;
+                }
+            } else if rank < min_max_rank && rank > max_min_rank {
                 match self.compare(i, key) {
                     Ordering::Less => {
                         if max_min_rank < rank {
@@ -446,17 +443,16 @@ where
         Q: Ord + ?Sized,
     {
         let metadata = self.metadata.load(Acquire);
+        let mut min_max_rank = DIMENSION.removed_state();
         let mut max_min_rank = 0;
         let mut min_max_index = DIMENSION.num_entries;
-        let mut min_max_rank = DIMENSION.removed_state();
         for i in 0..DIMENSION.num_entries {
             let rank = DIMENSION.state(metadata, i);
-            if rank == Dimension::uninit_state()
-                && (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0
-            {
-                break;
-            }
-            if rank > max_min_rank && rank < min_max_rank {
+            if rank == Dimension::uninit_state() {
+                if (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
+                    break;
+                }
+            } else if rank < min_max_rank && rank > max_min_rank {
                 match self.compare(i, key) {
                     Ordering::Less => {
                         if max_min_rank < rank {
@@ -550,16 +546,15 @@ where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        let mut max_min_rank = 0;
         let mut min_max_rank = DIMENSION.removed_state();
+        let mut max_min_rank = 0;
         for i in 0..DIMENSION.num_entries {
             let rank = DIMENSION.state(metadata, i);
-            if rank == Dimension::uninit_state()
-                && (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0
-            {
-                break;
-            }
-            if rank > max_min_rank && rank < min_max_rank {
+            if rank == Dimension::uninit_state() {
+                if (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
+                    break;
+                }
+            } else if rank < min_max_rank && rank > max_min_rank {
                 match self.compare(i, key) {
                     Ordering::Less => {
                         if max_min_rank < rank {
@@ -585,19 +580,17 @@ where
         let key = self.key_at(free_slot_index);
         loop {
             let mut new_metadata = metadata;
-            let mut max_min_rank = 0;
             let mut min_max_rank = DIMENSION.removed_state();
+            let mut max_min_rank = 0;
             for i in 0..DIMENSION.num_entries {
                 let rank = DIMENSION.state(metadata, i);
                 if rank == Dimension::uninit_state() {
                     if (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
                         break;
                     }
-                    continue;
                 } else if rank == DIMENSION.removed_state() {
                     continue;
-                }
-                if rank > max_min_rank && rank < min_max_rank {
+                } else if rank < min_max_rank && rank > max_min_rank {
                     match self.compare(i, key) {
                         Ordering::Less => {
                             if max_min_rank < rank {
@@ -696,22 +689,16 @@ where
         if current_entry_rank < DIMENSION.num_entries {
             let mut next_rank = DIMENSION.removed_state();
             for i in 0..DIMENSION.num_entries {
-                if i == index {
-                    continue;
-                }
-                let rank = DIMENSION.state(metadata, i);
-                if rank == Dimension::uninit_state() {
-                    if (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
-                        break;
+                if i != index {
+                    let rank = DIMENSION.state(metadata, i);
+                    if rank == Dimension::uninit_state() {
+                        if (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
+                            break;
+                        }
+                    } else if rank < next_rank && rank > current_entry_rank {
+                        next_rank = rank;
+                        next_index = i;
                     }
-                    continue;
-                } else if rank == DIMENSION.removed_state() {
-                    continue;
-                }
-                debug_assert_ne!(rank, current_entry_rank);
-                if current_entry_rank < rank && rank < next_rank {
-                    next_rank = rank;
-                    next_index = i;
                 }
             }
         }
@@ -729,14 +716,13 @@ where
         if needs_drop::<(K, V)>() {
             let metadata = self.metadata.load(Acquire);
             for i in 0..DIMENSION.num_entries {
-                let rank = DIMENSION.state(metadata, i);
-                if rank == Dimension::uninit_state() {
+                if DIMENSION.state(metadata, i) == Dimension::uninit_state() {
                     if (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
                         break;
                     }
-                    continue;
+                } else {
+                    self.take(i);
                 }
-                self.take(i);
             }
         }
     }
@@ -819,7 +805,7 @@ where
 
     /// Returns a reference to the max key.
     #[inline]
-    pub(super) fn max_entry(&self) -> Option<&'l K> {
+    pub(super) fn max_key(&self) -> Option<&'l K> {
         self.leaf.max_key()
     }
 

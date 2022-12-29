@@ -14,6 +14,9 @@ use std::sync::atomic::{AtomicPtr, AtomicU8};
 /// [`Tag::First`] indicates the corresponding node has retired.
 pub const RETIRED: Tag = Tag::First;
 
+/// [`Tag::Second`] indicates the corresponding node has retired.
+pub const LOCKED: Tag = Tag::Second;
+
 /// [`LeafNode`] contains a list of instances of `K, V` [`Leaf`].
 ///
 /// The layout of a leaf node: |ptr(entry array)/max(child keys)|...|ptr(entry array)|
@@ -53,7 +56,7 @@ where
             children: Leaf::new(),
             unbounded_child: AtomicArc::null(),
             split_op: StructuralChange::default(),
-            latch: AtomicU8::new(0),
+            latch: AtomicU8::new(Tag::None.into()),
             wait_queue: WaitQueue::default(),
         }
     }
@@ -362,8 +365,8 @@ where
     ) -> &'b K {
         let mut middle_key = None;
 
-        low_key_leaf_node.latch.store(1, Relaxed);
-        high_key_leaf_node.latch.store(1, Relaxed);
+        low_key_leaf_node.latch.store(LOCKED.into(), Relaxed);
+        high_key_leaf_node.latch.store(LOCKED.into(), Relaxed);
 
         // It is safe to keep the pointers to the new leaf nodes in this full leaf node since the
         // whole split operation is protected under a single `ebr::Barrier`, and the pointers are
@@ -607,7 +610,7 @@ where
     #[inline]
     pub(super) fn wait<D: DeriveAsyncWait>(&self, async_wait: &mut D) {
         let waiter = || {
-            if self.latch.load(Relaxed) == 1 {
+            if self.latch.load(Relaxed) == LOCKED.into() {
                 // The `LeafNode` is being split or locked.
                 return Err(());
             }
@@ -884,20 +887,22 @@ where
 
     /// Tries to lock the [`LeafNode`].
     fn try_lock(&self) -> bool {
-        self.latch.compare_exchange(0, 1, Acquire, Relaxed).is_ok()
+        self.latch
+            .compare_exchange(Tag::None.into(), LOCKED.into(), Acquire, Relaxed)
+            .is_ok()
     }
 
     /// Unlocks the [`LeafNode`].
     fn unlock(&self) {
-        debug_assert_eq!(self.latch.load(Relaxed), 1);
-        self.latch.store(0, Release);
+        debug_assert_eq!(self.latch.load(Relaxed), LOCKED.into());
+        self.latch.store(Tag::None.into(), Release);
         self.wait_queue.signal();
     }
 
     /// Retires itself.
     fn retire(&self) {
-        debug_assert_eq!(self.latch.load(Relaxed), 1);
-        self.latch.store(u8::MAX, Release);
+        debug_assert_eq!(self.latch.load(Relaxed), LOCKED.into());
+        self.latch.store(RETIRED.into(), Release);
         self.wait_queue.signal();
     }
 }

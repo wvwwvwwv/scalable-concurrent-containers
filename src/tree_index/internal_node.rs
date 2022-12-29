@@ -1,5 +1,5 @@
 use super::leaf::{InsertResult, Leaf, RemoveResult, Scanner, DIMENSION};
-use super::leaf_node::RETIRED;
+use super::leaf_node::{LOCKED, RETIRED};
 use super::node::{Node, Type};
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
@@ -50,7 +50,7 @@ where
             children: Leaf::new(),
             unbounded_child: AtomicArc::null(),
             split_op: StructuralChange::default(),
-            latch: AtomicU8::new(0),
+            latch: AtomicU8::new(Tag::None.into()),
             wait_queue: WaitQueue::default(),
         }
     }
@@ -736,7 +736,7 @@ where
     #[inline]
     pub(super) fn wait<D: DeriveAsyncWait>(&self, async_wait: &mut D) {
         let waiter = || {
-            if self.latch.load(Relaxed) == 1 {
+            if self.latch.load(Relaxed) == LOCKED.into() {
                 // The `InternalNode` is being split or locked.
                 return Err(());
             }
@@ -861,20 +861,22 @@ where
 
     /// Tries to lock the [`InternalNode`].
     fn try_lock(&self) -> bool {
-        self.latch.compare_exchange(0, 1, Acquire, Relaxed).is_ok()
+        self.latch
+            .compare_exchange(Tag::None.into(), LOCKED.into(), Acquire, Relaxed)
+            .is_ok()
     }
 
     /// Unlocks the [`InternalNode`].
     fn unlock(&self) {
-        debug_assert_eq!(self.latch.load(Relaxed), 1);
-        self.latch.store(0, Release);
+        debug_assert_eq!(self.latch.load(Relaxed), LOCKED.into());
+        self.latch.store(Tag::None.into(), Release);
         self.wait_queue.signal();
     }
 
     /// Retires itself.
     fn retire(&self) {
-        debug_assert_eq!(self.latch.load(Relaxed), 1);
-        self.latch.store(u8::MAX, Release);
+        debug_assert_eq!(self.latch.load(Relaxed), LOCKED.into());
+        self.latch.store(RETIRED.into(), Release);
         self.wait_queue.signal();
     }
 }
@@ -979,12 +981,12 @@ mod test {
                     children: Leaf::new(),
                     unbounded_child: AtomicArc::new(Node::new_leaf_node()),
                     split_op: StructuralChange::default(),
-                    latch: AtomicU8::new(0),
+                    latch: AtomicU8::new(Tag::None.into()),
                     wait_queue: WaitQueue::default(),
                 }),
             }),
             split_op: StructuralChange::default(),
-            latch: AtomicU8::new(0),
+            latch: AtomicU8::new(Tag::None.into()),
             wait_queue: WaitQueue::default(),
         }
     }

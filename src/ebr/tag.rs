@@ -49,3 +49,30 @@ impl Tag {
         ((ptr as usize) & (!3)) as *const P
     }
 }
+
+impl TryFrom<u8> for Tag {
+    type Error = u8;
+
+    #[inline]
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Tag::None),
+            1 => Ok(Tag::First),
+            2 => Ok(Tag::Second),
+            3 => Ok(Tag::Both),
+            _ => Err(value),
+        }
+    }
+}
+
+impl From<Tag> for u8 {
+    #[inline]
+    fn from(t: Tag) -> Self {
+        match t {
+            Tag::None => 0,
+            Tag::First => 1,
+            Tag::Second => 2,
+            Tag::Both => 3,
+        }
+    }
+}
