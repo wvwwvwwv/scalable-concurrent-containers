@@ -2,8 +2,8 @@
 
 1.0.3
 
+* Major `TreeIndex` performance improvement.
 * Add `From<ebr::Tag> for u8`.
-* Minor `TreeIndex` optimization.
 
 1.0.2
 

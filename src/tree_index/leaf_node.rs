@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicPtr, AtomicU8};
 /// [`Tag::First`] indicates the corresponding node has retired.
 pub const RETIRED: Tag = Tag::First;
 
-/// [`Tag::Second`] indicates the corresponding node has retired.
+/// [`Tag::Second`] indicates the corresponding node is locked.
 pub const LOCKED: Tag = Tag::Second;
 
 /// [`LeafNode`] contains a list of instances of `K, V` [`Leaf`].

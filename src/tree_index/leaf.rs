@@ -83,29 +83,30 @@ impl Dimension {
     const fn retire(metadata: usize) -> usize {
         metadata | (1_usize << (usize::BITS - 1))
     }
+
     /// Returns a bit mask for an entry.
-    const fn state_mask(&self, index: usize) -> usize {
+    const fn rank_mask(&self, index: usize) -> usize {
         ((1_usize << self.num_bits_per_entry) - 1) << (index * self.num_bits_per_entry)
     }
 
-    /// Returns the state of an entry.
-    const fn state(&self, metadata: usize, index: usize) -> usize {
+    /// Returns the rank of an entry.
+    const fn rank(&self, metadata: usize, index: usize) -> usize {
         (metadata >> (index * self.num_bits_per_entry)) % (1_usize << self.num_bits_per_entry)
     }
 
-    /// Returns an uninitialized state of an entry.
-    const fn uninit_state() -> usize {
+    /// Returns the uninitialized rank value which is smaller than all the valid rank values.
+    const fn uninit_rank() -> usize {
         0
     }
 
-    /// Returns a removed state of an entry.
-    const fn removed_state(&self) -> usize {
+    /// Returns the removed rank value which is greater than all the valid rank values.
+    const fn removed_rank(&self) -> usize {
         (1_usize << self.num_bits_per_entry) - 1
     }
 
-    /// Augments the state to the given metadata.
-    const fn augment(&self, metadata: usize, index: usize, state: usize) -> usize {
-        (metadata & (!self.state_mask(index))) | (state << (index * self.num_bits_per_entry))
+    /// Augments the rank to the given metadata.
+    const fn augment(&self, metadata: usize, index: usize, rank: usize) -> usize {
+        (metadata & (!self.rank_mask(index))) | (rank << (index * self.num_bits_per_entry))
     }
 }
 
@@ -159,7 +160,7 @@ where
     K: 'static + Clone + Ord + Sync,
     V: 'static + Clone + Sync,
 {
-    /// The metadata that manages the contents.
+    /// The metadata containing information about the [`Leaf`] and individual entries.
     ///
     /// The state of each entry is as follows.
     /// * 0: `uninit`.
@@ -215,19 +216,19 @@ where
     /// Returns a reference to the max key.
     #[inline]
     pub(super) fn max_key(&self) -> Option<&K> {
-        let metadata = self.metadata.load(Acquire);
+        let mut mutable_metadata = self.metadata.load(Acquire);
         let mut max_rank = 0;
         let mut max_index = DIMENSION.num_entries;
         for i in 0..DIMENSION.num_entries {
-            let rank = DIMENSION.state(metadata, i);
-            if rank == Dimension::uninit_state() {
-                if (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
-                    break;
-                }
-            } else if rank != DIMENSION.removed_state() && rank > max_rank {
+            if mutable_metadata == 0 {
+                break;
+            }
+            let rank = mutable_metadata % (1_usize << DIMENSION.num_bits_per_entry);
+            if rank > max_rank && rank != DIMENSION.removed_rank() {
                 max_rank = rank;
                 max_index = i;
             }
+            mutable_metadata >>= DIMENSION.num_bits_per_entry;
         }
         if max_index != DIMENSION.num_entries {
             return Some(self.key_at(max_index));
@@ -246,10 +247,11 @@ where
                 return InsertResult::Frozen(key, value);
             }
 
+            let mut mutable_metadata = metadata;
             for i in 0..DIMENSION.num_entries {
-                if DIMENSION.state(metadata, i) == Dimension::uninit_state() {
-                    let interim_metadata =
-                        DIMENSION.augment(metadata, i, DIMENSION.removed_state());
+                let rank = mutable_metadata % (1_usize << DIMENSION.num_bits_per_entry);
+                if rank == Dimension::uninit_rank() {
+                    let interim_metadata = DIMENSION.augment(metadata, i, DIMENSION.removed_rank());
 
                     // Reserve the slot.
                     //
@@ -265,6 +267,7 @@ where
                     self.write(i, key, value);
                     return self.post_insert(i, interim_metadata);
                 }
+                mutable_metadata >>= DIMENSION.num_bits_per_entry;
             }
 
             if self.search_slot(key.borrow(), metadata).is_some() {
@@ -301,15 +304,15 @@ where
         if Dimension::frozen(metadata) {
             return RemoveResult::Frozen;
         }
-        let mut min_max_rank = DIMENSION.removed_state();
+        let mut min_max_rank = DIMENSION.removed_rank();
         let mut max_min_rank = 0;
+        let mut mutable_metadata = metadata;
         for i in 0..DIMENSION.num_entries {
-            let rank = DIMENSION.state(metadata, i);
-            if rank == Dimension::uninit_state() {
-                if (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
-                    break;
-                }
-            } else if rank < min_max_rank && rank > max_min_rank {
+            if mutable_metadata == 0 {
+                break;
+            }
+            let rank = mutable_metadata % (1_usize << DIMENSION.num_bits_per_entry);
+            if rank < min_max_rank && rank > max_min_rank {
                 match self.compare(i, key) {
                     Ordering::Less => {
                         if max_min_rank < rank {
@@ -329,21 +332,25 @@ where
                                 return RemoveResult::Fail;
                             }
                             let mut empty = true;
+                            mutable_metadata = metadata;
                             for j in 0..DIMENSION.num_entries {
-                                // Check if other entries are all unreachable.
-                                if i == j {
-                                    continue;
-                                }
-                                let rank = DIMENSION.state(metadata, j);
-                                if rank != Dimension::uninit_state()
-                                    && rank != DIMENSION.removed_state()
-                                {
-                                    empty = false;
+                                if mutable_metadata == 0 {
                                     break;
                                 }
+                                if i != j {
+                                    let rank = mutable_metadata
+                                        % (1_usize << DIMENSION.num_bits_per_entry);
+                                    if rank != Dimension::uninit_rank()
+                                        && rank != DIMENSION.removed_rank()
+                                    {
+                                        empty = false;
+                                        break;
+                                    }
+                                }
+                                mutable_metadata >>= DIMENSION.num_bits_per_entry;
                             }
 
-                            let mut new_metadata = metadata | DIMENSION.state_mask(i);
+                            let mut new_metadata = metadata | DIMENSION.rank_mask(i);
                             if empty {
                                 new_metadata = Dimension::retire(new_metadata);
                             }
@@ -360,7 +367,7 @@ where
                                     return RemoveResult::Success;
                                 }
                                 Err(actual) => {
-                                    if DIMENSION.state(actual, i) == DIMENSION.removed_state() {
+                                    if DIMENSION.rank(actual, i) == DIMENSION.removed_rank() {
                                         return RemoveResult::Fail;
                                     }
                                     if Dimension::frozen(actual) {
@@ -373,6 +380,7 @@ where
                     }
                 };
             }
+            mutable_metadata >>= DIMENSION.num_bits_per_entry;
         }
 
         RemoveResult::Fail
@@ -391,21 +399,20 @@ where
 
     /// Returns the index of the key-value pair that is smaller than the given key.
     #[inline]
-    pub(super) fn max_less<Q>(&self, metadata: usize, key: &Q) -> usize
+    pub(super) fn max_less<Q>(&self, mut mutable_metadata: usize, key: &Q) -> usize
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        let mut min_max_rank = DIMENSION.removed_state();
+        let mut min_max_rank = DIMENSION.removed_rank();
         let mut max_min_rank = 0;
         let mut max_min_index = DIMENSION.num_entries;
         for i in 0..DIMENSION.num_entries {
-            let rank = DIMENSION.state(metadata, i);
-            if rank == Dimension::uninit_state() {
-                if (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
-                    break;
-                }
-            } else if rank < min_max_rank && rank > max_min_rank {
+            if mutable_metadata == 0 {
+                break;
+            }
+            let rank = mutable_metadata % (1_usize << DIMENSION.num_bits_per_entry);
+            if rank < min_max_rank && rank > max_min_rank {
                 match self.compare(i, key) {
                     Ordering::Less => {
                         if max_min_rank < rank {
@@ -423,6 +430,7 @@ where
                     }
                 }
             }
+            mutable_metadata >>= DIMENSION.num_bits_per_entry;
         }
         max_min_index
     }
@@ -438,16 +446,16 @@ where
         Q: Ord + ?Sized,
     {
         let metadata = self.metadata.load(Acquire);
-        let mut min_max_rank = DIMENSION.removed_state();
+        let mut min_max_rank = DIMENSION.removed_rank();
         let mut max_min_rank = 0;
         let mut min_max_index = DIMENSION.num_entries;
+        let mut mutable_metadata = metadata;
         for i in 0..DIMENSION.num_entries {
-            let rank = DIMENSION.state(metadata, i);
-            if rank == Dimension::uninit_state() {
-                if (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
-                    break;
-                }
-            } else if rank < min_max_rank && rank > max_min_rank {
+            if mutable_metadata == 0 {
+                break;
+            }
+            let rank = mutable_metadata % (1_usize << DIMENSION.num_bits_per_entry);
+            if rank < min_max_rank && rank > max_min_rank {
                 let k = self.key_at(i);
                 match k.borrow().cmp(key) {
                     Ordering::Less => {
@@ -466,6 +474,7 @@ where
                     }
                 }
             }
+            mutable_metadata >>= DIMENSION.num_bits_per_entry;
         }
         if min_max_index != DIMENSION.num_entries {
             return (
@@ -537,20 +546,19 @@ where
     }
 
     /// Searches for a slot in which the key is stored.
-    fn search_slot<Q>(&self, key: &Q, metadata: usize) -> Option<usize>
+    fn search_slot<Q>(&self, key: &Q, mut mutable_metadata: usize) -> Option<usize>
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        let mut min_max_rank = DIMENSION.removed_state();
+        let mut min_max_rank = DIMENSION.removed_rank();
         let mut max_min_rank = 0;
         for i in 0..DIMENSION.num_entries {
-            let rank = DIMENSION.state(metadata, i);
-            if rank == Dimension::uninit_state() {
-                if (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
-                    break;
-                }
-            } else if rank < min_max_rank && rank > max_min_rank {
+            if mutable_metadata == 0 {
+                break;
+            }
+            let rank = mutable_metadata % (1_usize << DIMENSION.num_bits_per_entry);
+            if rank < min_max_rank && rank > max_min_rank {
                 match self.compare(i, key) {
                     Ordering::Less => {
                         if max_min_rank < rank {
@@ -567,26 +575,25 @@ where
                     }
                 }
             }
+            mutable_metadata >>= DIMENSION.num_bits_per_entry;
         }
         None
     }
 
     /// Post-processing after reserving a free slot.
-    fn post_insert(&self, free_slot_index: usize, mut metadata: usize) -> InsertResult<K, V> {
+    fn post_insert(&self, free_slot_index: usize, mut prev_metadata: usize) -> InsertResult<K, V> {
         let key = self.key_at(free_slot_index);
         loop {
-            let mut new_metadata = metadata;
-            let mut min_max_rank = DIMENSION.removed_state();
+            let mut min_max_rank = DIMENSION.removed_rank();
             let mut max_min_rank = 0;
+            let mut new_metadata = prev_metadata;
+            let mut mutable_metadata = prev_metadata;
             for i in 0..DIMENSION.num_entries {
-                let rank = DIMENSION.state(metadata, i);
-                if rank == Dimension::uninit_state() {
-                    if (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
-                        break;
-                    }
-                } else if rank == DIMENSION.removed_state() {
-                    continue;
-                } else if rank < min_max_rank && rank > max_min_rank {
+                if mutable_metadata == 0 {
+                    break;
+                }
+                let rank = mutable_metadata % (1_usize << DIMENSION.num_bits_per_entry);
+                if rank < min_max_rank && rank > max_min_rank {
                     match self.compare(i, key) {
                         Ordering::Less => {
                             if max_min_rank < rank {
@@ -604,21 +611,22 @@ where
                             return self.rollback(free_slot_index);
                         }
                     }
-                } else if rank > min_max_rank {
+                } else if rank != DIMENSION.removed_rank() && rank > min_max_rank {
                     new_metadata = DIMENSION.augment(new_metadata, i, rank + 1);
                 }
+                mutable_metadata >>= DIMENSION.num_bits_per_entry;
             }
 
             // Make the newly inserted value reachable.
             let final_metadata = DIMENSION.augment(new_metadata, free_slot_index, max_min_rank + 1);
             if let Err(actual) =
                 self.metadata
-                    .compare_exchange(metadata, final_metadata, AcqRel, Acquire)
+                    .compare_exchange(prev_metadata, final_metadata, AcqRel, Acquire)
             {
                 if Dimension::frozen(actual) || Dimension::retired(actual) {
                     return self.rollback(free_slot_index);
                 }
-                metadata = actual;
+                prev_metadata = actual;
                 continue;
             }
 
@@ -630,8 +638,8 @@ where
         let (key, value) = self.take(index);
         let result = self
             .metadata
-            .fetch_and(!DIMENSION.state_mask(index), Relaxed)
-            & (!DIMENSION.state_mask(index));
+            .fetch_and(!DIMENSION.rank_mask(index), Relaxed)
+            & (!DIMENSION.rank_mask(index));
         if Dimension::retired(result) {
             InsertResult::Retired(key, value)
         } else if Dimension::frozen(result) {
@@ -674,24 +682,23 @@ where
     }
 
     /// Returns the index of the corresponding entry of the next higher ranked entry.
-    fn next(index: usize, metadata: usize) -> usize {
+    fn next(index: usize, mut mutable_metadata: usize) -> usize {
         debug_assert_ne!(index, usize::MAX);
         let current_entry_rank = if index == DIMENSION.num_entries {
             0
         } else {
-            DIMENSION.state(metadata, index)
+            DIMENSION.rank(mutable_metadata, index)
         };
         let mut next_index = DIMENSION.num_entries;
         if current_entry_rank < DIMENSION.num_entries {
-            let mut next_rank = DIMENSION.removed_state();
+            let mut next_rank = DIMENSION.removed_rank();
             for i in 0..DIMENSION.num_entries {
+                if mutable_metadata == 0 {
+                    break;
+                }
                 if i != index {
-                    let rank = DIMENSION.state(metadata, i);
-                    if rank == Dimension::uninit_state() {
-                        if (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
-                            break;
-                        }
-                    } else if rank < next_rank {
+                    let rank = mutable_metadata % (1_usize << DIMENSION.num_bits_per_entry);
+                    if rank != Dimension::uninit_rank() && rank < next_rank {
                         if rank == current_entry_rank + 1 {
                             return i;
                         } else if rank > current_entry_rank {
@@ -700,6 +707,7 @@ where
                         }
                     }
                 }
+                mutable_metadata >>= DIMENSION.num_bits_per_entry;
             }
         }
         next_index
@@ -714,15 +722,17 @@ where
     #[inline]
     fn drop(&mut self) {
         if needs_drop::<(K, V)>() {
-            let metadata = self.metadata.load(Acquire);
+            let mut mutable_metadata = self.metadata.load(Acquire);
             for i in 0..DIMENSION.num_entries {
-                if DIMENSION.state(metadata, i) == Dimension::uninit_state() {
-                    if (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
-                        break;
-                    }
-                } else {
+                if mutable_metadata == 0 {
+                    break;
+                }
+                if mutable_metadata % (1_usize << DIMENSION.num_bits_per_entry)
+                    != Dimension::uninit_rank()
+                {
                     self.take(i);
                 }
+                mutable_metadata >>= DIMENSION.num_bits_per_entry;
             }
         }
     }
