@@ -3,6 +3,7 @@
 1.0.3
 
 * Add `From<ebr::Tag> for u8`.
+* Minor `TreeIndex` optimization.
 
 1.0.2
 

@@ -87,16 +87,16 @@ where
                         return child.search(key, barrier);
                     }
                 }
-                continue;
-            }
-            let unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
-            if let Some(unbounded) = unbounded_ptr.as_ref() {
-                if !self.children.validate(metadata) {
-                    continue;
+            } else {
+                let unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
+                if let Some(unbounded) = unbounded_ptr.as_ref() {
+                    if self.children.validate(metadata) {
+                        return unbounded.search(key, barrier);
+                    }
+                } else {
+                    return None;
                 }
-                return unbounded.search(key, barrier);
             }
-            return None;
         }
     }
 
@@ -660,7 +660,7 @@ where
         }
 
         // Unlock the node.
-        self.finish_split();
+        self.finish_split(barrier);
 
         // Drop the deprecated nodes.
         if let Some(unused_node) = unused_node {
@@ -675,10 +675,11 @@ where
 
     /// Finishes splitting the [`InternalNode`].
     #[inline]
-    pub(super) fn finish_split(&self) {
-        self.split_op.reset();
+    pub(super) fn finish_split(&self, barrier: &Barrier) {
+        let origin = self.split_op.reset();
         self.unlock();
         self.wait_queue.signal();
+        origin.map(|o| o.release(barrier));
     }
 
     /// Commits an on-going structural change recursively.
@@ -690,6 +691,7 @@ where
         self.retire();
         if let Some(origin) = origin {
             origin.commit(barrier);
+            let _ = origin.release(barrier);
         }
     }
 
@@ -700,6 +702,7 @@ where
         self.unlock();
         if let Some(origin) = origin {
             origin.rollback(barrier);
+            let _ = origin.release(barrier);
         }
     }
 

@@ -96,16 +96,16 @@ where
                 //
                 // The `LeafNode` metadata is updated before a leaf is removed. This implies that
                 // the new `metadata` will be different from the current `metadata`.
-                continue;
-            }
-            let unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
-            if let Some(unbounded) = unbounded_ptr.as_ref() {
-                if !self.children.validate(metadata) {
-                    continue;
+            } else {
+                let unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
+                if let Some(unbounded) = unbounded_ptr.as_ref() {
+                    if self.children.validate(metadata) {
+                        return unbounded.search(key);
+                    }
+                } else {
+                    return None;
                 }
-                return unbounded.search(key);
             }
-            return None;
         }
     }
 
@@ -509,21 +509,22 @@ where
         if let Some(low_key_leaf_node) =
             unsafe { self.split_op.low_key_leaf_node.load(Relaxed).as_ref() }
         {
-            low_key_leaf_node.split_op.reset();
+            let origin = low_key_leaf_node.split_op.reset();
             low_key_leaf_node.unlock();
+            origin.map(|o| o.release(barrier));
         }
 
         if let Some(high_key_leaf_node) =
             unsafe { self.split_op.high_key_leaf_node.load(Relaxed).as_ref() }
         {
-            high_key_leaf_node.split_op.reset();
+            let origin = high_key_leaf_node.split_op.reset();
             high_key_leaf_node.unlock();
+            origin.map(|o| o.release(barrier));
         }
 
-        self.split_op.reset();
-
-        // Mark the leaf node retired to prevent further locking attempts.
+        let origin = self.split_op.reset();
         self.retire();
+        origin.map(|o| o.release(barrier));
     }
 
     /// Rolls back the ongoing split operation.
@@ -560,10 +561,9 @@ where
             debug_assert!(unmarked);
         }
 
-        self.split_op.reset();
-
-        // Unlock the leaf node.
+        let origin = self.split_op.reset();
         self.unlock();
+        origin.map(|o| o.release(barrier));
     }
 
     /// Cleans up logically deleted [`LeafNode`] instances in the linked list.
@@ -671,8 +671,7 @@ where
         let mut high_key_leaf_arc = None;
 
         // Distribute entries to two leaves after make the target retired.
-        let result = target.freeze_and_distribute(&mut low_key_leaf_arc, &mut high_key_leaf_arc);
-        debug_assert!(result);
+        target.freeze_and_distribute(&mut low_key_leaf_arc, &mut high_key_leaf_arc);
 
         if let Some(low_key_leaf) = low_key_leaf_arc.take() {
             self.split_op
@@ -768,15 +767,10 @@ where
                 .0
         };
 
-        // Reset `split_op`.
-        self.split_op.reset();
-
-        // Unlock the leaf node.
+        let origin = self.split_op.reset();
         self.unlock();
-
-        if let Some(unused_leaf) = unused_leaf {
-            let _ = unused_leaf.release(barrier);
-        }
+        origin.map(|o| o.release(barrier));
+        unused_leaf.map(|u| u.release(barrier));
 
         // Since a new leaf has been inserted, the caller can retry.
         Ok(InsertResult::Retry(key, value))
@@ -965,13 +959,13 @@ where
     K: 'static + Clone + Ord + Send + Sync,
     V: 'static + Clone + Send + Sync,
 {
-    fn reset(&self) {
+    fn reset(&self) -> Option<Arc<Leaf<K, V>>> {
         self.origin_leaf_key.store(ptr::null_mut(), Relaxed);
-        self.origin_leaf.swap((None, Tag::None), Relaxed);
         self.low_key_leaf.swap((None, Tag::None), Relaxed);
         self.high_key_leaf.swap((None, Tag::None), Relaxed);
         self.low_key_leaf_node.store(ptr::null_mut(), Relaxed);
         self.high_key_leaf_node.store(ptr::null_mut(), Relaxed);
+        self.origin_leaf.swap((None, Tag::None), Relaxed).0
     }
 }
 

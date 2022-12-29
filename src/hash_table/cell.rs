@@ -118,9 +118,11 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         barrier: &Barrier,
     ) {
         if !self.metadata.link.load(Acquire, barrier).is_null() {
-            if let Some(link) = self.metadata.link.swap((None, Tag::None), Relaxed).0 {
-                let _ = link.release(barrier);
-            }
+            self.metadata
+                .link
+                .swap((None, Tag::None), Relaxed)
+                .0
+                .map(|l| l.release(barrier));
         }
         if needs_drop::<(K, V)>() && self.metadata.occupied_bitmap != 0 {
             let mut bitmap = self.metadata.occupied_bitmap;
@@ -385,9 +387,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryPtr<'b, K, V, 
                 .swap((next_link, Tag::None), Relaxed)
                 .0
         };
-        if let Some(link) = old_link {
-            let _ = link.release(barrier);
-        }
+        old_link.map(|l| l.release(barrier));
 
         if self.current_link_ptr.is_null() {
             // Fuse the pointer.
@@ -680,9 +680,12 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         self.cell.state.fetch_or(KILLED, Release);
         self.cell.num_entries = 0;
         if !self.cell.metadata.link.load(Acquire, barrier).is_null() {
-            if let Some(link) = self.cell.metadata.link.swap((None, Tag::None), Relaxed).0 {
-                let _ = link.release(barrier);
-            }
+            self.cell
+                .metadata
+                .link
+                .swap((None, Tag::None), Relaxed)
+                .0
+                .map(|l| l.release(barrier));
         }
     }
 

@@ -94,6 +94,7 @@ where
     /// ```
     #[inline]
     pub fn insert(&self, mut key: K, mut value: V) -> Result<(), (K, V)> {
+        let mut new_root = None;
         loop {
             let barrier = Barrier::new();
             if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
@@ -125,14 +126,20 @@ where
                 }
             }
 
-            let new_root = Arc::new(Node::new_leaf_node());
-            let _result = self.root.compare_exchange(
+            let node = if let Some(new_root) = new_root.take() {
+                new_root
+            } else {
+                Arc::new(Node::new_leaf_node())
+            };
+            if let Err((node, _)) = self.root.compare_exchange(
                 Ptr::null(),
-                (Some(new_root), Tag::None),
+                (Some(node), Tag::None),
                 AcqRel,
                 Acquire,
                 &barrier,
-            );
+            ) {
+                new_root = node;
+            }
         }
     }
 
@@ -154,6 +161,7 @@ where
     /// ```
     #[inline]
     pub async fn insert_async(&self, mut key: K, mut value: V) -> Result<(), (K, V)> {
+        let mut new_root = None;
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
@@ -201,14 +209,20 @@ where
                 async_wait_pinned.await;
             }
 
-            let new_root = Arc::new(Node::new_leaf_node());
-            let _result = self.root.compare_exchange(
+            let node = if let Some(new_root) = new_root.take() {
+                new_root
+            } else {
+                Arc::new(Node::new_leaf_node())
+            };
+            if let Err((node, _)) = self.root.compare_exchange(
                 Ptr::null(),
-                (Some(new_root), Tag::None),
+                (Some(node), Tag::None),
                 AcqRel,
                 Acquire,
                 &Barrier::new(),
-            );
+            ) {
+                new_root = node;
+            }
         }
     }
 
@@ -228,12 +242,12 @@ where
     /// assert!(treeindex.remove(&1));
     /// ```
     #[inline]
-    pub fn remove<Q>(&self, key_ref: &Q) -> bool
+    pub fn remove<Q>(&self, key: &Q) -> bool
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        self.remove_if(key_ref, |_| true)
+        self.remove_if(key, |_| true)
     }
 
     /// Removes a key-value pair.
@@ -249,12 +263,12 @@ where
     /// let future_remove = treeindex.remove_async(&1);
     /// ```
     #[inline]
-    pub async fn remove_async<Q>(&self, key_ref: &Q) -> bool
+    pub async fn remove_async<Q>(&self, key: &Q) -> bool
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        self.remove_if_async(key_ref, |_| true).await
+        self.remove_if_async(key, |_| true).await
     }
 
     /// Removes a key-value pair if the given condition is met.
@@ -271,7 +285,7 @@ where
     /// assert!(treeindex.remove_if(&1, |v| *v == 10));
     /// ```
     #[inline]
-    pub fn remove_if<Q, F: FnMut(&V) -> bool>(&self, key_ref: &Q, mut condition: F) -> bool
+    pub fn remove_if<Q, F: FnMut(&V) -> bool>(&self, key: &Q, mut condition: F) -> bool
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
@@ -280,11 +294,11 @@ where
         loop {
             let barrier = Barrier::new();
             if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
-                match root_ref.remove_if::<_, _, _>(key_ref, &mut condition, &mut (), &barrier) {
+                match root_ref.remove_if::<_, _, _>(key, &mut condition, &mut (), &barrier) {
                     Ok(r) => match r {
                         RemoveResult::Success => return true,
                         RemoveResult::Cleanup => {
-                            root_ref.cleanup_link(key_ref, false, &barrier);
+                            root_ref.cleanup_link(key, false, &barrier);
                             return true;
                         }
                         RemoveResult::Retired => {
@@ -322,11 +336,7 @@ where
     /// let future_remove = treeindex.remove_if_async(&1, |v| *v == 0);
     /// ```
     #[inline]
-    pub async fn remove_if_async<Q, F: FnMut(&V) -> bool>(
-        &self,
-        key_ref: &Q,
-        mut condition: F,
-    ) -> bool
+    pub async fn remove_if_async<Q, F: FnMut(&V) -> bool>(&self, key: &Q, mut condition: F) -> bool
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
@@ -339,7 +349,7 @@ where
                 let barrier = Barrier::new();
                 if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
                     match root_ref.remove_if::<_, _, _>(
-                        key_ref,
+                        key,
                         &mut condition,
                         &mut async_wait_pinned,
                         &barrier,
@@ -347,7 +357,7 @@ where
                         Ok(r) => match r {
                             RemoveResult::Success => return true,
                             RemoveResult::Cleanup => {
-                                root_ref.cleanup_link(key_ref, false, &barrier);
+                                root_ref.cleanup_link(key, false, &barrier);
                                 return true;
                             }
                             RemoveResult::Retired => {
@@ -389,13 +399,13 @@ where
     /// assert!(treeindex.read(&1, |k, v| *v).is_none());
     /// ```
     #[inline]
-    pub fn read<Q, R, F: FnOnce(&Q, &V) -> R>(&self, key_ref: &Q, reader: F) -> Option<R>
+    pub fn read<Q, R, F: FnOnce(&Q, &V) -> R>(&self, key: &Q, reader: F) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
         let barrier = Barrier::new();
-        self.read_with(key_ref, reader, &barrier)
+        self.read_with(key, reader, &barrier)
     }
 
     /// Reads a key-value pair using the supplied [`Barrier`].
@@ -417,7 +427,7 @@ where
     #[inline]
     pub fn read_with<'b, Q, R, F: FnOnce(&Q, &'b V) -> R>(
         &self,
-        key_ref: &Q,
+        key: &Q,
         reader: F,
         barrier: &'b Barrier,
     ) -> Option<R>
@@ -426,8 +436,8 @@ where
         Q: Ord + ?Sized,
     {
         if let Some(root_ref) = self.root.load(Acquire, barrier).as_ref() {
-            if let Some(value) = root_ref.search(key_ref, barrier) {
-                return Some(reader(key_ref, value));
+            if let Some(value) = root_ref.search(key, barrier) {
+                return Some(reader(key, value));
             }
         }
         None
@@ -806,16 +816,16 @@ where
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        while let Some((key_ref, value_ref)) = self.next_unbounded() {
+        while let Some((k, v)) = self.next_unbounded() {
             if self.check_lower_bound {
                 match self.range.start_bound() {
                     Excluded(key) => {
-                        if key_ref.cmp(key) != Ordering::Greater {
+                        if k.cmp(key) != Ordering::Greater {
                             continue;
                         }
                     }
                     Included(key) => {
-                        if key_ref.cmp(key) == Ordering::Less {
+                        if k.cmp(key) == Ordering::Less {
                             continue;
                         }
                     }
@@ -826,22 +836,22 @@ where
             if self.check_upper_bound {
                 match self.range.end_bound() {
                     Excluded(key) => {
-                        if key_ref.cmp(key) == Ordering::Less {
-                            return Some((key_ref, value_ref));
+                        if k.cmp(key) == Ordering::Less {
+                            return Some((k, v));
                         }
                     }
                     Included(key) => {
-                        if key_ref.cmp(key) != Ordering::Greater {
-                            return Some((key_ref, value_ref));
+                        if k.cmp(key) != Ordering::Greater {
+                            return Some((k, v));
                         }
                     }
                     Unbounded => {
-                        return Some((key_ref, value_ref));
+                        return Some((k, v));
                     }
                 }
                 break;
             }
-            return Some((key_ref, value_ref));
+            return Some((k, v));
         }
         None
     }

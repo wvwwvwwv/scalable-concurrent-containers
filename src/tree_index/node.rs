@@ -165,8 +165,10 @@ where
     ) -> (K, V) {
         // The fact that the `TreeIndex` calls this function means that the root is full and
         // locked.
-        let mut new_root: Node<K, V> = Node::new_internal_node();
-        if let Type::Internal(internal_node) = &mut new_root.node {
+        let mut new_root = Arc::new(Node::new_internal_node());
+        if let Some(Type::Internal(internal_node)) =
+            unsafe { new_root.get_mut().map(|r| &mut r.node) }
+        {
             internal_node.unbounded_child = root.clone(Relaxed, barrier);
             let result = internal_node.split_node(
                 key,
@@ -181,10 +183,10 @@ where
             let Ok(InsertResult::Retry(key, value)) = result else { unreachable!() };
 
             // Updates the pointer before unlocking the root.
-            let new_root = Arc::new(new_root);
-            if let Some(old_root) = root.swap((Some(new_root.clone()), Tag::None), Release).0 {
-                if let Type::Internal(internal_node) = &new_root.node {
-                    internal_node.finish_split();
+            let new_root_ref = new_root.ptr(barrier).as_ref();
+            if let Some(old_root) = root.swap((Some(new_root), Tag::None), Release).0 {
+                if let Some(Type::Internal(internal_node)) = new_root_ref.map(|r| &r.node) {
+                    internal_node.finish_split(barrier);
                     old_root.commit(barrier);
                 }
                 let _ = old_root.release(barrier);
@@ -238,9 +240,7 @@ where
 
             match root.compare_exchange(root_ptr, (None, Tag::None), Acquire, Acquire, barrier) {
                 Ok((old_root, _)) => {
-                    if let Some(old_root) = old_root {
-                        let _ = old_root.release(barrier);
-                    }
+                    old_root.map(|r| r.release(barrier));
                     return Ok(true);
                 }
                 Err(_) => {

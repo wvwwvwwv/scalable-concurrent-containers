@@ -229,7 +229,7 @@ where
                 max_index = i;
             }
         }
-        if max_rank > 0 {
+        if max_index != DIMENSION.num_entries {
             return Some(self.key_at(max_index));
         }
         None
@@ -239,16 +239,15 @@ where
     #[inline]
     pub(super) fn insert(&self, key: K, value: V) -> InsertResult<K, V> {
         let mut metadata = self.metadata.load(Acquire);
-        while !Dimension::retired(metadata) {
-            if Dimension::frozen(metadata) {
+        'after_read_metadata: loop {
+            if Dimension::retired(metadata) {
+                return InsertResult::Retired(key, value);
+            } else if Dimension::frozen(metadata) {
                 return InsertResult::Frozen(key, value);
             }
 
-            let mut has_free_slot = false;
             for i in 0..DIMENSION.num_entries {
-                let rank = DIMENSION.state(metadata, i);
-                if rank == Dimension::uninit_state() {
-                    has_free_slot = true;
+                if DIMENSION.state(metadata, i) == Dimension::uninit_state() {
                     let interim_metadata =
                         DIMENSION.augment(metadata, i, DIMENSION.removed_state());
 
@@ -260,7 +259,7 @@ where
                             .compare_exchange(metadata, interim_metadata, Acquire, Acquire)
                     {
                         metadata = actual;
-                        break;
+                        continue 'after_read_metadata;
                     }
 
                     self.write(i, key, value);
@@ -268,15 +267,11 @@ where
                 }
             }
 
-            if !has_free_slot {
-                if self.search_slot(key.borrow(), metadata).is_some() {
-                    return InsertResult::Duplicate(key, value);
-                }
-                return InsertResult::Full(key, value);
+            if self.search_slot(key.borrow(), metadata).is_some() {
+                return InsertResult::Duplicate(key, value);
             }
+            return InsertResult::Full(key, value);
         }
-
-        InsertResult::Retired(key, value)
     }
 
     /// Inserts a key value pair at the specified position without checking the metadata.
@@ -453,7 +448,8 @@ where
                     break;
                 }
             } else if rank < min_max_rank && rank > max_min_rank {
-                match self.compare(i, key) {
+                let k = self.key_at(i);
+                match k.borrow().cmp(key) {
                     Ordering::Less => {
                         if max_min_rank < rank {
                             max_min_rank = rank;
@@ -466,12 +462,12 @@ where
                         }
                     }
                     Ordering::Equal => {
-                        return (Some((self.key_at(i), self.value_at(i))), metadata);
+                        return (Some((k, self.value_at(i))), metadata);
                     }
                 }
             }
         }
-        if min_max_rank != DIMENSION.removed_state() {
+        if min_max_index != DIMENSION.num_entries {
             return (
                 Some((self.key_at(min_max_index), self.value_at(min_max_index))),
                 metadata,
@@ -509,34 +505,34 @@ where
         &self,
         low_key_leaf: &mut Option<Arc<Leaf<K, V>>>,
         high_key_leaf: &mut Option<Arc<Leaf<K, V>>>,
-    ) -> bool {
-        if let Ok(prev) = self.metadata.fetch_update(AcqRel, Acquire, |p| {
-            if Dimension::frozen(p) {
-                None
+    ) {
+        let prev = unsafe {
+            self.metadata
+                .fetch_update(AcqRel, Acquire, |p| {
+                    if Dimension::frozen(p) {
+                        None
+                    } else {
+                        Some(Dimension::freeze(p))
+                    }
+                })
+                .unwrap_unchecked()
+        };
+        let scanner = Scanner {
+            leaf: self,
+            metadata: prev,
+            entry_index: DIMENSION.num_entries,
+        };
+        let boundary = DIMENSION.num_entries / 2;
+        for (i, (k, v)) in scanner.enumerate() {
+            if i < DIMENSION.num_entries / 2 {
+                low_key_leaf
+                    .get_or_insert_with(|| Arc::new(Leaf::new()))
+                    .insert_unchecked(k.clone(), v.clone(), i);
             } else {
-                Some(Dimension::freeze(p))
-            }
-        }) {
-            let scanner = Scanner {
-                leaf: self,
-                metadata: prev,
-                entry_index: DIMENSION.num_entries,
+                high_key_leaf
+                    .get_or_insert_with(|| Arc::new(Leaf::new()))
+                    .insert_unchecked(k.clone(), v.clone(), i - boundary);
             };
-            let boundary = DIMENSION.num_entries / 2;
-            for (i, (k, v)) in scanner.enumerate() {
-                if i < DIMENSION.num_entries / 2 {
-                    low_key_leaf
-                        .get_or_insert_with(|| Arc::new(Leaf::new()))
-                        .insert_unchecked(k.clone(), v.clone(), i);
-                } else {
-                    high_key_leaf
-                        .get_or_insert_with(|| Arc::new(Leaf::new()))
-                        .insert_unchecked(k.clone(), v.clone(), i - boundary);
-                };
-            }
-            true
-        } else {
-            false
         }
     }
 
@@ -695,9 +691,13 @@ where
                         if (metadata >> (i * DIMENSION.num_bits_per_entry)) == 0 {
                             break;
                         }
-                    } else if rank < next_rank && rank > current_entry_rank {
-                        next_rank = rank;
-                        next_index = i;
+                    } else if rank < next_rank {
+                        if rank == current_entry_rank + 1 {
+                            return i;
+                        } else if rank > current_entry_rank {
+                            next_rank = rank;
+                            next_index = i;
+                        }
                     }
                 }
             }
@@ -969,7 +969,7 @@ mod test {
 
         let mut leaf1 = None;
         let mut leaf2 = None;
-        assert!(leaf.freeze_and_distribute(&mut leaf1, &mut leaf2));
+        leaf.freeze_and_distribute(&mut leaf1, &mut leaf2);
         assert_eq!(leaf1.as_ref().and_then(|l| l.search(&11)), Some(&17));
         assert_eq!(leaf1.as_ref().and_then(|l| l.search(&17)), Some(&11));
         assert!(leaf2.is_none());
