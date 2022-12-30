@@ -373,8 +373,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> Drop for CellArray<K, V, LOCK_FREE> {
             // No instances are dropped when the array is reachable.
             0
         } else {
-            // If `T: Copy`, `drop` does not need to be explicitly called, however, still any
-            // linked lists should be cleaned up.
+            // Linked lists should be cleaned up.
             self.num_cleared_cells.load(Relaxed)
         };
 

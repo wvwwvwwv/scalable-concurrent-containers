@@ -208,7 +208,7 @@ where
                 break;
             }
 
-            // A new array has been installed.
+            // A new array has been allocated.
             current_array = new_current_array;
         }
 

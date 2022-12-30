@@ -51,7 +51,7 @@ let future_insert = hashmap.insert_async(2, 1);
 let future_remove = hashmap.remove_async(&1);
 ```
 
-The `upsert` method inserts a new entry if the key does not exist, or updates the value field.
+`upsert` will insert a new entry if the key does not exist, otherwise update the value field.
 
 ```rust
 use scc::HashMap;
@@ -170,7 +170,7 @@ assert_eq!(entry_ref, (&1, &0));
 
 ### Examples
 
-Key-value pairs can be inserted, read, and removed.
+A unique key can be inserted, read, and removed. Locks are acquired or awaited only when internal nodes are split or merged.
 
 ```rust
 use scc::TreeIndex;
@@ -187,7 +187,7 @@ let future_insert = treeindex.insert_async(2, 3);
 let future_remove = treeindex.remove_if_async(&1, |v| *v == 2);
 ```
 
-Key-value pairs can be scanned.
+Entries can be scanned without acquiring any locks.
 
 ```rust
 use scc::ebr::Barrier;
@@ -209,7 +209,7 @@ assert_eq!(visitor.next().unwrap(), (&3, &13));
 assert!(visitor.next().is_none());
 ```
 
-Key-value pairs in a specific range can be scanned.
+A specific range of keys can be scanned.
 
 ```rust
 use scc::ebr::Barrier;

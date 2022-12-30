@@ -117,21 +117,15 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         data_block: &DataBlock<K, V, CELL_LEN>,
         barrier: &Barrier,
     ) {
-        if !self.metadata.link.load(Acquire, barrier).is_null() {
-            self.metadata
-                .link
-                .swap((None, Tag::None), Relaxed)
-                .0
-                .map(|l| l.release(barrier));
+        if !self.metadata.link.load(Relaxed, barrier).is_null() {
+            self.clear_links(barrier);
         }
         if needs_drop::<(K, V)>() && self.metadata.occupied_bitmap != 0 {
-            let mut bitmap = self.metadata.occupied_bitmap;
-            let mut index = bitmap.trailing_zeros();
+            let mut index = self.metadata.occupied_bitmap.trailing_zeros();
             while index != 32 {
-                let entry_mut_ptr = data_block[index as usize].as_ptr() as *mut (K, V);
-                ptr::drop_in_place(entry_mut_ptr);
-                bitmap &= !(1_u32 << index);
-                index = bitmap.trailing_zeros();
+                ptr::drop_in_place(data_block[index as usize].as_ptr() as *mut (K, V));
+                self.metadata.occupied_bitmap -= 1_u32 << index;
+                index = self.metadata.occupied_bitmap.trailing_zeros();
             }
         }
     }
@@ -199,7 +193,9 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         }
 
         let preferred_index = usize::from(partial_hash) % LEN;
-        if (bitmap & (1_u32 << preferred_index)) != 0 {
+        if (bitmap & (1_u32 << preferred_index)) != 0
+            && metadata.partial_hash_array[preferred_index] == partial_hash
+        {
             let entry_ref = unsafe { &(*data_block[preferred_index].as_ptr()) };
             if entry_ref.0.borrow() == key {
                 return Some((preferred_index, entry_ref));
@@ -207,8 +203,10 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         }
 
         bitmap = if LEN == CELL_LEN {
+            debug_assert_eq!(LEN, 32);
             bitmap.rotate_right(preferred_index as u32) & (!1_u32)
         } else {
+            debug_assert_eq!(LEN, 8);
             u32::from((bitmap as u8).rotate_right(preferred_index as u32) & (!1_u8))
         };
         let mut offset = bitmap.trailing_zeros();
@@ -220,7 +218,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
                     return Some((index, entry_ref));
                 }
             }
-            bitmap &= !(1_u32 << offset);
+            bitmap -= 1_u32 << offset;
             offset = bitmap.trailing_zeros();
         }
 
@@ -259,6 +257,21 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
         }
 
         None
+    }
+
+    /// Clears all the linked arrays iteratively.
+    fn clear_links(&mut self, barrier: &Barrier) {
+        if let (Some(mut next), _) = self.metadata.link.swap((None, Tag::None), Acquire) {
+            loop {
+                if let (Some(next_next), _) = next.metadata.link.swap((None, Tag::None), Acquire) {
+                    let _ = next.release(barrier);
+                    next = next_next;
+                } else {
+                    let _ = next.release(barrier);
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -679,13 +692,8 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         }
         self.cell.state.fetch_or(KILLED, Release);
         self.cell.num_entries = 0;
-        if !self.cell.metadata.link.load(Acquire, barrier).is_null() {
-            self.cell
-                .metadata
-                .link
-                .swap((None, Tag::None), Relaxed)
-                .0
-                .map(|l| l.release(barrier));
+        if !self.cell.metadata.link.load(Relaxed, barrier).is_null() {
+            self.cell.clear_links(barrier);
         }
     }
 
@@ -879,10 +887,13 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Reader<'b,
 pub(crate) struct Metadata<K: 'static + Eq, V: 'static, const LEN: usize> {
     /// Linked list of entries.
     link: AtomicArc<Linked<K, V, LINKED_LEN>>,
+
     /// Bitmap for occupied slots.
     occupied_bitmap: u32,
+
     /// Bitmap for removed slots.
     removed_bitmap: u32,
+
     /// Partial hash array.
     partial_hash_array: [u8; LEN],
 }
@@ -920,11 +931,10 @@ impl<K: 'static + Eq, V: 'static, const LEN: usize> Drop for Linked<K, V, LEN> {
         if needs_drop::<(K, V)>() {
             let mut index = self.metadata.occupied_bitmap.trailing_zeros();
             while index != 32 {
-                let entry_mut_ptr = self.data_block[index as usize].as_mut_ptr();
                 unsafe {
-                    ptr::drop_in_place(entry_mut_ptr);
+                    ptr::drop_in_place(self.data_block[index as usize].as_mut_ptr());
                 }
-                self.metadata.occupied_bitmap &= !(1_u32 << index);
+                self.metadata.occupied_bitmap -= 1_u32 << index;
                 index = self.metadata.occupied_bitmap.trailing_zeros();
             }
         }
