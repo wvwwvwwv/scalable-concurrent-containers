@@ -31,10 +31,13 @@ const LOCK_MASK: u32 = LOCK | SLOCK_MAX;
 pub(crate) struct Cell<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
     /// The state of the [`Cell`].
     state: AtomicU32,
+
     /// The number of valid entries in the [`Cell`].
     num_entries: u32,
+
     /// The metadata of the [`Cell`].
     metadata: Metadata<K, V, CELL_LEN>,
+
     /// The wait queue of the [`Cell`].
     wait_queue: WaitQueue,
 }
@@ -517,22 +520,53 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     ) {
         assert!(self.cell.num_entries != u32::MAX, "array overflow");
 
-        let preferred_index = partial_hash as usize % CELL_LEN;
-        if (self.cell.metadata.occupied_bitmap & (1_u32 << preferred_index)) == 0 {
-            Self::insert_entry(
-                &mut self.cell.metadata,
-                data_block,
+        let free_index = Self::get_free_index::<CELL_LEN>(
+            self.cell.metadata.occupied_bitmap,
+            partial_hash as usize % CELL_LEN,
+        );
+        if free_index == CELL_LEN {
+            let preferred_index = partial_hash as usize % LINKED_LEN;
+            let mut link_ptr = self.cell.metadata.link.load(Acquire, barrier).as_raw()
+                as *mut Linked<K, V, LINKED_LEN>;
+            while let Some(link_mut) = unsafe { link_ptr.as_mut() } {
+                let free_index = Self::get_free_index::<LINKED_LEN>(
+                    link_mut.metadata.occupied_bitmap,
+                    preferred_index,
+                );
+                if free_index != LINKED_LEN {
+                    Self::insert_entry(
+                        &mut link_mut.metadata,
+                        &link_mut.data_block,
+                        free_index,
+                        key,
+                        value,
+                        partial_hash,
+                    );
+                    self.cell.num_entries += 1;
+                    return;
+                }
+                link_ptr = link_mut.metadata.link.load(Acquire, barrier).as_raw()
+                    as *mut Linked<K, V, LINKED_LEN>;
+            }
+
+            // Insert a new `Linked` at the linked list head.
+            let head = self.cell.metadata.link.get_arc(Relaxed, barrier);
+            let link = Arc::new(Linked::new_with(
                 preferred_index,
                 key,
                 value,
                 partial_hash,
-            );
-            self.cell.num_entries += 1;
-            return;
-        }
-        let free_index =
-            Self::get_free_index::<CELL_LEN>(self.cell.metadata.occupied_bitmap, preferred_index);
-        if free_index != CELL_LEN {
+                head,
+            ));
+            if let Some(head) = link.metadata.link.load(Relaxed, barrier).as_ref() {
+                head.prev_link
+                    .store(link.as_ptr() as *mut Linked<K, V, LINKED_LEN>, Relaxed);
+            }
+            self.cell
+                .metadata
+                .link
+                .swap((Some(link), Tag::None), Release);
+        } else {
             Self::insert_entry(
                 &mut self.cell.metadata,
                 data_block,
@@ -541,69 +575,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                 value,
                 partial_hash,
             );
-            self.cell.num_entries += 1;
-            return;
         }
-
-        let preferred_index = partial_hash as usize % LINKED_LEN;
-        let mut link_ptr = self.cell.metadata.link.load(Acquire, barrier).as_raw()
-            as *mut Linked<K, V, LINKED_LEN>;
-        while let Some(link_mut) = unsafe { link_ptr.as_mut() } {
-            if (link_mut.metadata.occupied_bitmap & (1_u32 << preferred_index)) == 0 {
-                Self::insert_entry(
-                    &mut link_mut.metadata,
-                    &link_mut.data_block,
-                    preferred_index,
-                    key,
-                    value,
-                    partial_hash,
-                );
-                self.cell.num_entries += 1;
-                return;
-            }
-            let free_index = Self::get_free_index::<LINKED_LEN>(
-                link_mut.metadata.occupied_bitmap,
-                preferred_index,
-            );
-            if free_index != LINKED_LEN {
-                Self::insert_entry(
-                    &mut link_mut.metadata,
-                    &link_mut.data_block,
-                    free_index,
-                    key,
-                    value,
-                    partial_hash,
-                );
-                self.cell.num_entries += 1;
-                return;
-            }
-
-            link_ptr = link_mut.metadata.link.load(Acquire, barrier).as_raw()
-                as *mut Linked<K, V, LINKED_LEN>;
-        }
-
-        // Insert a new `Linked` at the linked list head.
-        let new_link = Arc::new(Linked::new());
-        let new_link_mut = unsafe { &mut *(new_link.as_ptr() as *mut Linked<K, V, LINKED_LEN>) };
-        Self::insert_entry(
-            &mut new_link_mut.metadata,
-            &new_link.data_block,
-            preferred_index,
-            key,
-            value,
-            partial_hash,
-        );
-        let head_link = self.cell.metadata.link.get_arc(Relaxed, barrier);
-        if let Some(head_link) = head_link.as_ref() {
-            head_link
-                .prev_link
-                .store(new_link.as_ptr() as *mut Linked<K, V, LINKED_LEN>, Relaxed);
-        }
-        new_link.metadata.link.swap((head_link, Tag::None), Relaxed);
-        self.cell
-            .metadata
-            .link
-            .swap((Some(new_link), Tag::None), Release);
         self.cell.num_entries += 1;
     }
 
@@ -917,12 +889,29 @@ pub(crate) struct Linked<K: 'static + Eq, V: 'static, const LEN: usize> {
 }
 
 impl<K: 'static + Eq, V: 'static, const LEN: usize> Linked<K, V, LEN> {
-    fn new() -> Linked<K, V, LEN> {
-        Linked {
-            metadata: Metadata::default(),
+    /// Creates a [`Linked`] with a single key-value pair constructed.
+    fn new_with(
+        index: usize,
+        key: K,
+        value: V,
+        partial_hash: u8,
+        next: Option<Arc<Linked<K, V, LINKED_LEN>>>,
+    ) -> Linked<K, V, LEN> {
+        let mut linked = Linked {
+            metadata: Metadata {
+                link: next.map_or_else(AtomicArc::null, AtomicArc::from),
+                occupied_bitmap: 1_u32 << index,
+                removed_bitmap: 0,
+                partial_hash_array: [0; LEN],
+            },
             data_block: unsafe { MaybeUninit::uninit().assume_init() },
             prev_link: AtomicPtr::default(),
+        };
+        unsafe {
+            linked.data_block[index].as_mut_ptr().write((key, value));
         }
+        linked.metadata.partial_hash_array[index] = partial_hash;
+        linked
     }
 }
 

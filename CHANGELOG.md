@@ -1,5 +1,9 @@
 # Changelog
 
+1.0.4
+
+* Minor `Hash*` optimization.
+
 1.0.3
 
 * Major `TreeIndex` performance improvement.
