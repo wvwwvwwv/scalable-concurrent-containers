@@ -1254,6 +1254,30 @@ where
     }
 }
 
+impl<K, V, H> PartialEq for HashMap<K, V, H>
+where
+    K: 'static + Eq + Hash + Sync,
+    V: 'static + PartialEq + Sync,
+    H: BuildHasher,
+{
+    fn eq(&self, other: &Self) -> bool {
+        let mut has_diff = false;
+        self.for_each(|k, v| {
+            if !has_diff && other.read(k, |_, ov| v == ov) != Some(true) {
+                has_diff = true;
+            }
+        });
+        if !has_diff {
+            other.for_each(|k, v| {
+                if !has_diff && self.read(k, |_, ov| v == ov) != Some(true) {
+                    has_diff = true;
+                }
+            });
+        }
+        !has_diff
+    }
+}
+
 /// [`Ticket`] keeps the increased minimum capacity of the [`HashMap`] during its lifetime.
 ///
 /// The minimum capacity is lowered when the [`Ticket`] is dropped, thereby allowing unused

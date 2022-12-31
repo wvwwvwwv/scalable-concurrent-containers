@@ -24,7 +24,7 @@ where
     /// The default capacity.
     const DEFAULT_CAPACITY: usize = CELL_LEN * 2;
 
-    /// Returns the hash value of the given key.
+    /// Returns the hash value of the key.
     #[inline]
     fn hash<Q>(&self, key: &Q) -> u64
     where
@@ -39,7 +39,8 @@ where
     /// Returns a reference to its [`BuildHasher`].
     fn hasher(&self) -> &H;
 
-    /// Copying function.
+    /// Copying function which is only invoked when `LOCK_FREE` is `true` thus `K` and `V` both
+    /// being `Clone`.
     fn copier(key: &K, val: &V) -> (K, V);
 
     /// Returns a reference to the [`CellArray`] pointer.
@@ -51,7 +52,7 @@ where
     /// Returns a reference to the resizing mutex.
     fn resize_mutex(&self) -> &AtomicU8;
 
-    /// Returns a reference to the current array without checking the pointer.
+    /// Returns a reference to the current array without checking the pointer value.
     #[inline]
     fn current_array_unchecked<'b>(&self, barrier: &'b Barrier) -> &'b CellArray<K, V, LOCK_FREE> {
         // An acquire fence is required to correctly load the contents of the array.
@@ -83,7 +84,7 @@ where
         current_array.num_entries()
     }
 
-    /// Estimates the number of entries using the given number of cells.
+    /// Estimates the number of entries using by sampling the specified number of cells.
     #[inline]
     fn estimate(
         array: &CellArray<K, V, LOCK_FREE>,
@@ -320,7 +321,6 @@ where
         //  2. The thread reads the latest version of `self.array`.
         //    If the array is deprecated while inserting the key, it falls into case 1.
         loop {
-            // An acquire fence is required to correctly load the contents of the array.
             let current_array = self.current_array_unchecked(barrier);
             if let Some(old_array) = current_array.old_array(barrier).as_ref() {
                 self.move_entry(current_array, old_array, hash, async_wait, barrier)?;
@@ -350,7 +350,7 @@ where
                 return Ok((locker, data_block, entry_ptr));
             }
 
-            // Reaching here means that `self.array` is updated.
+            // Reaching here means that `self.array` has been updated.
         }
     }
 
@@ -474,7 +474,7 @@ where
                 return;
             }
             let new_state = if mutex_state == 1_u8 {
-                // Another thread is resizing the table, and needs to retry.
+                // Let the mutex owner know that a new resize was requested.
                 2_u8
             } else {
                 // This thread will acquire the mutex.
@@ -527,7 +527,7 @@ where
                 } else {
                     let mut new_capacity = capacity;
                     while new_capacity < (estimated_num_entries / 8) * 15 {
-                        // Doubles the new capacity until it can accommodate the estimated number of entries * 15/8.
+                        // Double the new capacity until it can accommodate the estimated number of entries * 15/8.
                         if new_capacity == max_capacity {
                             break;
                         }
@@ -539,7 +539,7 @@ where
                     new_capacity
                 }
             } else if estimated_num_entries <= capacity / 16 {
-                // Shrinks to fit.
+                // Shrink to fit.
                 estimated_num_entries
                     .next_power_of_two()
                     .max(self.minimum_capacity())

@@ -11,7 +11,7 @@ use std::mem::{align_of, needs_drop, size_of};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 
-/// [`CellArray`] is a special purpose array being initialized by zero.
+/// [`CellArray`] is a special purpose array to manage [`DataBlock`].
 pub struct CellArray<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
     cell_ptr: *const Cell<K, V, LOCK_FREE>,
     data_block_ptr: *const DataBlock<K, V, CELL_LEN>,

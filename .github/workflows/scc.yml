@@ -15,15 +15,13 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v2
-      - name: Debug - Build
-        run: cargo build --verbose
-      - name: Debug -Run tests
+      - name: Debug - Test
         run: RUST_BACKTRACE=1 cargo test --verbose -- --nocapture
-      - name: Release - Build
-        run: cargo build --release --verbose
-      - name: Release - Run tests
+      - name: Release - Test
         run: RUST_BACKTRACE=1 cargo test --release --verbose -- --nocapture
-      - name: Bench - Run benchmarks
+      - name: Release - Benchmark
         run: cargo bench
+      - name: Debug(serde) - Test
+        run: RUST_BACKTRACE=1 cargo test serde --verbose --features serde
       - name: Document - Generate documentation
         run: cargo doc

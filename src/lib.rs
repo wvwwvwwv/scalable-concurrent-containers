@@ -47,5 +47,8 @@ mod exit_guard;
 mod hash_table;
 mod wait_queue;
 
+#[cfg(feature = "serde")]
+mod serde;
+
 #[cfg(test)]
 mod tests;
