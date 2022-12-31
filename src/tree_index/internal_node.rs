@@ -16,8 +16,8 @@ use std::sync::atomic::{AtomicPtr, AtomicU8};
 /// The layout of an internal node: |ptr(children)/max(child keys)|...|ptr(children)|
 pub struct InternalNode<K, V>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     /// Children of the [`InternalNode`].
     children: Leaf<K, AtomicArc<Node<K, V>>>,
@@ -40,8 +40,8 @@ where
 
 impl<K, V> InternalNode<K, V>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     /// Creates a new empty internal node.
     #[inline]
@@ -887,16 +887,16 @@ where
 /// [`Locker`] holds exclusive access to a [`InternalNode`].
 pub struct Locker<'n, K, V>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     internal_node: &'n InternalNode<K, V>,
 }
 
 impl<'n, K, V> Locker<'n, K, V>
 where
-    K: Clone + Ord + Send + Sync,
-    V: Clone + Send + Sync,
+    K: Clone + Ord + Sync,
+    V: Clone + Sync,
 {
     /// Acquires exclusive lock on the [`InternalNode`].
     #[inline]
@@ -911,8 +911,8 @@ where
 
 impl<'n, K, V> Drop for Locker<'n, K, V>
 where
-    K: Clone + Ord + Send + Sync,
-    V: Clone + Send + Sync,
+    K: Clone + Ord + Sync,
+    V: Clone + Sync,
 {
     #[inline]
     fn drop(&mut self) {
@@ -926,8 +926,8 @@ where
 /// split operation.
 struct StructuralChange<K, V>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     origin_node_key: AtomicPtr<K>,
     origin_node: AtomicArc<Node<K, V>>,
@@ -938,8 +938,8 @@ where
 
 impl<K, V> StructuralChange<K, V>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     fn reset(&self) -> Option<Arc<Node<K, V>>> {
         self.origin_node_key.store(ptr::null_mut(), Relaxed);
@@ -952,8 +952,8 @@ where
 
 impl<K, V> Default for StructuralChange<K, V>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     #[inline]
     fn default() -> Self {

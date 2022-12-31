@@ -1260,6 +1260,7 @@ where
     V: 'static + PartialEq + Sync,
     H: BuildHasher,
 {
+    #[inline]
     fn eq(&self, other: &Self) -> bool {
         let mut has_diff = false;
         self.for_each(|k, v| {

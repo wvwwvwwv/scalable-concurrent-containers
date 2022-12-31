@@ -11,8 +11,8 @@ use std::sync::atomic::Ordering::{self, Acquire, Relaxed, Release};
 /// [`Type`] indicates the type of a [`Node`].
 pub enum Type<K, V>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     Internal(InternalNode<K, V>),
     Leaf(LeafNode<K, V>),
@@ -21,16 +21,16 @@ where
 /// [`Node`] is either [`Type::Internal`] or [`Type::Leaf`].
 pub struct Node<K, V>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     pub(super) node: Type<K, V>,
 }
 
 impl<K, V> Node<K, V>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     /// Creates a new [`InternalNode`].
     #[inline]

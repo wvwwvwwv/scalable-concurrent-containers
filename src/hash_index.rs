@@ -839,6 +839,32 @@ where
     }
 }
 
+impl<K, V, H> PartialEq for HashIndex<K, V, H>
+where
+    K: 'static + Clone + Eq + Hash + Sync,
+    V: 'static + Clone + PartialEq + Sync,
+    H: 'static + BuildHasher,
+{
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        let mut has_diff = false;
+        let barrier = Barrier::new();
+        self.iter(&barrier).for_each(|(k, v)| {
+            if !has_diff && other.read(k, |_, ov| v == ov) != Some(true) {
+                has_diff = true;
+            }
+        });
+        if !has_diff {
+            other.iter(&barrier).for_each(|(k, v)| {
+                if !has_diff && self.read(k, |_, ov| v == ov) != Some(true) {
+                    has_diff = true;
+                }
+            });
+        }
+        !has_diff
+    }
+}
+
 /// Visitor traverses all the key-value pairs in the [`HashIndex`].
 ///
 /// It is guaranteed to visit all the key-value pairs that outlive the Visitor.

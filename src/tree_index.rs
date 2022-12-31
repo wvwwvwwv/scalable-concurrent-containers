@@ -47,16 +47,16 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 /// * The size of metadata per key-value pair in a leaf: ~3-byte.
 pub struct TreeIndex<K, V>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     root: AtomicArc<Node<K, V>>,
 }
 
 impl<K, V> TreeIndex<K, V>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     /// Creates an empty [`TreeIndex`].
     ///
@@ -568,8 +568,8 @@ where
 
 impl<K, V> Clone for TreeIndex<K, V>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     #[inline]
     fn clone(&self) -> Self {
@@ -583,8 +583,8 @@ where
 
 impl<K, V> Debug for TreeIndex<K, V>
 where
-    K: 'static + Clone + Debug + Ord + Send + Sync,
-    V: 'static + Clone + Debug + Send + Sync,
+    K: 'static + Clone + Debug + Ord + Sync,
+    V: 'static + Clone + Debug + Sync,
 {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -595,8 +595,8 @@ where
 
 impl<K, V> Default for TreeIndex<K, V>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     /// Creates a [`TreeIndex`] with the default parameters.
     ///
@@ -613,14 +613,39 @@ where
     }
 }
 
+impl<K, V> PartialEq for TreeIndex<K, V>
+where
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + PartialEq + Sync,
+{
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        let mut has_diff = false;
+        let barrier = Barrier::new();
+        self.iter(&barrier).for_each(|(k, v)| {
+            if !has_diff && other.read(k, |_, ov| v == ov) != Some(true) {
+                has_diff = true;
+            }
+        });
+        if !has_diff {
+            other.iter(&barrier).for_each(|(k, v)| {
+                if !has_diff && self.read(k, |_, ov| v == ov) != Some(true) {
+                    has_diff = true;
+                }
+            });
+        }
+        !has_diff
+    }
+}
+
 /// [`Visitor`] scans all the key-value pairs in the [`TreeIndex`].
 ///
 /// It is guaranteed to visit all the key-value pairs that outlive the [`Visitor`], and it
 /// scans keys in monotonically increasing order.
 pub struct Visitor<'t, 'b, K, V>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     root: &'t AtomicArc<Node<K, V>>,
     leaf_scanner: Option<Scanner<'b, K, V>>,
@@ -629,8 +654,8 @@ where
 
 impl<'t, 'b, K, V> Visitor<'t, 'b, K, V>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     #[inline]
     fn new(root: &'t AtomicArc<Node<K, V>>, barrier: &'b Barrier) -> Visitor<'t, 'b, K, V> {
@@ -644,8 +669,8 @@ where
 
 impl<'t, 'b, K, V> Iterator for Visitor<'t, 'b, K, V>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     type Item = (&'b K, &'b V);
 
@@ -684,8 +709,8 @@ where
 
 impl<'t, 'b, K, V> FusedIterator for Visitor<'t, 'b, K, V>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
 }
 
@@ -695,8 +720,8 @@ where
 /// range.
 pub struct Range<'t, 'b, K, V, R>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
     R: 'static + RangeBounds<K>,
 {
     root: &'t AtomicArc<Node<K, V>>,
@@ -709,8 +734,8 @@ where
 
 impl<'t, 'b, K, V, R> Range<'t, 'b, K, V, R>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
     R: RangeBounds<K>,
 {
     #[inline]
@@ -808,8 +833,8 @@ where
 
 impl<'t, 'b, K, V, R> Iterator for Range<'t, 'b, K, V, R>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
     R: RangeBounds<K>,
 {
     type Item = (&'b K, &'b V);
@@ -859,8 +884,8 @@ where
 
 impl<'t, 'b, K, V, R> FusedIterator for Range<'t, 'b, K, V, R>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
     R: RangeBounds<K>,
 {
 }

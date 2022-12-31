@@ -664,6 +664,30 @@ impl<K: 'static + Eq + Hash + Sync> Default for HashSet<K, RandomState> {
     }
 }
 
+impl<K, H> PartialEq for HashSet<K, H>
+where
+    K: 'static + Eq + Hash + Sync,
+    H: BuildHasher,
+{
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        let mut has_diff = false;
+        self.for_each(|k| {
+            if !has_diff && !other.contains(k) {
+                has_diff = true;
+            }
+        });
+        if !has_diff {
+            other.for_each(|k| {
+                if !has_diff && !self.contains(k) {
+                    has_diff = true;
+                }
+            });
+        }
+        !has_diff
+    }
+}
+
 /// [`Ticket`] keeps the increased minimum capacity of the [`HashSet`] during its lifetime.
 ///
 /// The minimum capacity is lowered when the [`Ticket`] is dropped, thereby allowing unused

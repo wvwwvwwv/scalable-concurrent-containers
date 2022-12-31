@@ -12,6 +12,7 @@ A collection of high performance containers and utilities for concurrent and asy
 - Formally verified [EBR](#EBR) implementation.
 - Zero dependencies on other crates.
 - Zero spin-locks and busy-waiting.
+- [Serde](https://serde.rs) support: `features = ["serde"]`.
 
 #### Concurrent and Asynchronous Containers
 

@@ -1,5 +1,10 @@
 # Changelog
 
+1.0.5
+
+* Add `serde` support.
+* Remove the unnecessary `Send` bound from `TreeIndex`.
+
 1.0.4
 
 * Minor `Hash*` optimization.

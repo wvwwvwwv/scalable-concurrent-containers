@@ -22,8 +22,8 @@ pub const LOCKED: Tag = Tag::Second;
 /// The layout of a leaf node: |ptr(entry array)/max(child keys)|...|ptr(entry array)|
 pub struct LeafNode<K, V>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     /// Children of the [`LeafNode`].
     children: Leaf<K, AtomicArc<Leaf<K, V>>>,
@@ -46,8 +46,8 @@ where
 
 impl<K, V> LeafNode<K, V>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     /// Creates a new empty [`LeafNode`].
     #[inline]
@@ -904,16 +904,16 @@ where
 /// [`Locker`] holds exclusive access to a [`Leaf`].
 pub struct Locker<'n, K, V>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     leaf_node: &'n LeafNode<K, V>,
 }
 
 impl<'n, K, V> Locker<'n, K, V>
 where
-    K: Clone + Ord + Send + Sync,
-    V: Clone + Send + Sync,
+    K: Clone + Ord + Sync,
+    V: Clone + Sync,
 {
     /// Acquires exclusive lock on the [`LeafNode`].
     #[inline]
@@ -928,8 +928,8 @@ where
 
 impl<'n, K, V> Drop for Locker<'n, K, V>
 where
-    K: Clone + Ord + Send + Sync,
-    V: Clone + Send + Sync,
+    K: Clone + Ord + Sync,
+    V: Clone + Sync,
 {
     #[inline]
     fn drop(&mut self) {
@@ -943,8 +943,8 @@ where
 /// split operation.
 pub struct StructuralChange<K, V>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     origin_leaf_key: AtomicPtr<K>,
     origin_leaf: AtomicArc<Leaf<K, V>>,
@@ -956,8 +956,8 @@ where
 
 impl<K, V> StructuralChange<K, V>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     fn reset(&self) -> Option<Arc<Leaf<K, V>>> {
         self.origin_leaf_key.store(ptr::null_mut(), Relaxed);
@@ -971,8 +971,8 @@ where
 
 impl<K, V> Default for StructuralChange<K, V>
 where
-    K: 'static + Clone + Ord + Send + Sync,
-    V: 'static + Clone + Send + Sync,
+    K: 'static + Clone + Ord + Sync,
+    V: 'static + Clone + Sync,
 {
     #[inline]
     fn default() -> Self {
