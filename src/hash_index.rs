@@ -847,21 +847,16 @@ where
 {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        let mut has_diff = false;
         let barrier = Barrier::new();
-        self.iter(&barrier).for_each(|(k, v)| {
-            if !has_diff && other.read(k, |_, ov| v == ov) != Some(true) {
-                has_diff = true;
-            }
-        });
-        if !has_diff {
-            other.iter(&barrier).for_each(|(k, v)| {
-                if !has_diff && self.read(k, |_, ov| v == ov) != Some(true) {
-                    has_diff = true;
-                }
-            });
+        if !self
+            .iter(&barrier)
+            .any(|(k, v)| other.read(k, |_, ov| v == ov) != Some(true))
+        {
+            return !other
+                .iter(&barrier)
+                .any(|(k, v)| self.read(k, |_, sv| v == sv) != Some(true));
         }
-        !has_diff
+        false
     }
 }
 

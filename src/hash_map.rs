@@ -616,7 +616,7 @@ where
         self.read_async(key, |_, _| ()).await.is_some()
     }
 
-    /// Scans all the key-value pairs.
+    /// Scans all the entries.
     ///
     /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
     /// visited if they are not removed, however the same key-value pair can be visited more than
@@ -636,7 +636,63 @@ where
     /// hashmap.scan(|k, v| { sum += *k + *v; });
     /// assert_eq!(sum, 4);
     /// ```
+    #[inline]
     pub fn scan<F: FnMut(&K, &V)>(&self, mut scanner: F) {
+        self.any(|k, v| {
+            scanner(k, v);
+            false
+        });
+    }
+
+    /// Scans all the entries.
+    ///
+    /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
+    /// visited if they are not removed, however the same key-value pair can be visited more than
+    /// once if the [`HashMap`] gets resized by another task.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<usize, usize> = HashMap::default();
+    ///
+    /// let future_insert = hashmap.insert_async(1, 0);
+    /// let future_scan = hashmap.scan_async(|k, v| println!("{k} {v}"));
+    /// ```
+    #[inline]
+    pub async fn scan_async<F: FnMut(&K, &V)>(&self, mut scanner: F) {
+        self.any_async(|k, v| {
+            scanner(k, v);
+            false
+        })
+        .await;
+    }
+
+    /// Searches for any entry that satisfies the given predicate.
+    ///
+    /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
+    /// visited if they are not removed, however the same key-value pair can be visited more than
+    /// once if the [`HashMap`] gets resized by another thread.
+    ///
+    /// It returns `true` if an entry satisfying the predicate is found.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// assert!(hashmap.insert(2, 1).is_ok());
+    /// assert!(hashmap.insert(3, 2).is_ok());
+    ///
+    /// assert!(hashmap.any(|k, v| *k == 1 && *v == 0));
+    /// assert!(!hashmap.any(|k, v| *k == 2 && *v == 0));
+    /// ```
+    #[inline]
+    pub fn any<P: FnMut(&K, &V) -> bool>(&self, mut pred: P) -> bool {
         let barrier = Barrier::new();
 
         // An acquire fence is required to correctly load the contents of the array.
@@ -653,14 +709,18 @@ where
                     break;
                 }
             }
+            debug_assert!(current_array.old_array(&barrier).is_null());
 
             for cell_index in 0..current_array.num_cells() {
-                if let Some(reader) = Reader::lock(current_array.cell(cell_index), &barrier) {
+                let cell = current_array.cell(cell_index);
+                if let Some(locker) = Reader::lock(cell, &barrier) {
                     let data_block = current_array.data_block(cell_index);
                     let mut entry_ptr = EntryPtr::new(&barrier);
-                    while entry_ptr.next(reader.cell(), &barrier) {
+                    while entry_ptr.next(locker.cell(), &barrier) {
                         let (k, v) = entry_ptr.get(data_block);
-                        scanner(k, v);
+                        if pred(k, v) {
+                            return true;
+                        }
                     }
                 }
             }
@@ -671,25 +731,32 @@ where
             }
             current_array_ptr = new_current_array_ptr;
         }
+
+        false
     }
 
-    /// Scans all the key-value pairs.
+    /// Searches for any entry that satisfies the given predicate.
     ///
     /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
     /// visited if they are not removed, however the same key-value pair can be visited more than
     /// once if the [`HashMap`] gets resized by another task.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
+    ///
+    /// It returns `true` if an entry satisfying the predicate is found.
     ///
     /// # Examples
     ///
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<usize, usize> = HashMap::default();
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// let future_insert = hashmap.insert_async(1, 0);
-    /// let future_scan = hashmap.scan_async(|k, v| println!("{k} {v}"));
+    /// let future_any = hashmap.any_async(|k, _| *k == 1);
     /// ```
-    pub async fn scan_async<F: FnMut(&K, &V)>(&self, mut scanner: F) {
+    #[inline]
+    pub async fn any_async<P: FnMut(&K, &V) -> bool>(&self, mut pred: P) -> bool {
         // An acquire fence is required to correctly load the contents of the array.
         let mut current_array_holder = self.array.get_arc(Acquire, &Barrier::new());
         while let Some(current_array) = current_array_holder.take() {
@@ -707,6 +774,7 @@ where
                 }
                 async_wait_pinned.await;
             }
+            debug_assert!(current_array.old_array(&Barrier::new()).is_null());
 
             for cell_index in 0..current_array.num_cells() {
                 let killed = loop {
@@ -714,17 +782,19 @@ where
                     let mut async_wait_pinned = Pin::new(&mut async_wait);
                     {
                         let barrier = Barrier::new();
-                        if let Ok(result) = Reader::try_lock_or_wait(
-                            current_array.cell(cell_index),
-                            &mut async_wait_pinned,
-                            &barrier,
-                        ) {
-                            if let Some(reader) = result {
+                        let cell = current_array.cell(cell_index);
+                        if let Ok(reader) =
+                            Reader::try_lock_or_wait(cell, &mut async_wait_pinned, &barrier)
+                        {
+                            if let Some(reader) = reader {
                                 let data_block = current_array.data_block(cell_index);
                                 let mut entry_ptr = EntryPtr::new(&barrier);
                                 while entry_ptr.next(reader.cell(), &barrier) {
                                     let (k, v) = entry_ptr.get(data_block);
-                                    scanner(k, v);
+                                    if pred(k, v) {
+                                        // Found one entry satisfying the predicate.
+                                        return true;
+                                    }
                                 }
                                 break false;
                             }
@@ -750,6 +820,8 @@ where
             }
             break;
         }
+
+        false
     }
 
     /// Iterates over all the entries in the [`HashMap`].
@@ -836,6 +908,7 @@ where
     ///
     /// assert_eq!(hashmap.retain(|k, v| *k == 1 && *v == 0), (1, 2));
     /// ```
+    #[inline]
     pub fn retain<F: FnMut(&K, &mut V) -> bool>(&self, mut filter: F) -> (usize, usize) {
         let mut num_retained: usize = 0;
         let mut num_removed: usize = 0;
@@ -911,6 +984,7 @@ where
     /// let future_insert = hashmap.insert_async(1, 0);
     /// let future_retain = hashmap.retain_async(|k, v| *k == 1);
     /// ```
+    #[inline]
     pub async fn retain_async<F: FnMut(&K, &mut V) -> bool>(
         &self,
         mut filter: F,
@@ -1262,20 +1336,10 @@ where
 {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        let mut has_diff = false;
-        self.for_each(|k, v| {
-            if !has_diff && other.read(k, |_, ov| v == ov) != Some(true) {
-                has_diff = true;
-            }
-        });
-        if !has_diff {
-            other.for_each(|k, v| {
-                if !has_diff && self.read(k, |_, ov| v == ov) != Some(true) {
-                    has_diff = true;
-                }
-            });
+        if !self.any(|k, v| other.read(k, |_, ov| v == ov) != Some(true)) {
+            return !other.any(|k, v| self.read(k, |_, sv| v == sv) != Some(true));
         }
-        !has_diff
+        false
     }
 }
 

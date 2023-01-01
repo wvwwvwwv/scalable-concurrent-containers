@@ -620,21 +620,9 @@ where
 {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        let mut has_diff = false;
+        // The key order is preserved, therefore comparing iterators suffices.
         let barrier = Barrier::new();
-        self.iter(&barrier).for_each(|(k, v)| {
-            if !has_diff && other.read(k, |_, ov| v == ov) != Some(true) {
-                has_diff = true;
-            }
-        });
-        if !has_diff {
-            other.iter(&barrier).for_each(|(k, v)| {
-                if !has_diff && self.read(k, |_, ov| v == ov) != Some(true) {
-                    has_diff = true;
-                }
-            });
-        }
-        !has_diff
+        Iterator::eq(self.iter(&barrier), other.iter(&barrier))
     }
 }
 

@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod hashmap_test {
     use crate::ebr;
-    use crate::{HashIndex, HashMap};
+    use crate::HashMap;
 
     use std::collections::BTreeSet;
     use std::hash::{Hash, Hasher};
@@ -34,8 +34,46 @@ mod hashmap_test {
         }
     }
 
+    struct Data {
+        data: usize,
+        checker: Arc<AtomicUsize>,
+    }
+
+    impl Data {
+        fn new(data: usize, checker: Arc<AtomicUsize>) -> Data {
+            checker.fetch_add(1, Relaxed);
+            Data { data, checker }
+        }
+    }
+
+    impl Clone for Data {
+        fn clone(&self) -> Self {
+            Data::new(self.data, self.checker.clone())
+        }
+    }
+
+    impl Drop for Data {
+        fn drop(&mut self) {
+            self.checker.fetch_sub(1, Relaxed);
+        }
+    }
+
+    impl Eq for Data {}
+
+    impl Hash for Data {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            self.data.hash(state);
+        }
+    }
+
+    impl PartialEq for Data {
+        fn eq(&self, other: &Self) -> bool {
+            self.data == other.data
+        }
+    }
+
     #[tokio::test]
-    async fn hashmap_insert_drop() {
+    async fn insert_drop() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         let hashmap: HashMap<usize, R> = HashMap::default();
 
@@ -54,7 +92,7 @@ mod hashmap_test {
     }
 
     #[tokio::test]
-    async fn hashmap_clear() {
+    async fn clear() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         let hashmap: HashMap<usize, R> = HashMap::default();
 
@@ -76,7 +114,7 @@ mod hashmap_test {
     }
 
     #[tokio::test]
-    async fn hashmap_clone() {
+    async fn clone() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         let hashmap: HashMap<usize, R> = HashMap::default();
 
@@ -98,8 +136,30 @@ mod hashmap_test {
         }
     }
 
+    #[test]
+    fn compare() {
+        let hashmap1: HashMap<String, usize> = HashMap::new();
+        let hashmap2: HashMap<String, usize> = HashMap::new();
+        assert_eq!(hashmap1, hashmap2);
+
+        assert!(hashmap1.insert("Hi".to_string(), 1).is_ok());
+        assert_ne!(hashmap1, hashmap2);
+
+        assert!(hashmap2.insert("Hello".to_string(), 2).is_ok());
+        assert_ne!(hashmap1, hashmap2);
+
+        assert!(hashmap1.insert("Hello".to_string(), 2).is_ok());
+        assert_ne!(hashmap1, hashmap2);
+
+        assert!(hashmap2.insert("Hi".to_string(), 1).is_ok());
+        assert_eq!(hashmap1, hashmap2);
+
+        assert!(hashmap1.remove("Hi").is_some());
+        assert_ne!(hashmap1, hashmap2);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
-    async fn hashmap_integer_key() {
+    async fn integer_key() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
 
         let num_tasks = 8;
@@ -174,7 +234,7 @@ mod hashmap_test {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-    async fn hashmap_retain_for_each() {
+    async fn retain_for_each() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
 
         for _ in 0..64 {
@@ -220,7 +280,7 @@ mod hashmap_test {
     }
 
     #[test]
-    fn hashmap_string_key() {
+    fn string_key() {
         let hashmap1: HashMap<String, u32> = HashMap::default();
         let hashmap2: HashMap<u32, String> = HashMap::default();
         let mut checker1 = BTreeSet::new();
@@ -256,7 +316,7 @@ mod hashmap_test {
     }
 
     #[test]
-    fn hashmap_accessor() {
+    fn accessor() {
         let data_size = 4096;
         for _ in 0..16 {
             let hashmap: Arc<HashMap<u64, u64>> = Arc::new(HashMap::default());
@@ -315,47 +375,9 @@ mod hashmap_test {
         }
     }
 
-    struct Data {
-        data: usize,
-        checker: Arc<AtomicUsize>,
-    }
-
-    impl Data {
-        fn new(data: usize, checker: Arc<AtomicUsize>) -> Data {
-            checker.fetch_add(1, Relaxed);
-            Data { data, checker }
-        }
-    }
-
-    impl Clone for Data {
-        fn clone(&self) -> Self {
-            Data::new(self.data, self.checker.clone())
-        }
-    }
-
-    impl Drop for Data {
-        fn drop(&mut self) {
-            self.checker.fetch_sub(1, Relaxed);
-        }
-    }
-
-    impl Eq for Data {}
-
-    impl Hash for Data {
-        fn hash<H: Hasher>(&self, state: &mut H) {
-            self.data.hash(state);
-        }
-    }
-
-    impl PartialEq for Data {
-        fn eq(&self, other: &Self) -> bool {
-            self.data == other.data
-        }
-    }
-
     proptest! {
         #[test]
-        fn hashmap_insert(key in 0_usize..16) {
+        fn insert(key in 0_usize..16) {
             let range = 4096;
             let checker = Arc::new(AtomicUsize::new(0));
             let hashmap: HashMap<Data, Data> = HashMap::default();
@@ -410,9 +432,66 @@ mod hashmap_test {
             }
         }
     }
+}
+
+#[cfg(test)]
+mod hashindex_test {
+    use crate::ebr;
+    use crate::HashIndex;
+
+    use std::collections::BTreeSet;
+    use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+    use std::sync::atomic::{AtomicU64, AtomicUsize};
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+    use tokio::sync::Barrier as AsyncBarrier;
+
+    struct R(&'static AtomicUsize);
+    impl R {
+        fn new(cnt: &'static AtomicUsize) -> R {
+            cnt.fetch_add(1, Relaxed);
+            R(cnt)
+        }
+    }
+    impl Clone for R {
+        fn clone(&self) -> Self {
+            self.0.fetch_add(1, Relaxed);
+            R(self.0)
+        }
+    }
+    impl Drop for R {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Relaxed);
+        }
+    }
+
+    #[test]
+    fn compare() {
+        let hashindex1: HashIndex<String, usize> = HashIndex::new();
+        let hashindex2: HashIndex<String, usize> = HashIndex::new();
+        assert_eq!(hashindex1, hashindex2);
+
+        assert!(hashindex1.insert("Hi".to_string(), 1).is_ok());
+        assert_ne!(hashindex1, hashindex2);
+
+        assert!(hashindex2.insert("Hello".to_string(), 2).is_ok());
+        assert_ne!(hashindex1, hashindex2);
+
+        assert!(hashindex1.insert("Hello".to_string(), 2).is_ok());
+        assert_ne!(hashindex1, hashindex2);
+
+        assert!(hashindex2.insert("Hi".to_string(), 1).is_ok());
+        assert_eq!(hashindex1, hashindex2);
+
+        assert!(hashindex1.remove("Hi"));
+        assert_ne!(hashindex1, hashindex2);
+    }
 
     #[tokio::test]
-    async fn hashindex_clear() {
+    async fn clear() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         let hashindex: HashIndex<usize, R> = HashIndex::default();
 
@@ -435,7 +514,7 @@ mod hashmap_test {
     }
 
     #[tokio::test]
-    async fn hashindex_clone() {
+    async fn clone() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         let hashindex: HashIndex<usize, R> = HashIndex::default();
 
@@ -458,7 +537,7 @@ mod hashmap_test {
     }
 
     #[test]
-    fn hashindex_string_key() {
+    fn string_key() {
         let hashindex1: HashIndex<String, u32> = HashIndex::default();
         let hashindex2: HashIndex<u32, String> = HashIndex::default();
         let mut checker1 = BTreeSet::new();
@@ -491,7 +570,7 @@ mod hashmap_test {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn hashindex_rebuild() {
+    async fn rebuild() {
         let hashindex: Arc<HashIndex<usize, usize>> = Arc::new(HashIndex::default());
         let num_tasks = 4;
         let num_iter = 64;
@@ -526,7 +605,7 @@ mod hashmap_test {
     }
 
     #[test]
-    fn hashindex_visitor() {
+    fn visitor() {
         let data_size = 4096;
         for _ in 0..64 {
             let hashindex: Arc<HashIndex<u64, u64>> = Arc::new(HashIndex::default());
@@ -580,6 +659,33 @@ mod hashmap_test {
             }
             thread_handle.join().unwrap();
         }
+    }
+}
+
+#[cfg(test)]
+mod hashset_test {
+    use crate::HashSet;
+
+    #[test]
+    fn compare() {
+        let hashset1: HashSet<String> = HashSet::new();
+        let hashset2: HashSet<String> = HashSet::new();
+        assert_eq!(hashset1, hashset2);
+
+        assert!(hashset1.insert("Hi".to_string()).is_ok());
+        assert_ne!(hashset1, hashset2);
+
+        assert!(hashset2.insert("Hello".to_string()).is_ok());
+        assert_ne!(hashset1, hashset2);
+
+        assert!(hashset1.insert("Hello".to_string()).is_ok());
+        assert_ne!(hashset1, hashset2);
+
+        assert!(hashset2.insert("Hi".to_string()).is_ok());
+        assert_eq!(hashset1, hashset2);
+
+        assert!(hashset1.remove("Hi").is_some());
+        assert_ne!(hashset1, hashset2);
     }
 }
 
@@ -846,6 +952,28 @@ mod treeindex_test {
             assert_eq!(*entry.0, *entry.1);
             prev = *entry.0;
         }
+    }
+
+    #[test]
+    fn compare() {
+        let tree1: TreeIndex<String, usize> = TreeIndex::new();
+        let tree2: TreeIndex<String, usize> = TreeIndex::new();
+        assert_eq!(tree1, tree2);
+
+        assert!(tree1.insert("Hi".to_string(), 1).is_ok());
+        assert_ne!(tree1, tree2);
+
+        assert!(tree2.insert("Hello".to_string(), 2).is_ok());
+        assert_ne!(tree1, tree2);
+
+        assert!(tree1.insert("Hello".to_string(), 2).is_ok());
+        assert_ne!(tree1, tree2);
+
+        assert!(tree2.insert("Hi".to_string(), 1).is_ok());
+        assert_eq!(tree1, tree2);
+
+        assert!(tree1.remove("Hi"));
+        assert_ne!(tree1, tree2);
     }
 
     #[test]
@@ -1697,5 +1825,74 @@ mod ebr_test {
         for r in futures::future::join_all(task_handles).await {
             assert!(r.is_ok());
         }
+    }
+}
+
+#[cfg(feature = "serde")]
+#[cfg(test)]
+mod serde_test {
+    use crate::{HashIndex, HashMap, HashSet, TreeIndex};
+
+    use serde_test::{assert_tokens, Token};
+
+    #[test]
+    fn hashmap() {
+        let hashmap: HashMap<u64, i16> = HashMap::new();
+        assert!(hashmap.insert(2, -6).is_ok());
+        assert_tokens(
+            &hashmap,
+            &[
+                Token::Map { len: Some(1) },
+                Token::U64(2),
+                Token::I16(-6),
+                Token::MapEnd,
+            ],
+        );
+    }
+
+    #[test]
+    fn hashset() {
+        let hashset: HashSet<u64> = HashSet::new();
+        assert!(hashset.insert(2).is_ok());
+        assert_tokens(
+            &hashset,
+            &[Token::Seq { len: Some(1) }, Token::U64(2), Token::SeqEnd],
+        );
+    }
+
+    #[test]
+    fn hashindex() {
+        let hashindex: HashIndex<u64, i16> = HashIndex::new();
+        assert!(hashindex.insert(2, -6).is_ok());
+        assert_tokens(
+            &hashindex,
+            &[
+                Token::Map { len: Some(1) },
+                Token::U64(2),
+                Token::I16(-6),
+                Token::MapEnd,
+            ],
+        );
+    }
+
+    #[test]
+    fn treeindex() {
+        let treeindex: TreeIndex<u64, i16> = TreeIndex::new();
+        assert!(treeindex.insert(4, -4).is_ok());
+        assert!(treeindex.insert(2, -6).is_ok());
+        assert!(treeindex.insert(3, -5).is_ok());
+        assert_tokens(
+            &treeindex,
+            &[
+                Token::Map { len: Some(3) },
+                Token::U64(2),
+                Token::I16(-6),
+                Token::U64(3),
+                Token::I16(-5),
+                Token::U64(4),
+                Token::I16(-4),
+                Token::MapEnd,
+            ],
+        );
     }
 }

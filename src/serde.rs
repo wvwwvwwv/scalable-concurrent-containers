@@ -1,23 +1,24 @@
-use super::HashMap;
+use super::ebr::Barrier;
+use super::{HashIndex, HashMap, HashSet, TreeIndex};
 
-use serde::de::{Deserialize, MapAccess, Visitor};
-use serde::ser::{Serialize, SerializeMap, Serializer};
+use serde::de::{Deserialize, MapAccess, SeqAccess, Visitor};
+use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
 use serde::Deserializer;
 
 use std::fmt;
 use std::hash::{BuildHasher, Hash};
 use std::marker::PhantomData;
 
-pub struct HashMapVisitor<K: 'static + Eq + Hash + Sync, V: 'static + Sync, S: BuildHasher> {
+pub struct HashMapVisitor<K: 'static + Eq + Hash + Sync, V: 'static + Sync, H: BuildHasher> {
     #[allow(clippy::type_complexity)]
-    marker: PhantomData<fn() -> HashMap<K, V, S>>,
+    marker: PhantomData<fn() -> HashMap<K, V, H>>,
 }
 
-impl<K, V, S> HashMapVisitor<K, V, S>
+impl<K, V, H> HashMapVisitor<K, V, H>
 where
     K: Eq + Hash + Sync,
     V: Sync,
-    S: BuildHasher,
+    H: BuildHasher,
 {
     fn new() -> Self {
         HashMapVisitor {
@@ -26,49 +27,48 @@ where
     }
 }
 
-impl<'de, K, V, S> Visitor<'de> for HashMapVisitor<K, V, S>
+impl<'d, K, V, H> Visitor<'d> for HashMapVisitor<K, V, H>
 where
-    K: Deserialize<'de> + Eq + Hash + Sync,
-    V: Deserialize<'de> + Sync,
-    S: BuildHasher + Default,
+    K: Deserialize<'d> + Eq + Hash + Sync,
+    V: Deserialize<'d> + Sync,
+    H: BuildHasher + Default,
 {
-    type Value = HashMap<K, V, S>;
+    type Value = HashMap<K, V, H>;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("a HashMap")
+        formatter.write_str("HashMap")
     }
 
     fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error>
     where
-        M: MapAccess<'de>,
+        M: MapAccess<'d>,
     {
-        let map = HashMap::with_capacity_and_hasher(access.size_hint().unwrap_or(0), S::default());
-
+        let hashmap =
+            HashMap::with_capacity_and_hasher(access.size_hint().unwrap_or(0), H::default());
         while let Some((key, value)) = access.next_entry()? {
-            map.upsert(key, || value, |_, _| ());
+            let _result = hashmap.insert(key, value);
         }
-
-        Ok(map)
+        Ok(hashmap)
     }
 }
 
-impl<'de, K, V, S> Deserialize<'de> for HashMap<K, V, S>
+impl<'d, K, V, H> Deserialize<'d> for HashMap<K, V, H>
 where
-    K: Deserialize<'de> + Eq + Hash + Sync,
-    V: Deserialize<'de> + Sync,
-    S: BuildHasher + Default,
+    K: Deserialize<'d> + Eq + Hash + Sync,
+    V: Deserialize<'d> + Sync,
+    H: BuildHasher + Default,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: Deserializer<'de>,
+        D: Deserializer<'d>,
     {
-        deserializer.deserialize_map(HashMapVisitor::<K, V, S>::new())
+        deserializer.deserialize_map(HashMapVisitor::<K, V, H>::new())
     }
 }
 
 impl<K, V, H> Serialize for HashMap<K, V, H>
 where
-    K: Serialize + Eq + Hash + Sync,
+    K: Eq + Hash + Serialize + Sync,
     V: Serialize + Sync,
     H: BuildHasher,
 {
@@ -85,33 +85,254 @@ where
                 }
             }
         });
-
         if let Some(e) = error {
             return Err(e);
         }
-
         map.end()
     }
 }
 
-#[cfg(test)]
-mod serde_test {
-    use crate::HashMap;
+pub struct HashSetVisitor<K: 'static + Eq + Hash + Sync, H: BuildHasher> {
+    marker: PhantomData<fn() -> HashSet<K, H>>,
+}
 
-    use serde_test::{assert_tokens, Token};
+impl<K, H> HashSetVisitor<K, H>
+where
+    K: Eq + Hash + Sync,
+    H: BuildHasher,
+{
+    fn new() -> Self {
+        HashSetVisitor {
+            marker: PhantomData,
+        }
+    }
+}
 
-    #[test]
-    fn serde_hashmap() {
-        let map: HashMap<u64, i16> = HashMap::new();
-        assert!(map.insert(2, -6).is_ok());
-        assert_tokens(
-            &map,
-            &[
-                Token::Map { len: Some(1) },
-                Token::U64(2),
-                Token::I16(-6),
-                Token::MapEnd,
-            ],
-        );
+impl<'d, K, H> Visitor<'d> for HashSetVisitor<K, H>
+where
+    K: Deserialize<'d> + Eq + Hash + Sync,
+    H: BuildHasher + Default,
+{
+    type Value = HashSet<K, H>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("HashSet")
+    }
+
+    fn visit_seq<M>(self, mut access: M) -> Result<Self::Value, M::Error>
+    where
+        M: SeqAccess<'d>,
+    {
+        let hashset =
+            HashSet::with_capacity_and_hasher(access.size_hint().unwrap_or(0), Default::default());
+        while let Some(key) = access.next_element()? {
+            let _result = hashset.insert(key);
+        }
+        Ok(hashset)
+    }
+}
+
+impl<'d, K, H> Deserialize<'d> for HashSet<K, H>
+where
+    K: Deserialize<'d> + Eq + Hash + Sync,
+    H: BuildHasher + Default,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'d>,
+    {
+        deserializer.deserialize_seq(HashSetVisitor::<K, H>::new())
+    }
+}
+
+impl<K, H> Serialize for HashSet<K, H>
+where
+    K: Eq + Hash + Serialize + Sync,
+    H: BuildHasher,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(self.len()))?;
+        let mut error = None;
+        self.for_each(|k| {
+            if error.is_none() {
+                if let Err(e) = seq.serialize_element(k) {
+                    error.replace(e);
+                }
+            }
+        });
+        if let Some(e) = error {
+            return Err(e);
+        }
+        seq.end()
+    }
+}
+
+pub struct HashIndexVisitor<
+    K: 'static + Clone + Eq + Hash + Sync,
+    V: 'static + Clone + Sync,
+    H: BuildHasher,
+> {
+    #[allow(clippy::type_complexity)]
+    marker: PhantomData<fn() -> HashIndex<K, V, H>>,
+}
+
+impl<K, V, H> HashIndexVisitor<K, V, H>
+where
+    K: Clone + Eq + Hash + Sync,
+    V: Clone + Sync,
+    H: BuildHasher,
+{
+    fn new() -> Self {
+        HashIndexVisitor {
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<'d, K, V, H> Visitor<'d> for HashIndexVisitor<K, V, H>
+where
+    K: Clone + Deserialize<'d> + Eq + Hash + Sync,
+    V: Clone + Deserialize<'d> + Sync,
+    H: BuildHasher + Default,
+{
+    type Value = HashIndex<K, V, H>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("HashIndex")
+    }
+
+    fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error>
+    where
+        M: MapAccess<'d>,
+    {
+        let hashindex =
+            HashIndex::with_capacity_and_hasher(access.size_hint().unwrap_or(0), H::default());
+        while let Some((key, value)) = access.next_entry()? {
+            let _result = hashindex.insert(key, value);
+        }
+        Ok(hashindex)
+    }
+}
+
+impl<'d, K, V, H> Deserialize<'d> for HashIndex<K, V, H>
+where
+    K: Clone + Deserialize<'d> + Eq + Hash + Sync,
+    V: Clone + Deserialize<'d> + Sync,
+    H: BuildHasher + Default,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'d>,
+    {
+        deserializer.deserialize_map(HashIndexVisitor::<K, V, H>::new())
+    }
+}
+
+impl<K, V, H> Serialize for HashIndex<K, V, H>
+where
+    K: Clone + Eq + Hash + Serialize + Sync,
+    V: Clone + Serialize + Sync,
+    H: 'static + BuildHasher,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(self.len()))?;
+        let mut error = None;
+        self.iter(&Barrier::new()).any(|(k, v)| {
+            if let Err(e) = map.serialize_entry(k, v) {
+                error.replace(e);
+                true
+            } else {
+                false
+            }
+        });
+        if let Some(e) = error {
+            return Err(e);
+        }
+        map.end()
+    }
+}
+
+pub struct TreeIndexVisitor<K: 'static + Clone + Ord + Sync, V: 'static + Clone + Sync> {
+    #[allow(clippy::type_complexity)]
+    marker: PhantomData<fn() -> TreeIndex<K, V>>,
+}
+
+impl<K, V> TreeIndexVisitor<K, V>
+where
+    K: Clone + Ord + Sync,
+    V: Clone + Sync,
+{
+    fn new() -> Self {
+        TreeIndexVisitor {
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<'d, K, V> Visitor<'d> for TreeIndexVisitor<K, V>
+where
+    K: Clone + Deserialize<'d> + Ord + Sync,
+    V: Clone + Deserialize<'d> + Sync,
+{
+    type Value = TreeIndex<K, V>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("TreeIndex")
+    }
+
+    fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error>
+    where
+        M: MapAccess<'d>,
+    {
+        let treeindex = TreeIndex::default();
+        while let Some((key, value)) = access.next_entry()? {
+            let _result = treeindex.insert(key, value);
+        }
+        Ok(treeindex)
+    }
+}
+
+impl<'d, K, V> Deserialize<'d> for TreeIndex<K, V>
+where
+    K: Clone + Deserialize<'d> + Ord + Sync,
+    V: Clone + Deserialize<'d> + Sync,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'d>,
+    {
+        deserializer.deserialize_map(TreeIndexVisitor::<K, V>::new())
+    }
+}
+
+impl<K, V> Serialize for TreeIndex<K, V>
+where
+    K: Clone + Ord + Serialize + Sync,
+    V: Clone + Serialize + Sync,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(self.len()))?;
+        let mut error = None;
+        self.iter(&Barrier::new()).any(|(k, v)| {
+            if let Err(e) = map.serialize_entry(k, v) {
+                error.replace(e);
+                true
+            } else {
+                false
+            }
+        });
+        if let Some(e) = error {
+            return Err(e);
+        }
+        map.end()
     }
 }

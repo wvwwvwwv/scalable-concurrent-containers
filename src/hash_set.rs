@@ -377,6 +377,58 @@ where
         self.map.scan_async(|k, _| scanner(k)).await;
     }
 
+    /// Searches for any entry that satisfies the given predicate.
+    ///
+    /// Keys that have existed since the invocation of the method are guaranteed to be visited if
+    /// they are not removed, however the same key can be visited more than once if the [`HashSet`]
+    /// gets resized by another task.
+    ///
+    /// It returns `true` if an entry satisfying the predicate is found.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    ///
+    /// let hashset: HashSet<u64> = HashSet::default();
+    ///
+    /// assert!(hashset.insert(1).is_ok());
+    /// assert!(hashset.insert(2).is_ok());
+    /// assert!(hashset.insert(3).is_ok());
+    ///
+    /// assert!(hashset.any(|k| *k == 1));
+    /// assert!(!hashset.any(|k| *k == 4));
+    /// ```
+    #[inline]
+    pub fn any<P: FnMut(&K) -> bool>(&self, mut pred: P) -> bool {
+        self.map.any(|k, _| pred(k))
+    }
+
+    /// Searches for any entry that satisfies the given predicate.
+    ///
+    /// Keys that have existed since the invocation of the method are guaranteed to be visited if
+    /// they are not removed, however the same key can be visited more than once if the [`HashSet`]
+    /// gets resized by another task.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
+    ///
+    /// It returns `true` if an entry satisfying the predicate is found.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    ///
+    /// let hashset: HashSet<u64> = HashSet::default();
+    ///
+    /// let future_insert = hashset.insert(1);
+    /// let future_any = hashset.any_async(|k| *k == 1);
+    /// ```
+    #[inline]
+    pub async fn any_async<P: FnMut(&K) -> bool>(&self, mut pred: P) -> bool {
+        self.map.any_async(|k, _| pred(k)).await
+    }
+
     /// Iterates over all the keys in the [`HashSet`].
     ///
     /// Keys that have existed since the invocation of the method are guaranteed to be visited if
@@ -671,20 +723,10 @@ where
 {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        let mut has_diff = false;
-        self.for_each(|k| {
-            if !has_diff && !other.contains(k) {
-                has_diff = true;
-            }
-        });
-        if !has_diff {
-            other.for_each(|k| {
-                if !has_diff && !self.contains(k) {
-                    has_diff = true;
-                }
-            });
+        if !self.any(|k| !other.contains(k)) {
+            return !other.any(|k| !self.contains(k));
         }
-        !has_diff
+        false
     }
 }
 

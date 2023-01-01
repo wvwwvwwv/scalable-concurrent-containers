@@ -2,7 +2,9 @@
 
 1.0.5
 
-* Add `serde` support.
+* Add `{HashMap, HashSet}::{any, any_async}` to emulate `Iterator::any`.
+* Implement `PartialEq` for `{HashMap, HashSet, HashIndex, TreeIndex}`.
+* Add `serde` support to `{HashMap, HashSet, HashIndex, TreeIndex}`.
 * Remove the unnecessary `Send` bound from `TreeIndex`.
 
 1.0.4
