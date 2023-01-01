@@ -67,7 +67,7 @@ assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 3);
 let future_upsert = hashmap.upsert_async(2, || 1, |_, v| *v = 3);
 ```
 
-There is no method to confine the lifetime of references derived from an [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html), and it is illegal to let them live as long as the [HashMap](#HashMap). Therefore [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, it provides a number of methods to iterate over entries: `for_each`, `for_each_async`, `scan`, `scan_async`, `retain`, and `retain_async`.
+There is no method to confine the lifetime of references derived from an [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html), and it is illegal to let them live as long as the [HashMap](#HashMap). Therefore [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, it provides a number of methods to iterate over entries: `any`, `any_async`, `for_each`, `for_each_async`, `scan`, `scan_async`, `retain`, and `retain_async`.
 
 ```rust
 use scc::HashMap;
@@ -77,16 +77,16 @@ let hashmap: HashMap<u64, u32> = HashMap::default();
 assert!(hashmap.insert(1, 0).is_ok());
 assert!(hashmap.insert(2, 1).is_ok());
 
-// Inside `for_each`, an `ebr::Barrier` protects the entry array.
+// `for_each` allows entry modification.
 let mut acc = 0;
 hashmap.for_each(|k, v_mut| { acc += *k; *v_mut = 2; });
 assert_eq!(acc, 3);
-
-// `for_each` allows entry modification.
 assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
 assert_eq!(hashmap.read(&2, |_, v| *v).unwrap(), 2);
 
+// `any` returns `true` as soon as an entry satisfying the predicate is found.
 assert!(hashmap.insert(3, 2).is_ok());
+assert!(hashmap.any(|k, _| *k == 3));
 
 // `retain` enables entry removal.
 assert_eq!(hashmap.retain(|k, v| *k == 1 && *v == 0), (1, 2));

@@ -17,11 +17,13 @@ jobs:
       - uses: actions/checkout@v2
       - name: Debug - Test
         run: RUST_BACKTRACE=1 cargo test --verbose -- --nocapture
-      - name: Release - Test
-        run: RUST_BACKTRACE=1 cargo test --release --verbose -- --nocapture
-      - name: Release - Benchmark
-        run: cargo bench
       - name: Debug(serde) - Test
         run: RUST_BACKTRACE=1 cargo test serde --verbose --features serde
+      - name: Release - Test
+        run: RUST_BACKTRACE=1 cargo test --release --verbose -- --nocapture
+      - name: Release(serde) - Test
+        run: RUST_BACKTRACE=1 cargo test --release serde --verbose --features serde
+      - name: Release - Benchmark
+        run: cargo bench
       - name: Document - Generate documentation
         run: cargo doc
