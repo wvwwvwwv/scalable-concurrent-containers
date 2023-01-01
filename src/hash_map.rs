@@ -249,11 +249,11 @@ where
     /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
     /// ```
     #[inline]
-    pub fn update<Q, F, R>(&self, key: &Q, updater: F) -> Option<R>
+    pub fn update<Q, U, R>(&self, key: &Q, updater: U) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
-        F: FnOnce(&K, &mut V) -> R,
+        U: FnOnce(&K, &mut V) -> R,
     {
         let barrier = Barrier::new();
         let (mut locker, data_block, mut entry_ptr) = self
@@ -282,11 +282,11 @@ where
     /// let future_update = hashmap.update_async(&1, |_, v| { *v = 2; *v });
     /// ```
     #[inline]
-    pub async fn update_async<Q, F, R>(&self, key: &Q, updater: F) -> Option<R>
+    pub async fn update_async<Q, U, R>(&self, key: &Q, updater: U) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
-        F: FnOnce(&K, &mut V) -> R,
+        U: FnOnce(&K, &mut V) -> R,
     {
         let hash = self.hash(key);
         loop {
@@ -320,11 +320,11 @@ where
     /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 3);
     /// ```
     #[inline]
-    pub fn upsert<FI: FnOnce() -> V, FU: FnOnce(&K, &mut V)>(
+    pub fn upsert<C: FnOnce() -> V, U: FnOnce(&K, &mut V)>(
         &self,
         key: K,
-        constructor: FI,
-        updater: FU,
+        constructor: C,
+        updater: U,
     ) {
         let barrier = Barrier::new();
         let hash = self.hash(key.borrow());
@@ -360,11 +360,11 @@ where
     /// let future_upsert = hashmap.upsert_async(1, || 2, |_, v| *v = 3);
     /// ```
     #[inline]
-    pub async fn upsert_async<FI: FnOnce() -> V, FU: FnOnce(&K, &mut V)>(
+    pub async fn upsert_async<C: FnOnce() -> V, U: FnOnce(&K, &mut V)>(
         &self,
         key: K,
-        constructor: FI,
-        updater: FU,
+        constructor: C,
+        updater: U,
     ) {
         let hash = self.hash(key.borrow());
         loop {
@@ -1334,6 +1334,9 @@ where
     V: 'static + PartialEq + Sync,
     H: BuildHasher,
 {
+    /// Compares two [`HashMap`] instances.
+    ///
+    /// It may lead to a deadlock if the instances are being modified by another thread.
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         if !self.any(|k, v| other.read(k, |_, ov| v == ov) != Some(true)) {

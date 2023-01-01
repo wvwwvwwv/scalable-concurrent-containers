@@ -377,13 +377,13 @@ where
         self.map.scan_async(|k, _| scanner(k)).await;
     }
 
-    /// Searches for any entry that satisfies the given predicate.
+    /// Searches for any key that satisfies the given predicate.
     ///
     /// Keys that have existed since the invocation of the method are guaranteed to be visited if
     /// they are not removed, however the same key can be visited more than once if the [`HashSet`]
     /// gets resized by another task.
     ///
-    /// It returns `true` if an entry satisfying the predicate is found.
+    /// It returns `true` if a key satisfying the predicate is found.
     ///
     /// # Examples
     ///
@@ -404,7 +404,7 @@ where
         self.map.any(|k, _| pred(k))
     }
 
-    /// Searches for any entry that satisfies the given predicate.
+    /// Searches for any key that satisfies the given predicate.
     ///
     /// Keys that have existed since the invocation of the method are guaranteed to be visited if
     /// they are not removed, however the same key can be visited more than once if the [`HashSet`]
@@ -412,7 +412,7 @@ where
     ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
-    /// It returns `true` if an entry satisfying the predicate is found.
+    /// It returns `true` if a key satisfying the predicate is found.
     ///
     /// # Examples
     ///
@@ -721,6 +721,9 @@ where
     K: 'static + Eq + Hash + Sync,
     H: BuildHasher,
 {
+    /// Compares two [`HashSet`] instances.
+    ///
+    /// It may lead to a deadlock if the instances are being modified by another thread.
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         if !self.any(|k| !other.contains(k)) {

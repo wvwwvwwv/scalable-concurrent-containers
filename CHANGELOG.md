@@ -1,5 +1,9 @@
 # Changelog
 
+1.0.6
+
+* Update documentation.
+
 1.0.5
 
 * Add `{HashMap, HashSet}::{any, any_async}` to emulate `Iterator::any`.
