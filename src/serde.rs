@@ -1,3 +1,5 @@
+//! This module implements helper types and traits for `serde`.
+
 use super::ebr::Barrier;
 use super::{HashIndex, HashMap, HashSet, TreeIndex};
 
@@ -9,6 +11,7 @@ use std::fmt;
 use std::hash::{BuildHasher, Hash};
 use std::marker::PhantomData;
 
+/// Helper type to allow `serde` to access [`HashMap`] entries.
 pub struct HashMapVisitor<K: 'static + Eq + Hash + Sync, V: 'static + Sync, H: BuildHasher> {
     #[allow(clippy::type_complexity)]
     marker: PhantomData<fn() -> HashMap<K, V, H>>,
@@ -92,6 +95,7 @@ where
     }
 }
 
+/// Helper type to allow `serde` to access [`HashSet`] entries.
 pub struct HashSetVisitor<K: 'static + Eq + Hash + Sync, H: BuildHasher> {
     marker: PhantomData<fn() -> HashSet<K, H>>,
 }
@@ -170,6 +174,7 @@ where
     }
 }
 
+/// Helper type to allow `serde` to access [`HashIndex`] entries.
 pub struct HashIndexVisitor<
     K: 'static + Clone + Eq + Hash + Sync,
     V: 'static + Clone + Sync,
@@ -258,6 +263,7 @@ where
     }
 }
 
+/// Helper type to allow `serde` to access [`TreeIndex`] entries.
 pub struct TreeIndexVisitor<K: 'static + Clone + Ord + Sync, V: 'static + Clone + Sync> {
     #[allow(clippy::type_complexity)]
     marker: PhantomData<fn() -> TreeIndex<K, V>>,

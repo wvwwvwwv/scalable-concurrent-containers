@@ -48,7 +48,7 @@ mod hash_table;
 mod wait_queue;
 
 #[cfg(feature = "serde")]
-mod serde;
+pub mod serde;
 
 #[cfg(test)]
 mod tests;
