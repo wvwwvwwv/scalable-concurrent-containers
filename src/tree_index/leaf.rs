@@ -515,7 +515,7 @@ where
         low_key_leaf: &mut Option<Arc<Leaf<K, V>>>,
         high_key_leaf: &mut Option<Arc<Leaf<K, V>>>,
     ) {
-        let prev = unsafe {
+        let metadata = unsafe {
             self.metadata
                 .fetch_update(AcqRel, Acquire, |p| {
                     if Dimension::frozen(p) {
@@ -526,14 +526,15 @@ where
                 })
                 .unwrap_unchecked()
         };
+
+        let boundary = Self::optimal_boundary(metadata);
         let scanner = Scanner {
             leaf: self,
-            metadata: prev,
+            metadata,
             entry_index: DIMENSION.num_entries,
         };
-        let boundary = DIMENSION.num_entries / 2;
         for (i, (k, v)) in scanner.enumerate() {
-            if i < DIMENSION.num_entries / 2 {
+            if i < boundary {
                 low_key_leaf
                     .get_or_insert_with(|| Arc::new(Leaf::new()))
                     .insert_unchecked(k.clone(), v.clone(), i);
@@ -543,6 +544,42 @@ where
                     .insert_unchecked(k.clone(), v.clone(), i - boundary);
             };
         }
+    }
+
+    /// Returns the recommended number of entries that the left-side node shall store when a
+    /// [`Leaf`] is split.
+    ///
+    /// It returns a number in `[1, len(leaf))` that represents the recommended number of entries
+    /// in the left-side node. The number is calculated as, for each adjacent slots,
+    /// - Initial `score` = `len(leaf)`.
+    /// - Rank increased: `score -= 1`.
+    /// - Rank decreased: `score += 1`.
+    /// - Clamp `score` in `[len(leaf) / 2 + 1, len(leaf) / 2 + len(leaf))`.
+    /// - Take `score - len(leaf) / 2`.
+    ///
+    /// For instance, when the length of a [`Leaf`] is 7,
+    /// - Returns 6 for `rank = [1, 2, 3, 4, 5, 6, 7]`.
+    /// - Returns 1 for `rank = [7, 6, 5, 4, 3, 2, 1]`.
+    #[inline]
+    pub(super) fn optimal_boundary(mut mutable_metadata: usize) -> usize {
+        let mut boundary: usize = DIMENSION.num_entries;
+        let mut prev_rank = 1;
+        for _ in 0..DIMENSION.num_entries {
+            let rank = mutable_metadata % (1_usize << DIMENSION.num_bits_per_entry);
+            if rank != 0 && rank != DIMENSION.removed_rank() {
+                if prev_rank < rank {
+                    boundary += 1;
+                } else {
+                    boundary -= 1;
+                }
+                prev_rank = rank;
+            }
+            mutable_metadata >>= DIMENSION.num_bits_per_entry;
+        }
+        boundary.clamp(
+            DIMENSION.num_entries / 2 + 1,
+            DIMENSION.num_entries + DIMENSION.num_entries / 2 - 1,
+        ) - DIMENSION.num_entries / 2
     }
 
     /// Searches for a slot in which the key is stored.
@@ -969,6 +1006,43 @@ mod test {
             leaf.insert("200".to_owned(), "200".to_owned()),
             InsertResult::Retired(..)
         ));
+    }
+
+    #[test]
+    fn calculate_boundary() {
+        let leaf: Leaf<usize, usize> = Leaf::new();
+        for i in 0..DIMENSION.num_entries {
+            assert!(matches!(leaf.insert(i, i), InsertResult::Success));
+        }
+        assert_eq!(
+            Leaf::<usize, usize>::optimal_boundary(leaf.metadata.load(Relaxed)),
+            DIMENSION.num_entries - 1
+        );
+
+        let leaf: Leaf<usize, usize> = Leaf::new();
+        for i in (0..DIMENSION.num_entries).rev() {
+            assert!(matches!(leaf.insert(i, i), InsertResult::Success));
+        }
+        assert_eq!(
+            Leaf::<usize, usize>::optimal_boundary(leaf.metadata.load(Relaxed)),
+            1
+        );
+
+        let leaf: Leaf<usize, usize> = Leaf::new();
+        for i in 0..DIMENSION.num_entries {
+            if i < DIMENSION.num_entries / 2 {
+                assert!(matches!(
+                    leaf.insert(usize::MAX - i, usize::MAX - i),
+                    InsertResult::Success
+                ));
+            } else {
+                assert!(matches!(leaf.insert(i, i), InsertResult::Success));
+            }
+        }
+        assert_eq!(
+            Leaf::<usize, usize>::optimal_boundary(leaf.metadata.load(Relaxed)),
+            DIMENSION.num_entries / 2
+        );
     }
 
     #[test]

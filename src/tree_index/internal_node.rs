@@ -431,7 +431,9 @@ where
                 let mut entry_array: [Option<(Option<&K>, AtomicArc<Node<K, V>>)>;
                     DIMENSION.num_entries + 2] = Default::default();
                 let mut num_entries = 0;
-                for entry in Scanner::new(&full_internal_node.children) {
+                let scanner = Scanner::new(&full_internal_node.children);
+                let recommended_boundary = Leaf::<K, V>::optimal_boundary(scanner.metadata());
+                for entry in scanner {
                     if unsafe {
                         full_internal_node
                             .split_op
@@ -535,7 +537,7 @@ where
                 }
                 debug_assert!(num_entries >= 2);
 
-                let low_key_node_array_size = num_entries / 2;
+                let low_key_node_array_size = recommended_boundary.min(num_entries - 1);
                 for (i, entry) in entry_array.iter().enumerate() {
                     if let Some((k, v)) = entry {
                         match (i + 1).cmp(&low_key_node_array_size) {

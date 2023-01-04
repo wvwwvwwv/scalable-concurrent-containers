@@ -2,7 +2,7 @@
 
 1.0.6
 
-* Update documentation.
+* Optimize `TreeIndex` for low-entropy input patterns.
 
 1.0.5
 

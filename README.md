@@ -20,7 +20,6 @@ A collection of high performance containers and utilities for concurrent and asy
 - [HashSet](#HashSet) is a concurrent and asynchronous hash set.
 - [HashIndex](#HashIndex) is a read-optimized concurrent and asynchronous hash map.
 - [TreeIndex](#TreeIndex) is a read-optimized concurrent and asynchronous B+ tree.
-- [Bag](#Bag) is a concurrent lock-free unordered opaque container.
 
 #### Utilities for Concurrent Programming
 
@@ -28,6 +27,7 @@ A collection of high performance containers and utilities for concurrent and asy
 - [LinkedList](#LinkedList) is a type trait implementing a lock-free concurrent singly linked list.
 - [Queue](#Queue) is an [EBR](#EBR) backed concurrent lock-free first-in-first-out container.
 - [Stack](#Stack) is an [EBR](#EBR) backed concurrent lock-free last-in-first-out container.
+- [Bag](#Bag) is a concurrent lock-free unordered opaque container.
 
 
 ## HashMap

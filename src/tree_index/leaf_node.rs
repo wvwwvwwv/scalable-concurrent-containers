@@ -357,6 +357,7 @@ where
     }
 
     /// Splits itself into the given leaf nodes, and returns the middle key value.
+    #[allow(clippy::too_many_lines)]
     pub(super) fn split_leaf_node<'b>(
         &'b self,
         low_key_leaf_node: &LeafNode<K, V>,
@@ -392,7 +393,9 @@ where
             .as_ref()
             .unwrap();
         let middle_key_ref = low_key_leaf_ref.max_key().unwrap();
-        for entry in Scanner::new(&self.children) {
+        let scanner = Scanner::new(&self.children);
+        let recommended_boundary = Leaf::<K, V>::optimal_boundary(scanner.metadata());
+        for entry in scanner {
             if unsafe {
                 self.split_op
                     .origin_leaf_key
@@ -439,7 +442,7 @@ where
         }
         debug_assert!(num_entries >= 2);
 
-        let low_key_leaf_array_size = num_entries / 2;
+        let low_key_leaf_array_size = recommended_boundary.min(num_entries - 1);
         for (i, entry) in entry_array.iter().enumerate() {
             if let Some((k, v)) = entry {
                 match (i + 1).cmp(&low_key_leaf_array_size) {
