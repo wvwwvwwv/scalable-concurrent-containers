@@ -554,7 +554,7 @@ where
     /// - Initial `score` = `len(leaf)`.
     /// - Rank increased: `score -= 1`.
     /// - Rank decreased: `score += 1`.
-    /// - Clamp `score` in `[len(leaf) / 2 + 1, len(leaf) / 2 + len(leaf))`.
+    /// - Clamp `score` in `[len(leaf) / 2 + 1, len(leaf) / 2 + len(leaf) - 1)`.
     /// - Take `score - len(leaf) / 2`.
     ///
     /// For instance, when the length of a [`Leaf`] is 7,

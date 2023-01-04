@@ -1,5 +1,9 @@
 # Changelog
 
+1.0.7
+
+* Minor changes.
+
 1.0.6
 
 * Optimize `TreeIndex` for low-entropy input patterns.
