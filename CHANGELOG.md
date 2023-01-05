@@ -2,7 +2,8 @@
 
 1.0.7
 
-* Minor changes.
+* Minor performance optimization.
+* Identified a piece of blocking code in `HashIndex::read`, and make it non-blocking.
 
 1.0.6
 

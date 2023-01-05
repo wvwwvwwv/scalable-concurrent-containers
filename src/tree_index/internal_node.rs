@@ -193,7 +193,7 @@ where
     pub(super) fn insert<D: DeriveAsyncWait>(
         &self,
         mut key: K,
-        mut value: V,
+        mut val: V,
         async_wait: &mut D,
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
@@ -204,7 +204,7 @@ where
                 if let Some(child_ref) = child_ptr.as_ref() {
                     if self.children.validate(metadata) {
                         // Data race resolution - see `LeafNode::search`.
-                        let insert_result = child_ref.insert(key, value, async_wait, barrier)?;
+                        let insert_result = child_ref.insert(key, val, async_wait, barrier)?;
                         match insert_result {
                             InsertResult::Success
                             | InsertResult::Duplicate(..)
@@ -222,7 +222,7 @@ where
                                 )?;
                                 if let InsertResult::Retry(k, v) = split_result {
                                     key = k;
-                                    value = v;
+                                    val = v;
                                     continue;
                                 }
                                 return Ok(split_result);
@@ -239,7 +239,7 @@ where
                                 // `child` has been split, therefore it can be retried.
                                 if self.cleanup_link(k.borrow(), false, barrier) {
                                     key = k;
-                                    value = v;
+                                    val = v;
                                     continue;
                                 }
                                 return Ok(InsertResult::Retry(k, v));
@@ -257,7 +257,7 @@ where
                 if !self.children.validate(metadata) {
                     continue;
                 }
-                let insert_result = unbounded.insert(key, value, async_wait, barrier)?;
+                let insert_result = unbounded.insert(key, val, async_wait, barrier)?;
                 match insert_result {
                     InsertResult::Success
                     | InsertResult::Duplicate(..)
@@ -275,7 +275,7 @@ where
                         )?;
                         if let InsertResult::Retry(k, v) = split_result {
                             key = k;
-                            value = v;
+                            val = v;
                             continue;
                         }
                         return Ok(split_result);
@@ -291,7 +291,7 @@ where
                     InsertResult::Retry(k, v) => {
                         if self.cleanup_link(k.borrow(), false, barrier) {
                             key = k;
-                            value = v;
+                            val = v;
                             continue;
                         }
                         return Ok(InsertResult::Retry(k, v));
@@ -299,7 +299,7 @@ where
                 };
             }
             debug_assert!(unbounded_ptr.tag() == RETIRED);
-            return Ok(InsertResult::Retired(key, value));
+            return Ok(InsertResult::Retired(key, val));
         }
     }
 
@@ -377,7 +377,7 @@ where
     pub(super) fn split_node<D: DeriveAsyncWait>(
         &self,
         key: K,
-        value: V,
+        val: V,
         full_node_key: Option<&K>,
         full_node_ptr: Ptr<Node<K, V>>,
         full_node: &AtomicArc<Node<K, V>>,
@@ -389,14 +389,14 @@ where
         if !self.try_lock() {
             target.rollback(barrier);
             self.wait(async_wait);
-            return Err((key, value));
+            return Err((key, val));
         }
         debug_assert!(!self.retired(Relaxed));
 
         if full_node_ptr != full_node.load(Relaxed, barrier) {
             self.unlock();
             target.rollback(barrier);
-            return Err((key, value));
+            return Err((key, val));
         }
 
         let prev = self
@@ -641,7 +641,7 @@ where
             }
             InsertResult::Full(..) | InsertResult::Retired(..) => {
                 // Insertion failed: expects that the parent splits this node.
-                return Ok(InsertResult::Full(key, value));
+                return Ok(InsertResult::Full(key, val));
             }
         };
 
@@ -658,7 +658,7 @@ where
 
         if root_split {
             // Return without unlocking it.
-            return Ok(InsertResult::Retry(key, value));
+            return Ok(InsertResult::Retry(key, val));
         }
 
         // Unlock the node.
@@ -672,7 +672,7 @@ where
         }
 
         // Since a new node has been inserted, the caller can retry.
-        Ok(InsertResult::Retry(key, value))
+        Ok(InsertResult::Retry(key, val))
     }
 
     /// Finishes splitting the [`InternalNode`].

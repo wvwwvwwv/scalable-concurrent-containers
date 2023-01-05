@@ -238,13 +238,13 @@ where
 
     /// Inserts a key value pair.
     #[inline]
-    pub(super) fn insert(&self, key: K, value: V) -> InsertResult<K, V> {
+    pub(super) fn insert(&self, key: K, val: V) -> InsertResult<K, V> {
         let mut metadata = self.metadata.load(Acquire);
         'after_read_metadata: loop {
             if Dimension::retired(metadata) {
-                return InsertResult::Retired(key, value);
+                return InsertResult::Retired(key, val);
             } else if Dimension::frozen(metadata) {
-                return InsertResult::Frozen(key, value);
+                return InsertResult::Frozen(key, val);
             }
 
             let mut mutable_metadata = metadata;
@@ -264,16 +264,16 @@ where
                         continue 'after_read_metadata;
                     }
 
-                    self.write(i, key, value);
+                    self.write(i, key, val);
                     return self.post_insert(i, interim_metadata);
                 }
                 mutable_metadata >>= DIMENSION.num_bits_per_entry;
             }
 
             if self.search_slot(key.borrow(), metadata).is_some() {
-                return InsertResult::Duplicate(key, value);
+                return InsertResult::Duplicate(key, val);
             }
-            return InsertResult::Full(key, value);
+            return InsertResult::Full(key, val);
         }
     }
 
@@ -281,11 +281,11 @@ where
     ///
     /// `rank` is calculated as `index + 1`.
     #[inline]
-    pub(super) fn insert_unchecked(&self, key: K, value: V, index: usize) {
+    pub(super) fn insert_unchecked(&self, key: K, val: V, index: usize) {
         debug_assert!(index < DIMENSION.num_entries);
         let metadata = self.metadata.load(Relaxed);
         let new_metadata = DIMENSION.augment(metadata, index, index + 1);
-        self.write(index, key, value);
+        self.write(index, key, val);
         self.metadata.store(new_metadata, Release);
     }
 
@@ -672,17 +672,17 @@ where
     }
 
     fn rollback(&self, index: usize) -> InsertResult<K, V> {
-        let (key, value) = self.take(index);
+        let (key, val) = self.take(index);
         let result = self
             .metadata
             .fetch_and(!DIMENSION.rank_mask(index), Relaxed)
             & (!DIMENSION.rank_mask(index));
         if Dimension::retired(result) {
-            InsertResult::Retired(key, value)
+            InsertResult::Retired(key, val)
         } else if Dimension::frozen(result) {
-            InsertResult::Frozen(key, value)
+            InsertResult::Frozen(key, val)
         } else {
-            InsertResult::Duplicate(key, value)
+            InsertResult::Duplicate(key, val)
         }
     }
 
@@ -703,10 +703,10 @@ where
         }
     }
 
-    fn write(&self, index: usize, key: K, value: V) {
+    fn write(&self, index: usize, key: K, val: V) {
         unsafe {
             (self.entry_array.0[index].as_ptr() as *mut K).write(key);
-            (self.entry_array.1[index].as_ptr() as *mut V).write(value);
+            (self.entry_array.1[index].as_ptr() as *mut V).write(val);
         }
     }
 

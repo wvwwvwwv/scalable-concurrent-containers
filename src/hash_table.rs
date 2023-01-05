@@ -142,11 +142,10 @@ where
                 if entry_ptr.is_valid() {
                     return Ok(Some((key, val)));
                 }
-                locker.insert(
+                locker.insert_with(
                     data_block,
-                    key,
-                    val,
                     CellArray::<K, V, LOCK_FREE>::partial_hash(hash),
+                    || (key, val),
                     barrier,
                 );
                 Ok(None)
@@ -172,7 +171,27 @@ where
         let mut current_array = self.current_array_unchecked(barrier);
         loop {
             if let Some(old_array) = current_array.old_array(barrier).as_ref() {
-                self.move_entry(current_array, old_array, hash, async_wait, barrier)?;
+                if LOCK_FREE {
+                    if current_array.partial_rehash::<Q, _, _, D, true>(
+                        |key| self.hash(key),
+                        Self::copier,
+                        async_wait,
+                        barrier,
+                    ) != Ok(true)
+                    {
+                        let cell_index = old_array.calculate_cell_index(hash);
+                        if let Some((k, v)) = old_array.cell(cell_index).search(
+                            old_array.data_block(cell_index),
+                            key,
+                            CellArray::<K, V, LOCK_FREE>::partial_hash(hash),
+                            barrier,
+                        ) {
+                            return Ok(Some((k, v)));
+                        }
+                    }
+                } else {
+                    self.move_entry(current_array, old_array, hash, async_wait, barrier)?;
+                }
             };
 
             let cell_index = current_array.calculate_cell_index(hash);
@@ -193,13 +212,13 @@ where
                     Reader::lock(cell, barrier)
                 };
                 if let Some(reader) = lock_result {
-                    if let Some((key, value)) = reader.cell().search(
+                    if let Some((key, val)) = reader.cell().search(
                         current_array.data_block(cell_index),
                         key,
                         CellArray::<K, V, LOCK_FREE>::partial_hash(hash),
                         barrier,
                     ) {
-                        return Ok(Some((key, value)));
+                        return Ok(Some((key, val)));
                     }
                 }
             }
@@ -371,7 +390,7 @@ where
         Q: Hash + Eq + ?Sized,
         D: DeriveAsyncWait,
     {
-        if !current_array.partial_rehash::<Q, _, _, D>(
+        if !current_array.partial_rehash::<Q, _, _, D, false>(
             |key| self.hash(key),
             Self::copier,
             async_wait,
@@ -385,7 +404,7 @@ where
                 Locker::lock(cell, barrier)
             };
             if let Some(mut locker) = lock_result {
-                current_array.kill_cell::<Q, _, _, _>(
+                current_array.kill_cell::<Q, _, _, _, false>(
                     &mut locker,
                     cell_index,
                     old_array,

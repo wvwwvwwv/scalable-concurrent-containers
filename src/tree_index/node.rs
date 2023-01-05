@@ -121,13 +121,13 @@ where
     pub(super) fn insert<D: DeriveAsyncWait>(
         &self,
         key: K,
-        value: V,
+        val: V,
         async_wait: &mut D,
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
         match &self.node {
-            Type::Internal(internal_node) => internal_node.insert(key, value, async_wait, barrier),
-            Type::Leaf(leaf_node) => leaf_node.insert(key, value, async_wait, barrier),
+            Type::Internal(internal_node) => internal_node.insert(key, val, async_wait, barrier),
+            Type::Leaf(leaf_node) => leaf_node.insert(key, val, async_wait, barrier),
         }
     }
 
@@ -159,7 +159,7 @@ where
     #[inline]
     pub(super) fn split_root(
         key: K,
-        value: V,
+        val: V,
         root: &AtomicArc<Node<K, V>>,
         barrier: &Barrier,
     ) -> (K, V) {
@@ -172,7 +172,7 @@ where
             internal_node.unbounded_child = root.clone(Relaxed, barrier);
             let result = internal_node.split_node(
                 key,
-                value,
+                val,
                 None,
                 root.load(Relaxed, barrier),
                 &internal_node.unbounded_child,
@@ -180,7 +180,7 @@ where
                 &mut (),
                 barrier,
             );
-            let Ok(InsertResult::Retry(key, value)) = result else { unreachable!() };
+            let Ok(InsertResult::Retry(key, val)) = result else { unreachable!() };
 
             // Updates the pointer before unlocking the root.
             let new_root_ref = new_root.ptr(barrier).as_ref();
@@ -192,9 +192,9 @@ where
                 let _ = old_root.release(barrier);
             };
 
-            (key, value)
+            (key, val)
         } else {
-            (key, value)
+            (key, val)
         }
     }
 

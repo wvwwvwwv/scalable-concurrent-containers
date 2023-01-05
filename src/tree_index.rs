@@ -93,35 +93,35 @@ where
     /// assert_eq!(treeindex.read(&1, |k, v| *v).unwrap(), 10);
     /// ```
     #[inline]
-    pub fn insert(&self, mut key: K, mut value: V) -> Result<(), (K, V)> {
+    pub fn insert(&self, mut key: K, mut val: V) -> Result<(), (K, V)> {
         let mut new_root = None;
         loop {
             let barrier = Barrier::new();
             if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
-                match root_ref.insert(key, value, &mut (), &barrier) {
+                match root_ref.insert(key, val, &mut (), &barrier) {
                     Ok(r) => match r {
                         InsertResult::Success => return Ok(()),
                         InsertResult::Frozen(k, v) | InsertResult::Retry(k, v) => {
                             key = k;
-                            value = v;
+                            val = v;
                             root_ref.cleanup_link(key.borrow(), false, &barrier);
                         }
                         InsertResult::Duplicate(k, v) => return Err((k, v)),
                         InsertResult::Full(k, v) => {
                             let (k, v) = Node::split_root(k, v, &self.root, &barrier);
                             key = k;
-                            value = v;
+                            val = v;
                             continue;
                         }
                         InsertResult::Retired(k, v) => {
                             key = k;
-                            value = v;
+                            val = v;
                             let _result = Node::remove_root(&self.root, &mut (), &barrier);
                         }
                     },
                     Err((k, v)) => {
                         key = k;
-                        value = v;
+                        val = v;
                     }
                 }
             }
@@ -160,7 +160,7 @@ where
     /// let future_insert = treeindex.insert_async(1, 10);
     /// ```
     #[inline]
-    pub async fn insert_async(&self, mut key: K, mut value: V) -> Result<(), (K, V)> {
+    pub async fn insert_async(&self, mut key: K, mut val: V) -> Result<(), (K, V)> {
         let mut new_root = None;
         loop {
             let mut async_wait = AsyncWait::default();
@@ -169,12 +169,12 @@ where
             let need_await = {
                 let barrier = Barrier::new();
                 if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
-                    match root_ref.insert(key, value, &mut async_wait_pinned, &barrier) {
+                    match root_ref.insert(key, val, &mut async_wait_pinned, &barrier) {
                         Ok(r) => match r {
                             InsertResult::Success => return Ok(()),
                             InsertResult::Frozen(k, v) | InsertResult::Retry(k, v) => {
                                 key = k;
-                                value = v;
+                                val = v;
                                 root_ref.cleanup_link(key.borrow(), false, &barrier);
                                 true
                             }
@@ -182,12 +182,12 @@ where
                             InsertResult::Full(k, v) => {
                                 let (k, v) = Node::split_root(k, v, &self.root, &barrier);
                                 key = k;
-                                value = v;
+                                val = v;
                                 continue;
                             }
                             InsertResult::Retired(k, v) => {
                                 key = k;
-                                value = v;
+                                val = v;
                                 !matches!(
                                     Node::remove_root(&self.root, &mut async_wait_pinned, &barrier),
                                     Ok(true)
@@ -196,7 +196,7 @@ where
                         },
                         Err((k, v)) => {
                             key = k;
-                            value = v;
+                            val = v;
                             true
                         }
                     }
@@ -436,8 +436,8 @@ where
         Q: Ord + ?Sized,
     {
         if let Some(root_ref) = self.root.load(Acquire, barrier).as_ref() {
-            if let Some(value) = root_ref.search(key, barrier) {
-                return Some(reader(key, value));
+            if let Some(val) = root_ref.search(key, barrier) {
+                return Some(reader(key, val));
             }
         }
         None

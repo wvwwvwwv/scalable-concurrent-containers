@@ -375,6 +375,43 @@ mod hashmap_test {
         }
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn read() {
+        let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
+        let num_tasks = 4;
+        let workload_size = 1024 * 1024;
+
+        for k in 0..num_tasks {
+            assert!(hashmap.insert(k, k).is_ok());
+        }
+
+        let mut task_handles = Vec::with_capacity(num_tasks);
+        let barrier = Arc::new(AsyncBarrier::new(num_tasks));
+        for task_id in 0..num_tasks {
+            let barrier_cloned = barrier.clone();
+            let hashmap_cloned = hashmap.clone();
+            task_handles.push(tokio::task::spawn(async move {
+                barrier_cloned.wait().await;
+                if task_id == 0 {
+                    for k in num_tasks..workload_size {
+                        assert!(hashmap_cloned.insert(k, k).is_ok());
+                    }
+                    for k in num_tasks..workload_size {
+                        assert!(hashmap_cloned.remove(&k).is_some());
+                    }
+                } else {
+                    for k in 0..num_tasks {
+                        assert!(hashmap_cloned.read(&k, |_, _| ()).is_some());
+                    }
+                }
+            }));
+        }
+
+        for r in futures::future::join_all(task_handles).await {
+            assert!(r.is_ok());
+        }
+    }
+
     proptest! {
         #[test]
         fn insert(key in 0_usize..16) {
@@ -567,6 +604,43 @@ mod hashindex_test {
         }
         assert_eq!(hashindex1.len(), 0);
         assert_eq!(hashindex2.len(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn read() {
+        let hashindex: Arc<HashIndex<usize, usize>> = Arc::new(HashIndex::default());
+        let num_tasks = 4;
+        let workload_size = 1024 * 1024;
+
+        for k in 0..num_tasks {
+            assert!(hashindex.insert(k, k).is_ok());
+        }
+
+        let mut task_handles = Vec::with_capacity(num_tasks);
+        let barrier = Arc::new(AsyncBarrier::new(num_tasks));
+        for task_id in 0..num_tasks {
+            let barrier_cloned = barrier.clone();
+            let hashindex_cloned = hashindex.clone();
+            task_handles.push(tokio::task::spawn(async move {
+                barrier_cloned.wait().await;
+                if task_id == 0 {
+                    for k in num_tasks..workload_size {
+                        assert!(hashindex_cloned.insert(k, k).is_ok());
+                    }
+                    for k in num_tasks..workload_size {
+                        assert!(hashindex_cloned.remove(&k));
+                    }
+                } else {
+                    for k in 0..num_tasks {
+                        assert!(hashindex_cloned.read(&k, |_, _| ()).is_some());
+                    }
+                }
+            }));
+        }
+
+        for r in futures::future::join_all(task_handles).await {
+            assert!(r.is_ok());
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -912,7 +986,7 @@ mod treeindex_test {
                 }
                 for key in first_key..(first_key + range / 2) {
                     assert!(tree_copied
-                        .read(&key, |key, value| assert_eq!(key, value))
+                        .read(&key, |key, val| assert_eq!(key, val))
                         .is_some());
                 }
                 for key in (first_key + range / 2)..(first_key + range) {
@@ -920,7 +994,7 @@ mod treeindex_test {
                 }
                 for key in (first_key + range / 2)..(first_key + range) {
                     assert!(tree_copied
-                        .read(&key, |key, value| assert_eq!(key, value))
+                        .read(&key, |key, val| assert_eq!(key, val))
                         .is_some());
                 }
             }));
@@ -930,18 +1004,13 @@ mod treeindex_test {
         }
         let mut found = 0;
         for key in 0..num_threads * range {
-            if tree
-                .read(&key, |key, value| assert_eq!(key, value))
-                .is_some()
-            {
+            if tree.read(&key, |key, val| assert_eq!(key, val)).is_some() {
                 found += 1;
             }
         }
         assert_eq!(found, num_threads * range);
         for key in 0..num_threads * range {
-            assert!(tree
-                .read(&key, |key, value| assert_eq!(key, value))
-                .is_some());
+            assert!(tree.read(&key, |key, val| assert_eq!(key, val)).is_some());
         }
 
         let barrier = ebr::Barrier::new();
@@ -1001,7 +1070,7 @@ mod treeindex_test {
                     }
                     for key in (first_key + 1)..(first_key + range) {
                         assert!(tree_copied
-                            .read(&key, |key, value| assert_eq!(key, value))
+                            .read(&key, |key, val| assert_eq!(key, val))
                             .is_some());
                     }
                     {
@@ -1035,7 +1104,7 @@ mod treeindex_test {
                     }
                     for key in (first_key + 1)..(first_key + range) {
                         assert!(tree_copied
-                            .read(&key, |key, value| assert_eq!(key, value))
+                            .read(&key, |key, val| assert_eq!(key, val))
                             .is_none());
                     }
                 }

@@ -54,13 +54,13 @@ impl TryFrom<u8> for Tag {
     type Error = u8;
 
     #[inline]
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
+    fn try_from(val: u8) -> Result<Self, Self::Error> {
+        match val {
             0 => Ok(Tag::None),
             1 => Ok(Tag::First),
             2 => Ok(Tag::Second),
             3 => Ok(Tag::Both),
-            _ => Err(value),
+            _ => Err(val),
         }
     }
 }

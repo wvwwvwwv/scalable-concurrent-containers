@@ -48,8 +48,8 @@ where
     {
         let hashmap =
             HashMap::with_capacity_and_hasher(access.size_hint().unwrap_or(0), H::default());
-        while let Some((key, value)) = access.next_entry()? {
-            let _result = hashmap.insert(key, value);
+        while let Some((key, val)) = access.next_entry()? {
+            let _result = hashmap.insert(key, val);
         }
         Ok(hashmap)
     }
@@ -215,8 +215,8 @@ where
     {
         let hashindex =
             HashIndex::with_capacity_and_hasher(access.size_hint().unwrap_or(0), H::default());
-        while let Some((key, value)) = access.next_entry()? {
-            let _result = hashindex.insert(key, value);
+        while let Some((key, val)) = access.next_entry()? {
+            let _result = hashindex.insert(key, val);
         }
         Ok(hashindex)
     }
@@ -297,8 +297,8 @@ where
         M: MapAccess<'d>,
     {
         let treeindex = TreeIndex::default();
-        while let Some((key, value)) = access.next_entry()? {
-            let _result = treeindex.insert(key, value);
+        while let Some((key, val)) = access.next_entry()? {
+            let _result = treeindex.insert(key, val);
         }
         Ok(treeindex)
     }

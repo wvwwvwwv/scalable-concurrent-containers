@@ -8,8 +8,8 @@ use std::alloc::{alloc, alloc_zeroed, dealloc, Layout};
 use std::borrow::Borrow;
 use std::hash::Hash;
 use std::mem::{align_of, needs_drop, size_of};
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::Ordering::{Relaxed, Release};
+use std::sync::atomic::{fence, AtomicUsize};
 
 /// [`CellArray`] is a special purpose array to manage [`DataBlock`].
 pub struct CellArray<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
@@ -146,7 +146,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     /// It returns an error if locking failed.
     #[allow(clippy::too_many_arguments)]
     #[inline]
-    pub(crate) fn kill_cell<Q, F: Fn(&Q) -> u64, C: Fn(&K, &V) -> (K, V), D>(
+    pub(crate) fn kill_cell<Q, F: Fn(&Q) -> u64, C: Fn(&K, &V) -> (K, V), D, const TRY_LOCK: bool>(
         &self,
         old_cell_locker: &mut Locker<K, V, LOCK_FREE>,
         old_cell_index: usize,
@@ -209,7 +209,9 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             while max_index <= offset {
                 let target_cell = self.cell_mut(max_index + target_cell_index);
                 let locker = unsafe {
-                    if let Some(async_wait) = async_wait.derive() {
+                    if TRY_LOCK {
+                        Locker::try_lock(target_cell, barrier)?.unwrap_unchecked()
+                    } else if let Some(async_wait) = async_wait.derive() {
                         Locker::try_lock_or_wait(target_cell, async_wait, barrier)?
                             .unwrap_unchecked()
                     } else {
@@ -221,18 +223,28 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
             }
 
             let target_cell = unsafe { target_cells[offset].as_mut().unwrap_unchecked() };
-            let new_entry = if LOCK_FREE {
-                copier(&old_entry.0, &old_entry.1)
-            } else {
-                old_cell_locker.extract(old_data_block, &mut entry_ptr, barrier)
-            };
-            target_cell.insert(
+            target_cell.insert_with(
                 self.data_block(target_cell_index + offset),
-                new_entry.0,
-                new_entry.1,
                 partial_hash,
+                || {
+                    // Stack unwinding during a call to `insert` will result in the entry being
+                    // removed from the map, any map entry modification should take place after all
+                    // the memory is reserved.
+                    if LOCK_FREE {
+                        copier(&old_entry.0, &old_entry.1)
+                    } else {
+                        old_cell_locker.extract(old_data_block, &mut entry_ptr, barrier)
+                    }
+                },
                 barrier,
             );
+
+            if LOCK_FREE {
+                // In order for readers that have observed the following erasure to see the above
+                // insertion, a `Release` fence is needed.
+                fence(Release);
+                old_cell_locker.erase(old_data_block, &mut entry_ptr);
+            }
         }
         old_cell_locker.purge(barrier);
         Ok(())
@@ -242,7 +254,13 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
     ///
     /// Returns `true` if `old_array` is null.
     #[inline]
-    pub(crate) fn partial_rehash<Q, F: Fn(&Q) -> u64, C: Fn(&K, &V) -> (K, V), D>(
+    pub(crate) fn partial_rehash<
+        Q,
+        F: Fn(&Q) -> u64,
+        C: Fn(&K, &V) -> (K, V),
+        D,
+        const TRY_LOCK: bool,
+    >(
         &self,
         hasher: F,
         copier: C,
@@ -315,13 +333,15 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> CellArray<K, V, LOCK_FR
 
             for old_cell_index in current..(current + CELL_LEN).min(old_array_num_cells) {
                 let old_cell = old_array.cell_mut(old_cell_index);
-                let lock_result = if let Some(async_wait) = async_wait.derive() {
+                let lock_result = if TRY_LOCK {
+                    Locker::try_lock(old_cell, barrier)?
+                } else if let Some(async_wait) = async_wait.derive() {
                     Locker::try_lock_or_wait(old_cell, async_wait, barrier)?
                 } else {
                     Locker::lock(old_cell, barrier)
                 };
                 if let Some(mut locker) = lock_result {
-                    self.kill_cell::<Q, F, C, D>(
+                    self.kill_cell::<Q, F, C, D, TRY_LOCK>(
                         &mut locker,
                         old_cell_index,
                         old_array,

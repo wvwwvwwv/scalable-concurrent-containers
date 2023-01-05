@@ -198,7 +198,7 @@ where
     pub(super) fn insert<D: DeriveAsyncWait>(
         &self,
         mut key: K,
-        mut value: V,
+        mut val: V,
         async_wait: &mut D,
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
@@ -209,7 +209,7 @@ where
                 if let Some(child_ref) = child_ptr.as_ref() {
                     if self.children.validate(metadata) {
                         // Data race resolution - see `LeafNode::search`.
-                        let insert_result = child_ref.insert(key, value);
+                        let insert_result = child_ref.insert(key, val);
                         match insert_result {
                             InsertResult::Success
                             | InsertResult::Duplicate(..)
@@ -226,7 +226,7 @@ where
                                 )?;
                                 if let InsertResult::Retry(k, v) = split_result {
                                     key = k;
-                                    value = v;
+                                    val = v;
                                     continue;
                                 }
                                 return Ok(split_result);
@@ -265,7 +265,7 @@ where
                 if !self.children.validate(metadata) {
                     continue;
                 }
-                let insert_result = unbounded.insert(key, value);
+                let insert_result = unbounded.insert(key, val);
                 match insert_result {
                     InsertResult::Success
                     | InsertResult::Duplicate(..)
@@ -282,7 +282,7 @@ where
                         )?;
                         if let InsertResult::Retry(k, v) = split_result {
                             key = k;
-                            value = v;
+                            val = v;
                             continue;
                         }
                         return Ok(split_result);
@@ -293,7 +293,7 @@ where
                     }
                 };
             }
-            return Ok(InsertResult::Retired(key, value));
+            return Ok(InsertResult::Retired(key, val));
         }
     }
 
@@ -636,7 +636,7 @@ where
     fn split_leaf<D: DeriveAsyncWait>(
         &self,
         key: K,
-        value: V,
+        val: V,
         full_leaf_key: Option<&K>,
         full_leaf_ptr: Ptr<Leaf<K, V>>,
         full_leaf: &AtomicArc<Leaf<K, V>>,
@@ -645,15 +645,15 @@ where
     ) -> Result<InsertResult<K, V>, (K, V)> {
         if !self.try_lock() {
             self.wait(async_wait);
-            return Err((key, value));
+            return Err((key, val));
         }
         if self.retired(Relaxed) {
             self.unlock();
-            return Ok(InsertResult::Retired(key, value));
+            return Ok(InsertResult::Retired(key, val));
         }
         if full_leaf_ptr != full_leaf.load(Relaxed, barrier) {
             self.unlock();
-            return Err((key, value));
+            return Err((key, val));
         }
 
         let prev = self
@@ -726,7 +726,7 @@ where
                     // Need to freeze the other leaf.
                     let frozen = high_key_leaf.freeze();
                     debug_assert!(frozen);
-                    return Ok(InsertResult::Full(key, value));
+                    return Ok(InsertResult::Full(key, val));
                 }
             };
 
@@ -776,7 +776,7 @@ where
         unused_leaf.map(|u| u.release(barrier));
 
         // Since a new leaf has been inserted, the caller can retry.
-        Ok(InsertResult::Retry(key, value))
+        Ok(InsertResult::Retry(key, val))
     }
 
     /// Tries to coalesce empty or obsolete leaves after a successful removal of an entry.

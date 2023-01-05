@@ -336,11 +336,11 @@ where
                 updater(k, v);
                 return;
             }
-            locker.insert(
+            let val = constructor();
+            locker.insert_with(
                 data_block,
-                key,
-                constructor(),
                 CellArray::<K, V, false>::partial_hash(hash),
+                || (key, val),
                 &barrier,
             );
         };
@@ -379,11 +379,11 @@ where
                         let (k, v) = entry_ptr.get_mut(data_block, &mut locker);
                         updater(k, v);
                     } else {
-                        locker.insert(
+                        let val = constructor();
+                        locker.insert_with(
                             data_block,
-                            key,
-                            constructor(),
                             CellArray::<K, V, false>::partial_hash(hash),
+                            || (key, val),
                             &barrier,
                         );
                     }
@@ -699,7 +699,7 @@ where
         let mut current_array_ptr = self.array.load(Acquire, &barrier);
         while let Some(current_array) = current_array_ptr.as_ref() {
             while !current_array.old_array(&barrier).is_null() {
-                if current_array.partial_rehash::<_, _, _, _>(
+                if current_array.partial_rehash::<_, _, _, _, false>(
                     |key| self.hash(key),
                     Self::copier,
                     &mut (),
@@ -763,7 +763,7 @@ where
             while !current_array.old_array(&Barrier::new()).is_null() {
                 let mut async_wait = AsyncWait::default();
                 let mut async_wait_pinned = Pin::new(&mut async_wait);
-                if current_array.partial_rehash::<_, _, _, _>(
+                if current_array.partial_rehash::<_, _, _, _, false>(
                     |key| self.hash(key),
                     Self::copier,
                     &mut async_wait_pinned,
@@ -919,7 +919,7 @@ where
         let mut current_array_ptr = self.array.load(Acquire, &barrier);
         while let Some(current_array) = current_array_ptr.as_ref() {
             while !current_array.old_array(&barrier).is_null() {
-                if current_array.partial_rehash::<_, _, _, _>(
+                if current_array.partial_rehash::<_, _, _, _, false>(
                     |key| self.hash(key),
                     Self::copier,
                     &mut (),
@@ -998,7 +998,7 @@ where
             while !current_array.old_array(&Barrier::new()).is_null() {
                 let mut async_wait = AsyncWait::default();
                 let mut async_wait_pinned = Pin::new(&mut async_wait);
-                if current_array.partial_rehash::<_, _, _, _>(
+                if current_array.partial_rehash::<_, _, _, _, false>(
                     |key| self.hash(key),
                     Self::copier,
                     &mut async_wait_pinned,

@@ -464,6 +464,27 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         }
     }
 
+    /// Tries to lock the [`Cell`].
+    #[inline]
+    pub(crate) fn try_lock(
+        cell: &'b mut Cell<K, V, LOCK_FREE>,
+        _barrier: &'b Barrier,
+    ) -> Result<Option<Locker<'b, K, V, LOCK_FREE>>, ()> {
+        let current = cell.state.load(Relaxed) & (!LOCK_MASK);
+        if (current & KILLED) == KILLED {
+            return Ok(None);
+        }
+        if cell
+            .state
+            .compare_exchange(current, current | LOCK, Acquire, Relaxed)
+            .is_ok()
+        {
+            Ok(Some(Locker { cell }))
+        } else {
+            Err(())
+        }
+    }
+
     /// Tries to lock the [`Cell`], and if it fails, pushes an [`AsyncWait`].
     #[inline]
     pub(crate) fn try_lock_or_wait(
@@ -508,14 +529,15 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         self.cell.get(data_block, key, partial_hash, barrier)
     }
 
-    /// Inserts a new key-value pair into the [`Cell`] without a uniqueness check.
+    /// Reserves memory insertion, and then constructs the key-value pair.
+    ///
+    /// `C` must not panic otherwise it leads to undefined behavior.
     #[inline]
-    pub(crate) fn insert(
+    pub(crate) fn insert_with<C: FnOnce() -> (K, V)>(
         &mut self,
         data_block: &DataBlock<K, V, CELL_LEN>,
-        key: K,
-        value: V,
         partial_hash: u8,
+        constructor: C,
         barrier: &Barrier,
     ) {
         assert!(self.cell.num_entries != u32::MAX, "array overflow");
@@ -534,13 +556,12 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                     preferred_index,
                 );
                 if free_index != LINKED_LEN {
-                    Self::insert_entry(
+                    Self::insert_entry_with(
                         &mut link_mut.metadata,
                         &link_mut.data_block,
                         free_index,
-                        key,
-                        value,
                         partial_hash,
+                        constructor,
                     );
                     self.cell.num_entries += 1;
                     return;
@@ -551,13 +572,15 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
 
             // Insert a new `Linked` at the linked list head.
             let head = self.cell.metadata.link.get_arc(Relaxed, barrier);
-            let link = Arc::new(Linked::new_with(
-                preferred_index,
-                key,
-                value,
-                partial_hash,
-                head,
-            ));
+            let link = Arc::new(Linked::new(head));
+            unsafe {
+                let link_mut = &mut *(link.as_ptr() as *mut Linked<K, V, LINKED_LEN>);
+                link_mut.data_block[preferred_index]
+                    .as_mut_ptr()
+                    .write(constructor());
+                link_mut.metadata.partial_hash_array[preferred_index] = partial_hash;
+                link_mut.metadata.occupied_bitmap |= 1_u32 << preferred_index;
+            }
             if let Some(head) = link.metadata.link.load(Relaxed, barrier).as_ref() {
                 head.prev_link
                     .store(link.as_ptr() as *mut Linked<K, V, LINKED_LEN>, Relaxed);
@@ -567,13 +590,12 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                 .link
                 .swap((Some(link), Tag::None), Release);
         } else {
-            Self::insert_entry(
+            Self::insert_entry_with(
                 &mut self.cell.metadata,
                 data_block,
                 free_index,
-                key,
-                value,
                 partial_hash,
+                constructor,
             );
         }
         self.cell.num_entries += 1;
@@ -669,26 +691,6 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         }
     }
 
-    /// Tries to lock the [`Cell`].
-    fn try_lock(
-        cell: &'b mut Cell<K, V, LOCK_FREE>,
-        _barrier: &'b Barrier,
-    ) -> Result<Option<Locker<'b, K, V, LOCK_FREE>>, ()> {
-        let current = cell.state.load(Relaxed) & (!LOCK_MASK);
-        if (current & KILLED) == KILLED {
-            return Ok(None);
-        }
-        if cell
-            .state
-            .compare_exchange(current, current | LOCK, Acquire, Relaxed)
-            .is_ok()
-        {
-            Ok(Some(Locker { cell }))
-        } else {
-            Err(())
-        }
-    }
-
     /// Gets the most optimal free slot index from the given bitmap.
     fn get_free_index<const LEN: usize>(bitmap: u32, preferred_index: usize) -> usize {
         let mut free_index = (bitmap | ((1_u32 << preferred_index) - 1)).trailing_ones() as usize;
@@ -699,18 +701,17 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     }
 
     /// Inserts a key-value pair in the slot.
-    fn insert_entry<const LEN: usize>(
+    fn insert_entry_with<C: FnOnce() -> (K, V), const LEN: usize>(
         metadata: &mut Metadata<K, V, LEN>,
         data_block: &DataBlock<K, V, LEN>,
         index: usize,
-        key: K,
-        value: V,
         partial_hash: u8,
+        constructor: C,
     ) {
         debug_assert!(index < LEN);
 
         unsafe {
-            (data_block[index].as_ptr() as *mut (K, V)).write((key, value));
+            (data_block[index].as_ptr() as *mut (K, V)).write(constructor());
             metadata.partial_hash_array[index] = partial_hash;
             if LOCK_FREE {
                 fence(Release);
@@ -889,29 +890,18 @@ pub(crate) struct Linked<K: 'static + Eq, V: 'static, const LEN: usize> {
 }
 
 impl<K: 'static + Eq, V: 'static, const LEN: usize> Linked<K, V, LEN> {
-    /// Creates a [`Linked`] with a single key-value pair constructed.
-    fn new_with(
-        index: usize,
-        key: K,
-        value: V,
-        partial_hash: u8,
-        next: Option<Arc<Linked<K, V, LINKED_LEN>>>,
-    ) -> Linked<K, V, LEN> {
-        let mut linked = Linked {
+    /// Creates an empty [`Linked`].
+    fn new(next: Option<Arc<Linked<K, V, LINKED_LEN>>>) -> Linked<K, V, LEN> {
+        Linked {
             metadata: Metadata {
                 link: next.map_or_else(AtomicArc::null, AtomicArc::from),
-                occupied_bitmap: 1_u32 << index,
+                occupied_bitmap: 0,
                 removed_bitmap: 0,
                 partial_hash_array: [0; LEN],
             },
             data_block: unsafe { MaybeUninit::uninit().assume_init() },
             prev_link: AtomicPtr::default(),
-        };
-        unsafe {
-            linked.data_block[index].as_mut_ptr().write((key, value));
         }
-        linked.metadata.partial_hash_array[index] = partial_hash;
-        linked
     }
 }
 
@@ -969,11 +959,10 @@ mod test {
                     }
                     assert_eq!(sum % 256, 0);
                     if i == 0 {
-                        exclusive_locker.insert(
+                        exclusive_locker.insert_with(
                             &data_block_copied,
-                            task_id,
-                            0,
                             (task_id % CELL_LEN).try_into().unwrap(),
+                            || (task_id, 0),
                             &barrier,
                         );
                     } else {
