@@ -41,7 +41,6 @@ pub use tree_index::TreeIndex;
 
 pub mod ebr;
 
-mod channel;
 mod exit_guard;
 mod hash_table;
 mod wait_queue;
