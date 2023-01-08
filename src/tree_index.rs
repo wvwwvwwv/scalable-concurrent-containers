@@ -42,9 +42,15 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 ///
 /// ## The key statistics for [`TreeIndex`]
 ///
-/// * The maximum number of key-value pairs that a leaf can store: 14.
+/// * The maximum number of entries that a leaf can contain: 14.
 /// * The maximum number of leaves or child nodes that a node can point to: 15.
-/// * The size of metadata per key-value pair in a leaf: ~3-byte.
+///
+/// ## Locking behavior
+///
+/// Read access is always lock-free and non-blocking. Write access to an entry is also lock-free
+/// and non-blocking as long as no structural changes are required. However, when nodes are being
+/// split or merged by a write operation, other write operations on keys in the affected range are
+/// blocked.
 pub struct TreeIndex<K, V>
 where
     K: 'static + Clone + Ord + Sync,

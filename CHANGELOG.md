@@ -1,5 +1,9 @@
 # Changelog
 
+1.0.8
+
+* Doc update.
+
 1.0.7
 
 * Minor performance optimization.

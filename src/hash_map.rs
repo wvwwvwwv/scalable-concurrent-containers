@@ -20,27 +20,43 @@ use std::sync::atomic::{AtomicU8, AtomicUsize};
 /// highly concurrent workload. The use of an epoch-based reclamation technique enables the hash
 /// map to implement non-blocking resizing and fine-granular locking. A [`HashMap`] instance has a
 /// single array of *buckets* instead of a fixed number of lock-protected hash tables. Each bucket
-/// has a fixed size array of key-value pairs and a customized mutex to protect the data, and it
-/// resolves hash conflicts by allocating a linked list of bucket-local hash tables.
+/// has a fixed size array of entries and a customized mutex to protect the data, and it resolves
+/// hash conflicts by allocating a linked list of bucket-local hash tables.
 ///
 /// ## The key features of [`HashMap`]
 ///
-/// * Non-sharded: the data is stored in a single array of key-value pairs.
+/// * Non-sharded: the data is stored in a single array of entry buckets.
 /// * Non-blocking resizing: resizing does not block other threads or tasks.
 /// * Automatic resizing: it automatically grows or shrinks.
 /// * Incremental resizing: each access to the hash map is mandated to move a fixed
-///   number of key-value pairs if an old array is present.
+///   number of entries if an old array is present.
 /// * No busy waiting: the thread or asynchronous task is suspended until the desired resource
 ///   becomes available.
 /// * Linearizability: [`HashMap`] insert/read/remove/update/upsert methods are linearizable.
 ///
 /// ## The key statistics for [`HashMap`]
 ///
-/// * The expected size of metadata for a single key-value pair: 2-byte.
+/// * The expected size of metadata for a single entry: 2-byte.
 /// * The expected number of atomic write operations required for an operation on a single key: 2.
 /// * The expected number of atomic variables accessed during a single key operation: 2.
 /// * The number of entries managed by a single bucket without a linked list: 32.
 /// * The expected maximum linked list length when a resize is triggered: log(capacity) / 8.
+///
+/// ## Locking behavior
+///
+/// ### Entry access
+///
+/// Read/write access to an entry requires a single shared/exclusive lock on the bucket where the
+/// size of a bucket is fixed regardless of the size of the [`HashMap`]. There are no
+/// container-level locks, therefore, the larger the [`HashMap`] gets, the lower the chance that a
+/// bucket-level lock is contended becomes.
+///
+/// ### Resize
+///
+/// Resizing of the [`HashMap`] is totally non-blocking and lock-free. Resizing is analogous to
+/// pushing a new bucket array into a lock-free stack. Each individual entry is relocated to the
+/// new bucket array on future access to the [`HashMap`], and the old bucket array gets dropped
+/// when it becomes empty.
 pub struct HashMap<K, V, H = RandomState>
 where
     K: 'static + Eq + Hash + Sync,

@@ -9,6 +9,7 @@ A collection of high performance containers and utilities for concurrent and asy
 #### Features
 
 - Asynchronous and synchronous methods work in tandem.
+- Every blocking method has asynchronous counterpart.
 - Formally verified [EBR](#EBR) implementation.
 - Zero dependencies on other crates.
 - Zero spin-locks and busy-waiting.
@@ -33,6 +34,16 @@ A collection of high performance containers and utilities for concurrent and asy
 ## HashMap
 
 [HashMap](#HashMap) is a concurrent hash map that is targeted at highly concurrent write-heavy workloads. It uses [EBR](#EBR) for its hash table memory management in order to implement non-blocking resizing and fine-granular locking without static data sharding; *it is not a lock-free data structure, and each access to a single key is serialized by a bucket-level mutex*.
+
+### Locking behavior
+
+#### Entry access
+
+Read/write access to an entry requires a single shared/exclusive lock on the bucket where the size of a bucket is fixed regardless of the size of the container. There are no container-level locks, therefore, the larger the container gets, the lower the chance that a bucket-level lock is contended becomes.
+
+#### Resize
+
+Resizing of the container is totally non-blocking and lock-free. _Resizing is analogous to pushing a new bucket array into a lock-free stack_. Each individual entry is relocated to the new bucket array on future access to the container, and the old bucket array gets dropped when it becomes empty.
 
 ### Examples
 
@@ -168,6 +179,10 @@ assert_eq!(entry_ref, (&1, &0));
 ## TreeIndex
 
 [TreeIndex](#TreeIndex) is a B+ tree variant optimized for read operations. The `ebr` module enables it to implement lock-free read and scan methods.
+
+### Locking behavior
+
+Read access is always lock-free and non-blocking. Write access to an entry is also lock-free and non-blocking as long as no structural changes are required. However, when nodes are being split or merged by a write operation, other write operations on keys in the affected range are blocked.
 
 ### Examples
 
@@ -412,11 +427,18 @@ assert!(head.next_ptr(Relaxed, &barrier).is_null());
 
 ## Performance
 
+### [HashMap](#HashMap) and [HashIndex](#HashIndex)
+
 Comparison with [DashMap](https://github.com/xacrimon/dashmap).
 
 - [Results on Apple M1 (8 cores)](https://github.com/wvwwvwwv/conc-map-bench).
 - [Results on Intel Xeon (VM, 40 cores)](https://github.com/wvwwvwwv/conc-map-bench/tree/Intel).
-- The benchmark test a fork of [conc-map-bench](https://github.com/xacrimon/conc-map-bench).
+- The benchmark test is a fork of [conc-map-bench](https://github.com/xacrimon/conc-map-bench).
 - *Interpret the results cautiously as benchmarks do not represent real world workloads.*
+
+### [EBR](#EBR)
+
+- The average time taken to enter and exit a protected region: 2.3ns on Apple M1.
+
 
 ## [Changelog](https://github.com/wvwwvwwv/scalable-concurrent-containers/blob/main/CHANGELOG.md)
