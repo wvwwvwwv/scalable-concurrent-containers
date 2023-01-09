@@ -1,8 +1,8 @@
 //! [`HashIndex`] is a read-optimized concurrent and asynchronous hash map.
 
 use super::ebr::{Arc, AtomicArc, Barrier};
-use super::hash_table::cell::{Cell, EntryPtr, Locker};
-use super::hash_table::cell_array::CellArray;
+use super::hash_table::bucket::{Bucket, EntryPtr, Locker};
+use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::HashTable;
 use super::wait_queue::{AsyncWait, DeriveAsyncWait};
 
@@ -33,7 +33,7 @@ use std::sync::atomic::Ordering::Acquire;
 /// * The expected size of metadata for a single key-value pair: 2-byte.
 /// * The expected number of atomic write operations required for an operation on a single key: 2.
 /// * The expected number of atomic variables accessed during a single key operation: 2.
-/// * The number of entries managed by a single metadata cell without a linked list: 32.
+/// * The number of entries managed by a single bucket without a linked list: 32.
 /// * The expected maximum linked list length when resize is triggered: log(capacity) / 8.
 pub struct HashIndex<K, V, H = RandomState>
 where
@@ -41,7 +41,7 @@ where
     V: 'static + Clone + Sync,
     H: BuildHasher,
 {
-    array: AtomicArc<CellArray<K, V, true>>,
+    array: AtomicArc<BucketArray<K, V, true>>,
     minimum_capacity: usize,
     resize_mutex: AtomicU8,
     build_hasher: H,
@@ -67,7 +67,7 @@ where
     #[inline]
     pub fn with_hasher(build_hasher: H) -> HashIndex<K, V, H> {
         HashIndex {
-            array: AtomicArc::from(Arc::new(CellArray::<K, V, true>::new(
+            array: AtomicArc::from(Arc::new(BucketArray::<K, V, true>::new(
                 Self::DEFAULT_CAPACITY,
                 AtomicArc::null(),
             ))),
@@ -97,7 +97,7 @@ where
     pub fn with_capacity_and_hasher(capacity: usize, build_hasher: H) -> HashIndex<K, V, H> {
         let initial_capacity = capacity.max(Self::DEFAULT_CAPACITY);
         HashIndex {
-            array: AtomicArc::from(Arc::new(CellArray::<K, V, true>::new(
+            array: AtomicArc::from(Arc::new(BucketArray::<K, V, true>::new(
                 initial_capacity,
                 AtomicArc::null(),
             ))),
@@ -488,12 +488,12 @@ where
                     break;
                 }
             }
-            for index in 0..current_array.num_cells() {
-                let cell = current_array.cell_mut(index);
-                if let Some(mut locker) = Locker::lock(cell, &barrier) {
+            for index in 0..current_array.num_buckets() {
+                let bucket = current_array.bucket_mut(index);
+                if let Some(mut locker) = Locker::lock(bucket, &barrier) {
                     let data_block = current_array.data_block(index);
                     let mut entry_ptr = EntryPtr::new(&barrier);
-                    while entry_ptr.next(locker.cell(), &barrier) {
+                    while entry_ptr.next(locker.bucket(), &barrier) {
                         locker.erase(data_block, &mut entry_ptr);
                         num_removed = num_removed.saturating_add(1);
                     }
@@ -544,29 +544,29 @@ where
                 async_wait_pinned.await;
             }
 
-            for cell_index in 0..current_array.num_cells() {
+            for index in 0..current_array.num_buckets() {
                 let killed = loop {
                     let mut async_wait = AsyncWait::default();
                     let mut async_wait_pinned = Pin::new(&mut async_wait);
                     {
                         let barrier = Barrier::new();
-                        let cell = current_array.cell_mut(cell_index);
+                        let bucket = current_array.bucket_mut(index);
                         if let Ok(locker) = Locker::try_lock_or_wait(
-                            cell,
+                            bucket,
                             unsafe { async_wait_pinned.derive().unwrap_unchecked() },
                             &barrier,
                         ) {
                             if let Some(mut locker) = locker {
-                                let data_block = current_array.data_block(cell_index);
+                                let data_block = current_array.data_block(index);
                                 let mut entry_ptr = EntryPtr::new(&barrier);
-                                while entry_ptr.next(locker.cell(), &barrier) {
+                                while entry_ptr.next(locker.bucket(), &barrier) {
                                     locker.erase(data_block, &mut entry_ptr);
                                     num_removed = num_removed.saturating_add(1);
                                 }
                                 break false;
                             }
 
-                            // The `Cell` having been killed means that a new array has been
+                            // The bucket having been killed means that a new array has been
                             // allocated.
                             break true;
                         };
@@ -688,7 +688,7 @@ where
             hash_index: self,
             current_array: None,
             current_index: 0,
-            current_cell: None,
+            current_bucket: None,
             current_entry_ptr: EntryPtr::new(barrier),
             barrier,
         }
@@ -767,7 +767,7 @@ where
     pub fn with_capacity(capacity: usize) -> HashIndex<K, V, RandomState> {
         let initial_capacity = capacity.max(Self::DEFAULT_CAPACITY);
         HashIndex {
-            array: AtomicArc::from(Arc::new(CellArray::<K, V, true>::new(
+            array: AtomicArc::from(Arc::new(BucketArray::<K, V, true>::new(
                 initial_capacity,
                 AtomicArc::null(),
             ))),
@@ -800,7 +800,7 @@ where
     #[inline]
     fn default() -> Self {
         HashIndex {
-            array: AtomicArc::from(Arc::new(CellArray::<K, V, true>::new(
+            array: AtomicArc::from(Arc::new(BucketArray::<K, V, true>::new(
                 Self::DEFAULT_CAPACITY,
                 AtomicArc::null(),
             ))),
@@ -826,7 +826,7 @@ where
         (key.clone(), val.clone())
     }
     #[inline]
-    fn cell_array(&self) -> &AtomicArc<CellArray<K, V, true>> {
+    fn bucket_array(&self) -> &AtomicArc<BucketArray<K, V, true>> {
         &self.array
     }
     #[inline]
@@ -871,9 +871,9 @@ where
     H: BuildHasher,
 {
     hash_index: &'h HashIndex<K, V, H>,
-    current_array: Option<&'b CellArray<K, V, true>>,
+    current_array: Option<&'b BucketArray<K, V, true>>,
     current_index: usize,
-    current_cell: Option<&'b Cell<K, V, true>>,
+    current_bucket: Option<&'b Bucket<K, V, true>>,
     current_entry_ptr: EntryPtr<'b, K, V, true>,
     barrier: &'b Barrier,
 }
@@ -900,25 +900,25 @@ where
                 current_array
             };
             self.current_array.replace(array);
-            self.current_cell.replace(array.cell(0));
+            self.current_bucket.replace(array.bucket(0));
             self.current_entry_ptr = EntryPtr::new(self.barrier);
             array
         };
 
-        // Go to the next Cell.
+        // Go to the next bucket.
         loop {
-            if let Some(cell) = self.current_cell.take() {
-                // Go to the next entry in the Cell.
-                if self.current_entry_ptr.next(cell, self.barrier) {
+            if let Some(bucket) = self.current_bucket.take() {
+                // Go to the next entry in the bucket.
+                if self.current_entry_ptr.next(bucket, self.barrier) {
                     let (k, v) = self
                         .current_entry_ptr
                         .get(array.data_block(self.current_index));
-                    self.current_cell.replace(cell);
+                    self.current_bucket.replace(bucket);
                     return Some((k, v));
                 }
             }
             self.current_index += 1;
-            if self.current_index == array.num_cells() {
+            if self.current_index == array.num_buckets() {
                 let current_array = self.hash_index.current_array_unchecked(self.barrier);
                 if self
                     .current_array
@@ -940,7 +940,7 @@ where
                     array = current_array;
                     self.current_array.replace(array);
                     self.current_index = 0;
-                    self.current_cell.replace(array.cell(0));
+                    self.current_bucket.replace(array.bucket(0));
                     self.current_entry_ptr = EntryPtr::new(self.barrier);
                     continue;
                 }
@@ -953,11 +953,12 @@ where
                 };
                 self.current_array.replace(array);
                 self.current_index = 0;
-                self.current_cell.replace(array.cell(0));
+                self.current_bucket.replace(array.bucket(0));
                 self.current_entry_ptr = EntryPtr::new(self.barrier);
                 continue;
             }
-            self.current_cell.replace(array.cell(self.current_index));
+            self.current_bucket
+                .replace(array.bucket(self.current_index));
             self.current_entry_ptr = EntryPtr::new(self.barrier);
         }
         None

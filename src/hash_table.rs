@@ -1,8 +1,8 @@
-pub mod cell;
-pub mod cell_array;
+pub mod bucket;
+pub mod bucket_array;
 
-use cell::{DataBlock, EntryPtr, Locker, Reader, CELL_LEN};
-use cell_array::CellArray;
+use bucket::{DataBlock, EntryPtr, Locker, Reader, BUCKET_LEN};
+use bucket_array::BucketArray;
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
 use crate::exit_guard::ExitGuard;
@@ -22,7 +22,7 @@ where
     H: BuildHasher,
 {
     /// The default capacity.
-    const DEFAULT_CAPACITY: usize = CELL_LEN * 2;
+    const DEFAULT_CAPACITY: usize = BUCKET_LEN * 2;
 
     /// Returns the hash value of the key.
     #[inline]
@@ -43,8 +43,8 @@ where
     /// being `Clone`.
     fn copier(key: &K, val: &V) -> (K, V);
 
-    /// Returns a reference to the [`CellArray`] pointer.
-    fn cell_array(&self) -> &AtomicArc<CellArray<K, V, LOCK_FREE>>;
+    /// Returns a reference to the [`BucketArray`] pointer.
+    fn bucket_array(&self) -> &AtomicArc<BucketArray<K, V, LOCK_FREE>>;
 
     /// Returns the minimum allowed capacity.
     fn minimum_capacity(&self) -> usize;
@@ -54,9 +54,12 @@ where
 
     /// Returns a reference to the current array without checking the pointer value.
     #[inline]
-    fn current_array_unchecked<'b>(&self, barrier: &'b Barrier) -> &'b CellArray<K, V, LOCK_FREE> {
+    fn current_array_unchecked<'b>(
+        &self,
+        barrier: &'b Barrier,
+    ) -> &'b BucketArray<K, V, LOCK_FREE> {
         // An acquire fence is required to correctly load the contents of the array.
-        let current_array_ptr = self.cell_array().load(Acquire, barrier);
+        let current_array_ptr = self.bucket_array().load(Acquire, barrier);
         unsafe { current_array_ptr.as_ref().unwrap_unchecked() }
     }
 
@@ -65,13 +68,13 @@ where
     fn num_entries(&self, barrier: &Barrier) -> usize {
         let current_array = self.current_array_unchecked(barrier);
         let mut num_entries = 0;
-        for i in 0..current_array.num_cells() {
-            num_entries += current_array.cell(i).num_entries();
+        for i in 0..current_array.num_buckets() {
+            num_entries += current_array.bucket(i).num_entries();
         }
         let old_array_ptr = current_array.old_array(barrier);
         if let Some(old_array) = old_array_ptr.as_ref() {
-            for i in 0..old_array.num_cells() {
-                num_entries += old_array.cell(i).num_entries();
+            for i in 0..old_array.num_buckets() {
+                num_entries += old_array.bucket(i).num_entries();
             }
         }
         num_entries
@@ -84,42 +87,42 @@ where
         current_array.num_entries()
     }
 
-    /// Estimates the number of entries using by sampling the specified number of cells.
+    /// Estimates the number of entries using by sampling the specified number of buckets.
     #[inline]
     fn estimate(
-        array: &CellArray<K, V, LOCK_FREE>,
+        array: &BucketArray<K, V, LOCK_FREE>,
         sampling_index: usize,
-        num_cells_to_sample: usize,
+        num_buckets_to_sample: usize,
     ) -> usize {
         let mut num_entries = 0;
-        let start = if sampling_index + num_cells_to_sample >= array.num_cells() {
+        let start = if sampling_index + num_buckets_to_sample >= array.num_buckets() {
             0
         } else {
             sampling_index
         };
-        for i in start..(start + num_cells_to_sample) {
-            num_entries += array.cell(i).num_entries();
+        for i in start..(start + num_buckets_to_sample) {
+            num_entries += array.bucket(i).num_entries();
         }
-        num_entries * (array.num_cells() / num_cells_to_sample)
+        num_entries * (array.num_buckets() / num_buckets_to_sample)
     }
 
     /// Checks whether rebuilding the entire hash table is required.
     #[inline]
     fn check_rebuild(
-        array: &CellArray<K, V, LOCK_FREE>,
+        array: &BucketArray<K, V, LOCK_FREE>,
         sampling_index: usize,
-        num_cells_to_sample: usize,
+        num_buckets_to_sample: usize,
     ) -> bool {
-        let mut num_cells_to_rebuild = 0;
-        let start = if sampling_index + num_cells_to_sample >= array.num_cells() {
+        let mut num_buckets_to_rebuild = 0;
+        let start = if sampling_index + num_buckets_to_sample >= array.num_buckets() {
             0
         } else {
             sampling_index
         };
-        for i in start..(start + num_cells_to_sample) {
-            if array.cell(i).need_rebuild() {
-                num_cells_to_rebuild += 1;
-                if num_cells_to_rebuild > num_cells_to_sample / 2 {
+        for i in start..(start + num_buckets_to_sample) {
+            if array.bucket(i).need_rebuild() {
+                num_buckets_to_rebuild += 1;
+                if num_buckets_to_rebuild > num_buckets_to_sample / 2 {
                     return true;
                 }
             }
@@ -144,7 +147,7 @@ where
                 }
                 locker.insert_with(
                     data_block,
-                    CellArray::<K, V, LOCK_FREE>::partial_hash(hash),
+                    BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
                     || (key, val),
                     barrier,
                 );
@@ -179,11 +182,11 @@ where
                         barrier,
                     ) != Ok(true)
                     {
-                        let cell_index = old_array.calculate_cell_index(hash);
-                        if let Some((k, v)) = old_array.cell(cell_index).search(
-                            old_array.data_block(cell_index),
+                        let index = old_array.calculate_bucket_index(hash);
+                        if let Some((k, v)) = old_array.bucket(index).search(
+                            old_array.data_block(index),
                             key,
-                            CellArray::<K, V, LOCK_FREE>::partial_hash(hash),
+                            BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
                             barrier,
                         ) {
                             return Ok(Some((k, v)));
@@ -194,28 +197,28 @@ where
                 }
             };
 
-            let cell_index = current_array.calculate_cell_index(hash);
-            let cell = current_array.cell(cell_index);
+            let index = current_array.calculate_bucket_index(hash);
+            let bucket = current_array.bucket(index);
             if LOCK_FREE {
-                if let Some(entry) = cell.search(
-                    current_array.data_block(cell_index),
+                if let Some(entry) = bucket.search(
+                    current_array.data_block(index),
                     key,
-                    CellArray::<K, V, LOCK_FREE>::partial_hash(hash),
+                    BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
                     barrier,
                 ) {
                     return Ok(Some((&entry.0, &entry.1)));
                 }
             } else {
                 let lock_result = if let Some(async_wait) = async_wait.derive() {
-                    Reader::try_lock_or_wait(cell, async_wait, barrier)?
+                    Reader::try_lock_or_wait(bucket, async_wait, barrier)?
                 } else {
-                    Reader::lock(cell, barrier)
+                    Reader::lock(bucket, barrier)
                 };
                 if let Some(reader) = lock_result {
-                    if let Some((key, val)) = reader.cell().search(
-                        current_array.data_block(cell_index),
+                    if let Some((key, val)) = reader.bucket().search(
+                        current_array.data_block(index),
                         key,
-                        CellArray::<K, V, LOCK_FREE>::partial_hash(hash),
+                        BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
                         barrier,
                     ) {
                         return Ok(Some((key, val)));
@@ -263,35 +266,35 @@ where
                 true
             };
 
-            let cell_index = current_array.calculate_cell_index(hash);
-            let cell = current_array.cell_mut(cell_index);
+            let index = current_array.calculate_bucket_index(hash);
+            let bucket = current_array.bucket_mut(index);
             let lock_result = if let Some(async_wait) = async_wait.derive() {
-                match Locker::try_lock_or_wait(cell, async_wait, barrier) {
+                match Locker::try_lock_or_wait(bucket, async_wait, barrier) {
                     Ok(l) => l,
                     Err(_) => break,
                 }
             } else {
-                Locker::lock(cell, barrier)
+                Locker::lock(bucket, barrier)
             };
             if let Some(mut locker) = lock_result {
-                let data_block = current_array.data_block(cell_index);
+                let data_block = current_array.data_block(index);
                 let mut entry_ptr = locker.get(
                     data_block,
                     key,
-                    CellArray::<K, V, LOCK_FREE>::partial_hash(hash),
+                    BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
                     barrier,
                 );
                 if entry_ptr.is_valid() && condition(&entry_ptr.get(data_block).1) {
                     let result = locker.erase(data_block, &mut entry_ptr);
-                    if shrinkable && cell_index % CELL_LEN == 0 {
-                        if locker.cell().num_entries() < CELL_LEN / 16
+                    if shrinkable && index % BUCKET_LEN == 0 {
+                        if locker.bucket().num_entries() < BUCKET_LEN / 16
                             && current_array.num_entries() > self.minimum_capacity()
                         {
                             drop(locker);
-                            self.try_shrink(current_array, cell_index, barrier);
-                        } else if LOCK_FREE && locker.cell().need_rebuild() {
+                            self.try_shrink(current_array, index, barrier);
+                        } else if LOCK_FREE && locker.bucket().need_rebuild() {
                             drop(locker);
-                            self.try_rebuild(current_array, cell_index, barrier);
+                            self.try_rebuild(current_array, index, barrier);
                         }
                     }
                     return Ok(post_processor(Some(result)));
@@ -317,7 +320,7 @@ where
     ) -> Result<
         (
             Locker<'b, K, V, LOCK_FREE>,
-            &'b DataBlock<K, V, CELL_LEN>,
+            &'b DataBlock<K, V, BUCKET_LEN>,
             EntryPtr<'b, K, V, LOCK_FREE>,
         ),
         (),
@@ -330,12 +333,12 @@ where
         // It is guaranteed that the thread reads a consistent snapshot of the current and old
         // array pair by a release memory barrier in the resize function, hence the following
         // procedure is correct.
-        //  - The thread reads `self.array`, and it kills the target cell in the old array if
-        //    there is one attached to it, and inserts the key into array.
+        //  - The thread reads `self.array`, and it kills the target bucket in the old array if
+        //    there is one attached to it, and inserts the key into `self.array`.
         // There are two cases.
         //  1. The thread reads an old version of `self.array`.
         //    If there is another thread having read the latest version of `self.array`,
-        //    trying to insert the same key, it will try to kill the Cell in the old version
+        //    trying to insert the same key, it will try to kill the bucket in the old version
         //    of `self.array`, thus competing with each other.
         //  2. The thread reads the latest version of `self.array`.
         //    If the array is deprecated while inserting the key, it falls into case 1.
@@ -345,25 +348,25 @@ where
                 self.move_entry(current_array, old_array, hash, async_wait, barrier)?;
             }
 
-            let cell_index = current_array.calculate_cell_index(hash);
-            let cell = current_array.cell_mut(cell_index);
+            let index = current_array.calculate_bucket_index(hash);
+            let bucket = current_array.bucket_mut(index);
 
             // Try to resize the array.
-            if cell_index % CELL_LEN == 0 && cell.num_entries() >= CELL_LEN - 1 {
-                self.try_enlarge(current_array, cell_index, cell.num_entries(), barrier);
+            if index % BUCKET_LEN == 0 && bucket.num_entries() >= BUCKET_LEN - 1 {
+                self.try_enlarge(current_array, index, bucket.num_entries(), barrier);
             }
 
             let lock_result = if let Some(async_wait) = async_wait.derive() {
-                Locker::try_lock_or_wait(cell, async_wait, barrier)?
+                Locker::try_lock_or_wait(bucket, async_wait, barrier)?
             } else {
-                Locker::lock(cell, barrier)
+                Locker::lock(bucket, barrier)
             };
             if let Some(locker) = lock_result {
-                let data_block = current_array.data_block(cell_index);
+                let data_block = current_array.data_block(index);
                 let entry_ptr = locker.get(
                     data_block,
                     key,
-                    CellArray::<K, V, LOCK_FREE>::partial_hash(hash),
+                    BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
                     barrier,
                 );
                 return Ok((locker, data_block, entry_ptr));
@@ -379,8 +382,8 @@ where
     #[inline]
     fn move_entry<Q, D>(
         &self,
-        current_array: &CellArray<K, V, LOCK_FREE>,
-        old_array: &CellArray<K, V, LOCK_FREE>,
+        current_array: &BucketArray<K, V, LOCK_FREE>,
+        old_array: &BucketArray<K, V, LOCK_FREE>,
         hash: u64,
         async_wait: &mut D,
         barrier: &Barrier,
@@ -396,17 +399,17 @@ where
             async_wait,
             barrier,
         )? {
-            let cell_index = old_array.calculate_cell_index(hash);
-            let cell = old_array.cell_mut(cell_index);
+            let index = old_array.calculate_bucket_index(hash);
+            let bucket = old_array.bucket_mut(index);
             let lock_result = if let Some(async_wait) = async_wait.derive() {
-                Locker::try_lock_or_wait(cell, async_wait, barrier)?
+                Locker::try_lock_or_wait(bucket, async_wait, barrier)?
             } else {
-                Locker::lock(cell, barrier)
+                Locker::lock(bucket, barrier)
             };
             if let Some(mut locker) = lock_result {
-                current_array.kill_cell::<Q, _, _, _, false>(
+                current_array.kill_bucket::<Q, _, _, _, false>(
                     &mut locker,
-                    cell_index,
+                    index,
                     old_array,
                     &|key| self.hash(key),
                     &Self::copier,
@@ -423,17 +426,17 @@ where
     #[inline]
     fn try_enlarge(
         &self,
-        array: &CellArray<K, V, LOCK_FREE>,
-        cell_index: usize,
+        array: &BucketArray<K, V, LOCK_FREE>,
+        index: usize,
         mut num_entries: usize,
         barrier: &Barrier,
     ) {
         let sample_size = array.sample_size();
-        let threshold = sample_size * (CELL_LEN / 8) * 7;
+        let threshold = sample_size * (BUCKET_LEN / 8) * 7;
         if num_entries > threshold
             || (1..sample_size).any(|i| {
                 num_entries += array
-                    .cell((cell_index + i) % array.num_cells())
+                    .bucket((index + i) % array.num_buckets())
                     .num_entries();
                 num_entries > threshold
             })
@@ -444,13 +447,13 @@ where
 
     /// Tries to shrink the array if the load factor is estimated at around `1/16`.
     #[inline]
-    fn try_shrink(&self, array: &CellArray<K, V, LOCK_FREE>, cell_index: usize, barrier: &Barrier) {
+    fn try_shrink(&self, array: &BucketArray<K, V, LOCK_FREE>, index: usize, barrier: &Barrier) {
         let sample_size = array.sample_size();
-        let threshold = sample_size * CELL_LEN / 16;
+        let threshold = sample_size * BUCKET_LEN / 16;
         let mut num_entries = 0;
         if !(1..sample_size).any(|i| {
             num_entries += array
-                .cell((cell_index + i) % array.num_cells())
+                .bucket((index + i) % array.num_buckets())
                 .num_entries();
             num_entries >= threshold
         }) {
@@ -459,23 +462,18 @@ where
     }
 
     /// Tries to rebuild the array if there are no usable entry slots in at least half of the
-    /// `Cells` in the sampling range.
-    fn try_rebuild(
-        &self,
-        array: &CellArray<K, V, LOCK_FREE>,
-        cell_index: usize,
-        barrier: &Barrier,
-    ) {
+    /// buckets in the sampling range.
+    fn try_rebuild(&self, array: &BucketArray<K, V, LOCK_FREE>, index: usize, barrier: &Barrier) {
         let sample_size = array.sample_size();
         let threshold = sample_size / 2;
-        let mut num_cells_to_rebuild = 1;
+        let mut num_buckets_to_rebuild = 1;
         if (1..sample_size).any(|i| {
             if array
-                .cell((cell_index + i) % array.num_cells())
+                .bucket((index + i) % array.num_buckets())
                 .need_rebuild()
             {
-                num_cells_to_rebuild += 1;
-                num_cells_to_rebuild > threshold
+                num_buckets_to_rebuild += 1;
+                num_buckets_to_rebuild > threshold
             } else {
                 false
             }
@@ -532,12 +530,12 @@ where
             //  - The load factor reaches 7/8, then the array grows up to 32x.
             //  - The load factor reaches 1/16, then the array shrinks to fit.
             let capacity = current_array.num_entries();
-            let num_cells = current_array.num_cells();
-            let num_cells_to_sample = (num_cells / 8).clamp(2, 4096);
+            let num_buckets = current_array.num_buckets();
+            let num_buckets_to_sample = (num_buckets / 8).clamp(2, 4096);
             let mut rebuild = false;
             let estimated_num_entries =
-                Self::estimate(current_array, sampling_index, num_cells_to_sample);
-            sampling_index = sampling_index.wrapping_add(num_cells_to_sample);
+                Self::estimate(current_array, sampling_index, num_buckets_to_sample);
+            sampling_index = sampling_index.wrapping_add(num_buckets_to_sample);
             let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
                 let max_capacity = 1_usize << (usize::BITS - 1);
                 if capacity == max_capacity {
@@ -565,18 +563,17 @@ where
             } else {
                 if LOCK_FREE {
                     rebuild =
-                        Self::check_rebuild(current_array, sampling_index, num_cells_to_sample);
+                        Self::check_rebuild(current_array, sampling_index, num_buckets_to_sample);
                 }
                 capacity
             };
 
-            // `CellArray::new` may not be able to allocate the requested number of cells.
             if new_capacity != capacity || (LOCK_FREE && rebuild) {
-                self.cell_array().swap(
+                self.bucket_array().swap(
                     (
-                        Some(Arc::new(CellArray::<K, V, LOCK_FREE>::new(
+                        Some(Arc::new(BucketArray::<K, V, LOCK_FREE>::new(
                             new_capacity,
-                            self.cell_array().clone(Relaxed, barrier),
+                            self.bucket_array().clone(Relaxed, barrier),
                         ))),
                         Tag::None,
                     ),

@@ -1,8 +1,8 @@
 //! [`HashMap`] is a concurrent and asynchronous hash map.
 
 use super::ebr::{Arc, AtomicArc, Barrier, Tag};
-use super::hash_table::cell::{EntryPtr, Locker, Reader};
-use super::hash_table::cell_array::CellArray;
+use super::hash_table::bucket::{EntryPtr, Locker, Reader};
+use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::HashTable;
 use super::wait_queue::AsyncWait;
 
@@ -17,11 +17,9 @@ use std::sync::atomic::{AtomicU8, AtomicUsize};
 /// Scalable concurrent hash map.
 ///
 /// [`HashMap`] is a concurrent and asynchronous hash map data structure that is targeted at a
-/// highly concurrent workload. The use of an epoch-based reclamation technique enables the hash
-/// map to implement non-blocking resizing and fine-granular locking. A [`HashMap`] instance has a
-/// single array of *buckets* instead of a fixed number of lock-protected hash tables. Each bucket
-/// has a fixed size array of entries and a customized mutex to protect the data, and it resolves
-/// hash conflicts by allocating a linked list of bucket-local hash tables.
+/// highly concurrent workload. [`HashMap`] has a dynamically sized array of buckets where a bucket
+/// is a fixed size hash table with linear probing that can be expanded by allocating a linked list
+/// of smaller buckets when the bucket is full.
 ///
 /// ## The key features of [`HashMap`]
 ///
@@ -44,6 +42,10 @@ use std::sync::atomic::{AtomicU8, AtomicUsize};
 ///
 /// ## Locking behavior
 ///
+/// ### Bucket access
+///
+/// Bucket arrays are protected by [`ebr`](super::ebr), thus allowing lock-free access to them.
+///
 /// ### Entry access
 ///
 /// Read/write access to an entry requires a single shared/exclusive lock on the bucket where the
@@ -53,17 +55,18 @@ use std::sync::atomic::{AtomicU8, AtomicUsize};
 ///
 /// ### Resize
 ///
-/// Resizing of the [`HashMap`] is totally non-blocking and lock-free. Resizing is analogous to
-/// pushing a new bucket array into a lock-free stack. Each individual entry is relocated to the
-/// new bucket array on future access to the [`HashMap`], and the old bucket array gets dropped
-/// when it becomes empty.
+/// Resizing of the [`HashMap`] is totally non-blocking and lock-free; resizing does not block any
+/// other read/write access to the [`HashMap`] or resizing attempts. Resizing is analogous to
+/// pushing a new bucket array into a lock-free stack. Each individual entry in the old bucket
+/// array will be incrementally relocated to the new bucket array on future access to the
+/// [`HashMap`], and the old bucket array gets dropped when it becomes empty and unreachable.
 pub struct HashMap<K, V, H = RandomState>
 where
     K: 'static + Eq + Hash + Sync,
     V: 'static + Sync,
     H: BuildHasher,
 {
-    array: AtomicArc<CellArray<K, V, false>>,
+    array: AtomicArc<BucketArray<K, V, false>>,
     minimum_capacity: usize,
     additional_capacity: AtomicUsize,
     resize_mutex: AtomicU8,
@@ -89,7 +92,7 @@ where
     #[inline]
     pub fn with_hasher(build_hasher: H) -> HashMap<K, V, H> {
         HashMap {
-            array: AtomicArc::new(CellArray::<K, V, false>::new(
+            array: AtomicArc::new(BucketArray::<K, V, false>::new(
                 Self::DEFAULT_CAPACITY,
                 AtomicArc::null(),
             )),
@@ -119,7 +122,7 @@ where
     #[inline]
     pub fn with_capacity_and_hasher(capacity: usize, build_hasher: H) -> HashMap<K, V, H> {
         let initial_capacity = capacity.max(Self::DEFAULT_CAPACITY);
-        let array = Arc::new(CellArray::<K, V, false>::new(
+        let array = Arc::new(BucketArray::<K, V, false>::new(
             initial_capacity,
             AtomicArc::null(),
         ));
@@ -355,7 +358,7 @@ where
             let val = constructor();
             locker.insert_with(
                 data_block,
-                CellArray::<K, V, false>::partial_hash(hash),
+                BucketArray::<K, V, false>::partial_hash(hash),
                 || (key, val),
                 &barrier,
             );
@@ -398,7 +401,7 @@ where
                         let val = constructor();
                         locker.insert_with(
                             data_block,
-                            CellArray::<K, V, false>::partial_hash(hash),
+                            BucketArray::<K, V, false>::partial_hash(hash),
                             || (key, val),
                             &barrier,
                         );
@@ -727,12 +730,12 @@ where
             }
             debug_assert!(current_array.old_array(&barrier).is_null());
 
-            for cell_index in 0..current_array.num_cells() {
-                let cell = current_array.cell(cell_index);
-                if let Some(locker) = Reader::lock(cell, &barrier) {
-                    let data_block = current_array.data_block(cell_index);
+            for index in 0..current_array.num_buckets() {
+                let bucket = current_array.bucket(index);
+                if let Some(locker) = Reader::lock(bucket, &barrier) {
+                    let data_block = current_array.data_block(index);
                     let mut entry_ptr = EntryPtr::new(&barrier);
-                    while entry_ptr.next(locker.cell(), &barrier) {
+                    while entry_ptr.next(locker.bucket(), &barrier) {
                         let (k, v) = entry_ptr.get(data_block);
                         if pred(k, v) {
                             return true;
@@ -792,20 +795,20 @@ where
             }
             debug_assert!(current_array.old_array(&Barrier::new()).is_null());
 
-            for cell_index in 0..current_array.num_cells() {
+            for index in 0..current_array.num_buckets() {
                 let killed = loop {
                     let mut async_wait = AsyncWait::default();
                     let mut async_wait_pinned = Pin::new(&mut async_wait);
                     {
                         let barrier = Barrier::new();
-                        let cell = current_array.cell(cell_index);
+                        let bucket = current_array.bucket(index);
                         if let Ok(reader) =
-                            Reader::try_lock_or_wait(cell, &mut async_wait_pinned, &barrier)
+                            Reader::try_lock_or_wait(bucket, &mut async_wait_pinned, &barrier)
                         {
                             if let Some(reader) = reader {
-                                let data_block = current_array.data_block(cell_index);
+                                let data_block = current_array.data_block(index);
                                 let mut entry_ptr = EntryPtr::new(&barrier);
-                                while entry_ptr.next(reader.cell(), &barrier) {
+                                while entry_ptr.next(reader.bucket(), &barrier) {
                                     let (k, v) = entry_ptr.get(data_block);
                                     if pred(k, v) {
                                         // Found one entry satisfying the predicate.
@@ -815,7 +818,7 @@ where
                                 break false;
                             }
 
-                            // The `Cell` having been killed means that a new array has been
+                            // The bucket having been killed means that a new array has been
                             // allocated.
                             break true;
                         };
@@ -947,12 +950,12 @@ where
             }
             debug_assert!(current_array.old_array(&barrier).is_null());
 
-            for cell_index in 0..current_array.num_cells() {
-                let cell = current_array.cell_mut(cell_index);
-                if let Some(mut locker) = Locker::lock(cell, &barrier) {
-                    let data_block = current_array.data_block(cell_index);
+            for index in 0..current_array.num_buckets() {
+                let bucket = current_array.bucket_mut(index);
+                if let Some(mut locker) = Locker::lock(bucket, &barrier) {
+                    let data_block = current_array.data_block(index);
                     let mut entry_ptr = EntryPtr::new(&barrier);
-                    while entry_ptr.next(locker.cell(), &barrier) {
+                    while entry_ptr.next(locker.bucket(), &barrier) {
                         let (k, v) = entry_ptr.get_mut(data_block, &mut locker);
                         if filter(k, v) {
                             num_retained = num_retained.saturating_add(1);
@@ -1027,20 +1030,20 @@ where
             }
             debug_assert!(current_array.old_array(&Barrier::new()).is_null());
 
-            for cell_index in 0..current_array.num_cells() {
+            for index in 0..current_array.num_buckets() {
                 let killed = loop {
                     let mut async_wait = AsyncWait::default();
                     let mut async_wait_pinned = Pin::new(&mut async_wait);
                     {
                         let barrier = Barrier::new();
-                        let cell = current_array.cell_mut(cell_index);
+                        let bucket = current_array.bucket_mut(index);
                         if let Ok(locker) =
-                            Locker::try_lock_or_wait(cell, &mut async_wait_pinned, &barrier)
+                            Locker::try_lock_or_wait(bucket, &mut async_wait_pinned, &barrier)
                         {
                             if let Some(mut locker) = locker {
-                                let data_block = current_array.data_block(cell_index);
+                                let data_block = current_array.data_block(index);
                                 let mut entry_ptr = EntryPtr::new(&barrier);
-                                while entry_ptr.next(locker.cell(), &barrier) {
+                                while entry_ptr.next(locker.bucket(), &barrier) {
                                     let (k, v) = entry_ptr.get_mut(data_block, &mut locker);
                                     if filter(k, v) {
                                         num_retained = num_retained.saturating_add(1);
@@ -1052,7 +1055,7 @@ where
                                 break false;
                             }
 
-                            // The `Cell` having been killed means that a new array has been
+                            // The bucket having been killed means that a new array has been
                             // allocated.
                             break true;
                         };
@@ -1248,7 +1251,7 @@ where
     #[must_use]
     pub fn with_capacity(capacity: usize) -> HashMap<K, V, RandomState> {
         let initial_capacity = capacity.max(Self::DEFAULT_CAPACITY);
-        let array = Arc::new(CellArray::<K, V, false>::new(
+        let array = Arc::new(BucketArray::<K, V, false>::new(
             initial_capacity,
             AtomicArc::null(),
         ));
@@ -1285,7 +1288,7 @@ where
     #[inline]
     fn default() -> Self {
         HashMap {
-            array: AtomicArc::new(CellArray::<K, V, false>::new(
+            array: AtomicArc::new(BucketArray::<K, V, false>::new(
                 Self::DEFAULT_CAPACITY,
                 AtomicArc::null(),
             )),
@@ -1331,7 +1334,7 @@ where
         unreachable!()
     }
     #[inline]
-    fn cell_array(&self) -> &AtomicArc<CellArray<K, V, false>> {
+    fn bucket_array(&self) -> &AtomicArc<BucketArray<K, V, false>> {
         &self.array
     }
     #[inline]

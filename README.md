@@ -43,7 +43,7 @@ Read/write access to an entry requires a single shared/exclusive lock on the buc
 
 #### Resize
 
-Resizing of the container is totally non-blocking and lock-free. _Resizing is analogous to pushing a new bucket array into a lock-free stack_. Each individual entry is relocated to the new bucket array on future access to the container, and the old bucket array gets dropped when it becomes empty.
+Resizing of the container is totally non-blocking and lock-free; resizing does not block any other read/write access to the container or resizing attempts. _Resizing is analogous to pushing a new bucket array into a lock-free stack_. Each individual entry in the old bucket array will be incrementally relocated to the new bucket array on future access to the container, and the old bucket array gets dropped when it becomes empty.
 
 ### Examples
 

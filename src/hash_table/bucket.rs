@@ -8,16 +8,14 @@ use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{fence, AtomicU32};
 
-/// The fixed size of the bitmap.
-///
-/// The size cannot exceed `32`.
-pub const CELL_LEN: usize = 32;
-
-/// Data block type.
+/// [`DataBlock`] is a type alias of a raw memory chunk that may contain entry instances.
 pub type DataBlock<K, V, const LEN: usize> = [MaybeUninit<(K, V)>; LEN];
 
-/// The fixed size of the linked data block.
-const LINKED_LEN: usize = CELL_LEN / 4;
+/// The size of a [`Bucket`].
+pub const BUCKET_LEN: usize = 32;
+
+/// The size of the linked data block.
+const LINKED_LEN: usize = BUCKET_LEN / 4;
 
 /// State bits.
 const KILLED: u32 = 1_u32 << 31;
@@ -26,25 +24,24 @@ const LOCK: u32 = 1_u32 << 29;
 const SLOCK_MAX: u32 = LOCK - 1;
 const LOCK_MASK: u32 = LOCK | SLOCK_MAX;
 
-/// [`Cell`] is a small fixed-size hash table that resolves hash conflicts using a linked list
-/// of data blocks.
-pub(crate) struct Cell<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
-    /// The state of the [`Cell`].
+/// [`Bucket`] is a small fixed-size hash table with linear probing.
+pub(crate) struct Bucket<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
+    /// The state of the [`Bucket`].
     state: AtomicU32,
 
-    /// The number of valid entries in the [`Cell`].
+    /// The number of valid entries in the [`Bucket`].
     num_entries: u32,
 
-    /// The metadata of the [`Cell`].
-    metadata: Metadata<K, V, CELL_LEN>,
+    /// The metadata of the [`Bucket`].
+    metadata: Metadata<K, V, BUCKET_LEN>,
 
-    /// The wait queue of the [`Cell`].
+    /// The wait queue of the [`Bucket`].
     wait_queue: WaitQueue,
 }
 
-impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Default for Cell<K, V, LOCK_FREE> {
+impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Default for Bucket<K, V, LOCK_FREE> {
     fn default() -> Self {
-        Cell::<K, V, LOCK_FREE> {
+        Bucket::<K, V, LOCK_FREE> {
             state: AtomicU32::new(0),
             num_entries: 0,
             metadata: Metadata::default(),
@@ -53,33 +50,33 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Default for Cell<K, V, 
     }
 }
 
-impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
-    /// Returns true if the [`Cell`] has been killed.
+impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
+    /// Returns true if the [`Bucket`] has been killed.
     #[inline]
     pub(crate) fn killed(&self) -> bool {
         (self.state.load(Relaxed) & KILLED) == KILLED
     }
 
-    /// Returns the number of entries in the [`Cell`].
+    /// Returns the number of entries in the [`Bucket`].
     #[inline]
     pub(crate) fn num_entries(&self) -> usize {
         self.num_entries as usize
     }
 
-    /// Returns `true` if the [`Cell`] requires to be rebuilt.
+    /// Returns `true` if the [`Bucket`] needs to be rebuilt.
     ///
     /// If `LOCK_FREE == true`, removed entries are not dropped occupying the slots, therefore
-    /// rebuilding the [`Cell`] might be needed to keep the data structure as small as possible.
+    /// rebuilding the [`Bucket`] might be needed to keep the [`Bucket`] as small as possible.
     #[inline]
     pub(crate) fn need_rebuild(&self) -> bool {
-        self.metadata.removed_bitmap == (u32::MAX >> (32 - CELL_LEN))
+        self.metadata.removed_bitmap == (u32::MAX >> (32 - BUCKET_LEN))
     }
 
     /// Searches for an entry associated with the given key.
     #[inline]
     pub(crate) fn search<'b, Q>(
         &'b self,
-        data_block: &'b DataBlock<K, V, CELL_LEN>,
+        data_block: &'b DataBlock<K, V, BUCKET_LEN>,
         key: &Q,
         partial_hash: u8,
         barrier: &'b Barrier,
@@ -113,11 +110,11 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
 
     /// Drops entries in the given [`DataBlock`].
     ///
-    /// The [`Cell`] and the [`DataBlock`] should never be used afterwards.
+    /// The [`Bucket`] and the [`DataBlock`] should never be used afterwards.
     #[inline]
     pub(crate) unsafe fn drop_entries(
         &mut self,
-        data_block: &DataBlock<K, V, CELL_LEN>,
+        data_block: &DataBlock<K, V, BUCKET_LEN>,
         barrier: &Barrier,
     ) {
         if !self.metadata.link.load(Relaxed, barrier).is_null() {
@@ -137,7 +134,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
     #[inline]
     fn get<'b, Q>(
         &self,
-        data_block: &'b DataBlock<K, V, CELL_LEN>,
+        data_block: &'b DataBlock<K, V, BUCKET_LEN>,
         key: &Q,
         partial_hash: u8,
         barrier: &'b Barrier,
@@ -205,7 +202,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
             }
         }
 
-        bitmap = if LEN == CELL_LEN {
+        bitmap = if LEN == BUCKET_LEN {
             debug_assert_eq!(LEN, 32);
             bitmap.rotate_right(preferred_index as u32) & (!1_u32)
         } else {
@@ -279,7 +276,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Cell<K, V, LOCK_FREE> {
 }
 
 pub struct EntryPtr<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
-    current_link_ptr: Ptr<'b, Linked<K, V, LINKED_LEN>>,
+    current_link_ptr: Ptr<'b, LinkedBucket<K, V, LINKED_LEN>>,
     current_index: usize,
 }
 
@@ -289,23 +286,23 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryPtr<'b, K, V, 
     pub(crate) fn new(_barrier: &'b Barrier) -> EntryPtr<'b, K, V, LOCK_FREE> {
         EntryPtr {
             current_link_ptr: Ptr::null(),
-            current_index: CELL_LEN,
+            current_index: BUCKET_LEN,
         }
     }
 
     /// Returns `true` if the [`EntryPtr`] points to a valid entry or fused.
     #[inline]
     pub(crate) fn is_valid(&self) -> bool {
-        self.current_index != CELL_LEN
+        self.current_index != BUCKET_LEN
     }
 
     /// Moves the [`EntryPtr`] to point to the next valid entry.
     ///
     /// Returns `true` if it successfully found the next valid entry.
     #[inline]
-    pub(crate) fn next(&mut self, cell: &Cell<K, V, LOCK_FREE>, barrier: &'b Barrier) -> bool {
+    pub(crate) fn next(&mut self, bucket: &Bucket<K, V, LOCK_FREE>, barrier: &'b Barrier) -> bool {
         if self.current_index != usize::MAX {
-            if self.current_link_ptr.is_null() && self.next_entry(&cell.metadata, barrier) {
+            if self.current_link_ptr.is_null() && self.next_entry(&bucket.metadata, barrier) {
                 return true;
             }
             while let Some(link) = self.current_link_ptr.as_ref() {
@@ -325,7 +322,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryPtr<'b, K, V, 
     ///
     /// The [`EntryPtr`] must point to a valid entry.
     #[inline]
-    pub(crate) fn get(&self, data_block: &'b DataBlock<K, V, CELL_LEN>) -> &'b (K, V) {
+    pub(crate) fn get(&self, data_block: &'b DataBlock<K, V, BUCKET_LEN>) -> &'b (K, V) {
         debug_assert_ne!(self.current_index, usize::MAX);
         let entry_ptr = if let Some(link) = self.current_link_ptr.as_ref() {
             link.data_block[self.current_index].as_ptr()
@@ -337,12 +334,12 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryPtr<'b, K, V, 
 
     /// Gets a mutable reference to the entry.
     ///
-    /// The [`EntryPtr`] must point to a valid entry, and the associated [`Cell`] must be locked.
+    /// The [`EntryPtr`] must point to a valid entry, and the associated [`Bucket`] must be locked.
     #[allow(clippy::mut_from_ref)]
     #[inline]
     pub(crate) fn get_mut(
         &mut self,
-        data_block: &'b DataBlock<K, V, CELL_LEN>,
+        data_block: &'b DataBlock<K, V, BUCKET_LEN>,
         _locker: &mut Locker<K, V, LOCK_FREE>,
     ) -> &'b mut (K, V) {
         debug_assert_ne!(self.current_index, usize::MAX);
@@ -358,22 +355,22 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryPtr<'b, K, V, 
     ///
     /// The [`EntryPtr`] must point to a valid entry.
     #[inline]
-    pub(crate) fn partial_hash(&self, cell: &Cell<K, V, LOCK_FREE>) -> u8 {
+    pub(crate) fn partial_hash(&self, bucket: &Bucket<K, V, LOCK_FREE>) -> u8 {
         debug_assert_ne!(self.current_index, usize::MAX);
         if let Some(link) = self.current_link_ptr.as_ref() {
             link.metadata.partial_hash_array[self.current_index]
         } else {
-            cell.metadata.partial_hash_array[self.current_index]
+            bucket.metadata.partial_hash_array[self.current_index]
         }
     }
 
     /// Tries to remove [`Link`] from the linked list.
     ///
-    /// It should only be invoked when the caller is holding a [`Locker`] on the [`Cell`].
+    /// It should only be invoked when the caller is holding a [`Locker`] on the [`Bucket`].
     fn unlink(
         &mut self,
         locker: &Locker<K, V, LOCK_FREE>,
-        link: &Linked<K, V, LINKED_LEN>,
+        link: &LinkedBucket<K, V, LINKED_LEN>,
         barrier: &'b Barrier,
     ) {
         let prev_link_ptr = link.prev_link.load(Relaxed);
@@ -397,7 +394,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryPtr<'b, K, V, 
                 .0
         } else {
             locker
-                .cell
+                .bucket
                 .metadata
                 .link
                 .swap((next_link, Tag::None), Relaxed)
@@ -414,7 +411,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryPtr<'b, K, V, 
         }
     }
 
-    /// Moves the [`EntryPointer`] to the next valid entry in the [`Cell`].
+    /// Moves the [`EntryPointer`] to the next valid entry in the [`Bucket`].
     fn next_entry<const LEN: usize>(
         &mut self,
         metadata: &Metadata<K, V, LEN>,
@@ -426,7 +423,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryPtr<'b, K, V, 
         } else {
             self.current_index + 1
         };
-        if let Some(index) = Cell::<K, V, LOCK_FREE>::next_entry(metadata, current_index) {
+        if let Some(index) = Bucket::<K, V, LOCK_FREE>::next_entry(metadata, current_index) {
             self.current_index = index;
             return true;
         }
@@ -439,76 +436,76 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryPtr<'b, K, V, 
 }
 
 pub struct Locker<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
-    cell: &'b mut Cell<K, V, LOCK_FREE>,
+    bucket: &'b mut Bucket<K, V, LOCK_FREE>,
 }
 
 impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
-    /// Locks the [`Cell`].
+    /// Locks the [`Bucket`].
     #[inline]
     pub(crate) fn lock(
-        cell: &'b mut Cell<K, V, LOCK_FREE>,
+        bucket: &'b mut Bucket<K, V, LOCK_FREE>,
         barrier: &'b Barrier,
     ) -> Option<Locker<'b, K, V, LOCK_FREE>> {
-        let cell_ptr = cell as *mut Cell<K, V, LOCK_FREE>;
+        let bucket_ptr = bucket as *mut Bucket<K, V, LOCK_FREE>;
         loop {
-            if let Ok(locker) = Self::try_lock(unsafe { &mut *cell_ptr }, barrier) {
+            if let Ok(locker) = Self::try_lock(unsafe { &mut *bucket_ptr }, barrier) {
                 return locker;
             }
-            if let Ok(locker) = unsafe { &*cell_ptr }.wait_queue.wait_sync(|| {
+            if let Ok(locker) = unsafe { &*bucket_ptr }.wait_queue.wait_sync(|| {
                 // Mark that there is a waiting thread.
-                cell.state.fetch_or(WAITING, Release);
-                Self::try_lock(unsafe { &mut *cell_ptr }, barrier)
+                bucket.state.fetch_or(WAITING, Release);
+                Self::try_lock(unsafe { &mut *bucket_ptr }, barrier)
             }) {
                 return locker;
             }
         }
     }
 
-    /// Tries to lock the [`Cell`].
+    /// Tries to lock the [`Bucket`].
     #[inline]
     pub(crate) fn try_lock(
-        cell: &'b mut Cell<K, V, LOCK_FREE>,
+        bucket: &'b mut Bucket<K, V, LOCK_FREE>,
         _barrier: &'b Barrier,
     ) -> Result<Option<Locker<'b, K, V, LOCK_FREE>>, ()> {
-        let current = cell.state.load(Relaxed) & (!LOCK_MASK);
+        let current = bucket.state.load(Relaxed) & (!LOCK_MASK);
         if (current & KILLED) == KILLED {
             return Ok(None);
         }
-        if cell
+        if bucket
             .state
             .compare_exchange(current, current | LOCK, Acquire, Relaxed)
             .is_ok()
         {
-            Ok(Some(Locker { cell }))
+            Ok(Some(Locker { bucket }))
         } else {
             Err(())
         }
     }
 
-    /// Tries to lock the [`Cell`], and if it fails, pushes an [`AsyncWait`].
+    /// Tries to lock the [`Bucket`], and if it fails, pushes an [`AsyncWait`].
     #[inline]
     pub(crate) fn try_lock_or_wait(
-        cell: &'b mut Cell<K, V, LOCK_FREE>,
+        bucket: &'b mut Bucket<K, V, LOCK_FREE>,
         async_wait: &mut AsyncWait,
         barrier: &'b Barrier,
     ) -> Result<Option<Locker<'b, K, V, LOCK_FREE>>, ()> {
-        let cell_ptr = cell as *mut Cell<K, V, LOCK_FREE>;
-        if let Ok(locker) = Self::try_lock(unsafe { &mut *cell_ptr }, barrier) {
+        let bucket_ptr = bucket as *mut Bucket<K, V, LOCK_FREE>;
+        if let Ok(locker) = Self::try_lock(unsafe { &mut *bucket_ptr }, barrier) {
             return Ok(locker);
         }
-        unsafe { &*cell_ptr }
+        unsafe { &*bucket_ptr }
             .wait_queue
             .push_async_entry(async_wait, || {
                 // Mark that there is a waiting thread.
-                cell.state.fetch_or(WAITING, Release);
-                Self::try_lock(cell, barrier)
+                bucket.state.fetch_or(WAITING, Release);
+                Self::try_lock(bucket, barrier)
             })
     }
 
-    /// Returns a reference to the [`Cell`].
+    /// Returns a reference to the [`Bucket`].
     #[inline]
-    pub(crate) fn cell(&self) -> &Cell<K, V, LOCK_FREE> {
-        self.cell
+    pub(crate) fn bucket(&self) -> &Bucket<K, V, LOCK_FREE> {
+        self.bucket
     }
 
     /// Gets an [`EntryPtr`] pointing to an entry associated with the given key.
@@ -517,7 +514,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     #[inline]
     pub(crate) fn get<Q>(
         &self,
-        data_block: &'b DataBlock<K, V, CELL_LEN>,
+        data_block: &'b DataBlock<K, V, BUCKET_LEN>,
         key: &Q,
         partial_hash: u8,
         barrier: &'b Barrier,
@@ -526,30 +523,30 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         K: Borrow<Q>,
         Q: Eq + ?Sized,
     {
-        self.cell.get(data_block, key, partial_hash, barrier)
+        self.bucket.get(data_block, key, partial_hash, barrier)
     }
 
-    /// Reserves memory insertion, and then constructs the key-value pair.
+    /// Reserves memory for insertion, and then constructs the key-value pair.
     ///
     /// `C` must not panic otherwise it leads to undefined behavior.
     #[inline]
     pub(crate) fn insert_with<C: FnOnce() -> (K, V)>(
         &mut self,
-        data_block: &DataBlock<K, V, CELL_LEN>,
+        data_block: &DataBlock<K, V, BUCKET_LEN>,
         partial_hash: u8,
         constructor: C,
         barrier: &Barrier,
     ) {
-        assert!(self.cell.num_entries != u32::MAX, "array overflow");
+        assert!(self.bucket.num_entries != u32::MAX, "array overflow");
 
-        let free_index = Self::get_free_index::<CELL_LEN>(
-            self.cell.metadata.occupied_bitmap,
-            partial_hash as usize % CELL_LEN,
+        let free_index = Self::get_free_index::<BUCKET_LEN>(
+            self.bucket.metadata.occupied_bitmap,
+            partial_hash as usize % BUCKET_LEN,
         );
-        if free_index == CELL_LEN {
+        if free_index == BUCKET_LEN {
             let preferred_index = partial_hash as usize % LINKED_LEN;
-            let mut link_ptr = self.cell.metadata.link.load(Acquire, barrier).as_raw()
-                as *mut Linked<K, V, LINKED_LEN>;
+            let mut link_ptr = self.bucket.metadata.link.load(Acquire, barrier).as_raw()
+                as *mut LinkedBucket<K, V, LINKED_LEN>;
             while let Some(link_mut) = unsafe { link_ptr.as_mut() } {
                 let free_index = Self::get_free_index::<LINKED_LEN>(
                     link_mut.metadata.occupied_bitmap,
@@ -563,18 +560,18 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                         partial_hash,
                         constructor,
                     );
-                    self.cell.num_entries += 1;
+                    self.bucket.num_entries += 1;
                     return;
                 }
                 link_ptr = link_mut.metadata.link.load(Acquire, barrier).as_raw()
-                    as *mut Linked<K, V, LINKED_LEN>;
+                    as *mut LinkedBucket<K, V, LINKED_LEN>;
             }
 
-            // Insert a new `Linked` at the linked list head.
-            let head = self.cell.metadata.link.get_arc(Relaxed, barrier);
-            let link = Arc::new(Linked::new(head));
+            // Insert a new `LinkedBucket` at the linked list head.
+            let head = self.bucket.metadata.link.get_arc(Relaxed, barrier);
+            let link = Arc::new(LinkedBucket::new(head));
             unsafe {
-                let link_mut = &mut *(link.as_ptr() as *mut Linked<K, V, LINKED_LEN>);
+                let link_mut = &mut *(link.as_ptr() as *mut LinkedBucket<K, V, LINKED_LEN>);
                 link_mut.data_block[preferred_index]
                     .as_mut_ptr()
                     .write(constructor());
@@ -582,36 +579,38 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                 link_mut.metadata.occupied_bitmap |= 1_u32 << preferred_index;
             }
             if let Some(head) = link.metadata.link.load(Relaxed, barrier).as_ref() {
-                head.prev_link
-                    .store(link.as_ptr() as *mut Linked<K, V, LINKED_LEN>, Relaxed);
+                head.prev_link.store(
+                    link.as_ptr() as *mut LinkedBucket<K, V, LINKED_LEN>,
+                    Relaxed,
+                );
             }
-            self.cell
+            self.bucket
                 .metadata
                 .link
                 .swap((Some(link), Tag::None), Release);
         } else {
             Self::insert_entry_with(
-                &mut self.cell.metadata,
+                &mut self.bucket.metadata,
                 data_block,
                 free_index,
                 partial_hash,
                 constructor,
             );
         }
-        self.cell.num_entries += 1;
+        self.bucket.num_entries += 1;
     }
 
     /// Removes the key-value pair being pointed by the given [`EntryPtr`].
     #[inline]
     pub(crate) fn erase(
         &mut self,
-        data_block: &DataBlock<K, V, CELL_LEN>,
+        data_block: &DataBlock<K, V, BUCKET_LEN>,
         entry_ptr: &mut EntryPtr<K, V, LOCK_FREE>,
     ) -> Option<(K, V)> {
         debug_assert_ne!(entry_ptr.current_index, usize::MAX);
 
-        self.cell.num_entries -= 1;
-        let link_ptr = entry_ptr.current_link_ptr.as_raw() as *mut Linked<K, V, LINKED_LEN>;
+        self.bucket.num_entries -= 1;
+        let link_ptr = entry_ptr.current_link_ptr.as_raw() as *mut LinkedBucket<K, V, LINKED_LEN>;
         if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
             if LOCK_FREE {
                 debug_assert_eq!(
@@ -631,16 +630,16 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
             }
         } else if LOCK_FREE {
             debug_assert_eq!(
-                self.cell.metadata.removed_bitmap & (1_u32 << entry_ptr.current_index),
+                self.bucket.metadata.removed_bitmap & (1_u32 << entry_ptr.current_index),
                 0
             );
-            self.cell.metadata.removed_bitmap |= 1_u32 << entry_ptr.current_index;
+            self.bucket.metadata.removed_bitmap |= 1_u32 << entry_ptr.current_index;
         } else {
             debug_assert_ne!(
-                self.cell.metadata.occupied_bitmap & (1_u32 << entry_ptr.current_index),
+                self.bucket.metadata.occupied_bitmap & (1_u32 << entry_ptr.current_index),
                 0
             );
-            self.cell.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
+            self.bucket.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
             return Some(unsafe { data_block[entry_ptr.current_index].as_ptr().read() });
         }
 
@@ -651,18 +650,18 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     #[inline]
     pub(crate) fn extract<'e>(
         &mut self,
-        data_block: &DataBlock<K, V, CELL_LEN>,
+        data_block: &DataBlock<K, V, BUCKET_LEN>,
         entry_ptr: &mut EntryPtr<'e, K, V, LOCK_FREE>,
         barrier: &'e Barrier,
     ) -> (K, V) {
         debug_assert!(!LOCK_FREE);
-        let link_ptr = entry_ptr.current_link_ptr.as_raw() as *mut Linked<K, V, LINKED_LEN>;
+        let link_ptr = entry_ptr.current_link_ptr.as_raw() as *mut LinkedBucket<K, V, LINKED_LEN>;
         if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
             let extracted = Self::extract_entry(
                 &mut link_mut.metadata,
                 &link_mut.data_block,
                 entry_ptr.current_index,
-                &mut self.cell.num_entries,
+                &mut self.bucket.num_entries,
             );
             if link_mut.metadata.occupied_bitmap == 0 {
                 entry_ptr.unlink(self, link_mut, barrier);
@@ -670,10 +669,10 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
             extracted
         } else {
             Self::extract_entry(
-                &mut self.cell.metadata,
+                &mut self.bucket.metadata,
                 data_block,
                 entry_ptr.current_index,
-                &mut self.cell.num_entries,
+                &mut self.bucket.num_entries,
             )
         }
     }
@@ -682,12 +681,12 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     #[inline]
     pub(crate) fn purge(&mut self, barrier: &Barrier) {
         if LOCK_FREE {
-            self.cell.metadata.removed_bitmap = self.cell.metadata.occupied_bitmap;
+            self.bucket.metadata.removed_bitmap = self.bucket.metadata.occupied_bitmap;
         }
-        self.cell.state.fetch_or(KILLED, Release);
-        self.cell.num_entries = 0;
-        if !self.cell.metadata.link.load(Relaxed, barrier).is_null() {
-            self.cell.clear_links(barrier);
+        self.bucket.state.fetch_or(KILLED, Release);
+        self.bucket.num_entries = 0;
+        if !self.bucket.metadata.link.load(Relaxed, barrier).is_null() {
+            self.bucket.clear_links(barrier);
         }
     }
 
@@ -739,10 +738,10 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
 impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Locker<'b, K, V, LOCK_FREE> {
     #[inline]
     fn drop(&mut self) {
-        let mut current = self.cell.state.load(Relaxed);
+        let mut current = self.bucket.state.load(Relaxed);
         loop {
             let wakeup = (current & WAITING) == WAITING;
-            match self.cell.state.compare_exchange(
+            match self.bucket.state.compare_exchange(
                 current,
                 current & (!(WAITING | LOCK)),
                 Release,
@@ -750,7 +749,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Locker<'b,
             ) {
                 Ok(_) => {
                     if wakeup {
-                        self.cell.wait_queue.signal();
+                        self.bucket.wait_queue.signal();
                     }
                     break;
                 }
@@ -761,71 +760,71 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Locker<'b,
 }
 
 pub struct Reader<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
-    cell: &'b Cell<K, V, LOCK_FREE>,
+    bucket: &'b Bucket<K, V, LOCK_FREE>,
 }
 
 impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
-    /// Locks the given [`Cell`].
+    /// Locks the given [`Bucket`].
     #[inline]
     pub(crate) fn lock(
-        cell: &'b Cell<K, V, LOCK_FREE>,
+        bucket: &'b Bucket<K, V, LOCK_FREE>,
         barrier: &'b Barrier,
     ) -> Option<Reader<'b, K, V, LOCK_FREE>> {
         loop {
-            if let Ok(reader) = Self::try_lock(cell, barrier) {
+            if let Ok(reader) = Self::try_lock(bucket, barrier) {
                 return reader;
             }
-            if let Ok(reader) = cell.wait_queue.wait_sync(|| {
+            if let Ok(reader) = bucket.wait_queue.wait_sync(|| {
                 // Mark that there is a waiting thread.
-                cell.state.fetch_or(WAITING, Release);
-                Self::try_lock(cell, barrier)
+                bucket.state.fetch_or(WAITING, Release);
+                Self::try_lock(bucket, barrier)
             }) {
                 return reader;
             }
         }
     }
 
-    /// Tries to lock the [`Cell`], and if it fails, pushes an [`AsyncWait`].
+    /// Tries to lock the [`Bucket`], and if it fails, pushes an [`AsyncWait`].
     #[inline]
     pub(crate) fn try_lock_or_wait(
-        cell: &'b Cell<K, V, LOCK_FREE>,
+        bucket: &'b Bucket<K, V, LOCK_FREE>,
         async_wait: &mut AsyncWait,
         barrier: &'b Barrier,
     ) -> Result<Option<Reader<'b, K, V, LOCK_FREE>>, ()> {
-        if let Ok(reader) = Self::try_lock(cell, barrier) {
+        if let Ok(reader) = Self::try_lock(bucket, barrier) {
             return Ok(reader);
         }
-        cell.wait_queue.push_async_entry(async_wait, || {
+        bucket.wait_queue.push_async_entry(async_wait, || {
             // Mark that there is a waiting thread.
-            cell.state.fetch_or(WAITING, Release);
-            Self::try_lock(cell, barrier)
+            bucket.state.fetch_or(WAITING, Release);
+            Self::try_lock(bucket, barrier)
         })
     }
 
-    /// Returns a reference to the [`Cell`].
+    /// Returns a reference to the [`Bucket`].
     #[inline]
-    pub(crate) fn cell(&self) -> &'b Cell<K, V, LOCK_FREE> {
-        self.cell
+    pub(crate) fn bucket(&self) -> &'b Bucket<K, V, LOCK_FREE> {
+        self.bucket
     }
 
-    /// Tries to lock the [`Cell`].
+    /// Tries to lock the [`Bucket`].
     fn try_lock(
-        cell: &'b Cell<K, V, LOCK_FREE>,
+        bucket: &'b Bucket<K, V, LOCK_FREE>,
         _barrier: &'b Barrier,
     ) -> Result<Option<Reader<'b, K, V, LOCK_FREE>>, ()> {
-        let current = cell.state.load(Relaxed);
+        let current = bucket.state.load(Relaxed);
         if (current & LOCK_MASK) >= SLOCK_MAX {
             return Err(());
         }
         if (current & KILLED) >= KILLED {
             return Ok(None);
         }
-        if cell
+        if bucket
             .state
             .compare_exchange(current, current + 1, Acquire, Relaxed)
             .is_ok()
         {
-            Ok(Some(Reader { cell }))
+            Ok(Some(Reader { bucket }))
         } else {
             Err(())
         }
@@ -835,18 +834,18 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
 impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Reader<'b, K, V, LOCK_FREE> {
     #[inline]
     fn drop(&mut self) {
-        let mut current = self.cell.state.load(Relaxed);
+        let mut current = self.bucket.state.load(Relaxed);
         loop {
             let wakeup = (current & WAITING) == WAITING;
             let next = (current - 1) & !(WAITING);
             match self
-                .cell
+                .bucket
                 .state
                 .compare_exchange(current, next, Relaxed, Relaxed)
             {
                 Ok(_) => {
                     if wakeup {
-                        self.cell.wait_queue.signal();
+                        self.bucket.wait_queue.signal();
                     }
                     break;
                 }
@@ -856,10 +855,10 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Reader<'b,
     }
 }
 
-/// [`Metadata`] is a collection of metadata fields of [`Cell`] and [`Linked`].
+/// [`Metadata`] is a collection of metadata fields of [`Bucket`] and [`LinkedBucket`].
 pub(crate) struct Metadata<K: 'static + Eq, V: 'static, const LEN: usize> {
     /// Linked list of entries.
-    link: AtomicArc<Linked<K, V, LINKED_LEN>>,
+    link: AtomicArc<LinkedBucket<K, V, LINKED_LEN>>,
 
     /// Bitmap for occupied slots.
     occupied_bitmap: u32,
@@ -882,17 +881,17 @@ impl<K: 'static + Eq, V: 'static, const LEN: usize> Default for Metadata<K, V, L
     }
 }
 
-/// [`Linked`] is a fixed size data block of key-value pairs.
-pub(crate) struct Linked<K: 'static + Eq, V: 'static, const LEN: usize> {
+/// [`LinkedBucket`] is a smaller [`Bucket`] that is attached to a [`Bucket`] as a linked list.
+pub(crate) struct LinkedBucket<K: 'static + Eq, V: 'static, const LEN: usize> {
     metadata: Metadata<K, V, LEN>,
     data_block: DataBlock<K, V, LEN>,
-    prev_link: AtomicPtr<Linked<K, V, LEN>>,
+    prev_link: AtomicPtr<LinkedBucket<K, V, LEN>>,
 }
 
-impl<K: 'static + Eq, V: 'static, const LEN: usize> Linked<K, V, LEN> {
-    /// Creates an empty [`Linked`].
-    fn new(next: Option<Arc<Linked<K, V, LINKED_LEN>>>) -> Linked<K, V, LEN> {
-        Linked {
+impl<K: 'static + Eq, V: 'static, const LEN: usize> LinkedBucket<K, V, LEN> {
+    /// Creates an empty [`LinkedBucket`].
+    fn new(next: Option<Arc<LinkedBucket<K, V, LINKED_LEN>>>) -> LinkedBucket<K, V, LEN> {
+        LinkedBucket {
             metadata: Metadata {
                 link: next.map_or_else(AtomicArc::null, AtomicArc::from),
                 occupied_bitmap: 0,
@@ -905,7 +904,7 @@ impl<K: 'static + Eq, V: 'static, const LEN: usize> Linked<K, V, LEN> {
     }
 }
 
-impl<K: 'static + Eq, V: 'static, const LEN: usize> Drop for Linked<K, V, LEN> {
+impl<K: 'static + Eq, V: 'static, const LEN: usize> Drop for LinkedBucket<K, V, LEN> {
     fn drop(&mut self) {
         if needs_drop::<(K, V)>() {
             let mut index = self.metadata.occupied_bitmap.trailing_zeros();
@@ -931,25 +930,25 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn queue() {
-        let num_tasks = CELL_LEN + 2;
+        let num_tasks = BUCKET_LEN + 2;
         let barrier = Arc::new(sync::Barrier::new(num_tasks));
-        let data_block: Arc<DataBlock<usize, usize, CELL_LEN>> =
+        let data_block: Arc<DataBlock<usize, usize, BUCKET_LEN>> =
             Arc::new(unsafe { MaybeUninit::uninit().assume_init() });
-        let mut cell: Arc<Cell<usize, usize, true>> = Arc::new(Cell::default());
+        let mut bucket: Arc<Bucket<usize, usize, true>> = Arc::new(Bucket::default());
         let mut data: [u64; 128] = [0; 128];
         let mut task_handles = Vec::with_capacity(num_tasks);
         for task_id in 0..num_tasks {
             let barrier_copied = barrier.clone();
             let data_block_copied = data_block.clone();
-            let cell_copied = cell.clone();
+            let bucket_copied = bucket.clone();
             let data_ptr = AtomicPtr::new(&mut data);
             task_handles.push(tokio::spawn(async move {
                 barrier_copied.wait().await;
-                let cell_mut =
-                    unsafe { &mut *(cell_copied.as_ptr() as *mut Cell<usize, usize, true>) };
+                let bucket_mut =
+                    unsafe { &mut *(bucket_copied.as_ptr() as *mut Bucket<usize, usize, true>) };
                 let barrier = Barrier::new();
                 for i in 0..2048 {
-                    let mut exclusive_locker = Locker::lock(cell_mut, &barrier).unwrap();
+                    let mut exclusive_locker = Locker::lock(bucket_mut, &barrier).unwrap();
                     let mut sum: u64 = 0;
                     for j in 0..128 {
                         unsafe {
@@ -961,18 +960,18 @@ mod test {
                     if i == 0 {
                         exclusive_locker.insert_with(
                             &data_block_copied,
-                            (task_id % CELL_LEN).try_into().unwrap(),
+                            (task_id % BUCKET_LEN).try_into().unwrap(),
                             || (task_id, 0),
                             &barrier,
                         );
                     } else {
                         assert_eq!(
                             exclusive_locker
-                                .cell()
+                                .bucket()
                                 .search(
                                     &data_block_copied,
                                     &task_id,
-                                    (task_id % CELL_LEN).try_into().unwrap(),
+                                    (task_id % BUCKET_LEN).try_into().unwrap(),
                                     &barrier
                                 )
                                 .unwrap(),
@@ -981,14 +980,14 @@ mod test {
                     }
                     drop(exclusive_locker);
 
-                    let read_locker = Reader::lock(&*cell_copied, &barrier).unwrap();
+                    let read_locker = Reader::lock(&*bucket_copied, &barrier).unwrap();
                     assert_eq!(
                         read_locker
-                            .cell()
+                            .bucket()
                             .search(
                                 &data_block_copied,
                                 &task_id,
-                                (task_id % CELL_LEN).try_into().unwrap(),
+                                (task_id % BUCKET_LEN).try_into().unwrap(),
                                 &barrier
                             )
                             .unwrap(),
@@ -1003,15 +1002,15 @@ mod test {
 
         let sum: u64 = data.iter().sum();
         assert_eq!(sum % 256, 0);
-        assert_eq!(cell.num_entries(), num_tasks);
+        assert_eq!(bucket.num_entries(), num_tasks);
 
         let epoch_barrier = Barrier::new();
         for task_id in 0..num_tasks {
             assert_eq!(
-                cell.search(
+                bucket.search(
                     &data_block,
                     &task_id,
-                    (task_id % CELL_LEN).try_into().unwrap(),
+                    (task_id % BUCKET_LEN).try_into().unwrap(),
                     &epoch_barrier
                 ),
                 Some(&(task_id, 0))
@@ -1020,17 +1019,18 @@ mod test {
 
         let mut count = 0;
         let mut entry_ptr = EntryPtr::new(&epoch_barrier);
-        while entry_ptr.next(&cell, &epoch_barrier) {
+        while entry_ptr.next(&bucket, &epoch_barrier) {
             count += 1;
         }
-        assert_eq!(cell.num_entries(), count);
+        assert_eq!(bucket.num_entries(), count);
 
-        let mut xlocker = Locker::lock(unsafe { cell.get_mut().unwrap() }, &epoch_barrier).unwrap();
+        let mut xlocker =
+            Locker::lock(unsafe { bucket.get_mut().unwrap() }, &epoch_barrier).unwrap();
         xlocker.purge(&epoch_barrier);
         drop(xlocker);
 
-        assert!(cell.killed());
-        assert_eq!(cell.num_entries(), 0);
-        assert!(Locker::lock(unsafe { cell.get_mut().unwrap() }, &epoch_barrier).is_none());
+        assert!(bucket.killed());
+        assert_eq!(bucket.num_entries(), 0);
+        assert!(Locker::lock(unsafe { bucket.get_mut().unwrap() }, &epoch_barrier).is_none());
     }
 }

@@ -14,7 +14,8 @@ const ASYNC: usize = 1_usize;
 /// The sole purpose of the data structure is to avoid busy-waiting.
 #[derive(Debug, Default)]
 pub(crate) struct WaitQueue {
-    /// The wait queue of the [`Cell`].
+    /// Stores the pointer value of the actual wait queue entry and a flag indicating that the
+    /// entry is asynchronous.
     wait_queue: AtomicUsize,
 }
 
