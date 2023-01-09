@@ -1,15 +1,11 @@
-use super::bucket::{Bucket, DataBlock, EntryPtr, Locker, BUCKET_LEN};
+use super::bucket::{Bucket, DataBlock, BUCKET_LEN};
 
 use crate::ebr::{AtomicArc, Barrier, Ptr, Tag};
-use crate::exit_guard::ExitGuard;
-use crate::wait_queue::DeriveAsyncWait;
 
 use std::alloc::{alloc, alloc_zeroed, dealloc, Layout};
-use std::borrow::Borrow;
-use std::hash::Hash;
 use std::mem::{align_of, needs_drop, size_of};
-use std::sync::atomic::Ordering::{Relaxed, Release};
-use std::sync::atomic::{fence, AtomicUsize};
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::Relaxed;
 
 /// [`BucketArray`] is a special purpose array to manage [`Bucket`] and [`DataBlock`].
 pub struct BucketArray<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
@@ -104,6 +100,12 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> BucketArray<K, V, LOCK_
         unsafe { &mut (*(self.bucket_ptr.add(index) as *mut Bucket<K, V, LOCK_FREE>)) }
     }
 
+    /// Returns a reference to `num_cleared_buckets`.
+    #[inline]
+    pub(crate) fn num_cleared_buckets(&self) -> &AtomicUsize {
+        &self.num_cleared_buckets
+    }
+
     /// Returns a reference to a [`DataBlock`] at the given position.
     #[inline]
     pub(crate) fn data_block(&self, index: usize) -> &DataBlock<K, V, BUCKET_LEN> {
@@ -138,234 +140,20 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> BucketArray<K, V, LOCK_
         self.old_array.load(Relaxed, barrier)
     }
 
+    /// Drops the old array.
+    #[inline]
+    pub(crate) fn drop_old_array(&self, barrier: &Barrier) {
+        self.old_array
+            .swap((None, Tag::None), Relaxed)
+            .0
+            .map(|a| a.release(barrier));
+    }
+
     /// Calculates the [`Bucket`] index for the hash value.
     #[allow(clippy::cast_possible_truncation)]
     #[inline]
     pub(crate) fn calculate_bucket_index(&self, hash: u64) -> usize {
         hash.wrapping_shr(u32::from(self.hash_offset)) as usize
-    }
-
-    /// Kills the [`Bucket`].
-    ///
-    /// It returns an error if locking failed.
-    #[allow(clippy::too_many_arguments)]
-    #[inline]
-    pub(crate) fn kill_bucket<
-        Q,
-        F: Fn(&Q) -> u64,
-        C: Fn(&K, &V) -> (K, V),
-        D,
-        const TRY_LOCK: bool,
-    >(
-        &self,
-        old_locker: &mut Locker<K, V, LOCK_FREE>,
-        old_index: usize,
-        old_array: &BucketArray<K, V, LOCK_FREE>,
-        hasher: &F,
-        copier: &C,
-        async_wait: &mut D,
-        barrier: &Barrier,
-    ) -> Result<(), ()>
-    where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
-        D: DeriveAsyncWait,
-    {
-        debug_assert!(!old_locker.bucket().killed());
-        if old_locker.bucket().num_entries() == 0 {
-            old_locker.purge(barrier);
-            return Ok(());
-        }
-
-        let shrink = old_array.num_buckets() > self.num_buckets();
-        let ratio = if shrink {
-            old_array.num_buckets() / self.array_len
-        } else {
-            self.array_len / old_array.num_buckets()
-        };
-        let target_index = if shrink {
-            old_index / ratio
-        } else {
-            debug_assert!(ratio <= 32);
-            old_index * ratio
-        };
-
-        let mut target_buckets: [Option<Locker<K, V, LOCK_FREE>>; usize::BITS as usize / 2] =
-            Default::default();
-        let mut max_index = 0;
-        let mut entry_ptr = EntryPtr::new(barrier);
-        let old_data_block = old_array.data_block(old_index);
-        while entry_ptr.next(old_locker.bucket(), barrier) {
-            let old_entry = entry_ptr.get(old_data_block);
-            let (new_index, partial_hash) = if shrink {
-                debug_assert!(
-                    self.calculate_bucket_index(hasher(old_entry.0.borrow())) == target_index
-                );
-                (target_index, entry_ptr.partial_hash(old_locker.bucket()))
-            } else {
-                let hash = hasher(old_entry.0.borrow());
-                let new_index = self.calculate_bucket_index(hash);
-                debug_assert!((new_index - target_index) < ratio);
-                (
-                    new_index,
-                    BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
-                )
-            };
-
-            let offset = new_index - target_index;
-            while max_index <= offset {
-                let target_bucket = self.bucket_mut(max_index + target_index);
-                let locker = unsafe {
-                    if TRY_LOCK {
-                        Locker::try_lock(target_bucket, barrier)?.unwrap_unchecked()
-                    } else if let Some(async_wait) = async_wait.derive() {
-                        Locker::try_lock_or_wait(target_bucket, async_wait, barrier)?
-                            .unwrap_unchecked()
-                    } else {
-                        Locker::lock(target_bucket, barrier).unwrap_unchecked()
-                    }
-                };
-                target_buckets[max_index].replace(locker);
-                max_index += 1;
-            }
-
-            let target_bucket = unsafe { target_buckets[offset].as_mut().unwrap_unchecked() };
-            target_bucket.insert_with(
-                self.data_block(target_index + offset),
-                partial_hash,
-                || {
-                    // Stack unwinding during a call to `insert` will result in the entry being
-                    // removed from the map, any map entry modification should take place after all
-                    // the memory is reserved.
-                    if LOCK_FREE {
-                        copier(&old_entry.0, &old_entry.1)
-                    } else {
-                        old_locker.extract(old_data_block, &mut entry_ptr, barrier)
-                    }
-                },
-                barrier,
-            );
-
-            if LOCK_FREE {
-                // In order for readers that have observed the following erasure to see the above
-                // insertion, a `Release` fence is needed.
-                fence(Release);
-                old_locker.erase(old_data_block, &mut entry_ptr);
-            }
-        }
-        old_locker.purge(barrier);
-        Ok(())
-    }
-
-    /// Relocates a fixed number of `Bucket` instances from the old array to the current array.
-    ///
-    /// Returns `true` if `old_array` is null.
-    #[inline]
-    pub(crate) fn partial_rehash<
-        Q,
-        F: Fn(&Q) -> u64,
-        C: Fn(&K, &V) -> (K, V),
-        D,
-        const TRY_LOCK: bool,
-    >(
-        &self,
-        hasher: F,
-        copier: C,
-        async_wait: &mut D,
-        barrier: &Barrier,
-    ) -> Result<bool, ()>
-    where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
-        D: DeriveAsyncWait,
-    {
-        if let Some(old_array) = self.old_array(barrier).as_ref() {
-            // Assign itself a range of `Bucket` instances to rehash.
-            //
-            // Aside from the range, it increments the implicit reference counting field in
-            // `old_array.rehashing`.
-            let old_array_num_buckets = old_array.num_buckets();
-            let mut current = old_array.num_cleared_buckets.load(Relaxed);
-            loop {
-                if current >= old_array_num_buckets
-                    || (current & (BUCKET_LEN - 1)) == BUCKET_LEN - 1
-                {
-                    // Only `BUCKET_LEN - 1` threads are allowed to rehash a `Bucket` at a moment.
-                    return Ok(self.old_array.is_null(Relaxed));
-                }
-                match old_array.num_cleared_buckets.compare_exchange(
-                    current,
-                    current + BUCKET_LEN + 1,
-                    Relaxed,
-                    Relaxed,
-                ) {
-                    Ok(_) => {
-                        current &= !(BUCKET_LEN - 1);
-                        break;
-                    }
-                    Err(result) => current = result,
-                }
-            }
-
-            // The guard ensures dropping one reference in `old_array.rehashing`.
-            let mut rehashing_guard = ExitGuard::new((current, false), |(prev, success)| {
-                if success {
-                    // Keep the index as it is.
-                    let current = old_array.num_cleared_buckets.fetch_sub(1, Relaxed) - 1;
-                    if (current & (BUCKET_LEN - 1) == 0) && current >= old_array_num_buckets {
-                        // The last one trying to relocate old entries gets rid of the old array.
-                        self.old_array
-                            .swap((None, Tag::None), Relaxed)
-                            .0
-                            .map(|a| a.release(barrier));
-                    }
-                } else {
-                    // On failure, `rehashing` reverts to its previous state.
-                    let mut current = old_array.num_cleared_buckets.load(Relaxed);
-                    loop {
-                        let new = if current <= prev {
-                            current - 1
-                        } else {
-                            let ref_cnt = current & (BUCKET_LEN - 1);
-                            prev | (ref_cnt - 1)
-                        };
-                        match old_array
-                            .num_cleared_buckets
-                            .compare_exchange(current, new, Relaxed, Relaxed)
-                        {
-                            Ok(_) => break,
-                            Err(actual) => current = actual,
-                        }
-                    }
-                }
-            });
-
-            for old_index in current..(current + BUCKET_LEN).min(old_array_num_buckets) {
-                let old_bucket = old_array.bucket_mut(old_index);
-                let lock_result = if TRY_LOCK {
-                    Locker::try_lock(old_bucket, barrier)?
-                } else if let Some(async_wait) = async_wait.derive() {
-                    Locker::try_lock_or_wait(old_bucket, async_wait, barrier)?
-                } else {
-                    Locker::lock(old_bucket, barrier)
-                };
-                if let Some(mut locker) = lock_result {
-                    self.kill_bucket::<Q, F, C, D, TRY_LOCK>(
-                        &mut locker,
-                        old_index,
-                        old_array,
-                        &hasher,
-                        &copier,
-                        async_wait,
-                        barrier,
-                    )?;
-                }
-            }
-
-            // Successfully rehashed all the assigned buckets.
-            rehashing_guard.1 = true;
-        }
-        Ok(self.old_array.is_null(Relaxed))
     }
 
     /// Calculates `log_2` of the array size from the given capacity.

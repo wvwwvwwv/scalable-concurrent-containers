@@ -11,8 +11,8 @@ use crate::wait_queue::DeriveAsyncWait;
 use std::borrow::Borrow;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::ptr;
-use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use std::sync::atomic::{fence, AtomicU8};
 
 /// `HashTable` defines common functions for hash table implementations.
 pub(super) trait HashTable<K, V, H, const LOCK_FREE: bool>
@@ -39,9 +39,9 @@ where
     /// Returns a reference to its [`BuildHasher`].
     fn hasher(&self) -> &H;
 
-    /// Copying function which is only invoked when `LOCK_FREE` is `true` thus `K` and `V` both
+    /// Cloning function which is only invoked when `LOCK_FREE` is `true` thus `K` and `V` both
     /// being `Clone`.
-    fn copier(key: &K, val: &V) -> (K, V);
+    fn cloner(key: &K, val: &V) -> Option<(K, V)>;
 
     /// Returns a reference to the [`BucketArray`] pointer.
     fn bucket_array(&self) -> &AtomicArc<BucketArray<K, V, LOCK_FREE>>;
@@ -87,7 +87,7 @@ where
         current_array.num_entries()
     }
 
-    /// Estimates the number of entries using by sampling the specified number of buckets.
+    /// Estimates the number of entries by sampling the specified number of buckets.
     #[inline]
     fn estimate(
         array: &BucketArray<K, V, LOCK_FREE>,
@@ -175,12 +175,8 @@ where
         loop {
             if let Some(old_array) = current_array.old_array(barrier).as_ref() {
                 if LOCK_FREE {
-                    if current_array.partial_rehash::<Q, _, _, D, true>(
-                        |key| self.hash(key),
-                        Self::copier,
-                        async_wait,
-                        barrier,
-                    ) != Ok(true)
+                    if self.partial_rehash::<Q, D, true>(current_array, async_wait, barrier)
+                        != Ok(true)
                     {
                         let index = old_array.calculate_bucket_index(hash);
                         if let Some((k, v)) = old_array.bucket(index).search(
@@ -393,12 +389,7 @@ where
         Q: Hash + Eq + ?Sized,
         D: DeriveAsyncWait,
     {
-        if !current_array.partial_rehash::<Q, _, _, D, false>(
-            |key| self.hash(key),
-            Self::copier,
-            async_wait,
-            barrier,
-        )? {
+        if !self.partial_rehash::<Q, D, false>(current_array, async_wait, barrier)? {
             let index = old_array.calculate_bucket_index(hash);
             let bucket = old_array.bucket_mut(index);
             let lock_result = if let Some(async_wait) = async_wait.derive() {
@@ -407,12 +398,11 @@ where
                 Locker::lock(bucket, barrier)
             };
             if let Some(mut locker) = lock_result {
-                current_array.kill_bucket::<Q, _, _, _, false>(
+                self.kill_bucket::<Q, _, false>(
+                    current_array,
                     &mut locker,
                     index,
                     old_array,
-                    &|key| self.hash(key),
-                    &Self::copier,
                     async_wait,
                     barrier,
                 )?;
@@ -420,6 +410,210 @@ where
             return Ok(false);
         }
         Ok(true)
+    }
+
+    /// Kills the [`Bucket`].
+    ///
+    /// It returns an error if locking failed.
+    #[inline]
+    fn kill_bucket<Q, D, const TRY_LOCK: bool>(
+        &self,
+        current_array: &BucketArray<K, V, LOCK_FREE>,
+        old_locker: &mut Locker<K, V, LOCK_FREE>,
+        old_index: usize,
+        old_array: &BucketArray<K, V, LOCK_FREE>,
+        async_wait: &mut D,
+        barrier: &Barrier,
+    ) -> Result<(), ()>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+        D: DeriveAsyncWait,
+    {
+        debug_assert!(!old_locker.bucket().killed());
+        if old_locker.bucket().num_entries() == 0 {
+            old_locker.purge(barrier);
+            return Ok(());
+        }
+
+        let shrink = old_array.num_buckets() > current_array.num_buckets();
+        let ratio = if shrink {
+            old_array.num_buckets() / current_array.num_buckets()
+        } else {
+            current_array.num_buckets() / old_array.num_buckets()
+        };
+        let target_index = if shrink {
+            old_index / ratio
+        } else {
+            debug_assert!(ratio <= 32);
+            old_index * ratio
+        };
+
+        let mut target_buckets: [Option<Locker<K, V, LOCK_FREE>>; usize::BITS as usize / 2] =
+            Default::default();
+        let mut max_index = 0;
+        let mut entry_ptr = EntryPtr::new(barrier);
+        let old_data_block = old_array.data_block(old_index);
+        while entry_ptr.next(old_locker.bucket(), barrier) {
+            let old_entry = entry_ptr.get(old_data_block);
+            let (new_index, partial_hash) = if shrink {
+                debug_assert!(
+                    current_array.calculate_bucket_index(self.hash(old_entry.0.borrow()))
+                        == target_index
+                );
+                (target_index, entry_ptr.partial_hash(old_locker.bucket()))
+            } else {
+                let hash = self.hash(old_entry.0.borrow());
+                let new_index = current_array.calculate_bucket_index(hash);
+                debug_assert!((new_index - target_index) < ratio);
+                (
+                    new_index,
+                    BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
+                )
+            };
+
+            let offset = new_index - target_index;
+            while max_index <= offset {
+                let target_bucket = current_array.bucket_mut(max_index + target_index);
+                let locker = unsafe {
+                    if TRY_LOCK {
+                        Locker::try_lock(target_bucket, barrier)?.unwrap_unchecked()
+                    } else if let Some(async_wait) = async_wait.derive() {
+                        Locker::try_lock_or_wait(target_bucket, async_wait, barrier)?
+                            .unwrap_unchecked()
+                    } else {
+                        Locker::lock(target_bucket, barrier).unwrap_unchecked()
+                    }
+                };
+                target_buckets[max_index].replace(locker);
+                max_index += 1;
+            }
+
+            let target_bucket = unsafe { target_buckets[offset].as_mut().unwrap_unchecked() };
+            let cloned_entry = Self::cloner(&old_entry.0, &old_entry.1);
+            target_bucket.insert_with(
+                current_array.data_block(target_index + offset),
+                partial_hash,
+                || {
+                    // Stack unwinding during a call to `insert` will result in the entry being
+                    // removed from the map, any map entry modification should take place after all
+                    // the memory is reserved.
+                    cloned_entry.unwrap_or_else(|| {
+                        old_locker.extract(old_data_block, &mut entry_ptr, barrier)
+                    })
+                },
+                barrier,
+            );
+
+            if LOCK_FREE {
+                // In order for readers that have observed the following erasure to see the above
+                // insertion, a `Release` fence is needed.
+                fence(Release);
+                old_locker.erase(old_data_block, &mut entry_ptr);
+            }
+        }
+        old_locker.purge(barrier);
+        Ok(())
+    }
+
+    /// Relocates a fixed number of buckets from the old array to the current array.
+    ///
+    /// Returns `true` if `old_array` is null.
+    #[inline]
+    fn partial_rehash<Q, D, const TRY_LOCK: bool>(
+        &self,
+        current_array: &BucketArray<K, V, LOCK_FREE>,
+        async_wait: &mut D,
+        barrier: &Barrier,
+    ) -> Result<bool, ()>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+        D: DeriveAsyncWait,
+    {
+        if let Some(old_array) = current_array.old_array(barrier).as_ref() {
+            // Assign itself a range of `Bucket` instances to rehash.
+            //
+            // Aside from the range, it increments the implicit reference counting field in
+            // `old_array.rehashing`.
+            let old_array_num_buckets = old_array.num_buckets();
+            let mut current = old_array.num_cleared_buckets().load(Relaxed);
+            loop {
+                if current >= old_array_num_buckets
+                    || (current & (BUCKET_LEN - 1)) == BUCKET_LEN - 1
+                {
+                    // Only `BUCKET_LEN - 1` threads are allowed to rehash a `Bucket` at a moment.
+                    return Ok(current_array.old_array(barrier).is_null());
+                }
+                match old_array.num_cleared_buckets().compare_exchange(
+                    current,
+                    current + BUCKET_LEN + 1,
+                    Relaxed,
+                    Relaxed,
+                ) {
+                    Ok(_) => {
+                        current &= !(BUCKET_LEN - 1);
+                        break;
+                    }
+                    Err(result) => current = result,
+                }
+            }
+
+            // The guard ensures dropping one reference in `old_array.rehashing`.
+            let mut rehashing_guard = ExitGuard::new((current, false), |(prev, success)| {
+                if success {
+                    // Keep the index as it is.
+                    let current = old_array.num_cleared_buckets().fetch_sub(1, Relaxed) - 1;
+                    if (current & (BUCKET_LEN - 1) == 0) && current >= old_array_num_buckets {
+                        // The last one trying to relocate old entries gets rid of the old array.
+                        current_array.drop_old_array(barrier);
+                    }
+                } else {
+                    // On failure, `rehashing` reverts to its previous state.
+                    let mut current = old_array.num_cleared_buckets().load(Relaxed);
+                    loop {
+                        let new = if current <= prev {
+                            current - 1
+                        } else {
+                            let ref_cnt = current & (BUCKET_LEN - 1);
+                            prev | (ref_cnt - 1)
+                        };
+                        match old_array
+                            .num_cleared_buckets()
+                            .compare_exchange(current, new, Relaxed, Relaxed)
+                        {
+                            Ok(_) => break,
+                            Err(actual) => current = actual,
+                        }
+                    }
+                }
+            });
+
+            for old_index in current..(current + BUCKET_LEN).min(old_array_num_buckets) {
+                let old_bucket = old_array.bucket_mut(old_index);
+                let lock_result = if TRY_LOCK {
+                    Locker::try_lock(old_bucket, barrier)?
+                } else if let Some(async_wait) = async_wait.derive() {
+                    Locker::try_lock_or_wait(old_bucket, async_wait, barrier)?
+                } else {
+                    Locker::lock(old_bucket, barrier)
+                };
+                if let Some(mut locker) = lock_result {
+                    self.kill_bucket::<Q, D, TRY_LOCK>(
+                        current_array,
+                        &mut locker,
+                        old_index,
+                        old_array,
+                        async_wait,
+                        barrier,
+                    )?;
+                }
+            }
+
+            // Successfully rehashed all the assigned buckets.
+            rehashing_guard.1 = true;
+        }
+        Ok(current_array.old_array(barrier).is_null())
     }
 
     /// Tries to enlarge the array if the estimated load factor is greater than `7/8`.

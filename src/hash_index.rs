@@ -478,12 +478,7 @@ where
         let mut current_array_ptr = self.array.load(Acquire, &barrier);
         while let Some(current_array) = current_array_ptr.as_ref() {
             while !current_array.old_array(&barrier).is_null() {
-                if current_array.partial_rehash::<_, _, _, _, false>(
-                    |key| self.hash(key),
-                    Self::copier,
-                    &mut (),
-                    &barrier,
-                ) == Ok(true)
+                if self.partial_rehash::<_, _, false>(current_array, &mut (), &barrier) == Ok(true)
                 {
                     break;
                 }
@@ -532,9 +527,8 @@ where
             while !current_array.old_array(&Barrier::new()).is_null() {
                 let mut async_wait = AsyncWait::default();
                 let mut async_wait_pinned = Pin::new(&mut async_wait);
-                if current_array.partial_rehash::<_, _, _, _, false>(
-                    |key| self.hash(key),
-                    Self::copier,
+                if self.partial_rehash::<_, _, false>(
+                    &current_array,
                     &mut async_wait_pinned,
                     &Barrier::new(),
                 ) == Ok(true)
@@ -822,8 +816,8 @@ where
         &self.build_hasher
     }
     #[inline]
-    fn copier(key: &K, val: &V) -> (K, V) {
-        (key.clone(), val.clone())
+    fn cloner(key: &K, val: &V) -> Option<(K, V)> {
+        Some((key.clone(), val.clone()))
     }
     #[inline]
     fn bucket_array(&self) -> &AtomicArc<BucketArray<K, V, true>> {

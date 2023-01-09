@@ -19,6 +19,8 @@ jobs:
         run: cargo clippy --all
       - name: Format
         run: cargo fmt --all
+      - name: Doc
+        run: cargo doc --document-private-items
       - name: Debug - Test
         run: RUST_BACKTRACE=1 cargo test --verbose -- --nocapture
       - name: Debug(serde) - Test
@@ -29,5 +31,3 @@ jobs:
         run: cargo bench
       - name: Release(serde) - Test
         run: RUST_BACKTRACE=1 cargo test --release serde --verbose --features serde
-      - name: Document - Generate documentation
-        run: cargo doc --document-private-items
