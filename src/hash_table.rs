@@ -412,7 +412,7 @@ where
         Ok(true)
     }
 
-    /// Kills the [`Bucket`].
+    /// Kills the bucket.
     ///
     /// It returns an error if locking failed.
     #[inline]
@@ -519,7 +519,6 @@ where
     /// Relocates a fixed number of buckets from the old array to the current array.
     ///
     /// Returns `true` if `old_array` is null.
-    #[inline]
     fn partial_rehash<Q, D, const TRY_LOCK: bool>(
         &self,
         current_array: &BucketArray<K, V, LOCK_FREE>,
