@@ -2,6 +2,7 @@
 
 1.0.8
 
+* More robust panic handling.
 * Doc update.
 
 1.0.7

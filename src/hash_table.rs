@@ -516,6 +516,67 @@ where
         Ok(())
     }
 
+    /// Tries to enlarge the array if the estimated load factor is greater than `7/8`.
+    #[inline]
+    fn try_enlarge(
+        &self,
+        array: &BucketArray<K, V, LOCK_FREE>,
+        index: usize,
+        mut num_entries: usize,
+        barrier: &Barrier,
+    ) {
+        let sample_size = array.sample_size();
+        let threshold = sample_size * (BUCKET_LEN / 8) * 7;
+        if num_entries > threshold
+            || (1..sample_size).any(|i| {
+                num_entries += array
+                    .bucket((index + i) % array.num_buckets())
+                    .num_entries();
+                num_entries > threshold
+            })
+        {
+            self.resize(barrier);
+        }
+    }
+
+    /// Tries to shrink the array if the load factor is estimated at around `1/16`.
+    #[inline]
+    fn try_shrink(&self, array: &BucketArray<K, V, LOCK_FREE>, index: usize, barrier: &Barrier) {
+        let sample_size = array.sample_size();
+        let threshold = sample_size * BUCKET_LEN / 16;
+        let mut num_entries = 0;
+        if !(1..sample_size).any(|i| {
+            num_entries += array
+                .bucket((index + i) % array.num_buckets())
+                .num_entries();
+            num_entries >= threshold
+        }) {
+            self.resize(barrier);
+        }
+    }
+
+    /// Tries to rebuild the array if there are no usable entry slots in at least half of the
+    /// buckets in the sampling range.
+    #[inline]
+    fn try_rebuild(&self, array: &BucketArray<K, V, LOCK_FREE>, index: usize, barrier: &Barrier) {
+        let sample_size = array.sample_size();
+        let threshold = sample_size / 2;
+        let mut num_buckets_to_rebuild = 1;
+        if (1..sample_size).any(|i| {
+            if array
+                .bucket((index + i) % array.num_buckets())
+                .need_rebuild()
+            {
+                num_buckets_to_rebuild += 1;
+                num_buckets_to_rebuild > threshold
+            } else {
+                false
+            }
+        }) {
+            self.resize(barrier);
+        }
+    }
+
     /// Relocates a fixed number of buckets from the old array to the current array.
     ///
     /// Returns `true` if `old_array` is null.
@@ -613,66 +674,6 @@ where
             rehashing_guard.1 = true;
         }
         Ok(current_array.old_array(barrier).is_null())
-    }
-
-    /// Tries to enlarge the array if the estimated load factor is greater than `7/8`.
-    #[inline]
-    fn try_enlarge(
-        &self,
-        array: &BucketArray<K, V, LOCK_FREE>,
-        index: usize,
-        mut num_entries: usize,
-        barrier: &Barrier,
-    ) {
-        let sample_size = array.sample_size();
-        let threshold = sample_size * (BUCKET_LEN / 8) * 7;
-        if num_entries > threshold
-            || (1..sample_size).any(|i| {
-                num_entries += array
-                    .bucket((index + i) % array.num_buckets())
-                    .num_entries();
-                num_entries > threshold
-            })
-        {
-            self.resize(barrier);
-        }
-    }
-
-    /// Tries to shrink the array if the load factor is estimated at around `1/16`.
-    #[inline]
-    fn try_shrink(&self, array: &BucketArray<K, V, LOCK_FREE>, index: usize, barrier: &Barrier) {
-        let sample_size = array.sample_size();
-        let threshold = sample_size * BUCKET_LEN / 16;
-        let mut num_entries = 0;
-        if !(1..sample_size).any(|i| {
-            num_entries += array
-                .bucket((index + i) % array.num_buckets())
-                .num_entries();
-            num_entries >= threshold
-        }) {
-            self.resize(barrier);
-        }
-    }
-
-    /// Tries to rebuild the array if there are no usable entry slots in at least half of the
-    /// buckets in the sampling range.
-    fn try_rebuild(&self, array: &BucketArray<K, V, LOCK_FREE>, index: usize, barrier: &Barrier) {
-        let sample_size = array.sample_size();
-        let threshold = sample_size / 2;
-        let mut num_buckets_to_rebuild = 1;
-        if (1..sample_size).any(|i| {
-            if array
-                .bucket((index + i) % array.num_buckets())
-                .need_rebuild()
-            {
-                num_buckets_to_rebuild += 1;
-                num_buckets_to_rebuild > threshold
-            } else {
-                false
-            }
-        }) {
-            self.resize(barrier);
-        }
     }
 
     /// Resizes the array.
