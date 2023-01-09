@@ -8,23 +8,17 @@ use crate::wait_queue::DeriveAsyncWait;
 use std::borrow::Borrow;
 use std::sync::atomic::Ordering::{self, Acquire, Relaxed, Release};
 
-/// [`Type`] indicates the type of a [`Node`].
-pub enum Type<K, V>
+/// [`Node`] is either [`Self::Internal`] or [`Self::Leaf`].
+pub enum Node<K, V>
 where
     K: 'static + Clone + Ord + Sync,
     V: 'static + Clone + Sync,
 {
+    /// Internal node.
     Internal(InternalNode<K, V>),
-    Leaf(LeafNode<K, V>),
-}
 
-/// [`Node`] is either [`Type::Internal`] or [`Type::Leaf`].
-pub struct Node<K, V>
-where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
-{
-    pub(super) node: Type<K, V>,
+    /// Leaf node.
+    Leaf(LeafNode<K, V>),
 }
 
 impl<K, V> Node<K, V>
@@ -35,40 +29,30 @@ where
     /// Creates a new [`InternalNode`].
     #[inline]
     pub(super) fn new_internal_node() -> Node<K, V> {
-        Node {
-            node: Type::Internal(InternalNode::new()),
-        }
+        Self::Internal(InternalNode::new())
     }
 
     /// Creates a new [`LeafNode`].
     #[inline]
     pub(super) fn new_leaf_node() -> Node<K, V> {
-        Node {
-            node: Type::Leaf(LeafNode::new()),
-        }
-    }
-
-    /// Returns a reference to the node internal.
-    #[inline]
-    pub(super) fn node(&self) -> &Type<K, V> {
-        &self.node
+        Self::Leaf(LeafNode::new())
     }
 
     /// Returns the depth of the node.
     #[inline]
     pub(super) fn depth(&self, depth: usize, barrier: &Barrier) -> usize {
-        match &self.node {
-            Type::Internal(internal_node) => internal_node.depth(depth, barrier),
-            Type::Leaf(_) => depth,
+        match &self {
+            Self::Internal(internal_node) => internal_node.depth(depth, barrier),
+            Self::Leaf(_) => depth,
         }
     }
 
     /// Checks if the node has retired.
     #[inline]
     pub(super) fn retired(&self, mo: Ordering) -> bool {
-        match &self.node {
-            Type::Internal(internal_node) => internal_node.retired(mo),
-            Type::Leaf(leaf_node) => leaf_node.retired(mo),
+        match &self {
+            Self::Internal(internal_node) => internal_node.retired(mo),
+            Self::Leaf(leaf_node) => leaf_node.retired(mo),
         }
     }
 
@@ -79,9 +63,9 @@ where
         K: 'b + Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        match &self.node {
-            Type::Internal(internal_node) => internal_node.search(key, barrier),
-            Type::Leaf(leaf_node) => leaf_node.search(key, barrier),
+        match &self {
+            Self::Internal(internal_node) => internal_node.search(key, barrier),
+            Self::Leaf(leaf_node) => leaf_node.search(key, barrier),
         }
     }
 
@@ -90,9 +74,9 @@ where
     /// This method is not linearizable.
     #[inline]
     pub(super) fn min<'b>(&self, barrier: &'b Barrier) -> Option<Scanner<'b, K, V>> {
-        match &self.node {
-            Type::Internal(internal_node) => internal_node.min(barrier),
-            Type::Leaf(leaf_node) => leaf_node.min(barrier),
+        match &self {
+            Self::Internal(internal_node) => internal_node.min(barrier),
+            Self::Leaf(leaf_node) => leaf_node.min(barrier),
         }
     }
 
@@ -110,9 +94,9 @@ where
         K: 'b + Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        match &self.node {
-            Type::Internal(internal_node) => internal_node.max_le_appr(key, barrier),
-            Type::Leaf(leaf_node) => leaf_node.max_le_appr(key, barrier),
+        match &self {
+            Self::Internal(internal_node) => internal_node.max_le_appr(key, barrier),
+            Self::Leaf(leaf_node) => leaf_node.max_le_appr(key, barrier),
         }
     }
 
@@ -125,9 +109,9 @@ where
         async_wait: &mut D,
         barrier: &Barrier,
     ) -> Result<InsertResult<K, V>, (K, V)> {
-        match &self.node {
-            Type::Internal(internal_node) => internal_node.insert(key, val, async_wait, barrier),
-            Type::Leaf(leaf_node) => leaf_node.insert(key, val, async_wait, barrier),
+        match &self {
+            Self::Internal(internal_node) => internal_node.insert(key, val, async_wait, barrier),
+            Self::Leaf(leaf_node) => leaf_node.insert(key, val, async_wait, barrier),
         }
     }
 
@@ -145,11 +129,11 @@ where
         Q: Ord + ?Sized,
         D: DeriveAsyncWait,
     {
-        match &self.node {
-            Type::Internal(internal_node) => {
+        match &self {
+            Self::Internal(internal_node) => {
                 internal_node.remove_if::<_, _, _>(key, condition, async_wait, barrier)
             }
-            Type::Leaf(leaf_node) => {
+            Self::Leaf(leaf_node) => {
                 leaf_node.remove_if::<_, _, _>(key, condition, async_wait, barrier)
             }
         }
@@ -166,9 +150,7 @@ where
         // The fact that the `TreeIndex` calls this function means that the root is full and
         // locked.
         let mut new_root = Arc::new(Node::new_internal_node());
-        if let Some(Type::Internal(internal_node)) =
-            unsafe { new_root.get_mut().map(|r| &mut r.node) }
-        {
+        if let Some(Self::Internal(internal_node)) = unsafe { new_root.get_mut() } {
             internal_node.unbounded_child = root.clone(Relaxed, barrier);
             let result = internal_node.split_node(
                 key,
@@ -185,7 +167,7 @@ where
             // Updates the pointer before unlocking the root.
             let new_root_ref = new_root.ptr(barrier).as_ref();
             if let Some(old_root) = root.swap((Some(new_root), Tag::None), Release).0 {
-                if let Some(Type::Internal(internal_node)) = new_root_ref.map(|r| &r.node) {
+                if let Some(Self::Internal(internal_node)) = new_root_ref.as_ref() {
                     internal_node.finish_split(barrier);
                     old_root.commit(barrier);
                 }
@@ -213,15 +195,15 @@ where
         if let Some(root_ref) = root_ptr.as_ref() {
             let mut internal_node_locker = None;
             let mut leaf_node_locker = None;
-            match &root_ref.node {
-                Type::Internal(internal_node) => {
+            match root_ref {
+                Self::Internal(internal_node) => {
                     if let Some(locker) = internal_node::Locker::try_lock(internal_node) {
                         internal_node_locker.replace(locker);
                     } else {
                         internal_node.wait(async_wait);
                     }
                 }
-                Type::Leaf(leaf_node) => {
+                Self::Leaf(leaf_node) => {
                     if let Some(locker) = leaf_node::Locker::try_lock(leaf_node) {
                         leaf_node_locker.replace(locker);
                     } else {
@@ -255,18 +237,18 @@ where
     /// Commits an on-going structural change.
     #[inline]
     pub(super) fn commit(&self, barrier: &Barrier) {
-        match &self.node {
-            Type::Internal(internal_node) => internal_node.commit(barrier),
-            Type::Leaf(leaf_node) => leaf_node.commit(barrier),
+        match &self {
+            Self::Internal(internal_node) => internal_node.commit(barrier),
+            Self::Leaf(leaf_node) => leaf_node.commit(barrier),
         }
     }
 
     /// Rolls back an on-going structural change.
     #[inline]
     pub(super) fn rollback(&self, barrier: &Barrier) {
-        match &self.node {
-            Type::Internal(internal_node) => internal_node.rollback(barrier),
-            Type::Leaf(leaf_node) => leaf_node.rollback(barrier),
+        match &self {
+            Self::Internal(internal_node) => internal_node.rollback(barrier),
+            Self::Leaf(leaf_node) => leaf_node.rollback(barrier),
         }
     }
 
@@ -284,9 +266,9 @@ where
         K: 'b + Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        match &self.node {
-            Type::Internal(internal_node) => internal_node.cleanup_link(key, traverse_max, barrier),
-            Type::Leaf(leaf_node) => leaf_node.cleanup_link(key, traverse_max, barrier),
+        match &self {
+            Self::Internal(internal_node) => internal_node.cleanup_link(key, traverse_max, barrier),
+            Self::Leaf(leaf_node) => leaf_node.cleanup_link(key, traverse_max, barrier),
         }
     }
 }

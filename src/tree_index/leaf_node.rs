@@ -792,7 +792,7 @@ where
             for entry in Scanner::new(&self.children) {
                 let leaf_ptr = entry.1.load(Relaxed, barrier);
                 let leaf = leaf_ptr.as_ref().unwrap();
-                if leaf.retired() {
+                if leaf.is_retired() {
                     let deleted = leaf.delete_self(Relaxed);
                     debug_assert!(deleted);
                     let result = self.children.remove_if(entry.0.borrow(), &mut |_| true);
@@ -820,7 +820,7 @@ where
             } else {
                 let unbounded_ptr = self.unbounded_child.load(Relaxed, barrier);
                 if let Some(unbounded) = unbounded_ptr.as_ref() {
-                    if unbounded.retired() {
+                    if unbounded.is_retired() {
                         let deleted = unbounded.delete_self(Relaxed);
                         debug_assert!(deleted);
 
@@ -865,7 +865,7 @@ where
         for entry in Scanner::new(&self.children) {
             let leaf_ptr = entry.1.load(Relaxed, barrier);
             if let Some(leaf) = leaf_ptr.as_ref() {
-                if leaf.retired() {
+                if leaf.is_retired() {
                     return true;
                 }
                 has_valid_leaf = true;
@@ -874,7 +874,7 @@ where
         if !has_valid_leaf {
             let unbounded_ptr = self.unbounded_child.load(Relaxed, barrier);
             if let Some(unbounded) = unbounded_ptr.as_ref() {
-                if unbounded.retired() {
+                if unbounded.is_retired() {
                     return true;
                 }
             }

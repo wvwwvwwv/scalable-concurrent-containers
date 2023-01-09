@@ -33,7 +33,7 @@ impl Collector {
     /// A bit field representing a thread state where the thread has been terminated.
     const INVALID: u8 = 1_u8 << 3;
 
-    /// Acknowledges a new [`Barrier`] being instantiated.
+    /// Acknowledges a new [`Barrier`](super::Barrier) being instantiated.
     ///
     /// # Panics
     ///
@@ -69,7 +69,7 @@ impl Collector {
         }
     }
 
-    /// Acknowledges an existing [`Barrier`] being dropped.
+    /// Acknowledges an existing [`Barrier`](super::Barrier) being dropped.
     #[inline]
     pub(super) fn end_barrier(&mut self) {
         debug_assert_eq!(self.state.load(Relaxed) & Self::INACTIVE, 0);

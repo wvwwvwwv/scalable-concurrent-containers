@@ -327,7 +327,7 @@ pub trait LinkedList: 'static + Sized {
 
 /// [`Entry`] stores an instance of `T` and a link to the next entry.
 pub struct Entry<T: 'static> {
-    /// `instance` is always `Some` unless [`Self::into_inner`] is called.
+    /// `instance` is always `Some` unless [`Self::take_inner`] is called.
     instance: Option<T>,
 
     /// `next` points to the next entry in a linked list.

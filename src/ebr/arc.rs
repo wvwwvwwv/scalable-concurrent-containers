@@ -175,7 +175,7 @@ impl<T: 'static> Arc<T> {
         dropped
     }
 
-    /// Provides a raw pointer to its [`Underlying`].
+    /// Provides a raw pointer to its [`RefCounted`].
     #[inline]
     pub(super) fn get_underlying_ptr(&self) -> *mut RefCounted<T> {
         self.instance_ptr.as_ptr()

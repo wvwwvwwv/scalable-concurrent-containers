@@ -116,7 +116,7 @@ impl<T> Collectible for RefCounted<T> {
     }
 }
 
-/// [`LinkOrRefCnt`] is a union of a dynamic pointer to [`Link`] and a reference count.
+/// [`LinkOrRefCnt`] is a union of a dynamic pointer to [`Collectible`] and a reference count.
 pub(super) union LinkOrRefCnt {
     next: Option<NonNull<dyn Collectible>>,
     refcnt: ManuallyDrop<(AtomicUsize, usize)>,

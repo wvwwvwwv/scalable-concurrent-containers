@@ -15,15 +15,19 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v2
+      - name: Lint
+        run: cargo clippy --all
+      - name: Format
+        run: cargo fmt --all
       - name: Debug - Test
         run: RUST_BACKTRACE=1 cargo test --verbose -- --nocapture
       - name: Debug(serde) - Test
         run: RUST_BACKTRACE=1 cargo test serde --verbose --features serde
       - name: Release - Test
         run: RUST_BACKTRACE=1 cargo test --release --verbose -- --nocapture
-      - name: Release(serde) - Test
-        run: RUST_BACKTRACE=1 cargo test --release serde --verbose --features serde
       - name: Release - Benchmark
         run: cargo bench
+      - name: Release(serde) - Test
+        run: RUST_BACKTRACE=1 cargo test --release serde --verbose --features serde
       - name: Document - Generate documentation
-        run: cargo doc
+        run: cargo doc --document-private-items

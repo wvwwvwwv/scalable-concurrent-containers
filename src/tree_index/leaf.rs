@@ -7,150 +7,6 @@ use std::mem::{needs_drop, MaybeUninit};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
-/// The result of insertion.
-pub enum InsertResult<K, V> {
-    /// Insertion succeeded.
-    Success,
-
-    /// Duplicate key found.
-    Duplicate(K, V),
-
-    /// No vacant slot for the key.
-    Full(K, V),
-
-    /// The [`Leaf`] is frozen.
-    ///
-    /// It is not a terminal state that a frozen [`Leaf`] can be unfrozen.
-    Frozen(K, V),
-
-    /// Insertion failed as the [`Leaf`] has retired.
-    ///
-    /// It is a terminal state.
-    Retired(K, V),
-
-    /// The operation can be retried.
-    Retry(K, V),
-}
-
-/// The result of removal.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RemoveResult {
-    /// Remove succeeded.
-    Success,
-
-    /// Remove succeeded and cleanup required.
-    Cleanup,
-
-    /// Remove succeeded and the [`Leaf`] has retired without usable entries left.
-    Retired,
-
-    /// Remove failed.
-    Fail,
-
-    /// The [`Leaf`] is frozen.
-    Frozen,
-}
-
-/// The number of entries and number of state bits per entry.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Dimension {
-    pub num_entries: usize,
-    pub num_bits_per_entry: usize,
-}
-
-impl Dimension {
-    /// Checks if the [`Leaf`] is frozen.
-    const fn frozen(metadata: usize) -> bool {
-        metadata & (1_usize << (usize::BITS - 2)) != 0
-    }
-
-    /// Makes the metadata represent a frozen state.
-    const fn freeze(metadata: usize) -> usize {
-        metadata | (1_usize << (usize::BITS - 2))
-    }
-
-    /// Updates the metadata to represent a non-frozen state.
-    const fn thaw(metadata: usize) -> usize {
-        metadata & (!(1_usize << (usize::BITS - 2)))
-    }
-
-    /// Checks if the [`Leaf`] is retired.
-    const fn retired(metadata: usize) -> bool {
-        metadata & (1_usize << (usize::BITS - 1)) != 0
-    }
-
-    /// Makes the metadata represent a retired state.
-    const fn retire(metadata: usize) -> usize {
-        metadata | (1_usize << (usize::BITS - 1))
-    }
-
-    /// Returns a bit mask for an entry.
-    const fn rank_mask(&self, index: usize) -> usize {
-        ((1_usize << self.num_bits_per_entry) - 1) << (index * self.num_bits_per_entry)
-    }
-
-    /// Returns the rank of an entry.
-    const fn rank(&self, metadata: usize, index: usize) -> usize {
-        (metadata >> (index * self.num_bits_per_entry)) % (1_usize << self.num_bits_per_entry)
-    }
-
-    /// Returns the uninitialized rank value which is smaller than all the valid rank values.
-    const fn uninit_rank() -> usize {
-        0
-    }
-
-    /// Returns the removed rank value which is greater than all the valid rank values.
-    const fn removed_rank(&self) -> usize {
-        (1_usize << self.num_bits_per_entry) - 1
-    }
-
-    /// Augments the rank to the given metadata.
-    const fn augment(&self, metadata: usize, index: usize, rank: usize) -> usize {
-        (metadata & (!self.rank_mask(index))) | (rank << (index * self.num_bits_per_entry))
-    }
-}
-
-/// The maximum number of entries and the number of metadata bits per entry in a [`Leaf`].
-///
-/// * M = The maximum number of entries.
-/// * B = The minimum number of bits to express the state of an entry.
-/// * 2 = The number of special states of an entry: uninit, removed.
-/// * 2 = The number of special states of a [`Leaf`]: frozen, retired.
-/// * U = `usize::BITS`.
-/// * Eq1 = M + 2 <= 2^B: B bits represent at least M + 2 states.
-/// * Eq2 = B * M + 2 <= U: M entries + 2 special state.
-/// * Eq3 = Ceil(Log2(M + 2)) * M + 2 <= U: derived from Eq1 and Eq2.
-///
-/// Therefore, when U = 64 => M = 14 / B = 4, and U = 32 => M = 7 / B = 4.
-pub const DIMENSION: Dimension = match usize::BITS / 8 {
-    1 => Dimension {
-        num_entries: 2,
-        num_bits_per_entry: 2,
-    },
-    2 => Dimension {
-        num_entries: 4,
-        num_bits_per_entry: 3,
-    },
-    4 => Dimension {
-        num_entries: 7,
-        num_bits_per_entry: 4,
-    },
-    8 => Dimension {
-        num_entries: 14,
-        num_bits_per_entry: 4,
-    },
-    _ => Dimension {
-        num_entries: 25,
-        num_bits_per_entry: 5,
-    },
-};
-
-/// Each constructed entry in an `EntryArray` is never dropped until the [`Leaf`] is dropped.
-pub type EntryArray<K, V> = (
-    [MaybeUninit<K>; DIMENSION.num_entries],
-    [MaybeUninit<V>; DIMENSION.num_entries],
-);
-
 /// [`Leaf`] is an ordered array of key-value pairs.
 ///
 /// A constructed key-value pair entry is never dropped until the entire [`Leaf`] instance is
@@ -209,7 +65,7 @@ where
 
     /// Returns `true` if the [`Leaf`] has retired.
     #[inline]
-    pub(super) fn retired(&self) -> bool {
+    pub(super) fn is_retired(&self) -> bool {
         Dimension::retired(self.metadata.load(Relaxed))
     }
 
@@ -787,6 +643,150 @@ where
     }
 }
 
+/// The result of insertion.
+pub enum InsertResult<K, V> {
+    /// Insertion succeeded.
+    Success,
+
+    /// Duplicate key found.
+    Duplicate(K, V),
+
+    /// No vacant slot for the key.
+    Full(K, V),
+
+    /// The [`Leaf`] is frozen.
+    ///
+    /// It is not a terminal state that a frozen [`Leaf`] can be unfrozen.
+    Frozen(K, V),
+
+    /// Insertion failed as the [`Leaf`] has retired.
+    ///
+    /// It is a terminal state.
+    Retired(K, V),
+
+    /// The operation can be retried.
+    Retry(K, V),
+}
+
+/// The result of removal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RemoveResult {
+    /// Remove succeeded.
+    Success,
+
+    /// Remove succeeded and cleanup required.
+    Cleanup,
+
+    /// Remove succeeded and the [`Leaf`] has retired without usable entries left.
+    Retired,
+
+    /// Remove failed.
+    Fail,
+
+    /// The [`Leaf`] is frozen.
+    Frozen,
+}
+
+/// The number of entries and number of state bits per entry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Dimension {
+    pub num_entries: usize,
+    pub num_bits_per_entry: usize,
+}
+
+impl Dimension {
+    /// Checks if the [`Leaf`] is frozen.
+    const fn frozen(metadata: usize) -> bool {
+        metadata & (1_usize << (usize::BITS - 2)) != 0
+    }
+
+    /// Makes the metadata represent a frozen state.
+    const fn freeze(metadata: usize) -> usize {
+        metadata | (1_usize << (usize::BITS - 2))
+    }
+
+    /// Updates the metadata to represent a non-frozen state.
+    const fn thaw(metadata: usize) -> usize {
+        metadata & (!(1_usize << (usize::BITS - 2)))
+    }
+
+    /// Checks if the [`Leaf`] is retired.
+    const fn retired(metadata: usize) -> bool {
+        metadata & (1_usize << (usize::BITS - 1)) != 0
+    }
+
+    /// Makes the metadata represent a retired state.
+    const fn retire(metadata: usize) -> usize {
+        metadata | (1_usize << (usize::BITS - 1))
+    }
+
+    /// Returns a bit mask for an entry.
+    const fn rank_mask(&self, index: usize) -> usize {
+        ((1_usize << self.num_bits_per_entry) - 1) << (index * self.num_bits_per_entry)
+    }
+
+    /// Returns the rank of an entry.
+    const fn rank(&self, metadata: usize, index: usize) -> usize {
+        (metadata >> (index * self.num_bits_per_entry)) % (1_usize << self.num_bits_per_entry)
+    }
+
+    /// Returns the uninitialized rank value which is smaller than all the valid rank values.
+    const fn uninit_rank() -> usize {
+        0
+    }
+
+    /// Returns the removed rank value which is greater than all the valid rank values.
+    const fn removed_rank(&self) -> usize {
+        (1_usize << self.num_bits_per_entry) - 1
+    }
+
+    /// Augments the rank to the given metadata.
+    const fn augment(&self, metadata: usize, index: usize, rank: usize) -> usize {
+        (metadata & (!self.rank_mask(index))) | (rank << (index * self.num_bits_per_entry))
+    }
+}
+
+/// The maximum number of entries and the number of metadata bits per entry in a [`Leaf`].
+///
+/// * M = The maximum number of entries.
+/// * B = The minimum number of bits to express the state of an entry.
+/// * 2 = The number of special states of an entry: uninit, removed.
+/// * 2 = The number of special states of a [`Leaf`]: frozen, retired.
+/// * U = `usize::BITS`.
+/// * Eq1 = M + 2 <= 2^B: B bits represent at least M + 2 states.
+/// * Eq2 = B * M + 2 <= U: M entries + 2 special state.
+/// * Eq3 = Ceil(Log2(M + 2)) * M + 2 <= U: derived from Eq1 and Eq2.
+///
+/// Therefore, when U = 64 => M = 14 / B = 4, and U = 32 => M = 7 / B = 4.
+pub const DIMENSION: Dimension = match usize::BITS / 8 {
+    1 => Dimension {
+        num_entries: 2,
+        num_bits_per_entry: 2,
+    },
+    2 => Dimension {
+        num_entries: 4,
+        num_bits_per_entry: 3,
+    },
+    4 => Dimension {
+        num_entries: 7,
+        num_bits_per_entry: 4,
+    },
+    8 => Dimension {
+        num_entries: 14,
+        num_bits_per_entry: 4,
+    },
+    _ => Dimension {
+        num_entries: 25,
+        num_bits_per_entry: 5,
+    },
+};
+
+/// Each constructed entry in an `EntryArray` is never dropped until the [`Leaf`] is dropped.
+pub type EntryArray<K, V> = (
+    [MaybeUninit<K>; DIMENSION.num_entries],
+    [MaybeUninit<V>; DIMENSION.num_entries],
+);
+
 /// Leaf scanner.
 pub struct Scanner<'l, K, V>
 where
@@ -1216,7 +1216,7 @@ mod test {
                                 if i != k {
                                     let _result = leaf_clone.insert(i, i);
                                 }
-                                assert!(!leaf_clone.retired());
+                                assert!(!leaf_clone.is_retired());
                                 assert_eq!(leaf_clone.search(&k).unwrap(), &k);
                             }
                             for i in 0..workload_size {

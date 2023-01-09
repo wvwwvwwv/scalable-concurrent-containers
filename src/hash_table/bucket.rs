@@ -364,7 +364,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryPtr<'b, K, V, 
         }
     }
 
-    /// Tries to remove [`Link`] from the linked list.
+    /// Tries to remove [`LinkedBucket`] from the linked list.
     ///
     /// It should only be invoked when the caller is holding a [`Locker`] on the [`Bucket`].
     fn unlink(
@@ -411,7 +411,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryPtr<'b, K, V, 
         }
     }
 
-    /// Moves the [`EntryPointer`] to the next valid entry in the [`Bucket`].
+    /// Moves the [`EntryPtr`] to the next valid entry in the [`Bucket`].
     fn next_entry<const LEN: usize>(
         &mut self,
         metadata: &Metadata<K, V, LEN>,

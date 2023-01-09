@@ -1,6 +1,6 @@
 use super::leaf::{InsertResult, Leaf, RemoveResult, Scanner, DIMENSION};
 use super::leaf_node::{LOCKED, RETIRED};
-use super::node::{Node, Type};
+use super::node::Node;
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
@@ -412,17 +412,17 @@ where
                 .store(full_node_key as *const K as *mut K, Relaxed);
         }
 
-        match target.node() {
-            Type::Internal(full_internal_node) => {
+        match target {
+            Node::Internal(full_internal_node) => {
                 // Copies nodes except for the known full node to the newly allocated internal node entries.
                 let internal_nodes = (
                     Arc::new(Node::new_internal_node()),
                     Arc::new(Node::new_internal_node()),
                 );
-                let Type::Internal(low_key_nodes) = &internal_nodes.0.node() else {
+                let Node::Internal(low_key_nodes) = internal_nodes.0.as_ref() else {
                     unreachable!()
                 };
-                let Type::Internal(high_key_nodes) = &internal_nodes.1.node() else {
+                let Node::Internal(high_key_nodes) = internal_nodes.1.as_ref() else {
                     unreachable!()
                 };
 
@@ -585,20 +585,20 @@ where
                     .high_key_node
                     .swap((Some(internal_nodes.1), Tag::None), Relaxed);
             }
-            Type::Leaf(full_leaf_node) => {
+            Node::Leaf(full_leaf_node) => {
                 // Copies leaves except for the known full leaf to the newly allocated leaf node entries.
                 let leaf_nodes = (
                     Arc::new(Node::new_leaf_node()),
                     Arc::new(Node::new_leaf_node()),
                 );
-                let low_key_leaf_node = if let Type::Leaf(low_key_leaf_node) = &leaf_nodes.0.node()
+                let low_key_leaf_node = if let Node::Leaf(low_key_leaf_node) = leaf_nodes.0.as_ref()
                 {
                     Some(low_key_leaf_node)
                 } else {
                     None
                 };
                 let high_key_leaf_node =
-                    if let Type::Leaf(high_key_leaf_node) = &leaf_nodes.1.node() {
+                    if let Node::Leaf(high_key_leaf_node) = &leaf_nodes.1.as_ref() {
                         Some(high_key_leaf_node)
                     } else {
                         None
@@ -708,7 +708,7 @@ where
         }
     }
 
-    /// Cleans up logically deleted [`LeafNode`] instances in the linked list.
+    /// Cleans up logically deleted leaves in the linked list.
     ///
     /// If the target leaf node does not exist in the sub-tree, returns `false`.
     #[inline]
@@ -737,7 +737,7 @@ where
         false
     }
 
-    /// Waits for the lock on the [`LeafNode`] to be released.
+    /// Waits for the lock on the [`InternalNode`] to be released.
     #[inline]
     pub(super) fn wait<D: DeriveAsyncWait>(&self, async_wait: &mut D) {
         let waiter = || {
@@ -981,15 +981,13 @@ mod test {
     fn new_level_3_node() -> InternalNode<usize, usize> {
         InternalNode {
             children: Leaf::new(),
-            unbounded_child: AtomicArc::new(Node {
-                node: Type::Internal(InternalNode {
-                    children: Leaf::new(),
-                    unbounded_child: AtomicArc::new(Node::new_leaf_node()),
-                    split_op: StructuralChange::default(),
-                    latch: AtomicU8::new(Tag::None.into()),
-                    wait_queue: WaitQueue::default(),
-                }),
-            }),
+            unbounded_child: AtomicArc::new(Node::Internal(InternalNode {
+                children: Leaf::new(),
+                unbounded_child: AtomicArc::new(Node::new_leaf_node()),
+                split_op: StructuralChange::default(),
+                latch: AtomicU8::new(Tag::None.into()),
+                wait_queue: WaitQueue::default(),
+            })),
             split_op: StructuralChange::default(),
             latch: AtomicU8::new(Tag::None.into()),
             wait_queue: WaitQueue::default(),

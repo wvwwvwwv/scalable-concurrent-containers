@@ -225,7 +225,7 @@ impl<'b, T> Ptr<'b, T> {
         }
     }
 
-    /// Provides a raw pointer to its [`Underlying`].
+    /// Provides a raw pointer to its [`RefCounted`].
     #[inline]
     pub(super) fn as_underlying_ptr(self) -> *const RefCounted<T> {
         self.instance_ptr
