@@ -100,9 +100,9 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> BucketArray<K, V, LOCK_
         unsafe { &mut (*(self.bucket_ptr.add(index) as *mut Bucket<K, V, LOCK_FREE>)) }
     }
 
-    /// Returns a reference to `num_cleared_buckets`.
+    /// Returns a reference to its rehashing metadata.
     #[inline]
-    pub(crate) fn num_cleared_buckets(&self) -> &AtomicUsize {
+    pub(crate) fn rehashing_metadata(&self) -> &AtomicUsize {
         &self.num_cleared_buckets
     }
 

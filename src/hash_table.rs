@@ -41,7 +41,7 @@ where
 
     /// Cloning function which is only invoked when `LOCK_FREE` is `true` thus `K` and `V` both
     /// being `Clone`.
-    fn cloner(key: &K, val: &V) -> Option<(K, V)>;
+    fn cloner(entry: &(K, V)) -> Option<(K, V)>;
 
     /// Returns a reference to the [`BucketArray`] pointer.
     fn bucket_array(&self) -> &AtomicArc<BucketArray<K, V, LOCK_FREE>>;
@@ -398,11 +398,11 @@ where
                 Locker::lock(bucket, barrier)
             };
             if let Some(mut locker) = lock_result {
-                self.kill_bucket::<Q, _, false>(
+                self.relocate_bucket::<Q, _, false>(
                     current_array,
-                    &mut locker,
-                    index,
                     old_array,
+                    index,
+                    &mut locker,
                     async_wait,
                     barrier,
                 )?;
@@ -412,16 +412,16 @@ where
         Ok(true)
     }
 
-    /// Kills the bucket.
+    /// Relocates the bucket to the current bucket array.
     ///
     /// It returns an error if locking failed.
     #[inline]
-    fn kill_bucket<Q, D, const TRY_LOCK: bool>(
+    fn relocate_bucket<Q, D, const TRY_LOCK: bool>(
         &self,
         current_array: &BucketArray<K, V, LOCK_FREE>,
-        old_locker: &mut Locker<K, V, LOCK_FREE>,
-        old_index: usize,
         old_array: &BucketArray<K, V, LOCK_FREE>,
+        old_index: usize,
+        old_locker: &mut Locker<K, V, LOCK_FREE>,
         async_wait: &mut D,
         barrier: &Barrier,
     ) -> Result<(), ()>
@@ -431,85 +431,83 @@ where
         D: DeriveAsyncWait,
     {
         debug_assert!(!old_locker.bucket().killed());
-        if old_locker.bucket().num_entries() == 0 {
-            old_locker.purge(barrier);
-            return Ok(());
-        }
-
-        let shrink = old_array.num_buckets() > current_array.num_buckets();
-        let ratio = if shrink {
-            old_array.num_buckets() / current_array.num_buckets()
-        } else {
-            current_array.num_buckets() / old_array.num_buckets()
-        };
-        let target_index = if shrink {
-            old_index / ratio
-        } else {
-            debug_assert!(ratio <= 32);
-            old_index * ratio
-        };
-
-        let mut target_buckets: [Option<Locker<K, V, LOCK_FREE>>; usize::BITS as usize / 2] =
-            Default::default();
-        let mut max_index = 0;
-        let mut entry_ptr = EntryPtr::new(barrier);
-        let old_data_block = old_array.data_block(old_index);
-        while entry_ptr.next(old_locker.bucket(), barrier) {
-            let old_entry = entry_ptr.get(old_data_block);
-            let (new_index, partial_hash) = if shrink {
-                debug_assert!(
-                    current_array.calculate_bucket_index(self.hash(old_entry.0.borrow()))
-                        == target_index
-                );
-                (target_index, entry_ptr.partial_hash(old_locker.bucket()))
+        if old_locker.bucket().num_entries() != 0 {
+            let target_index = if old_array.num_buckets() >= current_array.num_buckets() {
+                let ratio = old_array.num_buckets() / current_array.num_buckets();
+                old_index / ratio
             } else {
-                let hash = self.hash(old_entry.0.borrow());
-                let new_index = current_array.calculate_bucket_index(hash);
-                debug_assert!((new_index - target_index) < ratio);
-                (
-                    new_index,
-                    BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
-                )
+                let ratio = current_array.num_buckets() / old_array.num_buckets();
+                debug_assert!(ratio <= BUCKET_LEN);
+                old_index * ratio
             };
 
-            let offset = new_index - target_index;
-            while max_index <= offset {
-                let target_bucket = current_array.bucket_mut(max_index + target_index);
-                let locker = unsafe {
-                    if TRY_LOCK {
-                        Locker::try_lock(target_bucket, barrier)?.unwrap_unchecked()
-                    } else if let Some(async_wait) = async_wait.derive() {
-                        Locker::try_lock_or_wait(target_bucket, async_wait, barrier)?
-                            .unwrap_unchecked()
+            let mut target_buckets: [Option<Locker<K, V, LOCK_FREE>>; usize::BITS as usize / 2] =
+                Default::default();
+            let mut max_index = 0;
+            let mut entry_ptr = EntryPtr::new(barrier);
+            let old_data_block = old_array.data_block(old_index);
+            while entry_ptr.next(old_locker.bucket(), barrier) {
+                let old_entry = entry_ptr.get(old_data_block);
+                let (new_index, partial_hash) =
+                    if old_array.num_buckets() >= current_array.num_buckets() {
+                        debug_assert_eq!(
+                            current_array.calculate_bucket_index(self.hash(old_entry.0.borrow())),
+                            target_index
+                        );
+                        (target_index, entry_ptr.partial_hash(old_locker.bucket()))
                     } else {
-                        Locker::lock(target_bucket, barrier).unwrap_unchecked()
-                    }
+                        let hash = self.hash(old_entry.0.borrow());
+                        let new_index = current_array.calculate_bucket_index(hash);
+                        debug_assert!(
+                            new_index - target_index
+                                < (current_array.num_buckets() / old_array.num_buckets())
+                        );
+                        let partial_hash = BucketArray::<K, V, LOCK_FREE>::partial_hash(hash);
+                        (new_index, partial_hash)
+                    };
+
+                while max_index <= new_index - target_index {
+                    let target_bucket = current_array.bucket_mut(max_index + target_index);
+                    let locker = unsafe {
+                        if TRY_LOCK {
+                            Locker::try_lock(target_bucket, barrier)?.unwrap_unchecked()
+                        } else if let Some(async_wait) = async_wait.derive() {
+                            Locker::try_lock_or_wait(target_bucket, async_wait, barrier)?
+                                .unwrap_unchecked()
+                        } else {
+                            Locker::lock(target_bucket, barrier).unwrap_unchecked()
+                        }
+                    };
+                    target_buckets[max_index].replace(locker);
+                    max_index += 1;
+                }
+
+                let target_bucket = unsafe {
+                    target_buckets[new_index - target_index]
+                        .as_mut()
+                        .unwrap_unchecked()
                 };
-                target_buckets[max_index].replace(locker);
-                max_index += 1;
-            }
+                let cloned_entry = Self::cloner(old_entry);
+                target_bucket.insert_with(
+                    current_array.data_block(new_index),
+                    partial_hash,
+                    || {
+                        // Stack unwinding during a call to `insert` will result in the entry being
+                        // removed from the map, any map entry modification should take place after all
+                        // the memory is reserved.
+                        cloned_entry.unwrap_or_else(|| {
+                            old_locker.extract(old_data_block, &mut entry_ptr, barrier)
+                        })
+                    },
+                    barrier,
+                );
 
-            let target_bucket = unsafe { target_buckets[offset].as_mut().unwrap_unchecked() };
-            let cloned_entry = Self::cloner(&old_entry.0, &old_entry.1);
-            target_bucket.insert_with(
-                current_array.data_block(target_index + offset),
-                partial_hash,
-                || {
-                    // Stack unwinding during a call to `insert` will result in the entry being
-                    // removed from the map, any map entry modification should take place after all
-                    // the memory is reserved.
-                    cloned_entry.unwrap_or_else(|| {
-                        old_locker.extract(old_data_block, &mut entry_ptr, barrier)
-                    })
-                },
-                barrier,
-            );
-
-            if LOCK_FREE {
-                // In order for readers that have observed the following erasure to see the above
-                // insertion, a `Release` fence is needed.
-                fence(Release);
-                old_locker.erase(old_data_block, &mut entry_ptr);
+                if LOCK_FREE {
+                    // In order for readers that have observed the following erasure to see the above
+                    // insertion, a `Release` fence is needed.
+                    fence(Release);
+                    old_locker.erase(old_data_block, &mut entry_ptr);
+                }
             }
         }
         old_locker.purge(barrier);
@@ -596,16 +594,16 @@ where
             //
             // Aside from the range, it increments the implicit reference counting field in
             // `old_array.rehashing`.
-            let old_array_num_buckets = old_array.num_buckets();
-            let mut current = old_array.num_cleared_buckets().load(Relaxed);
+            let rehashing_metadata = old_array.rehashing_metadata();
+            let mut current = rehashing_metadata.load(Relaxed);
             loop {
-                if current >= old_array_num_buckets
+                if current >= old_array.num_buckets()
                     || (current & (BUCKET_LEN - 1)) == BUCKET_LEN - 1
                 {
                     // Only `BUCKET_LEN - 1` threads are allowed to rehash a `Bucket` at a moment.
                     return Ok(current_array.old_array(barrier).is_null());
                 }
-                match old_array.num_cleared_buckets().compare_exchange(
+                match rehashing_metadata.compare_exchange(
                     current,
                     current + BUCKET_LEN + 1,
                     Relaxed,
@@ -623,14 +621,14 @@ where
             let mut rehashing_guard = ExitGuard::new((current, false), |(prev, success)| {
                 if success {
                     // Keep the index as it is.
-                    let current = old_array.num_cleared_buckets().fetch_sub(1, Relaxed) - 1;
-                    if (current & (BUCKET_LEN - 1) == 0) && current >= old_array_num_buckets {
+                    let current = rehashing_metadata.fetch_sub(1, Relaxed) - 1;
+                    if (current & (BUCKET_LEN - 1) == 0) && current >= old_array.num_buckets() {
                         // The last one trying to relocate old entries gets rid of the old array.
                         current_array.drop_old_array(barrier);
                     }
                 } else {
                     // On failure, `rehashing` reverts to its previous state.
-                    let mut current = old_array.num_cleared_buckets().load(Relaxed);
+                    let mut current = rehashing_metadata.load(Relaxed);
                     loop {
                         let new = if current <= prev {
                             current - 1
@@ -638,10 +636,7 @@ where
                             let ref_cnt = current & (BUCKET_LEN - 1);
                             prev | (ref_cnt - 1)
                         };
-                        match old_array
-                            .num_cleared_buckets()
-                            .compare_exchange(current, new, Relaxed, Relaxed)
-                        {
+                        match rehashing_metadata.compare_exchange(current, new, Relaxed, Relaxed) {
                             Ok(_) => break,
                             Err(actual) => current = actual,
                         }
@@ -649,8 +644,8 @@ where
                 }
             });
 
-            for old_index in current..(current + BUCKET_LEN).min(old_array_num_buckets) {
-                let old_bucket = old_array.bucket_mut(old_index);
+            for index in current..(current + BUCKET_LEN).min(old_array.num_buckets()) {
+                let old_bucket = old_array.bucket_mut(index);
                 let lock_result = if TRY_LOCK {
                     Locker::try_lock(old_bucket, barrier)?
                 } else if let Some(async_wait) = async_wait.derive() {
@@ -659,11 +654,11 @@ where
                     Locker::lock(old_bucket, barrier)
                 };
                 if let Some(mut locker) = lock_result {
-                    self.kill_bucket::<Q, D, TRY_LOCK>(
+                    self.relocate_bucket::<Q, D, TRY_LOCK>(
                         current_array,
-                        &mut locker,
-                        old_index,
                         old_array,
+                        index,
+                        &mut locker,
                         async_wait,
                         barrier,
                     )?;

@@ -816,8 +816,8 @@ where
         &self.build_hasher
     }
     #[inline]
-    fn cloner(key: &K, val: &V) -> Option<(K, V)> {
-        Some((key.clone(), val.clone()))
+    fn cloner(entry: &(K, V)) -> Option<(K, V)> {
+        Some((entry.0.clone(), entry.1.clone()))
     }
     #[inline]
     fn bucket_array(&self) -> &AtomicArc<BucketArray<K, V, true>> {

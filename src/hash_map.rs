@@ -1318,7 +1318,7 @@ where
         &self.build_hasher
     }
     #[inline]
-    fn cloner(_: &K, _: &V) -> Option<(K, V)> {
+    fn cloner(_: &(K, V)) -> Option<(K, V)> {
         None
     }
     #[inline]
