@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod hashmap_test {
     use crate::ebr;
+    use crate::hash_map::Entry;
     use crate::HashMap;
 
     use std::collections::BTreeSet;
@@ -184,6 +185,16 @@ mod hashmap_test {
                     } else if id % 2 == 0 {
                         let result = hashmap_cloned.insert_async(id, id).await;
                         assert!(result.is_ok());
+                    } else if id % 3 == 0 {
+                        let entry = hashmap_cloned.entry(id);
+                        let o = match entry {
+                            Entry::Occupied(mut o) => {
+                                *o.get_mut() = id;
+                                o
+                            }
+                            Entry::Vacant(v) => v.insert_entry(id),
+                        };
+                        assert_eq!(*o.get(), id);
                     } else {
                         let result = hashmap_cloned.insert(id, id);
                         assert!(result.is_ok());
@@ -194,6 +205,16 @@ mod hashmap_test {
                         hashmap_cloned
                             .upsert_async(id, || id, |_, v| *v = id + 1)
                             .await;
+                    } else if id % 7 == 5 {
+                        let entry = hashmap_cloned.entry(id);
+                        match entry {
+                            Entry::Occupied(mut o) => {
+                                *o.get_mut() += 1;
+                            }
+                            Entry::Vacant(v) => {
+                                v.insert_entry(id);
+                            }
+                        }
                     } else {
                         let result = hashmap_cloned
                             .update_async(&id, |_, v| {
@@ -308,8 +329,11 @@ mod hashmap_test {
             assert_eq!(v.unwrap().1, iter.1);
         }
         for iter in checker2 {
-            let v = hashmap2.remove(&iter.0);
-            assert_eq!(v.unwrap().1, iter.1);
+            let e = hashmap2.entry(iter.0);
+            match e {
+                Entry::Occupied(o) => assert_eq!(o.remove(), iter.1),
+                Entry::Vacant(_) => unreachable!(),
+            }
         }
         assert_eq!(hashmap1.len(), 0);
         assert_eq!(hashmap2.len(), 0);

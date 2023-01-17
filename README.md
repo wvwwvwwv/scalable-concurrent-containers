@@ -59,6 +59,9 @@ assert_eq!(hashmap.update(&1, |v| { *v = 2; *v }).unwrap(), 2);
 assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
 assert_eq!(hashmap.remove(&1).unwrap(), (1, 2));
 
+hashmap.entry(7).or_insert(17);
+assert_eq!(hashmap.read(&7, |_, v| *v).unwrap(), 17);
+
 let future_insert = hashmap.insert_async(2, 1);
 let future_remove = hashmap.remove_async(&1);
 ```

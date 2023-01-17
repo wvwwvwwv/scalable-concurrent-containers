@@ -532,11 +532,11 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     #[inline]
     pub(crate) fn insert_with<C: FnOnce() -> (K, V)>(
         &mut self,
-        data_block: &DataBlock<K, V, BUCKET_LEN>,
+        data_block: &'b DataBlock<K, V, BUCKET_LEN>,
         partial_hash: u8,
         constructor: C,
-        barrier: &Barrier,
-    ) {
+        barrier: &'b Barrier,
+    ) -> EntryPtr<'b, K, V, LOCK_FREE> {
         assert!(self.bucket.num_entries != u32::MAX, "array overflow");
 
         let free_index = Self::get_free_index::<BUCKET_LEN>(
@@ -545,9 +545,10 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         );
         if free_index == BUCKET_LEN {
             let preferred_index = partial_hash as usize % LINKED_LEN;
-            let mut link_ptr = self.bucket.metadata.link.load(Acquire, barrier).as_raw()
-                as *mut LinkedBucket<K, V, LINKED_LEN>;
-            while let Some(link_mut) = unsafe { link_ptr.as_mut() } {
+            let mut link_ptr = self.bucket.metadata.link.load(Acquire, barrier);
+            while let Some(link_mut) =
+                unsafe { (link_ptr.as_raw() as *mut LinkedBucket<K, V, LINKED_LEN>).as_mut() }
+            {
                 let free_index = Self::get_free_index::<LINKED_LEN>(
                     link_mut.metadata.occupied_bitmap,
                     preferred_index,
@@ -561,17 +562,20 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                         constructor,
                     );
                     self.bucket.num_entries += 1;
-                    return;
+                    return EntryPtr {
+                        current_link_ptr: link_ptr,
+                        current_index: free_index,
+                    };
                 }
-                link_ptr = link_mut.metadata.link.load(Acquire, barrier).as_raw()
-                    as *mut LinkedBucket<K, V, LINKED_LEN>;
+                link_ptr = link_mut.metadata.link.load(Acquire, barrier);
             }
 
             // Insert a new `LinkedBucket` at the linked list head.
             let head = self.bucket.metadata.link.get_arc(Relaxed, barrier);
             let link = Arc::new(LinkedBucket::new(head));
+            let link_ptr = link.ptr(barrier);
             unsafe {
-                let link_mut = &mut *(link.as_ptr() as *mut LinkedBucket<K, V, LINKED_LEN>);
+                let link_mut = &mut *(link_ptr.as_raw() as *mut LinkedBucket<K, V, LINKED_LEN>);
                 link_mut.data_block[preferred_index]
                     .as_mut_ptr()
                     .write(constructor());
@@ -588,6 +592,11 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                 .metadata
                 .link
                 .swap((Some(link), Tag::None), Release);
+            self.bucket.num_entries += 1;
+            EntryPtr {
+                current_link_ptr: link_ptr,
+                current_index: preferred_index,
+            }
         } else {
             Self::insert_entry_with(
                 &mut self.bucket.metadata,
@@ -596,8 +605,12 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                 partial_hash,
                 constructor,
             );
+            self.bucket.num_entries += 1;
+            EntryPtr {
+                current_link_ptr: Ptr::null(),
+                current_index: free_index,
+            }
         }
-        self.bucket.num_entries += 1;
     }
 
     /// Removes the key-value pair being pointed by the given [`EntryPtr`].

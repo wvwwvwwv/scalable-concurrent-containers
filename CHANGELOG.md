@@ -1,5 +1,9 @@
 # Changelog
 
+1.0.9
+
+* Add `HashMap::{entry, entry_async}`.
+
 1.0.8
 
 * More robust panic handling.

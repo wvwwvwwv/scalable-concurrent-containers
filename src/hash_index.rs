@@ -679,7 +679,7 @@ where
     #[inline]
     pub fn iter<'h, 'b>(&'h self, barrier: &'b Barrier) -> Visitor<'h, 'b, K, V, H> {
         Visitor {
-            hash_index: self,
+            hashindex: self,
             current_array: None,
             current_index: 0,
             current_bucket: None,
@@ -864,7 +864,7 @@ where
     V: 'static + Clone + Sync,
     H: BuildHasher,
 {
-    hash_index: &'h HashIndex<K, V, H>,
+    hashindex: &'h HashIndex<K, V, H>,
     current_array: Option<&'b BucketArray<K, V, true>>,
     current_index: usize,
     current_bucket: Option<&'b Bucket<K, V, true>>,
@@ -886,7 +886,7 @@ where
             array
         } else {
             // Start scanning.
-            let current_array = self.hash_index.current_array_unchecked(self.barrier);
+            let current_array = self.hashindex.current_array_unchecked(self.barrier);
             let old_array_ptr = current_array.old_array(self.barrier);
             let array = if let Some(old_array) = old_array_ptr.as_ref() {
                 old_array
@@ -913,7 +913,7 @@ where
             }
             self.current_index += 1;
             if self.current_index == array.num_buckets() {
-                let current_array = self.hash_index.current_array_unchecked(self.barrier);
+                let current_array = self.hashindex.current_array_unchecked(self.barrier);
                 if self
                     .current_array
                     .as_ref()

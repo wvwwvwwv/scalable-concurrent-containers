@@ -1,7 +1,7 @@
 //! [`HashMap`] is a concurrent and asynchronous hash map.
 
 use super::ebr::{Arc, AtomicArc, Barrier, Tag};
-use super::hash_table::bucket::{EntryPtr, Locker, Reader};
+use super::hash_table::bucket::{DataBlock, EntryPtr, Locker, Reader, BUCKET_LEN};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::HashTable;
 use super::wait_queue::AsyncWait;
@@ -10,6 +10,7 @@ use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
+use std::mem::replace;
 use std::pin::Pin;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 use std::sync::atomic::{AtomicU8, AtomicUsize};
@@ -71,6 +72,62 @@ where
     additional_capacity: AtomicUsize,
     resize_mutex: AtomicU8,
     build_hasher: H,
+}
+
+/// [`Entry`] represents a single entry in a [`HashMap`].
+pub enum Entry<'h, K, V, H>
+where
+    K: 'static + Eq + Hash + Sync,
+    V: 'static + Sync,
+    H: BuildHasher,
+{
+    /// An occupied entry.
+    Occupied(OccupiedEntry<'h, K, V, H>),
+
+    /// A vacant entry.
+    Vacant(VacantEntry<'h, K, V, H>),
+}
+
+/// [`OccupiedEntry`] is a view into an occupied entry in a [`HashMap`].
+pub struct OccupiedEntry<'h, K, V, H>
+where
+    K: 'static + Eq + Hash + Sync,
+    V: 'static + Sync,
+    H: BuildHasher,
+{
+    hashmap: &'h HashMap<K, V, H>,
+    hash: u64,
+    data_block: &'h DataBlock<K, V, BUCKET_LEN>,
+    locker: Locker<'h, K, V, false>,
+    entry_ptr: EntryPtr<'h, K, V, false>,
+}
+
+/// [`VacantEntry`] is a view into a vacant entry in a [`HashMap`].
+pub struct VacantEntry<'h, K, V, H>
+where
+    K: 'static + Eq + Hash + Sync,
+    V: 'static + Sync,
+    H: BuildHasher,
+{
+    hashmap: &'h HashMap<K, V, H>,
+    key: K,
+    hash: u64,
+    data_block: &'h DataBlock<K, V, BUCKET_LEN>,
+    locker: Locker<'h, K, V, false>,
+}
+
+/// [`Ticket`] keeps the increased minimum capacity of the [`HashMap`] during its lifetime.
+///
+/// The minimum capacity is lowered when the [`Ticket`] is dropped, thereby allowing unused
+/// memory to be reclaimed.
+pub struct Ticket<'h, K, V, H>
+where
+    K: 'static + Eq + Hash + Sync,
+    V: 'static + Sync,
+    H: BuildHasher,
+{
+    hashmap: &'h HashMap<K, V, H>,
+    increment: usize,
 }
 
 impl<K, V, H> HashMap<K, V, H>
@@ -181,12 +238,109 @@ where
                 Ok(_) => {
                     self.resize(&Barrier::new());
                     return Some(Ticket {
-                        hash_map: self,
+                        hashmap: self,
                         increment: capacity,
                     });
                 }
                 Err(current) => current_additional_capacity = current,
             }
+        }
+    }
+
+    /// Gets the entry associated with the given key in the map for in-place manipulation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<char, u32> = HashMap::default();
+    ///
+    /// for ch in "a short treatise on fungi".chars() {
+    ///     hashmap.entry(ch).and_modify(|counter| *counter += 1).or_insert(1);
+    /// }
+    ///
+    /// assert_eq!(hashmap.read(&'s', |_, v| *v), Some(2));
+    /// assert_eq!(hashmap.read(&'t', |_, v| *v), Some(3));
+    /// assert!(hashmap.read(&'y', |_, v| *v).is_none());
+    /// ```
+    #[inline]
+    pub fn entry(&self, key: K) -> Entry<K, V, H> {
+        let barrier = Barrier::new();
+        let hash = self.hash(key.borrow());
+        let (locker, data_block, entry_ptr) = unsafe {
+            self.acquire_entry(
+                key.borrow(),
+                hash,
+                &mut (),
+                self.prolonged_barrier_ref(&barrier),
+            )
+            .ok()
+            .unwrap_unchecked()
+        };
+        if entry_ptr.is_valid() {
+            Entry::Occupied(OccupiedEntry {
+                hashmap: self,
+                hash,
+                data_block,
+                locker,
+                entry_ptr,
+            })
+        } else {
+            Entry::Vacant(VacantEntry {
+                hashmap: self,
+                key,
+                hash,
+                data_block,
+                locker,
+            })
+        }
+    }
+
+    /// Gets the entry associated with the given key in the map for in-place manipulation.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<char, u32> = HashMap::default();
+    ///
+    /// let future_entry = hashmap.entry_async('b');
+    /// ```
+    #[inline]
+    pub async fn entry_async(&self, key: K) -> Entry<K, V, H> {
+        let hash = self.hash(key.borrow());
+        loop {
+            let mut async_wait = AsyncWait::default();
+            let mut async_wait_pinned = Pin::new(&mut async_wait);
+            let barrier = Barrier::new();
+            if let Ok((locker, data_block, entry_ptr)) = self.acquire_entry(
+                key.borrow(),
+                hash,
+                &mut async_wait_pinned,
+                self.prolonged_barrier_ref(&barrier),
+            ) {
+                if entry_ptr.is_valid() {
+                    return Entry::Occupied(OccupiedEntry {
+                        hashmap: self,
+                        hash,
+                        data_block,
+                        locker,
+                        entry_ptr,
+                    });
+                }
+                return Entry::Vacant(VacantEntry {
+                    hashmap: self,
+                    key,
+                    hash,
+                    data_block,
+                    locker,
+                });
+            }
+            async_wait_pinned.await;
         }
     }
 
@@ -1163,6 +1317,12 @@ where
     pub fn capacity(&self) -> usize {
         self.num_slots(&Barrier::new())
     }
+
+    /// Returns a reference to the specified [`Barrier`] whose lifetime matches that of `self`.
+    fn prolonged_barrier_ref<'h>(&'h self, barrier: &Barrier) -> &'h Barrier {
+        let _ = self;
+        unsafe { std::mem::transmute::<&Barrier, &'h Barrier>(barrier) }
+    }
 }
 
 impl<K, V, H> Clone for HashMap<K, V, H>
@@ -1353,18 +1513,442 @@ where
     }
 }
 
-/// [`Ticket`] keeps the increased minimum capacity of the [`HashMap`] during its lifetime.
-///
-/// The minimum capacity is lowered when the [`Ticket`] is dropped, thereby allowing unused
-/// memory to be reclaimed.
-pub struct Ticket<'h, K, V, H>
+impl<'h, K, V, H> Entry<'h, K, V, H>
 where
     K: 'static + Eq + Hash + Sync,
     V: 'static + Sync,
     H: BuildHasher,
 {
-    hash_map: &'h HashMap<K, V, H>,
-    increment: usize,
+    /// Ensures a value is in the entry by inserting the supplied instance if empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// hashmap.entry(3).or_insert(7);
+    /// assert_eq!(hashmap.read(&3, |_, v| *v), Some(7));
+    /// ```
+    #[inline]
+    pub fn or_insert(self, val: V) -> OccupiedEntry<'h, K, V, H> {
+        self.or_insert_with(|| val)
+    }
+
+    /// Ensures a value is in the entry by inserting the result of the supplied closure if empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// hashmap.entry(19).or_insert_with(|| 5);
+    /// assert_eq!(hashmap.read(&19, |_, v| *v), Some(5));
+    /// ```
+    #[inline]
+    pub fn or_insert_with<F: FnOnce() -> V>(self, constructor: F) -> OccupiedEntry<'h, K, V, H> {
+        self.or_insert_with_key(|_| constructor())
+    }
+
+    /// Ensures a value is in the entry by inserting the result of the supplied closure if empty.
+    ///
+    /// The reference to the moved key is provided, therefore cloning or copying the key is
+    /// unnecessary.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// hashmap.entry(11).or_insert_with_key(|k| if *k == 11 { 7 } else { 3 });
+    /// assert_eq!(hashmap.read(&11, |_, v| *v), Some(7));
+    /// ```
+    #[inline]
+    pub fn or_insert_with_key<F: FnOnce(&K) -> V>(
+        self,
+        constructor: F,
+    ) -> OccupiedEntry<'h, K, V, H> {
+        match self {
+            Self::Occupied(o) => o,
+            Self::Vacant(v) => {
+                let val = constructor(v.key());
+                v.insert_entry(val)
+            }
+        }
+    }
+
+    /// Returns a reference to the key of this entry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    /// assert_eq!(hashmap.entry(31).key(), &31);
+    /// ```
+    #[inline]
+    pub fn key(&self) -> &K {
+        match self {
+            Self::Occupied(o) => o.key(),
+            Self::Vacant(v) => v.key(),
+        }
+    }
+
+    /// Provides in-place mutable access to an occupied entry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// hashmap.entry(37).and_modify(|v| { *v += 1 }).or_insert(47);
+    /// assert_eq!(hashmap.read(&37, |_, v| *v), Some(47));
+    ///
+    /// hashmap.entry(37).and_modify(|v| { *v += 1 }).or_insert(3);
+    /// assert_eq!(hashmap.read(&37, |_, v| *v), Some(48));
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn and_modify<F>(self, f: F) -> Self
+    where
+        F: FnOnce(&mut V),
+    {
+        match self {
+            Self::Occupied(mut o) => {
+                f(o.get_mut());
+                Self::Occupied(o)
+            }
+            Self::Vacant(_) => self,
+        }
+    }
+
+    /// Sets the value of the entry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    /// let entry = hashmap.entry(11).insert_entry(17);
+    /// assert_eq!(entry.key(), &11);
+    /// ```
+    #[inline]
+    pub fn insert_entry(self, val: V) -> OccupiedEntry<'h, K, V, H> {
+        match self {
+            Self::Occupied(mut o) => {
+                o.insert(val);
+                o
+            }
+            Self::Vacant(v) => v.insert_entry(val),
+        }
+    }
+}
+
+impl<'h, K, V, H> Entry<'h, K, V, H>
+where
+    K: 'static + Eq + Hash + Sync,
+    V: 'static + Default + Sync,
+    H: BuildHasher,
+{
+    /// Ensures a value is in the entry by inserting the default value if empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    /// hashmap.entry(11).or_default();
+    /// assert_eq!(hashmap.read(&11, |_, v| *v), Some(0));
+    /// ```
+    #[inline]
+    pub fn or_default(self) -> OccupiedEntry<'h, K, V, H> {
+        match self {
+            Self::Occupied(o) => o,
+            Self::Vacant(v) => v.insert_entry(Default::default()),
+        }
+    }
+}
+
+impl<'h, K, V, H> Debug for Entry<'h, K, V, H>
+where
+    K: 'static + Debug + Eq + Hash + Sync,
+    V: 'static + Debug + Sync,
+    H: BuildHasher,
+{
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Vacant(v) => f.debug_tuple("Entry").field(v).finish(),
+            Self::Occupied(o) => f.debug_tuple("Entry").field(o).finish(),
+        }
+    }
+}
+
+impl<'h, K, V, H> OccupiedEntry<'h, K, V, H>
+where
+    K: 'static + Eq + Hash + Sync,
+    V: 'static + Sync,
+    H: BuildHasher,
+{
+    /// Gets a reference to the key in the entry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// assert_eq!(hashmap.entry(29).or_default().key(), &29);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn key(&self) -> &K {
+        &self.entry_ptr.get(self.data_block).0
+    }
+
+    /// Takes ownership of the key and value from the [`HashMap`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    /// use scc::hash_map::Entry;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// hashmap.entry(11).or_insert(17);
+    ///
+    /// if let Entry::Occupied(o) = hashmap.entry(11) {
+    ///     assert_eq!(o.remove_entry(), (11, 17));
+    /// };
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn remove_entry(mut self) -> (K, V) {
+        let entry = unsafe {
+            self.locker
+                .erase(self.data_block, &mut self.entry_ptr)
+                .unwrap_unchecked()
+        };
+        if self.locker.bucket().num_entries() == 0 {
+            let barrier = Barrier::new();
+            let array = self.hashmap.current_array_unchecked(&barrier);
+            let bucket_index = array.calculate_bucket_index(self.hash);
+            if bucket_index % BUCKET_LEN == 0 {
+                let hashmap = self.hashmap;
+                drop(self);
+                hashmap.try_shrink(
+                    hashmap.current_array_unchecked(&barrier),
+                    bucket_index,
+                    &barrier,
+                );
+            }
+        }
+        entry
+    }
+
+    /// Gets a reference to the value in the entry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    /// use scc::hash_map::Entry;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// hashmap.entry(19).or_insert(11);
+    ///
+    /// if let Entry::Occupied(o) = hashmap.entry(19) {
+    ///     assert_eq!(o.get(), &11);
+    /// };
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn get(&self) -> &V {
+        &self.entry_ptr.get(self.data_block).1
+    }
+
+    /// Gets a mutable reference to the value in the entry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    /// use scc::hash_map::Entry;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// hashmap.entry(37).or_insert(11);
+    ///
+    /// if let Entry::Occupied(mut o) = hashmap.entry(37) {
+    ///     *o.get_mut() += 18;
+    ///     assert_eq!(*o.get(), 29);
+    /// }
+    ///
+    /// assert_eq!(hashmap.read(&37, |_, v| *v), Some(29));
+    /// ```
+    #[inline]
+    pub fn get_mut(&mut self) -> &mut V {
+        &mut self.entry_ptr.get_mut(self.data_block, &mut self.locker).1
+    }
+
+    /// Sets the value of the entry, and returns the old value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    /// use scc::hash_map::Entry;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// hashmap.entry(37).or_insert(11);
+    ///
+    /// if let Entry::Occupied(mut o) = hashmap.entry(37) {
+    ///     assert_eq!(o.insert(17), 11);
+    /// }
+    ///
+    /// assert_eq!(hashmap.read(&37, |_, v| *v), Some(17));
+    /// ```
+    #[inline]
+    pub fn insert(&mut self, val: V) -> V {
+        replace(self.get_mut(), val)
+    }
+
+    /// Takes the value out of the entry, and returns it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    /// use scc::hash_map::Entry;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// hashmap.entry(11).or_insert(17);
+    ///
+    /// if let Entry::Occupied(o) = hashmap.entry(11) {
+    ///     assert_eq!(o.remove(), 17);
+    /// };
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn remove(self) -> V {
+        self.remove_entry().1
+    }
+}
+
+impl<'h, K, V, H> Debug for OccupiedEntry<'h, K, V, H>
+where
+    K: 'static + Debug + Eq + Hash + Sync,
+    V: 'static + Debug + Sync,
+    H: BuildHasher,
+{
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OccupiedEntry")
+            .field("key", self.key())
+            .field("value", self.get())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'h, K, V, H> VacantEntry<'h, K, V, H>
+where
+    K: 'static + Eq + Hash + Sync,
+    V: 'static + Sync,
+    H: BuildHasher,
+{
+    /// Gets a reference to the key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    /// assert_eq!(hashmap.entry(11).key(), &11);
+    /// ```
+    #[inline]
+    pub fn key(&self) -> &K {
+        &self.key
+    }
+
+    /// Takes ownership of the key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    /// use scc::hash_map::Entry;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// if let Entry::Vacant(v) = hashmap.entry(17) {
+    ///     assert_eq!(v.into_key(), 17);
+    /// };
+    /// ```
+    #[inline]
+    pub fn into_key(self) -> K {
+        self.key
+    }
+
+    /// Sets the value of the entry with its key, and returns an [`OccupiedEntry`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    /// use scc::hash_map::Entry;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// if let Entry::Vacant(o) = hashmap.entry(19) {
+    ///     o.insert_entry(29);
+    /// }
+    /// assert_eq!(hashmap.read(&19, |_, v| *v), Some(29));
+    /// ```
+    #[inline]
+    pub fn insert_entry(mut self, val: V) -> OccupiedEntry<'h, K, V, H> {
+        let barrier = Barrier::new();
+        let entry_ptr = self.locker.insert_with(
+            self.data_block,
+            BucketArray::<K, V, false>::partial_hash(self.hash),
+            || (self.key, val),
+            self.hashmap.prolonged_barrier_ref(&barrier),
+        );
+        OccupiedEntry {
+            hashmap: self.hashmap,
+            hash: self.hash,
+            data_block: self.data_block,
+            locker: self.locker,
+            entry_ptr,
+        }
+    }
+}
+
+impl<'h, K, V, H> Debug for VacantEntry<'h, K, V, H>
+where
+    K: 'static + Debug + Eq + Hash + Sync,
+    V: 'static + Debug + Sync,
+    H: BuildHasher,
+{
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("VacantEntry").field(self.key()).finish()
+    }
 }
 
 impl<'h, K, V, H> Drop for Ticket<'h, K, V, H>
@@ -1376,10 +1960,10 @@ where
     #[inline]
     fn drop(&mut self) {
         let result = self
-            .hash_map
+            .hashmap
             .additional_capacity
             .fetch_sub(self.increment, Relaxed);
-        self.hash_map.resize(&Barrier::new());
+        self.hashmap.resize(&Barrier::new());
         debug_assert!(result >= self.increment);
     }
 }
