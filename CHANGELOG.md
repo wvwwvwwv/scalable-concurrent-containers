@@ -1,5 +1,9 @@
 # Changelog
 
+1.1.0
+
+* Remove `'static` bounds from `HashMap`, `HashSet`, and `ebr`.
+
 1.0.9
 
 * Add `HashMap::{entry, entry_async}`.

@@ -1,19 +1,27 @@
 use super::ref_counted::RefCounted;
 use super::{Barrier, Collectible, Ptr};
 
+use std::mem::{forget, transmute};
 use std::ops::Deref;
 use std::ptr::{addr_of, NonNull};
+use std::sync::atomic::Ordering::Relaxed;
 
 /// [`Arc`] is a reference-counted handle to an instance.
 ///
 /// The instance is passed to the EBR garbage collector when the last strong reference is dropped.
 #[derive(Debug)]
-pub struct Arc<T: 'static> {
+pub struct Arc<T> {
     instance_ptr: NonNull<RefCounted<T>>,
 }
 
 impl<T: 'static> Arc<T> {
     /// Creates a new instance of [`Arc`].
+    ///
+    /// The type of the instance must be determined at compile-time, must not contain non-static
+    /// references, and must not be a non-static reference since the instance can, theoretically,
+    /// live as long as the process. For instance, `struct Disallowed<'l, T>(&'l T)` is not
+    /// allowed, because an instance of the type cannot outlive `'l` whereas the garbage collector
+    /// does not guarantee that the instance is dropped within `'l`.
     ///
     /// # Examples
     ///
@@ -24,6 +32,33 @@ impl<T: 'static> Arc<T> {
     /// ```
     #[inline]
     pub fn new(t: T) -> Arc<T> {
+        let boxed = Box::new(RefCounted::new(t));
+        Arc {
+            instance_ptr: unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) },
+        }
+    }
+}
+
+impl<T> Arc<T> {
+    /// Creates a new instance of [`Arc`].
+    ///
+    /// # Safety
+    ///
+    /// The user must make sure that the instance is dropped by invoking
+    /// [`release_drop_in_place()`](Self::release_drop_in_place) before the lifetime of `T` is
+    /// reached if `T` cannot live as long as `'static`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::Arc;
+    ///
+    /// let hello = String::from("hello");
+    /// let arc: Arc<&str> = unsafe { Arc::new_unmanaged(hello.as_str()) };
+    /// assert!(unsafe { arc.release_drop_in_place() });
+    /// ```
+    #[inline]
+    pub unsafe fn new_unmanaged(t: T) -> Arc<T> {
         let boxed = Box::new(RefCounted::new(t));
         Arc {
             instance_ptr: unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) },
@@ -110,14 +145,14 @@ impl<T: 'static> Arc<T> {
     /// ```
     #[inline]
     #[must_use]
-    pub fn release(self, barrier: &Barrier) -> bool {
-        let released = if let Some(ptr) = self.drop_ref() {
-            barrier.collect(ptr);
+    pub fn release(mut self, barrier: &Barrier) -> bool {
+        let released = if self.underlying().drop_ref() {
+            self.pass_underlying_to_collector(barrier);
             true
         } else {
             false
         };
-        std::mem::forget(self);
+        forget(self);
         released
     }
 
@@ -165,13 +200,13 @@ impl<T: 'static> Arc<T> {
             if !self.instance_ptr.as_mut().drop_and_dealloc() {
                 // The instance needs further cleanup.
                 let barrier = Barrier::new();
-                barrier.collect(self.instance_ptr.as_ptr());
+                self.pass_underlying_to_collector(&barrier);
             }
             true
         } else {
             false
         };
-        std::mem::forget(self);
+        forget(self);
         dropped
     }
 
@@ -195,40 +230,33 @@ impl<T: 'static> Arc<T> {
         Arc { instance_ptr: ptr }
     }
 
-    /// Drops the reference, and returns the underlying pointer if the last reference was
-    /// dropped.
-    #[inline]
-    pub(super) fn drop_ref(&self) -> Option<*mut RefCounted<T>> {
-        if self.underlying().drop_ref() {
-            Some(self.instance_ptr.as_ptr())
-        } else {
-            None
-        }
-    }
-
     /// Returns a reference to the underlying instance.
     #[inline]
     fn underlying(&self) -> &RefCounted<T> {
         unsafe { self.instance_ptr.as_ref() }
     }
+
+    #[inline]
+    fn pass_underlying_to_collector(&mut self, barrier: &Barrier) {
+        let dyn_ptr: *const dyn Collectible = self.instance_ptr.as_ptr();
+        let (addr, vtable) =
+            unsafe { transmute::<*const dyn Collectible, (usize, usize)>(dyn_ptr) };
+        let dyn_ptr = unsafe { transmute::<(usize, usize), *mut dyn Collectible>((addr, vtable)) };
+        barrier.collect(dyn_ptr);
+    }
 }
 
-impl<T: 'static> AsRef<T> for Arc<T> {
+impl<T> AsRef<T> for Arc<T> {
     #[inline]
     fn as_ref(&self) -> &T {
         self.underlying()
     }
 }
 
-impl<T: 'static> Clone for Arc<T> {
+impl<T> Clone for Arc<T> {
     #[inline]
     fn clone(&self) -> Self {
-        debug_assert_ne!(
-            self.underlying()
-                .ref_cnt()
-                .load(std::sync::atomic::Ordering::Relaxed),
-            0
-        );
+        debug_assert_ne!(self.underlying().ref_cnt().load(Relaxed), 0);
         self.underlying().add_ref();
         Self {
             instance_ptr: self.instance_ptr,
@@ -236,7 +264,7 @@ impl<T: 'static> Clone for Arc<T> {
     }
 }
 
-impl<T: 'static> Deref for Arc<T> {
+impl<T> Deref for Arc<T> {
     type Target = T;
 
     #[inline]
@@ -245,17 +273,17 @@ impl<T: 'static> Deref for Arc<T> {
     }
 }
 
-impl<T: 'static> Drop for Arc<T> {
+impl<T> Drop for Arc<T> {
     #[inline]
     fn drop(&mut self) {
         if self.underlying().drop_ref() {
             let barrier = Barrier::new();
-            barrier.collect(self.instance_ptr.as_ptr());
+            self.pass_underlying_to_collector(&barrier);
         }
     }
 }
 
-impl<'b, T: 'static> TryFrom<Ptr<'b, T>> for Arc<T> {
+impl<'b, T> TryFrom<Ptr<'b, T>> for Arc<T> {
     type Error = Ptr<'b, T>;
 
     #[inline]
@@ -268,5 +296,5 @@ impl<'b, T: 'static> TryFrom<Ptr<'b, T>> for Arc<T> {
     }
 }
 
-unsafe impl<T: 'static + Send> Send for Arc<T> {}
-unsafe impl<T: 'static + Sync> Sync for Arc<T> {}
+unsafe impl<T: Send> Send for Arc<T> {}
+unsafe impl<T: Sync> Sync for Arc<T> {}

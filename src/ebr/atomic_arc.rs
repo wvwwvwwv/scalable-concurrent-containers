@@ -9,12 +9,18 @@ use std::sync::atomic::Ordering::{self, Acquire, Relaxed};
 /// [`AtomicArc`] owns the underlying instance, and allows users to perform atomic operations
 /// on the pointer to it.
 #[derive(Debug)]
-pub struct AtomicArc<T: 'static> {
+pub struct AtomicArc<T> {
     instance_ptr: AtomicPtr<RefCounted<T>>,
 }
 
 impl<T: 'static> AtomicArc<T> {
     /// Creates a new [`AtomicArc`] from an instance of `T`.
+    ///
+    /// The type of the instance must be determined at compile-time, must not contain non-static
+    /// references, and must not be a non-static reference since the instance can, theoretically,
+    /// live as long as the process. For instance, `struct Disallowed<'l, T>(&'l T)` is not
+    /// allowed, because an instance of the type cannot outlive `'l` whereas the garbage collector
+    /// does not guarantee that the instance is dropped within `'l`.
     ///
     /// # Examples
     ///
@@ -30,7 +36,9 @@ impl<T: 'static> AtomicArc<T> {
             instance_ptr: AtomicPtr::new(Box::into_raw(boxed)),
         }
     }
+}
 
+impl<T> AtomicArc<T> {
     /// Creates a new [`AtomicArc`] from an [`Arc`] of `T`.
     ///
     /// # Examples
@@ -348,7 +356,7 @@ impl<T: 'static> AtomicArc<T> {
     }
 }
 
-impl<T: 'static> Clone for AtomicArc<T> {
+impl<T> Clone for AtomicArc<T> {
     #[inline]
     fn clone(&self) -> AtomicArc<T> {
         self.clone(Relaxed, &Barrier::new())
@@ -362,7 +370,7 @@ impl<T> Default for AtomicArc<T> {
     }
 }
 
-impl<T: 'static> Drop for AtomicArc<T> {
+impl<T> Drop for AtomicArc<T> {
     #[inline]
     fn drop(&mut self) {
         if let Some(ptr) = NonNull::new(Tag::unset_tag(
@@ -374,5 +382,5 @@ impl<T: 'static> Drop for AtomicArc<T> {
     }
 }
 
-unsafe impl<T: 'static + Send> Send for AtomicArc<T> {}
-unsafe impl<T: 'static + Sync> Sync for AtomicArc<T> {}
+unsafe impl<T: Send> Send for AtomicArc<T> {}
+unsafe impl<T: Sync> Sync for AtomicArc<T> {}
