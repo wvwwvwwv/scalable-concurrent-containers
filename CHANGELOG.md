@@ -2,7 +2,7 @@
 
 1.1.0
 
-* Remove `'static` bounds from `HashMap`, `HashSet`, and `ebr`.
+* Remove `'static` bounds from `HashMap`, `HashSet`, and `ebr::{Arc, AtomicArc}`.
 
 1.0.9
 

@@ -12,7 +12,7 @@ use std::hash::{BuildHasher, Hash};
 use std::marker::PhantomData;
 
 /// Helper type to allow `serde` to access [`HashMap`] entries.
-pub struct HashMapVisitor<K: 'static + Eq + Hash + Sync, V: 'static + Sync, H: BuildHasher> {
+pub struct HashMapVisitor<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> {
     #[allow(clippy::type_complexity)]
     marker: PhantomData<fn() -> HashMap<K, V, H>>,
 }
@@ -96,7 +96,7 @@ where
 }
 
 /// Helper type to allow `serde` to access [`HashSet`] entries.
-pub struct HashSetVisitor<K: 'static + Eq + Hash + Sync, H: BuildHasher> {
+pub struct HashSetVisitor<K: Eq + Hash + Sync, H: BuildHasher> {
     marker: PhantomData<fn() -> HashSet<K, H>>,
 }
 
