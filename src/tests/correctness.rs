@@ -159,6 +159,41 @@ mod hashmap_test {
         assert_ne!(hashmap1, hashmap2);
     }
 
+    #[test]
+    fn local_ref() {
+        struct L<'a>(&'a AtomicUsize);
+        impl<'a> L<'a> {
+            fn new(cnt: &'a AtomicUsize) -> Self {
+                cnt.fetch_add(1, Relaxed);
+                L(cnt)
+            }
+        }
+        impl<'a> Drop for L<'a> {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Relaxed);
+            }
+        }
+
+        let workload_size = 65536;
+        let cnt = AtomicUsize::new(0);
+        let hashmap: HashMap<usize, L> = HashMap::default();
+
+        for k in 0..workload_size {
+            assert!(hashmap.insert(k, L::new(&cnt)).is_ok());
+        }
+        hashmap.for_each(|k, _| assert!(*k < workload_size));
+        assert_eq!(cnt.load(Relaxed), workload_size);
+
+        for k in 0..workload_size / 2 {
+            assert!(hashmap.remove(&k).is_some());
+        }
+        hashmap.for_each(|k, _| assert!(*k >= workload_size / 2));
+        assert_eq!(cnt.load(Relaxed), workload_size / 2);
+
+        drop(hashmap);
+        assert_eq!(cnt.load(Relaxed), 0);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn integer_key() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());

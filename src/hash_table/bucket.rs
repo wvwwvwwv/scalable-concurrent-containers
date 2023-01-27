@@ -25,7 +25,7 @@ const SLOCK_MAX: u32 = LOCK - 1;
 const LOCK_MASK: u32 = LOCK | SLOCK_MAX;
 
 /// [`Bucket`] is a small fixed-size hash table with linear probing.
-pub(crate) struct Bucket<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
+pub(crate) struct Bucket<K: Eq, V, const LOCK_FREE: bool> {
     /// The state of the [`Bucket`].
     state: AtomicU32,
 
@@ -39,7 +39,7 @@ pub(crate) struct Bucket<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
     wait_queue: WaitQueue,
 }
 
-impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Default for Bucket<K, V, LOCK_FREE> {
+impl<K: Eq, V, const LOCK_FREE: bool> Default for Bucket<K, V, LOCK_FREE> {
     fn default() -> Self {
         Bucket::<K, V, LOCK_FREE> {
             state: AtomicU32::new(0),
@@ -50,7 +50,7 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Default for Bucket<K, V
     }
 }
 
-impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
+impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
     /// Returns true if the [`Bucket`] has been killed.
     #[inline]
     pub(crate) fn killed(&self) -> bool {
@@ -264,10 +264,20 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE>
         if let (Some(mut next), _) = self.metadata.link.swap((None, Tag::None), Acquire) {
             loop {
                 if let (Some(next_next), _) = next.metadata.link.swap((None, Tag::None), Acquire) {
-                    let _ = next.release(barrier);
+                    let released = if LOCK_FREE {
+                        next.release(barrier)
+                    } else {
+                        unsafe { next.release_drop_in_place() }
+                    };
+                    debug_assert!(released);
                     next = next_next;
                 } else {
-                    let _ = next.release(barrier);
+                    let released = if LOCK_FREE {
+                        next.release(barrier)
+                    } else {
+                        unsafe { next.release_drop_in_place() }
+                    };
+                    debug_assert!(released);
                     break;
                 }
             }
@@ -275,12 +285,12 @@ impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE>
     }
 }
 
-pub struct EntryPtr<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
+pub struct EntryPtr<'b, K: Eq, V, const LOCK_FREE: bool> {
     current_link_ptr: Ptr<'b, LinkedBucket<K, V, LINKED_LEN>>,
     current_index: usize,
 }
 
-impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
+impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
     /// Creates a new [`EntryPtr`].
     #[inline]
     pub(crate) fn new(_barrier: &'b Barrier) -> EntryPtr<'b, K, V, LOCK_FREE> {
@@ -364,7 +374,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryPtr<'b, K, V, 
         }
     }
 
-    /// Tries to remove [`LinkedBucket`] from the linked list.
+    /// Tries to remove the [`LinkedBucket`] from the linked list.
     ///
     /// It should only be invoked when the caller is holding a [`Locker`] on the [`Bucket`].
     fn unlink(
@@ -400,7 +410,15 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryPtr<'b, K, V, 
                 .swap((next_link, Tag::None), Relaxed)
                 .0
         };
-        old_link.map(|l| l.release(barrier));
+        let released = old_link.map_or(true, |l| {
+            if LOCK_FREE {
+                l.release(barrier)
+            } else {
+                // The `LinkedBucket` should be dropped immediately.
+                unsafe { l.release_drop_in_place() }
+            }
+        });
+        debug_assert!(released);
 
         if self.current_link_ptr.is_null() {
             // Fuse the pointer.
@@ -435,7 +453,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> EntryPtr<'b, K, V, 
     }
 }
 
-pub struct Locker<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
+pub struct Locker<'b, K: Eq, V, const LOCK_FREE: bool> {
     bucket: &'b mut Bucket<K, V, LOCK_FREE>,
 }
 
@@ -572,7 +590,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
 
             // Insert a new `LinkedBucket` at the linked list head.
             let head = self.bucket.metadata.link.get_arc(Relaxed, barrier);
-            let link = Arc::new(LinkedBucket::new(head));
+            let link = unsafe { Arc::new_unchecked(LinkedBucket::new(head)) };
             let link_ptr = link.ptr(barrier);
             unsafe {
                 let link_mut = &mut *(link_ptr.as_raw() as *mut LinkedBucket<K, V, LINKED_LEN>);
@@ -748,7 +766,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     }
 }
 
-impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Locker<'b, K, V, LOCK_FREE> {
+impl<'b, K: Eq, V, const LOCK_FREE: bool> Drop for Locker<'b, K, V, LOCK_FREE> {
     #[inline]
     fn drop(&mut self) {
         let mut current = self.bucket.state.load(Relaxed);
@@ -772,7 +790,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Locker<'b,
     }
 }
 
-pub struct Reader<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
+pub struct Reader<'b, K: Eq, V, const LOCK_FREE: bool> {
     bucket: &'b Bucket<K, V, LOCK_FREE>,
 }
 
@@ -844,7 +862,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
     }
 }
 
-impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Reader<'b, K, V, LOCK_FREE> {
+impl<'b, K: Eq, V, const LOCK_FREE: bool> Drop for Reader<'b, K, V, LOCK_FREE> {
     #[inline]
     fn drop(&mut self) {
         let mut current = self.bucket.state.load(Relaxed);
@@ -869,7 +887,7 @@ impl<'b, K: 'static + Eq, V: 'static, const LOCK_FREE: bool> Drop for Reader<'b,
 }
 
 /// [`Metadata`] is a collection of metadata fields of [`Bucket`] and [`LinkedBucket`].
-pub(crate) struct Metadata<K: 'static + Eq, V: 'static, const LEN: usize> {
+pub(crate) struct Metadata<K: Eq, V, const LEN: usize> {
     /// Linked list of entries.
     link: AtomicArc<LinkedBucket<K, V, LINKED_LEN>>,
 
@@ -883,7 +901,7 @@ pub(crate) struct Metadata<K: 'static + Eq, V: 'static, const LEN: usize> {
     partial_hash_array: [u8; LEN],
 }
 
-impl<K: 'static + Eq, V: 'static, const LEN: usize> Default for Metadata<K, V, LEN> {
+impl<K: Eq, V, const LEN: usize> Default for Metadata<K, V, LEN> {
     fn default() -> Self {
         Self {
             link: AtomicArc::default(),
@@ -895,13 +913,13 @@ impl<K: 'static + Eq, V: 'static, const LEN: usize> Default for Metadata<K, V, L
 }
 
 /// [`LinkedBucket`] is a smaller [`Bucket`] that is attached to a [`Bucket`] as a linked list.
-pub(crate) struct LinkedBucket<K: 'static + Eq, V: 'static, const LEN: usize> {
+pub(crate) struct LinkedBucket<K: Eq, V, const LEN: usize> {
     metadata: Metadata<K, V, LEN>,
     data_block: DataBlock<K, V, LEN>,
     prev_link: AtomicPtr<LinkedBucket<K, V, LEN>>,
 }
 
-impl<K: 'static + Eq, V: 'static, const LEN: usize> LinkedBucket<K, V, LEN> {
+impl<K: Eq, V, const LEN: usize> LinkedBucket<K, V, LEN> {
     /// Creates an empty [`LinkedBucket`].
     fn new(next: Option<Arc<LinkedBucket<K, V, LINKED_LEN>>>) -> LinkedBucket<K, V, LEN> {
         LinkedBucket {
@@ -917,7 +935,7 @@ impl<K: 'static + Eq, V: 'static, const LEN: usize> LinkedBucket<K, V, LEN> {
     }
 }
 
-impl<K: 'static + Eq, V: 'static, const LEN: usize> Drop for LinkedBucket<K, V, LEN> {
+impl<K: Eq, V, const LEN: usize> Drop for LinkedBucket<K, V, LEN> {
     fn drop(&mut self) {
         if needs_drop::<(K, V)>() {
             let mut index = self.metadata.occupied_bitmap.trailing_zeros();

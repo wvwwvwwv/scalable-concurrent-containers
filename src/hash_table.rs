@@ -17,8 +17,8 @@ use std::sync::atomic::{fence, AtomicU8};
 /// `HashTable` defines common functions for hash table implementations.
 pub(super) trait HashTable<K, V, H, const LOCK_FREE: bool>
 where
-    K: 'static + Eq + Hash + Sync,
-    V: 'static + Sync,
+    K: Eq + Hash + Sync,
+    V: Sync,
     H: BuildHasher,
 {
     /// The default capacity.
@@ -760,10 +760,12 @@ where
             if new_capacity != capacity || (LOCK_FREE && rebuild) {
                 self.bucket_array().swap(
                     (
-                        Some(Arc::new(BucketArray::<K, V, LOCK_FREE>::new(
-                            new_capacity,
-                            self.bucket_array().clone(Relaxed, barrier),
-                        ))),
+                        Some(unsafe {
+                            Arc::new_unchecked(BucketArray::<K, V, LOCK_FREE>::new(
+                                new_capacity,
+                                self.bucket_array().clone(Relaxed, barrier),
+                            ))
+                        }),
                         Tag::None,
                     ),
                     Release,

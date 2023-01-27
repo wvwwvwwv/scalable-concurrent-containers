@@ -8,7 +8,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 
 /// [`BucketArray`] is a special purpose array to manage [`Bucket`] and [`DataBlock`].
-pub struct BucketArray<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
+pub struct BucketArray<K: Eq, V, const LOCK_FREE: bool> {
     bucket_ptr: *const Bucket<K, V, LOCK_FREE>,
     data_block_ptr: *const DataBlock<K, V, BUCKET_LEN>,
     array_len: usize,
@@ -19,7 +19,7 @@ pub struct BucketArray<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> {
     num_cleared_buckets: AtomicUsize,
 }
 
-impl<K: 'static + Eq, V: 'static, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
+impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
     /// Returns the partial hash value of the given hash.
     #[allow(clippy::cast_possible_truncation)]
     #[inline]
@@ -222,19 +222,9 @@ impl<K: Eq, V, const LOCK_FREE: bool> Drop for BucketArray<K, V, LOCK_FREE> {
     }
 }
 
-unsafe impl<K, V, const LOCK_FREE: bool> Send for BucketArray<K, V, LOCK_FREE>
-where
-    K: 'static + Eq + Send,
-    V: 'static + Send,
-{
-}
+unsafe impl<K: Eq + Send, V: Send, const LOCK_FREE: bool> Send for BucketArray<K, V, LOCK_FREE> {}
 
-unsafe impl<K, V, const LOCK_FREE: bool> Sync for BucketArray<K, V, LOCK_FREE>
-where
-    K: 'static + Eq + Sync,
-    V: 'static + Sync,
-{
-}
+unsafe impl<K: Eq + Sync, V: Sync, const LOCK_FREE: bool> Sync for BucketArray<K, V, LOCK_FREE> {}
 
 #[cfg(test)]
 mod test {

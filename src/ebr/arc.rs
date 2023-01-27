@@ -54,11 +54,11 @@ impl<T> Arc<T> {
     /// use scc::ebr::Arc;
     ///
     /// let hello = String::from("hello");
-    /// let arc: Arc<&str> = unsafe { Arc::new_unmanaged(hello.as_str()) };
+    /// let arc: Arc<&str> = unsafe { Arc::new_unchecked(hello.as_str()) };
     /// assert!(unsafe { arc.release_drop_in_place() });
     /// ```
     #[inline]
-    pub unsafe fn new_unmanaged(t: T) -> Arc<T> {
+    pub unsafe fn new_unchecked(t: T) -> Arc<T> {
         let boxed = Box::new(RefCounted::new(t));
         Arc {
             instance_ptr: unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) },
