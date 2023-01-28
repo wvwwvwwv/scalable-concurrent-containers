@@ -1,7 +1,7 @@
 use super::ref_counted::RefCounted;
 use super::{Barrier, Collectible, Ptr};
 
-use std::mem::{forget, transmute};
+use std::mem::forget;
 use std::ops::Deref;
 use std::ptr::{addr_of, NonNull};
 use std::sync::atomic::Ordering::Relaxed;
@@ -238,11 +238,9 @@ impl<T> Arc<T> {
 
     #[inline]
     fn pass_underlying_to_collector(&mut self, barrier: &Barrier) {
-        let dyn_ptr: *const dyn Collectible = self.instance_ptr.as_ptr();
-        let (addr, vtable) =
-            unsafe { transmute::<*const dyn Collectible, (usize, usize)>(dyn_ptr) };
-        let dyn_ptr = unsafe { transmute::<(usize, usize), *mut dyn Collectible>((addr, vtable)) };
-        barrier.collect(dyn_ptr);
+        let dyn_mut_ptr: *mut dyn Collectible =
+            self.instance_ptr.as_ptr() as *const dyn Collectible as *mut dyn Collectible;
+        barrier.collect(dyn_mut_ptr);
     }
 }
 

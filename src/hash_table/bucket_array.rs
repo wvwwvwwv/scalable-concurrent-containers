@@ -143,10 +143,14 @@ impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
     /// Drops the old array.
     #[inline]
     pub(crate) fn drop_old_array(&self, barrier: &Barrier) {
-        self.old_array
-            .swap((None, Tag::None), Relaxed)
-            .0
-            .map(|a| a.release(barrier));
+        self.old_array.swap((None, Tag::None), Relaxed).0.map(|a| {
+            // It is OK to pass the old array instance to the garbage collector, deferring destruction.
+            debug_assert_eq!(
+                a.num_cleared_buckets.load(Relaxed),
+                a.array_len.max(BUCKET_LEN)
+            );
+            a.release(barrier)
+        });
     }
 
     /// Calculates the [`Bucket`] index for the hash value.
