@@ -185,11 +185,21 @@ impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
 
 impl<K: Eq, V, const LOCK_FREE: bool> Drop for BucketArray<K, V, LOCK_FREE> {
     fn drop(&mut self) {
+        if !LOCK_FREE && !self.old_array.is_null(Relaxed) {
+            // The `BucketArray` should be dropped immediately.
+            unsafe {
+                self.old_array
+                    .swap((None, Tag::None), Relaxed)
+                    .0
+                    .map(|a| a.release_drop_in_place());
+            }
+        }
+
         let num_cleared_buckets = if LOCK_FREE && needs_drop::<(K, V)>() {
             // No instances are dropped when the array is reachable.
             0
         } else {
-            // Linked lists should be cleaned up.
+            // `LinkedBucket` instances should be cleaned up.
             self.num_cleared_buckets.load(Relaxed)
         };
 

@@ -263,21 +263,17 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
     fn clear_links(&mut self, barrier: &Barrier) {
         if let (Some(mut next), _) = self.metadata.link.swap((None, Tag::None), Acquire) {
             loop {
-                if let (Some(next_next), _) = next.metadata.link.swap((None, Tag::None), Acquire) {
-                    let released = if LOCK_FREE {
-                        next.release(barrier)
-                    } else {
-                        unsafe { next.release_drop_in_place() }
-                    };
-                    debug_assert!(released);
+                let next_next = next.metadata.link.swap((None, Tag::None), Acquire);
+                let released = if LOCK_FREE {
+                    next.release(barrier)
+                } else {
+                    // The `LinkedBucket` should be dropped immediately.
+                    unsafe { next.release_drop_in_place() }
+                };
+                debug_assert!(released);
+                if let (Some(next_next), _) = next_next {
                     next = next_next;
                 } else {
-                    let released = if LOCK_FREE {
-                        next.release(barrier)
-                    } else {
-                        unsafe { next.release_drop_in_place() }
-                    };
-                    debug_assert!(released);
                     break;
                 }
             }

@@ -40,7 +40,7 @@ impl<T: 'static> Arc<T> {
 }
 
 impl<T> Arc<T> {
-    /// Creates a new instance of [`Arc`].
+    /// Creates a new instance of [`Arc`] without checking the lifetime of `T`.
     ///
     /// # Safety
     ///

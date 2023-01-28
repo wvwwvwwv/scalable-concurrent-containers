@@ -1,5 +1,9 @@
 # Changelog
 
+1.1.1
+
+* Fix a rare problem with `HashMap` and `HashSet` violating lifetime contracts on drop.
+
 1.1.0
 
 * Remove `'static` bounds from `HashMap`, `HashSet`, and `ebr::{Arc, AtomicArc}`.
