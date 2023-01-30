@@ -37,11 +37,11 @@ A collection of high performance containers and utilities for concurrent and asy
 
 ### Locking behavior
 
-#### Entry access
+#### Entry access: fine-grained locking
 
-Read/write access to an entry requires a single shared/exclusive lock on the bucket where the size of a bucket is fixed regardless of the size of the container. There are no container-level locks, therefore, the larger the container gets, the lower the chance that a bucket-level lock is contended becomes.
+Read/write access to an entry is serialized by the read-write lock in the bucket containing the entry. There are no container-level locks, therefore, the larger the container gets, the lower the chance of the bucket-level lock being contended.
 
-#### Resize
+#### Resize: lock-free
 
 Resizing of the container is totally non-blocking and lock-free; resizing does not block any other read/write access to the container or resizing attempts. _Resizing is analogous to pushing a new bucket array into a lock-free stack_. Each individual entry in the old bucket array will be incrementally relocated to the new bucket array on future access to the container, and the old bucket array gets dropped when it becomes empty.
 

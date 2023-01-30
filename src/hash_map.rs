@@ -49,10 +49,9 @@ use std::sync::atomic::{AtomicU8, AtomicUsize};
 ///
 /// ### Entry access
 ///
-/// Read/write access to an entry requires a single shared/exclusive lock on the bucket where the
-/// size of a bucket is fixed regardless of the size of the [`HashMap`]. There are no
-/// container-level locks, therefore, the larger the [`HashMap`] gets, the lower the chance that a
-/// bucket-level lock is contended becomes.
+/// Each read/write access to an entry is serialized by the read-write lock in the bucket
+/// containing the entry. There are no container-level locks, therefore, the larger the [`HashMap`]
+/// gets, the lower the chance that the bucket-level lock being contended.
 ///
 /// ### Resize
 ///
