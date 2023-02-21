@@ -1048,6 +1048,7 @@ mod test {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    #[cfg_attr(miri, ignore)]
     async fn parallel() {
         let num_tasks = 8;
         let workload_size = 64;
@@ -1143,6 +1144,7 @@ mod test {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    #[cfg_attr(miri, ignore)]
     async fn durability() {
         let num_tasks = 16_usize;
         let num_iterations = 64;
