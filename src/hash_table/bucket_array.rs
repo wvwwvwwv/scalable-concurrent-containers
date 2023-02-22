@@ -258,6 +258,7 @@ mod test {
         assert_eq!(array.num_buckets(), 1024 * 1024);
         let after_alloc = Instant::now();
         println!("allocation took {:?}", after_alloc - start);
+        array.num_cleared_buckets.store(array.array_len, Relaxed);
         drop(array);
         let after_dealloc = Instant::now();
         println!("deallocation took {:?}", after_dealloc - after_alloc);
