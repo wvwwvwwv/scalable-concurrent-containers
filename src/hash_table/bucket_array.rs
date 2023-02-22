@@ -272,6 +272,7 @@ mod test {
             assert!(array.num_buckets() <= 2 * (s.max(BUCKET_LEN) / BUCKET_LEN));
             assert!(array.num_entries() >= s.max(BUCKET_LEN));
             assert!(array.num_entries() <= 2 * s.max(BUCKET_LEN));
+            array.num_cleared_buckets.store(array.array_len, Relaxed);
         }
     }
 }
