@@ -1,5 +1,9 @@
 # Changelog
 
+1.1.3
+
+* Fix [#86](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/86) completely.
+
 1.1.2
 
 * Fix [#86](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/86).

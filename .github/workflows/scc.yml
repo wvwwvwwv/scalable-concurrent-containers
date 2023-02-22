@@ -25,6 +25,8 @@ jobs:
         run: RUST_BACKTRACE=1 cargo test --verbose -- --nocapture
       - name: Debug(serde) - Test
         run: RUST_BACKTRACE=1 cargo test serde --verbose --features serde
+      - name: Debug(miri) - Test
+        run: rustup toolchain add nightly; rustup component add rust-src --toolchain nightly; rustup component add miri --toolchain nightly; cargo +nightly miri test --lib --bins --tests
       - name: Release - Test
         run: RUST_BACKTRACE=1 cargo test --release --verbose -- --nocapture
       - name: Release - Benchmark

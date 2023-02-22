@@ -328,15 +328,6 @@ impl Collectible for Collector {
     }
 }
 
-/// The global epoch.
-///
-/// The global epoch can have one of 0, 1, or 2, and a difference in the local announcement of
-/// a thread and the global is considered to be an epoch change to the thread.
-static EPOCH: AtomicU8 = AtomicU8::new(0);
-
-/// The global anchor for thread-local instances of [`Collector`].
-static ANCHOR: AtomicPtr<Collector> = AtomicPtr::new(ptr::null_mut());
-
 /// A wrapper of [`Collector`] for a thread to properly clean up collected instances.
 struct ThreadLocal {
     collector_ptr: AtomicPtr<Collector>,
@@ -345,7 +336,20 @@ struct ThreadLocal {
 impl Drop for ThreadLocal {
     #[inline]
     fn drop(&mut self) {
-        if let Some(collector) = unsafe { self.collector_ptr.load(Relaxed).as_mut() } {
+        let collector_ptr = self.collector_ptr.load(Relaxed);
+        if let Some(collector) = unsafe { collector_ptr.as_mut() } {
+            let anchor_ptr = ANCHOR.load(Relaxed);
+            if !collector.has_garbage
+                && collector.next_collector.is_null()
+                && ptr::eq(collector_ptr, anchor_ptr)
+                && ANCHOR
+                    .compare_exchange(anchor_ptr, ptr::null_mut(), Relaxed, Relaxed)
+                    .is_ok()
+            {
+                // If it is the head, empty, and the only `Collector` in the global list, drop it.
+                unsafe { collector_ptr.read() };
+                return;
+            }
             collector.state.fetch_or(Collector::INVALID, Release);
             mark_scan_enforced();
         }
@@ -368,3 +372,12 @@ fn mark_scan_enforced() {
 thread_local! {
     static TLS: ThreadLocal = ThreadLocal { collector_ptr: AtomicPtr::default() };
 }
+
+/// The global epoch.
+///
+/// The global epoch can have one of 0, 1, or 2, and a difference in the local announcement of
+/// a thread and the global is considered to be an epoch change to the thread.
+static EPOCH: AtomicU8 = AtomicU8::new(0);
+
+/// The global anchor for thread-local instances of [`Collector`].
+static ANCHOR: AtomicPtr<Collector> = AtomicPtr::new(ptr::null_mut());
