@@ -10,9 +10,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  check:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v2
       - name: Lint
@@ -21,15 +21,24 @@ jobs:
         run: cargo fmt --all
       - name: Doc
         run: cargo doc --document-private-items
-      - name: Debug - Test
-        run: RUST_BACKTRACE=1 cargo test --verbose -- --nocapture
-      - name: Debug(serde) - Test
-        run: RUST_BACKTRACE=1 cargo test serde --verbose --features serde
-      - name: Debug(miri) - Test
+      - name: Miri
         run: rustup toolchain add nightly; rustup component add rust-src --toolchain nightly; rustup component add miri --toolchain nightly; cargo +nightly miri test --lib --bins --tests
-      - name: Release - Test
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v2
+      - name: Debug
+        run: RUST_BACKTRACE=1 cargo test --verbose -- --nocapture
+      - name: Debug(serde)
+        run: RUST_BACKTRACE=1 cargo test serde --verbose --features serde
+      - name: Release
         run: RUST_BACKTRACE=1 cargo test --release --verbose -- --nocapture
-      - name: Release - Benchmark
-        run: cargo bench
       - name: Release(serde) - Test
         run: RUST_BACKTRACE=1 cargo test --release serde --verbose --features serde
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Release - Benchmark
+        run: cargo bench
