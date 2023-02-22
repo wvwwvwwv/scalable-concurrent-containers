@@ -44,10 +44,14 @@ impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
                 !bucket_array_ptr.is_null(),
                 "memory allocation failure: {bucket_array_allocation_size} bytes",
             );
-            let bucket_array_ptr_offset =
-                bucket_array_ptr as usize % bucket_size.next_power_of_two();
+            let bucket_array_ptr_offset = bucket_size.next_power_of_two()
+                - (bucket_array_ptr as usize % bucket_size.next_power_of_two());
             assert!(
                 bucket_array_ptr_offset + bucket_size * array_len <= bucket_array_allocation_size,
+            );
+            assert_eq!(
+                (bucket_array_ptr as usize + bucket_array_ptr_offset) % bucket_size,
+                0
             );
 
             #[allow(clippy::cast_ptr_alignment)]

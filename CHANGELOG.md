@@ -1,5 +1,9 @@
 # Changelog
 
+1.1.2
+
+* Fix [#86](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/86).
+
 1.1.1
 
 * Fix a rare problem with `HashMap` and `HashSet` violating lifetime contracts on drop.
