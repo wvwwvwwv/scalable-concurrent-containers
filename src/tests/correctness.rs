@@ -74,6 +74,7 @@ mod hashmap_test {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)]
     async fn insert_drop() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         let hashmap: HashMap<usize, R> = HashMap::default();
@@ -93,6 +94,7 @@ mod hashmap_test {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)]
     async fn clear() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         let hashmap: HashMap<usize, R> = HashMap::default();
@@ -115,6 +117,7 @@ mod hashmap_test {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)]
     async fn clone() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         let hashmap: HashMap<usize, R> = HashMap::default();
@@ -195,6 +198,7 @@ mod hashmap_test {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    #[cfg_attr(miri, ignore)]
     async fn integer_key() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
 
@@ -290,6 +294,7 @@ mod hashmap_test {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    #[cfg_attr(miri, ignore)]
     async fn retain_for_each() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
 
@@ -435,6 +440,7 @@ mod hashmap_test {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[cfg_attr(miri, ignore)]
     async fn read() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
         let num_tasks = 4;
@@ -587,6 +593,7 @@ mod hashindex_test {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)]
     async fn clear() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         let hashindex: HashIndex<usize, R> = HashIndex::default();
@@ -610,6 +617,7 @@ mod hashindex_test {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)]
     async fn clone() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         let hashindex: HashIndex<usize, R> = HashIndex::default();
@@ -666,6 +674,7 @@ mod hashindex_test {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[cfg_attr(miri, ignore)]
     async fn read() {
         let hashindex: Arc<HashIndex<usize, usize>> = Arc::new(HashIndex::default());
         let num_tasks = 4;
@@ -703,6 +712,7 @@ mod hashindex_test {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[cfg_attr(miri, ignore)]
     async fn rebuild() {
         let hashindex: Arc<HashIndex<usize, usize>> = Arc::new(HashIndex::default());
         let num_tasks = 4;
@@ -857,6 +867,7 @@ mod treeindex_test {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)]
     async fn insert_drop() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         let tree: TreeIndex<usize, R> = TreeIndex::default();
@@ -876,6 +887,7 @@ mod treeindex_test {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)]
     async fn insert_remove() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         let tree: TreeIndex<usize, R> = TreeIndex::default();
@@ -898,6 +910,7 @@ mod treeindex_test {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)]
     async fn clear() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         let tree: TreeIndex<usize, R> = TreeIndex::default();
@@ -917,6 +930,7 @@ mod treeindex_test {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)]
     async fn clone() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         let tree: TreeIndex<usize, R> = TreeIndex::default();
@@ -939,6 +953,7 @@ mod treeindex_test {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    #[cfg_attr(miri, ignore)]
     async fn integer_key() {
         let num_tasks = 8;
         let workload_size = 256;
@@ -1402,6 +1417,7 @@ mod bag_test {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    #[cfg_attr(miri, ignore)]
     async fn mpmc() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         const NUM_TASKS: usize = 6;
@@ -1477,6 +1493,7 @@ mod queue_test {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    #[cfg_attr(miri, ignore)]
     async fn mpmc() {
         const NUM_TASKS: usize = 12;
         const NUM_PRODUCERS: usize = NUM_TASKS / 2;
@@ -1561,6 +1578,7 @@ mod stack_test {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    #[cfg_attr(miri, ignore)]
     async fn mpmc() {
         const NUM_TASKS: usize = 12;
         let stack: Arc<Stack<R>> = Arc::new(Stack::default());
@@ -1843,6 +1861,7 @@ mod ebr_test {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    #[cfg_attr(miri, ignore)]
     async fn atomic_arc_parallel() {
         let atomic_arc: Arc<AtomicArc<String>> =
             Arc::new(AtomicArc::new(String::from("How are you?")));
@@ -1911,6 +1930,7 @@ mod ebr_test {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    #[cfg_attr(miri, ignore)]
     async fn atomic_arc_clone() {
         let atomic_arc: Arc<AtomicArc<String>> =
             Arc::new(AtomicArc::new(String::from("How are you?")));

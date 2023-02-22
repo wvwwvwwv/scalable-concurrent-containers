@@ -956,6 +956,7 @@ mod test {
     use tokio::sync;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    #[cfg_attr(miri, ignore)]
     async fn queue() {
         let num_tasks = BUCKET_LEN + 2;
         let barrier = Arc::new(sync::Barrier::new(num_tasks));

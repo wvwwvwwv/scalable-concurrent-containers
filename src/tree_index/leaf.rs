@@ -1117,6 +1117,7 @@ mod test {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    #[cfg_attr(miri, ignore)]
     async fn update() {
         let num_excess = 3;
         let num_tasks = DIMENSION.num_entries + num_excess;
@@ -1190,6 +1191,7 @@ mod test {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    #[cfg_attr(miri, ignore)]
     async fn durability() {
         let num_tasks = 16_usize;
         let workload_size = 8_usize;
