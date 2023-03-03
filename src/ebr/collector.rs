@@ -117,11 +117,11 @@ impl Collector {
     /// Returns the [`Collector`] attached to the current thread.
     #[inline]
     pub(super) fn current() -> *mut Collector {
-        TLS.with(|tls| {
-            let mut collector_ptr = tls.collector_ptr.load(Relaxed);
+        LOCAL_COLLECTOR.with(|local_collector| {
+            let mut collector_ptr = local_collector.load(Relaxed);
             if collector_ptr.is_null() {
-                collector_ptr = Collector::alloc();
-                tls.collector_ptr.store(collector_ptr, Relaxed);
+                collector_ptr = COLLECTOR_ANCHOR.with(CollectorAnchor::alloc);
+                local_collector.store(collector_ptr, Relaxed);
             }
             collector_ptr
         })
@@ -130,15 +130,15 @@ impl Collector {
     /// Passes its garbage instances to other threads.
     #[inline]
     pub(super) fn pass_garbage() -> bool {
-        TLS.with(|tls| {
-            let collector_ptr = tls.collector_ptr.load(Relaxed);
+        LOCAL_COLLECTOR.with(|local_collector| {
+            let collector_ptr = local_collector.load(Relaxed);
             if let Some(collector) = unsafe { collector_ptr.as_mut() } {
                 if collector.num_readers != 0 {
                     return false;
                 }
                 if collector.has_garbage {
                     collector.state.fetch_or(Collector::INVALID, Release);
-                    tls.collector_ptr.store(ptr::null_mut(), Relaxed);
+                    local_collector.store(ptr::null_mut(), Relaxed);
                     mark_scan_enforced();
                 }
             }
@@ -314,9 +314,12 @@ impl Drop for Collector {
     fn drop(&mut self) {
         self.state.store(0, Relaxed);
         self.announcement = 0;
+
+        // The garbage instances in it shall be dropped and deallocated in a different thread.
         self.epoch_updated();
         self.epoch_updated();
         self.epoch_updated();
+
         debug_assert!(!self.has_garbage);
     }
 }
@@ -328,31 +331,21 @@ impl Collectible for Collector {
     }
 }
 
-/// A wrapper of [`Collector`] for a thread to properly clean up collected instances.
-struct ThreadLocal {
-    collector_ptr: AtomicPtr<Collector>,
+/// [`CollectorAnchor`] helps allocate and cleanup the thread-local [`Collector`].
+#[derive(Default)]
+struct CollectorAnchor;
+
+impl CollectorAnchor {
+    fn alloc(&self) -> *mut Collector {
+        let _: &CollectorAnchor = self;
+        Collector::alloc()
+    }
 }
 
-impl Drop for ThreadLocal {
+impl Drop for CollectorAnchor {
     #[inline]
     fn drop(&mut self) {
-        let collector_ptr = self.collector_ptr.load(Relaxed);
-        if let Some(collector) = unsafe { collector_ptr.as_mut() } {
-            let anchor_ptr = ANCHOR.load(Relaxed);
-            if !collector.has_garbage
-                && collector.next_collector.is_null()
-                && ptr::eq(collector_ptr, anchor_ptr)
-                && ANCHOR
-                    .compare_exchange(anchor_ptr, ptr::null_mut(), Relaxed, Relaxed)
-                    .is_ok()
-            {
-                // If it is the head, empty, and the only `Collector` in the global list, drop it.
-                unsafe { collector_ptr.read() };
-                return;
-            }
-            collector.state.fetch_or(Collector::INVALID, Release);
-            mark_scan_enforced();
-        }
+        try_drop_local_collector();
     }
 }
 
@@ -369,8 +362,34 @@ fn mark_scan_enforced() {
     });
 }
 
+fn try_drop_local_collector() {
+    let collector_ptr = LOCAL_COLLECTOR.with(|local_collector| local_collector.load(Relaxed));
+    if let Some(collector) = unsafe { collector_ptr.as_mut() } {
+        let anchor_ptr = ANCHOR.load(Relaxed);
+        if collector.next_collector.is_null()
+            && ptr::eq(collector_ptr, anchor_ptr)
+            && ANCHOR
+                .compare_exchange(anchor_ptr, ptr::null_mut(), Relaxed, Relaxed)
+                .is_ok()
+        {
+            collector.new_barrier();
+            while collector.has_garbage {
+                collector.epoch_updated();
+            }
+
+            // If it is the head, empty, and the only `Collector` in the global list,
+            // drop it in-place.
+            collector.drop_and_dealloc();
+            return;
+        }
+        collector.state.fetch_or(Collector::INVALID, Release);
+        mark_scan_enforced();
+    }
+}
+
 thread_local! {
-    static TLS: ThreadLocal = ThreadLocal { collector_ptr: AtomicPtr::default() };
+    static COLLECTOR_ANCHOR: CollectorAnchor = CollectorAnchor::default();
+    static LOCAL_COLLECTOR: AtomicPtr<Collector> = AtomicPtr::default();
 }
 
 /// The global epoch.

@@ -1323,7 +1323,7 @@ where
 
     /// Returns a reference to the specified [`Barrier`] whose lifetime matches that of `self`.
     fn prolonged_barrier_ref<'h>(&'h self, barrier: &Barrier) -> &'h Barrier {
-        let _ = self;
+        let _: &HashMap<_, _, _> = self;
         unsafe { std::mem::transmute::<&Barrier, &'h Barrier>(barrier) }
     }
 }

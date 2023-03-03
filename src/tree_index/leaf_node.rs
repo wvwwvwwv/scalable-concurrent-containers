@@ -488,7 +488,7 @@ where
         if let Some(origin_leaf) = self.split_op.origin_leaf.swap((None, Tag::None), Relaxed).0 {
             // Make the origin leaf unreachable before making the new leaves updatable.
             origin_leaf.delete_self(Relaxed);
-            let _ = origin_leaf.release(barrier);
+            let _: bool = origin_leaf.release(barrier);
         }
         let low_key_leaf = self
             .split_op
@@ -801,7 +801,7 @@ where
                     // The pointer is nullified after the metadata of `self.children` is updated so
                     // that readers are able to retry when they find it being `null`.
                     if let Some(leaf) = entry.1.swap((None, Tag::None), Release).0 {
-                        let _ = leaf.release(barrier);
+                        let _: bool = leaf.release(barrier);
                         if let Some(prev_leaf) = prev_valid_leaf.as_ref() {
                             // One jump is sufficient.
                             Scanner::new(*prev_leaf).jump(None, barrier);
@@ -829,7 +829,7 @@ where
                         if let Some(obsolete_leaf) =
                             self.unbounded_child.swap((None, RETIRED), Release).0
                         {
-                            let _ = obsolete_leaf.release(barrier);
+                            let _: bool = obsolete_leaf.release(barrier);
                             uncleaned_leaf = true;
                         }
                         true

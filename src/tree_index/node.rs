@@ -171,7 +171,7 @@ where
                     internal_node.finish_split(barrier);
                     old_root.commit(barrier);
                 }
-                let _ = old_root.release(barrier);
+                let _: bool = old_root.release(barrier);
             };
 
             (key, val)
