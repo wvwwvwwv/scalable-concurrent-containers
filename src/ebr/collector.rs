@@ -1,4 +1,4 @@
-use super::{Collectible, Tag};
+use super::{Barrier, Collectible, Tag};
 
 use crate::exit_guard::ExitGuard;
 
@@ -27,13 +27,13 @@ impl Collector {
     const CADENCE: u8 = u8::MAX;
 
     /// A bit field representing a thread state where the thread does not have a
-    /// [`Barrier`](super::Barrier).
+    /// [`Barrier`].
     const INACTIVE: u8 = 1_u8 << 2;
 
     /// A bit field representing a thread state where the thread has been terminated.
     const INVALID: u8 = 1_u8 << 3;
 
-    /// Acknowledges a new [`Barrier`](super::Barrier) being instantiated.
+    /// Acknowledges a new [`Barrier`] being instantiated.
     ///
     /// # Panics
     ///
@@ -69,7 +69,7 @@ impl Collector {
         }
     }
 
-    /// Acknowledges an existing [`Barrier`](super::Barrier) being dropped.
+    /// Acknowledges an existing [`Barrier`] being dropped.
     #[inline]
     pub(super) fn end_barrier(&mut self) {
         debug_assert_eq!(self.state.load(Relaxed) & Self::INACTIVE, 0);
@@ -77,7 +77,7 @@ impl Collector {
 
         if self.num_readers == 1 {
             if self.next_epoch_update == 0 {
-                if self.has_garbage || Tag::into_tag(ANCHOR.load(Relaxed)) != Tag::First {
+                if self.has_garbage || Tag::into_tag(GLOBAL_ANCHOR.load(Relaxed)) != Tag::First {
                     self.try_scan();
                 }
                 self.next_epoch_update = if self.has_garbage {
@@ -161,7 +161,7 @@ impl Collector {
             link: None,
         });
         let ptr = Box::into_raw(boxed);
-        let mut current = ANCHOR.load(Relaxed);
+        let mut current = GLOBAL_ANCHOR.load(Relaxed);
         loop {
             unsafe {
                 (*ptr).next_collector = Tag::unset_tag(current) as *mut Collector;
@@ -170,7 +170,7 @@ impl Collector {
             // It keeps the tag intact.
             let tag = Tag::into_tag(current);
             let new = Tag::update_tag(ptr, tag) as *mut Collector;
-            if let Err(actual) = ANCHOR.compare_exchange(current, new, Release, Relaxed) {
+            if let Err(actual) = GLOBAL_ANCHOR.compare_exchange(current, new, Release, Relaxed) {
                 current = actual;
             } else {
                 break;
@@ -186,7 +186,7 @@ impl Collector {
 
         // Only one thread that acquires the anchor lock is allowed to scan the thread-local
         // collectors.
-        let lock_result = ANCHOR
+        let lock_result = GLOBAL_ANCHOR
             .fetch_update(Acquire, Acquire, |p| {
                 let tag = Tag::into_tag(p);
                 if tag == Tag::First || tag == Tag::Both {
@@ -198,7 +198,7 @@ impl Collector {
             .map(|p| Tag::unset_tag(p) as *mut Collector);
         if let Ok(mut collector_ptr) = lock_result {
             #[allow(clippy::blocks_in_if_conditions)]
-            let _guard = ExitGuard::new(&ANCHOR, |a| {
+            let _guard = ExitGuard::new(&GLOBAL_ANCHOR, |a| {
                 // Unlock the anchor.
                 while a
                     .fetch_update(Release, Relaxed, |p| {
@@ -225,7 +225,7 @@ impl Collector {
                         // The collector is obsolete.
                         let reclaimable = unsafe { prev_collector_ptr.as_mut() }.map_or_else(
                             || {
-                                ANCHOR
+                                GLOBAL_ANCHOR
                                     .fetch_update(Release, Relaxed, |p| {
                                         let tag = Tag::into_tag(p);
                                         debug_assert!(tag == Tag::First || tag == Tag::Both);
@@ -352,7 +352,7 @@ impl Drop for CollectorAnchor {
 /// Marks `ANCHOR` that there is a potentially unreachable `Collector`.
 fn mark_scan_enforced() {
     // `Tag::Second` indicates that there is a garbage `Collector`.
-    let _result = ANCHOR.fetch_update(Release, Relaxed, |p| {
+    let _result = GLOBAL_ANCHOR.fetch_update(Release, Relaxed, |p| {
         let new_tag = match Tag::into_tag(p) {
             Tag::None => Tag::Second,
             Tag::First => Tag::Both,
@@ -365,22 +365,22 @@ fn mark_scan_enforced() {
 fn try_drop_local_collector() {
     let collector_ptr = LOCAL_COLLECTOR.with(|local_collector| local_collector.load(Relaxed));
     if let Some(collector) = unsafe { collector_ptr.as_mut() } {
-        let anchor_ptr = ANCHOR.load(Relaxed);
-        if collector.next_collector.is_null()
-            && ptr::eq(collector_ptr, anchor_ptr)
-            && ANCHOR
-                .compare_exchange(anchor_ptr, ptr::null_mut(), Relaxed, Relaxed)
-                .is_ok()
-        {
-            collector.new_barrier();
-            while collector.has_garbage {
-                collector.epoch_updated();
+        if collector.next_collector.is_null() {
+            let anchor_ptr = GLOBAL_ANCHOR.load(Relaxed);
+            if ptr::eq(collector_ptr, anchor_ptr)
+                && GLOBAL_ANCHOR
+                    .compare_exchange(anchor_ptr, ptr::null_mut(), Relaxed, Relaxed)
+                    .is_ok()
+            {
+                // If it is the head, and the only `Collector` in the global list, drop it here.
+                let barrier = Barrier::new();
+                while collector.has_garbage {
+                    collector.epoch_updated();
+                }
+                drop(barrier);
+                collector.drop_and_dealloc();
+                return;
             }
-
-            // If it is the head, empty, and the only `Collector` in the global list,
-            // drop it in-place.
-            collector.drop_and_dealloc();
-            return;
         }
         collector.state.fetch_or(Collector::INVALID, Release);
         mark_scan_enforced();
@@ -399,4 +399,4 @@ thread_local! {
 static EPOCH: AtomicU8 = AtomicU8::new(0);
 
 /// The global anchor for thread-local instances of [`Collector`].
-static ANCHOR: AtomicPtr<Collector> = AtomicPtr::new(ptr::null_mut());
+static GLOBAL_ANCHOR: AtomicPtr<Collector> = AtomicPtr::new(ptr::null_mut());

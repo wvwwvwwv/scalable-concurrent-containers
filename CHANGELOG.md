@@ -3,6 +3,7 @@
 1.1.3
 
 * Fix [#86](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/86) completely.
+* EBR garbage instances and the garbage collector instance of a thread is now deallocated immediately when the thread exits if certain conditions are met.
 
 1.1.2
 
