@@ -28,6 +28,8 @@ jobs:
         run:
           rustup toolchain add nightly;
           rustup component add rust-src --toolchain nightly;
+          rustup component add rustfmt --toolchain nightly
+          rustup component add clippy --toolchain nightly
           rustup component add miri --toolchain nightly
       - name: Lint
         run:
