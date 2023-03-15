@@ -1304,22 +1304,7 @@ where
     /// ```
     #[inline]
     pub fn is_empty(&self) -> bool {
-        let barrier = Barrier::new();
-        let current_array = self.current_array_unchecked(&barrier);
-        let old_array_ptr = current_array.old_array(&barrier);
-        if let Some(old_array) = old_array_ptr.as_ref() {
-            for i in 0..old_array.num_buckets() {
-                if old_array.bucket(i).num_entries() != 0 {
-                    return false;
-                }
-            }
-        }
-        for i in 0..current_array.num_buckets() {
-            if current_array.bucket(i).num_entries() != 0 {
-                return false;
-            }
-        }
-        true
+        !self.has_entry(&Barrier::new())
     }
 
     /// Returns the capacity of the [`HashMap`].

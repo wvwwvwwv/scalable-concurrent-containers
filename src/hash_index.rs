@@ -627,7 +627,7 @@ where
     /// ```
     #[inline]
     pub fn is_empty(&self) -> bool {
-        !self.iter(&Barrier::new()).any(|_| true)
+        !self.has_entry(&Barrier::new())
     }
 
     /// Returns the capacity of the [`HashIndex`].

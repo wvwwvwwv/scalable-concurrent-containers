@@ -1,6 +1,6 @@
 # Changelog
 
-1.1.4
+1.1.4 - 1.1.5
 
 * Optimize `Hash*::is_empty`.
 * Remove unnecessary lifetime constraints on `BuildHasher`.

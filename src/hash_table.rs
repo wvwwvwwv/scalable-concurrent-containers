@@ -80,6 +80,26 @@ where
         num_entries
     }
 
+    /// Returns `true` if the number of entries is non-zero.
+    #[inline]
+    fn has_entry(&self, barrier: &Barrier) -> bool {
+        let current_array = self.current_array_unchecked(barrier);
+        let old_array_ptr = current_array.old_array(barrier);
+        if let Some(old_array) = old_array_ptr.as_ref() {
+            for i in 0..old_array.num_buckets() {
+                if old_array.bucket(i).num_entries() != 0 {
+                    return true;
+                }
+            }
+        }
+        for i in 0..current_array.num_buckets() {
+            if current_array.bucket(i).num_entries() != 0 {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Returns the number of slots.
     #[inline]
     fn num_slots(&self, barrier: &Barrier) -> usize {
