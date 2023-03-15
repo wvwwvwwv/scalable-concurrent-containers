@@ -568,7 +568,7 @@ where
 
     /// Returns the number of entries in the [`HashSet`].
     ///
-    /// It scans the entire array to calculate the number of valid entries, making its time
+    /// It scans the entire bucket array to calculate the number of valid entries, making its time
     /// complexity `O(N)`.
     ///
     /// # Examples
@@ -588,8 +588,8 @@ where
 
     /// Returns `true` if the [`HashSet`] is empty.
     ///
-    /// It scans the entire array to calculate the number of valid entries, making its time
-    /// complexity `O(N)`.
+    /// It may scan the entire bucket array to check if it is empty, therefore the time complexity
+    /// is `O(N)`.
     ///
     /// # Examples
     ///
@@ -599,6 +599,8 @@ where
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
     /// assert!(hashset.is_empty());
+    /// assert!(hashset.insert(1).is_ok());
+    /// assert!(!hashset.is_empty());
     /// ```
     #[inline]
     pub fn is_empty(&self) -> bool {

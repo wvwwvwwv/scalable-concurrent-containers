@@ -591,7 +591,7 @@ where
 
     /// Returns the number of entries in the [`HashIndex`].
     ///
-    /// It scans the entire array to calculate the number of valid entries, making its time
+    /// It scans the entire bucket array to calculate the number of valid entries, making its time
     /// complexity `O(N)`.
     ///
     /// # Examples
@@ -611,8 +611,8 @@ where
 
     /// Returns `true` if the [`HashIndex`] is empty.
     ///
-    /// It scans the entire array to calculate the number of valid entries, making its time
-    /// complexity `O(N)`.
+    /// It may scan the entire bucket array to check if it is empty, therefore the time complexity
+    /// is `O(N)`.
     ///
     /// # Examples
     ///
@@ -622,10 +622,12 @@ where
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
     /// assert!(hashindex.is_empty());
+    /// assert!(hashindex.insert(1, 0).is_ok());
+    /// assert!(!hashindex.is_empty());
     /// ```
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        !self.iter(&Barrier::new()).any(|_| true)
     }
 
     /// Returns the capacity of the [`HashIndex`].
@@ -693,7 +695,7 @@ impl<K, V, H> Clone for HashIndex<K, V, H>
 where
     K: 'static + Clone + Eq + Hash + Sync,
     V: 'static + Clone + Sync,
-    H: 'static + BuildHasher + Clone,
+    H: BuildHasher + Clone,
 {
     #[inline]
     fn clone(&self) -> Self {
@@ -709,7 +711,7 @@ impl<K, V, H> Debug for HashIndex<K, V, H>
 where
     K: 'static + Clone + Debug + Eq + Hash + Sync,
     V: 'static + Clone + Debug + Sync,
-    H: 'static + BuildHasher,
+    H: BuildHasher,
 {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -837,7 +839,7 @@ impl<K, V, H> PartialEq for HashIndex<K, V, H>
 where
     K: 'static + Clone + Eq + Hash + Sync,
     V: 'static + Clone + PartialEq + Sync,
-    H: 'static + BuildHasher,
+    H: BuildHasher,
 {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
@@ -876,7 +878,7 @@ impl<'h, 'b, K, V, H> Iterator for Visitor<'h, 'b, K, V, H>
 where
     K: 'static + Clone + Eq + Hash + Sync,
     V: 'static + Clone + Sync,
-    H: 'static + BuildHasher,
+    H: BuildHasher,
 {
     type Item = (&'b K, &'b V);
 
@@ -963,6 +965,6 @@ impl<'h, 'b, K, V, H> FusedIterator for Visitor<'h, 'b, K, V, H>
 where
     K: 'static + Clone + Eq + Hash + Sync,
     V: 'static + Clone + Sync,
-    H: 'static + BuildHasher,
+    H: BuildHasher,
 {
 }

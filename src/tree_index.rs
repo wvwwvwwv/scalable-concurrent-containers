@@ -716,7 +716,7 @@ pub struct Range<'t, 'b, K, V, R>
 where
     K: 'static + Clone + Ord + Sync,
     V: 'static + Clone + Sync,
-    R: 'static + RangeBounds<K>,
+    R: RangeBounds<K>,
 {
     root: &'t AtomicArc<Node<K, V>>,
     leaf_scanner: Option<Scanner<'b, K, V>>,

@@ -1268,7 +1268,7 @@ where
 
     /// Returns the number of entries in the [`HashMap`].
     ///
-    /// It scans the entire array to calculate the number of valid entries, making its time
+    /// It scans the entire bucket array to calculate the number of valid entries, making its time
     /// complexity `O(N)`.
     ///
     /// # Examples
@@ -1288,8 +1288,8 @@ where
 
     /// Returns `true` if the [`HashMap`] is empty.
     ///
-    /// It scans the entire array to calculate the number of valid entries, making its time
-    /// complexity `O(N)`.
+    /// It may scan the entire bucket array to check if it is empty, therefore the time complexity
+    /// is `O(N)`.
     ///
     /// # Examples
     ///
@@ -1299,10 +1299,27 @@ where
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// assert!(hashmap.is_empty());
+    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// assert!(!hashmap.is_empty());
     /// ```
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        let barrier = Barrier::new();
+        let current_array = self.current_array_unchecked(&barrier);
+        let old_array_ptr = current_array.old_array(&barrier);
+        if let Some(old_array) = old_array_ptr.as_ref() {
+            for i in 0..old_array.num_buckets() {
+                if old_array.bucket(i).num_entries() != 0 {
+                    return false;
+                }
+            }
+        }
+        for i in 0..current_array.num_buckets() {
+            if current_array.bucket(i).num_entries() != 0 {
+                return false;
+            }
+        }
+        true
     }
 
     /// Returns the capacity of the [`HashMap`].

@@ -68,14 +68,14 @@ where
     fn num_entries(&self, barrier: &Barrier) -> usize {
         let current_array = self.current_array_unchecked(barrier);
         let mut num_entries = 0;
-        for i in 0..current_array.num_buckets() {
-            num_entries += current_array.bucket(i).num_entries();
-        }
         let old_array_ptr = current_array.old_array(barrier);
         if let Some(old_array) = old_array_ptr.as_ref() {
             for i in 0..old_array.num_buckets() {
                 num_entries += old_array.bucket(i).num_entries();
             }
+        }
+        for i in 0..current_array.num_buckets() {
+            num_entries += current_array.bucket(i).num_entries();
         }
         num_entries
     }
