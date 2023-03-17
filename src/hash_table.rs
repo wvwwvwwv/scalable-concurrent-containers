@@ -287,6 +287,10 @@ where
 
             let index = current_array.calculate_bucket_index(hash);
             let bucket = current_array.bucket_mut(index);
+            if bucket.num_entries() == 0 {
+                // Nothing to remove.
+                return Ok(post_processor(None));
+            }
             let lock_result = if let Some(async_wait) = async_wait.derive() {
                 match Locker::try_lock_or_wait(bucket, async_wait, barrier) {
                     Ok(l) => l,

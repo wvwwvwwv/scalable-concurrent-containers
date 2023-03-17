@@ -947,7 +947,7 @@ where
             debug_assert!(current_array.old_array(&Barrier::new()).is_null());
 
             for index in 0..current_array.num_buckets() {
-                let killed = loop {
+                loop {
                     let mut async_wait = AsyncWait::default();
                     let mut async_wait_pinned = Pin::new(&mut async_wait);
                     {
@@ -966,18 +966,11 @@ where
                                         return true;
                                     }
                                 }
-                                break false;
                             }
-
-                            // The bucket having been killed means that a new array has been
-                            // allocated.
-                            break true;
+                            break;
                         };
                     }
                     async_wait_pinned.await;
-                };
-                if killed {
-                    break;
                 }
             }
 

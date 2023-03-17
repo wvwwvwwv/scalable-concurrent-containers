@@ -2,7 +2,7 @@
 
 1.1.6
 
-* Micro optimization.
+* `Hash*::{read*, remove*}` minor optimization: return early if the specified key does not exist.
 
 1.1.4 - 1.1.5
 
