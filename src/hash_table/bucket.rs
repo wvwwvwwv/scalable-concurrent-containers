@@ -932,6 +932,7 @@ impl<K: Eq, V, const LEN: usize> LinkedBucket<K, V, LEN> {
 }
 
 impl<K: Eq, V, const LEN: usize> Drop for LinkedBucket<K, V, LEN> {
+    #[inline]
     fn drop(&mut self) {
         if needs_drop::<(K, V)>() {
             let mut index = self.metadata.occupied_bitmap.trailing_zeros();

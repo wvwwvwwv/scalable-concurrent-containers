@@ -10,7 +10,6 @@ use crate::wait_queue::DeriveAsyncWait;
 
 use std::borrow::Borrow;
 use std::hash::{BuildHasher, Hash, Hasher};
-use std::ptr;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{fence, AtomicU8};
 
@@ -66,16 +65,17 @@ where
     /// Returns the number of entries.
     #[inline]
     fn num_entries(&self, barrier: &Barrier) -> usize {
-        let current_array = self.current_array_unchecked(barrier);
         let mut num_entries = 0;
-        let old_array_ptr = current_array.old_array(barrier);
-        if let Some(old_array) = old_array_ptr.as_ref() {
-            for i in 0..old_array.num_buckets() {
-                num_entries += old_array.bucket(i).num_entries();
+        if let Some(current_array) = self.bucket_array().load(Acquire, barrier).as_ref() {
+            let old_array_ptr = current_array.old_array(barrier);
+            if let Some(old_array) = old_array_ptr.as_ref() {
+                for i in 0..old_array.num_buckets() {
+                    num_entries += old_array.bucket(i).num_entries();
+                }
             }
-        }
-        for i in 0..current_array.num_buckets() {
-            num_entries += current_array.bucket(i).num_entries();
+            for i in 0..current_array.num_buckets() {
+                num_entries += current_array.bucket(i).num_entries();
+            }
         }
         num_entries
     }
@@ -83,18 +83,19 @@ where
     /// Returns `true` if the number of entries is non-zero.
     #[inline]
     fn has_entry(&self, barrier: &Barrier) -> bool {
-        let current_array = self.current_array_unchecked(barrier);
-        let old_array_ptr = current_array.old_array(barrier);
-        if let Some(old_array) = old_array_ptr.as_ref() {
-            for i in 0..old_array.num_buckets() {
-                if old_array.bucket(i).num_entries() != 0 {
-                    return true;
+        if let Some(current_array) = self.bucket_array().load(Acquire, barrier).as_ref() {
+            let old_array_ptr = current_array.old_array(barrier);
+            if let Some(old_array) = old_array_ptr.as_ref() {
+                for i in 0..old_array.num_buckets() {
+                    if old_array.bucket(i).num_entries() != 0 {
+                        return true;
+                    }
                 }
             }
-        }
-        for i in 0..current_array.num_buckets() {
-            if current_array.bucket(i).num_entries() != 0 {
-                return true;
+            for i in 0..current_array.num_buckets() {
+                if current_array.bucket(i).num_entries() != 0 {
+                    return true;
+                }
             }
         }
         false
@@ -103,8 +104,11 @@ where
     /// Returns the number of slots.
     #[inline]
     fn num_slots(&self, barrier: &Barrier) -> usize {
-        let current_array = self.current_array_unchecked(barrier);
-        current_array.num_entries()
+        if let Some(current_array) = self.bucket_array().load(Acquire, barrier).as_ref() {
+            current_array.num_entries()
+        } else {
+            0
+        }
     }
 
     /// Estimates the number of entries by sampling the specified number of buckets.
@@ -191,8 +195,8 @@ where
         Q: Eq + Hash + ?Sized,
         D: DeriveAsyncWait,
     {
-        let mut current_array = self.current_array_unchecked(barrier);
-        loop {
+        let mut current_array_ptr = self.bucket_array().load(Acquire, barrier);
+        while let Some(current_array) = current_array_ptr.as_ref() {
             if let Some(old_array) = current_array.old_array(barrier).as_ref() {
                 if LOCK_FREE {
                     if self.partial_rehash::<Q, D, true>(current_array, async_wait, barrier)
@@ -242,62 +246,13 @@ where
                 }
             }
 
-            let new_current_array = self.current_array_unchecked(barrier);
-            if ptr::eq(current_array, new_current_array) {
+            let new_current_array_ptr = self.bucket_array().load(Acquire, barrier);
+            if current_array_ptr == new_current_array_ptr {
                 break;
             }
 
             // A new array has been allocated.
-            current_array = new_current_array;
-        }
-
-        Ok(None)
-    }
-
-    /// Reads an entry from the [`HashTable`] without locking the bucket.
-    #[inline]
-    unsafe fn read_entry_unsafe<'b, Q>(
-        &self,
-        key: &Q,
-        hash: u64,
-        barrier: &'b Barrier,
-    ) -> Result<Option<(&'b K, &'b V)>, ()>
-    where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
-    {
-        let mut current_array = self.current_array_unchecked(barrier);
-        loop {
-            if let Some(old_array) = current_array.old_array(barrier).as_ref() {
-                let index = old_array.calculate_bucket_index(hash);
-                if let Some((k, v)) = old_array.bucket(index).search(
-                    old_array.data_block(index),
-                    key,
-                    BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
-                    barrier,
-                ) {
-                    return Ok(Some((k, v)));
-                }
-            };
-
-            let index = current_array.calculate_bucket_index(hash);
-            let bucket = current_array.bucket(index);
-            if let Some(entry) = bucket.search(
-                current_array.data_block(index),
-                key,
-                BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
-                barrier,
-            ) {
-                return Ok(Some((&entry.0, &entry.1)));
-            }
-
-            let new_current_array = self.current_array_unchecked(barrier);
-            if ptr::eq(current_array, new_current_array) {
-                break;
-            }
-
-            // A new array has been allocated.
-            current_array = new_current_array;
+            current_array_ptr = new_current_array_ptr;
         }
 
         Ok(None)
@@ -319,9 +274,8 @@ where
         Q: Eq + Hash + ?Sized,
         D: DeriveAsyncWait,
     {
-        loop {
+        while let Some(current_array) = self.bucket_array().load(Acquire, barrier).as_ref() {
             // The reasoning behind this loop can be found in `acquire_entry`.
-            let current_array = self.current_array_unchecked(barrier);
             let shrinkable = if let Some(old_array) = current_array.old_array(barrier).as_ref() {
                 match self.move_entry(current_array, old_array, hash, async_wait, barrier) {
                     Ok(r) => r,

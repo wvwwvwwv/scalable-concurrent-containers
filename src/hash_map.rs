@@ -748,36 +748,6 @@ where
         }
     }
 
-    /// Reads a key-value pair without locking the bucket.
-    ///
-    /// It returns `None` if the key does not exist.
-    ///
-    /// # Safety
-    ///
-    /// It is generally unsafe since the key-value pair can be moved out while reading it. This
-    /// method only guarantees that the bucket is not deallocated.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashMap;
-    ///
-    /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    /// assert!(hashmap.insert(1, 17).is_ok());
-    /// assert_eq!(unsafe { hashmap.read(&1, |_, v| *v).unwrap() }, 17);
-    /// ```
-    #[inline]
-    pub unsafe fn read_unsafe<Q, R, F: FnOnce(&K, &V) -> R>(&self, key: &Q, reader: F) -> Option<R>
-    where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
-    {
-        self.read_entry_unsafe(key, self.hash(key), &Barrier::new())
-            .ok()
-            .flatten()
-            .map(|(k, v)| reader(k, v))
-    }
-
     /// Checks if the key exists.
     ///
     /// # Examples
@@ -1782,16 +1752,19 @@ where
         };
         if self.locker.bucket().num_entries() == 0 {
             let barrier = Barrier::new();
-            let array = self.hashmap.current_array_unchecked(&barrier);
-            let bucket_index = array.calculate_bucket_index(self.hash);
-            if bucket_index % BUCKET_LEN == 0 {
-                let hashmap = self.hashmap;
-                drop(self);
-                hashmap.try_shrink(
-                    hashmap.current_array_unchecked(&barrier),
-                    bucket_index,
-                    &barrier,
-                );
+            if let Some(current_array) =
+                self.hashmap.bucket_array().load(Acquire, &barrier).as_ref()
+            {
+                let bucket_index = current_array.calculate_bucket_index(self.hash);
+                if bucket_index % BUCKET_LEN == 0 {
+                    let hashmap = self.hashmap;
+                    drop(self);
+                    if let Some(current_array) =
+                        hashmap.bucket_array().load(Acquire, &barrier).as_ref()
+                    {
+                        hashmap.try_shrink(current_array, bucket_index, &barrier);
+                    }
+                }
             }
         }
         entry
