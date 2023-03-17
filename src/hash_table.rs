@@ -51,7 +51,9 @@ where
     /// Returns a reference to the resizing mutex.
     fn resize_mutex(&self) -> &AtomicU8;
 
-    /// Returns a reference to the current array without checking the pointer value.
+    /// Returns a reference to the current array.
+    ///
+    /// If no array has been allocated, it allocates a new one and returns it.
     #[inline]
     fn get_current_array<'b>(&self, barrier: &'b Barrier) -> &'b BucketArray<K, V, LOCK_FREE> {
         // An acquire fence is required to correctly load the contents of the array.
@@ -305,10 +307,6 @@ where
 
             let index = current_array.calculate_bucket_index(hash);
             let bucket = current_array.bucket_mut(index);
-            if bucket.num_entries() == 0 {
-                // Nothing to remove.
-                return Ok(post_processor(None));
-            }
             let lock_result = if let Some(async_wait) = async_wait.derive() {
                 match Locker::try_lock_or_wait(bucket, async_wait, barrier) {
                     Ok(l) => l,

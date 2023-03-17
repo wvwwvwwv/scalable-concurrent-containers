@@ -841,9 +841,6 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
         bucket: &'b Bucket<K, V, LOCK_FREE>,
         _barrier: &'b Barrier,
     ) -> Result<Option<Reader<'b, K, V, LOCK_FREE>>, ()> {
-        if bucket.num_entries() == 0 {
-            return Ok(None);
-        }
         let current = bucket.state.load(Relaxed);
         if (current & LOCK_MASK) >= SLOCK_MAX {
             return Err(());
