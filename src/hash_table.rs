@@ -4,13 +4,13 @@ pub mod bucket_array;
 use bucket::{DataBlock, EntryPtr, Locker, Reader, BUCKET_LEN};
 use bucket_array::BucketArray;
 
-use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
+use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 use crate::exit_guard::ExitGuard;
 use crate::wait_queue::DeriveAsyncWait;
 
 use std::borrow::Borrow;
 use std::hash::{BuildHasher, Hash, Hasher};
-use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 use std::sync::atomic::{fence, AtomicU8};
 
 /// `HashTable` defines common functions for hash table implementations.
@@ -53,13 +53,31 @@ where
 
     /// Returns a reference to the current array without checking the pointer value.
     #[inline]
-    fn current_array_unchecked<'b>(
-        &self,
-        barrier: &'b Barrier,
-    ) -> &'b BucketArray<K, V, LOCK_FREE> {
+    fn get_current_array<'b>(&self, barrier: &'b Barrier) -> &'b BucketArray<K, V, LOCK_FREE> {
         // An acquire fence is required to correctly load the contents of the array.
         let current_array_ptr = self.bucket_array().load(Acquire, barrier);
-        unsafe { current_array_ptr.as_ref().unwrap_unchecked() }
+        if let Some(current_array) = current_array_ptr.as_ref() {
+            return current_array;
+        }
+
+        unsafe {
+            let current_array_ptr = match self.bucket_array().compare_exchange(
+                Ptr::null(),
+                (
+                    Some(Arc::new_unchecked(BucketArray::<K, V, LOCK_FREE>::new(
+                        self.minimum_capacity(),
+                        AtomicArc::null(),
+                    ))),
+                    Tag::None,
+                ),
+                AcqRel,
+                Acquire,
+                barrier,
+            ) {
+                Ok((_, ptr)) | Err((_, ptr)) => ptr,
+            };
+            current_array_ptr.as_ref().unwrap_unchecked()
+        }
     }
 
     /// Returns the number of entries.
@@ -366,7 +384,7 @@ where
         //  2. The thread reads the latest version of `self.array`.
         //    If the array is deprecated while inserting the key, it falls into case 1.
         loop {
-            let current_array = self.current_array_unchecked(barrier);
+            let current_array = self.get_current_array(barrier);
             if let Some(old_array) = current_array.old_array(barrier).as_ref() {
                 self.move_entry(current_array, old_array, hash, async_wait, barrier)?;
             }
@@ -736,7 +754,7 @@ where
                 *resize = self.resize_mutex().fetch_sub(1, Release) == 2_u8;
             });
 
-            let current_array = self.current_array_unchecked(barrier);
+            let current_array = self.get_current_array(barrier);
             if !current_array.old_array(barrier).is_null() {
                 // With a deprecated array present, it cannot be resized.
                 continue;

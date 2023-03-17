@@ -663,7 +663,7 @@ impl<K: Eq + Hash + Sync> HashSet<K, RandomState> {
     /// let hashset: HashSet<u64> = HashSet::new();
     ///
     /// let result = hashset.capacity();
-    /// assert_eq!(result, 64);
+    /// assert_eq!(result, 0);
     /// ```
     #[inline]
     #[must_use]
@@ -708,7 +708,7 @@ impl<K: Eq + Hash + Sync> Default for HashSet<K, RandomState> {
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
     /// let result = hashset.capacity();
-    /// assert_eq!(result, 64);
+    /// assert_eq!(result, 0);
     /// ```
     #[inline]
     fn default() -> Self {

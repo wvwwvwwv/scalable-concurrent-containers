@@ -67,10 +67,7 @@ where
     #[inline]
     pub fn with_hasher(build_hasher: H) -> HashIndex<K, V, H> {
         HashIndex {
-            array: AtomicArc::from(Arc::new(BucketArray::<K, V, true>::new(
-                Self::DEFAULT_CAPACITY,
-                AtomicArc::null(),
-            ))),
+            array: AtomicArc::null(),
             minimum_capacity: Self::DEFAULT_CAPACITY,
             resize_mutex: AtomicU8::new(0),
             build_hasher,
@@ -95,13 +92,13 @@ where
     /// ```
     #[inline]
     pub fn with_capacity_and_hasher(capacity: usize, build_hasher: H) -> HashIndex<K, V, H> {
-        let initial_capacity = capacity.max(Self::DEFAULT_CAPACITY);
+        let minimum_capacity = capacity.max(Self::DEFAULT_CAPACITY).next_power_of_two();
         HashIndex {
             array: AtomicArc::from(Arc::new(BucketArray::<K, V, true>::new(
-                initial_capacity,
+                minimum_capacity,
                 AtomicArc::null(),
             ))),
-            minimum_capacity: initial_capacity,
+            minimum_capacity,
             resize_mutex: AtomicU8::new(0),
             build_hasher,
         }
@@ -735,7 +732,7 @@ where
     /// let hashindex: HashIndex<u64, u32> = HashIndex::new();
     ///
     /// let result = hashindex.capacity();
-    /// assert_eq!(result, 64);
+    /// assert_eq!(result, 0);
     /// ```
     #[inline]
     #[must_use]
@@ -761,13 +758,13 @@ where
     #[inline]
     #[must_use]
     pub fn with_capacity(capacity: usize) -> HashIndex<K, V, RandomState> {
-        let initial_capacity = capacity.max(Self::DEFAULT_CAPACITY);
+        let minimum_capacity = capacity.max(Self::DEFAULT_CAPACITY).next_power_of_two();
         HashIndex {
             array: AtomicArc::from(Arc::new(BucketArray::<K, V, true>::new(
-                initial_capacity,
+                minimum_capacity,
                 AtomicArc::null(),
             ))),
-            minimum_capacity: initial_capacity,
+            minimum_capacity,
             resize_mutex: AtomicU8::new(0),
             build_hasher: RandomState::new(),
         }
@@ -791,15 +788,12 @@ where
     /// let hashindex: HashIndex<u64, u32, _> = HashIndex::default();
     ///
     /// let result = hashindex.capacity();
-    /// assert_eq!(result, 64);
+    /// assert_eq!(result, 0);
     /// ```
     #[inline]
     fn default() -> Self {
         HashIndex {
-            array: AtomicArc::from(Arc::new(BucketArray::<K, V, true>::new(
-                Self::DEFAULT_CAPACITY,
-                AtomicArc::null(),
-            ))),
+            array: AtomicArc::null(),
             minimum_capacity: Self::DEFAULT_CAPACITY,
             resize_mutex: AtomicU8::new(0),
             build_hasher: RandomState::new(),
@@ -888,7 +882,11 @@ where
             array
         } else {
             // Start scanning.
-            let current_array = self.hashindex.current_array_unchecked(self.barrier);
+            let current_array = self
+                .hashindex
+                .bucket_array()
+                .load(Acquire, self.barrier)
+                .as_ref()?;
             let old_array_ptr = current_array.old_array(self.barrier);
             let array = if let Some(old_array) = old_array_ptr.as_ref() {
                 old_array
@@ -915,7 +913,11 @@ where
             }
             self.current_index += 1;
             if self.current_index == array.num_buckets() {
-                let current_array = self.hashindex.current_array_unchecked(self.barrier);
+                let current_array = self
+                    .hashindex
+                    .bucket_array()
+                    .load(Acquire, self.barrier)
+                    .as_ref()?;
                 if self
                     .current_array
                     .as_ref()

@@ -148,12 +148,7 @@ where
     #[inline]
     pub fn with_hasher(build_hasher: H) -> HashMap<K, V, H> {
         HashMap {
-            array: AtomicArc::from(unsafe {
-                Arc::new_unchecked(BucketArray::<K, V, false>::new(
-                    Self::DEFAULT_CAPACITY,
-                    AtomicArc::null(),
-                ))
-            }),
+            array: AtomicArc::null(),
             minimum_capacity: Self::DEFAULT_CAPACITY,
             additional_capacity: AtomicUsize::new(0),
             resize_mutex: AtomicU8::new(0),
@@ -179,17 +174,16 @@ where
     /// ```
     #[inline]
     pub fn with_capacity_and_hasher(capacity: usize, build_hasher: H) -> HashMap<K, V, H> {
-        let initial_capacity = capacity.max(Self::DEFAULT_CAPACITY);
+        let minimum_capacity = capacity.max(Self::DEFAULT_CAPACITY).next_power_of_two();
         let array = unsafe {
             Arc::new_unchecked(BucketArray::<K, V, false>::new(
-                initial_capacity,
+                minimum_capacity,
                 AtomicArc::null(),
             ))
         };
-        let current_capacity = array.num_entries();
         HashMap {
             array: AtomicArc::from(array),
-            minimum_capacity: current_capacity,
+            minimum_capacity,
             additional_capacity: AtomicUsize::new(0),
             resize_mutex: AtomicU8::new(0),
             build_hasher,
@@ -1370,7 +1364,7 @@ where
     /// let hashmap: HashMap<u64, u32> = HashMap::new();
     ///
     /// let result = hashmap.capacity();
-    /// assert_eq!(result, 64);
+    /// assert_eq!(result, 0);
     /// ```
     #[inline]
     #[must_use]
@@ -1396,17 +1390,16 @@ where
     #[inline]
     #[must_use]
     pub fn with_capacity(capacity: usize) -> HashMap<K, V, RandomState> {
-        let initial_capacity = capacity.max(Self::DEFAULT_CAPACITY);
+        let minimum_capacity = capacity.max(Self::DEFAULT_CAPACITY).next_power_of_two();
         let array = unsafe {
             Arc::new_unchecked(BucketArray::<K, V, false>::new(
-                initial_capacity,
+                minimum_capacity,
                 AtomicArc::null(),
             ))
         };
-        let current_capacity = array.num_entries();
         HashMap {
             array: AtomicArc::from(array),
-            minimum_capacity: current_capacity,
+            minimum_capacity,
             additional_capacity: AtomicUsize::new(0),
             resize_mutex: AtomicU8::new(0),
             build_hasher: RandomState::new(),
@@ -1421,8 +1414,6 @@ where
 {
     /// Creates an empty default [`HashMap`].
     ///
-    /// The default hash builder is [`RandomState`], and the default capacity is `64`.
-    ///
     /// # Examples
     ///
     /// ```
@@ -1431,17 +1422,12 @@ where
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// let result = hashmap.capacity();
-    /// assert_eq!(result, 64);
+    /// assert_eq!(result, 0);
     /// ```
     #[inline]
     fn default() -> Self {
         HashMap {
-            array: AtomicArc::from(unsafe {
-                Arc::new_unchecked(BucketArray::<K, V, false>::new(
-                    Self::DEFAULT_CAPACITY,
-                    AtomicArc::null(),
-                ))
-            }),
+            array: AtomicArc::null(),
             minimum_capacity: Self::DEFAULT_CAPACITY,
             additional_capacity: AtomicUsize::new(0),
             resize_mutex: AtomicU8::new(0),
