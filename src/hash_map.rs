@@ -748,6 +748,36 @@ where
         }
     }
 
+    /// Reads a key-value pair without locking the bucket.
+    ///
+    /// It returns `None` if the key does not exist.
+    ///
+    /// # Safety
+    ///
+    /// It is generally unsafe since the key-value pair can be moved out while reading it. This
+    /// method only guarantees that the bucket is not deallocated.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    /// assert!(hashmap.insert(1, 17).is_ok());
+    /// assert_eq!(unsafe { hashmap.read(&1, |_, v| *v).unwrap() }, 17);
+    /// ```
+    #[inline]
+    pub unsafe fn read_unsafe<Q, R, F: FnOnce(&K, &V) -> R>(&self, key: &Q, reader: F) -> Option<R>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.read_entry_unsafe(key, self.hash(key), &Barrier::new())
+            .ok()
+            .flatten()
+            .map(|(k, v)| reader(k, v))
+    }
+
     /// Checks if the key exists.
     ///
     /// # Examples

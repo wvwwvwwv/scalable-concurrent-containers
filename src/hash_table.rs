@@ -254,6 +254,55 @@ where
         Ok(None)
     }
 
+    /// Reads an entry from the [`HashTable`] without locking the bucket.
+    #[inline]
+    unsafe fn read_entry_unsafe<'b, Q>(
+        &self,
+        key: &Q,
+        hash: u64,
+        barrier: &'b Barrier,
+    ) -> Result<Option<(&'b K, &'b V)>, ()>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        let mut current_array = self.current_array_unchecked(barrier);
+        loop {
+            if let Some(old_array) = current_array.old_array(barrier).as_ref() {
+                let index = old_array.calculate_bucket_index(hash);
+                if let Some((k, v)) = old_array.bucket(index).search(
+                    old_array.data_block(index),
+                    key,
+                    BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
+                    barrier,
+                ) {
+                    return Ok(Some((k, v)));
+                }
+            };
+
+            let index = current_array.calculate_bucket_index(hash);
+            let bucket = current_array.bucket(index);
+            if let Some(entry) = bucket.search(
+                current_array.data_block(index),
+                key,
+                BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
+                barrier,
+            ) {
+                return Ok(Some((&entry.0, &entry.1)));
+            }
+
+            let new_current_array = self.current_array_unchecked(barrier);
+            if ptr::eq(current_array, new_current_array) {
+                break;
+            }
+
+            // A new array has been allocated.
+            current_array = new_current_array;
+        }
+
+        Ok(None)
+    }
+
     /// Removes an entry if the condition is met.
     #[inline]
     fn remove_entry<Q, F: FnOnce(&V) -> bool, D, R, P: FnOnce(Option<Option<(K, V)>>) -> R>(

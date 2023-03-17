@@ -80,7 +80,8 @@ impl WaitQueue {
                 async_wait.mutex.take();
                 return Ok(result);
             }
-            // Another task is waking up `async_wait`: dispose of `result`.
+            // Another task is waking up `async_wait`: dispose of `result` which is holding the
+            // desired resource.
         }
 
         // The caller has to await.

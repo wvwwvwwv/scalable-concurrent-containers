@@ -39,17 +39,6 @@ pub(crate) struct Bucket<K: Eq, V, const LOCK_FREE: bool> {
     wait_queue: WaitQueue,
 }
 
-impl<K: Eq, V, const LOCK_FREE: bool> Default for Bucket<K, V, LOCK_FREE> {
-    fn default() -> Self {
-        Bucket::<K, V, LOCK_FREE> {
-            state: AtomicU32::new(0),
-            num_entries: 0,
-            metadata: Metadata::default(),
-            wait_queue: WaitQueue::default(),
-        }
-    }
-}
-
 impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
     /// Returns true if the [`Bucket`] has been killed.
     #[inline]
@@ -277,6 +266,17 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
                     break;
                 }
             }
+        }
+    }
+}
+
+impl<K: Eq, V, const LOCK_FREE: bool> Default for Bucket<K, V, LOCK_FREE> {
+    fn default() -> Self {
+        Bucket::<K, V, LOCK_FREE> {
+            state: AtomicU32::new(0),
+            num_entries: 0,
+            metadata: Metadata::default(),
+            wait_queue: WaitQueue::default(),
         }
     }
 }
@@ -843,7 +843,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
         if (current & LOCK_MASK) >= SLOCK_MAX {
             return Err(());
         }
-        if (current & KILLED) >= KILLED {
+        if (current & KILLED) == KILLED {
             return Ok(None);
         }
         if bucket
@@ -950,14 +950,17 @@ impl<K: Eq, V, const LEN: usize> Drop for LinkedBucket<K, V, LEN> {
 mod test {
     use super::*;
 
+    use crate::wait_queue::DeriveAsyncWait;
+
     use std::convert::TryInto;
+    use std::pin::Pin;
     use std::sync::atomic::AtomicPtr;
 
     use tokio::sync;
 
     #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
-    async fn queue() {
+    async fn bucket_lock_sync() {
         let num_tasks = BUCKET_LEN + 2;
         let barrier = Arc::new(sync::Barrier::new(num_tasks));
         let data_block: Arc<DataBlock<usize, usize, BUCKET_LEN>> =
@@ -966,14 +969,14 @@ mod test {
         let mut data: [u64; 128] = [0; 128];
         let mut task_handles = Vec::with_capacity(num_tasks);
         for task_id in 0..num_tasks {
-            let barrier_copied = barrier.clone();
-            let data_block_copied = data_block.clone();
-            let bucket_copied = bucket.clone();
+            let barrier_clone = barrier.clone();
+            let data_block_clone = data_block.clone();
+            let bucket_clone = bucket.clone();
             let data_ptr = AtomicPtr::new(&mut data);
             task_handles.push(tokio::spawn(async move {
-                barrier_copied.wait().await;
+                barrier_clone.wait().await;
                 let bucket_mut =
-                    unsafe { &mut *(bucket_copied.as_ptr() as *mut Bucket<usize, usize, true>) };
+                    unsafe { &mut *(bucket_clone.as_ptr() as *mut Bucket<usize, usize, true>) };
                 let barrier = Barrier::new();
                 for i in 0..2048 {
                     let mut exclusive_locker = Locker::lock(bucket_mut, &barrier).unwrap();
@@ -987,7 +990,7 @@ mod test {
                     assert_eq!(sum % 256, 0);
                     if i == 0 {
                         exclusive_locker.insert_with(
-                            &data_block_copied,
+                            &data_block_clone,
                             (task_id % BUCKET_LEN).try_into().unwrap(),
                             || (task_id, 0),
                             &barrier,
@@ -997,7 +1000,7 @@ mod test {
                             exclusive_locker
                                 .bucket()
                                 .search(
-                                    &data_block_copied,
+                                    &data_block_clone,
                                     &task_id,
                                     (task_id % BUCKET_LEN).try_into().unwrap(),
                                     &barrier
@@ -1008,12 +1011,12 @@ mod test {
                     }
                     drop(exclusive_locker);
 
-                    let read_locker = Reader::lock(&*bucket_copied, &barrier).unwrap();
+                    let read_locker = Reader::lock(&*bucket_clone, &barrier).unwrap();
                     assert_eq!(
                         read_locker
                             .bucket()
                             .search(
-                                &data_block_copied,
+                                &data_block_clone,
                                 &task_id,
                                 (task_id % BUCKET_LEN).try_into().unwrap(),
                                 &barrier
@@ -1060,5 +1063,112 @@ mod test {
         assert!(bucket.killed());
         assert_eq!(bucket.num_entries(), 0);
         assert!(Locker::lock(unsafe { bucket.get_mut().unwrap() }, &epoch_barrier).is_none());
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    async fn bucket_lock_async() {
+        let num_tasks = BUCKET_LEN + 2;
+        let barrier = Arc::new(sync::Barrier::new(num_tasks));
+        let data_block: Arc<DataBlock<usize, usize, BUCKET_LEN>> =
+            Arc::new(unsafe { MaybeUninit::uninit().assume_init() });
+        let bucket: Arc<Bucket<usize, usize, false>> = Arc::new(Bucket::default());
+        let mut data: [u64; 128] = [0; 128];
+        let mut task_handles = Vec::with_capacity(num_tasks);
+        for task_id in 0..num_tasks {
+            let barrier_clone = barrier.clone();
+            let data_block_clone = data_block.clone();
+            let bucket_clone = bucket.clone();
+            let data_ptr = AtomicPtr::new(&mut data);
+            task_handles.push(tokio::spawn(async move {
+                barrier_clone.wait().await;
+                for i in 0..256 {
+                    loop {
+                        let mut async_wait = AsyncWait::default();
+                        let mut async_wait_pinned = Pin::new(&mut async_wait);
+                        {
+                            let barrier = Barrier::new();
+                            if let Ok(exclusive_locker) = Locker::try_lock_or_wait(
+                                unsafe {
+                                    &mut *(bucket_clone.as_ptr()
+                                        as *mut Bucket<usize, usize, false>)
+                                },
+                                async_wait_pinned.derive().unwrap(),
+                                &barrier,
+                            ) {
+                                let mut exclusive_locker = exclusive_locker.unwrap();
+                                let mut sum: u64 = 0;
+                                for j in 0..128 {
+                                    unsafe {
+                                        sum += (*data_ptr.load(Relaxed))[j];
+                                        (*data_ptr.load(Relaxed))[j] =
+                                            if i % 4 == 0 { 2 } else { 4 }
+                                    };
+                                }
+                                assert_eq!(sum % 256, 0);
+                                if i == 0 {
+                                    exclusive_locker.insert_with(
+                                        &data_block_clone,
+                                        (task_id % BUCKET_LEN).try_into().unwrap(),
+                                        || (task_id, 0),
+                                        &barrier,
+                                    );
+                                } else {
+                                    assert_eq!(
+                                        exclusive_locker
+                                            .bucket()
+                                            .search(
+                                                &data_block_clone,
+                                                &task_id,
+                                                (task_id % BUCKET_LEN).try_into().unwrap(),
+                                                &barrier,
+                                            )
+                                            .unwrap(),
+                                        &(task_id, 0_usize)
+                                    );
+                                }
+                                break;
+                            };
+                        }
+                        async_wait_pinned.await;
+                    }
+
+                    loop {
+                        let mut async_wait = AsyncWait::default();
+                        let mut async_wait_pinned = Pin::new(&mut async_wait);
+                        {
+                            let barrier = Barrier::new();
+                            if let Ok(read_locker) = Reader::try_lock_or_wait(
+                                &*bucket_clone,
+                                async_wait_pinned.derive().unwrap(),
+                                &barrier,
+                            ) {
+                                assert_eq!(
+                                    read_locker
+                                        .unwrap()
+                                        .bucket()
+                                        .search(
+                                            &data_block_clone,
+                                            &task_id,
+                                            (task_id % BUCKET_LEN).try_into().unwrap(),
+                                            &barrier,
+                                        )
+                                        .unwrap(),
+                                    &(task_id, 0_usize)
+                                );
+                                break;
+                            };
+                        }
+                        async_wait_pinned.await;
+                    }
+                }
+            }));
+        }
+        for r in futures::future::join_all(task_handles).await {
+            assert!(r.is_ok());
+        }
+
+        let sum: u64 = data.iter().sum();
+        assert_eq!(sum % 256, 0);
     }
 }

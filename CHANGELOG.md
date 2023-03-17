@@ -1,5 +1,10 @@
 # Changelog
 
+1.1.6
+
+* Add `HashMap::read_unsafe` to allow unsafe lock-free access to an entry.
+* Micro optimization.
+
 1.1.4 - 1.1.5
 
 * Optimize `Hash*::is_empty`.
