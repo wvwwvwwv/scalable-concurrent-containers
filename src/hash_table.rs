@@ -20,9 +20,6 @@ where
     V: Sync,
     H: BuildHasher,
 {
-    /// The default capacity.
-    const DEFAULT_CAPACITY: usize = BUCKET_LEN * 2;
-
     /// Returns the hash value of the key.
     #[inline]
     fn hash<Q>(&self, key: &Q) -> u64
@@ -327,7 +324,7 @@ where
                     let result = locker.erase(data_block, &mut entry_ptr);
                     if shrinkable && index % BUCKET_LEN == 0 {
                         if locker.bucket().num_entries() < BUCKET_LEN / 16
-                            && current_array.num_entries() > self.minimum_capacity()
+                            && current_array.num_entries() > self.minimum_capacity().max(BUCKET_LEN)
                         {
                             drop(locker);
                             self.try_shrink(current_array, index, barrier);
@@ -763,7 +760,7 @@ where
             //  - The load factor reaches 1/16, then the array shrinks to fit.
             let capacity = current_array.num_entries();
             let num_buckets = current_array.num_buckets();
-            let num_buckets_to_sample = (num_buckets / 8).clamp(2, 4096);
+            let num_buckets_to_sample = (num_buckets / 8).clamp(1, 4096);
             let mut rebuild = false;
             let estimated_num_entries =
                 Self::estimate(current_array, sampling_index, num_buckets_to_sample);
@@ -790,8 +787,8 @@ where
             } else if estimated_num_entries <= capacity / 16 {
                 // Shrink to fit.
                 estimated_num_entries
-                    .next_power_of_two()
                     .max(self.minimum_capacity())
+                    .next_power_of_two()
             } else {
                 if LOCK_FREE {
                     rebuild =

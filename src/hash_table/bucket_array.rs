@@ -12,9 +12,9 @@ pub struct BucketArray<K: Eq, V, const LOCK_FREE: bool> {
     bucket_ptr: *const Bucket<K, V, LOCK_FREE>,
     data_block_ptr: *const DataBlock<K, V, BUCKET_LEN>,
     array_len: usize,
-    hash_offset: u16,
+    hash_offset: u32,
     sample_size: u16,
-    bucket_ptr_offset: u32,
+    bucket_ptr_offset: u16,
     old_array: AtomicArc<BucketArray<K, V, LOCK_FREE>>,
     num_cleared_buckets: AtomicUsize,
 }
@@ -60,7 +60,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
                     .add(bucket_array_ptr_offset)
                     .cast::<Bucket<K, V, LOCK_FREE>>();
             #[allow(clippy::cast_possible_truncation)]
-            let bucket_array_ptr_offset = bucket_array_ptr_offset as u32;
+            let bucket_array_ptr_offset = bucket_array_ptr_offset as u16;
 
             let data_block_array_layout = Layout::from_size_align(
                 size_of::<DataBlock<K, V, BUCKET_LEN>>() * array_len,
@@ -80,8 +80,8 @@ impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
                 bucket_ptr: bucket_array_ptr,
                 data_block_ptr: data_block_array_ptr,
                 array_len,
-                hash_offset: 64 - u16::from(log2_array_len),
-                sample_size: u16::from(log2_array_len).next_power_of_two(),
+                hash_offset: 64 - u32::from(log2_array_len),
+                sample_size: (u16::from(log2_array_len).next_power_of_two()).max(1),
                 bucket_ptr_offset: bucket_array_ptr_offset,
                 old_array,
                 num_cleared_buckets: AtomicUsize::new(0),
@@ -161,20 +161,22 @@ impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
     #[allow(clippy::cast_possible_truncation)]
     #[inline]
     pub(crate) fn calculate_bucket_index(&self, hash: u64) -> usize {
-        hash.wrapping_shr(u32::from(self.hash_offset)) as usize
+        // Take upper n-bits to make sure that a single bucket is spread across a few adjacent
+        // buckets when the hash table is resized.
+        hash.checked_shr(self.hash_offset).map_or(0, |i| i) as usize
     }
 
     /// Calculates `log_2` of the array size from the given capacity.
+    ///
+    /// If `0` is specified as `capacity`, `0` is returned.
     #[allow(clippy::cast_possible_truncation)]
     fn calculate_log2_array_size(capacity: usize) -> u8 {
         let adjusted_capacity = capacity.min((usize::MAX / 2) - (BUCKET_LEN - 1));
         let required_buckets =
             ((adjusted_capacity + BUCKET_LEN - 1) / BUCKET_LEN).next_power_of_two();
-        let log2_capacity =
-            (usize::BITS as usize - (required_buckets.leading_zeros() as usize) - 1).max(1);
+        let log2_capacity = usize::BITS as usize - (required_buckets.leading_zeros() as usize) - 1;
 
-        // `2^lb_capacity * BUCKET_LEN >= capacity`.
-        debug_assert!(log2_capacity > 0);
+        // `2^log2_capacity * BUCKET_LEN >= capacity`.
         debug_assert!(log2_capacity < (usize::BITS as usize));
         debug_assert!((1_usize << log2_capacity) * BUCKET_LEN >= adjusted_capacity);
         log2_capacity as u8
@@ -268,10 +270,17 @@ mod test {
     fn array() {
         for s in 0..BUCKET_LEN * 2 {
             let array: BucketArray<usize, usize, true> = BucketArray::new(s, AtomicArc::default());
-            assert!(array.num_buckets() >= s.max(BUCKET_LEN) / BUCKET_LEN);
-            assert!(array.num_buckets() <= 2 * (s.max(BUCKET_LEN) / BUCKET_LEN));
-            assert!(array.num_entries() >= s.max(BUCKET_LEN));
-            assert!(array.num_entries() <= 2 * s.max(BUCKET_LEN));
+            assert!(
+                array.num_buckets() >= (s.max(1) + BUCKET_LEN - 1) / BUCKET_LEN,
+                "{s} {}",
+                array.num_buckets()
+            );
+            assert!(
+                array.num_buckets() < 2 * (s.max(1) + BUCKET_LEN - 1) / BUCKET_LEN,
+                "{s} {}",
+                array.num_buckets()
+            );
+            assert!(array.num_entries() >= s, "{s} {}", array.num_entries());
             array.num_cleared_buckets.store(array.array_len, Relaxed);
         }
     }

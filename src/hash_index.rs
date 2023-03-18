@@ -68,7 +68,7 @@ where
     pub fn with_hasher(build_hasher: H) -> HashIndex<K, V, H> {
         HashIndex {
             array: AtomicArc::null(),
-            minimum_capacity: Self::DEFAULT_CAPACITY,
+            minimum_capacity: 0,
             resize_mutex: AtomicU8::new(0),
             build_hasher,
         }
@@ -92,13 +92,12 @@ where
     /// ```
     #[inline]
     pub fn with_capacity_and_hasher(capacity: usize, build_hasher: H) -> HashIndex<K, V, H> {
-        let minimum_capacity = capacity.max(Self::DEFAULT_CAPACITY).next_power_of_two();
         HashIndex {
             array: AtomicArc::from(Arc::new(BucketArray::<K, V, true>::new(
-                minimum_capacity,
+                capacity,
                 AtomicArc::null(),
             ))),
-            minimum_capacity,
+            minimum_capacity: capacity,
             resize_mutex: AtomicU8::new(0),
             build_hasher,
         }
@@ -635,6 +634,12 @@ where
     /// use scc::HashIndex;
     /// use std::collections::hash_map::RandomState;
     ///
+    /// let hashindex_default: HashIndex<u64, u32, RandomState> = HashIndex::default();
+    /// assert_eq!(hashindex_default.capacity(), 0);
+    ///
+    /// assert!(hashindex_default.insert(1, 0).is_ok());
+    /// assert_eq!(hashindex_default.capacity(), 32);
+    ///
     /// let hashindex: HashIndex<u64, u32, RandomState> = HashIndex::with_capacity(1000000);
     /// assert_eq!(hashindex.capacity(), 1048576);
     /// ```
@@ -758,13 +763,12 @@ where
     #[inline]
     #[must_use]
     pub fn with_capacity(capacity: usize) -> HashIndex<K, V, RandomState> {
-        let minimum_capacity = capacity.max(Self::DEFAULT_CAPACITY).next_power_of_two();
         HashIndex {
             array: AtomicArc::from(Arc::new(BucketArray::<K, V, true>::new(
-                minimum_capacity,
+                capacity,
                 AtomicArc::null(),
             ))),
-            minimum_capacity,
+            minimum_capacity: capacity,
             resize_mutex: AtomicU8::new(0),
             build_hasher: RandomState::new(),
         }
@@ -794,7 +798,7 @@ where
     fn default() -> Self {
         HashIndex {
             array: AtomicArc::null(),
-            minimum_capacity: Self::DEFAULT_CAPACITY,
+            minimum_capacity: 0,
             resize_mutex: AtomicU8::new(0),
             build_hasher: RandomState::new(),
         }

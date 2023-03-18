@@ -67,8 +67,7 @@ where
     H: BuildHasher,
 {
     array: AtomicArc<BucketArray<K, V, false>>,
-    minimum_capacity: usize,
-    additional_capacity: AtomicUsize,
+    minimum_capacity: AtomicUsize,
     resize_mutex: AtomicU8,
     build_hasher: H,
 }
@@ -149,8 +148,7 @@ where
     pub fn with_hasher(build_hasher: H) -> HashMap<K, V, H> {
         HashMap {
             array: AtomicArc::null(),
-            minimum_capacity: Self::DEFAULT_CAPACITY,
-            additional_capacity: AtomicUsize::new(0),
+            minimum_capacity: AtomicUsize::new(0),
             resize_mutex: AtomicU8::new(0),
             build_hasher,
         }
@@ -174,17 +172,12 @@ where
     /// ```
     #[inline]
     pub fn with_capacity_and_hasher(capacity: usize, build_hasher: H) -> HashMap<K, V, H> {
-        let minimum_capacity = capacity.max(Self::DEFAULT_CAPACITY).next_power_of_two();
         let array = unsafe {
-            Arc::new_unchecked(BucketArray::<K, V, false>::new(
-                minimum_capacity,
-                AtomicArc::null(),
-            ))
+            Arc::new_unchecked(BucketArray::<K, V, false>::new(capacity, AtomicArc::null()))
         };
         HashMap {
             array: AtomicArc::from(array),
-            minimum_capacity,
-            additional_capacity: AtomicUsize::new(0),
+            minimum_capacity: AtomicUsize::new(capacity),
             resize_mutex: AtomicU8::new(0),
             build_hasher,
         }
@@ -219,16 +212,15 @@ where
     /// assert_eq!(hashmap.capacity(), 1024);
     /// ```
     #[inline]
-    pub fn reserve(&self, capacity: usize) -> Option<Ticket<K, V, H>> {
-        let mut current_additional_capacity = self.additional_capacity.load(Relaxed);
+    pub fn reserve(&self, additional_capacity: usize) -> Option<Ticket<K, V, H>> {
+        let mut current_minimum_capacity = self.minimum_capacity.load(Relaxed);
         loop {
-            if usize::MAX - self.minimum_capacity - current_additional_capacity <= capacity {
-                // The given value is too large.
+            if usize::MAX - current_minimum_capacity <= additional_capacity {
                 return None;
             }
-            match self.additional_capacity.compare_exchange(
-                current_additional_capacity,
-                current_additional_capacity + capacity,
+            match self.minimum_capacity.compare_exchange(
+                current_minimum_capacity,
+                current_minimum_capacity + additional_capacity,
                 Relaxed,
                 Relaxed,
             ) {
@@ -236,10 +228,10 @@ where
                     self.resize(&Barrier::new());
                     return Some(Ticket {
                         hashmap: self,
-                        increment: capacity,
+                        increment: additional_capacity,
                     });
                 }
-                Err(current) => current_additional_capacity = current,
+                Err(actual) => current_minimum_capacity = actual,
             }
         }
     }
@@ -1302,6 +1294,12 @@ where
     /// use scc::HashMap;
     /// use std::collections::hash_map::RandomState;
     ///
+    /// let hashmap_default: HashMap<u64, u32, RandomState> = HashMap::default();
+    /// assert_eq!(hashmap_default.capacity(), 0);
+    ///
+    /// assert!(hashmap_default.insert(1, 0).is_ok());
+    /// assert_eq!(hashmap_default.capacity(), 32);
+    ///
     /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::with_capacity(1000000);
     /// assert_eq!(hashmap.capacity(), 1048576);
     /// ```
@@ -1390,17 +1388,12 @@ where
     #[inline]
     #[must_use]
     pub fn with_capacity(capacity: usize) -> HashMap<K, V, RandomState> {
-        let minimum_capacity = capacity.max(Self::DEFAULT_CAPACITY).next_power_of_two();
         let array = unsafe {
-            Arc::new_unchecked(BucketArray::<K, V, false>::new(
-                minimum_capacity,
-                AtomicArc::null(),
-            ))
+            Arc::new_unchecked(BucketArray::<K, V, false>::new(capacity, AtomicArc::null()))
         };
         HashMap {
             array: AtomicArc::from(array),
-            minimum_capacity,
-            additional_capacity: AtomicUsize::new(0),
+            minimum_capacity: AtomicUsize::new(capacity),
             resize_mutex: AtomicU8::new(0),
             build_hasher: RandomState::new(),
         }
@@ -1428,8 +1421,7 @@ where
     fn default() -> Self {
         HashMap {
             array: AtomicArc::null(),
-            minimum_capacity: Self::DEFAULT_CAPACITY,
-            additional_capacity: AtomicUsize::new(0),
+            minimum_capacity: AtomicUsize::new(0),
             resize_mutex: AtomicU8::new(0),
             build_hasher: RandomState::new(),
         }
@@ -1475,7 +1467,7 @@ where
     }
     #[inline]
     fn minimum_capacity(&self) -> usize {
-        self.minimum_capacity + self.additional_capacity.load(Relaxed)
+        self.minimum_capacity.load(Relaxed)
     }
     #[inline]
     fn resize_mutex(&self) -> &AtomicU8 {
@@ -1952,7 +1944,7 @@ where
     fn drop(&mut self) {
         let result = self
             .hashmap
-            .additional_capacity
+            .minimum_capacity
             .fetch_sub(self.increment, Relaxed);
         self.hashmap.resize(&Barrier::new());
         debug_assert!(result >= self.increment);

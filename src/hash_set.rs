@@ -615,6 +615,12 @@ where
     /// use scc::HashSet;
     /// use std::collections::hash_map::RandomState;
     ///
+    /// let hashset_default: HashSet<u64, RandomState> = HashSet::default();
+    /// assert_eq!(hashset_default.capacity(), 0);
+    ///
+    /// assert!(hashset_default.insert(1).is_ok());
+    /// assert_eq!(hashset_default.capacity(), 32);
+    ///
     /// let hashset: HashSet<u64, RandomState> = HashSet::with_capacity(1000000);
     /// assert_eq!(hashset.capacity(), 1048576);
     /// ```
