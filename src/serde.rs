@@ -128,7 +128,7 @@ where
         M: SeqAccess<'d>,
     {
         let hashset =
-            HashSet::with_capacity_and_hasher(access.size_hint().unwrap_or(0), Default::default());
+            HashSet::with_capacity_and_hasher(access.size_hint().unwrap_or(0), H::default());
         while let Some(key) = access.next_element()? {
             let _result = hashset.insert(key);
         }

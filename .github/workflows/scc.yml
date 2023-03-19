@@ -18,11 +18,9 @@ jobs:
       - name: Debug
         run:
           RUST_BACKTRACE=1 cargo test --verbose -- --nocapture;
-          cargo test serde --verbose --features serde;
       - name: Release
         run:
           RUST_BACKTRACE=1 cargo test --release --verbose -- --nocapture;
-          cargo test --release serde --verbose --features serde;
   check-extended:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -38,19 +36,16 @@ jobs:
       - name: Lint
         run:
           cargo clippy --all;
-          cargo +nightly clippy --all
       - name: Format
         run:
           cargo fmt --all;
-          cargo +nightly fmt --all
       - name: Doc
         run:
           cargo doc --document-private-items;
-          cargo +nightly doc --document-private-items
       - name: Serde
         run:
-          cargo +nightly test serde --verbose --features serde;
-          cargo +nightly test --release serde --verbose --features serde
+          cargo test serde --verbose --features serde;
+          cargo test --release serde --verbose --features serde
       - name: Miri
         run: cargo +nightly miri test --lib --bins --tests
       - name: Nightly
