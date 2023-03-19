@@ -76,12 +76,14 @@ impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
                 data_block_array_layout.size(),
             );
 
+            let sample_size = (u16::from(log2_array_len).next_power_of_two()).max(1);
+
             BucketArray {
                 bucket_ptr: bucket_array_ptr,
                 data_block_ptr: data_block_array_ptr,
                 array_len,
                 hash_offset: 64 - u32::from(log2_array_len),
-                sample_size: (u16::from(log2_array_len).next_power_of_two()).max(1),
+                sample_size,
                 bucket_ptr_offset: bucket_array_ptr_offset,
                 old_array,
                 num_cleared_buckets: AtomicUsize::new(0),
@@ -121,6 +123,14 @@ impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
     #[inline]
     pub(crate) fn sample_size(&self) -> usize {
         self.sample_size as usize
+    }
+
+    /// Returns the recommended sampling size.
+    #[inline]
+    pub(crate) fn full_sample_size(&self) -> usize {
+        ((self.sample_size as usize) * (self.sample_size as usize))
+            .next_power_of_two()
+            .min(self.num_buckets())
     }
 
     /// Returns the number of [`Bucket`] instances in the [`BucketArray`].
@@ -268,7 +278,7 @@ mod test {
 
     #[test]
     fn array() {
-        for s in 0..BUCKET_LEN * 2 {
+        for s in 0..BUCKET_LEN * 4 {
             let array: BucketArray<usize, usize, true> = BucketArray::new(s, AtomicArc::default());
             assert!(
                 array.num_buckets() >= (s.max(1) + BUCKET_LEN - 1) / BUCKET_LEN,
@@ -278,6 +288,12 @@ mod test {
             assert!(
                 array.num_buckets() < 2 * (s.max(1) + BUCKET_LEN - 1) / BUCKET_LEN,
                 "{s} {}",
+                array.num_buckets()
+            );
+            assert!(
+                array.full_sample_size() <= array.num_buckets(),
+                "{} {}",
+                array.full_sample_size(),
                 array.num_buckets()
             );
             assert!(array.num_entries() >= s, "{s} {}", array.num_entries());

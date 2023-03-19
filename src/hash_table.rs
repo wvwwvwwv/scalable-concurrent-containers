@@ -131,39 +131,39 @@ where
     /// Estimates the number of entries by sampling the specified number of buckets.
     #[inline]
     fn estimate(
-        array: &BucketArray<K, V, LOCK_FREE>,
+        current_array: &BucketArray<K, V, LOCK_FREE>,
         sampling_index: usize,
         num_buckets_to_sample: usize,
     ) -> usize {
         let mut num_entries = 0;
-        let start = if sampling_index + num_buckets_to_sample >= array.num_buckets() {
+        let start = if sampling_index + num_buckets_to_sample >= current_array.num_buckets() {
             0
         } else {
             sampling_index
         };
         for i in start..(start + num_buckets_to_sample) {
-            num_entries += array.bucket(i).num_entries();
+            num_entries += current_array.bucket(i).num_entries();
         }
-        num_entries * (array.num_buckets() / num_buckets_to_sample)
+        num_entries * (current_array.num_buckets() / num_buckets_to_sample)
     }
 
     /// Checks whether rebuilding the entire hash table is required.
     #[inline]
     fn check_rebuild(
-        array: &BucketArray<K, V, LOCK_FREE>,
+        current_array: &BucketArray<K, V, LOCK_FREE>,
         sampling_index: usize,
         num_buckets_to_sample: usize,
     ) -> bool {
         let mut num_buckets_to_rebuild = 0;
-        let start = if sampling_index + num_buckets_to_sample >= array.num_buckets() {
+        let start = if sampling_index + num_buckets_to_sample >= current_array.num_buckets() {
             0
         } else {
             sampling_index
         };
         for i in start..(start + num_buckets_to_sample) {
-            if array.bucket(i).need_rebuild() {
+            if current_array.bucket(i).need_rebuild() {
                 num_buckets_to_rebuild += 1;
-                if num_buckets_to_rebuild > num_buckets_to_sample / 2 {
+                if num_buckets_to_rebuild >= num_buckets_to_sample / 2 {
                     return true;
                 }
             }
@@ -296,7 +296,7 @@ where
             let shrinkable = if let Some(old_array) = current_array.old_array(barrier).as_ref() {
                 match self.move_entry(current_array, old_array, hash, async_wait, barrier) {
                     Ok(r) => r,
-                    Err(_) => break,
+                    Err(_) => return Err(condition),
                 }
             } else {
                 true
@@ -307,7 +307,7 @@ where
             let lock_result = if let Some(async_wait) = async_wait.derive() {
                 match Locker::try_lock_or_wait(bucket, async_wait, barrier) {
                     Ok(l) => l,
-                    Err(_) => break,
+                    Err(_) => return Err(condition),
                 }
             } else {
                 Locker::lock(bucket, barrier)
@@ -322,23 +322,15 @@ where
                 );
                 if entry_ptr.is_valid() && condition(&entry_ptr.get(data_block).1) {
                     let result = locker.erase(data_block, &mut entry_ptr);
-                    if shrinkable && index % BUCKET_LEN == 0 {
-                        if locker.bucket().num_entries() < BUCKET_LEN / 16
-                            && current_array.num_entries() > self.minimum_capacity().max(BUCKET_LEN)
-                        {
-                            drop(locker);
-                            self.try_shrink(current_array, index, barrier);
-                        } else if LOCK_FREE && locker.bucket().need_rebuild() {
-                            drop(locker);
-                            self.try_rebuild(current_array, index, barrier);
-                        }
+                    if shrinkable && locker.bucket().num_entries() == 0 {
+                        self.try_shrink(current_array, locker, index, barrier);
                     }
                     return Ok(post_processor(Some(result)));
                 }
-                return Ok(post_processor(None));
+                break;
             }
         }
-        Err(condition)
+        Ok(post_processor(None))
     }
 
     /// Acquires a [`Locker`] and [`EntryPtr`] corresponding to the key.
@@ -388,8 +380,10 @@ where
             let bucket = current_array.bucket_mut(index);
 
             // Try to resize the array.
-            if index % BUCKET_LEN == 0 && bucket.num_entries() >= BUCKET_LEN - 1 {
-                self.try_enlarge(current_array, index, bucket.num_entries(), barrier);
+            if bucket.num_entries() >= BUCKET_LEN
+                && self.try_enlarge(current_array, index, bucket.num_entries(), barrier)
+            {
+                continue;
             }
 
             let lock_result = if let Some(async_wait) = async_wait.derive() {
@@ -550,67 +544,108 @@ where
                 }
             }
         }
-        old_locker.purge(barrier);
+        old_locker.kill(barrier);
         Ok(())
     }
 
     /// Tries to enlarge the array if the estimated load factor is greater than `7/8`.
+    ///
+    /// Returns `true` if the hash table has been enlarged.
     #[inline]
     fn try_enlarge(
         &self,
-        array: &BucketArray<K, V, LOCK_FREE>,
+        current_array: &BucketArray<K, V, LOCK_FREE>,
         index: usize,
         mut num_entries: usize,
         barrier: &Barrier,
-    ) {
-        let sample_size = array.sample_size();
+    ) -> bool {
+        let sample_size = current_array.sample_size();
         let threshold = sample_size * (BUCKET_LEN / 8) * 7;
         if num_entries > threshold
             || (1..sample_size).any(|i| {
-                num_entries += array
-                    .bucket((index + i) % array.num_buckets())
+                num_entries += current_array
+                    .bucket((index + i) % current_array.num_buckets())
                     .num_entries();
                 num_entries > threshold
             })
         {
-            self.resize(barrier);
+            return self.resize(barrier);
         }
+        false
     }
 
-    /// Tries to shrink the array if the load factor is estimated at around `1/16`.
+    /// Tries to shrink the hash table to fit the estimated number of entries.
     #[inline]
-    fn try_shrink(&self, array: &BucketArray<K, V, LOCK_FREE>, index: usize, barrier: &Barrier) {
-        let sample_size = array.sample_size();
-        let threshold = sample_size * BUCKET_LEN / 16;
-        let mut num_entries = 0;
-        if !(1..sample_size).any(|i| {
-            num_entries += array
-                .bucket((index + i) % array.num_buckets())
-                .num_entries();
-            num_entries >= threshold
-        }) {
-            self.resize(barrier);
+    fn try_shrink(
+        &self,
+        current_array: &BucketArray<K, V, LOCK_FREE>,
+        mut locker: Locker<K, V, LOCK_FREE>,
+        index: usize,
+        barrier: &Barrier,
+    ) {
+        // If the array has no old array attached to it, and the bucket is empty,
+        // try to shrink the array.
+        let minimum_capacity = self.minimum_capacity();
+        if current_array.num_buckets() == 1 && minimum_capacity == 0 {
+            // The whole hash table is empty.
+            let empty_array = self.bucket_array().swap((None, Tag::None), Release);
+            locker.kill(barrier);
+            drop(locker);
+            debug_assert!(empty_array
+                .0
+                .as_ref()
+                .map_or(false, |a| a.num_buckets() == 1));
+            debug_assert!(empty_array
+                .0
+                .as_ref()
+                .map_or(false, |a| a.bucket_mut(0).killed()));
+        } else if current_array.num_entries() > minimum_capacity.next_power_of_two() {
+            // Check if the hash table can be shrunk.
+            drop(locker);
+
+            let sample_size = current_array.sample_size();
+            let threshold = sample_size * BUCKET_LEN / 16;
+            let mut num_entries = 0;
+            if !(1..sample_size).any(|i| {
+                num_entries += current_array
+                    .bucket((index + i) % current_array.num_buckets())
+                    .num_entries();
+                num_entries >= threshold
+            }) {
+                self.resize(barrier);
+            }
+        } else if LOCK_FREE && locker.bucket().need_rebuild() {
+            // Check if the hash table can be rebuilt.
+            drop(locker);
+            self.try_rebuild(current_array, index, barrier);
         }
     }
 
     /// Tries to rebuild the array if there are no usable entry slots in at least half of the
     /// buckets in the sampling range.
     #[inline]
-    fn try_rebuild(&self, array: &BucketArray<K, V, LOCK_FREE>, index: usize, barrier: &Barrier) {
-        let sample_size = array.sample_size();
+    fn try_rebuild(
+        &self,
+        current_array: &BucketArray<K, V, LOCK_FREE>,
+        index: usize,
+        barrier: &Barrier,
+    ) {
+        let sample_size = current_array.sample_size();
         let threshold = sample_size / 2;
         let mut num_buckets_to_rebuild = 1;
-        if (1..sample_size).any(|i| {
-            if array
-                .bucket((index + i) % array.num_buckets())
-                .need_rebuild()
-            {
-                num_buckets_to_rebuild += 1;
-                num_buckets_to_rebuild > threshold
-            } else {
-                false
-            }
-        }) {
+        if num_buckets_to_rebuild > threshold
+            || (1..sample_size).any(|i| {
+                if current_array
+                    .bucket((index + i) % current_array.num_buckets())
+                    .need_rebuild()
+                {
+                    num_buckets_to_rebuild += 1;
+                    num_buckets_to_rebuild > threshold
+                } else {
+                    false
+                }
+            })
+        {
             self.resize(barrier);
         }
     }
@@ -712,12 +747,14 @@ where
     }
 
     /// Resizes the array.
-    fn resize(&self, barrier: &Barrier) {
+    ///
+    /// Returns `true` if successfully resized.
+    fn resize(&self, barrier: &Barrier) -> bool {
         let mut mutex_state = self.resize_mutex().load(Acquire);
         loop {
             if mutex_state == 2_u8 {
                 // Another thread is resizing the table, and will retry.
-                return;
+                return false;
             }
             let new_state = if mutex_state == 1_u8 {
                 // Let the mutex owner know that a new resize was requested.
@@ -733,7 +770,7 @@ where
                 Ok(_) => {
                     if new_state == 2_u8 {
                         // Retry requested.
-                        return;
+                        return false;
                     }
                     // Lock acquired.
                     break;
@@ -744,6 +781,7 @@ where
 
         let mut sampling_index = 0;
         let mut resize = true;
+        let mut resized = false;
         while resize {
             let _mutex_guard = ExitGuard::new(&mut resize, |resize| {
                 *resize = self.resize_mutex().fetch_sub(1, Release) == 2_u8;
@@ -759,8 +797,7 @@ where
             //  - The load factor reaches 7/8, then the array grows up to 32x.
             //  - The load factor reaches 1/16, then the array shrinks to fit.
             let capacity = current_array.num_entries();
-            let num_buckets = current_array.num_buckets();
-            let num_buckets_to_sample = (num_buckets / 8).clamp(1, 4096);
+            let num_buckets_to_sample = current_array.full_sample_size();
             let mut rebuild = false;
             let estimated_num_entries =
                 Self::estimate(current_array, sampling_index, num_buckets_to_sample);
@@ -772,7 +809,7 @@ where
                     capacity
                 } else {
                     let mut new_capacity = capacity;
-                    while new_capacity < (estimated_num_entries / 8) * 15 {
+                    while new_capacity <= (estimated_num_entries / 8) * 15 {
                         // Double the new capacity until it can accommodate the estimated number of entries * 15/8.
                         if new_capacity == max_capacity {
                             break;
@@ -810,7 +847,10 @@ where
                     ),
                     Release,
                 );
+                resized = true;
             }
         }
+
+        resized
     }
 }

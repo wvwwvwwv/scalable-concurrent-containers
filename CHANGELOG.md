@@ -3,6 +3,7 @@
 1.1.6
 
 * `Hash*` do not allocate bucket arrays until the first write access.
+* `Hash*::remove*` more aggressively shrinks the bucket array.
 
 1.1.4 - 1.1.5
 

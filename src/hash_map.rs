@@ -1723,18 +1723,12 @@ where
         };
         if self.locker.bucket().num_entries() == 0 {
             let barrier = Barrier::new();
-            if let Some(current_array) =
-                self.hashmap.bucket_array().load(Acquire, &barrier).as_ref()
-            {
-                let bucket_index = current_array.calculate_bucket_index(self.hash);
-                if bucket_index % BUCKET_LEN == 0 {
-                    let hashmap = self.hashmap;
-                    drop(self);
-                    if let Some(current_array) =
-                        hashmap.bucket_array().load(Acquire, &barrier).as_ref()
-                    {
-                        hashmap.try_shrink(current_array, bucket_index, &barrier);
-                    }
+            let hashmap = self.hashmap;
+            if let Some(current_array) = hashmap.bucket_array().load(Acquire, &barrier).as_ref() {
+                let locker = self.locker;
+                if current_array.old_array(&barrier).is_null() {
+                    let index = current_array.calculate_bucket_index(self.hash);
+                    hashmap.try_shrink(current_array, locker, index, &barrier);
                 }
             }
         }

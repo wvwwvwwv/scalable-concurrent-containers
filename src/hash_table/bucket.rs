@@ -704,9 +704,9 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         }
     }
 
-    /// Purges all the data.
+    /// Kills the bucket by purging the data.
     #[inline]
-    pub(crate) fn purge(&mut self, barrier: &Barrier) {
+    pub(crate) fn kill(&mut self, barrier: &Barrier) {
         if LOCK_FREE {
             self.bucket.metadata.removed_bitmap = self.bucket.metadata.occupied_bitmap;
         }
@@ -1060,7 +1060,7 @@ mod test {
 
         let mut xlocker =
             Locker::lock(unsafe { bucket.get_mut().unwrap() }, &epoch_barrier).unwrap();
-        xlocker.purge(&epoch_barrier);
+        xlocker.kill(&epoch_barrier);
         drop(xlocker);
 
         assert!(bucket.killed());
