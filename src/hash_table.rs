@@ -380,7 +380,8 @@ where
             let bucket = current_array.bucket_mut(index);
 
             // Try to resize the array.
-            if bucket.num_entries() >= BUCKET_LEN
+            if index % BUCKET_LEN == 0
+                && bucket.num_entries() >= BUCKET_LEN - 1
                 && self.try_enlarge(current_array, index, bucket.num_entries(), barrier)
             {
                 continue;

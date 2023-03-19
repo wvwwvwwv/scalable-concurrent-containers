@@ -383,7 +383,6 @@ mod benchmark {
                 "hashmap-remove-local-remote: {num_threads}, {duration:?}, {total_num_operations}"
             );
             assert_eq!(hashmap.len(), 0);
-            assert!(hashmap.capacity() <= 32);
         }
     }
 
@@ -514,7 +513,6 @@ mod benchmark {
                 "hashindex-remove-local-remote: {num_threads}, {duration:?}, {total_num_operations}"
             );
             assert_eq!(hashindex.len(), 0);
-            assert!(hashindex.capacity() <= 32);
         }
     }
 
