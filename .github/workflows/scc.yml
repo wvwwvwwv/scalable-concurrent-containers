@@ -16,11 +16,9 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - name: Debug
-        run:
-          RUST_BACKTRACE=1 cargo test --verbose -- --nocapture;
+        run: RUST_BACKTRACE=1 cargo test --verbose -- --nocapture
       - name: Release
-        run:
-          RUST_BACKTRACE=1 cargo test --release --verbose -- --nocapture;
+        run: RUST_BACKTRACE=1 cargo test --release --verbose -- --nocapture
   check-extended:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -34,14 +32,11 @@ jobs:
           rustup component add clippy --toolchain nightly;
           rustup component add miri --toolchain nightly
       - name: Lint
-        run:
-          cargo clippy --all;
+        run: cargo clippy --all
       - name: Format
-        run:
-          cargo fmt --all;
+        run: cargo fmt --all
       - name: Doc
-        run:
-          cargo doc --document-private-items;
+        run: cargo doc --document-private-items
       - name: Serde
         run:
           cargo test serde --verbose --features serde;
