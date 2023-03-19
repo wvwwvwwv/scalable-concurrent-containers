@@ -16,9 +16,13 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - name: Debug
-        run: RUST_BACKTRACE=1 cargo test --verbose -- --nocapture
+        run:
+          RUST_BACKTRACE=1 cargo test --verbose -- --nocapture;
+          cargo test serde --verbose --features serde
       - name: Release
-        run: RUST_BACKTRACE=1 cargo test --release --verbose -- --nocapture
+        run:
+          RUST_BACKTRACE=1 cargo test --release --verbose -- --nocapture;
+          cargo test --release serde --verbose --features serde
   check-extended:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -37,10 +41,6 @@ jobs:
         run: cargo fmt --all
       - name: Doc
         run: cargo doc --document-private-items
-      - name: Serde
-        run:
-          cargo test serde --verbose --features serde;
-          cargo test --release serde --verbose --features serde
       - name: Miri
         run: cargo +nightly miri test --lib --bins --tests
       - name: Nightly

@@ -13,7 +13,6 @@ use std::hash::{BuildHasher, Hash};
 use std::iter::FusedIterator;
 use std::pin::Pin;
 use std::ptr;
-use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering::Acquire;
 
 /// Scalable concurrent hash index.
@@ -43,7 +42,6 @@ where
 {
     array: AtomicArc<BucketArray<K, V, true>>,
     minimum_capacity: usize,
-    resize_mutex: AtomicU8,
     build_hasher: H,
 }
 
@@ -69,7 +67,6 @@ where
         HashIndex {
             array: AtomicArc::null(),
             minimum_capacity: 0,
-            resize_mutex: AtomicU8::new(0),
             build_hasher,
         }
     }
@@ -98,7 +95,6 @@ where
                 AtomicArc::null(),
             ))),
             minimum_capacity: capacity,
-            resize_mutex: AtomicU8::new(0),
             build_hasher,
         }
     }
@@ -769,7 +765,6 @@ where
                 AtomicArc::null(),
             ))),
             minimum_capacity: capacity,
-            resize_mutex: AtomicU8::new(0),
             build_hasher: RandomState::new(),
         }
     }
@@ -799,7 +794,6 @@ where
         HashIndex {
             array: AtomicArc::null(),
             minimum_capacity: 0,
-            resize_mutex: AtomicU8::new(0),
             build_hasher: RandomState::new(),
         }
     }
@@ -826,10 +820,6 @@ where
     #[inline]
     fn minimum_capacity(&self) -> usize {
         self.minimum_capacity
-    }
-    #[inline]
-    fn resize_mutex(&self) -> &AtomicU8 {
-        &self.resize_mutex
     }
 }
 

@@ -10,8 +10,8 @@ use crate::wait_queue::DeriveAsyncWait;
 
 use std::borrow::Borrow;
 use std::hash::{BuildHasher, Hash, Hasher};
+use std::sync::atomic::fence;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
-use std::sync::atomic::{fence, AtomicU8};
 
 /// `HashTable` defines common functions for hash table implementations.
 pub(super) trait HashTable<K, V, H, const LOCK_FREE: bool>
@@ -44,9 +44,6 @@ where
 
     /// Returns the minimum allowed capacity.
     fn minimum_capacity(&self) -> usize;
-
-    /// Returns a reference to the resizing mutex.
-    fn resize_mutex(&self) -> &AtomicU8;
 
     /// Returns a reference to the current array.
     ///
@@ -130,18 +127,9 @@ where
 
     /// Estimates the number of entries by sampling the specified number of buckets.
     #[inline]
-    fn estimate(
-        current_array: &BucketArray<K, V, LOCK_FREE>,
-        sampling_index: usize,
-        num_buckets_to_sample: usize,
-    ) -> usize {
+    fn sample(current_array: &BucketArray<K, V, LOCK_FREE>, num_buckets_to_sample: usize) -> usize {
         let mut num_entries = 0;
-        let start = if sampling_index + num_buckets_to_sample >= current_array.num_buckets() {
-            0
-        } else {
-            sampling_index
-        };
-        for i in start..(start + num_buckets_to_sample) {
+        for i in 0..num_buckets_to_sample {
             num_entries += current_array.bucket(i).num_entries();
         }
         num_entries * (current_array.num_buckets() / num_buckets_to_sample)
@@ -151,16 +139,10 @@ where
     #[inline]
     fn check_rebuild(
         current_array: &BucketArray<K, V, LOCK_FREE>,
-        sampling_index: usize,
         num_buckets_to_sample: usize,
     ) -> bool {
         let mut num_buckets_to_rebuild = 0;
-        let start = if sampling_index + num_buckets_to_sample >= current_array.num_buckets() {
-            0
-        } else {
-            sampling_index
-        };
-        for i in start..(start + num_buckets_to_sample) {
+        for i in 0..num_buckets_to_sample {
             if current_array.bucket(i).need_rebuild() {
                 num_buckets_to_rebuild += 1;
                 if num_buckets_to_rebuild >= num_buckets_to_sample / 2 {
@@ -372,16 +354,19 @@ where
         //    If the array is deprecated while inserting the key, it falls into case 1.
         loop {
             let current_array = self.get_current_array(barrier);
-            if let Some(old_array) = current_array.old_array(barrier).as_ref() {
+            let resizable = if let Some(old_array) = current_array.old_array(barrier).as_ref() {
                 self.move_entry(current_array, old_array, hash, async_wait, barrier)?;
-            }
+                false
+            } else {
+                true
+            };
 
             let index = current_array.calculate_bucket_index(hash);
             let bucket = current_array.bucket_mut(index);
 
             // Try to resize the array.
-            if index % BUCKET_LEN == 0
-                && bucket.num_entries() >= BUCKET_LEN - 1
+            if resizable
+                && bucket.num_entries() >= BUCKET_LEN
                 && self.try_enlarge(current_array, index, bucket.num_entries(), barrier)
             {
                 continue;
@@ -580,27 +565,14 @@ where
     fn try_shrink(
         &self,
         current_array: &BucketArray<K, V, LOCK_FREE>,
-        mut locker: Locker<K, V, LOCK_FREE>,
+        locker: Locker<K, V, LOCK_FREE>,
         index: usize,
         barrier: &Barrier,
     ) {
         // If the array has no old array attached to it, and the bucket is empty,
         // try to shrink the array.
         let minimum_capacity = self.minimum_capacity();
-        if current_array.num_buckets() == 1 && minimum_capacity == 0 {
-            // The whole hash table is empty.
-            let empty_array = self.bucket_array().swap((None, Tag::None), Release);
-            locker.kill(barrier);
-            drop(locker);
-            debug_assert!(empty_array
-                .0
-                .as_ref()
-                .map_or(false, |a| a.num_buckets() == 1));
-            debug_assert!(empty_array
-                .0
-                .as_ref()
-                .map_or(false, |a| a.bucket_mut(0).killed()));
-        } else if current_array.num_entries() > minimum_capacity.next_power_of_two() {
+        if current_array.num_entries() > minimum_capacity.next_power_of_two() {
             // Check if the hash table can be shrunk.
             drop(locker);
 
@@ -751,107 +723,81 @@ where
     ///
     /// Returns `true` if successfully resized.
     fn resize(&self, barrier: &Barrier) -> bool {
-        let mut mutex_state = self.resize_mutex().load(Acquire);
-        loop {
-            if mutex_state == 2_u8 {
-                // Another thread is resizing the table, and will retry.
-                return false;
-            }
-            let new_state = if mutex_state == 1_u8 {
-                // Let the mutex owner know that a new resize was requested.
-                2_u8
-            } else {
-                // This thread will acquire the mutex.
-                1_u8
-            };
-            match self
-                .resize_mutex()
-                .compare_exchange(mutex_state, new_state, Acquire, Acquire)
-            {
-                Ok(_) => {
-                    if new_state == 2_u8 {
-                        // Retry requested.
-                        return false;
-                    }
-                    // Lock acquired.
-                    break;
-                }
-                Err(actual) => mutex_state = actual,
-            }
+        if self.bucket_array().is_null(Relaxed) {
+            return false;
+        }
+        if !self
+            .bucket_array()
+            .update_tag_if(Tag::First, |t| t == Tag::None, Relaxed)
+        {
+            return false;
         }
 
-        let mut sampling_index = 0;
-        let mut resize = true;
-        let mut resized = false;
-        while resize {
-            let _mutex_guard = ExitGuard::new(&mut resize, |resize| {
-                *resize = self.resize_mutex().fetch_sub(1, Release) == 2_u8;
-            });
+        let _mutex_guard = ExitGuard::new((), |_| {
+            self.bucket_array()
+                .update_tag_if(Tag::None, |t| t == Tag::First, Relaxed);
+        });
 
-            let current_array = self.get_current_array(barrier);
-            if !current_array.old_array(barrier).is_null() {
-                // With a deprecated array present, it cannot be resized.
-                continue;
-            }
+        let current_array = self.get_current_array(barrier);
+        if !current_array.old_array(barrier).is_null() {
+            // With a deprecated array present, it cannot be resized.
+            return false;
+        }
 
-            // The resizing policies are as follows.
-            //  - The load factor reaches 7/8, then the array grows up to 32x.
-            //  - The load factor reaches 1/16, then the array shrinks to fit.
-            let capacity = current_array.num_entries();
-            let num_buckets_to_sample = current_array.full_sample_size();
-            let mut rebuild = false;
-            let estimated_num_entries =
-                Self::estimate(current_array, sampling_index, num_buckets_to_sample);
-            sampling_index = sampling_index.wrapping_add(num_buckets_to_sample);
-            let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
-                let max_capacity = 1_usize << (usize::BITS - 1);
-                if capacity == max_capacity {
-                    // Do not resize if the capacity cannot be increased.
-                    capacity
-                } else {
-                    let mut new_capacity = capacity;
-                    while new_capacity <= (estimated_num_entries / 8) * 15 {
-                        // Double the new capacity until it can accommodate the estimated number of entries * 15/8.
-                        if new_capacity == max_capacity {
-                            break;
-                        }
-                        if new_capacity / capacity == 32 {
-                            break;
-                        }
-                        new_capacity *= 2;
-                    }
-                    new_capacity
-                }
-            } else if estimated_num_entries <= capacity / 16 {
-                // Shrink to fit.
-                estimated_num_entries
-                    .max(self.minimum_capacity())
-                    .next_power_of_two()
-            } else {
-                if LOCK_FREE {
-                    rebuild =
-                        Self::check_rebuild(current_array, sampling_index, num_buckets_to_sample);
-                }
+        // The resizing policies are as follows.
+        //  - The load factor reaches 7/8, then the array grows up to 32x.
+        //  - The load factor reaches 1/16, then the array shrinks to fit.
+        let capacity = current_array.num_entries();
+        let num_buckets_to_sample = current_array.full_sample_size();
+        let mut rebuild = false;
+        let estimated_num_entries = Self::sample(current_array, num_buckets_to_sample);
+        let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
+            let max_capacity = 1_usize << (usize::BITS - 1);
+            if capacity == max_capacity {
+                // Do not resize if the capacity cannot be increased.
                 capacity
-            };
-
-            if new_capacity != capacity || (LOCK_FREE && rebuild) {
-                self.bucket_array().swap(
-                    (
-                        Some(unsafe {
-                            Arc::new_unchecked(BucketArray::<K, V, LOCK_FREE>::new(
-                                new_capacity,
-                                self.bucket_array().clone(Relaxed, barrier),
-                            ))
-                        }),
-                        Tag::None,
-                    ),
-                    Release,
-                );
-                resized = true;
+            } else {
+                let mut new_capacity = capacity;
+                while new_capacity <= (estimated_num_entries / 8) * 15 {
+                    // Double the new capacity until it can accommodate the estimated number of entries * 15/8.
+                    if new_capacity == max_capacity {
+                        break;
+                    }
+                    if new_capacity / capacity == 32 {
+                        break;
+                    }
+                    new_capacity *= 2;
+                }
+                new_capacity
             }
+        } else if estimated_num_entries <= capacity / 16 {
+            // Shrink to fit.
+            estimated_num_entries
+                .max(self.minimum_capacity())
+                .next_power_of_two()
+        } else {
+            if LOCK_FREE {
+                rebuild = Self::check_rebuild(current_array, num_buckets_to_sample);
+            }
+            capacity
+        };
+
+        if new_capacity != capacity || (LOCK_FREE && rebuild) {
+            self.bucket_array().swap(
+                (
+                    Some(unsafe {
+                        Arc::new_unchecked(BucketArray::<K, V, LOCK_FREE>::new(
+                            new_capacity,
+                            self.bucket_array().clone(Relaxed, barrier),
+                        ))
+                    }),
+                    Tag::None,
+                ),
+                Release,
+            );
+            return true;
         }
 
-        resized
+        false
     }
 }

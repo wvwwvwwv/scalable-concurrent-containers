@@ -12,8 +12,8 @@ use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
 use std::mem::replace;
 use std::pin::Pin;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
-use std::sync::atomic::{AtomicU8, AtomicUsize};
 
 /// Scalable concurrent hash map.
 ///
@@ -68,7 +68,6 @@ where
 {
     array: AtomicArc<BucketArray<K, V, false>>,
     minimum_capacity: AtomicUsize,
-    resize_mutex: AtomicU8,
     build_hasher: H,
 }
 
@@ -149,7 +148,6 @@ where
         HashMap {
             array: AtomicArc::null(),
             minimum_capacity: AtomicUsize::new(0),
-            resize_mutex: AtomicU8::new(0),
             build_hasher,
         }
     }
@@ -178,7 +176,6 @@ where
         HashMap {
             array: AtomicArc::from(array),
             minimum_capacity: AtomicUsize::new(capacity),
-            resize_mutex: AtomicU8::new(0),
             build_hasher,
         }
     }
@@ -1394,7 +1391,6 @@ where
         HashMap {
             array: AtomicArc::from(array),
             minimum_capacity: AtomicUsize::new(capacity),
-            resize_mutex: AtomicU8::new(0),
             build_hasher: RandomState::new(),
         }
     }
@@ -1422,7 +1418,6 @@ where
         HashMap {
             array: AtomicArc::null(),
             minimum_capacity: AtomicUsize::new(0),
-            resize_mutex: AtomicU8::new(0),
             build_hasher: RandomState::new(),
         }
     }
@@ -1468,10 +1463,6 @@ where
     #[inline]
     fn minimum_capacity(&self) -> usize {
         self.minimum_capacity.load(Relaxed)
-    }
-    #[inline]
-    fn resize_mutex(&self) -> &AtomicU8 {
-        &self.resize_mutex
     }
 }
 
