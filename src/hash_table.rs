@@ -313,7 +313,7 @@ where
                     let result = locker.erase(data_block, &mut entry_ptr);
                     if shrinkable
                         && locker.bucket().num_entries() <= 1
-                        && current_array.trigger_resize(index)
+                        && current_array.within_sampling_range(index)
                     {
                         self.try_shrink(current_array, locker, index, barrier);
                     }
@@ -376,8 +376,8 @@ where
 
             // Try to resize the array.
             if resizable
+                && current_array.within_sampling_range(index)
                 && bucket.num_entries() >= BUCKET_LEN - 1
-                && current_array.trigger_resize(index)
             {
                 self.try_enlarge(current_array, index, bucket.num_entries(), barrier);
             }
@@ -544,6 +544,102 @@ where
         Ok(())
     }
 
+    /// Relocates a fixed number of buckets from the old array to the current array.
+    ///
+    /// Returns `true` if `old_array` is null.
+    fn partial_rehash<Q, D, const TRY_LOCK: bool>(
+        &self,
+        current_array: &BucketArray<K, V, LOCK_FREE>,
+        async_wait: &mut D,
+        barrier: &Barrier,
+    ) -> Result<bool, ()>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+        D: DeriveAsyncWait,
+    {
+        if let Some(old_array) = current_array.old_array(barrier).as_ref() {
+            // Assign itself a range of `Bucket` instances to rehash.
+            //
+            // Aside from the range, it increments the implicit reference counting field in
+            // `old_array.rehashing`.
+            let rehashing_metadata = old_array.rehashing_metadata();
+            let mut current = rehashing_metadata.load(Relaxed);
+            loop {
+                if current >= old_array.num_buckets()
+                    || (current & (BUCKET_LEN - 1)) == BUCKET_LEN - 1
+                {
+                    // Only `BUCKET_LEN - 1` threads are allowed to rehash a `Bucket` at a moment.
+                    return Ok(current_array.old_array(barrier).is_null());
+                }
+                match rehashing_metadata.compare_exchange(
+                    current,
+                    current + BUCKET_LEN + 1,
+                    Relaxed,
+                    Relaxed,
+                ) {
+                    Ok(_) => {
+                        current &= !(BUCKET_LEN - 1);
+                        break;
+                    }
+                    Err(result) => current = result,
+                }
+            }
+
+            // The guard ensures dropping one reference in `old_array.rehashing`.
+            let mut rehashing_guard = ExitGuard::new((current, false), |(prev, success)| {
+                if success {
+                    // Keep the index as it is.
+                    let current = rehashing_metadata.fetch_sub(1, Relaxed) - 1;
+                    if (current & (BUCKET_LEN - 1) == 0) && current >= old_array.num_buckets() {
+                        // The last one trying to relocate old entries gets rid of the old array.
+                        current_array.drop_old_array(barrier);
+                    }
+                } else {
+                    // On failure, `rehashing` reverts to its previous state.
+                    let mut current = rehashing_metadata.load(Relaxed);
+                    loop {
+                        let new = if current <= prev {
+                            current - 1
+                        } else {
+                            let ref_cnt = current & (BUCKET_LEN - 1);
+                            prev | (ref_cnt - 1)
+                        };
+                        match rehashing_metadata.compare_exchange(current, new, Relaxed, Relaxed) {
+                            Ok(_) => break,
+                            Err(actual) => current = actual,
+                        }
+                    }
+                }
+            });
+
+            for index in current..(current + BUCKET_LEN).min(old_array.num_buckets()) {
+                let old_bucket = old_array.bucket_mut(index);
+                let lock_result = if TRY_LOCK {
+                    Locker::try_lock(old_bucket, barrier)?
+                } else if let Some(async_wait) = async_wait.derive() {
+                    Locker::try_lock_or_wait(old_bucket, async_wait, barrier)?
+                } else {
+                    Locker::lock(old_bucket, barrier)
+                };
+                if let Some(mut locker) = lock_result {
+                    self.relocate_bucket::<Q, D, TRY_LOCK>(
+                        current_array,
+                        old_array,
+                        index,
+                        &mut locker,
+                        async_wait,
+                        barrier,
+                    )?;
+                }
+            }
+
+            // Successfully rehashed all the assigned buckets.
+            rehashing_guard.1 = true;
+        }
+        Ok(current_array.old_array(barrier).is_null())
+    }
+
     /// Tries to enlarge the array if the estimated load factor is greater than `7/8`.
     #[inline]
     fn try_enlarge(
@@ -653,183 +749,94 @@ where
         }
     }
 
-    /// Relocates a fixed number of buckets from the old array to the current array.
-    ///
-    /// Returns `true` if `old_array` is null.
-    fn partial_rehash<Q, D, const TRY_LOCK: bool>(
-        &self,
-        current_array: &BucketArray<K, V, LOCK_FREE>,
-        async_wait: &mut D,
-        barrier: &Barrier,
-    ) -> Result<bool, ()>
-    where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
-        D: DeriveAsyncWait,
-    {
-        if let Some(old_array) = current_array.old_array(barrier).as_ref() {
-            // Assign itself a range of `Bucket` instances to rehash.
-            //
-            // Aside from the range, it increments the implicit reference counting field in
-            // `old_array.rehashing`.
-            let rehashing_metadata = old_array.rehashing_metadata();
-            let mut current = rehashing_metadata.load(Relaxed);
-            loop {
-                if current >= old_array.num_buckets()
-                    || (current & (BUCKET_LEN - 1)) == BUCKET_LEN - 1
-                {
-                    // Only `BUCKET_LEN - 1` threads are allowed to rehash a `Bucket` at a moment.
-                    return Ok(current_array.old_array(barrier).is_null());
+    /// Tries to resize the array.
+    fn try_resize(&self, sampling_index: usize, barrier: &Barrier) {
+        let current_array_ptr = self.bucket_array().load(Acquire, barrier);
+        if current_array_ptr.tag() != Tag::None {
+            // Another thread is currently allocating a new bucket array.
+            return;
+        }
+        if let Some(current_array) = current_array_ptr.as_ref() {
+            if !current_array.old_array(barrier).is_null() {
+                // The hash table cannot be resized with an old array attached to it.
+                return;
+            }
+
+            // The resizing policies are as follows.
+            //  - The load factor reaches 7/8, then the array grows up to 32x.
+            //  - The load factor reaches 1/16, then the array shrinks to fit.
+            let capacity = current_array.num_entries();
+            let num_buckets_to_sample = current_array.full_sample_size();
+            let mut rebuild = false;
+            let estimated_num_entries =
+                Self::sample(current_array, sampling_index, num_buckets_to_sample);
+            let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
+                let max_capacity = 1_usize << (usize::BITS - 1);
+                if capacity == max_capacity {
+                    // Do not resize if the capacity cannot be increased.
+                    capacity
+                } else {
+                    let mut new_capacity = capacity;
+                    while new_capacity <= (estimated_num_entries / 8) * 15 {
+                        // Double `new_capacity` until the expected load factor is below 0.5.
+                        if new_capacity == max_capacity {
+                            break;
+                        }
+                        if new_capacity / capacity == 32 {
+                            break;
+                        }
+                        new_capacity *= 2;
+                    }
+                    new_capacity
                 }
-                match rehashing_metadata.compare_exchange(
-                    current,
-                    current + BUCKET_LEN + 1,
+            } else if estimated_num_entries <= capacity / 16 {
+                // Shrink to fit.
+                estimated_num_entries
+                    .max(self.minimum_capacity())
+                    .next_power_of_two()
+            } else {
+                if LOCK_FREE {
+                    rebuild = Self::check_rebuild(current_array, num_buckets_to_sample);
+                }
+                capacity
+            };
+
+            if new_capacity != capacity || rebuild {
+                // Mark that the thread will allocate a new array to prevent multiple threads from
+                // allocating bucket arrays at the same time.
+                if !self.bucket_array().update_tag_if(
+                    Tag::First,
+                    |ptr| ptr == current_array_ptr,
                     Relaxed,
                     Relaxed,
                 ) {
-                    Ok(_) => {
-                        current &= !(BUCKET_LEN - 1);
-                        break;
-                    }
-                    Err(result) => current = result,
+                    // The bucket array is being replaced with a new one.
+                    return;
                 }
-            }
 
-            // The guard ensures dropping one reference in `old_array.rehashing`.
-            let mut rehashing_guard = ExitGuard::new((current, false), |(prev, success)| {
-                if success {
-                    // Keep the index as it is.
-                    let current = rehashing_metadata.fetch_sub(1, Relaxed) - 1;
-                    if (current & (BUCKET_LEN - 1) == 0) && current >= old_array.num_buckets() {
-                        // The last one trying to relocate old entries gets rid of the old array.
-                        current_array.drop_old_array(barrier);
+                let allocated_array: Option<Arc<BucketArray<K, V, LOCK_FREE>>> = None;
+                let mut mutex_guard = ExitGuard::new(allocated_array, |allocated_array| {
+                    if let Some(allocated_array) = allocated_array {
+                        // A new array was allocated.
+                        self.bucket_array()
+                            .swap((Some(allocated_array), Tag::None), Release);
+                    } else {
+                        // Release the lock.
+                        self.bucket_array().update_tag_if(
+                            Tag::None,
+                            |ptr| ptr.tag() == Tag::First,
+                            Relaxed,
+                            Relaxed,
+                        );
                     }
-                } else {
-                    // On failure, `rehashing` reverts to its previous state.
-                    let mut current = rehashing_metadata.load(Relaxed);
-                    loop {
-                        let new = if current <= prev {
-                            current - 1
-                        } else {
-                            let ref_cnt = current & (BUCKET_LEN - 1);
-                            prev | (ref_cnt - 1)
-                        };
-                        match rehashing_metadata.compare_exchange(current, new, Relaxed, Relaxed) {
-                            Ok(_) => break,
-                            Err(actual) => current = actual,
-                        }
-                    }
-                }
-            });
-
-            for index in current..(current + BUCKET_LEN).min(old_array.num_buckets()) {
-                let old_bucket = old_array.bucket_mut(index);
-                let lock_result = if TRY_LOCK {
-                    Locker::try_lock(old_bucket, barrier)?
-                } else if let Some(async_wait) = async_wait.derive() {
-                    Locker::try_lock_or_wait(old_bucket, async_wait, barrier)?
-                } else {
-                    Locker::lock(old_bucket, barrier)
-                };
-                if let Some(mut locker) = lock_result {
-                    self.relocate_bucket::<Q, D, TRY_LOCK>(
-                        current_array,
-                        old_array,
-                        index,
-                        &mut locker,
-                        async_wait,
-                        barrier,
-                    )?;
-                }
+                });
+                mutex_guard.replace(unsafe {
+                    Arc::new_unchecked(BucketArray::<K, V, LOCK_FREE>::new(
+                        new_capacity,
+                        self.bucket_array().clone(Relaxed, barrier),
+                    ))
+                });
             }
-
-            // Successfully rehashed all the assigned buckets.
-            rehashing_guard.1 = true;
-        }
-        Ok(current_array.old_array(barrier).is_null())
-    }
-
-    /// Tries to resize the array.
-    fn try_resize(&self, sampling_index: usize, barrier: &Barrier) {
-        if !self.bucket_array().update_tag_if(
-            Tag::First,
-            |ptr| !ptr.is_null() && ptr.tag() == Tag::None,
-            Relaxed,
-            Relaxed,
-        ) {
-            // The array is null or locking failed.
-            return;
-        }
-
-        let allocated_array: Option<Arc<BucketArray<K, V, LOCK_FREE>>> = None;
-        let mut mutex_guard = ExitGuard::new(allocated_array, |allocated_array| {
-            if let Some(allocated_array) = allocated_array {
-                // A new array was allocated.
-                self.bucket_array()
-                    .swap((Some(allocated_array), Tag::None), Release);
-            } else {
-                // Release the lock.
-                self.bucket_array().update_tag_if(
-                    Tag::None,
-                    |ptr| ptr.tag() == Tag::First,
-                    Relaxed,
-                    Relaxed,
-                );
-            }
-        });
-
-        let current_array = self.get_current_array(barrier);
-        if !current_array.old_array(barrier).is_null() {
-            // The hash table cannot be resized with an old array attached to it.
-            return;
-        }
-
-        // The resizing policies are as follows.
-        //  - The load factor reaches 7/8, then the array grows up to 32x.
-        //  - The load factor reaches 1/16, then the array shrinks to fit.
-        let capacity = current_array.num_entries();
-        let num_buckets_to_sample = current_array.full_sample_size();
-        let mut rebuild = false;
-        let estimated_num_entries =
-            Self::sample(current_array, sampling_index, num_buckets_to_sample);
-        let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
-            let max_capacity = 1_usize << (usize::BITS - 1);
-            if capacity == max_capacity {
-                // Do not resize if the capacity cannot be increased.
-                capacity
-            } else {
-                let mut new_capacity = capacity;
-                while new_capacity <= (estimated_num_entries / 8) * 15 {
-                    // Double the new capacity until it can accommodate the estimated number of entries * 15/8.
-                    if new_capacity == max_capacity {
-                        break;
-                    }
-                    if new_capacity / capacity == 32 {
-                        break;
-                    }
-                    new_capacity *= 2;
-                }
-                new_capacity
-            }
-        } else if estimated_num_entries <= capacity / 16 {
-            // Shrink to fit.
-            estimated_num_entries
-                .max(self.minimum_capacity())
-                .next_power_of_two()
-        } else {
-            if LOCK_FREE {
-                rebuild = Self::check_rebuild(current_array, num_buckets_to_sample);
-            }
-            capacity
-        };
-
-        if new_capacity != capacity || rebuild {
-            mutex_guard.replace(unsafe {
-                Arc::new_unchecked(BucketArray::<K, V, LOCK_FREE>::new(
-                    new_capacity,
-                    self.bucket_array().clone(Relaxed, barrier),
-                ))
-            });
         }
     }
 }

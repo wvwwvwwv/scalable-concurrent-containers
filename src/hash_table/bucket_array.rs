@@ -76,7 +76,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
                 data_block_array_layout.size(),
             );
 
-            let sample_size = (u16::from(log2_array_len).next_power_of_two()).max(1);
+            let sample_size = u16::from(log2_array_len).next_power_of_two();
 
             BucketArray {
                 bucket_ptr: bucket_array_ptr,
@@ -119,10 +119,10 @@ impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
         unsafe { &(*(self.data_block_ptr.add(index))) }
     }
 
-    /// Returns `true` if the index can trigger a hash table resize.
+    /// Checks if the index is within the sampling range of the array.
     #[inline]
-    pub(crate) fn trigger_resize(&self, index: usize) -> bool {
-        (index % self.sample_size().next_power_of_two()) == 0
+    pub(crate) fn within_sampling_range(&self, index: usize) -> bool {
+        (index % self.sample_size()) == 0
     }
 
     /// Returns the recommended sampling size.
@@ -134,9 +134,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
     /// Returns the recommended sampling size.
     #[inline]
     pub(crate) fn full_sample_size(&self) -> usize {
-        ((self.sample_size as usize) * (self.sample_size as usize))
-            .next_power_of_two()
-            .min(self.num_buckets())
+        ((self.sample_size as usize) * (self.sample_size as usize)).min(self.num_buckets())
     }
 
     /// Returns the number of [`Bucket`] instances in the [`BucketArray`].

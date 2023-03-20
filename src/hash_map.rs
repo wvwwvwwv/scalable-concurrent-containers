@@ -1719,7 +1719,7 @@ where
                 let locker = self.locker;
                 if current_array.old_array(&barrier).is_null() {
                     let index = current_array.calculate_bucket_index(self.hash);
-                    if current_array.trigger_resize(index) {
+                    if current_array.within_sampling_range(index) {
                         hashmap.try_shrink(current_array, locker, index, &barrier);
                     }
                 }
