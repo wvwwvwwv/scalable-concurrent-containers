@@ -488,7 +488,7 @@ where
             }
             let new_current_array_ptr = self.array.load(Acquire, &barrier);
             if current_array_ptr == new_current_array_ptr {
-                self.resize(&barrier);
+                self.try_resize(0, &barrier);
                 break;
             }
             current_array_ptr = new_current_array_ptr;
@@ -575,7 +575,7 @@ where
         }
 
         if num_removed != 0 {
-            self.resize(&Barrier::new());
+            self.try_resize(0, &Barrier::new());
         }
 
         num_removed

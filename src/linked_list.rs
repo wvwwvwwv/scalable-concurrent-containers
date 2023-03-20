@@ -66,7 +66,7 @@ pub trait LinkedList: 'static + Sized {
     #[inline]
     fn mark(&self, order: Ordering) -> bool {
         self.link_ref()
-            .update_tag_if(Tag::First, |t| t == Tag::None, order)
+            .update_tag_if(Tag::First, |ptr| ptr.tag() == Tag::None, order, Relaxed)
     }
 
     /// Removes the mark from `self`.
@@ -97,7 +97,7 @@ pub trait LinkedList: 'static + Sized {
     #[inline]
     fn unmark(&self, order: Ordering) -> bool {
         self.link_ref()
-            .update_tag_if(Tag::None, |t| t == Tag::First, order)
+            .update_tag_if(Tag::None, |ptr| ptr.tag() == Tag::First, order, Relaxed)
     }
 
     /// Returns `true` if `self` has a mark on it.
@@ -158,7 +158,7 @@ pub trait LinkedList: 'static + Sized {
     #[inline]
     fn delete_self(&self, order: Ordering) -> bool {
         self.link_ref()
-            .update_tag_if(Tag::Second, |t| t != Tag::Second, order)
+            .update_tag_if(Tag::Second, |ptr| ptr.tag() != Tag::Second, order, Relaxed)
     }
 
     /// Returns `true` if `self` has been deleted.

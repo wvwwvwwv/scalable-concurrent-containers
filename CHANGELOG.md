@@ -1,7 +1,9 @@
 # Changelog
 
-1.1.6
+1.2.0
 
+* API update: the closure argument of `AtomicArc::update_tag_if` now receives the pointer value.
+* API update: add a new memory ordering argument to `AtomicArc::update_tag_if`.
 * `Hash*` do not allocate bucket arrays until the first write access.
 * `Hash*::remove*` more aggressively shrinks the bucket array.
 

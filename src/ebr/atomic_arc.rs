@@ -85,7 +85,7 @@ impl<T> AtomicArc<T> {
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::null();
-    /// atomic_arc.update_tag_if(Tag::Both, |t| t == Tag::None, Relaxed);
+    /// atomic_arc.update_tag_if(Tag::Both, |p| p.tag() == Tag::None, Relaxed, Relaxed);
     /// assert!(atomic_arc.is_null(Relaxed));
     /// ```
     #[inline]
@@ -164,7 +164,7 @@ impl<T> AtomicArc<T> {
 
     /// Sets a new [`Tag`] if the given condition is met.
     ///
-    /// It returns `true` if the condition is met.
+    /// It returns `true` if the new [`Tag`] has been successfully set.
     ///
     /// # Examples
     ///
@@ -173,22 +173,23 @@ impl<T> AtomicArc<T> {
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::null();
-    /// assert!(atomic_arc.update_tag_if(Tag::Both, |t| t == Tag::None, Relaxed));
+    /// assert!(atomic_arc.update_tag_if(Tag::Both, |p| p.tag() == Tag::None, Relaxed, Relaxed));
     /// assert_eq!(atomic_arc.tag(Relaxed), Tag::Both);
     /// ```
     #[inline]
-    pub fn update_tag_if<F: FnMut(Tag) -> bool>(
+    pub fn update_tag_if<F: FnMut(Ptr<T>) -> bool>(
         &self,
         tag: Tag,
         mut condition: F,
-        order: Ordering,
+        set_order: Ordering,
+        fetch_order: Ordering,
     ) -> bool {
-        let mut current = self.instance_ptr.load(Relaxed);
-        while condition(Tag::into_tag(current)) {
+        let mut current = self.instance_ptr.load(fetch_order);
+        while condition(Ptr::from(current)) {
             let desired = Tag::update_tag(current, tag) as *mut RefCounted<T>;
-            if let Err(actual) = self
-                .instance_ptr
-                .compare_exchange(current, desired, order, Relaxed)
+            if let Err(actual) =
+                self.instance_ptr
+                    .compare_exchange(current, desired, set_order, fetch_order)
             {
                 current = actual;
             } else {
@@ -219,7 +220,7 @@ impl<T> AtomicArc<T> {
     /// let mut ptr = atomic_arc.load(Relaxed, &barrier);
     /// assert_eq!(*ptr.as_ref().unwrap(), 17);
     ///
-    /// atomic_arc.update_tag_if(Tag::Both, |_| true, Relaxed);
+    /// atomic_arc.update_tag_if(Tag::Both, |_| true, Relaxed, Relaxed);
     /// assert!(atomic_arc.compare_exchange(
     ///     ptr, (Some(Arc::new(18)), Tag::First), Relaxed, Relaxed, &barrier).is_err());
     ///

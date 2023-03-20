@@ -1809,7 +1809,7 @@ mod ebr_test {
         drop(atomic_arc);
         assert!(!DESTROYED.load(Relaxed));
 
-        atomic_arc_cloned.update_tag_if(Tag::Second, |_| true, Relaxed);
+        atomic_arc_cloned.update_tag_if(Tag::Second, |_| true, Relaxed, Relaxed);
 
         drop(atomic_arc_cloned);
         drop(barrier);
@@ -1933,7 +1933,7 @@ mod ebr_test {
 
                     assert!(suspend());
 
-                    atomic_arc.update_tag_if(Tag::None, |_| true, Relaxed);
+                    atomic_arc.update_tag_if(Tag::None, |_| true, Relaxed, Relaxed);
 
                     let barrier = Barrier::new();
                     ptr = atomic_arc.load(Acquire, &barrier);

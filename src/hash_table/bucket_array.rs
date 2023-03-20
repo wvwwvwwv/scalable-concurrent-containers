@@ -119,6 +119,12 @@ impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
         unsafe { &(*(self.data_block_ptr.add(index))) }
     }
 
+    /// Returns `true` if the index can trigger a hash table resize.
+    #[inline]
+    pub(crate) fn trigger_resize(&self, index: usize) -> bool {
+        (index % self.sample_size().next_power_of_two()) == 0
+    }
+
     /// Returns the recommended sampling size.
     #[inline]
     pub(crate) fn sample_size(&self) -> usize {

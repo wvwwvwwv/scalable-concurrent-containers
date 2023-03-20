@@ -23,7 +23,7 @@
 //! assert_eq!(*ptr.as_ref().unwrap(), 17);
 //!
 //! // `atomic_arc` can be tagged.
-//! atomic_arc.update_tag_if(Tag::First, |t| t == Tag::None, Relaxed);
+//! atomic_arc.update_tag_if(Tag::First, |p| p.tag() == Tag::None, Relaxed, Relaxed);
 //!
 //! // `ptr` is not tagged, so CAS fails.
 //! assert!(atomic_arc.compare_exchange(

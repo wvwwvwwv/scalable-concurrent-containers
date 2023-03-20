@@ -222,7 +222,7 @@ where
                 Relaxed,
             ) {
                 Ok(_) => {
-                    self.resize(&Barrier::new());
+                    self.try_resize(0, &Barrier::new());
                     return Some(Ticket {
                         hashmap: self,
                         increment: additional_capacity,
@@ -1098,7 +1098,7 @@ where
         }
 
         if num_removed >= num_retained {
-            self.resize(&barrier);
+            self.try_resize(0, &barrier);
         }
 
         (num_retained, num_removed)
@@ -1200,7 +1200,7 @@ where
         }
 
         if num_removed >= num_retained {
-            self.resize(&Barrier::new());
+            self.try_resize(0, &Barrier::new());
         }
 
         (num_retained, num_removed)
@@ -1712,14 +1712,16 @@ where
                 .erase(self.data_block, &mut self.entry_ptr)
                 .unwrap_unchecked()
         };
-        if self.locker.bucket().num_entries() == 0 {
+        if self.locker.bucket().num_entries() <= 1 {
             let barrier = Barrier::new();
             let hashmap = self.hashmap;
             if let Some(current_array) = hashmap.bucket_array().load(Acquire, &barrier).as_ref() {
                 let locker = self.locker;
                 if current_array.old_array(&barrier).is_null() {
                     let index = current_array.calculate_bucket_index(self.hash);
-                    hashmap.try_shrink(current_array, locker, index, &barrier);
+                    if current_array.trigger_resize(index) {
+                        hashmap.try_shrink(current_array, locker, index, &barrier);
+                    }
                 }
             }
         }
@@ -1931,7 +1933,7 @@ where
             .hashmap
             .minimum_capacity
             .fetch_sub(self.increment, Relaxed);
-        self.hashmap.resize(&Barrier::new());
+        self.hashmap.try_resize(0, &Barrier::new());
         debug_assert!(result >= self.increment);
     }
 }

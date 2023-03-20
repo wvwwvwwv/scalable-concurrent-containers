@@ -8,21 +8,8 @@ use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{fence, AtomicU32};
 
-/// [`DataBlock`] is a type alias of a raw memory chunk that may contain entry instances.
-pub type DataBlock<K, V, const LEN: usize> = [MaybeUninit<(K, V)>; LEN];
-
 /// The size of a [`Bucket`].
 pub const BUCKET_LEN: usize = 32;
-
-/// The size of the linked data block.
-const LINKED_LEN: usize = BUCKET_LEN / 4;
-
-/// State bits.
-const KILLED: u32 = 1_u32 << 31;
-const WAITING: u32 = 1_u32 << 30;
-const LOCK: u32 = 1_u32 << 29;
-const SLOCK_MAX: u32 = LOCK - 1;
-const LOCK_MASK: u32 = LOCK | SLOCK_MAX;
 
 /// [`Bucket`] is a small fixed-size hash table with linear probing.
 pub(crate) struct Bucket<K: Eq, V, const LOCK_FREE: bool> {
@@ -38,6 +25,19 @@ pub(crate) struct Bucket<K: Eq, V, const LOCK_FREE: bool> {
     /// The wait queue of the [`Bucket`].
     wait_queue: WaitQueue,
 }
+
+/// [`DataBlock`] is a type alias of a raw memory chunk that may contain entry instances.
+pub type DataBlock<K, V, const LEN: usize> = [MaybeUninit<(K, V)>; LEN];
+
+/// The size of the linked data block.
+const LINKED_BUCKET_LEN: usize = BUCKET_LEN / 4;
+
+/// State bits.
+const KILLED: u32 = 1_u32 << 31;
+const WAITING: u32 = 1_u32 << 30;
+const LOCK: u32 = 1_u32 << 29;
+const SLOCK_MAX: u32 = LOCK - 1;
+const LOCK_MASK: u32 = LOCK | SLOCK_MAX;
 
 impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
     /// Returns true if the [`Bucket`] has been killed.
@@ -282,7 +282,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> Default for Bucket<K, V, LOCK_FREE> {
 }
 
 pub struct EntryPtr<'b, K: Eq, V, const LOCK_FREE: bool> {
-    current_link_ptr: Ptr<'b, LinkedBucket<K, V, LINKED_LEN>>,
+    current_link_ptr: Ptr<'b, LinkedBucket<K, V, LINKED_BUCKET_LEN>>,
     current_index: usize,
 }
 
@@ -376,7 +376,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
     fn unlink(
         &mut self,
         locker: &Locker<K, V, LOCK_FREE>,
-        link: &LinkedBucket<K, V, LINKED_LEN>,
+        link: &LinkedBucket<K, V, LINKED_BUCKET_LEN>,
         barrier: &'b Barrier,
     ) {
         let prev_link_ptr = link.prev_link.load(Relaxed);
@@ -421,7 +421,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
             self.current_index = usize::MAX;
         } else {
             // Go to the next `Link`.
-            self.current_index = LINKED_LEN;
+            self.current_index = LINKED_BUCKET_LEN;
         }
     }
 
@@ -443,7 +443,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
         }
 
         self.current_link_ptr = metadata.link.load(Acquire, barrier);
-        self.current_index = LINKED_LEN;
+        self.current_index = LINKED_BUCKET_LEN;
 
         false
     }
@@ -558,16 +558,16 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
             partial_hash as usize % BUCKET_LEN,
         );
         if free_index == BUCKET_LEN {
-            let preferred_index = partial_hash as usize % LINKED_LEN;
+            let preferred_index = partial_hash as usize % LINKED_BUCKET_LEN;
             let mut link_ptr = self.bucket.metadata.link.load(Acquire, barrier);
-            while let Some(link_mut) =
-                unsafe { (link_ptr.as_raw() as *mut LinkedBucket<K, V, LINKED_LEN>).as_mut() }
-            {
-                let free_index = Self::get_free_index::<LINKED_LEN>(
+            while let Some(link_mut) = unsafe {
+                (link_ptr.as_raw() as *mut LinkedBucket<K, V, LINKED_BUCKET_LEN>).as_mut()
+            } {
+                let free_index = Self::get_free_index::<LINKED_BUCKET_LEN>(
                     link_mut.metadata.occupied_bitmap,
                     preferred_index,
                 );
-                if free_index != LINKED_LEN {
+                if free_index != LINKED_BUCKET_LEN {
                     Self::insert_entry_with(
                         &mut link_mut.metadata,
                         &link_mut.data_block,
@@ -589,7 +589,8 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
             let link = unsafe { Arc::new_unchecked(LinkedBucket::new(head)) };
             let link_ptr = link.ptr(barrier);
             unsafe {
-                let link_mut = &mut *(link_ptr.as_raw() as *mut LinkedBucket<K, V, LINKED_LEN>);
+                let link_mut =
+                    &mut *(link_ptr.as_raw() as *mut LinkedBucket<K, V, LINKED_BUCKET_LEN>);
                 link_mut.data_block[preferred_index]
                     .as_mut_ptr()
                     .write(constructor());
@@ -598,7 +599,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
             }
             if let Some(head) = link.metadata.link.load(Relaxed, barrier).as_ref() {
                 head.prev_link.store(
-                    link.as_ptr() as *mut LinkedBucket<K, V, LINKED_LEN>,
+                    link.as_ptr() as *mut LinkedBucket<K, V, LINKED_BUCKET_LEN>,
                     Relaxed,
                 );
             }
@@ -637,7 +638,8 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         debug_assert_ne!(entry_ptr.current_index, usize::MAX);
 
         self.bucket.num_entries -= 1;
-        let link_ptr = entry_ptr.current_link_ptr.as_raw() as *mut LinkedBucket<K, V, LINKED_LEN>;
+        let link_ptr =
+            entry_ptr.current_link_ptr.as_raw() as *mut LinkedBucket<K, V, LINKED_BUCKET_LEN>;
         if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
             if LOCK_FREE {
                 debug_assert_eq!(
@@ -682,7 +684,8 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         barrier: &'e Barrier,
     ) -> (K, V) {
         debug_assert!(!LOCK_FREE);
-        let link_ptr = entry_ptr.current_link_ptr.as_raw() as *mut LinkedBucket<K, V, LINKED_LEN>;
+        let link_ptr =
+            entry_ptr.current_link_ptr.as_raw() as *mut LinkedBucket<K, V, LINKED_BUCKET_LEN>;
         if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
             let extracted = Self::extract_entry(
                 &mut link_mut.metadata,
@@ -887,7 +890,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Drop for Reader<'b, K, V, LOCK_FREE> {
 /// [`Metadata`] is a collection of metadata fields of [`Bucket`] and [`LinkedBucket`].
 pub(crate) struct Metadata<K: Eq, V, const LEN: usize> {
     /// Linked list of entries.
-    link: AtomicArc<LinkedBucket<K, V, LINKED_LEN>>,
+    link: AtomicArc<LinkedBucket<K, V, LINKED_BUCKET_LEN>>,
 
     /// Bitmap for occupied slots.
     occupied_bitmap: u32,
@@ -919,7 +922,7 @@ pub(crate) struct LinkedBucket<K: Eq, V, const LEN: usize> {
 
 impl<K: Eq, V, const LEN: usize> LinkedBucket<K, V, LEN> {
     /// Creates an empty [`LinkedBucket`].
-    fn new(next: Option<Arc<LinkedBucket<K, V, LINKED_LEN>>>) -> LinkedBucket<K, V, LEN> {
+    fn new(next: Option<Arc<LinkedBucket<K, V, LINKED_BUCKET_LEN>>>) -> LinkedBucket<K, V, LEN> {
         LinkedBucket {
             metadata: Metadata {
                 link: next.map_or_else(AtomicArc::null, AtomicArc::from),
@@ -978,6 +981,7 @@ mod test {
             let data_ptr = AtomicPtr::new(&mut data);
             task_handles.push(tokio::spawn(async move {
                 barrier_clone.wait().await;
+                let partial_hash = (task_id % BUCKET_LEN).try_into().unwrap();
                 let bucket_mut =
                     unsafe { &mut *(bucket_clone.as_ptr() as *mut Bucket<usize, usize, true>) };
                 let barrier = Barrier::new();
@@ -994,7 +998,7 @@ mod test {
                     if i == 0 {
                         exclusive_locker.insert_with(
                             &data_block_clone,
-                            (task_id % BUCKET_LEN).try_into().unwrap(),
+                            partial_hash,
                             || (task_id, 0),
                             &barrier,
                         );
@@ -1002,12 +1006,7 @@ mod test {
                         assert_eq!(
                             exclusive_locker
                                 .bucket()
-                                .search(
-                                    &data_block_clone,
-                                    &task_id,
-                                    (task_id % BUCKET_LEN).try_into().unwrap(),
-                                    &barrier
-                                )
+                                .search(&data_block_clone, &task_id, partial_hash, &barrier)
                                 .unwrap(),
                             &(task_id, 0_usize)
                         );
@@ -1018,12 +1017,7 @@ mod test {
                     assert_eq!(
                         read_locker
                             .bucket()
-                            .search(
-                                &data_block_clone,
-                                &task_id,
-                                (task_id % BUCKET_LEN).try_into().unwrap(),
-                                &barrier
-                            )
+                            .search(&data_block_clone, &task_id, partial_hash, &barrier)
                             .unwrap(),
                         &(task_id, 0_usize)
                     );
@@ -1076,16 +1070,15 @@ mod test {
         let data_block: Arc<DataBlock<usize, usize, BUCKET_LEN>> =
             Arc::new(unsafe { MaybeUninit::uninit().assume_init() });
         let bucket: Arc<Bucket<usize, usize, false>> = Arc::new(Bucket::default());
-        let mut data: [u64; 128] = [0; 128];
         let mut task_handles = Vec::with_capacity(num_tasks);
         for task_id in 0..num_tasks {
             let barrier_clone = barrier.clone();
             let data_block_clone = data_block.clone();
             let bucket_clone = bucket.clone();
-            let data_ptr = AtomicPtr::new(&mut data);
             task_handles.push(tokio::spawn(async move {
+                let partial_hash = (task_id % BUCKET_LEN).try_into().unwrap();
                 barrier_clone.wait().await;
-                for i in 0..256 {
+                for _ in 0..256 {
                     loop {
                         let mut async_wait = AsyncWait::default();
                         let mut async_wait_pinned = Pin::new(&mut async_wait);
@@ -1100,42 +1093,17 @@ mod test {
                                 &barrier,
                             ) {
                                 let mut exclusive_locker = exclusive_locker.unwrap();
-                                let mut sum: u64 = 0;
-                                for j in 0..128 {
-                                    unsafe {
-                                        sum += (*data_ptr.load(Relaxed))[j];
-                                        (*data_ptr.load(Relaxed))[j] =
-                                            if i % 4 == 0 { 2 } else { 4 }
-                                    };
-                                }
-                                assert_eq!(sum % 256, 0);
-                                if i == 0 {
-                                    exclusive_locker.insert_with(
-                                        &data_block_clone,
-                                        (task_id % BUCKET_LEN).try_into().unwrap(),
-                                        || (task_id, 0),
-                                        &barrier,
-                                    );
-                                } else {
-                                    assert_eq!(
-                                        exclusive_locker
-                                            .bucket()
-                                            .search(
-                                                &data_block_clone,
-                                                &task_id,
-                                                (task_id % BUCKET_LEN).try_into().unwrap(),
-                                                &barrier,
-                                            )
-                                            .unwrap(),
-                                        &(task_id, 0_usize)
-                                    );
-                                }
+                                exclusive_locker.insert_with(
+                                    &data_block_clone,
+                                    partial_hash,
+                                    || (task_id, 0),
+                                    &barrier,
+                                );
                                 break;
                             };
                         }
                         async_wait_pinned.await;
                     }
-
                     loop {
                         let mut async_wait = AsyncWait::default();
                         let mut async_wait_pinned = Pin::new(&mut async_wait);
@@ -1153,7 +1121,7 @@ mod test {
                                         .search(
                                             &data_block_clone,
                                             &task_id,
-                                            (task_id % BUCKET_LEN).try_into().unwrap(),
+                                            partial_hash,
                                             &barrier,
                                         )
                                         .unwrap(),
@@ -1164,14 +1132,30 @@ mod test {
                         }
                         async_wait_pinned.await;
                     }
+                    {
+                        let bucket_mut = unsafe {
+                            &mut *(bucket_clone.as_ptr() as *mut Bucket<usize, usize, false>)
+                        };
+                        let barrier = Barrier::new();
+                        let mut exclusive_locker = Locker::lock(bucket_mut, &barrier).unwrap();
+                        let mut entry_ptr = exclusive_locker.get(
+                            &data_block_clone,
+                            &task_id,
+                            partial_hash,
+                            &barrier,
+                        );
+                        assert_eq!(
+                            exclusive_locker
+                                .erase(&data_block_clone, &mut entry_ptr)
+                                .unwrap(),
+                            (task_id, 0_usize)
+                        );
+                    }
                 }
             }));
         }
         for r in futures::future::join_all(task_handles).await {
             assert!(r.is_ok());
         }
-
-        let sum: u64 = data.iter().sum();
-        assert_eq!(sum % 256, 0);
     }
 }

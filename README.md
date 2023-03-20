@@ -30,7 +30,6 @@ A collection of high performance containers and utilities for concurrent and asy
 - [Stack](#Stack) is an [EBR](#EBR) backed concurrent lock-free last-in-first-out container.
 - [Bag](#Bag) is a concurrent lock-free unordered opaque container.
 
-
 ## HashMap
 
 [HashMap](#HashMap) is a concurrent hash map that is targeted at highly concurrent write-heavy workloads. It uses [EBR](#EBR) for its hash table memory management in order to implement non-blocking resizing and fine-granular locking without static data sharding; *it is not a lock-free data structure, and each access to a single key is serialized by a bucket-level mutex*.
@@ -110,7 +109,6 @@ let future_scan = hashmap.scan_async(|k, v| println!("{k} {v}"));
 let future_for_each = hashmap.for_each_async(|k, v_mut| { *v_mut = *k; });
 ```
 
-
 ## HashSet
 
 [HashSet](#HashSet) is a version of [HashMap](#HashMap) where the value type is `()`.
@@ -131,7 +129,6 @@ assert!(hashset.read(&1, |_| true).unwrap());
 let future_insert = hashset.insert_async(2);
 let future_remove = hashset.remove_async(&1);
 ```
-
 
 ## HashIndex
 
@@ -177,7 +174,6 @@ drop(hashindex);
 // The entry can be read after `hashindex` is dropped.
 assert_eq!(entry_ref, (&1, &0));
 ```
-
 
 ## TreeIndex
 
@@ -247,7 +243,6 @@ assert_eq!(treeindex.range(4..8, &barrier).count(), 4);
 assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 ```
 
-
 ## Bag
 
 [Bag](#Bag) is a concurrent lock-free unordered container. [Bag](#Bag) is completely opaque, disallowing access to contained instances until they are popped. [Bag](#Bag) is especially efficient if the number of contained instances can be maintained under `usize::BITS / 2`.
@@ -264,7 +259,6 @@ assert!(!bag.is_empty());
 assert_eq!(bag.pop(), Some(1));
 assert!(bag.is_empty());
 ```
-
 
 ## Queue
 
@@ -285,7 +279,6 @@ assert_eq!(queue.pop().map(|e| **e), Some(2));
 assert!(queue.pop().is_none());
 ```
 
-
 ## Stack
 
 [Stack](#Stack) is an [EBR](#EBR) backed concurrent lock-free last-in-first-out container.
@@ -303,7 +296,6 @@ assert_eq!(stack.pop().map(|e| **e), Some(2));
 assert_eq!(stack.pop().map(|e| **e), Some(1));
 assert!(stack.pop().is_none());
 ```
-
 
 ## EBR
 
@@ -329,7 +321,7 @@ let mut ptr: Ptr<usize> = atomic_arc.load(Relaxed, &barrier);
 assert_eq!(*ptr.as_ref().unwrap(), 17);
 
 // `atomic_arc` can be tagged.
-atomic_arc.update_tag_if(Tag::First, |t| t == Tag::None, Relaxed);
+atomic_arc.update_tag_if(Tag::First, |p| p.tag() == Tag::None, Relaxed, Relaxed);
 
 // `ptr` is not tagged, so CAS fails.
 assert!(atomic_arc.compare_exchange(
@@ -384,7 +376,6 @@ drop(barrier);
 // to reclaim its own retired instances.
 suspend();
 ```
-
 
 ## LinkedList
 
@@ -442,6 +433,5 @@ Comparison with [DashMap](https://github.com/xacrimon/dashmap).
 ### [EBR](#EBR)
 
 - The average time taken to enter and exit a protected region: 2.3ns on Apple M1.
-
 
 ## [Changelog](https://github.com/wvwwvwwv/scalable-concurrent-containers/blob/main/CHANGELOG.md)
