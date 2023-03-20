@@ -65,8 +65,12 @@ where
 
     /// Temporarily increases the minimum capacity of the [`HashSet`].
     ///
-    /// The reserved space is not exclusively owned by the [`Ticket`], thus can be overtaken.
-    /// Unused space is immediately reclaimed when the [`Ticket`] is dropped.
+    /// A [`Reserve`] is returned if the [`HashSet`] could increase the minimum capacity while the
+    /// increased capacity is not exclusively owned by the returned [`Reserve`], allowing others to
+    /// benefit from it. The memory for the additional space may not be immediately allocated if
+    /// the [`HashSet`] is empty or currently being resized, however once the memory is reserved
+    /// eventually, the capacity will not shrink below the additional capacity until the returned
+    /// [`Reserve`] is dropped.
     ///
     /// # Errors
     ///
@@ -81,18 +85,22 @@ where
     /// let hashset: HashSet<usize, RandomState> = HashSet::with_capacity(1000);
     /// assert_eq!(hashset.capacity(), 1024);
     ///
-    /// let ticket = hashset.reserve(10000);
-    /// assert!(ticket.is_some());
+    /// let reserved = hashset.reserve(10000);
+    /// assert!(reserved.is_some());
     /// assert_eq!(hashset.capacity(), 16384);
+    ///
+    /// assert!(hashset.reserve(usize::MAX).is_none());
+    /// assert_eq!(hashset.capacity(), 16384);
+    ///
     /// for i in 0..16 {
     ///     assert!(hashset.insert(i).is_ok());
     /// }
-    /// drop(ticket);
+    /// drop(reserved);
     ///
     /// assert_eq!(hashset.capacity(), 1024);
     /// ```
     #[inline]
-    pub fn reserve(&self, capacity: usize) -> Option<Ticket<K, H>> {
+    pub fn reserve(&self, capacity: usize) -> Option<Reserve<K, H>> {
         self.map.reserve(capacity)
     }
 
@@ -741,8 +749,7 @@ where
     }
 }
 
-/// [`Ticket`] keeps the increased minimum capacity of the [`HashSet`] during its lifetime.
+/// [`Reserve`] keeps the capacity of the associated [`HashSet`] higher than a certain level.
 ///
-/// The minimum capacity is lowered when the [`Ticket`] is dropped, thereby allowing unused
-/// memory to be reclaimed.
-pub type Ticket<'h, K, H> = super::hash_map::Ticket<'h, K, (), H>;
+/// The [`HashSet`] does not shrink the capacity below the reserved capacity.
+pub type Reserve<'h, K, H> = super::hash_map::Reserve<'h, K, (), H>;

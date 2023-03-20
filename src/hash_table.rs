@@ -756,6 +756,7 @@ where
             // Another thread is currently allocating a new bucket array.
             return;
         }
+
         if let Some(current_array) = current_array_ptr.as_ref() {
             if !current_array.old_array(barrier).is_null() {
                 // The hash table cannot be resized with an old array attached to it.
@@ -763,11 +764,10 @@ where
             }
 
             // The resizing policies are as follows.
-            //  - The load factor reaches 7/8, then the array grows up to 32x.
-            //  - The load factor reaches 1/16, then the array shrinks to fit.
+            //  - The estimated load factor >= `7/8`, then the hash table grows up to 32x.
+            //  - The estimated load factor <= `1/16`, then the hash table shrinks to fit.
             let capacity = current_array.num_entries();
             let num_buckets_to_sample = current_array.full_sample_size();
-            let mut rebuild = false;
             let estimated_num_entries =
                 Self::sample(current_array, sampling_index, num_buckets_to_sample);
             let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
@@ -795,14 +795,13 @@ where
                     .max(self.minimum_capacity())
                     .next_power_of_two()
             } else {
-                if LOCK_FREE {
-                    rebuild = Self::check_rebuild(current_array, num_buckets_to_sample);
-                }
                 capacity
             };
 
-            if new_capacity != capacity || rebuild {
-                // Mark that the thread will allocate a new array to prevent multiple threads from
+            if new_capacity != capacity
+                || (LOCK_FREE && Self::check_rebuild(current_array, num_buckets_to_sample))
+            {
+                // Mark that the thread may allocate a new array to prevent multiple threads from
                 // allocating bucket arrays at the same time.
                 if !self.bucket_array().update_tag_if(
                     Tag::First,
@@ -824,12 +823,16 @@ where
                         // Release the lock.
                         self.bucket_array().update_tag_if(
                             Tag::None,
-                            |ptr| ptr.tag() == Tag::First,
+                            |ptr| {
+                                debug_assert_eq!(ptr.tag(), Tag::First);
+                                true
+                            },
                             Relaxed,
                             Relaxed,
                         );
                     }
                 });
+
                 mutex_guard.replace(unsafe {
                     Arc::new_unchecked(BucketArray::<K, V, LOCK_FREE>::new(
                         new_capacity,

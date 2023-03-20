@@ -2,8 +2,8 @@
 
 1.2.0
 
-* API update: the closure argument of `AtomicArc::update_tag_if` now receives the pointer value.
-* API update: add a new memory ordering argument to `AtomicArc::update_tag_if`.
+* API update 1: `AtomicArc::update_tag_if` now receives `fetch_order`, and the closure can access the pointer value.
+* API update 2: rename `hash_map::Ticket` `hash_map::Reserve`.
 * `Hash*` do not allocate bucket arrays until the first write access.
 * `Hash*::remove*` more aggressively shrinks the bucket array.
 

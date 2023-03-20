@@ -184,19 +184,15 @@ impl<T> AtomicArc<T> {
         set_order: Ordering,
         fetch_order: Ordering,
     ) -> bool {
-        let mut current = self.instance_ptr.load(fetch_order);
-        while condition(Ptr::from(current)) {
-            let desired = Tag::update_tag(current, tag) as *mut RefCounted<T>;
-            if let Err(actual) =
-                self.instance_ptr
-                    .compare_exchange(current, desired, set_order, fetch_order)
-            {
-                current = actual;
-            } else {
-                return true;
-            }
-        }
-        false
+        self.instance_ptr
+            .fetch_update(set_order, fetch_order, |ptr| {
+                if condition(Ptr::from(ptr)) {
+                    Some(Tag::update_tag(ptr, tag) as *mut RefCounted<T>)
+                } else {
+                    None
+                }
+            })
+            .is_ok()
     }
 
     /// Performs CAS on the [`AtomicArc`].

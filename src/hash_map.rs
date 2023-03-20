@@ -11,6 +11,7 @@ use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
 use std::mem::replace;
+use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
@@ -113,18 +114,18 @@ where
     locker: Locker<'h, K, V, false>,
 }
 
-/// [`Ticket`] keeps the increased minimum capacity of the [`HashMap`] during its lifetime.
+/// [`Reserve`] keeps the capacity of the associated [`HashMap`] higher than a certain level.
 ///
-/// The minimum capacity is lowered when the [`Ticket`] is dropped, thereby allowing unused
-/// memory to be reclaimed.
-pub struct Ticket<'h, K, V, H>
+/// The [`HashMap`] does not shrink the capacity below the reserved capacity.
+#[derive(Debug)]
+pub struct Reserve<'h, K, V, H>
 where
     K: Eq + Hash + Sync,
     V: Sync,
     H: BuildHasher,
 {
     hashmap: &'h HashMap<K, V, H>,
-    increment: usize,
+    additional: usize,
 }
 
 impl<K, V, H> HashMap<K, V, H>
@@ -182,8 +183,12 @@ where
 
     /// Temporarily increases the minimum capacity of the [`HashMap`].
     ///
-    /// The reserved space is not exclusively owned by the [`Ticket`], thus can be overtaken.
-    /// Unused space is immediately reclaimed when the [`Ticket`] is dropped.
+    /// A [`Reserve`] is returned if the [`HashMap`] could increase the minimum capacity while the
+    /// increased capacity is not exclusively owned by the returned [`Reserve`], allowing others to
+    /// benefit from it. The memory for the additional space may not be immediately allocated if
+    /// the [`HashMap`] is empty or currently being resized, however once the memory is reserved
+    /// eventually, the capacity will not shrink below the additional capacity until the returned
+    /// [`Reserve`] is dropped.
     ///
     /// # Errors
     ///
@@ -198,18 +203,22 @@ where
     /// let hashmap: HashMap<usize, usize, RandomState> = HashMap::with_capacity(1000);
     /// assert_eq!(hashmap.capacity(), 1024);
     ///
-    /// let ticket = hashmap.reserve(10000);
-    /// assert!(ticket.is_some());
+    /// let reserved = hashmap.reserve(10000);
+    /// assert!(reserved.is_some());
     /// assert_eq!(hashmap.capacity(), 16384);
+    ///
+    /// assert!(hashmap.reserve(usize::MAX).is_none());
+    /// assert_eq!(hashmap.capacity(), 16384);
+    ///
     /// for i in 0..16 {
     ///     assert!(hashmap.insert(i, i).is_ok());
     /// }
-    /// drop(ticket);
+    /// drop(reserved);
     ///
     /// assert_eq!(hashmap.capacity(), 1024);
     /// ```
     #[inline]
-    pub fn reserve(&self, additional_capacity: usize) -> Option<Ticket<K, V, H>> {
+    pub fn reserve(&self, additional_capacity: usize) -> Option<Reserve<K, V, H>> {
         let mut current_minimum_capacity = self.minimum_capacity.load(Relaxed);
         loop {
             if usize::MAX - current_minimum_capacity <= additional_capacity {
@@ -223,9 +232,9 @@ where
             ) {
                 Ok(_) => {
                     self.try_resize(0, &Barrier::new());
-                    return Some(Ticket {
+                    return Some(Reserve {
                         hashmap: self,
-                        increment: additional_capacity,
+                        additional: additional_capacity,
                     });
                 }
                 Err(actual) => current_minimum_capacity = actual,
@@ -1921,7 +1930,68 @@ where
     }
 }
 
-impl<'h, K, V, H> Drop for Ticket<'h, K, V, H>
+impl<'h, K, V, H> Reserve<'h, K, V, H>
+where
+    K: Eq + Hash + Sync,
+    V: Sync,
+    H: BuildHasher,
+{
+    /// Returns the number of reserved slots.
+    ///
+    /// The associated [`HashMap`] or [`HashSet`](super::HashSet) guarantees that the capacity will
+    /// never be below the number of reserved slots once the memory is allocated until the
+    /// [`Reserve`] is dropped.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    /// use std::collections::hash_map::RandomState;
+    ///
+    /// let hashmap: HashMap<usize, usize, RandomState> = HashMap::default();
+    ///
+    /// let reserved = hashmap.reserve(10000);
+    /// assert_eq!(hashmap.capacity(), 0);
+    ///
+    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// assert!(hashmap.capacity() >= 10000);
+    ///
+    /// assert_eq!(reserved.map_or(0, |r| r.additional_capacity()), 10000);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn additional_capacity(&self) -> usize {
+        self.additional
+    }
+}
+
+impl<'h, K, V, H> AsRef<HashMap<K, V, H>> for Reserve<'h, K, V, H>
+where
+    K: Eq + Hash + Sync,
+    V: Sync,
+    H: BuildHasher,
+{
+    #[inline]
+    fn as_ref(&self) -> &HashMap<K, V, H> {
+        self.hashmap
+    }
+}
+
+impl<'h, K, V, H> Deref for Reserve<'h, K, V, H>
+where
+    K: Eq + Hash + Sync,
+    V: Sync,
+    H: BuildHasher,
+{
+    type Target = HashMap<K, V, H>;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.hashmap
+    }
+}
+
+impl<'h, K, V, H> Drop for Reserve<'h, K, V, H>
 where
     K: Eq + Hash + Sync,
     V: Sync,
@@ -1932,8 +2002,8 @@ where
         let result = self
             .hashmap
             .minimum_capacity
-            .fetch_sub(self.increment, Relaxed);
+            .fetch_sub(self.additional, Relaxed);
         self.hashmap.try_resize(0, &Barrier::new());
-        debug_assert!(result >= self.increment);
+        debug_assert!(result >= self.additional);
     }
 }
