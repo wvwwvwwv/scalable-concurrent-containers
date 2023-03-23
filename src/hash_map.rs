@@ -13,7 +13,6 @@ use std::hash::{BuildHasher, Hash};
 use std::mem::replace;
 use std::ops::Deref;
 use std::pin::Pin;
-use std::ptr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
@@ -314,30 +313,32 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            let barrier = Barrier::new();
-            if let Ok((locker, data_block, entry_ptr, index)) = self.acquire_entry(
-                key.borrow(),
-                hash,
-                &mut async_wait_pinned,
-                self.prolonged_barrier_ref(&barrier),
-            ) {
-                if entry_ptr.is_valid() {
-                    return Entry::Occupied(OccupiedEntry {
+            {
+                let barrier = Barrier::new();
+                if let Ok((locker, data_block, entry_ptr, index)) = self.acquire_entry(
+                    key.borrow(),
+                    hash,
+                    &mut async_wait_pinned,
+                    self.prolonged_barrier_ref(&barrier),
+                ) {
+                    if entry_ptr.is_valid() {
+                        return Entry::Occupied(OccupiedEntry {
+                            hashmap: self,
+                            index,
+                            data_block,
+                            locker,
+                            entry_ptr,
+                        });
+                    }
+                    return Entry::Vacant(VacantEntry {
                         hashmap: self,
+                        key,
+                        hash,
                         index,
                         data_block,
                         locker,
-                        entry_ptr,
                     });
                 }
-                return Entry::Vacant(VacantEntry {
-                    hashmap: self,
-                    key,
-                    hash,
-                    index,
-                    data_block,
-                    locker,
-                });
             }
             async_wait_pinned.await;
         }
@@ -363,13 +364,13 @@ where
         let prolonged_barrier = self.prolonged_barrier_ref(&barrier);
         let mut current_array_ptr = self.array.load(Acquire, prolonged_barrier);
         while let Some(current_array) = current_array_ptr.as_ref() {
-            self.cleanse_old_array(current_array, &barrier);
+            self.clear_old_array(current_array, &barrier);
             for index in 0..current_array.num_buckets() {
                 let bucket = current_array.bucket_mut(index);
                 if let Some(locker) = Locker::lock(bucket, prolonged_barrier) {
                     let data_block = current_array.data_block(index);
                     let mut entry_ptr = EntryPtr::new(prolonged_barrier);
-                    if entry_ptr.next(locker.bucket(), prolonged_barrier) {
+                    if entry_ptr.next(&locker, prolonged_barrier) {
                         return Some(OccupiedEntry {
                             hashmap: self,
                             index,
@@ -382,7 +383,7 @@ where
             }
 
             let new_current_array_ptr = self.array.load(Acquire, prolonged_barrier);
-            if current_array_ptr == new_current_array_ptr {
+            if current_array_ptr.without_tag() == new_current_array_ptr.without_tag() {
                 break;
             }
             current_array_ptr = new_current_array_ptr;
@@ -410,7 +411,7 @@ where
         while let Some(current_array) = current_array_holder.take() {
             self.cleanse_old_array_async(&current_array).await;
             for index in 0..current_array.num_buckets() {
-                let killed = loop {
+                loop {
                     let mut async_wait = AsyncWait::default();
                     let mut async_wait_pinned = Pin::new(&mut async_wait);
                     {
@@ -426,7 +427,7 @@ where
                             if let Some(locker) = locker {
                                 let data_block = prolonged_current_array.data_block(index);
                                 let mut entry_ptr = EntryPtr::new(prolonged_barrier);
-                                if entry_ptr.next(locker.bucket(), prolonged_barrier) {
+                                if entry_ptr.next(&locker, prolonged_barrier) {
                                     return Some(OccupiedEntry {
                                         hashmap: self,
                                         index,
@@ -435,18 +436,11 @@ where
                                         entry_ptr,
                                     });
                                 }
-                                break false;
                             }
-
-                            // The bucket having been killed means that a new array has been
-                            // allocated.
-                            break true;
+                            break;
                         };
                     }
                     async_wait_pinned.await;
-                };
-                if killed {
-                    break;
                 }
             }
 
@@ -990,7 +984,7 @@ where
         let barrier = Barrier::new();
         let mut current_array_ptr = self.array.load(Acquire, &barrier);
         while let Some(current_array) = current_array_ptr.as_ref() {
-            self.cleanse_old_array(current_array, &barrier);
+            self.clear_old_array(current_array, &barrier);
             for index in 0..current_array.num_buckets() {
                 let bucket = current_array.bucket(index);
                 if let Some(locker) = Reader::lock(bucket, &barrier) {
@@ -1172,13 +1166,13 @@ where
         let mut num_removed: usize = 0;
         let mut current_array_ptr = self.array.load(Acquire, &barrier);
         while let Some(current_array) = current_array_ptr.as_ref() {
-            self.cleanse_old_array(current_array, &barrier);
+            self.clear_old_array(current_array, &barrier);
             for index in 0..current_array.num_buckets() {
                 let bucket = current_array.bucket_mut(index);
                 if let Some(mut locker) = Locker::lock(bucket, &barrier) {
                     let data_block = current_array.data_block(index);
                     let mut entry_ptr = EntryPtr::new(&barrier);
-                    while entry_ptr.next(locker.bucket(), &barrier) {
+                    while entry_ptr.next(&locker, &barrier) {
                         let (k, v) = entry_ptr.get_mut(data_block, &mut locker);
                         if filter(k, v) {
                             num_retained = num_retained.saturating_add(1);
@@ -1237,7 +1231,7 @@ where
         while let Some(current_array) = current_array_holder.take() {
             self.cleanse_old_array_async(&current_array).await;
             for index in 0..current_array.num_buckets() {
-                let killed = loop {
+                loop {
                     let mut async_wait = AsyncWait::default();
                     let mut async_wait_pinned = Pin::new(&mut async_wait);
                     {
@@ -1249,7 +1243,7 @@ where
                             if let Some(mut locker) = locker {
                                 let data_block = current_array.data_block(index);
                                 let mut entry_ptr = EntryPtr::new(&barrier);
-                                while entry_ptr.next(locker.bucket(), &barrier) {
+                                while entry_ptr.next(&locker, &barrier) {
                                     let (k, v) = entry_ptr.get_mut(data_block, &mut locker);
                                     if filter(k, v) {
                                         num_retained = num_retained.saturating_add(1);
@@ -1258,18 +1252,11 @@ where
                                         num_removed = num_removed.saturating_add(1);
                                     }
                                 }
-                                break false;
                             }
-
-                            // The bucket having been killed means that a new array has been
-                            // allocated.
-                            break true;
+                            break;
                         };
                     }
                     async_wait_pinned.await;
-                };
-                if killed {
-                    break;
                 }
             }
 
@@ -1388,15 +1375,6 @@ where
     #[inline]
     pub fn capacity(&self) -> usize {
         self.num_slots(&Barrier::new())
-    }
-
-    /// Clears the old array.
-    fn cleanse_old_array(&self, current_array: &BucketArray<K, V, false>, barrier: &Barrier) {
-        while !current_array.old_array(barrier).is_null() {
-            if self.partial_rehash::<_, _, false>(current_array, &mut (), barrier) == Ok(true) {
-                break;
-            }
-        }
     }
 
     /// Clears the old array asynchronously.
@@ -1825,7 +1803,7 @@ where
                 .erase(self.data_block, &mut self.entry_ptr)
                 .unwrap_unchecked()
         };
-        if self.locker.bucket().num_entries() <= 1 {
+        if self.locker.num_entries() <= 1 {
             let barrier = Barrier::new();
             let hashmap = self.hashmap;
             if let Some(current_array) = hashmap.bucket_array().load(Acquire, &barrier).as_ref() {
@@ -1965,20 +1943,20 @@ where
         let hashmap = self.hashmap;
         let current_array_ptr = hashmap.array.load(Acquire, prolonged_barrier);
         if let Some(current_array) = current_array_ptr.as_ref() {
-            if let Some(old_array) = current_array.old_array(&Barrier::new()).as_ref() {
-                if self.index < old_array.num_buckets()
-                    && ptr::eq(&*self.locker, old_array.bucket(self.index))
-                {
-                    drop(self);
-                    return hashmap.first_occupied_entry();
-                }
+            if !current_array.old_array(&Barrier::new()).is_null() {
+                drop(self);
+                return hashmap.first_occupied_entry();
             }
-            for index in (self.index + 1)..current_array.num_buckets() {
+
+            let prev_index = self.index;
+            drop(self);
+
+            for index in (prev_index + 1)..current_array.num_buckets() {
                 let bucket = current_array.bucket_mut(index);
                 if let Some(locker) = Locker::lock(bucket, prolonged_barrier) {
                     let data_block = current_array.data_block(index);
                     let mut entry_ptr = EntryPtr::new(prolonged_barrier);
-                    if entry_ptr.next(locker.bucket(), prolonged_barrier) {
+                    if entry_ptr.next(&locker, prolonged_barrier) {
                         return Some(OccupiedEntry {
                             hashmap,
                             index,
@@ -1990,9 +1968,8 @@ where
                 }
             }
 
-            let new_current_array_ptr = hashmap.array.load(Acquire, prolonged_barrier);
+            let new_current_array_ptr = hashmap.array.load(Relaxed, prolonged_barrier);
             if current_array_ptr.without_tag() != new_current_array_ptr.without_tag() {
-                drop(self);
                 return hashmap.first_occupied_entry();
             }
         }
@@ -2027,18 +2004,17 @@ where
         }
 
         let hashmap = self.hashmap;
-        let current_array_holder = hashmap.array.get_arc(Acquire, &Barrier::new());
+        let mut current_array_holder = hashmap.array.get_arc(Acquire, &Barrier::new());
         if let Some(current_array) = current_array_holder {
-            let old_array_holder = current_array.old_array(&Barrier::new()).get_arc();
-            if let Some(old_array) = old_array_holder {
-                if self.index < old_array.num_buckets()
-                    && ptr::eq(&*self.locker, old_array.bucket(self.index))
-                {
-                    drop(self);
-                    return hashmap.first_occupied_entry_async().await;
-                }
+            if !current_array.old_array(&Barrier::new()).is_null() {
+                drop(self);
+                return hashmap.first_occupied_entry_async().await;
             }
-            for index in (self.index + 1)..current_array.num_buckets() {
+
+            let prev_index = self.index;
+            drop(self);
+
+            for index in (prev_index + 1)..current_array.num_buckets() {
                 loop {
                     let mut async_wait = AsyncWait::default();
                     let mut async_wait_pinned = Pin::new(&mut async_wait);
@@ -2055,7 +2031,7 @@ where
                             if let Some(locker) = locker {
                                 let data_block = prolonged_current_array.data_block(index);
                                 let mut entry_ptr = EntryPtr::new(prolonged_barrier);
-                                if entry_ptr.next(locker.bucket(), prolonged_barrier) {
+                                if entry_ptr.next(&locker, prolonged_barrier) {
                                     return Some(OccupiedEntry {
                                         hashmap,
                                         index,
@@ -2072,9 +2048,9 @@ where
                 }
             }
 
-            if let Some(new_current_array) = hashmap.array.get_arc(Acquire, &Barrier::new()) {
+            current_array_holder = hashmap.array.get_arc(Relaxed, &Barrier::new());
+            if let Some(new_current_array) = current_array_holder {
                 if new_current_array.as_ptr() != current_array.as_ptr() {
-                    drop(self);
                     return hashmap.first_occupied_entry_async().await;
                 }
             }

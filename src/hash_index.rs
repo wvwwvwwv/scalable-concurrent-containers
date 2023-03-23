@@ -489,25 +489,20 @@ where
         let barrier = Barrier::new();
         let mut current_array_ptr = self.array.load(Acquire, &barrier);
         while let Some(current_array) = current_array_ptr.as_ref() {
-            while !current_array.old_array(&barrier).is_null() {
-                if self.partial_rehash::<_, _, false>(current_array, &mut (), &barrier) == Ok(true)
-                {
-                    break;
-                }
-            }
+            self.clear_old_array(current_array, &barrier);
             for index in 0..current_array.num_buckets() {
                 let bucket = current_array.bucket_mut(index);
                 if let Some(mut locker) = Locker::lock(bucket, &barrier) {
                     let data_block = current_array.data_block(index);
                     let mut entry_ptr = EntryPtr::new(&barrier);
-                    while entry_ptr.next(locker.bucket(), &barrier) {
+                    while entry_ptr.next(&locker, &barrier) {
                         locker.erase(data_block, &mut entry_ptr);
                         num_removed = num_removed.saturating_add(1);
                     }
                 }
             }
             let new_current_array_ptr = self.array.load(Acquire, &barrier);
-            if current_array_ptr == new_current_array_ptr {
+            if current_array_ptr.without_tag() == new_current_array_ptr.without_tag() {
                 self.try_resize(0, &barrier);
                 break;
             }
@@ -536,22 +531,9 @@ where
         // An acquire fence is required to correctly load the contents of the array.
         let mut current_array_holder = self.array.get_arc(Acquire, &Barrier::new());
         while let Some(current_array) = current_array_holder.take() {
-            while !current_array.old_array(&Barrier::new()).is_null() {
-                let mut async_wait = AsyncWait::default();
-                let mut async_wait_pinned = Pin::new(&mut async_wait);
-                if self.partial_rehash::<_, _, false>(
-                    &current_array,
-                    &mut async_wait_pinned,
-                    &Barrier::new(),
-                ) == Ok(true)
-                {
-                    break;
-                }
-                async_wait_pinned.await;
-            }
-
+            self.cleanse_old_array_async(&current_array).await;
             for index in 0..current_array.num_buckets() {
-                let killed = loop {
+                loop {
                     let mut async_wait = AsyncWait::default();
                     let mut async_wait_pinned = Pin::new(&mut async_wait);
                     {
@@ -565,22 +547,15 @@ where
                             if let Some(mut locker) = locker {
                                 let data_block = current_array.data_block(index);
                                 let mut entry_ptr = EntryPtr::new(&barrier);
-                                while entry_ptr.next(locker.bucket(), &barrier) {
+                                while entry_ptr.next(&locker, &barrier) {
                                     locker.erase(data_block, &mut entry_ptr);
                                     num_removed = num_removed.saturating_add(1);
                                 }
-                                break false;
                             }
-
-                            // The bucket having been killed means that a new array has been
-                            // allocated.
-                            break true;
+                            break;
                         };
                     }
                     async_wait_pinned.await;
-                };
-                if killed {
-                    break;
                 }
             }
 
@@ -705,6 +680,23 @@ where
             current_bucket: None,
             current_entry_ptr: EntryPtr::new(barrier),
             barrier,
+        }
+    }
+
+    /// Clears the old array asynchronously.
+    async fn cleanse_old_array_async(&self, current_array: &BucketArray<K, V, true>) {
+        while !current_array.old_array(&Barrier::new()).is_null() {
+            let mut async_wait = AsyncWait::default();
+            let mut async_wait_pinned = Pin::new(&mut async_wait);
+            if self.partial_rehash::<_, _, false>(
+                current_array,
+                &mut async_wait_pinned,
+                &Barrier::new(),
+            ) == Ok(true)
+            {
+                break;
+            }
+            async_wait_pinned.await;
         }
     }
 }

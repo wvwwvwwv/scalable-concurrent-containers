@@ -8,11 +8,10 @@ A collection of high performance containers and utilities for concurrent and asy
 
 #### Features
 
-- Asynchronous and synchronous methods work in tandem.
-- Every blocking method has asynchronous counterpart.
+- Asynchronous methods for blocking operations.
 - Formally verified [EBR](#EBR) implementation.
+- No spin-locks and no busy loops.
 - Zero dependencies on other crates.
-- Zero spin-locks and busy-waiting.
 - [Serde](https://serde.rs) support: `features = ["serde"]`.
 
 #### Concurrent and Asynchronous Containers

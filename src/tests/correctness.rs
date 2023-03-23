@@ -227,7 +227,11 @@ mod hashmap_test {
                         let result = hashmap_cloned.insert_async(id, id).await;
                         assert!(result.is_ok());
                     } else if id % 3 == 0 {
-                        let entry = hashmap_cloned.entry(id);
+                        let entry = if id % 6 == 0 {
+                            hashmap_cloned.entry(id)
+                        } else {
+                            hashmap_cloned.entry_async(id).await
+                        };
                         let o = match entry {
                             Entry::Occupied(mut o) => {
                                 *o.get_mut() = id;
@@ -297,10 +301,9 @@ mod hashmap_test {
 
     #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-    async fn entry_next_retain() {
+    async fn insert_read_remove() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
-
-        for _ in 0..64 {
+        for _ in 0..256 {
             let num_tasks = 8;
             let workload_size = 256;
             let mut task_handles = Vec::with_capacity(num_tasks);
@@ -315,24 +318,11 @@ mod hashmap_test {
                         let result = hashmap_cloned.insert_async(id, id).await;
                         assert!(result.is_ok());
                     }
-
-                    let mut iterated = 0;
-                    let mut entry = hashmap_cloned.first_occupied_entry();
-                    while let Some(current_entry) = entry.take() {
-                        if range.contains(current_entry.key()) {
-                            iterated += 1;
-                        }
-                        entry = current_entry.next();
+                    for id in range.clone() {
+                        assert!(hashmap_cloned.read_async(&id, |_, _| ()).await.is_some());
                     }
-                    assert!(iterated >= workload_size);
-
-                    let (_, removed) = hashmap_cloned.retain_async(|k, _| !range.contains(k)).await;
-                    assert_eq!(removed, workload_size);
-
-                    let mut entry = hashmap_cloned.first_occupied_entry();
-                    while let Some(current_entry) = entry.take() {
-                        assert!(!range.contains(current_entry.key()));
-                        entry = current_entry.next();
+                    for id in range.clone() {
+                        assert!(hashmap_cloned.remove_async(&id).await.is_some());
                     }
                 }));
             }
@@ -347,10 +337,80 @@ mod hashmap_test {
 
     #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-    async fn retain_for_each() {
+    async fn entry_next_retain() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
+        for _ in 0..256 {
+            let num_tasks = 8;
+            let workload_size = 256;
+            let mut task_handles = Vec::with_capacity(num_tasks);
+            let barrier = Arc::new(AsyncBarrier::new(num_tasks));
+            for task_id in 0..num_tasks {
+                let barrier_cloned = barrier.clone();
+                let hashmap_cloned = hashmap.clone();
+                task_handles.push(tokio::task::spawn(async move {
+                    barrier_cloned.wait().await;
+                    let range = (task_id * workload_size)..((task_id + 1) * workload_size);
+                    for id in range.clone() {
+                        let result = hashmap_cloned.insert_async(id, id).await;
+                        assert!(result.is_ok());
+                    }
+                    for id in range.clone() {
+                        assert!(hashmap_cloned.read_async(&id, |_, _| ()).await.is_some());
+                    }
 
-        for _ in 0..64 {
+                    let mut call_async = false;
+                    let mut in_range = 0;
+                    let mut entry = if task_id % 2 == 0 {
+                        hashmap_cloned.first_occupied_entry()
+                    } else {
+                        hashmap_cloned.first_occupied_entry_async().await
+                    };
+                    while let Some(current_entry) = entry.take() {
+                        if range.contains(current_entry.key()) {
+                            in_range += 1;
+                        }
+                        if call_async {
+                            entry = current_entry.next_async().await;
+                        } else {
+                            entry = current_entry.next();
+                        }
+                        call_async = !call_async;
+                    }
+                    assert!(in_range >= workload_size, "{in_range} {workload_size}");
+
+                    let (_, removed) = hashmap_cloned.retain_async(|k, _| !range.contains(k)).await;
+                    assert_eq!(removed, workload_size);
+
+                    let mut entry = if task_id % 2 == 0 {
+                        hashmap_cloned.first_occupied_entry()
+                    } else {
+                        hashmap_cloned.first_occupied_entry_async().await
+                    };
+                    while let Some(current_entry) = entry.take() {
+                        assert!(!range.contains(current_entry.key()));
+                        if call_async {
+                            entry = current_entry.next_async().await;
+                        } else {
+                            entry = current_entry.next();
+                        }
+                        call_async = !call_async;
+                    }
+                }));
+            }
+
+            for r in futures::future::join_all(task_handles).await {
+                assert!(r.is_ok());
+            }
+
+            assert_eq!(hashmap.len(), 0);
+        }
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn retain_for_each_any() {
+        let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
+        for _ in 0..256 {
             let num_tasks = 8;
             let workload_size = 256;
             let mut task_handles = Vec::with_capacity(num_tasks);
@@ -378,9 +438,14 @@ mod hashmap_test {
                         })
                         .await;
                     assert!(iterated >= workload_size);
+                    assert!(hashmap_cloned.any(|k, _| range.contains(k)));
+                    assert!(hashmap_cloned.any_async(|k, _| range.contains(k)).await);
 
                     let (_, removed) = hashmap_cloned.retain_async(|k, _| !range.contains(k)).await;
                     assert_eq!(removed, workload_size);
+
+                    assert!(!hashmap_cloned.any(|k, _| range.contains(k)));
+                    assert!(!hashmap_cloned.any_async(|k, _| range.contains(k)).await);
                 }));
             }
 

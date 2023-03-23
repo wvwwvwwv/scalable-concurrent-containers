@@ -17,7 +17,7 @@ pub struct Bucket<K: Eq, V, const LOCK_FREE: bool> {
     /// The state of the [`Bucket`].
     state: AtomicU32,
 
-    /// The number of valid entries in the [`Bucket`].
+    /// The number of occupied entries in the [`Bucket`].
     num_entries: u32,
 
     /// The metadata of the [`Bucket`].
@@ -27,8 +27,39 @@ pub struct Bucket<K: Eq, V, const LOCK_FREE: bool> {
     wait_queue: WaitQueue,
 }
 
+/// [`EntryPtr`] points to an occupied slot in a [`Bucket`].
+pub struct EntryPtr<'b, K: Eq, V, const LOCK_FREE: bool> {
+    current_link_ptr: Ptr<'b, LinkedBucket<K, V, LINKED_BUCKET_LEN>>,
+    current_index: usize,
+}
+
 /// [`DataBlock`] is a type alias of a raw memory chunk that may contain entry instances.
 pub type DataBlock<K, V, const LEN: usize> = [MaybeUninit<(K, V)>; LEN];
+
+/// [`Metadata`] is a collection of metadata fields of [`Bucket`] and [`LinkedBucket`].
+pub(crate) struct Metadata<K: Eq, V, const LEN: usize> {
+    /// Linked list of entries.
+    link: AtomicArc<LinkedBucket<K, V, LINKED_BUCKET_LEN>>,
+
+    /// Bitmap for occupied slots.
+    occupied_bitmap: u32,
+
+    /// Bitmap for removed slots.
+    removed_bitmap: u32,
+
+    /// Partial hash array.
+    partial_hash_array: [u8; LEN],
+}
+
+/// [`Locker`] owns a [`Bucket`] by holding the exclusive lock on it.
+pub struct Locker<'b, K: Eq, V, const LOCK_FREE: bool> {
+    bucket: &'b mut Bucket<K, V, LOCK_FREE>,
+}
+
+/// [`Locker`] owns a [`Bucket`] by holding a shared lock on it.
+pub struct Reader<'b, K: Eq, V, const LOCK_FREE: bool> {
+    bucket: &'b Bucket<K, V, LOCK_FREE>,
+}
 
 /// The size of the linked data block.
 const LINKED_BUCKET_LEN: usize = BUCKET_LEN / 4;
@@ -41,13 +72,13 @@ const SLOCK_MAX: u32 = LOCK - 1;
 const LOCK_MASK: u32 = LOCK | SLOCK_MAX;
 
 impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
-    /// Returns true if the [`Bucket`] has been killed.
+    /// Returns `true` if the [`Bucket`] has been killed.
     #[inline]
     pub(crate) fn killed(&self) -> bool {
         (self.state.load(Relaxed) & KILLED) == KILLED
     }
 
-    /// Returns the number of entries in the [`Bucket`].
+    /// Returns the number of occupied and reachable slots in the [`Bucket`].
     #[inline]
     pub(crate) fn num_entries(&self) -> usize {
         self.num_entries as usize
@@ -55,8 +86,9 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
 
     /// Returns `true` if the [`Bucket`] needs to be rebuilt.
     ///
-    /// If `LOCK_FREE == true`, removed entries are not dropped occupying the slots, therefore
-    /// rebuilding the [`Bucket`] might be needed to keep the [`Bucket`] as small as possible.
+    /// If `LOCK_FREE == true`, removed entries are not dropped, still occupying the slots,
+    /// therefore rebuilding the [`Bucket`] might be needed to keep the [`Bucket`] as small as
+    /// possible.
     #[inline]
     pub(crate) fn need_rebuild(&self) -> bool {
         self.metadata.removed_bitmap == (u32::MAX >> (32 - BUCKET_LEN))
@@ -111,7 +143,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
         }
     }
 
-    /// Drops entries in the given [`DataBlock`].
+    /// Drops entries in the given [`DataBlock`] using the information stored in the [`Bucket`].
     ///
     /// The [`Bucket`] and the [`DataBlock`] should never be used afterwards.
     #[inline]
@@ -133,7 +165,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
         }
     }
 
-    /// Gets an [`EntryPtr`] pointing to an entry associated with the given key.
+    /// Gets an [`EntryPtr`] pointing to the slot containing the given key.
     #[inline]
     fn get<'b, Q>(
         &self,
@@ -228,9 +260,9 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
         None
     }
 
-    /// Searches for a next closest valid entry slot number from the current one in the bitmap.
+    /// Searches for the next closest occupied entry slot number from the current one in the bitmap.
     ///
-    /// If the specified slot is valid, it returns the specified one.
+    /// If the specified slot is occupied and reachable, just returns its index number.
     fn next_entry<Q, const LEN: usize>(
         metadata: &Metadata<K, V, LEN>,
         current_index: usize,
@@ -285,6 +317,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
 }
 
 impl<K: Eq, V, const LOCK_FREE: bool> Default for Bucket<K, V, LOCK_FREE> {
+    #[inline]
     fn default() -> Self {
         Bucket::<K, V, LOCK_FREE> {
             state: AtomicU32::new(0),
@@ -295,13 +328,8 @@ impl<K: Eq, V, const LOCK_FREE: bool> Default for Bucket<K, V, LOCK_FREE> {
     }
 }
 
-pub struct EntryPtr<'b, K: Eq, V, const LOCK_FREE: bool> {
-    current_link_ptr: Ptr<'b, LinkedBucket<K, V, LINKED_BUCKET_LEN>>,
-    current_index: usize,
-}
-
 impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
-    /// Creates a new [`EntryPtr`].
+    /// Creates a new invalid [`EntryPtr`].
     #[inline]
     pub(crate) fn new(_barrier: &'b Barrier) -> EntryPtr<'b, K, V, LOCK_FREE> {
         EntryPtr {
@@ -310,15 +338,15 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
         }
     }
 
-    /// Returns `true` if the [`EntryPtr`] points to a valid entry or fused.
+    /// Returns `true` if the [`EntryPtr`] points to an occupied entry or fused.
     #[inline]
     pub(crate) fn is_valid(&self) -> bool {
         self.current_index != BUCKET_LEN
     }
 
-    /// Moves the [`EntryPtr`] to point to the next valid entry.
+    /// Moves the [`EntryPtr`] to point to the next occupied entry.
     ///
-    /// Returns `true` if it successfully found the next valid entry.
+    /// Returns `true` if it successfully found the next occupied entry.
     #[inline]
     pub(crate) fn next(&mut self, bucket: &Bucket<K, V, LOCK_FREE>, barrier: &'b Barrier) -> bool {
         if self.current_index != usize::MAX {
@@ -340,7 +368,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
 
     /// Gets a reference to the entry.
     ///
-    /// The [`EntryPtr`] must point to a valid entry.
+    /// The [`EntryPtr`] must point to an occupied entry.
     #[inline]
     pub(crate) fn get(&self, data_block: &'b DataBlock<K, V, BUCKET_LEN>) -> &'b (K, V) {
         debug_assert_ne!(self.current_index, usize::MAX);
@@ -354,7 +382,8 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
 
     /// Gets a mutable reference to the entry.
     ///
-    /// The [`EntryPtr`] must point to a valid entry, and the associated [`Bucket`] must be locked.
+    /// The [`EntryPtr`] must point to an occupied entry, and the associated [`Bucket`] must be
+    /// locked.
     #[allow(clippy::mut_from_ref)]
     #[inline]
     pub(crate) fn get_mut(
@@ -373,7 +402,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
 
     /// Gets the partial hash value of the entry.
     ///
-    /// The [`EntryPtr`] must point to a valid entry.
+    /// The [`EntryPtr`] must point to an occupied entry.
     #[inline]
     pub(crate) fn partial_hash(&self, bucket: &Bucket<K, V, LOCK_FREE>) -> u8 {
         debug_assert_ne!(self.current_index, usize::MAX);
@@ -439,13 +468,13 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
         }
     }
 
-    /// Moves the [`EntryPtr`] to the next valid entry in the [`Bucket`].
+    /// Moves the [`EntryPtr`] to the next occupied entry in the [`Bucket`].
     fn next_entry<const LEN: usize>(
         &mut self,
         metadata: &Metadata<K, V, LEN>,
         barrier: &'b Barrier,
     ) -> bool {
-        // Search for the next valid entry.
+        // Search for the next occupied entry.
         let current_index = if self.current_index == LEN {
             0
         } else {
@@ -466,11 +495,6 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
 unsafe impl<'b, K: Eq + Send, V: Send, const LOCK_FREE: bool> Send
     for EntryPtr<'b, K, V, LOCK_FREE>
 {
-}
-
-/// [`Locker`] owns a [`Bucket`] by holding the exclusive lock.
-pub struct Locker<'b, K: Eq, V, const LOCK_FREE: bool> {
-    bucket: &'b mut Bucket<K, V, LOCK_FREE>,
 }
 
 impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
@@ -559,15 +583,9 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         }
     }
 
-    /// Returns a reference to the [`Bucket`].
-    #[inline]
-    pub(crate) fn bucket(&self) -> &Bucket<K, V, LOCK_FREE> {
-        self.bucket
-    }
-
     /// Gets an [`EntryPtr`] pointing to an entry associated with the given key.
     ///
-    /// The returned [`EntryPtr`] points to a valid entry if the key is found.
+    /// The returned [`EntryPtr`] points to an occupied entry if the key is found.
     #[inline]
     pub(crate) fn get<Q>(
         &self,
@@ -817,11 +835,6 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Drop for Locker<'b, K, V, LOCK_FREE> {
     }
 }
 
-/// [`Locker`] owns a [`Bucket`] by holding a shared lock.
-pub struct Reader<'b, K: Eq, V, const LOCK_FREE: bool> {
-    bucket: &'b Bucket<K, V, LOCK_FREE>,
-}
-
 impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
     /// Locks the given [`Bucket`].
     ///
@@ -922,21 +935,6 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Drop for Reader<'b, K, V, LOCK_FREE> {
     fn drop(&mut self) {
         Self::release(self.bucket);
     }
-}
-
-/// [`Metadata`] is a collection of metadata fields of [`Bucket`] and [`LinkedBucket`].
-pub(crate) struct Metadata<K: Eq, V, const LEN: usize> {
-    /// Linked list of entries.
-    link: AtomicArc<LinkedBucket<K, V, LINKED_BUCKET_LEN>>,
-
-    /// Bitmap for occupied slots.
-    occupied_bitmap: u32,
-
-    /// Bitmap for removed slots.
-    removed_bitmap: u32,
-
-    /// Partial hash array.
-    partial_hash_array: [u8; LEN],
 }
 
 impl<K: Eq, V, const LEN: usize> Default for Metadata<K, V, LEN> {
@@ -1042,7 +1040,6 @@ mod test {
                     } else {
                         assert_eq!(
                             exclusive_locker
-                                .bucket()
                                 .search(&data_block_clone, &task_id, partial_hash, &barrier)
                                 .unwrap(),
                             &(task_id, 0_usize)

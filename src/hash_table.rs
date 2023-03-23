@@ -311,7 +311,7 @@ where
                 if entry_ptr.is_valid() && condition(&entry_ptr.get(data_block).1) {
                     let result = locker.erase(data_block, &mut entry_ptr);
                     if shrinkable
-                        && locker.bucket().num_entries() <= 1
+                        && locker.num_entries() <= 1
                         && current_array.within_sampling_range(index)
                     {
                         drop(locker);
@@ -399,7 +399,7 @@ where
                 return Ok((locker, data_block, entry_ptr, index));
             }
 
-            // Reaching here means that `self.array` has been updated.
+            // Reaching here means that `self.bucket_array()` has been updated.
         }
     }
 
@@ -461,8 +461,8 @@ where
         Q: Eq + Hash + ?Sized,
         D: DeriveAsyncWait,
     {
-        debug_assert!(!old_locker.bucket().killed());
-        if old_locker.bucket().num_entries() != 0 {
+        debug_assert!(!old_locker.killed());
+        if old_locker.num_entries() != 0 {
             let target_index = if old_array.num_buckets() >= current_array.num_buckets() {
                 let ratio = old_array.num_buckets() / current_array.num_buckets();
                 old_index / ratio
@@ -477,7 +477,7 @@ where
             let mut max_index = 0;
             let mut entry_ptr = EntryPtr::new(barrier);
             let old_data_block = old_array.data_block(old_index);
-            while entry_ptr.next(old_locker.bucket(), barrier) {
+            while entry_ptr.next(old_locker, barrier) {
                 let old_entry = entry_ptr.get(old_data_block);
                 let (new_index, partial_hash) =
                     if old_array.num_buckets() >= current_array.num_buckets() {
@@ -485,7 +485,7 @@ where
                             current_array.calculate_bucket_index(self.hash(old_entry.0.borrow())),
                             target_index
                         );
-                        (target_index, entry_ptr.partial_hash(old_locker.bucket()))
+                        (target_index, entry_ptr.partial_hash(&*old_locker))
                     } else {
                         let hash = self.hash(old_entry.0.borrow());
                         let new_index = current_array.calculate_bucket_index(hash);
@@ -543,6 +543,15 @@ where
         }
         old_locker.kill(barrier);
         Ok(())
+    }
+
+    /// Clears the old array.
+    fn clear_old_array(&self, current_array: &BucketArray<K, V, LOCK_FREE>, barrier: &Barrier) {
+        while !current_array.old_array(barrier).is_null() {
+            if self.partial_rehash::<_, _, false>(current_array, &mut (), barrier) == Ok(true) {
+                break;
+            }
+        }
     }
 
     /// Relocates a fixed number of buckets from the old array to the current array.
@@ -818,6 +827,7 @@ where
 
                     if reader_guard.0 == current_array.num_buckets() {
                         // All the buckets are empty and locked.
+                        reader_guard.1 = true;
                         self.bucket_array().swap((None, Tag::None), Relaxed);
                         return;
                     }

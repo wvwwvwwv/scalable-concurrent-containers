@@ -2,9 +2,10 @@
 
 1.3.0
 
-* `Hash*::remove*` more aggressively clears the entire hash table.
 * Add `HashMap::first_occupied_entry*` for more flexible mutable iteration over entries.
 * Add `ebr::Arc::get_ref_with`.
+* Implement `Send` for `hash_map::Entry` if `(K, V): Send`.
+* `Hash*::remove*` methods may deallocate the entire hash table when they find the container empty.
 
 1.2.0
 
