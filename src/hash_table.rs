@@ -170,7 +170,7 @@ where
         barrier: &Barrier,
     ) -> Result<Option<(K, V)>, (K, V)> {
         match self.acquire_entry(&key, hash, async_wait, barrier) {
-            Ok((mut locker, data_block, entry_ptr)) => {
+            Ok((mut locker, data_block, entry_ptr, _)) => {
                 if entry_ptr.is_valid() {
                     return Ok(Some((key, val)));
                 }
@@ -342,6 +342,7 @@ where
             Locker<'b, K, V, LOCK_FREE>,
             &'b DataBlock<K, V, BUCKET_LEN>,
             EntryPtr<'b, K, V, LOCK_FREE>,
+            usize,
         ),
         (),
     >
@@ -395,7 +396,7 @@ where
                     BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
                     barrier,
                 );
-                return Ok((locker, data_block, entry_ptr));
+                return Ok((locker, data_block, entry_ptr, index));
             }
 
             // Reaching here means that `self.array` has been updated.

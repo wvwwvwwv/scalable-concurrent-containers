@@ -80,7 +80,7 @@ assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 3);
 let future_upsert = hashmap.upsert_async(2, || 1, |_, v| *v = 3);
 ```
 
-There is no method to confine the lifetime of references derived from an [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html), and it is illegal to let them live as long as the [HashMap](#HashMap). Therefore [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, it provides a number of methods to iterate over entries: `any`, `any_async`, `for_each`, `for_each_async`, `scan`, `scan_async`, `retain`, and `retain_async`.
+There is no method to confine the lifetime of references derived from an [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html), and it is illegal to let them live as long as the [HashMap](#HashMap). Therefore [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, it provides a number of methods to iterate over entries: `any`, `any_async`, `for_each`, `for_each_async`, `OccupiedEntry::next`, `OccupiedEntry::next_async`, `scan`, `scan_async`, `retain`, and `retain_async`.
 
 ```rust
 use scc::HashMap;
@@ -103,6 +103,12 @@ assert!(hashmap.any(|k, _| *k == 3));
 
 // `retain` enables entry removal.
 assert_eq!(hashmap.retain(|k, v| *k == 1 && *v == 0), (1, 2));
+
+// `hash_map::OccupiedEntry` also can return the next closest occupied entry.
+let first_entry = hashmap.first_occupied_entry();
+let second_entry = first_entry.and_then(|e| e.next());
+assert!(first_entry.is_some() && second_entry.is_some());
+assert!(second_entry.and_then(|e| e.next()).is_none());
 
 // Asynchronous iteration over entries using `scan_async` and `for_each_async`.
 let future_scan = hashmap.scan_async(|k, v| println!("{k} {v}"));

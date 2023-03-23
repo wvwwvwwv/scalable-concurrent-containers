@@ -45,6 +45,24 @@ where
     build_hasher: H,
 }
 
+/// [`Visitor`] iterates over all the key-value pairs in the [`HashIndex`].
+///
+/// It is guaranteed to visit all the key-value pairs that outlive the [`Visitor`]. However, the
+/// same key-value pair can be visited more than once.
+pub struct Visitor<'h, 'b, K, V, H>
+where
+    K: 'static + Clone + Eq + Hash + Sync,
+    V: 'static + Clone + Sync,
+    H: BuildHasher,
+{
+    hashindex: &'h HashIndex<K, V, H>,
+    current_array: Option<&'b BucketArray<K, V, true>>,
+    current_index: usize,
+    current_bucket: Option<&'b Bucket<K, V, true>>,
+    current_entry_ptr: EntryPtr<'b, K, V, true>,
+    barrier: &'b Barrier,
+}
+
 impl<K, V, H> HashIndex<K, V, H>
 where
     K: 'static + Clone + Eq + Hash + Sync,
@@ -190,7 +208,7 @@ where
         F: FnOnce(&K, &mut V) -> R,
     {
         let barrier = Barrier::new();
-        let (mut locker, data_block, mut entry_ptr) = self
+        let (mut locker, data_block, mut entry_ptr, _) = self
             .acquire_entry(key, self.hash(key), &mut (), &barrier)
             .ok()?;
         if entry_ptr.is_valid() {
@@ -232,7 +250,7 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if let Ok((mut locker, data_block, mut entry_ptr)) =
+            if let Ok((mut locker, data_block, mut entry_ptr, _)) =
                 self.acquire_entry(key, hash, &mut async_wait_pinned, &Barrier::new())
             {
                 if entry_ptr.is_valid() {
@@ -844,24 +862,6 @@ where
         }
         false
     }
-}
-
-/// Visitor traverses all the key-value pairs in the [`HashIndex`].
-///
-/// It is guaranteed to visit all the key-value pairs that outlive the Visitor.
-/// However, the same key-value pair can be visited more than once.
-pub struct Visitor<'h, 'b, K, V, H>
-where
-    K: 'static + Clone + Eq + Hash + Sync,
-    V: 'static + Clone + Sync,
-    H: BuildHasher,
-{
-    hashindex: &'h HashIndex<K, V, H>,
-    current_array: Option<&'b BucketArray<K, V, true>>,
-    current_index: usize,
-    current_bucket: Option<&'b Bucket<K, V, true>>,
-    current_entry_ptr: EntryPtr<'b, K, V, true>,
-    barrier: &'b Barrier,
 }
 
 impl<'h, 'b, K, V, H> Iterator for Visitor<'h, 'b, K, V, H>

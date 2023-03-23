@@ -463,6 +463,12 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
     }
 }
 
+unsafe impl<'b, K: Eq + Send, V: Send, const LOCK_FREE: bool> Send
+    for EntryPtr<'b, K, V, LOCK_FREE>
+{
+}
+
+/// [`Locker`] owns a [`Bucket`] by holding the exclusive lock.
 pub struct Locker<'b, K: Eq, V, const LOCK_FREE: bool> {
     bucket: &'b mut Bucket<K, V, LOCK_FREE>,
 }
@@ -811,6 +817,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Drop for Locker<'b, K, V, LOCK_FREE> {
     }
 }
 
+/// [`Locker`] owns a [`Bucket`] by holding a shared lock.
 pub struct Reader<'b, K: Eq, V, const LOCK_FREE: bool> {
     bucket: &'b Bucket<K, V, LOCK_FREE>,
 }

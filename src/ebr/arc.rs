@@ -83,6 +83,24 @@ impl<T> Arc<T> {
         Ptr::from(self.instance_ptr.as_ptr())
     }
 
+    /// Returns a reference to the underlying instance with the supplied [`Barrier`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::{Arc, Barrier};
+    ///
+    /// let arc: Arc<usize> = Arc::new(37);
+    /// let barrier = Barrier::new();
+    /// let ref_b = arc.get_ref_with(&barrier);
+    /// assert_eq!(*ref_b, 37);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn get_ref_with<'b>(&self, _barrier: &'b Barrier) -> &'b T {
+        unsafe { std::mem::transmute(&**self.underlying()) }
+    }
+
     /// Returns a mutable reference to the underlying instance if the instance is exclusively
     /// owned.
     ///
