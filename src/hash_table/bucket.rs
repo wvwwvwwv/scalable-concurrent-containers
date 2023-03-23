@@ -3,6 +3,7 @@ use crate::wait_queue::{AsyncWait, WaitQueue};
 
 use std::borrow::Borrow;
 use std::mem::{needs_drop, MaybeUninit};
+use std::ops::{Deref, DerefMut};
 use std::ptr;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -12,7 +13,7 @@ use std::sync::atomic::{fence, AtomicU32};
 pub const BUCKET_LEN: usize = 32;
 
 /// [`Bucket`] is a small fixed-size hash table with linear probing.
-pub(crate) struct Bucket<K: Eq, V, const LOCK_FREE: bool> {
+pub struct Bucket<K: Eq, V, const LOCK_FREE: bool> {
     /// The state of the [`Bucket`].
     state: AtomicU32,
 
@@ -95,6 +96,19 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
         }
 
         None
+    }
+
+    /// Kills the bucket by purging the data.
+    #[inline]
+    pub(crate) fn kill(&mut self, barrier: &Barrier) {
+        if LOCK_FREE {
+            self.metadata.removed_bitmap = self.metadata.occupied_bitmap;
+        }
+        self.state.fetch_or(KILLED, Release);
+        self.num_entries = 0;
+        if !self.metadata.link.load(Relaxed, barrier).is_null() {
+            self.clear_links(barrier);
+        }
     }
 
     /// Drops entries in the given [`DataBlock`].
@@ -516,6 +530,29 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
             })
     }
 
+    /// Releases the lock.
+    #[inline]
+    pub(crate) fn release(bucket: &mut Bucket<K, V, LOCK_FREE>) {
+        let mut current = bucket.state.load(Relaxed);
+        loop {
+            let wakeup = (current & WAITING) == WAITING;
+            match bucket.state.compare_exchange(
+                current,
+                current & (!(WAITING | LOCK)),
+                Release,
+                Relaxed,
+            ) {
+                Ok(_) => {
+                    if wakeup {
+                        bucket.wait_queue.signal();
+                    }
+                    break;
+                }
+                Err(result) => current = result,
+            }
+        }
+    }
+
     /// Returns a reference to the [`Bucket`].
     #[inline]
     pub(crate) fn bucket(&self) -> &Bucket<K, V, LOCK_FREE> {
@@ -707,19 +744,6 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         }
     }
 
-    /// Kills the bucket by purging the data.
-    #[inline]
-    pub(crate) fn kill(&mut self, barrier: &Barrier) {
-        if LOCK_FREE {
-            self.bucket.metadata.removed_bitmap = self.bucket.metadata.occupied_bitmap;
-        }
-        self.bucket.state.fetch_or(KILLED, Release);
-        self.bucket.num_entries = 0;
-        if !self.bucket.metadata.link.load(Relaxed, barrier).is_null() {
-            self.bucket.clear_links(barrier);
-        }
-    }
-
     /// Gets the most optimal free slot index from the given bitmap.
     fn get_free_index<const LEN: usize>(bitmap: u32, preferred_index: usize) -> usize {
         let mut free_index = (bitmap | ((1_u32 << preferred_index) - 1)).trailing_ones() as usize;
@@ -765,27 +789,25 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     }
 }
 
+impl<'b, K: Eq, V, const LOCK_FREE: bool> Deref for Locker<'b, K, V, LOCK_FREE> {
+    type Target = Bucket<K, V, LOCK_FREE>;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.bucket
+    }
+}
+
+impl<'b, K: Eq, V, const LOCK_FREE: bool> DerefMut for Locker<'b, K, V, LOCK_FREE> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.bucket
+    }
+}
+
 impl<'b, K: Eq, V, const LOCK_FREE: bool> Drop for Locker<'b, K, V, LOCK_FREE> {
     #[inline]
     fn drop(&mut self) {
-        let mut current = self.bucket.state.load(Relaxed);
-        loop {
-            let wakeup = (current & WAITING) == WAITING;
-            match self.bucket.state.compare_exchange(
-                current,
-                current & (!(WAITING | LOCK)),
-                Release,
-                Relaxed,
-            ) {
-                Ok(_) => {
-                    if wakeup {
-                        self.bucket.wait_queue.signal();
-                    }
-                    break;
-                }
-                Err(result) => current = result,
-            }
-        }
+        Self::release(self.bucket);
     }
 }
 
@@ -833,14 +855,8 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
         })
     }
 
-    /// Returns a reference to the [`Bucket`].
-    #[inline]
-    pub(crate) fn bucket(&self) -> &'b Bucket<K, V, LOCK_FREE> {
-        self.bucket
-    }
-
     /// Tries to lock the [`Bucket`].
-    fn try_lock(
+    pub(crate) fn try_lock(
         bucket: &'b Bucket<K, V, LOCK_FREE>,
         _barrier: &'b Barrier,
     ) -> Result<Option<Reader<'b, K, V, LOCK_FREE>>, ()> {
@@ -861,29 +877,43 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
             Err(())
         }
     }
-}
 
-impl<'b, K: Eq, V, const LOCK_FREE: bool> Drop for Reader<'b, K, V, LOCK_FREE> {
+    /// Releases the lock.
     #[inline]
-    fn drop(&mut self) {
-        let mut current = self.bucket.state.load(Relaxed);
+    pub(crate) fn release(bucket: &Bucket<K, V, LOCK_FREE>) {
+        let mut current = bucket.state.load(Relaxed);
         loop {
             let wakeup = (current & WAITING) == WAITING;
             let next = (current - 1) & !(WAITING);
-            match self
-                .bucket
+            match bucket
                 .state
                 .compare_exchange(current, next, Relaxed, Relaxed)
             {
                 Ok(_) => {
                     if wakeup {
-                        self.bucket.wait_queue.signal();
+                        bucket.wait_queue.signal();
                     }
                     break;
                 }
                 Err(result) => current = result,
             }
         }
+    }
+}
+
+impl<'b, K: Eq, V, const LOCK_FREE: bool> Deref for Reader<'b, K, V, LOCK_FREE> {
+    type Target = &'b Bucket<K, V, LOCK_FREE>;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.bucket
+    }
+}
+
+impl<'b, K: Eq, V, const LOCK_FREE: bool> Drop for Reader<'b, K, V, LOCK_FREE> {
+    #[inline]
+    fn drop(&mut self) {
+        Self::release(self.bucket);
     }
 }
 
@@ -1016,7 +1046,6 @@ mod test {
                     let read_locker = Reader::lock(&*bucket_clone, &barrier).unwrap();
                     assert_eq!(
                         read_locker
-                            .bucket()
                             .search(&data_block_clone, &task_id, partial_hash, &barrier)
                             .unwrap(),
                         &(task_id, 0_usize)
@@ -1054,7 +1083,7 @@ mod test {
 
         let mut xlocker =
             Locker::lock(unsafe { bucket.get_mut().unwrap() }, &epoch_barrier).unwrap();
-        xlocker.kill(&epoch_barrier);
+        (*xlocker).kill(&epoch_barrier);
         drop(xlocker);
 
         assert!(bucket.killed());
@@ -1117,7 +1146,6 @@ mod test {
                                 assert_eq!(
                                     read_locker
                                         .unwrap()
-                                        .bucket()
                                         .search(
                                             &data_block_clone,
                                             &task_id,

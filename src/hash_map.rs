@@ -576,6 +576,7 @@ where
     /// assert!(hashmap.remove(&1).is_none());
     /// assert!(hashmap.insert(1, 0).is_ok());
     /// assert_eq!(hashmap.remove(&1).unwrap(), (1, 0));
+    /// assert_eq!(hashmap.capacity(), 0);
     /// ```
     #[inline]
     pub fn remove<Q>(&self, key: &Q) -> Option<(K, V)>
@@ -620,6 +621,7 @@ where
     /// assert!(hashmap.insert(1, 0).is_ok());
     /// assert!(hashmap.remove_if(&1, |v| *v == 1).is_none());
     /// assert_eq!(hashmap.remove_if(&1, |v| *v == 0).unwrap(), (1, 0));
+    /// assert_eq!(hashmap.capacity(), 0);
     /// ```
     #[inline]
     pub fn remove_if<Q, F: FnOnce(&V) -> bool>(&self, key: &Q, condition: F) -> Option<(K, V)>
@@ -879,7 +881,7 @@ where
                 if let Some(locker) = Reader::lock(bucket, &barrier) {
                     let data_block = current_array.data_block(index);
                     let mut entry_ptr = EntryPtr::new(&barrier);
-                    while entry_ptr.next(locker.bucket(), &barrier) {
+                    while entry_ptr.next(*locker, &barrier) {
                         let (k, v) = entry_ptr.get(data_block);
                         if pred(k, v) {
                             return true;
@@ -951,7 +953,7 @@ where
                             if let Some(reader) = reader {
                                 let data_block = current_array.data_block(index);
                                 let mut entry_ptr = EntryPtr::new(&barrier);
-                                while entry_ptr.next(reader.bucket(), &barrier) {
+                                while entry_ptr.next(*reader, &barrier) {
                                     let (k, v) = entry_ptr.get(data_block);
                                     if pred(k, v) {
                                         // Found one entry satisfying the predicate.
@@ -1712,6 +1714,8 @@ where
     /// if let Entry::Occupied(o) = hashmap.entry(11) {
     ///     assert_eq!(o.remove_entry(), (11, 17));
     /// };
+    ///
+    /// assert_eq!(hashmap.capacity(), 0);
     /// ```
     #[inline]
     #[must_use]
@@ -1725,11 +1729,11 @@ where
             let barrier = Barrier::new();
             let hashmap = self.hashmap;
             if let Some(current_array) = hashmap.bucket_array().load(Acquire, &barrier).as_ref() {
-                let locker = self.locker;
                 if current_array.old_array(&barrier).is_null() {
                     let index = current_array.calculate_bucket_index(self.hash);
                     if current_array.within_sampling_range(index) {
-                        hashmap.try_shrink(current_array, locker, index, &barrier);
+                        drop(self);
+                        hashmap.try_shrink(current_array, index, &barrier);
                     }
                 }
             }

@@ -1,5 +1,9 @@
 # Changelog
 
+1.2.1
+
+* `Hash*::remove*` more aggressively clears the entire hash table.
+
 1.2.0
 
 * API update 1: `AtomicArc::update_tag_if` now receives `fetch_order`, and the closure can access the pointer value.

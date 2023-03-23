@@ -10,7 +10,6 @@ use crate::wait_queue::DeriveAsyncWait;
 
 use std::borrow::Borrow;
 use std::hash::{BuildHasher, Hash, Hasher};
-use std::ptr;
 use std::sync::atomic::fence;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
@@ -241,7 +240,7 @@ where
                     Reader::lock(bucket, barrier)
                 };
                 if let Some(reader) = lock_result {
-                    if let Some((key, val)) = reader.bucket().search(
+                    if let Some((key, val)) = reader.search(
                         current_array.data_block(index),
                         key,
                         BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
@@ -315,7 +314,8 @@ where
                         && locker.bucket().num_entries() <= 1
                         && current_array.within_sampling_range(index)
                     {
-                        self.try_shrink(current_array, locker, index, barrier);
+                        drop(locker);
+                        self.try_shrink(current_array, index, barrier);
                     }
                     return Ok(post_processor(Some(result)));
                 }
@@ -668,40 +668,13 @@ where
     fn try_shrink(
         &self,
         current_array: &BucketArray<K, V, LOCK_FREE>,
-        mut locker: Locker<K, V, LOCK_FREE>,
         index: usize,
         barrier: &Barrier,
     ) {
         debug_assert!(current_array.old_array(barrier).is_null());
 
-        let minimum_capacity = self.minimum_capacity();
-        if locker.bucket().num_entries() == 0
-            && current_array.num_buckets() == 1
-            && minimum_capacity == 0
-        {
-            // Remove the current array entirely.
-            let mut current_array_ptr = self.bucket_array().load(Relaxed, barrier);
-            while current_array_ptr
-                .as_ref()
-                .map_or(false, |c| ptr::eq(c, current_array))
-            {
-                if let Err((_, actual)) = self.bucket_array().compare_exchange(
-                    current_array_ptr,
-                    (None, current_array_ptr.tag()),
-                    Relaxed,
-                    Relaxed,
-                    barrier,
-                ) {
-                    current_array_ptr = actual;
-                } else {
-                    break;
-                }
-            }
-            locker.kill(barrier);
-        } else if current_array.num_entries() > minimum_capacity.next_power_of_two() {
+        if current_array.num_entries() > self.minimum_capacity().next_power_of_two() {
             // Check if the hash table can be shrunk.
-            drop(locker);
-
             let sample_size = current_array.sample_size();
             let threshold = sample_size * BUCKET_LEN / 16;
             let mut num_entries = 0;
@@ -713,9 +686,8 @@ where
             }) {
                 self.try_resize(index, barrier);
             }
-        } else if LOCK_FREE && locker.bucket().need_rebuild() {
+        } else if LOCK_FREE && current_array.bucket(index).need_rebuild() {
             // Check if the hash table can be rebuilt.
-            drop(locker);
             self.try_rebuild(current_array, index, barrier);
         }
     }
@@ -813,6 +785,43 @@ where
                     return;
                 }
 
+                if estimated_num_entries == 0 && self.minimum_capacity() == 0 {
+                    // Try to clear the hash table with all the buckets read-locked.
+                    let mut reader_guard = ExitGuard::new(
+                        (0, false),
+                        |(num_locked_buckets, success): (usize, bool)| {
+                            for i in 0..num_locked_buckets {
+                                let bucket = current_array.bucket_mut(i);
+                                if success {
+                                    bucket.kill(barrier);
+                                }
+                                Reader::release(bucket);
+                            }
+                        },
+                    );
+
+                    for i in 0..current_array.num_buckets() {
+                        if let Ok(Some(reader)) = Reader::try_lock(current_array.bucket(i), barrier)
+                        {
+                            if reader.num_entries() != 0 {
+                                break;
+                            }
+
+                            // The bucket will be unlocked later.
+                            std::mem::forget(reader);
+                            reader_guard.0 += 1;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if reader_guard.0 == current_array.num_buckets() {
+                        // All the buckets are empty and locked.
+                        self.bucket_array().swap((None, Tag::None), Relaxed);
+                        return;
+                    }
+                }
+
                 let allocated_array: Option<Arc<BucketArray<K, V, LOCK_FREE>>> = None;
                 let mut mutex_guard = ExitGuard::new(allocated_array, |allocated_array| {
                     if let Some(allocated_array) = allocated_array {
@@ -821,15 +830,8 @@ where
                             .swap((Some(allocated_array), Tag::None), Release);
                     } else {
                         // Release the lock.
-                        self.bucket_array().update_tag_if(
-                            Tag::None,
-                            |ptr| {
-                                debug_assert_eq!(ptr.tag(), Tag::First);
-                                true
-                            },
-                            Relaxed,
-                            Relaxed,
-                        );
+                        self.bucket_array()
+                            .update_tag_if(Tag::None, |_| true, Relaxed, Relaxed);
                     }
                 });
 
