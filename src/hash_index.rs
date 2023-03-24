@@ -49,7 +49,7 @@ where
 ///
 /// It is guaranteed to visit all the key-value pairs that outlive the [`Visitor`]. However, the
 /// same key-value pair can be visited more than once.
-pub struct Visitor<'h, 'b, K, V, H>
+pub struct Visitor<'h, 'b, K, V, H = RandomState>
 where
     K: 'static + Clone + Eq + Hash + Sync,
     V: 'static + Clone + Sync,
@@ -629,7 +629,7 @@ where
     /// assert_eq!(hashindex_default.capacity(), 0);
     ///
     /// assert!(hashindex_default.insert(1, 0).is_ok());
-    /// assert_eq!(hashindex_default.capacity(), 32);
+    /// assert_eq!(hashindex_default.capacity(), 64);
     ///
     /// let hashindex: HashIndex<u64, u32, RandomState> = HashIndex::with_capacity(1000000);
     /// assert_eq!(hashindex.capacity(), 1048576);

@@ -87,7 +87,7 @@ where
 }
 
 /// [`OccupiedEntry`] is a view into an occupied entry in a [`HashMap`].
-pub struct OccupiedEntry<'h, K, V, H>
+pub struct OccupiedEntry<'h, K, V, H = RandomState>
 where
     K: Eq + Hash + Sync,
     V: Sync,
@@ -101,7 +101,7 @@ where
 }
 
 /// [`VacantEntry`] is a view into a vacant entry in a [`HashMap`].
-pub struct VacantEntry<'h, K, V, H>
+pub struct VacantEntry<'h, K, V, H = RandomState>
 where
     K: Eq + Hash + Sync,
     V: Sync,
@@ -119,7 +119,7 @@ where
 ///
 /// The [`HashMap`] does not shrink the capacity below the reserved capacity.
 #[derive(Debug)]
-pub struct Reserve<'h, K, V, H>
+pub struct Reserve<'h, K, V, H = RandomState>
 where
     K: Eq + Hash + Sync,
     V: Sync,
@@ -1367,7 +1367,7 @@ where
     /// assert_eq!(hashmap_default.capacity(), 0);
     ///
     /// assert!(hashmap_default.insert(1, 0).is_ok());
-    /// assert_eq!(hashmap_default.capacity(), 32);
+    /// assert_eq!(hashmap_default.capacity(), 64);
     ///
     /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::with_capacity(1000000);
     /// assert_eq!(hashmap.capacity(), 1048576);

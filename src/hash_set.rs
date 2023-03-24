@@ -18,6 +18,11 @@ where
     map: HashMap<K, (), H>,
 }
 
+/// [`Reserve`] keeps the capacity of the associated [`HashSet`] higher than a certain level.
+///
+/// The [`HashSet`] does not shrink the capacity below the reserved capacity.
+pub type Reserve<'h, K, H = RandomState> = super::hash_map::Reserve<'h, K, (), H>;
+
 impl<K, H> HashSet<K, H>
 where
     K: Eq + Hash + Sync,
@@ -629,7 +634,7 @@ where
     /// assert_eq!(hashset_default.capacity(), 0);
     ///
     /// assert!(hashset_default.insert(1).is_ok());
-    /// assert_eq!(hashset_default.capacity(), 32);
+    /// assert_eq!(hashset_default.capacity(), 64);
     ///
     /// let hashset: HashSet<u64, RandomState> = HashSet::with_capacity(1000000);
     /// assert_eq!(hashset.capacity(), 1048576);
@@ -750,8 +755,3 @@ where
         false
     }
 }
-
-/// [`Reserve`] keeps the capacity of the associated [`HashSet`] higher than a certain level.
-///
-/// The [`HashSet`] does not shrink the capacity below the reserved capacity.
-pub type Reserve<'h, K, H> = super::hash_map::Reserve<'h, K, (), H>;

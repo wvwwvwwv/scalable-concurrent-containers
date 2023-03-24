@@ -1,5 +1,10 @@
 # Changelog
 
+1.3.1
+
+* `RandomState` is now the default type parameter for `hash_*` structures.
+* Minor `Hash*` optimization.
+
 1.3.0
 
 * Add `HashMap::first_occupied_entry*` for more flexible mutable iteration over entries.

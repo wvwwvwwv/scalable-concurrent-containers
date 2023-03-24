@@ -35,6 +35,8 @@ impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
         old_array: AtomicArc<BucketArray<K, V, LOCK_FREE>>,
     ) -> BucketArray<K, V, LOCK_FREE> {
         let log2_array_len = Self::calculate_log2_array_size(capacity);
+        assert_ne!(log2_array_len, 0);
+
         let array_len = 1_usize << log2_array_len;
         unsafe {
             let (bucket_size, bucket_array_allocation_size, bucket_array_layout) =
@@ -177,15 +179,15 @@ impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
     pub(crate) fn calculate_bucket_index(&self, hash: u64) -> usize {
         // Take upper n-bits to make sure that a single bucket is spread across a few adjacent
         // buckets when the hash table is resized.
-        hash.checked_shr(self.hash_offset).map_or(0, |i| i) as usize
+        hash.wrapping_shr(self.hash_offset) as usize
     }
 
     /// Calculates `log_2` of the array size from the given capacity.
     ///
-    /// If `0` is specified as `capacity`, `0` is returned.
+    /// Returns a non-zero `u8`, even when `capacity < 2 * BUCKET_LEN`.
     #[allow(clippy::cast_possible_truncation)]
     fn calculate_log2_array_size(capacity: usize) -> u8 {
-        let adjusted_capacity = capacity.min((usize::MAX / 2) - (BUCKET_LEN - 1));
+        let adjusted_capacity = capacity.max(64).min((usize::MAX / 2) - (BUCKET_LEN - 1));
         let required_buckets =
             ((adjusted_capacity + BUCKET_LEN - 1) / BUCKET_LEN).next_power_of_two();
         let log2_capacity = usize::BITS as usize - (required_buckets.leading_zeros() as usize) - 1;
@@ -290,7 +292,7 @@ mod test {
                 array.num_buckets()
             );
             assert!(
-                array.num_buckets() < 2 * (s.max(1) + BUCKET_LEN - 1) / BUCKET_LEN,
+                array.num_buckets() <= 2 * (s.max(1) + BUCKET_LEN - 1) / BUCKET_LEN,
                 "{s} {}",
                 array.num_buckets()
             );
