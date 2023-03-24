@@ -130,28 +130,32 @@ where
     fn sample(
         current_array: &BucketArray<K, V, LOCK_FREE>,
         sampling_index: usize,
-        num_buckets_to_sample: usize,
+        sample_size: usize,
     ) -> usize {
         let mut num_entries = 0;
-        for i in sampling_index..(sampling_index + num_buckets_to_sample) {
+        for i in sampling_index..(sampling_index + sample_size) {
             num_entries += current_array
                 .bucket(i % current_array.num_buckets())
                 .num_entries();
         }
-        num_entries * (current_array.num_buckets() / num_buckets_to_sample)
+        num_entries * (current_array.num_buckets() / sample_size)
     }
 
     /// Checks whether rebuilding the entire hash table is required.
     #[inline]
     fn check_rebuild(
         current_array: &BucketArray<K, V, LOCK_FREE>,
-        num_buckets_to_sample: usize,
+        sampling_index: usize,
+        sample_size: usize,
     ) -> bool {
         let mut num_buckets_to_rebuild = 0;
-        for i in 0..num_buckets_to_sample {
-            if current_array.bucket(i).need_rebuild() {
+        for i in sampling_index..(sampling_index + sample_size) {
+            if current_array
+                .bucket(i % current_array.num_buckets())
+                .need_rebuild()
+            {
                 num_buckets_to_rebuild += 1;
-                if num_buckets_to_rebuild >= num_buckets_to_sample / 2 {
+                if num_buckets_to_rebuild >= sample_size / 2 {
                     return true;
                 }
             }
@@ -748,10 +752,10 @@ where
             // The resizing policies are as follows.
             //  - The estimated load factor >= `7/8`, then the hash table grows up to 32x.
             //  - The estimated load factor <= `1/16`, then the hash table shrinks to fit.
+            let minimum_capacity = self.minimum_capacity();
             let capacity = current_array.num_entries();
-            let num_buckets_to_sample = current_array.full_sample_size();
-            let estimated_num_entries =
-                Self::sample(current_array, sampling_index, num_buckets_to_sample);
+            let sample_size = current_array.full_sample_size();
+            let estimated_num_entries = Self::sample(current_array, sampling_index, sample_size);
             let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
                 let max_capacity = 1_usize << (usize::BITS - 1);
                 if capacity == max_capacity {
@@ -774,15 +778,20 @@ where
             } else if estimated_num_entries <= capacity / 16 {
                 // Shrink to fit.
                 estimated_num_entries
-                    .max(self.minimum_capacity())
+                    .max(minimum_capacity)
+                    .max(BucketArray::<K, V, LOCK_FREE>::minimum_capacity())
                     .next_power_of_two()
             } else {
                 capacity
             };
 
-            if new_capacity != capacity
-                || (LOCK_FREE && Self::check_rebuild(current_array, num_buckets_to_sample))
-            {
+            let try_resize = new_capacity != capacity;
+            let try_drop_table = estimated_num_entries == 0 && minimum_capacity == 0;
+            let try_rebuild = LOCK_FREE
+                && !try_resize
+                && Self::check_rebuild(current_array, sampling_index, sample_size);
+
+            if try_resize || try_drop_table || try_rebuild {
                 // Mark that the thread may allocate a new array to prevent multiple threads from
                 // allocating bucket arrays at the same time.
                 if !self.bucket_array().update_tag_if(
@@ -795,10 +804,10 @@ where
                     return;
                 }
 
-                if estimated_num_entries == 0 && self.minimum_capacity() == 0 {
-                    // Try to clear the hash table with all the buckets read-locked.
+                if try_drop_table {
+                    // Try to drop the hash table with all the buckets read-locked if empty.
                     let mut reader_guard = ExitGuard::new(
-                        (0, false),
+                        (current_array.num_buckets(), true),
                         |(num_locked_buckets, success): (usize, bool)| {
                             for i in 0..num_locked_buckets {
                                 let bucket = current_array.bucket_mut(i);
@@ -810,25 +819,21 @@ where
                         },
                     );
 
-                    for i in 0..current_array.num_buckets() {
+                    if !(0..current_array.num_buckets()).any(|i| {
                         if let Ok(Some(reader)) = Reader::try_lock(current_array.bucket(i), barrier)
                         {
-                            if reader.num_entries() != 0 {
-                                break;
+                            if reader.num_entries() == 0 {
+                                // The bucket will be unlocked later.
+                                std::mem::forget(reader);
+                                return false;
                             }
-
-                            // The bucket will be unlocked later.
-                            std::mem::forget(reader);
-                            reader_guard.0 += 1;
-                        } else {
-                            break;
                         }
-                    }
-
-                    if reader_guard.0 == current_array.num_buckets() {
+                        reader_guard.0 = i;
+                        reader_guard.1 = false;
+                        true
+                    }) {
                         // All the buckets are empty and locked.
-                        reader_guard.1 = true;
-                        self.bucket_array().swap((None, Tag::None), Relaxed);
+                        self.bucket_array().swap((None, Tag::None), Release);
                         return;
                     }
                 }
@@ -845,13 +850,14 @@ where
                             .update_tag_if(Tag::None, |_| true, Relaxed, Relaxed);
                     }
                 });
-
-                mutex_guard.replace(unsafe {
-                    Arc::new_unchecked(BucketArray::<K, V, LOCK_FREE>::new(
-                        new_capacity,
-                        self.bucket_array().clone(Relaxed, barrier),
-                    ))
-                });
+                if try_resize || try_rebuild {
+                    mutex_guard.replace(unsafe {
+                        Arc::new_unchecked(BucketArray::<K, V, LOCK_FREE>::new(
+                            new_capacity,
+                            self.bucket_array().clone(Relaxed, barrier),
+                        ))
+                    });
+                }
             }
         }
     }

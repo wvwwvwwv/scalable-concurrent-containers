@@ -20,6 +20,12 @@ pub struct BucketArray<K: Eq, V, const LOCK_FREE: bool> {
 }
 
 impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
+    /// Returns the minimum capacity.
+    #[inline]
+    pub const fn minimum_capacity() -> usize {
+        BUCKET_LEN << 1
+    }
+
     /// Returns the partial hash value of the given hash.
     #[allow(clippy::cast_possible_truncation)]
     #[inline]
@@ -177,7 +183,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
     #[allow(clippy::cast_possible_truncation)]
     #[inline]
     pub(crate) fn calculate_bucket_index(&self, hash: u64) -> usize {
-        // Take upper n-bits to make sure that a single bucket is spread across a few adjacent
+        // Take the upper n-bits to make sure that a single bucket is spread across a few adjacent
         // buckets when the hash table is resized.
         hash.wrapping_shr(self.hash_offset) as usize
     }
