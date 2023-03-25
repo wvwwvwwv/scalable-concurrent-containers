@@ -16,8 +16,8 @@ use std::sync::atomic::{AtomicPtr, AtomicU8};
 /// The layout of an internal node: |ptr(children)/max(child keys)|...|ptr(children)|
 pub struct InternalNode<K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
     /// Children of the [`InternalNode`].
     children: Leaf<K, AtomicArc<Node<K, V>>>,
@@ -40,8 +40,8 @@ where
 
 impl<K, V> InternalNode<K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
     /// Creates a new empty internal node.
     #[inline]
@@ -889,16 +889,16 @@ where
 /// [`Locker`] holds exclusive access to a [`InternalNode`].
 pub struct Locker<'n, K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
     internal_node: &'n InternalNode<K, V>,
 }
 
 impl<'n, K, V> Locker<'n, K, V>
 where
-    K: Clone + Ord + Sync,
-    V: Clone + Sync,
+    K: Clone + Ord,
+    V: Clone,
 {
     /// Acquires exclusive lock on the [`InternalNode`].
     #[inline]
@@ -913,8 +913,8 @@ where
 
 impl<'n, K, V> Drop for Locker<'n, K, V>
 where
-    K: Clone + Ord + Sync,
-    V: Clone + Sync,
+    K: Clone + Ord,
+    V: Clone,
 {
     #[inline]
     fn drop(&mut self) {
@@ -928,8 +928,8 @@ where
 /// split operation.
 struct StructuralChange<K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
     origin_node_key: AtomicPtr<K>,
     origin_node: AtomicArc<Node<K, V>>,
@@ -940,8 +940,8 @@ where
 
 impl<K, V> StructuralChange<K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
     fn reset(&self) -> Option<Arc<Node<K, V>>> {
         self.origin_node_key.store(ptr::null_mut(), Relaxed);
@@ -954,8 +954,8 @@ where
 
 impl<K, V> Default for StructuralChange<K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
     #[inline]
     fn default() -> Self {

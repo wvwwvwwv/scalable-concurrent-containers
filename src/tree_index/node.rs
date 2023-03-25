@@ -11,8 +11,8 @@ use std::sync::atomic::Ordering::{self, Acquire, Relaxed, Release};
 /// [`Node`] is either [`Self::Internal`] or [`Self::Leaf`].
 pub enum Node<K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
     /// Internal node.
     Internal(InternalNode<K, V>),
@@ -23,8 +23,8 @@ where
 
 impl<K, V> Node<K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
     /// Creates a new [`InternalNode`].
     #[inline]

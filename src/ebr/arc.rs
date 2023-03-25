@@ -44,9 +44,11 @@ impl<T> Arc<T> {
     ///
     /// # Safety
     ///
-    /// The user must make sure that the instance is dropped by invoking
+    /// `T::drop` can be run after the last strong reference is dropped, therefore it is safe only
+    /// if `T::drop` does not access short-lived data or [`std::mem::needs_drop`] is `false` for
+    /// `T`. Otherwise, the instance must be manually dropped by invoking
     /// [`release_drop_in_place()`](Self::release_drop_in_place) before the lifetime of `T` is
-    /// reached if `T` cannot live as long as `'static`.
+    /// reached.
     ///
     /// # Examples
     ///
@@ -55,6 +57,7 @@ impl<T> Arc<T> {
     ///
     /// let hello = String::from("hello");
     /// let arc: Arc<&str> = unsafe { Arc::new_unchecked(hello.as_str()) };
+    ///
     /// assert!(unsafe { arc.release_drop_in_place() });
     /// ```
     #[inline]
@@ -215,12 +218,14 @@ impl<T> Arc<T> {
     #[must_use]
     pub unsafe fn release_drop_in_place(mut self) -> bool {
         let dropped = if self.underlying().drop_ref() {
-            if !self.instance_ptr.as_mut().drop_and_dealloc() {
+            if self.instance_ptr.as_mut().drop_and_dealloc() {
+                true
+            } else {
                 // The instance needs further cleanup.
                 let barrier = Barrier::new();
                 self.pass_underlying_to_collector(&barrier);
+                false
             }
-            true
         } else {
             false
         };

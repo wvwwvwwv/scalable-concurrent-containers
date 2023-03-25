@@ -16,8 +16,7 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 /// `HashTable` defines common functions for hash table implementations.
 pub(super) trait HashTable<K, V, H, const LOCK_FREE: bool>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     /// Returns the hash value of the key.
@@ -833,7 +832,7 @@ where
                         true
                     }) {
                         // All the buckets are empty and locked.
-                        self.bucket_array().swap((None, Tag::None), Release);
+                        self.bucket_array().swap((None, Tag::None), Relaxed);
                         return;
                     }
                 }

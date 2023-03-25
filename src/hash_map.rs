@@ -63,8 +63,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 /// [`HashMap`], and the old bucket array gets dropped when it becomes empty and unreachable.
 pub struct HashMap<K, V, H = RandomState>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     array: AtomicArc<BucketArray<K, V, false>>,
@@ -75,8 +74,7 @@ where
 /// [`Entry`] represents a single entry in a [`HashMap`].
 pub enum Entry<'h, K, V, H>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     /// An occupied entry.
@@ -89,8 +87,7 @@ where
 /// [`OccupiedEntry`] is a view into an occupied entry in a [`HashMap`].
 pub struct OccupiedEntry<'h, K, V, H = RandomState>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     hashmap: &'h HashMap<K, V, H>,
@@ -103,8 +100,7 @@ where
 /// [`VacantEntry`] is a view into a vacant entry in a [`HashMap`].
 pub struct VacantEntry<'h, K, V, H = RandomState>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     hashmap: &'h HashMap<K, V, H>,
@@ -121,8 +117,7 @@ where
 #[derive(Debug)]
 pub struct Reserve<'h, K, V, H = RandomState>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     hashmap: &'h HashMap<K, V, H>,
@@ -131,8 +126,7 @@ where
 
 impl<K, V, H> HashMap<K, V, H>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     /// Creates an empty [`HashMap`] with the given [`BuildHasher`].
@@ -1403,8 +1397,8 @@ where
 
 impl<K, V, H> Clone for HashMap<K, V, H>
 where
-    K: Clone + Eq + Hash + Sync,
-    V: Clone + Sync,
+    K: Clone + Eq + Hash,
+    V: Clone,
     H: BuildHasher + Clone,
 {
     #[inline]
@@ -1419,8 +1413,8 @@ where
 
 impl<K, V, H> Debug for HashMap<K, V, H>
 where
-    K: Debug + Eq + Hash + Sync,
-    V: Debug + Sync,
+    K: Debug + Eq + Hash,
+    V: Debug,
     H: BuildHasher,
 {
     #[inline]
@@ -1435,8 +1429,7 @@ where
 
 impl<K, V> HashMap<K, V, RandomState>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: Eq + Hash,
 {
     /// Creates an empty default [`HashMap`].
     ///
@@ -1487,8 +1480,7 @@ where
 
 impl<K, V> Default for HashMap<K, V, RandomState>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: Eq + Hash,
 {
     /// Creates an empty default [`HashMap`].
     ///
@@ -1514,8 +1506,7 @@ where
 
 impl<K, V, H> Drop for HashMap<K, V, H>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     #[inline]
@@ -1533,8 +1524,7 @@ where
 
 impl<K, V, H> HashTable<K, V, H, false> for HashMap<K, V, H>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     #[inline]
@@ -1557,8 +1547,8 @@ where
 
 impl<K, V, H> PartialEq for HashMap<K, V, H>
 where
-    K: Eq + Hash + Sync,
-    V: PartialEq + Sync,
+    K: Eq + Hash,
+    V: PartialEq,
     H: BuildHasher,
 {
     /// Compares two [`HashMap`] instances.
@@ -1575,8 +1565,7 @@ where
 
 impl<'h, K, V, H> Entry<'h, K, V, H>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     /// Ensures a value is in the entry by inserting the supplied instance if empty.
@@ -1715,8 +1704,8 @@ where
 
 impl<'h, K, V, H> Entry<'h, K, V, H>
 where
-    K: Eq + Hash + Sync,
-    V: Default + Sync,
+    K: Eq + Hash,
+    V: Default,
     H: BuildHasher,
 {
     /// Ensures a value is in the entry by inserting the default value if empty.
@@ -1741,8 +1730,8 @@ where
 
 impl<'h, K, V, H> Debug for Entry<'h, K, V, H>
 where
-    K: Debug + Eq + Hash + Sync,
-    V: Debug + Sync,
+    K: Debug + Eq + Hash,
+    V: Debug,
     H: BuildHasher,
 {
     #[inline]
@@ -1756,8 +1745,7 @@ where
 
 impl<'h, K, V, H> OccupiedEntry<'h, K, V, H>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     /// Gets a reference to the key in the entry.
@@ -2062,8 +2050,8 @@ where
 
 impl<'h, K, V, H> Debug for OccupiedEntry<'h, K, V, H>
 where
-    K: Debug + Eq + Hash + Sync,
-    V: Debug + Sync,
+    K: Debug + Eq + Hash,
+    V: Debug,
     H: BuildHasher,
 {
     #[inline]
@@ -2077,8 +2065,7 @@ where
 
 impl<'h, K, V, H> VacantEntry<'h, K, V, H>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     /// Gets a reference to the key.
@@ -2151,8 +2138,8 @@ where
 
 impl<'h, K, V, H> Debug for VacantEntry<'h, K, V, H>
 where
-    K: Debug + Eq + Hash + Sync,
-    V: Debug + Sync,
+    K: Debug + Eq + Hash,
+    V: Debug,
     H: BuildHasher,
 {
     #[inline]
@@ -2163,8 +2150,7 @@ where
 
 impl<'h, K, V, H> Reserve<'h, K, V, H>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     /// Returns the number of reserved slots.
@@ -2198,8 +2184,7 @@ where
 
 impl<'h, K, V, H> AsRef<HashMap<K, V, H>> for Reserve<'h, K, V, H>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     #[inline]
@@ -2210,8 +2195,7 @@ where
 
 impl<'h, K, V, H> Deref for Reserve<'h, K, V, H>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     type Target = HashMap<K, V, H>;
@@ -2224,8 +2208,7 @@ where
 
 impl<'h, K, V, H> Drop for Reserve<'h, K, V, H>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     #[inline]

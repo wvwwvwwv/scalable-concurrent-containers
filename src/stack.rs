@@ -7,7 +7,7 @@ use std::fmt::{self, Debug};
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 
 /// [`Stack`] is a lock-free concurrent last-in-first-out container.
-pub struct Stack<T: 'static> {
+pub struct Stack<T> {
     /// `newest` points to the newest entry in the [`Stack`].
     newest: AtomicArc<Entry<T>>,
 }
@@ -56,6 +56,97 @@ impl<T: 'static> Stack<T> {
     /// ```
     #[inline]
     pub fn push_if<F: FnMut(Option<&Entry<T>>) -> bool>(
+        &self,
+        val: T,
+        cond: F,
+    ) -> Result<Arc<Entry<T>>, T> {
+        self.push_if_internal(val, cond, &Barrier::new())
+    }
+
+    /// Peeks the newest entry with the supplied [`Barrier`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::Barrier;
+    /// use scc::Stack;
+    ///
+    /// let stack: Stack<usize> = Stack::default();
+    ///
+    /// assert!(stack.peek_with(|v| v.is_none(), &Barrier::new()));
+    ///
+    /// stack.push(37);
+    /// stack.push(3);
+    ///
+    /// assert_eq!(stack.peek_with(|v| **v.unwrap(), &Barrier::new()), 3);
+    /// ```
+    #[inline]
+    pub fn peek_with<'b, R, F: FnOnce(Option<&'b Entry<T>>) -> R>(
+        &self,
+        reader: F,
+        barrier: &'b Barrier,
+    ) -> R {
+        reader(
+            self.cleanup_newest(self.newest.load(Acquire, barrier), barrier)
+                .as_ref(),
+        )
+    }
+}
+
+impl<T> Stack<T> {
+    /// Pushes an instance of `T` without checking the lifetime of `T`.
+    ///
+    /// Returns an [`Arc`] holding a strong reference to the newly pushed entry.
+    ///
+    /// # Safety
+    ///
+    /// `T::drop` can be run after the [`Stack`] is dropped, therefore it is safe only if `T::drop`
+    /// does not access short-lived data or [`std::mem::needs_drop`] is `false` for `T`,
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::Stack;
+    ///
+    /// let hello = String::from("hello");
+    /// let stack: Stack<&str> = Stack::default();
+    ///
+    /// assert_eq!(unsafe { **stack.push_unchecked(hello.as_str()) }, "hello");
+    /// ```
+    #[inline]
+    pub unsafe fn push_unchecked(&self, val: T) -> Arc<Entry<T>> {
+        match self.push_if_internal(val, |_| true, &Barrier::new()) {
+            Ok(entry) => entry,
+            Err(_) => {
+                unreachable!();
+            }
+        }
+    }
+
+    /// Pushes an instance of `T` if the newest entry satisfies the given condition without
+    /// checking the lifetime of `T`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error along with the supplied instance if the condition is not met.
+    ///
+    /// # Safety
+    ///
+    /// `T::drop` can be run after the [`Stack`] is dropped, therefore it is safe only if `T::drop`
+    /// does not access short-lived data or [`std::mem::needs_drop`] is `false` for `T`,
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::Stack;
+    ///
+    /// let hello = String::from("hello");
+    /// let stack: Stack<&str> = Stack::default();
+    ///
+    /// assert!(unsafe { stack.push_if_unchecked(hello.as_str(), |e| e.is_none()).is_ok() });
+    /// ```
+    #[inline]
+    pub unsafe fn push_if_unchecked<F: FnMut(Option<&Entry<T>>) -> bool>(
         &self,
         val: T,
         cond: F,
@@ -139,8 +230,6 @@ impl<T: 'static> Stack<T> {
 
     /// Peeks the newest entry.
     ///
-    /// Returns `None` if the [`Stack`] is empty.
-    ///
     /// # Examples
     ///
     /// ```
@@ -148,47 +237,20 @@ impl<T: 'static> Stack<T> {
     ///
     /// let stack: Stack<usize> = Stack::default();
     ///
-    /// assert!(stack.peek(|v| **v).is_none());
+    /// assert!(stack.peek(|v| v.is_none()));
     ///
     /// stack.push(37);
     /// stack.push(3);
     ///
-    /// assert_eq!(stack.peek(|v| **v), Some(3));
+    /// assert_eq!(stack.peek(|v| **v.unwrap()), 3);
     /// ```
     #[inline]
-    pub fn peek<R, F: FnOnce(&Entry<T>) -> R>(&self, reader: F) -> Option<R> {
+    pub fn peek<R, F: FnOnce(Option<&Entry<T>>) -> R>(&self, reader: F) -> R {
         let barrier = Barrier::new();
-        self.peek_with(reader, &barrier)
-    }
-
-    /// Peeks the newest entry with the supplied [`Barrier`].
-    ///
-    /// Returns `None` if the [`Stack`] is empty.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::ebr::Barrier;
-    /// use scc::Stack;
-    ///
-    /// let stack: Stack<usize> = Stack::default();
-    ///
-    /// assert!(stack.peek_with(|v| **v, &Barrier::new()).is_none());
-    ///
-    /// stack.push(37);
-    /// stack.push(3);
-    ///
-    /// assert_eq!(stack.peek_with(|v| **v, &Barrier::new()), Some(3));
-    /// ```
-    #[inline]
-    pub fn peek_with<'b, R, F: FnOnce(&'b Entry<T>) -> R>(
-        &self,
-        reader: F,
-        barrier: &'b Barrier,
-    ) -> Option<R> {
-        self.cleanup_newest(self.newest.load(Acquire, barrier), barrier)
-            .as_ref()
-            .map(reader)
+        reader(
+            self.cleanup_newest(self.newest.load(Acquire, &barrier), &barrier)
+                .as_ref(),
+        )
     }
 
     /// Returns `true` if the [`Stack`] is empty.
@@ -224,7 +286,7 @@ impl<T: 'static> Stack<T> {
             return Err(val);
         }
 
-        let mut new_entry = Arc::new(Entry::new(val));
+        let mut new_entry = unsafe { Arc::new_unchecked(Entry::new(val)) };
         loop {
             new_entry
                 .next()
@@ -277,7 +339,7 @@ impl<T: 'static> Stack<T> {
     }
 }
 
-impl<T: 'static + Clone> Clone for Stack<T> {
+impl<T: Clone> Clone for Stack<T> {
     #[inline]
     fn clone(&self) -> Self {
         let cloned = Self::default();
@@ -285,7 +347,7 @@ impl<T: 'static + Clone> Clone for Stack<T> {
         let mut current = self.newest.load(Acquire, &barrier);
         let mut oldest: Option<Arc<Entry<T>>> = None;
         while let Some(entry) = current.as_ref() {
-            let new_entry = Arc::new(Entry::new((**entry).clone()));
+            let new_entry = unsafe { Arc::new_unchecked(Entry::new((**entry).clone())) };
             if let Some(oldest) = oldest.take() {
                 oldest
                     .next()
@@ -302,7 +364,7 @@ impl<T: 'static + Clone> Clone for Stack<T> {
     }
 }
 
-impl<T: 'static + Debug> Debug for Stack<T> {
+impl<T: Debug> Debug for Stack<T> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut d = f.debug_set();
@@ -317,7 +379,7 @@ impl<T: 'static + Debug> Debug for Stack<T> {
     }
 }
 
-impl<T: 'static> Default for Stack<T> {
+impl<T> Default for Stack<T> {
     #[inline]
     fn default() -> Self {
         Self {

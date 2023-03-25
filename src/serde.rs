@@ -12,15 +12,14 @@ use std::hash::{BuildHasher, Hash};
 use std::marker::PhantomData;
 
 /// Helper type to allow `serde` to access [`HashMap`] entries.
-pub struct HashMapVisitor<K: Eq + Hash + Sync, V: Sync, H: BuildHasher> {
+pub struct HashMapVisitor<K: Eq + Hash, V, H: BuildHasher> {
     #[allow(clippy::type_complexity)]
     marker: PhantomData<fn() -> HashMap<K, V, H>>,
 }
 
 impl<K, V, H> HashMapVisitor<K, V, H>
 where
-    K: Eq + Hash + Sync,
-    V: Sync,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     fn new() -> Self {
@@ -32,8 +31,8 @@ where
 
 impl<'d, K, V, H> Visitor<'d> for HashMapVisitor<K, V, H>
 where
-    K: Deserialize<'d> + Eq + Hash + Sync,
-    V: Deserialize<'d> + Sync,
+    K: Deserialize<'d> + Eq + Hash,
+    V: Deserialize<'d>,
     H: BuildHasher + Default,
 {
     type Value = HashMap<K, V, H>;
@@ -57,8 +56,8 @@ where
 
 impl<'d, K, V, H> Deserialize<'d> for HashMap<K, V, H>
 where
-    K: Deserialize<'d> + Eq + Hash + Sync,
-    V: Deserialize<'d> + Sync,
+    K: Deserialize<'d> + Eq + Hash,
+    V: Deserialize<'d>,
     H: BuildHasher + Default,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -71,8 +70,8 @@ where
 
 impl<K, V, H> Serialize for HashMap<K, V, H>
 where
-    K: Eq + Hash + Serialize + Sync,
-    V: Serialize + Sync,
+    K: Eq + Hash + Serialize,
+    V: Serialize,
     H: BuildHasher,
 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -96,13 +95,13 @@ where
 }
 
 /// Helper type to allow `serde` to access [`HashSet`] entries.
-pub struct HashSetVisitor<K: Eq + Hash + Sync, H: BuildHasher> {
+pub struct HashSetVisitor<K: Eq + Hash, H: BuildHasher> {
     marker: PhantomData<fn() -> HashSet<K, H>>,
 }
 
 impl<K, H> HashSetVisitor<K, H>
 where
-    K: Eq + Hash + Sync,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     fn new() -> Self {
@@ -114,7 +113,7 @@ where
 
 impl<'d, K, H> Visitor<'d> for HashSetVisitor<K, H>
 where
-    K: Deserialize<'d> + Eq + Hash + Sync,
+    K: Deserialize<'d> + Eq + Hash,
     H: BuildHasher + Default,
 {
     type Value = HashSet<K, H>;
@@ -138,7 +137,7 @@ where
 
 impl<'d, K, H> Deserialize<'d> for HashSet<K, H>
 where
-    K: Deserialize<'d> + Eq + Hash + Sync,
+    K: Deserialize<'d> + Eq + Hash,
     H: BuildHasher + Default,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -151,7 +150,7 @@ where
 
 impl<K, H> Serialize for HashSet<K, H>
 where
-    K: Eq + Hash + Serialize + Sync,
+    K: Eq + Hash + Serialize,
     H: BuildHasher,
 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -175,19 +174,15 @@ where
 }
 
 /// Helper type to allow `serde` to access [`HashIndex`] entries.
-pub struct HashIndexVisitor<
-    K: 'static + Clone + Eq + Hash + Sync,
-    V: 'static + Clone + Sync,
-    H: BuildHasher,
-> {
+pub struct HashIndexVisitor<K: 'static + Clone + Eq + Hash, V: 'static + Clone, H: BuildHasher> {
     #[allow(clippy::type_complexity)]
     marker: PhantomData<fn() -> HashIndex<K, V, H>>,
 }
 
 impl<K, V, H> HashIndexVisitor<K, V, H>
 where
-    K: Clone + Eq + Hash + Sync,
-    V: Clone + Sync,
+    K: Clone + Eq + Hash,
+    V: Clone,
     H: BuildHasher,
 {
     fn new() -> Self {
@@ -199,8 +194,8 @@ where
 
 impl<'d, K, V, H> Visitor<'d> for HashIndexVisitor<K, V, H>
 where
-    K: Clone + Deserialize<'d> + Eq + Hash + Sync,
-    V: Clone + Deserialize<'d> + Sync,
+    K: Clone + Deserialize<'d> + Eq + Hash,
+    V: Clone + Deserialize<'d>,
     H: BuildHasher + Default,
 {
     type Value = HashIndex<K, V, H>;
@@ -224,8 +219,8 @@ where
 
 impl<'d, K, V, H> Deserialize<'d> for HashIndex<K, V, H>
 where
-    K: Clone + Deserialize<'d> + Eq + Hash + Sync,
-    V: Clone + Deserialize<'d> + Sync,
+    K: Clone + Deserialize<'d> + Eq + Hash,
+    V: Clone + Deserialize<'d>,
     H: BuildHasher + Default,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -238,8 +233,8 @@ where
 
 impl<K, V, H> Serialize for HashIndex<K, V, H>
 where
-    K: Clone + Eq + Hash + Serialize + Sync,
-    V: Clone + Serialize + Sync,
+    K: Clone + Eq + Hash + Serialize,
+    V: Clone + Serialize,
     H: 'static + BuildHasher,
 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -264,15 +259,15 @@ where
 }
 
 /// Helper type to allow `serde` to access [`TreeIndex`] entries.
-pub struct TreeIndexVisitor<K: 'static + Clone + Ord + Sync, V: 'static + Clone + Sync> {
+pub struct TreeIndexVisitor<K: 'static + Clone + Ord, V: 'static + Clone> {
     #[allow(clippy::type_complexity)]
     marker: PhantomData<fn() -> TreeIndex<K, V>>,
 }
 
 impl<K, V> TreeIndexVisitor<K, V>
 where
-    K: Clone + Ord + Sync,
-    V: Clone + Sync,
+    K: Clone + Ord,
+    V: Clone,
 {
     fn new() -> Self {
         TreeIndexVisitor {
@@ -283,8 +278,8 @@ where
 
 impl<'d, K, V> Visitor<'d> for TreeIndexVisitor<K, V>
 where
-    K: Clone + Deserialize<'d> + Ord + Sync,
-    V: Clone + Deserialize<'d> + Sync,
+    K: Clone + Deserialize<'d> + Ord,
+    V: Clone + Deserialize<'d>,
 {
     type Value = TreeIndex<K, V>;
 
@@ -306,8 +301,8 @@ where
 
 impl<'d, K, V> Deserialize<'d> for TreeIndex<K, V>
 where
-    K: Clone + Deserialize<'d> + Ord + Sync,
-    V: Clone + Deserialize<'d> + Sync,
+    K: Clone + Deserialize<'d> + Ord,
+    V: Clone + Deserialize<'d>,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -319,8 +314,8 @@ where
 
 impl<K, V> Serialize for TreeIndex<K, V>
 where
-    K: Clone + Ord + Serialize + Sync,
-    V: Clone + Serialize + Sync,
+    K: Clone + Ord + Serialize,
+    V: Clone + Serialize,
 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where

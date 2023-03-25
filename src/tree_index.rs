@@ -53,16 +53,16 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 /// blocked.
 pub struct TreeIndex<K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
     root: AtomicArc<Node<K, V>>,
 }
 
 impl<K, V> TreeIndex<K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
     /// Creates an empty [`TreeIndex`].
     ///
@@ -574,8 +574,8 @@ where
 
 impl<K, V> Clone for TreeIndex<K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
     #[inline]
     fn clone(&self) -> Self {
@@ -589,8 +589,8 @@ where
 
 impl<K, V> Debug for TreeIndex<K, V>
 where
-    K: 'static + Clone + Debug + Ord + Sync,
-    V: 'static + Clone + Debug + Sync,
+    K: 'static + Clone + Debug + Ord,
+    V: 'static + Clone + Debug,
 {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -601,8 +601,8 @@ where
 
 impl<K, V> Default for TreeIndex<K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
     /// Creates a [`TreeIndex`] with the default parameters.
     ///
@@ -621,8 +621,8 @@ where
 
 impl<K, V> PartialEq for TreeIndex<K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + PartialEq + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone + PartialEq,
 {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
@@ -638,8 +638,8 @@ where
 /// scans keys in monotonically increasing order.
 pub struct Visitor<'t, 'b, K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
     root: &'t AtomicArc<Node<K, V>>,
     leaf_scanner: Option<Scanner<'b, K, V>>,
@@ -648,8 +648,8 @@ where
 
 impl<'t, 'b, K, V> Visitor<'t, 'b, K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
     #[inline]
     fn new(root: &'t AtomicArc<Node<K, V>>, barrier: &'b Barrier) -> Visitor<'t, 'b, K, V> {
@@ -663,8 +663,8 @@ where
 
 impl<'t, 'b, K, V> Iterator for Visitor<'t, 'b, K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
     type Item = (&'b K, &'b V);
 
@@ -703,8 +703,8 @@ where
 
 impl<'t, 'b, K, V> FusedIterator for Visitor<'t, 'b, K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
 }
 
@@ -714,8 +714,8 @@ where
 /// range.
 pub struct Range<'t, 'b, K, V, R>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
     R: RangeBounds<K>,
 {
     root: &'t AtomicArc<Node<K, V>>,
@@ -728,8 +728,8 @@ where
 
 impl<'t, 'b, K, V, R> Range<'t, 'b, K, V, R>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
     R: RangeBounds<K>,
 {
     #[inline]
@@ -827,8 +827,8 @@ where
 
 impl<'t, 'b, K, V, R> Iterator for Range<'t, 'b, K, V, R>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
     R: RangeBounds<K>,
 {
     type Item = (&'b K, &'b V);
@@ -878,8 +878,8 @@ where
 
 impl<'t, 'b, K, V, R> FusedIterator for Range<'t, 'b, K, V, R>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
     R: RangeBounds<K>,
 {
 }

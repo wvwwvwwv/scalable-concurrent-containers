@@ -18,7 +18,7 @@ const STORAGE_LEN: u32 = usize::BITS / 2;
 /// [`Bag`] especially efficient if the expected number of instances does not exceed
 /// `usize::BITS / 2`.
 #[derive(Debug)]
-pub struct Bag<T: 'static> {
+pub struct Bag<T> {
     /// Primary storage.
     primary_storage: Storage<T>,
 
@@ -26,7 +26,7 @@ pub struct Bag<T: 'static> {
     stack: Stack<Storage<T>>,
 }
 
-impl<T: 'static> Bag<T> {
+impl<T> Bag<T> {
     /// Pushes an instance of `T`.
     ///
     /// # Examples
@@ -41,14 +41,19 @@ impl<T: 'static> Bag<T> {
     #[inline]
     pub fn push(&self, val: T) {
         if let Some(val) = self.primary_storage.push(val, true) {
-            let barrier = Barrier::new();
-            if let Some(storage) = self.stack.peek_with(|e| &**e, &barrier) {
-                if let Some(val) = storage.push(val, false) {
-                    self.stack.push(Storage::with_val(val));
+            self.stack.peek(|e| {
+                if let Some(storage) = e {
+                    if let Some(val) = storage.push(val, false) {
+                        unsafe {
+                            self.stack.push_unchecked(Storage::with_val(val));
+                        }
+                    }
+                } else {
+                    unsafe {
+                        self.stack.push_unchecked(Storage::with_val(val));
+                    }
                 }
-                return;
-            }
-            self.stack.push(Storage::with_val(val));
+            });
         }
     }
 
@@ -69,18 +74,20 @@ impl<T: 'static> Bag<T> {
     #[inline]
     pub fn pop(&self) -> Option<T> {
         let barrier = Barrier::new();
-        let mut current = self.stack.peek_with(|e| e, &barrier);
-        while let Some(e) = current {
-            let (val_opt, empty) = e.pop();
-            if empty {
-                e.delete_self(Relaxed);
+        self.stack.peek(|e| {
+            let mut current = e;
+            while let Some(storage) = current {
+                let (val_opt, empty) = storage.pop();
+                if empty {
+                    storage.delete_self(Relaxed);
+                }
+                if let Some(val) = val_opt {
+                    return Some(val);
+                }
+                current = storage.next_ptr(Acquire, &barrier).as_ref();
             }
-            if let Some(val) = val_opt {
-                return Some(val);
-            }
-            current = e.next_ptr(Acquire, &barrier).as_ref();
-        }
-        self.primary_storage.pop().0
+            self.primary_storage.pop().0
+        })
     }
 
     /// Returns `true` if the [`Bag`] is empty.
@@ -109,7 +116,7 @@ impl<T: 'static> Bag<T> {
     }
 }
 
-impl<T: 'static> Default for Bag<T> {
+impl<T> Default for Bag<T> {
     #[inline]
     fn default() -> Self {
         Self {
@@ -119,8 +126,20 @@ impl<T: 'static> Default for Bag<T> {
     }
 }
 
+impl<T> Drop for Bag<T> {
+    #[inline]
+    fn drop(&mut self) {
+        if needs_drop::<T>() {
+            // It needs to drop all the stored instances in-place.
+            while let Some(v) = self.pop() {
+                drop(v);
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
-struct Storage<T: 'static> {
+struct Storage<T> {
     /// Storage.
     storage: [MaybeUninit<T>; STORAGE_LEN as usize],
 
@@ -138,7 +157,7 @@ struct Storage<T: 'static> {
     metadata: AtomicUsize,
 }
 
-impl<T: 'static> Storage<T> {
+impl<T> Storage<T> {
     /// Creates a new [`Storage`].
     fn new() -> Storage<T> {
         Storage {
@@ -290,7 +309,7 @@ impl<T: 'static> Storage<T> {
     }
 }
 
-impl<T: 'static> Drop for Storage<T> {
+impl<T> Drop for Storage<T> {
     #[inline]
     fn drop(&mut self) {
         if needs_drop::<T>() {

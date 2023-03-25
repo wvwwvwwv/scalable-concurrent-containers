@@ -13,8 +13,8 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 /// dropped.
 pub struct Leaf<K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
     /// The metadata containing information about the [`Leaf`] and individual entries.
     ///
@@ -36,8 +36,8 @@ where
 
 impl<K, V> Leaf<K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
     /// Creates a new [`Leaf`].
     #[inline]
@@ -609,8 +609,8 @@ where
 
 impl<K, V> Drop for Leaf<K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
     #[inline]
     fn drop(&mut self) {
@@ -634,8 +634,8 @@ where
 /// [`LinkedList`] implementation for [`Leaf`].
 impl<K, V> LinkedList for Leaf<K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
     #[inline]
     fn link_ref(&self) -> &AtomicArc<Leaf<K, V>> {
@@ -790,8 +790,8 @@ pub type EntryArray<K, V> = (
 /// Leaf scanner.
 pub struct Scanner<'l, K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
     leaf: &'l Leaf<K, V>,
     metadata: usize,
@@ -800,8 +800,8 @@ where
 
 impl<'l, K, V> Scanner<'l, K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
     /// Creates a new [`Scanner`].
     #[inline]
@@ -909,8 +909,8 @@ where
 
 impl<'l, K, V> Iterator for Scanner<'l, K, V>
 where
-    K: Clone + Ord + Sync,
-    V: Clone + Sync,
+    K: Clone + Ord,
+    V: Clone,
 {
     type Item = (&'l K, &'l V);
 

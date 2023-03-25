@@ -1,8 +1,11 @@
 # Changelog
 
-1.3.1
+1.4.0
 
+* API update: `{Stack, Queue}::{peek*}` receive `FnOnce(Option<&Entry<T>>) -> R`.
 * `RandomState` is now the default type parameter for `hash_*` structures.
+* Remove explicit `Sync` requirements.
+* Remove `'static` lifetime constraints from `Bag`, `LinkedList`, `Queue`, and `Stack`.
 * Minor `Hash*` optimization.
 
 1.3.0

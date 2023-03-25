@@ -73,6 +73,9 @@ mod hashmap_test {
         }
     }
 
+    static_assertions::assert_impl_all!(HashMap<String, String>: Send, Sync);
+    static_assertions::assert_not_impl_all!(HashMap<String, *const String>: Send, Sync);
+
     #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn insert_drop() {
@@ -690,6 +693,9 @@ mod hashindex_test {
         }
     }
 
+    static_assertions::assert_impl_all!(HashIndex<String, String>: Send, Sync);
+    static_assertions::assert_not_impl_all!(HashIndex<String, *const String>: Send, Sync);
+
     #[cfg_attr(miri, ignore)]
     #[test]
     fn compare() {
@@ -932,6 +938,9 @@ mod hashindex_test {
 mod hashset_test {
     use crate::HashSet;
 
+    static_assertions::assert_impl_all!(HashSet<String>: Send, Sync);
+    static_assertions::assert_not_impl_all!(HashSet<*const String>: Send, Sync);
+
     #[cfg_attr(miri, ignore)]
     #[test]
     fn compare() {
@@ -989,6 +998,9 @@ mod treeindex_test {
             self.0.fetch_sub(1, Relaxed);
         }
     }
+
+    static_assertions::assert_impl_all!(TreeIndex<String, String>: Send, Sync);
+    static_assertions::assert_not_impl_all!(TreeIndex<String, *const String>: Send, Sync);
 
     #[cfg_attr(miri, ignore)]
     #[tokio::test]
@@ -1525,11 +1537,14 @@ mod bag_test {
         }
     }
 
+    static_assertions::assert_impl_all!(Bag<String>: Send, Sync);
+    static_assertions::assert_not_impl_all!(Bag<*const String>: Send, Sync);
+
     #[cfg_attr(miri, ignore)]
     #[test]
     fn reclaim() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
-        for workload_size in [1, 17, 31, 39] {
+        for workload_size in [2, 18, 32, 40, 120] {
             let bag: Bag<R> = Bag::default();
             for _ in 0..workload_size {
                 bag.push(R::new(&INST_CNT));
@@ -1539,12 +1554,9 @@ mod bag_test {
             for _ in 0..workload_size / 2 {
                 bag.pop();
             }
+            assert_eq!(INST_CNT.load(Relaxed), workload_size / 2);
             drop(bag);
-
-            while INST_CNT.load(Relaxed) > 0 {
-                let barrier = crate::ebr::Barrier::new();
-                drop(barrier);
-            }
+            assert_eq!(INST_CNT.load(Relaxed), 0);
         }
     }
 
@@ -1579,11 +1591,7 @@ mod bag_test {
             assert!(bag.pop().is_none());
             assert!(bag.is_empty());
         }
-
-        while INST_CNT.load(Relaxed) > 0 {
-            let barrier = crate::ebr::Barrier::new();
-            drop(barrier);
-        }
+        assert_eq!(INST_CNT.load(Relaxed), 0);
     }
 }
 
@@ -1603,6 +1611,9 @@ mod queue_test {
             R(task_id, seq)
         }
     }
+
+    static_assertions::assert_impl_all!(Queue<String>: Send, Sync);
+    static_assertions::assert_not_impl_all!(Queue<*const String>: Send, Sync);
 
     #[cfg_attr(miri, ignore)]
     #[test]
@@ -1689,6 +1700,9 @@ mod stack_test {
             R(task_id, seq)
         }
     }
+
+    static_assertions::assert_impl_all!(Stack<String>: Send, Sync);
+    static_assertions::assert_not_impl_all!(Stack<*const String>: Send, Sync);
 
     #[cfg_attr(miri, ignore)]
     #[test]

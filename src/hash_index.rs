@@ -36,8 +36,8 @@ use std::sync::atomic::Ordering::Acquire;
 /// * The expected maximum linked list length when resize is triggered: log(capacity) / 8.
 pub struct HashIndex<K, V, H = RandomState>
 where
-    K: 'static + Clone + Eq + Hash + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Eq + Hash,
+    V: 'static + Clone,
     H: BuildHasher,
 {
     array: AtomicArc<BucketArray<K, V, true>>,
@@ -51,8 +51,8 @@ where
 /// same key-value pair can be visited more than once.
 pub struct Visitor<'h, 'b, K, V, H = RandomState>
 where
-    K: 'static + Clone + Eq + Hash + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Eq + Hash,
+    V: 'static + Clone,
     H: BuildHasher,
 {
     hashindex: &'h HashIndex<K, V, H>,
@@ -65,8 +65,8 @@ where
 
 impl<K, V, H> HashIndex<K, V, H>
 where
-    K: 'static + Clone + Eq + Hash + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Eq + Hash,
+    V: 'static + Clone,
     H: BuildHasher,
 {
     /// Creates an empty [`HashIndex`] with the given [`BuildHasher`].
@@ -703,8 +703,8 @@ where
 
 impl<K, V, H> Clone for HashIndex<K, V, H>
 where
-    K: 'static + Clone + Eq + Hash + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Eq + Hash,
+    V: 'static + Clone,
     H: BuildHasher + Clone,
 {
     #[inline]
@@ -719,8 +719,8 @@ where
 
 impl<K, V, H> Debug for HashIndex<K, V, H>
 where
-    K: 'static + Clone + Debug + Eq + Hash + Sync,
-    V: 'static + Clone + Debug + Sync,
+    K: 'static + Clone + Debug + Eq + Hash,
+    V: 'static + Clone + Debug,
     H: BuildHasher,
 {
     #[inline]
@@ -732,8 +732,8 @@ where
 
 impl<K, V> HashIndex<K, V, RandomState>
 where
-    K: 'static + Clone + Eq + Hash + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Eq + Hash,
+    V: 'static + Clone,
 {
     /// Creates an empty default [`HashIndex`].
     ///
@@ -784,8 +784,8 @@ where
 
 impl<K, V> Default for HashIndex<K, V, RandomState>
 where
-    K: 'static + Clone + Eq + Hash + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Eq + Hash,
+    V: 'static + Clone,
 {
     /// Creates an empty default [`HashIndex`].
     ///
@@ -813,8 +813,8 @@ where
 
 impl<K, V, H> HashTable<K, V, H, true> for HashIndex<K, V, H>
 where
-    K: 'static + Clone + Eq + Hash + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Eq + Hash,
+    V: 'static + Clone,
     H: BuildHasher,
 {
     #[inline]
@@ -837,8 +837,8 @@ where
 
 impl<K, V, H> PartialEq for HashIndex<K, V, H>
 where
-    K: 'static + Clone + Eq + Hash + Sync,
-    V: 'static + Clone + PartialEq + Sync,
+    K: 'static + Clone + Eq + Hash,
+    V: 'static + Clone + PartialEq,
     H: BuildHasher,
 {
     #[inline]
@@ -858,8 +858,8 @@ where
 
 impl<'h, 'b, K, V, H> Iterator for Visitor<'h, 'b, K, V, H>
 where
-    K: 'static + Clone + Eq + Hash + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Eq + Hash,
+    V: 'static + Clone,
     H: BuildHasher,
 {
     type Item = (&'b K, &'b V);
@@ -953,8 +953,8 @@ where
 
 impl<'h, 'b, K, V, H> FusedIterator for Visitor<'h, 'b, K, V, H>
 where
-    K: 'static + Clone + Eq + Hash + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Eq + Hash,
+    V: 'static + Clone,
     H: BuildHasher,
 {
 }

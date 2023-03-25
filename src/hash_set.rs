@@ -12,7 +12,7 @@ use std::hash::{BuildHasher, Hash};
 /// [`HashSet`] is a concurrent and asynchronous hash set based on [`HashMap`].
 pub struct HashSet<K, H = RandomState>
 where
-    K: Eq + Hash + Sync,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     map: HashMap<K, (), H>,
@@ -25,7 +25,7 @@ pub type Reserve<'h, K, H = RandomState> = super::hash_map::Reserve<'h, K, (), H
 
 impl<K, H> HashSet<K, H>
 where
-    K: Eq + Hash + Sync,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     /// Creates an empty [`HashSet`] with the given [`BuildHasher`].
@@ -647,7 +647,7 @@ where
 
 impl<K, H> Clone for HashSet<K, H>
 where
-    K: Clone + Eq + Hash + Sync,
+    K: Clone + Eq + Hash,
     H: BuildHasher + Clone,
 {
     #[inline]
@@ -660,7 +660,7 @@ where
 
 impl<K, H> Debug for HashSet<K, H>
 where
-    K: Debug + Eq + Hash + Sync,
+    K: Debug + Eq + Hash,
     H: BuildHasher,
 {
     #[inline]
@@ -673,7 +673,7 @@ where
     }
 }
 
-impl<K: Eq + Hash + Sync> HashSet<K, RandomState> {
+impl<K: Eq + Hash> HashSet<K, RandomState> {
     /// Creates an empty default [`HashSet`].
     ///
     /// # Examples
@@ -716,7 +716,7 @@ impl<K: Eq + Hash + Sync> HashSet<K, RandomState> {
     }
 }
 
-impl<K: Eq + Hash + Sync> Default for HashSet<K, RandomState> {
+impl<K: Eq + Hash> Default for HashSet<K, RandomState> {
     /// Creates an empty default [`HashSet`].
     ///
     /// The default hash builder is [`RandomState`], and the default capacity is `64`.
@@ -741,7 +741,7 @@ impl<K: Eq + Hash + Sync> Default for HashSet<K, RandomState> {
 
 impl<K, H> PartialEq for HashSet<K, H>
 where
-    K: Eq + Hash + Sync,
+    K: Eq + Hash,
     H: BuildHasher,
 {
     /// Compares two [`HashSet`] instances.

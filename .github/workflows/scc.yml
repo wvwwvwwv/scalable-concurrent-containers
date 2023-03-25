@@ -34,15 +34,12 @@ jobs:
       - name: Lint
         run:
           cargo clippy --all;
-          cargo +nightly clippy --all
       - name: Format
         run:
           cargo fmt --all;
-          cargo +nightly fmt --all
       - name: Doc
         run:
           cargo doc --document-private-items;
-          cargo +nightly doc --document-private-items
       - name: Serde
         run:
           cargo test serde --verbose --features serde;

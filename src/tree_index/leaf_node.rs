@@ -22,8 +22,8 @@ pub const LOCKED: Tag = Tag::Second;
 /// The layout of a leaf node: |ptr(entry array)/max(child keys)|...|ptr(entry array)|
 pub struct LeafNode<K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
     /// Children of the [`LeafNode`].
     children: Leaf<K, AtomicArc<Leaf<K, V>>>,
@@ -46,8 +46,8 @@ where
 
 impl<K, V> LeafNode<K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
     /// Creates a new empty [`LeafNode`].
     #[inline]
@@ -907,16 +907,16 @@ where
 /// [`Locker`] holds exclusive access to a [`Leaf`].
 pub struct Locker<'n, K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
     leaf_node: &'n LeafNode<K, V>,
 }
 
 impl<'n, K, V> Locker<'n, K, V>
 where
-    K: Clone + Ord + Sync,
-    V: Clone + Sync,
+    K: Clone + Ord,
+    V: Clone,
 {
     /// Acquires exclusive lock on the [`LeafNode`].
     #[inline]
@@ -931,8 +931,8 @@ where
 
 impl<'n, K, V> Drop for Locker<'n, K, V>
 where
-    K: Clone + Ord + Sync,
-    V: Clone + Sync,
+    K: Clone + Ord,
+    V: Clone,
 {
     #[inline]
     fn drop(&mut self) {
@@ -946,8 +946,8 @@ where
 /// split operation.
 pub struct StructuralChange<K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
     origin_leaf_key: AtomicPtr<K>,
     origin_leaf: AtomicArc<Leaf<K, V>>,
@@ -959,8 +959,8 @@ where
 
 impl<K, V> StructuralChange<K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
     fn reset(&self) -> Option<Arc<Leaf<K, V>>> {
         self.origin_leaf_key.store(ptr::null_mut(), Relaxed);
@@ -974,8 +974,8 @@ where
 
 impl<K, V> Default for StructuralChange<K, V>
 where
-    K: 'static + Clone + Ord + Sync,
-    V: 'static + Clone + Sync,
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
 {
     #[inline]
     fn default() -> Self {

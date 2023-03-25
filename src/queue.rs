@@ -7,7 +7,7 @@ use std::fmt::{self, Debug};
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
 /// [`Queue`] is a lock-free concurrent first-in-first-out container.
-pub struct Queue<T: 'static> {
+pub struct Queue<T> {
     /// `oldest` points to the oldest entry in the [`Queue`].
     oldest: AtomicArc<Entry<T>>,
 
@@ -59,6 +59,102 @@ impl<T: 'static> Queue<T> {
     /// ```
     #[inline]
     pub fn push_if<F: FnMut(Option<&Entry<T>>) -> bool>(
+        &self,
+        val: T,
+        cond: F,
+    ) -> Result<Arc<Entry<T>>, T> {
+        self.push_if_internal(val, cond, &Barrier::new())
+    }
+
+    /// Peeks the oldest entry with the supplied [`Barrier`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::Barrier;
+    /// use scc::Queue;
+    ///
+    /// let queue: Queue<usize> = Queue::default();
+    ///
+    /// assert!(queue.peek_with(|v| v.is_none(), &Barrier::new()));
+    ///
+    /// queue.push(37);
+    /// queue.push(3);
+    ///
+    /// assert_eq!(queue.peek_with(|v| **v.unwrap(), &Barrier::new()), 37);
+    /// ```
+    #[inline]
+    pub fn peek_with<'b, R, F: FnOnce(Option<&'b Entry<T>>) -> R>(
+        &self,
+        reader: F,
+        barrier: &'b Barrier,
+    ) -> R {
+        let mut current = self.oldest.load(Acquire, barrier);
+        while let Some(oldest_entry) = current.as_ref() {
+            if oldest_entry.is_deleted(Relaxed) {
+                current = self.cleanup_oldest(barrier);
+                continue;
+            }
+            return reader(Some(oldest_entry));
+        }
+        reader(None)
+    }
+}
+
+impl<T> Queue<T> {
+    /// Pushes an instance of `T` without checking the lifetime of `T`.
+    ///
+    /// Returns an [`Arc`] holding a strong reference to the newly pushed entry.
+    ///
+    /// # Safety
+    ///
+    /// `T::drop` can be run after the [`Queue`] is dropped, therefore it is safe only if `T::drop`
+    /// does not access short-lived data or [`std::mem::needs_drop`] is `false` for `T`,
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::Queue;
+    ///
+    /// let hello = String::from("hello");
+    /// let queue: Queue<&str> = Queue::default();
+    ///
+    /// assert_eq!(unsafe { **queue.push_unchecked(hello.as_str()) }, "hello");
+    /// ```
+    #[inline]
+    pub unsafe fn push_unchecked(&self, val: T) -> Arc<Entry<T>> {
+        match self.push_if_internal(val, |_| true, &Barrier::new()) {
+            Ok(entry) => entry,
+            Err(_) => {
+                unreachable!();
+            }
+        }
+    }
+
+    /// Pushes an instance of `T` if the newest entry satisfies the given condition without
+    /// checking the lifetime of `T`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error along with the supplied instance if the condition is not met.
+    ///
+    /// # Safety
+    ///
+    /// `T::drop` can be run after the [`Queue`] is dropped, therefore it is safe only if `T::drop`
+    /// does not access short-lived data or [`std::mem::needs_drop`] is `false` for `T`,
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::Queue;
+    ///
+    /// let hello = String::from("hello");
+    /// let queue: Queue<&str> = Queue::default();
+    ///
+    /// assert!(unsafe { queue.push_if_unchecked(hello.as_str(), |e| e.is_none()).is_ok() });
+    /// ```
+    #[inline]
+    pub unsafe fn push_if_unchecked<F: FnMut(Option<&Entry<T>>) -> bool>(
         &self,
         val: T,
         cond: F,
@@ -140,8 +236,6 @@ impl<T: 'static> Queue<T> {
 
     /// Peeks the oldest entry.
     ///
-    /// Returns `None` if the [`Queue`] is empty.
-    ///
     /// # Examples
     ///
     /// ```
@@ -149,53 +243,25 @@ impl<T: 'static> Queue<T> {
     ///
     /// let queue: Queue<usize> = Queue::default();
     ///
-    /// assert!(queue.peek(|v| **v).is_none());
+    /// assert!(queue.peek(|v| v.is_none()));
     ///
     /// queue.push(37);
     /// queue.push(3);
     ///
-    /// assert_eq!(queue.peek(|v| **v), Some(37));
+    /// assert_eq!(queue.peek(|v| **v.unwrap()), 37);
     /// ```
     #[inline]
-    pub fn peek<R, F: FnOnce(&Entry<T>) -> R>(&self, reader: F) -> Option<R> {
+    pub fn peek<R, F: FnOnce(Option<&Entry<T>>) -> R>(&self, reader: F) -> R {
         let barrier = Barrier::new();
-        self.peek_with(reader, &barrier)
-    }
-
-    /// Peeks the oldest entry with the supplied [`Barrier`].
-    ///
-    /// Returns `None` if the [`Queue`] is empty.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::ebr::Barrier;
-    /// use scc::Queue;
-    ///
-    /// let queue: Queue<usize> = Queue::default();
-    ///
-    /// assert!(queue.peek_with(|v| **v, &Barrier::new()).is_none());
-    ///
-    /// queue.push(37);
-    /// queue.push(3);
-    ///
-    /// assert_eq!(queue.peek_with(|v| **v, &Barrier::new()), Some(37));
-    /// ```
-    #[inline]
-    pub fn peek_with<'b, R, F: FnOnce(&'b Entry<T>) -> R>(
-        &self,
-        reader: F,
-        barrier: &'b Barrier,
-    ) -> Option<R> {
-        let mut current = self.oldest.load(Acquire, barrier);
+        let mut current = self.oldest.load(Acquire, &barrier);
         while let Some(oldest_entry) = current.as_ref() {
             if oldest_entry.is_deleted(Relaxed) {
-                current = self.cleanup_oldest(barrier);
+                current = self.cleanup_oldest(&barrier);
                 continue;
             }
-            return Some(reader(oldest_entry));
+            return reader(Some(oldest_entry));
         }
-        None
+        reader(None)
     }
 
     /// Returns `true` if the [`Queue`] is empty.
@@ -235,7 +301,7 @@ impl<T: 'static> Queue<T> {
             return Err(val);
         }
 
-        let mut new_entry = Arc::new(Entry::new(val));
+        let mut new_entry = unsafe { Arc::new_unchecked(Entry::new(val)) };
         loop {
             let result = if let Some(newest_entry) = newest_ptr.as_ref() {
                 newest_entry.next().compare_exchange(
@@ -328,7 +394,7 @@ impl<T: 'static> Queue<T> {
     }
 }
 
-impl<T: 'static + Clone> Clone for Queue<T> {
+impl<T: Clone> Clone for Queue<T> {
     #[inline]
     fn clone(&self) -> Self {
         let cloned = Self::default();
@@ -343,7 +409,7 @@ impl<T: 'static + Clone> Clone for Queue<T> {
     }
 }
 
-impl<T: 'static + Debug> Debug for Queue<T> {
+impl<T: Debug> Debug for Queue<T> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut d = f.debug_set();
@@ -358,7 +424,7 @@ impl<T: 'static + Debug> Debug for Queue<T> {
     }
 }
 
-impl<T: 'static> Default for Queue<T> {
+impl<T> Default for Queue<T> {
     #[inline]
     fn default() -> Self {
         Self {
