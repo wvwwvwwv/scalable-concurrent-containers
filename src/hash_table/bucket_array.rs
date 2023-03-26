@@ -127,7 +127,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
         unsafe { &(*(self.data_block_ptr.add(index))) }
     }
 
-    /// Returns a reference to a [`DataBlock`] at the given position.
+    /// Returns a mutable reference to a [`DataBlock`] at the given position.
     #[allow(clippy::mut_from_ref)]
     #[inline]
     pub(crate) fn data_block_mut(&self, index: usize) -> &mut DataBlock<K, V, BUCKET_LEN> {
