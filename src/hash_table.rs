@@ -173,12 +173,12 @@ where
         barrier: &Barrier,
     ) -> Result<Option<(K, V)>, (K, V)> {
         match self.acquire_entry(&key, hash, async_wait, barrier) {
-            Ok((mut locker, data_block, entry_ptr, _)) => {
+            Ok((mut locker, data_block_mut, entry_ptr, _)) => {
                 if entry_ptr.is_valid() {
                     return Ok(Some((key, val)));
                 }
                 locker.insert_with(
-                    data_block,
+                    data_block_mut,
                     BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
                     || (key, val),
                     barrier,
@@ -304,15 +304,15 @@ where
                 Locker::lock(bucket, barrier)
             };
             if let Some(mut locker) = lock_result {
-                let data_block = current_array.data_block(index);
+                let data_block_mut = current_array.data_block_mut(index);
                 let mut entry_ptr = locker.get(
-                    data_block,
+                    data_block_mut,
                     key,
                     BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
                     barrier,
                 );
-                if entry_ptr.is_valid() && condition(&entry_ptr.get(data_block).1) {
-                    let result = locker.erase(data_block, &mut entry_ptr);
+                if entry_ptr.is_valid() && condition(&entry_ptr.get(data_block_mut).1) {
+                    let result = locker.erase(data_block_mut, &mut entry_ptr);
                     if shrinkable
                         && locker.num_entries() <= 1
                         && current_array.within_sampling_range(index)
@@ -343,7 +343,7 @@ where
     ) -> Result<
         (
             Locker<'b, K, V, LOCK_FREE>,
-            &'b DataBlock<K, V, BUCKET_LEN>,
+            &'b mut DataBlock<K, V, BUCKET_LEN>,
             EntryPtr<'b, K, V, LOCK_FREE>,
             usize,
         ),
@@ -392,14 +392,14 @@ where
                 Locker::lock(bucket, barrier)
             };
             if let Some(locker) = lock_result {
-                let data_block = current_array.data_block(index);
+                let data_block_mut = current_array.data_block_mut(index);
                 let entry_ptr = locker.get(
-                    data_block,
+                    data_block_mut,
                     key,
                     BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
                     barrier,
                 );
-                return Ok((locker, data_block, entry_ptr, index));
+                return Ok((locker, data_block_mut, entry_ptr, index));
             }
 
             // Reaching here means that `self.bucket_array()` has been updated.
@@ -479,9 +479,9 @@ where
                 Default::default();
             let mut max_index = 0;
             let mut entry_ptr = EntryPtr::new(barrier);
-            let old_data_block = old_array.data_block(old_index);
+            let old_data_block_mut = old_array.data_block_mut(old_index);
             while entry_ptr.next(old_locker, barrier) {
-                let old_entry = entry_ptr.get(old_data_block);
+                let old_entry = entry_ptr.get(old_data_block_mut);
                 let (new_index, partial_hash) =
                     if old_array.num_buckets() >= current_array.num_buckets() {
                         debug_assert_eq!(
@@ -523,14 +523,14 @@ where
                 };
                 let cloned_entry = Self::cloner(old_entry);
                 target_bucket.insert_with(
-                    current_array.data_block(new_index),
+                    current_array.data_block_mut(new_index),
                     partial_hash,
                     || {
                         // Stack unwinding during a call to `insert` will result in the entry being
                         // removed from the map, any map entry modification should take place after all
                         // the memory is reserved.
                         cloned_entry.unwrap_or_else(|| {
-                            old_locker.extract(old_data_block, &mut entry_ptr, barrier)
+                            old_locker.extract(old_data_block_mut, &mut entry_ptr, barrier)
                         })
                     },
                     barrier,
@@ -540,7 +540,7 @@ where
                     // In order for readers that have observed the following erasure to see the above
                     // insertion, a `Release` fence is needed.
                     fence(Release);
-                    old_locker.erase(old_data_block, &mut entry_ptr);
+                    old_locker.erase(old_data_block_mut, &mut entry_ptr);
                 }
             }
         }

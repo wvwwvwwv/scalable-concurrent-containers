@@ -127,6 +127,14 @@ impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
         unsafe { &(*(self.data_block_ptr.add(index))) }
     }
 
+    /// Returns a reference to a [`DataBlock`] at the given position.
+    #[allow(clippy::mut_from_ref)]
+    #[inline]
+    pub(crate) fn data_block_mut(&self, index: usize) -> &mut DataBlock<K, V, BUCKET_LEN> {
+        debug_assert!(index < self.num_buckets());
+        unsafe { &mut (*(self.data_block_ptr.add(index) as *mut DataBlock<K, V, BUCKET_LEN>)) }
+    }
+
     /// Checks if the index is within the sampling range of the array.
     #[inline]
     pub(crate) fn within_sampling_range(&self, index: usize) -> bool {
@@ -240,7 +248,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> Drop for BucketArray<K, V, LOCK_FREE> {
             for index in num_cleared_buckets..self.array_len {
                 unsafe {
                     self.bucket_mut(index)
-                        .drop_entries(self.data_block(index), &barrier);
+                        .drop_entries(self.data_block_mut(index), &barrier);
                 }
             }
         }

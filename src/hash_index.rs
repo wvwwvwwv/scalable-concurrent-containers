@@ -208,11 +208,11 @@ where
         F: FnOnce(&K, &mut V) -> R,
     {
         let barrier = Barrier::new();
-        let (mut locker, data_block, mut entry_ptr, _) = self
+        let (mut locker, data_block_mut, mut entry_ptr, _) = self
             .acquire_entry(key, self.hash(key), &mut (), &barrier)
             .ok()?;
         if entry_ptr.is_valid() {
-            let (k, v) = entry_ptr.get_mut(data_block, &mut locker);
+            let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
             return Some(updater(k, v));
         }
         None
@@ -250,11 +250,11 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if let Ok((mut locker, data_block, mut entry_ptr, _)) =
+            if let Ok((mut locker, data_block_mut, mut entry_ptr, _)) =
                 self.acquire_entry(key, hash, &mut async_wait_pinned, &Barrier::new())
             {
                 if entry_ptr.is_valid() {
-                    let (k, v) = entry_ptr.get_mut(data_block, &mut locker);
+                    let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
                     return Some(updater(k, v));
                 }
                 return None;
@@ -493,10 +493,10 @@ where
             for index in 0..current_array.num_buckets() {
                 let bucket = current_array.bucket_mut(index);
                 if let Some(mut locker) = Locker::lock(bucket, &barrier) {
-                    let data_block = current_array.data_block(index);
+                    let data_block_mut = current_array.data_block_mut(index);
                     let mut entry_ptr = EntryPtr::new(&barrier);
                     while entry_ptr.next(&locker, &barrier) {
-                        locker.erase(data_block, &mut entry_ptr);
+                        locker.erase(data_block_mut, &mut entry_ptr);
                         num_removed = num_removed.saturating_add(1);
                     }
                 }
@@ -545,10 +545,10 @@ where
                             &barrier,
                         ) {
                             if let Some(mut locker) = locker {
-                                let data_block = current_array.data_block(index);
+                                let data_block_mut = current_array.data_block_mut(index);
                                 let mut entry_ptr = EntryPtr::new(&barrier);
                                 while entry_ptr.next(&locker, &barrier) {
-                                    locker.erase(data_block, &mut entry_ptr);
+                                    locker.erase(data_block_mut, &mut entry_ptr);
                                     num_removed = num_removed.saturating_add(1);
                                 }
                             }

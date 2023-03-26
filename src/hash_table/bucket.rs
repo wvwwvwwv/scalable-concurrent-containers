@@ -149,7 +149,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
     #[inline]
     pub(crate) unsafe fn drop_entries(
         &mut self,
-        data_block: &DataBlock<K, V, BUCKET_LEN>,
+        data_block: &mut DataBlock<K, V, BUCKET_LEN>,
         barrier: &Barrier,
     ) {
         if !self.metadata.link.load(Relaxed, barrier).is_null() {
@@ -158,7 +158,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
         if needs_drop::<(K, V)>() && self.metadata.occupied_bitmap != 0 {
             let mut index = self.metadata.occupied_bitmap.trailing_zeros();
             while index != 32 {
-                ptr::drop_in_place(data_block[index as usize].as_ptr() as *mut (K, V));
+                ptr::drop_in_place(data_block[index as usize].as_mut_ptr());
                 self.metadata.occupied_bitmap -= 1_u32 << index;
                 index = self.metadata.occupied_bitmap.trailing_zeros();
             }
@@ -169,7 +169,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
     #[inline]
     fn get<'b, Q>(
         &self,
-        data_block: &'b DataBlock<K, V, BUCKET_LEN>,
+        data_block: &DataBlock<K, V, BUCKET_LEN>,
         key: &Q,
         partial_hash: u8,
         barrier: &'b Barrier,
@@ -388,14 +388,15 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
     #[inline]
     pub(crate) fn get_mut(
         &mut self,
-        data_block: &'b DataBlock<K, V, BUCKET_LEN>,
+        data_block: &mut DataBlock<K, V, BUCKET_LEN>,
         _locker: &mut Locker<K, V, LOCK_FREE>,
-    ) -> &'b mut (K, V) {
+    ) -> &mut (K, V) {
         debug_assert_ne!(self.current_index, usize::MAX);
-        let entry_ptr = if let Some(link) = self.current_link_ptr.as_ref() {
-            link.data_block[self.current_index].as_ptr() as *mut (K, V)
+        let link_ptr = self.current_link_ptr.as_raw() as *mut LinkedBucket<K, V, LINKED_BUCKET_LEN>;
+        let entry_ptr = if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
+            link_mut.data_block[self.current_index].as_mut_ptr()
         } else {
-            data_block[self.current_index].as_ptr() as *mut (K, V)
+            data_block[self.current_index].as_mut_ptr()
         };
         unsafe { &mut (*entry_ptr) }
     }
@@ -589,7 +590,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     #[inline]
     pub(crate) fn get<Q>(
         &self,
-        data_block: &'b DataBlock<K, V, BUCKET_LEN>,
+        data_block: &DataBlock<K, V, BUCKET_LEN>,
         key: &Q,
         partial_hash: u8,
         barrier: &'b Barrier,
@@ -607,7 +608,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     #[inline]
     pub(crate) fn insert_with<C: FnOnce() -> (K, V)>(
         &mut self,
-        data_block: &'b DataBlock<K, V, BUCKET_LEN>,
+        data_block: &mut DataBlock<K, V, BUCKET_LEN>,
         partial_hash: u8,
         constructor: C,
         barrier: &'b Barrier,
@@ -631,7 +632,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                 if free_index != LINKED_BUCKET_LEN {
                     Self::insert_entry_with(
                         &mut link_mut.metadata,
-                        &link_mut.data_block,
+                        &mut link_mut.data_block,
                         free_index,
                         partial_hash,
                         constructor,
@@ -693,7 +694,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     #[inline]
     pub(crate) fn erase(
         &mut self,
-        data_block: &DataBlock<K, V, BUCKET_LEN>,
+        data_block: &mut DataBlock<K, V, BUCKET_LEN>,
         entry_ptr: &mut EntryPtr<K, V, LOCK_FREE>,
     ) -> Option<(K, V)> {
         debug_assert_ne!(entry_ptr.current_index, usize::MAX);
@@ -715,7 +716,9 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                 );
                 link_mut.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
                 return Some(unsafe {
-                    link_mut.data_block[entry_ptr.current_index].as_ptr().read()
+                    link_mut.data_block[entry_ptr.current_index]
+                        .as_mut_ptr()
+                        .read()
                 });
             }
         } else if LOCK_FREE {
@@ -730,7 +733,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                 0
             );
             self.bucket.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
-            return Some(unsafe { data_block[entry_ptr.current_index].as_ptr().read() });
+            return Some(unsafe { data_block[entry_ptr.current_index].as_mut_ptr().read() });
         }
 
         None
@@ -740,7 +743,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     #[inline]
     pub(crate) fn extract<'e>(
         &mut self,
-        data_block: &DataBlock<K, V, BUCKET_LEN>,
+        data_block: &mut DataBlock<K, V, BUCKET_LEN>,
         entry_ptr: &mut EntryPtr<'e, K, V, LOCK_FREE>,
         barrier: &'e Barrier,
     ) -> (K, V) {
@@ -750,7 +753,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
             let extracted = Self::extract_entry(
                 &mut link_mut.metadata,
-                &link_mut.data_block,
+                &mut link_mut.data_block,
                 entry_ptr.current_index,
                 &mut self.bucket.num_entries,
             );
@@ -780,7 +783,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     /// Inserts a key-value pair in the slot.
     fn insert_entry_with<C: FnOnce() -> (K, V), const LEN: usize>(
         metadata: &mut Metadata<K, V, LEN>,
-        data_block: &DataBlock<K, V, LEN>,
+        data_block: &mut DataBlock<K, V, LEN>,
         index: usize,
         partial_hash: u8,
         constructor: C,
@@ -788,7 +791,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         debug_assert!(index < LEN);
 
         unsafe {
-            (data_block[index].as_ptr() as *mut (K, V)).write(constructor());
+            data_block[index].as_mut_ptr().write(constructor());
             metadata.partial_hash_array[index] = partial_hash;
             if LOCK_FREE {
                 fence(Release);
@@ -800,7 +803,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     /// Extracts and removes the key-value pair in the slot.
     fn extract_entry<const LEN: usize>(
         metadata: &mut Metadata<K, V, LEN>,
-        data_block: &DataBlock<K, V, LEN>,
+        data_block: &mut DataBlock<K, V, LEN>,
         index: usize,
         num_entries_field: &mut u32,
     ) -> (K, V) {
@@ -808,8 +811,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
 
         *num_entries_field -= 1;
         metadata.occupied_bitmap &= !(1_u32 << index);
-        let entry_ptr = data_block[index].as_ptr() as *mut (K, V);
-        unsafe { ptr::read(entry_ptr) }
+        unsafe { data_block[index].as_mut_ptr().read() }
     }
 }
 
@@ -1019,6 +1021,9 @@ mod test {
                 let partial_hash = (task_id % BUCKET_LEN).try_into().unwrap();
                 let bucket_mut =
                     unsafe { &mut *(bucket_clone.as_ptr() as *mut Bucket<usize, usize, true>) };
+                let data_block_mut = unsafe {
+                    &mut *(data_block_clone.as_ptr() as *mut DataBlock<usize, usize, BUCKET_LEN>)
+                };
                 let barrier = Barrier::new();
                 for i in 0..2048 {
                     let mut exclusive_locker = Locker::lock(bucket_mut, &barrier).unwrap();
@@ -1032,7 +1037,7 @@ mod test {
                     assert_eq!(sum % 256, 0);
                     if i == 0 {
                         exclusive_locker.insert_with(
-                            &data_block_clone,
+                            data_block_mut,
                             partial_hash,
                             || (task_id, 0),
                             &barrier,
@@ -1125,9 +1130,13 @@ mod test {
                                 async_wait_pinned.derive().unwrap(),
                                 &barrier,
                             ) {
+                                let data_block_mut = unsafe {
+                                    &mut *(data_block_clone.as_ptr()
+                                        as *mut DataBlock<usize, usize, BUCKET_LEN>)
+                                };
                                 let mut exclusive_locker = exclusive_locker.unwrap();
                                 exclusive_locker.insert_with(
-                                    &data_block_clone,
+                                    data_block_mut,
                                     partial_hash,
                                     || (task_id, 0),
                                     &barrier,
@@ -1168,6 +1177,10 @@ mod test {
                         let bucket_mut = unsafe {
                             &mut *(bucket_clone.as_ptr() as *mut Bucket<usize, usize, false>)
                         };
+                        let data_block_mut = unsafe {
+                            &mut *(data_block_clone.as_ptr()
+                                as *mut DataBlock<usize, usize, BUCKET_LEN>)
+                        };
                         let barrier = Barrier::new();
                         let mut exclusive_locker = Locker::lock(bucket_mut, &barrier).unwrap();
                         let mut entry_ptr = exclusive_locker.get(
@@ -1178,7 +1191,7 @@ mod test {
                         );
                         assert_eq!(
                             exclusive_locker
-                                .erase(&data_block_clone, &mut entry_ptr)
+                                .erase(data_block_mut, &mut entry_ptr)
                                 .unwrap(),
                             (task_id, 0_usize)
                         );
