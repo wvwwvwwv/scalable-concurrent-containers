@@ -4,16 +4,16 @@
 //!
 //! * [`HashMap`]: concurrent and asynchronous hash map.
 //! * [`HashSet`]: concurrent and asynchronous hash set.
-//! * [`HashIndex`]: concurrent and asynchronous hash map optimized for read.
-//! * [`TreeIndex`]: concurrent and asynchronous B+ tree optimized for read.
+//! * [`HashIndex`]: read-optimized concurrent and asynchronous hash map.
+//! * [`TreeIndex`]: read-optimized concurrent and asynchronous B+ tree.
 //!
 //! Utilities for concurrent programming.
 //!
 //! * [`ebr`]: epoch-based reclamation.
 //! * [`LinkedList`]: lock-free concurrent linked list type trait.
 //! * [`Bag`]: lock-free concurrent unordered instance container.
-//! * [`Queue`]: lock-free concurrent container.
-//! * [`Stack`]: lock-free concurrent container.
+//! * [`Queue`]: lock-free concurrent first-in-first-out container.
+//! * [`Stack`]: lock-free concurrent last-in-first-out container.
 
 pub mod hash_map;
 pub use hash_map::HashMap;

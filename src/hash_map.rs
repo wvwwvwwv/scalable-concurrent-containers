@@ -214,26 +214,14 @@ where
     /// ```
     #[inline]
     pub fn reserve(&self, additional_capacity: usize) -> Option<Reserve<K, V, H>> {
-        let mut current_minimum_capacity = self.minimum_capacity.load(Relaxed);
-        loop {
-            if usize::MAX - current_minimum_capacity <= additional_capacity {
-                return None;
-            }
-            match self.minimum_capacity.compare_exchange(
-                current_minimum_capacity,
-                current_minimum_capacity + additional_capacity,
-                Relaxed,
-                Relaxed,
-            ) {
-                Ok(_) => {
-                    self.try_resize(0, &Barrier::new());
-                    return Some(Reserve {
-                        hashmap: self,
-                        additional: additional_capacity,
-                    });
-                }
-                Err(actual) => current_minimum_capacity = actual,
-            }
+        let additional = self.reserve_capacity(additional_capacity);
+        if additional == 0 {
+            None
+        } else {
+            Some(Reserve {
+                hashmap: self,
+                additional,
+            })
         }
     }
 
@@ -1532,7 +1520,7 @@ where
         &self.build_hasher
     }
     #[inline]
-    fn cloner(_: &(K, V)) -> Option<(K, V)> {
+    fn try_clone(_: &(K, V)) -> Option<(K, V)> {
         None
     }
     #[inline]
@@ -1540,8 +1528,8 @@ where
         &self.array
     }
     #[inline]
-    fn minimum_capacity(&self) -> usize {
-        self.minimum_capacity.load(Relaxed)
+    fn minimum_capacity(&self) -> &AtomicUsize {
+        &self.minimum_capacity
     }
 }
 
@@ -2157,27 +2145,6 @@ where
     H: BuildHasher,
 {
     /// Returns the number of reserved slots.
-    ///
-    /// The associated [`HashMap`] or [`HashSet`](super::HashSet) guarantees that the capacity will
-    /// never be below the number of reserved slots once the memory is allocated until the
-    /// [`Reserve`] is dropped.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashMap;
-    /// use std::collections::hash_map::RandomState;
-    ///
-    /// let hashmap: HashMap<usize, usize, RandomState> = HashMap::default();
-    ///
-    /// let reserved = hashmap.reserve(10000);
-    /// assert_eq!(hashmap.capacity(), 0);
-    ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.capacity() >= 10000);
-    ///
-    /// assert_eq!(reserved.map_or(0, |r| r.additional_capacity()), 10000);
-    /// ```
     #[inline]
     #[must_use]
     pub fn additional_capacity(&self) -> usize {

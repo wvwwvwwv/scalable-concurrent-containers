@@ -10,8 +10,8 @@ use crate::wait_queue::DeriveAsyncWait;
 
 use std::borrow::Borrow;
 use std::hash::{BuildHasher, Hash, Hasher};
-use std::sync::atomic::fence;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
+use std::sync::atomic::{fence, AtomicUsize};
 
 /// `HashTable` defines common functions for hash table implementations.
 pub(super) trait HashTable<K, V, H, const LOCK_FREE: bool>
@@ -34,15 +34,40 @@ where
     /// Returns a reference to its [`BuildHasher`].
     fn hasher(&self) -> &H;
 
-    /// Cloning function which is only invoked when `LOCK_FREE` is `true` thus `K` and `V` both
-    /// being `Clone`.
-    fn cloner(entry: &(K, V)) -> Option<(K, V)>;
+    /// Tries to clone the instances pointed by `entry`.
+    ///
+    /// It does not clone unless `LOCK_FREE` is `true` thus `K` and `V` both being `Clone`.
+    fn try_clone(entry: &(K, V)) -> Option<(K, V)>;
 
     /// Returns a reference to the [`BucketArray`] pointer.
     fn bucket_array(&self) -> &AtomicArc<BucketArray<K, V, LOCK_FREE>>;
 
     /// Returns the minimum allowed capacity.
-    fn minimum_capacity(&self) -> usize;
+    fn minimum_capacity(&self) -> &AtomicUsize;
+
+    /// Reserves the specified capacity.
+    ///
+    /// Returns the actually allocated capacity.
+    fn reserve_capacity(&self, additional_capacity: usize) -> usize {
+        let mut current_minimum_capacity = self.minimum_capacity().load(Relaxed);
+        loop {
+            if usize::MAX - current_minimum_capacity <= additional_capacity {
+                return 0;
+            }
+            match self.minimum_capacity().compare_exchange(
+                current_minimum_capacity,
+                current_minimum_capacity + additional_capacity,
+                Relaxed,
+                Relaxed,
+            ) {
+                Ok(_) => {
+                    self.try_resize(0, &Barrier::new());
+                    return additional_capacity;
+                }
+                Err(actual) => current_minimum_capacity = actual,
+            }
+        }
+    }
 
     /// Returns a reference to the current array.
     ///
@@ -60,7 +85,7 @@ where
                 Ptr::null(),
                 (
                     Some(Arc::new_unchecked(BucketArray::<K, V, LOCK_FREE>::new(
-                        self.minimum_capacity(),
+                        self.minimum_capacity().load(Relaxed),
                         AtomicArc::null(),
                     ))),
                     Tag::None,
@@ -521,7 +546,7 @@ where
                         .as_mut()
                         .unwrap_unchecked()
                 };
-                let cloned_entry = Self::cloner(old_entry);
+                let cloned_entry = Self::try_clone(old_entry);
                 target_bucket.insert_with(
                     current_array.data_block_mut(new_index),
                     partial_hash,
@@ -686,7 +711,7 @@ where
     ) {
         debug_assert!(current_array.old_array(barrier).is_null());
 
-        if current_array.num_entries() > self.minimum_capacity().next_power_of_two() {
+        if current_array.num_entries() > self.minimum_capacity().load(Relaxed).next_power_of_two() {
             // Check if the hash table can be shrunk.
             let sample_size = current_array.sample_size();
             let threshold = sample_size * BUCKET_LEN / 16;
@@ -751,7 +776,7 @@ where
             // The resizing policies are as follows.
             //  - The estimated load factor >= `7/8`, then the hash table grows up to 32x.
             //  - The estimated load factor <= `1/16`, then the hash table shrinks to fit.
-            let minimum_capacity = self.minimum_capacity();
+            let minimum_capacity = self.minimum_capacity().load(Relaxed);
             let capacity = current_array.num_entries();
             let sample_size = current_array.full_sample_size();
             let estimated_num_entries = Self::sample(current_array, sampling_index, sample_size);

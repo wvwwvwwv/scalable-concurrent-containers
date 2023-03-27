@@ -1,5 +1,10 @@
 # Changelog
 
+1.4.1
+
+* Add `hash_index::Reserve` and `HashIndex::reserve`.
+* Minor performance improvement and documentation update.
+
 1.4.0
 
 * API update: `{Stack, Queue}::{peek*}` receive `FnOnce(Option<&Entry<T>>) -> R`.

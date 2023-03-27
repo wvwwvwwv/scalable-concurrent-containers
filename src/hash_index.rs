@@ -11,9 +11,11 @@ use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
 use std::iter::FusedIterator;
+use std::ops::Deref;
 use std::pin::Pin;
 use std::ptr;
-use std::sync::atomic::Ordering::Acquire;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
 /// Scalable concurrent hash index.
 ///
@@ -41,8 +43,21 @@ where
     H: BuildHasher,
 {
     array: AtomicArc<BucketArray<K, V, true>>,
-    minimum_capacity: usize,
+    minimum_capacity: AtomicUsize,
     build_hasher: H,
+}
+
+/// [`Reserve`] keeps the capacity of the associated [`HashIndex`] higher than a certain level.
+///
+/// The [`HashIndex`] does not shrink the capacity below the reserved capacity.
+pub struct Reserve<'h, K, V, H>
+where
+    K: 'static + Clone + Eq + Hash,
+    V: 'static + Clone,
+    H: BuildHasher,
+{
+    hashindex: &'h HashIndex<K, V, H>,
+    additional: usize,
 }
 
 /// [`Visitor`] iterates over all the key-value pairs in the [`HashIndex`].
@@ -84,7 +99,7 @@ where
     pub fn with_hasher(build_hasher: H) -> HashIndex<K, V, H> {
         HashIndex {
             array: AtomicArc::null(),
-            minimum_capacity: 0,
+            minimum_capacity: AtomicUsize::new(0),
             build_hasher,
         }
     }
@@ -112,8 +127,57 @@ where
                 capacity,
                 AtomicArc::null(),
             ))),
-            minimum_capacity: capacity,
+            minimum_capacity: AtomicUsize::new(capacity),
             build_hasher,
+        }
+    }
+
+    /// Temporarily increases the minimum capacity of the [`HashIndex`].
+    ///
+    /// A [`Reserve`] is returned if the [`HashIndex`] could increase the minimum capacity while
+    /// the increased capacity is not exclusively owned by the returned [`Reserve`], allowing
+    /// others to benefit from it. The memory for the additional space may not be immediately
+    /// allocated if the [`HashIndex`] is empty or currently being resized, however once the memory
+    /// is reserved eventually, the capacity will not shrink below the additional capacity until
+    /// the returned [`Reserve`] is dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns `None` if a too large number is given.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    /// use std::collections::hash_map::RandomState;
+    ///
+    /// let hashindex: HashIndex<usize, usize, RandomState> = HashIndex::with_capacity(1000);
+    /// assert_eq!(hashindex.capacity(), 1024);
+    ///
+    /// let reserved = hashindex.reserve(10000);
+    /// assert!(reserved.is_some());
+    /// assert_eq!(hashindex.capacity(), 16384);
+    ///
+    /// assert!(hashindex.reserve(usize::MAX).is_none());
+    /// assert_eq!(hashindex.capacity(), 16384);
+    ///
+    /// for i in 0..16 {
+    ///     assert!(hashindex.insert(i, i).is_ok());
+    /// }
+    /// drop(reserved);
+    ///
+    /// assert_eq!(hashindex.capacity(), 1024);
+    /// ```
+    #[inline]
+    pub fn reserve(&self, additional_capacity: usize) -> Option<Reserve<K, V, H>> {
+        let additional = self.reserve_capacity(additional_capacity);
+        if additional == 0 {
+            None
+        } else {
+            Some(Reserve {
+                hashindex: self,
+                additional,
+            })
         }
     }
 
@@ -776,7 +840,7 @@ where
                 capacity,
                 AtomicArc::null(),
             ))),
-            minimum_capacity: capacity,
+            minimum_capacity: AtomicUsize::new(capacity),
             build_hasher: RandomState::new(),
         }
     }
@@ -805,7 +869,7 @@ where
     fn default() -> Self {
         HashIndex {
             array: AtomicArc::null(),
-            minimum_capacity: 0,
+            minimum_capacity: AtomicUsize::new(0),
             build_hasher: RandomState::new(),
         }
     }
@@ -822,7 +886,7 @@ where
         &self.build_hasher
     }
     #[inline]
-    fn cloner(entry: &(K, V)) -> Option<(K, V)> {
+    fn try_clone(entry: &(K, V)) -> Option<(K, V)> {
         Some((entry.0.clone(), entry.1.clone()))
     }
     #[inline]
@@ -830,8 +894,8 @@ where
         &self.array
     }
     #[inline]
-    fn minimum_capacity(&self) -> usize {
-        self.minimum_capacity
+    fn minimum_capacity(&self) -> &AtomicUsize {
+        &self.minimum_capacity
     }
 }
 
@@ -853,6 +917,63 @@ where
                 .any(|(k, v)| self.read(k, |_, sv| v == sv) != Some(true));
         }
         false
+    }
+}
+
+impl<'h, K, V, H> Reserve<'h, K, V, H>
+where
+    K: 'static + Clone + Eq + Hash,
+    V: 'static + Clone,
+    H: BuildHasher,
+{
+    /// Returns the number of reserved slots.
+    #[inline]
+    #[must_use]
+    pub fn additional_capacity(&self) -> usize {
+        self.additional
+    }
+}
+
+impl<'h, K, V, H> AsRef<HashIndex<K, V, H>> for Reserve<'h, K, V, H>
+where
+    K: 'static + Clone + Eq + Hash,
+    V: 'static + Clone,
+    H: BuildHasher,
+{
+    #[inline]
+    fn as_ref(&self) -> &HashIndex<K, V, H> {
+        self.hashindex
+    }
+}
+
+impl<'h, K, V, H> Deref for Reserve<'h, K, V, H>
+where
+    K: 'static + Clone + Eq + Hash,
+    V: 'static + Clone,
+    H: BuildHasher,
+{
+    type Target = HashIndex<K, V, H>;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.hashindex
+    }
+}
+
+impl<'h, K, V, H> Drop for Reserve<'h, K, V, H>
+where
+    K: 'static + Clone + Eq + Hash,
+    V: 'static + Clone,
+    H: BuildHasher,
+{
+    #[inline]
+    fn drop(&mut self) {
+        let result = self
+            .hashindex
+            .minimum_capacity
+            .fetch_sub(self.additional, Relaxed);
+        self.hashindex.try_resize(0, &Barrier::new());
+        debug_assert!(result >= self.additional);
     }
 }
 
