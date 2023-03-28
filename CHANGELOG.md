@@ -4,6 +4,7 @@
 
 * Add `hash_index::Reserve` and `HashIndex::reserve`.
 * Add missing `H = RandomState` to several types.
+* Add `const` to several trivial functions.
 
 1.4.0
 

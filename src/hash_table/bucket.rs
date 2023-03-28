@@ -49,6 +49,9 @@ pub(crate) struct Metadata<K: Eq, V, const LEN: usize> {
 
     /// Bitmap for removed slots.
     removed_bitmap: u32,
+
+    /// Partial hash array.
+    partial_hash_array: [u8; LEN],
 }
 
 /// [`Locker`] owns a [`Bucket`] by holding the exclusive lock on it.
@@ -72,15 +75,9 @@ const SLOCK_MAX: u32 = LOCK - 1;
 const LOCK_MASK: u32 = LOCK | SLOCK_MAX;
 
 impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
-    /// Returns `true` if the [`Bucket`] has been killed.
-    #[inline]
-    pub(crate) fn killed(&self) -> bool {
-        (self.state.load(Relaxed) & KILLED) == KILLED
-    }
-
     /// Returns the number of occupied and reachable slots in the [`Bucket`].
     #[inline]
-    pub(crate) fn num_entries(&self) -> usize {
+    pub(crate) const fn num_entries(&self) -> usize {
         self.num_entries as usize
     }
 
@@ -90,8 +87,14 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
     /// therefore rebuilding the [`Bucket`] might be needed to keep the [`Bucket`] as small as
     /// possible.
     #[inline]
-    pub(crate) fn need_rebuild(&self) -> bool {
+    pub(crate) const fn need_rebuild(&self) -> bool {
         self.metadata.removed_bitmap == (u32::MAX >> (32 - BUCKET_LEN))
+    }
+
+    /// Returns `true` if the [`Bucket`] has been killed.
+    #[inline]
+    pub(crate) fn killed(&self) -> bool {
+        (self.state.load(Relaxed) & KILLED) == KILLED
     }
 
     /// Searches for an entry associated with the given key.
@@ -228,7 +231,9 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
         }
 
         let preferred_index = usize::from(partial_hash) % LEN;
-        if (bitmap & (1_u32 << preferred_index)) != 0 {
+        if (bitmap & (1_u32 << preferred_index)) != 0
+            && metadata.partial_hash_array[preferred_index] == partial_hash
+        {
             let entry_ref = unsafe { &(*data_block[preferred_index].as_ptr()) };
             if entry_ref.0.borrow() == key {
                 return Some((preferred_index, entry_ref));
@@ -245,46 +250,14 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
         let mut offset = bitmap.trailing_zeros();
         while offset != 32 {
             let index = (preferred_index + offset as usize) % LEN;
-            let entry_ref = unsafe { &(*data_block[index].as_ptr()) };
-            if entry_ref.0.borrow() == key {
-                return Some((index, entry_ref));
+            if metadata.partial_hash_array[index] == partial_hash {
+                let entry_ref = unsafe { &(*data_block[index].as_ptr()) };
+                if entry_ref.0.borrow() == key {
+                    return Some((index, entry_ref));
+                }
             }
             bitmap -= 1_u32 << offset;
             offset = bitmap.trailing_zeros();
-        }
-
-        None
-    }
-
-    /// Searches for the next closest occupied entry slot number from the current one in the bitmap.
-    ///
-    /// If the specified slot is occupied and reachable, just returns its index number.
-    fn next_entry<Q, const LEN: usize>(
-        metadata: &Metadata<K, V, LEN>,
-        current_index: usize,
-    ) -> Option<usize>
-    where
-        K: Borrow<Q>,
-        Q: Eq + ?Sized,
-    {
-        if current_index >= LEN {
-            return None;
-        }
-
-        let bitmap = if LOCK_FREE {
-            (metadata.occupied_bitmap & (!metadata.removed_bitmap))
-                & (!((1_u32 << current_index) - 1))
-        } else {
-            metadata.occupied_bitmap & (!((1_u32 << current_index) - 1))
-        };
-
-        if LOCK_FREE {
-            fence(Acquire);
-        }
-
-        let next_index = bitmap.trailing_zeros() as usize;
-        if next_index < LEN {
-            return Some(next_index);
         }
 
         None
@@ -310,24 +283,45 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
             }
         }
     }
-}
 
-impl<K: Eq, V, const LOCK_FREE: bool> Default for Bucket<K, V, LOCK_FREE> {
-    #[inline]
-    fn default() -> Self {
-        Bucket::<K, V, LOCK_FREE> {
-            state: AtomicU32::new(0),
-            num_entries: 0,
-            metadata: Metadata::default(),
-            wait_queue: WaitQueue::default(),
+    /// Searches for the next closest occupied entry slot number from the current one in the bitmap.
+    ///
+    /// If the specified slot is occupied and reachable, just returns its index number.
+    fn next_entry<Q, const LEN: usize>(
+        metadata: &Metadata<K, V, LEN>,
+        current_index: usize,
+    ) -> Option<usize>
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
+        if current_index >= LEN {
+            return None;
         }
+
+        let bitmap = if LOCK_FREE {
+            (metadata.occupied_bitmap & (!metadata.removed_bitmap))
+                & (!((1_u32 << current_index) - 1))
+        } else {
+            metadata.occupied_bitmap & (!((1_u32 << current_index) - 1))
+        };
+
+        let next_index = bitmap.trailing_zeros() as usize;
+        if next_index < LEN {
+            if LOCK_FREE {
+                fence(Acquire);
+            }
+            return Some(next_index);
+        }
+
+        None
     }
 }
 
 impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
     /// Creates a new invalid [`EntryPtr`].
     #[inline]
-    pub(crate) fn new(_barrier: &'b Barrier) -> EntryPtr<'b, K, V, LOCK_FREE> {
+    pub(crate) const fn new(_barrier: &'b Barrier) -> EntryPtr<'b, K, V, LOCK_FREE> {
         EntryPtr {
             current_link_ptr: Ptr::null(),
             current_index: BUCKET_LEN,
@@ -336,7 +330,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
 
     /// Returns `true` if the [`EntryPtr`] points to an occupied entry or fused.
     #[inline]
-    pub(crate) fn is_valid(&self) -> bool {
+    pub(crate) const fn is_valid(&self) -> bool {
         self.current_index != BUCKET_LEN
     }
 
@@ -394,6 +388,19 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
             data_block[self.current_index].as_mut_ptr()
         };
         unsafe { &mut (*entry_ptr) }
+    }
+
+    /// Gets the partial hash value of the entry.
+    ///
+    /// The [`EntryPtr`] must point to an occupied entry.
+    #[inline]
+    pub(crate) fn partial_hash(&self, bucket: &Bucket<K, V, LOCK_FREE>) -> u8 {
+        debug_assert_ne!(self.current_index, usize::MAX);
+        if let Some(link) = self.current_link_ptr.as_ref() {
+            link.metadata.partial_hash_array[self.current_index]
+        } else {
+            bucket.metadata.partial_hash_array[self.current_index]
+        }
     }
 
     /// Tries to remove the [`LinkedBucket`] from the linked list.
@@ -475,7 +482,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
     }
 }
 
-unsafe impl<'b, K: Eq + Send, V: Send, const LOCK_FREE: bool> Send
+unsafe impl<'b, K: Eq + Sync, V: Sync, const LOCK_FREE: bool> Sync
     for EntryPtr<'b, K, V, LOCK_FREE>
 {
 }
@@ -616,6 +623,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                         &mut link_mut.metadata,
                         &mut link_mut.data_block,
                         free_index,
+                        partial_hash,
                         constructor,
                     );
                     self.bucket.num_entries += 1;
@@ -637,6 +645,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                 link_mut.data_block[preferred_index]
                     .as_mut_ptr()
                     .write(constructor());
+                link_mut.metadata.partial_hash_array[preferred_index] = partial_hash;
                 link_mut.metadata.occupied_bitmap |= 1_u32 << preferred_index;
             }
             if let Some(head) = link.metadata.link.load(Relaxed, barrier).as_ref() {
@@ -659,6 +668,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                 &mut self.bucket.metadata,
                 data_block,
                 free_index,
+                partial_hash,
                 constructor,
             );
             self.bucket.num_entries += 1;
@@ -750,26 +760,19 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         }
     }
 
-    /// Gets the most optimal free slot index from the given bitmap.
-    fn get_free_index<const LEN: usize>(bitmap: u32, preferred_index: usize) -> usize {
-        let mut free_index = (bitmap | ((1_u32 << preferred_index) - 1)).trailing_ones() as usize;
-        if free_index == LEN {
-            free_index = bitmap.trailing_ones() as usize;
-        }
-        free_index
-    }
-
     /// Inserts a key-value pair in the slot.
     fn insert_entry_with<C: FnOnce() -> (K, V), const LEN: usize>(
         metadata: &mut Metadata<K, V, LEN>,
         data_block: &mut DataBlock<K, V, LEN>,
         index: usize,
+        partial_hash: u8,
         constructor: C,
     ) {
         debug_assert!(index < LEN);
 
         unsafe {
             data_block[index].as_mut_ptr().write(constructor());
+            metadata.partial_hash_array[index] = partial_hash;
             if LOCK_FREE {
                 fence(Release);
             }
@@ -789,6 +792,15 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         *num_entries_field -= 1;
         metadata.occupied_bitmap &= !(1_u32 << index);
         unsafe { data_block[index].as_mut_ptr().read() }
+    }
+
+    /// Gets the most optimal free slot index from the given bitmap.
+    const fn get_free_index<const LEN: usize>(bitmap: u32, preferred_index: usize) -> usize {
+        let mut free_index = (bitmap | ((1_u32 << preferred_index) - 1)).trailing_ones() as usize;
+        if free_index == LEN {
+            free_index = bitmap.trailing_ones() as usize;
+        }
+        free_index
     }
 }
 
@@ -917,11 +929,13 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Drop for Reader<'b, K, V, LOCK_FREE> {
 }
 
 impl<K: Eq, V, const LEN: usize> Default for Metadata<K, V, LEN> {
+    #[inline]
     fn default() -> Self {
         Self {
             link: AtomicArc::default(),
             occupied_bitmap: 0,
             removed_bitmap: 0,
+            partial_hash_array: [0; LEN],
         }
     }
 }
@@ -942,6 +956,7 @@ impl<K: Eq, V, const LEN: usize> LinkedBucket<K, V, LEN> {
                 link: next.map_or_else(AtomicArc::null, AtomicArc::from),
                 occupied_bitmap: 0,
                 removed_bitmap: 0,
+                partial_hash_array: [0; LEN],
             },
             data_block: unsafe { MaybeUninit::uninit().assume_init() },
             prev_link: AtomicPtr::default(),
@@ -977,7 +992,16 @@ mod test {
 
     use tokio::sync;
 
-    static_assertions::assert_eq_size!(Bucket<String, String, false>, [u8; BUCKET_LEN]);
+    static_assertions::assert_eq_size!(Bucket<String, String, false>, [u8; BUCKET_LEN * 2]);
+
+    fn default_bucket<K: Eq, V>() -> Bucket<K, V, true> {
+        Bucket {
+            state: AtomicU32::new(0),
+            num_entries: 0,
+            metadata: Metadata::default(),
+            wait_queue: WaitQueue::default(),
+        }
+    }
 
     #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
@@ -986,7 +1010,7 @@ mod test {
         let barrier = Arc::new(sync::Barrier::new(num_tasks));
         let data_block: Arc<DataBlock<usize, usize, BUCKET_LEN>> =
             Arc::new(unsafe { MaybeUninit::uninit().assume_init() });
-        let mut bucket: Arc<Bucket<usize, usize, true>> = Arc::new(Bucket::default());
+        let mut bucket: Arc<Bucket<usize, usize, true>> = Arc::new(default_bucket());
         let mut data: [u64; 128] = [0; 128];
         let mut task_handles = Vec::with_capacity(num_tasks);
         for task_id in 0..num_tasks {
@@ -1085,7 +1109,7 @@ mod test {
         let barrier = Arc::new(sync::Barrier::new(num_tasks));
         let data_block: Arc<DataBlock<usize, usize, BUCKET_LEN>> =
             Arc::new(unsafe { MaybeUninit::uninit().assume_init() });
-        let bucket: Arc<Bucket<usize, usize, false>> = Arc::new(Bucket::default());
+        let bucket: Arc<Bucket<usize, usize, true>> = Arc::new(default_bucket());
         let mut task_handles = Vec::with_capacity(num_tasks);
         for task_id in 0..num_tasks {
             let barrier_clone = barrier.clone();

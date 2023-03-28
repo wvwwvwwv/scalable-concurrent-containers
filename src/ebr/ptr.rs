@@ -25,7 +25,7 @@ impl<'b, T> Ptr<'b, T> {
     /// ```
     #[inline]
     #[must_use]
-    pub fn null() -> Ptr<'b, T> {
+    pub const fn null() -> Ptr<'b, T> {
         Ptr {
             instance_ptr: ptr::null(),
             _phantom: PhantomData,
@@ -218,7 +218,7 @@ impl<'b, T> Ptr<'b, T> {
 
     /// Creates a new [`Ptr`] from a raw pointer.
     #[inline]
-    pub(super) fn from(ptr: *const RefCounted<T>) -> Ptr<'b, T> {
+    pub(super) const fn from(ptr: *const RefCounted<T>) -> Ptr<'b, T> {
         Ptr {
             instance_ptr: ptr,
             _phantom: std::marker::PhantomData,
@@ -227,7 +227,7 @@ impl<'b, T> Ptr<'b, T> {
 
     /// Provides a raw pointer to its [`RefCounted`].
     #[inline]
-    pub(super) fn as_underlying_ptr(self) -> *const RefCounted<T> {
+    pub(super) const fn as_underlying_ptr(self) -> *const RefCounted<T> {
         self.instance_ptr
     }
 }

@@ -213,7 +213,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
     }
 
     /// Calculates the layout of the memory block for an array of `T`.
-    fn calculate_memory_layout<T: Sized>(array_len: usize) -> (usize, usize, Layout) {
+    const fn calculate_memory_layout<T: Sized>(array_len: usize) -> (usize, usize, Layout) {
         let size_of_t = size_of::<T>();
         let aligned_size = size_of_t.next_power_of_two();
         let allocation_size = aligned_size + array_len * size_of_t;
@@ -273,7 +273,6 @@ impl<K: Eq, V, const LOCK_FREE: bool> Drop for BucketArray<K, V, LOCK_FREE> {
 }
 
 unsafe impl<K: Eq + Send, V: Send, const LOCK_FREE: bool> Send for BucketArray<K, V, LOCK_FREE> {}
-
 unsafe impl<K: Eq + Sync, V: Sync, const LOCK_FREE: bool> Sync for BucketArray<K, V, LOCK_FREE> {}
 
 #[cfg(test)]

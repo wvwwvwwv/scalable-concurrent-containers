@@ -507,19 +507,23 @@ where
             let old_data_block_mut = old_array.data_block_mut(old_index);
             while entry_ptr.next(old_locker, barrier) {
                 let old_entry = entry_ptr.get(old_data_block_mut);
-                let hash = self.hash(old_entry.0.borrow());
-                let partial_hash = BucketArray::<K, V, LOCK_FREE>::partial_hash(hash);
-                let new_index = if old_array.num_buckets() >= current_array.num_buckets() {
-                    debug_assert_eq!(current_array.calculate_bucket_index(hash), target_index);
-                    target_index
-                } else {
-                    let new_index = current_array.calculate_bucket_index(hash);
-                    debug_assert!(
-                        new_index - target_index
-                            < (current_array.num_buckets() / old_array.num_buckets())
-                    );
-                    new_index
-                };
+                let (new_index, partial_hash) =
+                    if old_array.num_buckets() >= current_array.num_buckets() {
+                        debug_assert_eq!(
+                            current_array.calculate_bucket_index(self.hash(old_entry.0.borrow())),
+                            target_index
+                        );
+                        (target_index, entry_ptr.partial_hash(&*old_locker))
+                    } else {
+                        let hash = self.hash(old_entry.0.borrow());
+                        let new_index = current_array.calculate_bucket_index(hash);
+                        debug_assert!(
+                            new_index - target_index
+                                < (current_array.num_buckets() / old_array.num_buckets())
+                        );
+                        let partial_hash = BucketArray::<K, V, LOCK_FREE>::partial_hash(hash);
+                        (new_index, partial_hash)
+                    };
 
                 while max_index <= new_index - target_index {
                     let target_bucket = current_array.bucket_mut(max_index + target_index);

@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod hashmap_test {
-    use crate::ebr;
     use crate::hash_map::Entry;
     use crate::HashMap;
+    use crate::{ebr, hash_map};
 
     use std::collections::BTreeSet;
     use std::hash::{Hash, Hasher};
@@ -75,6 +75,10 @@ mod hashmap_test {
 
     static_assertions::assert_impl_all!(HashMap<String, String>: Send, Sync);
     static_assertions::assert_not_impl_all!(HashMap<String, *const String>: Send, Sync);
+    static_assertions::assert_impl_all!(hash_map::OccupiedEntry<String, String>: Send, Sync);
+    static_assertions::assert_not_impl_all!(hash_map::OccupiedEntry<String, *const String>: Send, Sync);
+    static_assertions::assert_impl_all!(hash_map::VacantEntry<String, String>: Send, Sync);
+    static_assertions::assert_not_impl_all!(hash_map::VacantEntry<String, *const String>: Send, Sync);
 
     #[cfg_attr(miri, ignore)]
     #[tokio::test]

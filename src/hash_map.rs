@@ -2054,6 +2054,14 @@ where
     }
 }
 
+unsafe impl<'h, K, V, H> Send for OccupiedEntry<'h, K, V, H>
+where
+    K: Eq + Hash + Send,
+    V: Send,
+    H: BuildHasher,
+{
+}
+
 impl<'h, K, V, H> VacantEntry<'h, K, V, H>
 where
     K: Eq + Hash,

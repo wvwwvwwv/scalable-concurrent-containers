@@ -75,7 +75,7 @@ where
     /// ```
     #[inline]
     #[must_use]
-    pub fn new() -> TreeIndex<K, V> {
+    pub const fn new() -> TreeIndex<K, V> {
         TreeIndex {
             root: AtomicArc::null(),
         }

@@ -2,7 +2,7 @@ use super::ref_counted::RefCounted;
 use super::{Arc, Barrier, Ptr, Tag};
 
 use std::mem::forget;
-use std::ptr::{self, NonNull};
+use std::ptr::{null_mut, NonNull};
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{self, Acquire, Relaxed};
 
@@ -51,7 +51,7 @@ impl<T> AtomicArc<T> {
     /// ```
     #[inline]
     #[must_use]
-    pub fn from(arc: Arc<T>) -> AtomicArc<T> {
+    pub const fn from(arc: Arc<T>) -> AtomicArc<T> {
         let ptr = arc.get_underlying_ptr();
         forget(arc);
         AtomicArc {
@@ -70,9 +70,9 @@ impl<T> AtomicArc<T> {
     /// ```
     #[inline]
     #[must_use]
-    pub fn null() -> AtomicArc<T> {
+    pub const fn null() -> AtomicArc<T> {
         AtomicArc {
-            instance_ptr: AtomicPtr::default(),
+            instance_ptr: AtomicPtr::new(null_mut()),
         }
     }
 
@@ -136,7 +136,7 @@ impl<T> AtomicArc<T> {
         let desired = Tag::update_tag(
             new.0
                 .as_ref()
-                .map_or_else(ptr::null_mut, Arc::get_underlying_ptr),
+                .map_or_else(null_mut, Arc::get_underlying_ptr),
             new.1,
         ) as *mut RefCounted<T>;
         let prev = self.instance_ptr.swap(desired, order);
@@ -243,7 +243,7 @@ impl<T> AtomicArc<T> {
         let desired = Tag::update_tag(
             new.0
                 .as_ref()
-                .map_or_else(ptr::null_mut, Arc::get_underlying_ptr),
+                .map_or_else(null_mut, Arc::get_underlying_ptr),
             new.1,
         ) as *mut RefCounted<T>;
         match self.instance_ptr.compare_exchange(
@@ -345,7 +345,7 @@ impl<T> AtomicArc<T> {
     /// ```
     #[inline]
     pub fn try_into_arc(self, order: Ordering) -> Option<Arc<T>> {
-        let ptr = self.instance_ptr.swap(ptr::null_mut(), order);
+        let ptr = self.instance_ptr.swap(null_mut(), order);
         if let Some(underlying_ptr) = NonNull::new(Tag::unset_tag(ptr) as *mut RefCounted<T>) {
             return Some(Arc::from(underlying_ptr));
         }
@@ -370,10 +370,9 @@ impl<T> Default for AtomicArc<T> {
 impl<T> Drop for AtomicArc<T> {
     #[inline]
     fn drop(&mut self) {
-        if let Some(ptr) = NonNull::new(Tag::unset_tag(
-            self.instance_ptr.swap(ptr::null_mut(), Relaxed),
-        ) as *mut RefCounted<T>)
-        {
+        if let Some(ptr) = NonNull::new(
+            Tag::unset_tag(self.instance_ptr.swap(null_mut(), Relaxed)) as *mut RefCounted<T>
+        ) {
             drop(Arc::from(ptr));
         }
     }

@@ -199,7 +199,7 @@ struct SyncWait {
 
 impl SyncWait {
     /// Creates a new [`SyncWait`].
-    fn new(next: usize) -> SyncWait {
+    const fn new(next: usize) -> SyncWait {
         #[allow(clippy::mutex_atomic)]
         SyncWait {
             next,

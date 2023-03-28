@@ -16,10 +16,10 @@ pub(super) struct RefCounted<T> {
 impl<T> RefCounted<T> {
     // Creates a new underlying instance.
     #[inline]
-    pub(super) fn new(t: T) -> RefCounted<T> {
+    pub(super) const fn new(t: T) -> RefCounted<T> {
         RefCounted {
             instance: t,
-            next_or_refcnt: LinkOrRefCnt::default(),
+            next_or_refcnt: LinkOrRefCnt::new(),
         }
     }
 
@@ -122,9 +122,9 @@ pub(super) union LinkOrRefCnt {
     refcnt: ManuallyDrop<(AtomicUsize, usize)>,
 }
 
-impl Default for LinkOrRefCnt {
+impl LinkOrRefCnt {
     #[inline]
-    fn default() -> Self {
+    const fn new() -> Self {
         LinkOrRefCnt {
             refcnt: ManuallyDrop::new((AtomicUsize::new(1), 0)),
         }

@@ -34,6 +34,57 @@ where
     link: AtomicArc<Leaf<K, V>>,
 }
 
+/// The number of entries and number of state bits per entry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Dimension {
+    pub num_entries: usize,
+    pub num_bits_per_entry: usize,
+}
+
+/// The result of insertion.
+pub enum InsertResult<K, V> {
+    /// Insertion succeeded.
+    Success,
+
+    /// Duplicate key found.
+    Duplicate(K, V),
+
+    /// No vacant slot for the key.
+    Full(K, V),
+
+    /// The [`Leaf`] is frozen.
+    ///
+    /// It is not a terminal state that a frozen [`Leaf`] can be unfrozen.
+    Frozen(K, V),
+
+    /// Insertion failed as the [`Leaf`] has retired.
+    ///
+    /// It is a terminal state.
+    Retired(K, V),
+
+    /// The operation can be retried.
+    Retry(K, V),
+}
+
+/// The result of removal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RemoveResult {
+    /// Remove succeeded.
+    Success,
+
+    /// Remove succeeded and cleanup required.
+    Cleanup,
+
+    /// Remove succeeded and the [`Leaf`] has retired without usable entries left.
+    Retired,
+
+    /// Remove failed.
+    Fail,
+
+    /// The [`Leaf`] is frozen.
+    Frozen,
+}
+
 impl<K, V> Leaf<K, V>
 where
     K: 'static + Clone + Ord,
@@ -41,7 +92,7 @@ where
 {
     /// Creates a new [`Leaf`].
     #[inline]
-    pub(super) fn new() -> Leaf<K, V> {
+    pub(super) const fn new() -> Leaf<K, V> {
         #[allow(clippy::uninit_assumed_init)]
         Leaf {
             metadata: AtomicUsize::new(0),
@@ -567,11 +618,11 @@ where
         }
     }
 
-    fn key_at(&self, index: usize) -> &K {
+    const fn key_at(&self, index: usize) -> &K {
         unsafe { &*self.entry_array.0[index].as_ptr() }
     }
 
-    fn value_at(&self, index: usize) -> &V {
+    const fn value_at(&self, index: usize) -> &V {
         unsafe { &*self.entry_array.1[index].as_ptr() }
     }
 
@@ -642,57 +693,6 @@ where
     fn link_ref(&self) -> &AtomicArc<Leaf<K, V>> {
         &self.link
     }
-}
-
-/// The result of insertion.
-pub enum InsertResult<K, V> {
-    /// Insertion succeeded.
-    Success,
-
-    /// Duplicate key found.
-    Duplicate(K, V),
-
-    /// No vacant slot for the key.
-    Full(K, V),
-
-    /// The [`Leaf`] is frozen.
-    ///
-    /// It is not a terminal state that a frozen [`Leaf`] can be unfrozen.
-    Frozen(K, V),
-
-    /// Insertion failed as the [`Leaf`] has retired.
-    ///
-    /// It is a terminal state.
-    Retired(K, V),
-
-    /// The operation can be retried.
-    Retry(K, V),
-}
-
-/// The result of removal.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RemoveResult {
-    /// Remove succeeded.
-    Success,
-
-    /// Remove succeeded and cleanup required.
-    Cleanup,
-
-    /// Remove succeeded and the [`Leaf`] has retired without usable entries left.
-    Retired,
-
-    /// Remove failed.
-    Fail,
-
-    /// The [`Leaf`] is frozen.
-    Frozen,
-}
-
-/// The number of entries and number of state bits per entry.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Dimension {
-    pub num_entries: usize,
-    pub num_bits_per_entry: usize,
 }
 
 impl Dimension {
@@ -835,13 +835,13 @@ where
 
     /// Returns the metadata that the [`Scanner`] is currently using.
     #[inline]
-    pub(super) fn metadata(&self) -> usize {
+    pub(super) const fn metadata(&self) -> usize {
         self.metadata
     }
 
     /// Returns a reference to the entry that the scanner is currently pointing to
     #[inline]
-    pub(super) fn get(&self) -> Option<(&'l K, &'l V)> {
+    pub(super) const fn get(&self) -> Option<(&'l K, &'l V)> {
         if self.entry_index >= DIMENSION.num_entries {
             return None;
         }
