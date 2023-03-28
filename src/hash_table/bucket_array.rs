@@ -26,13 +26,6 @@ impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
         BUCKET_LEN << 1
     }
 
-    /// Returns the partial hash value of the given hash.
-    #[allow(clippy::cast_possible_truncation)]
-    #[inline]
-    pub(crate) fn partial_hash(hash: u64) -> u8 {
-        (hash % (1 << 8)) as u8
-    }
-
     /// Creates a new [`BucketArray`] of the given capacity.
     ///
     /// `capacity` is the desired number entries, not the number of [`Bucket`] instances.

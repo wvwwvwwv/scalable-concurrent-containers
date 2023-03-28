@@ -36,7 +36,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 ///
 /// ## The key statistics for [`HashMap`]
 ///
-/// * The expected size of metadata for a single entry: 2-byte.
+/// * The expected size of metadata for a single entry: 1-byte.
 /// * The expected number of atomic write operations required for an operation on a single key: 2.
 /// * The expected number of atomic variables accessed during a single key operation: 2.
 /// * The number of entries managed by a single bucket without a linked list: 32.
@@ -605,12 +605,7 @@ where
                 return;
             }
             let val = constructor();
-            locker.insert_with(
-                data_block_mut,
-                BucketArray::<K, V, false>::partial_hash(hash),
-                || (key, val),
-                &barrier,
-            );
+            locker.insert_with(data_block_mut, hash, || (key, val), &barrier);
         };
     }
 
@@ -648,12 +643,7 @@ where
                         updater(k, v);
                     } else {
                         let val = constructor();
-                        locker.insert_with(
-                            data_block_mut,
-                            BucketArray::<K, V, false>::partial_hash(hash),
-                            || (key, val),
-                            &barrier,
-                        );
+                        locker.insert_with(data_block_mut, hash, || (key, val), &barrier);
                     }
                     return;
                 };
@@ -1364,7 +1354,7 @@ where
         while !current_array.old_array(&Barrier::new()).is_null() {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if self.partial_rehash::<_, _, false>(
+            if self.incremental_rehash::<_, _, false>(
                 current_array,
                 &mut async_wait_pinned,
                 &Barrier::new(),
@@ -2113,7 +2103,7 @@ where
         let barrier = Barrier::new();
         let entry_ptr = self.locker.insert_with(
             self.data_block_mut,
-            BucketArray::<K, V, false>::partial_hash(self.hash),
+            self.hash,
             || (self.key, val),
             self.hashmap.prolonged_barrier_ref(&barrier),
         );

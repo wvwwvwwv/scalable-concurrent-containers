@@ -4,6 +4,7 @@
 
 * Add `hash_index::Reserve` and `HashIndex::reserve`.
 * Add missing `H = RandomState` to several types.
+* Major `Hash*` optimization: the size of metadata for a single entry is now 1-byte.
 
 1.4.0
 
