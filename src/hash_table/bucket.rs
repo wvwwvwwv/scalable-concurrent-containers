@@ -49,9 +49,6 @@ pub(crate) struct Metadata<K: Eq, V, const LEN: usize> {
 
     /// Bitmap for removed slots.
     removed_bitmap: u32,
-
-    /// Partial hash array.
-    partial_hash_array: [u8; LEN],
 }
 
 /// [`Locker`] owns a [`Bucket`] by holding the exclusive lock on it.
@@ -133,7 +130,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
         None
     }
 
-    /// Kills the bucket by purging the data.
+    /// Kills the bucket by marking it `KILLED` and unlinking [`LinkedBucket`].
     #[inline]
     pub(crate) fn kill(&mut self, barrier: &Barrier) {
         if LOCK_FREE {
@@ -231,9 +228,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
         }
 
         let preferred_index = usize::from(partial_hash) % LEN;
-        if (bitmap & (1_u32 << preferred_index)) != 0
-            && metadata.partial_hash_array[preferred_index] == partial_hash
-        {
+        if (bitmap & (1_u32 << preferred_index)) != 0 {
             let entry_ref = unsafe { &(*data_block[preferred_index].as_ptr()) };
             if entry_ref.0.borrow() == key {
                 return Some((preferred_index, entry_ref));
@@ -250,11 +245,9 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
         let mut offset = bitmap.trailing_zeros();
         while offset != 32 {
             let index = (preferred_index + offset as usize) % LEN;
-            if metadata.partial_hash_array[index] == partial_hash {
-                let entry_ref = unsafe { &(*data_block[index].as_ptr()) };
-                if entry_ref.0.borrow() == key {
-                    return Some((index, entry_ref));
-                }
+            let entry_ref = unsafe { &(*data_block[index].as_ptr()) };
+            if entry_ref.0.borrow() == key {
+                return Some((index, entry_ref));
             }
             bitmap -= 1_u32 << offset;
             offset = bitmap.trailing_zeros();
@@ -387,7 +380,6 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
     ///
     /// The [`EntryPtr`] must point to an occupied entry, and the associated [`Bucket`] must be
     /// locked.
-    #[allow(clippy::mut_from_ref)]
     #[inline]
     pub(crate) fn get_mut(
         &mut self,
@@ -402,19 +394,6 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
             data_block[self.current_index].as_mut_ptr()
         };
         unsafe { &mut (*entry_ptr) }
-    }
-
-    /// Gets the partial hash value of the entry.
-    ///
-    /// The [`EntryPtr`] must point to an occupied entry.
-    #[inline]
-    pub(crate) fn partial_hash(&self, bucket: &Bucket<K, V, LOCK_FREE>) -> u8 {
-        debug_assert_ne!(self.current_index, usize::MAX);
-        if let Some(link) = self.current_link_ptr.as_ref() {
-            link.metadata.partial_hash_array[self.current_index]
-        } else {
-            bucket.metadata.partial_hash_array[self.current_index]
-        }
     }
 
     /// Tries to remove the [`LinkedBucket`] from the linked list.
@@ -637,7 +616,6 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                         &mut link_mut.metadata,
                         &mut link_mut.data_block,
                         free_index,
-                        partial_hash,
                         constructor,
                     );
                     self.bucket.num_entries += 1;
@@ -659,7 +637,6 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                 link_mut.data_block[preferred_index]
                     .as_mut_ptr()
                     .write(constructor());
-                link_mut.metadata.partial_hash_array[preferred_index] = partial_hash;
                 link_mut.metadata.occupied_bitmap |= 1_u32 << preferred_index;
             }
             if let Some(head) = link.metadata.link.load(Relaxed, barrier).as_ref() {
@@ -682,7 +659,6 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                 &mut self.bucket.metadata,
                 data_block,
                 free_index,
-                partial_hash,
                 constructor,
             );
             self.bucket.num_entries += 1;
@@ -788,14 +764,12 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         metadata: &mut Metadata<K, V, LEN>,
         data_block: &mut DataBlock<K, V, LEN>,
         index: usize,
-        partial_hash: u8,
         constructor: C,
     ) {
         debug_assert!(index < LEN);
 
         unsafe {
             data_block[index].as_mut_ptr().write(constructor());
-            metadata.partial_hash_array[index] = partial_hash;
             if LOCK_FREE {
                 fence(Release);
             }
@@ -948,7 +922,6 @@ impl<K: Eq, V, const LEN: usize> Default for Metadata<K, V, LEN> {
             link: AtomicArc::default(),
             occupied_bitmap: 0,
             removed_bitmap: 0,
-            partial_hash_array: [0; LEN],
         }
     }
 }
@@ -969,7 +942,6 @@ impl<K: Eq, V, const LEN: usize> LinkedBucket<K, V, LEN> {
                 link: next.map_or_else(AtomicArc::null, AtomicArc::from),
                 occupied_bitmap: 0,
                 removed_bitmap: 0,
-                partial_hash_array: [0; LEN],
             },
             data_block: unsafe { MaybeUninit::uninit().assume_init() },
             prev_link: AtomicPtr::default(),
@@ -1005,7 +977,7 @@ mod test {
 
     use tokio::sync;
 
-    static_assertions::assert_eq_size!(Bucket<String, String, false>, [u8; BUCKET_LEN * 2]);
+    static_assertions::assert_eq_size!(Bucket<String, String, false>, [u8; BUCKET_LEN]);
 
     #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]

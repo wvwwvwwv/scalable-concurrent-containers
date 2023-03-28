@@ -752,7 +752,7 @@ where
         while !current_array.old_array(&Barrier::new()).is_null() {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if self.partial_rehash::<_, _, false>(
+            if self.incremental_rehash::<_, _, false>(
                 current_array,
                 &mut async_wait_pinned,
                 &Barrier::new(),

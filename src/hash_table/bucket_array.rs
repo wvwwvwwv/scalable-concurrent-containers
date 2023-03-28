@@ -29,7 +29,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
     /// Returns the partial hash value of the given hash.
     #[allow(clippy::cast_possible_truncation)]
     #[inline]
-    pub(crate) fn partial_hash(hash: u64) -> u8 {
+    pub(crate) const fn partial_hash(hash: u64) -> u8 {
         (hash % (1 << 8)) as u8
     }
 

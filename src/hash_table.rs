@@ -232,7 +232,7 @@ where
         while let Some(current_array) = current_array_ptr.as_ref() {
             if let Some(old_array) = current_array.old_array(barrier).as_ref() {
                 if LOCK_FREE {
-                    if self.partial_rehash::<Q, D, true>(current_array, async_wait, barrier)
+                    if self.incremental_rehash::<Q, D, true>(current_array, async_wait, barrier)
                         != Ok(true)
                     {
                         let index = old_array.calculate_bucket_index(hash);
@@ -448,7 +448,7 @@ where
         Q: Hash + Eq + ?Sized,
         D: DeriveAsyncWait,
     {
-        if !self.partial_rehash::<Q, D, false>(current_array, async_wait, barrier)? {
+        if !self.incremental_rehash::<Q, D, false>(current_array, async_wait, barrier)? {
             let index = old_array.calculate_bucket_index(hash);
             let bucket = old_array.bucket_mut(index);
             let lock_result = if let Some(async_wait) = async_wait.derive() {
@@ -507,23 +507,19 @@ where
             let old_data_block_mut = old_array.data_block_mut(old_index);
             while entry_ptr.next(old_locker, barrier) {
                 let old_entry = entry_ptr.get(old_data_block_mut);
-                let (new_index, partial_hash) =
-                    if old_array.num_buckets() >= current_array.num_buckets() {
-                        debug_assert_eq!(
-                            current_array.calculate_bucket_index(self.hash(old_entry.0.borrow())),
-                            target_index
-                        );
-                        (target_index, entry_ptr.partial_hash(&*old_locker))
-                    } else {
-                        let hash = self.hash(old_entry.0.borrow());
-                        let new_index = current_array.calculate_bucket_index(hash);
-                        debug_assert!(
-                            new_index - target_index
-                                < (current_array.num_buckets() / old_array.num_buckets())
-                        );
-                        let partial_hash = BucketArray::<K, V, LOCK_FREE>::partial_hash(hash);
-                        (new_index, partial_hash)
-                    };
+                let hash = self.hash(old_entry.0.borrow());
+                let partial_hash = BucketArray::<K, V, LOCK_FREE>::partial_hash(hash);
+                let new_index = if old_array.num_buckets() >= current_array.num_buckets() {
+                    debug_assert_eq!(current_array.calculate_bucket_index(hash), target_index);
+                    target_index
+                } else {
+                    let new_index = current_array.calculate_bucket_index(hash);
+                    debug_assert!(
+                        new_index - target_index
+                            < (current_array.num_buckets() / old_array.num_buckets())
+                    );
+                    new_index
+                };
 
                 while max_index <= new_index - target_index {
                     let target_bucket = current_array.bucket_mut(max_index + target_index);
@@ -576,7 +572,7 @@ where
     /// Clears the old array.
     fn clear_old_array(&self, current_array: &BucketArray<K, V, LOCK_FREE>, barrier: &Barrier) {
         while !current_array.old_array(barrier).is_null() {
-            if self.partial_rehash::<_, _, false>(current_array, &mut (), barrier) == Ok(true) {
+            if self.incremental_rehash::<_, _, false>(current_array, &mut (), barrier) == Ok(true) {
                 break;
             }
         }
@@ -585,7 +581,7 @@ where
     /// Relocates a fixed number of buckets from the old array to the current array.
     ///
     /// Returns `true` if `old_array` is null.
-    fn partial_rehash<Q, D, const TRY_LOCK: bool>(
+    fn incremental_rehash<Q, D, const TRY_LOCK: bool>(
         &self,
         current_array: &BucketArray<K, V, LOCK_FREE>,
         async_wait: &mut D,
