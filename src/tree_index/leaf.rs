@@ -42,6 +42,7 @@ where
     /// Creates a new [`Leaf`].
     #[inline]
     pub(super) fn new() -> Leaf<K, V> {
+        #[allow(clippy::uninit_assumed_init)]
         Leaf {
             metadata: AtomicUsize::new(0),
             entry_array: unsafe { MaybeUninit::uninit().assume_init() },

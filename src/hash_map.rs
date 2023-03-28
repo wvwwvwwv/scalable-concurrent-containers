@@ -72,7 +72,7 @@ where
 }
 
 /// [`Entry`] represents a single entry in a [`HashMap`].
-pub enum Entry<'h, K, V, H>
+pub enum Entry<'h, K, V, H = RandomState>
 where
     K: Eq + Hash,
     H: BuildHasher,

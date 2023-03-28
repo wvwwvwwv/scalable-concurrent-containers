@@ -50,7 +50,7 @@ where
 /// [`Reserve`] keeps the capacity of the associated [`HashIndex`] higher than a certain level.
 ///
 /// The [`HashIndex`] does not shrink the capacity below the reserved capacity.
-pub struct Reserve<'h, K, V, H>
+pub struct Reserve<'h, K, V, H = RandomState>
 where
     K: 'static + Clone + Eq + Hash,
     V: 'static + Clone,

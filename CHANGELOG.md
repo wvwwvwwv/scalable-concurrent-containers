@@ -1,9 +1,9 @@
 # Changelog
 
-1.4.1
+1.5.0
 
 * Add `hash_index::Reserve` and `HashIndex::reserve`.
-* Minor performance improvement and documentation update.
+* Add missing `H = RandomState` to several types.
 
 1.4.0
 

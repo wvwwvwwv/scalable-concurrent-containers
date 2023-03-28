@@ -160,6 +160,7 @@ struct Storage<T> {
 impl<T> Storage<T> {
     /// Creates a new [`Storage`].
     fn new() -> Storage<T> {
+        #[allow(clippy::uninit_assumed_init)]
         Storage {
             storage: unsafe { MaybeUninit::uninit().assume_init() },
             metadata: AtomicUsize::new(0),
@@ -168,6 +169,7 @@ impl<T> Storage<T> {
 
     /// Creates a new [`Storage`] with one inserted.
     fn with_val(val: T) -> Storage<T> {
+        #[allow(clippy::uninit_assumed_init)]
         let mut storage = Storage::<T> {
             storage: unsafe { MaybeUninit::uninit().assume_init() },
             metadata: AtomicUsize::new(1_usize << STORAGE_LEN),

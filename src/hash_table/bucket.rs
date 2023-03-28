@@ -9,10 +9,7 @@ use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{fence, AtomicU32};
 
-/// The size of a [`Bucket`].
-pub const BUCKET_LEN: usize = 32;
-
-/// [`Bucket`] is a small fixed-size hash table with linear probing.
+/// [`Bucket`] is a fixed-size hash table with linear probing.
 pub struct Bucket<K: Eq, V, const LOCK_FREE: bool> {
     /// The state of the [`Bucket`].
     state: AtomicU32,
@@ -27,14 +24,17 @@ pub struct Bucket<K: Eq, V, const LOCK_FREE: bool> {
     wait_queue: WaitQueue,
 }
 
+/// The size of a [`Bucket`].
+pub const BUCKET_LEN: usize = 32;
+
+/// [`DataBlock`] is a type alias of a raw memory chunk that may contain entry instances.
+pub type DataBlock<K, V, const LEN: usize> = [MaybeUninit<(K, V)>; LEN];
+
 /// [`EntryPtr`] points to an occupied slot in a [`Bucket`].
 pub struct EntryPtr<'b, K: Eq, V, const LOCK_FREE: bool> {
     current_link_ptr: Ptr<'b, LinkedBucket<K, V, LINKED_BUCKET_LEN>>,
     current_index: usize,
 }
-
-/// [`DataBlock`] is a type alias of a raw memory chunk that may contain entry instances.
-pub type DataBlock<K, V, const LEN: usize> = [MaybeUninit<(K, V)>; LEN];
 
 /// [`Metadata`] is a collection of metadata fields of [`Bucket`] and [`LinkedBucket`].
 pub(crate) struct Metadata<K: Eq, V, const LEN: usize> {
@@ -960,6 +960,7 @@ pub(crate) struct LinkedBucket<K: Eq, V, const LEN: usize> {
 impl<K: Eq, V, const LEN: usize> LinkedBucket<K, V, LEN> {
     /// Creates an empty [`LinkedBucket`].
     fn new(next: Option<Arc<LinkedBucket<K, V, LINKED_BUCKET_LEN>>>) -> LinkedBucket<K, V, LEN> {
+        #[allow(clippy::uninit_assumed_init)]
         LinkedBucket {
             metadata: Metadata {
                 link: next.map_or_else(AtomicArc::null, AtomicArc::from),
@@ -1000,6 +1001,8 @@ mod test {
     use std::sync::atomic::AtomicPtr;
 
     use tokio::sync;
+
+    static_assertions::assert_eq_size!(Bucket<String, String, false>, [u8; BUCKET_LEN * 2]);
 
     #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
