@@ -31,7 +31,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 ///
 /// ## The key statistics for [`HashIndex`]
 ///
-/// * The expected size of metadata for a single key-value pair: 1-byte.
+/// * The expected size of metadata for a single key-value pair: 2-byte.
 /// * The expected number of atomic write operations required for an operation on a single key: 2.
 /// * The expected number of atomic variables accessed during a single key operation: 2.
 /// * The number of entries managed by a single bucket without a linked list: 32.
@@ -752,7 +752,7 @@ where
         while !current_array.old_array(&Barrier::new()).is_null() {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if self.incremental_rehash::<_, _, false>(
+            if self.partial_rehash::<_, _, false>(
                 current_array,
                 &mut async_wait_pinned,
                 &Barrier::new(),

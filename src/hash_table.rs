@@ -202,7 +202,12 @@ where
                 if entry_ptr.is_valid() {
                     return Ok(Some((key, val)));
                 }
-                locker.insert_with(data_block_mut, hash, || (key, val), barrier);
+                locker.insert_with(
+                    data_block_mut,
+                    BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
+                    || (key, val),
+                    barrier,
+                );
                 Ok(None)
             }
             Err(_) => Err((key, val)),
@@ -227,14 +232,14 @@ where
         while let Some(current_array) = current_array_ptr.as_ref() {
             if let Some(old_array) = current_array.old_array(barrier).as_ref() {
                 if LOCK_FREE {
-                    if self.incremental_rehash::<Q, D, true>(current_array, async_wait, barrier)
+                    if self.partial_rehash::<Q, D, true>(current_array, async_wait, barrier)
                         != Ok(true)
                     {
                         let index = old_array.calculate_bucket_index(hash);
                         if let Some((k, v)) = old_array.bucket(index).search(
                             old_array.data_block(index),
                             key,
-                            hash,
+                            BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
                             barrier,
                         ) {
                             return Ok(Some((k, v)));
@@ -248,9 +253,12 @@ where
             let index = current_array.calculate_bucket_index(hash);
             let bucket = current_array.bucket(index);
             if LOCK_FREE {
-                if let Some(entry) =
-                    bucket.search(current_array.data_block(index), key, hash, barrier)
-                {
+                if let Some(entry) = bucket.search(
+                    current_array.data_block(index),
+                    key,
+                    BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
+                    barrier,
+                ) {
                     return Ok(Some((&entry.0, &entry.1)));
                 }
             } else {
@@ -260,9 +268,12 @@ where
                     Reader::lock(bucket, barrier)
                 };
                 if let Some(reader) = lock_result {
-                    if let Some((key, val)) =
-                        reader.search(current_array.data_block(index), key, hash, barrier)
-                    {
+                    if let Some((key, val)) = reader.search(
+                        current_array.data_block(index),
+                        key,
+                        BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
+                        barrier,
+                    ) {
                         return Ok(Some((key, val)));
                     }
                 }
@@ -319,7 +330,12 @@ where
             };
             if let Some(mut locker) = lock_result {
                 let data_block_mut = current_array.data_block_mut(index);
-                let mut entry_ptr = locker.get(data_block_mut, key, hash, barrier);
+                let mut entry_ptr = locker.get(
+                    data_block_mut,
+                    key,
+                    BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
+                    barrier,
+                );
                 if entry_ptr.is_valid() && condition(&entry_ptr.get(data_block_mut).1) {
                     let result = locker.erase(data_block_mut, &mut entry_ptr);
                     if shrinkable
@@ -402,7 +418,12 @@ where
             };
             if let Some(locker) = lock_result {
                 let data_block_mut = current_array.data_block_mut(index);
-                let entry_ptr = locker.get(data_block_mut, key, hash, barrier);
+                let entry_ptr = locker.get(
+                    data_block_mut,
+                    key,
+                    BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
+                    barrier,
+                );
                 return Ok((locker, data_block_mut, entry_ptr, index));
             }
 
@@ -427,7 +448,7 @@ where
         Q: Hash + Eq + ?Sized,
         D: DeriveAsyncWait,
     {
-        if !self.incremental_rehash::<Q, D, false>(current_array, async_wait, barrier)? {
+        if !self.partial_rehash::<Q, D, false>(current_array, async_wait, barrier)? {
             let index = old_array.calculate_bucket_index(hash);
             let bucket = old_array.bucket_mut(index);
             let lock_result = if let Some(async_wait) = async_wait.derive() {
@@ -486,18 +507,23 @@ where
             let old_data_block_mut = old_array.data_block_mut(old_index);
             while entry_ptr.next(old_locker, barrier) {
                 let old_entry = entry_ptr.get(old_data_block_mut);
-                let hash = self.hash(old_entry.0.borrow());
-                let new_index = if old_array.num_buckets() >= current_array.num_buckets() {
-                    debug_assert_eq!(current_array.calculate_bucket_index(hash), target_index);
-                    target_index
-                } else {
-                    let new_index = current_array.calculate_bucket_index(hash);
-                    debug_assert!(
-                        new_index - target_index
-                            < (current_array.num_buckets() / old_array.num_buckets())
-                    );
-                    new_index
-                };
+                let (new_index, partial_hash) =
+                    if old_array.num_buckets() >= current_array.num_buckets() {
+                        debug_assert_eq!(
+                            current_array.calculate_bucket_index(self.hash(old_entry.0.borrow())),
+                            target_index
+                        );
+                        (target_index, entry_ptr.partial_hash(&*old_locker))
+                    } else {
+                        let hash = self.hash(old_entry.0.borrow());
+                        let new_index = current_array.calculate_bucket_index(hash);
+                        debug_assert!(
+                            new_index - target_index
+                                < (current_array.num_buckets() / old_array.num_buckets())
+                        );
+                        let partial_hash = BucketArray::<K, V, LOCK_FREE>::partial_hash(hash);
+                        (new_index, partial_hash)
+                    };
 
                 while max_index <= new_index - target_index {
                     let target_bucket = current_array.bucket_mut(max_index + target_index);
@@ -523,7 +549,7 @@ where
                 let cloned_entry = Self::try_clone(old_entry);
                 target_bucket.insert_with(
                     current_array.data_block_mut(new_index),
-                    hash,
+                    partial_hash,
                     || {
                         // Stack unwinding during a call to `insert` will result in the entry being
                         // removed from the map, any map entry modification should take place after all
@@ -550,7 +576,7 @@ where
     /// Clears the old array.
     fn clear_old_array(&self, current_array: &BucketArray<K, V, LOCK_FREE>, barrier: &Barrier) {
         while !current_array.old_array(barrier).is_null() {
-            if self.incremental_rehash::<_, _, false>(current_array, &mut (), barrier) == Ok(true) {
+            if self.partial_rehash::<_, _, false>(current_array, &mut (), barrier) == Ok(true) {
                 break;
             }
         }
@@ -559,7 +585,7 @@ where
     /// Relocates a fixed number of buckets from the old array to the current array.
     ///
     /// Returns `true` if `old_array` is null.
-    fn incremental_rehash<Q, D, const TRY_LOCK: bool>(
+    fn partial_rehash<Q, D, const TRY_LOCK: bool>(
         &self,
         current_array: &BucketArray<K, V, LOCK_FREE>,
         async_wait: &mut D,
