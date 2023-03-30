@@ -48,6 +48,7 @@ where
     /// Reserves the specified capacity.
     ///
     /// Returns the actually allocated capacity.
+    #[inline]
     fn reserve_capacity(&self, additional_capacity: usize) -> usize {
         let mut current_minimum_capacity = self.minimum_capacity().load(Relaxed);
         loop {
@@ -114,6 +115,9 @@ where
             for i in 0..current_array.num_buckets() {
                 num_entries += current_array.bucket(i).num_entries();
             }
+            if num_entries == 0 {
+                self.try_resize(0, barrier);
+            }
         }
         num_entries
     }
@@ -135,6 +139,7 @@ where
                     return true;
                 }
             }
+            self.try_resize(0, barrier);
         }
         false
     }
@@ -339,11 +344,11 @@ where
                 if entry_ptr.is_valid() && condition(&entry_ptr.get(data_block_mut).1) {
                     let result = locker.erase(data_block_mut, &mut entry_ptr);
                     if shrinkable
-                        && locker.num_entries() <= 1
+                        && (locker.num_entries() <= 1 || locker.need_rebuild())
                         && current_array.within_sampling_range(index)
                     {
                         drop(locker);
-                        self.try_shrink(current_array, index, barrier);
+                        self.try_shrink_or_rebuild(current_array, index, barrier);
                     }
                     return Ok(post_processor(Some(result)));
                 }
@@ -701,9 +706,10 @@ where
         }
     }
 
-    /// Tries to shrink the hash table to fit the estimated number of entries.
+    /// Tries to shrink the hash table to fit the estimated number of entries, or rebuild it to
+    /// optimize the storage.
     #[inline]
-    fn try_shrink(
+    fn try_shrink_or_rebuild(
         &self,
         current_array: &BucketArray<K, V, LOCK_FREE>,
         index: usize,
@@ -711,51 +717,35 @@ where
     ) {
         debug_assert!(current_array.old_array(barrier).is_null());
 
-        if current_array.num_entries() > self.minimum_capacity().load(Relaxed).next_power_of_two() {
-            // Check if the hash table can be shrunk.
+        if current_array.num_entries() > self.minimum_capacity().load(Relaxed).next_power_of_two()
+            || LOCK_FREE
+        {
             let sample_size = current_array.sample_size();
-            let threshold = sample_size * BUCKET_LEN / 16;
+            let shrink_threshold = sample_size * BUCKET_LEN / 16;
+            let rebuild_threshold = sample_size / 2;
             let mut num_entries = 0;
-            if !(1..sample_size).any(|i| {
-                num_entries += current_array
-                    .bucket((index + i) % current_array.num_buckets())
-                    .num_entries();
-                num_entries >= threshold
-            }) {
+            let mut num_buckets_to_rebuild = 0;
+            for i in 0..sample_size {
+                let bucket = current_array.bucket((index + i) % current_array.num_buckets());
+                num_entries += bucket.num_entries();
+                if num_entries >= shrink_threshold
+                    && (!LOCK_FREE
+                        || num_buckets_to_rebuild + (sample_size - i) < rebuild_threshold)
+                {
+                    // Early exit.
+                    return;
+                }
+                if LOCK_FREE && bucket.need_rebuild() {
+                    if num_buckets_to_rebuild >= rebuild_threshold {
+                        self.try_resize(index, barrier);
+                        return;
+                    }
+                    num_buckets_to_rebuild += 1;
+                }
+            }
+            if !LOCK_FREE || num_entries < shrink_threshold {
                 self.try_resize(index, barrier);
             }
-        } else if LOCK_FREE && current_array.bucket(index).need_rebuild() {
-            // Check if the hash table can be rebuilt.
-            self.try_rebuild(current_array, index, barrier);
-        }
-    }
-
-    /// Tries to rebuild the array if there are no usable entry slots in at least half of the
-    /// buckets in the sampling range.
-    #[inline]
-    fn try_rebuild(
-        &self,
-        current_array: &BucketArray<K, V, LOCK_FREE>,
-        index: usize,
-        barrier: &Barrier,
-    ) {
-        let sample_size = current_array.sample_size();
-        let threshold = sample_size / 2;
-        let mut num_buckets_to_rebuild = 1;
-        if num_buckets_to_rebuild > threshold
-            || (1..sample_size).any(|i| {
-                if current_array
-                    .bucket((index + i) % current_array.num_buckets())
-                    .need_rebuild()
-                {
-                    num_buckets_to_rebuild += 1;
-                    num_buckets_to_rebuild > threshold
-                } else {
-                    false
-                }
-            })
-        {
-            self.try_resize(index, barrier);
         }
     }
 

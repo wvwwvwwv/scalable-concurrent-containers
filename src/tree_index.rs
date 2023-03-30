@@ -486,8 +486,6 @@ where
 
     /// Returns `true` if the [`TreeIndex`] is empty.
     ///
-    /// It internally scans all the leaf nodes, and therefore the time complexity is O(N).
-    ///
     /// # Examples
     ///
     /// ```
@@ -499,7 +497,8 @@ where
     /// ```
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        let barrier = Barrier::new();
+        !self.iter(&barrier).any(|_| true)
     }
 
     /// Returns the depth of the [`TreeIndex`].

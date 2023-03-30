@@ -88,7 +88,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
     /// possible.
     #[inline]
     pub(crate) const fn need_rebuild(&self) -> bool {
-        self.metadata.removed_bitmap == (u32::MAX >> (32 - BUCKET_LEN))
+        LOCK_FREE && self.metadata.removed_bitmap == (u32::MAX >> (32 - BUCKET_LEN))
     }
 
     /// Returns `true` if the [`Bucket`] has been killed.

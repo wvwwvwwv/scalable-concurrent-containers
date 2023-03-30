@@ -2,6 +2,7 @@
 
 1.4.2
 
+* Optimize `TreeIndex::is_empty`.
 * Update documentation.
 
 1.4.1

@@ -1305,8 +1305,9 @@ where
 
     /// Returns the number of entries in the [`HashMap`].
     ///
-    /// It scans the entire bucket array to calculate the number of valid entries, making its time
-    /// complexity `O(N)`.
+    /// It reads the entire metadata area of the bucket array to calculate the number of valid
+    /// entries, making its time complexity `O(N)`. Furthermore, it may overcount entries if an old
+    /// bucket array has yet to be dropped.
     ///
     /// # Examples
     ///
@@ -1324,9 +1325,6 @@ where
     }
 
     /// Returns `true` if the [`HashMap`] is empty.
-    ///
-    /// It may scan the entire bucket array to check if it is empty, therefore the time complexity
-    /// is `O(N)`.
     ///
     /// # Examples
     ///
@@ -1786,7 +1784,7 @@ where
                 .erase(self.data_block_mut, &mut self.entry_ptr)
                 .unwrap_unchecked()
         };
-        if self.locker.num_entries() <= 1 {
+        if self.locker.num_entries() <= 1 || self.locker.need_rebuild() {
             let barrier = Barrier::new();
             let hashmap = self.hashmap;
             if let Some(current_array) = hashmap.bucket_array().load(Acquire, &barrier).as_ref() {
@@ -1794,7 +1792,7 @@ where
                     let index = self.index;
                     if current_array.within_sampling_range(index) {
                         drop(self);
-                        hashmap.try_shrink(current_array, index, &barrier);
+                        hashmap.try_shrink_or_rebuild(current_array, index, &barrier);
                     }
                 }
             }

@@ -583,8 +583,9 @@ where
 
     /// Returns the number of entries in the [`HashSet`].
     ///
-    /// It scans the entire bucket array to calculate the number of valid entries, making its time
-    /// complexity `O(N)`.
+    /// It reads the entire metadata area of the bucket array to calculate the number of valid
+    /// entries, making its time complexity `O(N)`. Furthermore, it may overcount entries if an old
+    /// bucket array has yet to be dropped.
     ///
     /// # Examples
     ///
@@ -602,9 +603,6 @@ where
     }
 
     /// Returns `true` if the [`HashSet`] is empty.
-    ///
-    /// It may scan the entire bucket array to check if it is empty, therefore the time complexity
-    /// is `O(N)`.
     ///
     /// # Examples
     ///
