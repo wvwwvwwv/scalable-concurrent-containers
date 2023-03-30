@@ -1,5 +1,9 @@
 # Changelog
 
+1.4.2
+
+* Update documentation.
+
 1.4.1
 
 * Add `hash_index::Reserve` and `HashIndex::reserve`.

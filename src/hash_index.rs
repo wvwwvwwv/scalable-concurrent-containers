@@ -27,7 +27,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 ///
 /// * Lock-free-read: read and scan operations do not modify shared data and are never blocked.
 /// * Immutability: the data in the container is immutable until it becomes unreachable.
-/// * Linearizability: [`HashIndex`] insert/remove/update methods are linearizable.
+/// * Linearizability: [`HashIndex`] manipulation methods are linearizable.
 ///
 /// ## The key statistics for [`HashIndex`]
 ///

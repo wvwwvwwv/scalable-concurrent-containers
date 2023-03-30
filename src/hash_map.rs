@@ -21,18 +21,16 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 /// [`HashMap`] is a concurrent and asynchronous hash map data structure that is targeted at a
 /// highly concurrent workload. [`HashMap`] has a dynamically sized array of buckets where a bucket
 /// is a fixed size hash table with linear probing that can be expanded by allocating a linked list
-/// of smaller buckets when the bucket is full.
+/// of smaller buckets when it is full.
 ///
 /// ## The key features of [`HashMap`]
 ///
 /// * Non-sharded: the data is stored in a single array of entry buckets.
 /// * Non-blocking resizing: resizing does not block other threads or tasks.
 /// * Automatic resizing: it automatically grows or shrinks.
-/// * Incremental resizing: each access to the hash map is mandated to move a fixed
-///   number of entries if an old array is present.
-/// * No busy waiting: the thread or asynchronous task is suspended until the desired resource
-///   becomes available.
-/// * Linearizability: [`HashMap`] insert/read/remove/update/upsert methods are linearizable.
+/// * Incremental resizing: entries in the old bucket array are incrementally relocated.
+/// * No busy waiting: no spin-locks or hot loops to wait for desired resources.
+/// * Linearizability: [`HashMap`] manipulation methods are linearizable.
 ///
 /// ## The key statistics for [`HashMap`]
 ///
@@ -340,7 +338,7 @@ where
     ///
     /// assert!(hashmap.insert(1, 0).is_ok());
     ///
-    /// let first_entry = hashmap.first_occupied_entry().unwrap();
+    /// let mut first_entry = hashmap.first_occupied_entry().unwrap();
     /// *first_entry.get_mut() = 2;
     ///
     /// assert!(first_entry.next().is_none());
