@@ -31,7 +31,7 @@ A collection of high performance containers and utilities for concurrent and asy
 
 ## HashMap
 
-[HashMap](#HashMap) is a concurrent hash map that is targeted at highly concurrent write-heavy workloads. It uses [EBR](#EBR) for its hash table memory management in order to implement non-blocking resizing and fine-granular locking without static data sharding; *it is not a lock-free data structure, and each access to a single key is serialized by a bucket-level mutex*.
+[HashMap](#HashMap) is a concurrent hash map that is targeted at highly concurrent write-heavy workloads. [HashMap](#HashMap) is basically an array of entry buckets where each bucket is protected by a special read-write lock providing both blocking and asynchronous methods. The bucket array is fully managed by [EBR](#EBR) enabling lock-free access to it and non-blocking array resizing.
 
 ### Locking behavior
 
@@ -41,11 +41,11 @@ Read/write access to an entry is serialized by the read-write lock in the bucket
 
 #### Resize: lock-free
 
-Resizing of the container is totally non-blocking and lock-free; resizing does not block any other read/write access to the container or resizing attempts. _Resizing is analogous to pushing a new bucket array into a lock-free stack_. Each individual entry in the old bucket array will be incrementally relocated to the new bucket array on future access to the container, and the old bucket array gets dropped when it becomes empty.
+Resizing of the container is totally non-blocking and lock-free; resizing does not block any other read/write access to the container or resizing attempts. _Resizing is analogous to pushing a new bucket array into a lock-free stack_. Each individual entry in the old bucket array will be incrementally relocated to the new bucket array on future access to the container, and the old bucket array gets dropped eventually when it becomes empty.
 
 ### Examples
 
-A unique key can be inserted along with its corresponding value. The inserted entry can be updated, read, and removed synchronously or asynchronously.
+An entry can be inserted if the key is unique. The inserted entry can be updated, read, and removed synchronously or asynchronously.
 
 ```rust
 use scc::HashMap;
@@ -79,7 +79,7 @@ assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 3);
 let future_upsert = hashmap.upsert_async(2, || 1, |_, v| *v = 3);
 ```
 
-There is no method to confine the lifetime of references derived from an [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html), and it is illegal to let them live as long as the [HashMap](#HashMap). Therefore [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, it provides a number of methods to iterate over entries: `any`, `any_async`, `for_each`, `for_each_async`, `OccupiedEntry::next`, `OccupiedEntry::next_async`, `scan`, `scan_async`, `retain`, and `retain_async`.
+[HashMap](#HashMap) does not provide an [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) since it is impossible to confine the lifetime of [Iterator::Item](https://doc.rust-lang.org/std/iter/trait.Iterator.html#associatedtype.Item) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html). The limitation can be circumvented by relying on interior mutability, e.g., let the returned reference hold a lock, however it will easily lead to a deadlock if not correctly used, and frequent acquisition of locks may impact performance. Therefore, [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, [HashMap](#HashMap) provides a number of methods to iterate over entries synchronously or asynchronously: `any`, `any_async`, `for_each`, `for_each_async`, `OccupiedEntry::next`, `OccupiedEntry::next_async`, `retain`, `retain_async`, `scan`,  and `scan_async`.
 
 ```rust
 use scc::HashMap;
@@ -116,11 +116,11 @@ let future_for_each = hashmap.for_each_async(|k, v_mut| { *v_mut = *k; });
 
 ## HashSet
 
-[HashSet](#HashSet) is a version of [HashMap](#HashMap) where the value type is `()`.
+[HashSet](#HashSet) is a special version of [HashMap](#HashMap) where the value type is `()`.
 
 ### Examples
 
-All the [HashSet](#HashSet) methods identical to that of [HashMap](#HashMap) except that they do not receive a value argument.
+Most [HashSet](#HashSet) methods are identical to that of [HashMap](#HashMap) except that they do not receive a value argument, and some [HashMap](#HashMap) methods for value modification are not implemented for [HashSet](#HashSet).
 
 ```rust
 use scc::HashSet;
@@ -137,11 +137,11 @@ let future_remove = hashset.remove_async(&1);
 
 ## HashIndex
 
-[HashIndex](#HashIndex) is a read-optimized version of [HashMap](#HashMap). It applies [EBR](#EBR) to its entry management as well, enabling it to perform read operations without blocking or being blocked.
+[HashIndex](#HashIndex) is a read-optimized version of [HashMap](#HashMap). In a [HashIndex](#HashIndex), not only is the memory of the bucket array managed by [EBR](#EBR), but also that of entry buckets is protected by [EBR](#EBR), enabling lock-free read access to individual entries.
 
 ### Examples
 
-Its `read` method is completely lock-free and does not modify any shared data.
+The `read` method is completely lock-free.
 
 ```rust
 use scc::HashIndex;
@@ -182,7 +182,7 @@ assert_eq!(entry_ref, (&1, &0));
 
 ## TreeIndex
 
-[TreeIndex](#TreeIndex) is a B+ tree variant optimized for read operations. The `ebr` module enables it to implement lock-free read and scan methods.
+[TreeIndex](#TreeIndex) is a B+ tree variant optimized for read operations. [EBR](#EBR) protects the memory used by individual entries, thus enabling lock-free read access to them.
 
 ### Locking behavior
 
@@ -190,7 +190,7 @@ Read access is always lock-free and non-blocking. Write access to an entry is al
 
 ### Examples
 
-A unique key can be inserted, read, and removed. Locks are acquired or awaited only when internal nodes are split or merged.
+An entry can be inserted if the key is unique, and it can be read, and removed afterwards. Locks are acquired or awaited only when internal nodes are split or merged.
 
 ```rust
 use scc::TreeIndex;
@@ -433,10 +433,10 @@ Comparison with [DashMap](https://github.com/xacrimon/dashmap).
 - [Results on Apple M1 (8 cores)](https://github.com/wvwwvwwv/conc-map-bench).
 - [Results on Intel Xeon (VM, 40 cores)](https://github.com/wvwwvwwv/conc-map-bench/tree/Intel).
 - The benchmark test is a fork of [conc-map-bench](https://github.com/xacrimon/conc-map-bench).
-- *Interpret the results cautiously as benchmarks do not represent real world workloads.*
+- *Interpret the results cautiously as benchmarks usually do not represent real world workloads.*
 
 ### [EBR](#EBR)
 
-- The average time taken to enter and exit a protected region: 2.3ns on Apple M1.
+- The average time taken to enter and exit a protected region: 2.1ns on Apple M1.
 
 ## [Changelog](https://github.com/wvwwvwwv/scalable-concurrent-containers/blob/main/CHANGELOG.md)
