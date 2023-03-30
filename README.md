@@ -384,7 +384,7 @@ suspend();
 
 ## LinkedList
 
-[LinkedList](#LinkedList) is a type trait that implements lock-free concurrent singly linked list operations, backed by [EBR](#EBR). It additionally provides support for marking an entry of a linked list to denote a user-defined state.
+[LinkedList](#LinkedList) is a type trait that implements lock-free concurrent singly linked list operations, backed by [EBR](#EBR). It additionally provides a method for marking an entry of a linked list to denote a user-defined state.
 
 ### Examples
 

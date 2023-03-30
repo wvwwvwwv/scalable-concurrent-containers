@@ -328,6 +328,9 @@ where
 
     /// Gets the first occupied entry for in-place manipulation.
     ///
+    /// The returned [`OccupiedEntry`] in combination with [`OccupiedEntry::next`] or
+    /// [`OccupiedEntry::next_async`] can act as a mutable iterator over entries.
+    ///
     /// # Examples
     ///
     /// ```
@@ -337,7 +340,10 @@ where
     ///
     /// assert!(hashmap.insert(1, 0).is_ok());
     ///
-    /// *hashmap.first_occupied_entry().unwrap().get_mut() = 2;
+    /// let first_entry = hashmap.first_occupied_entry().unwrap();
+    /// *first_entry.get_mut() = 2;
+    ///
+    /// assert!(first_entry.next().is_none());
     /// assert_eq!(hashmap.read(&1, |_, v| *v), Some(2));
     /// ```
     #[inline]
@@ -375,6 +381,9 @@ where
     }
 
     /// Gets the first occupied entry for in-place manipulation.
+    ///
+    /// The returned [`OccupiedEntry`] in combination with [`OccupiedEntry::next`] or
+    /// [`OccupiedEntry::next_async`] can act as a mutable iterator over entries.
     ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
@@ -1891,6 +1900,11 @@ where
 
     /// Gets the next closest occupied entry.
     ///
+    /// [`HashMap::first_occupied_entry`], [`HashMap::first_occupied_entry_async`], and this method
+    /// together enables the [`OccupiedEntry`] to effectively act as a mutable iterator over
+    /// entries. The method never acquires more than one lock even when it searches other buckets
+    /// for the next closest occupied entry.
+    ///
     /// # Examples
     ///
     /// ```
@@ -1957,6 +1971,11 @@ where
     }
 
     /// Gets the next closest occupied entry.
+    ///
+    /// [`HashMap::first_occupied_entry`], [`HashMap::first_occupied_entry_async`], and this method
+    /// together enables the [`OccupiedEntry`] to effectively act as a mutable iterator over
+    /// entries. The method never acquires more than one lock even when it searches other buckets
+    /// for the next closest occupied entry.
     ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
@@ -2054,6 +2073,7 @@ where
     }
 }
 
+/// [`OccupiedEntry`] can be sent across threads and awaits with the lock on the bucket held in it.
 unsafe impl<'h, K, V, H> Send for OccupiedEntry<'h, K, V, H>
 where
     K: Eq + Hash + Send,
