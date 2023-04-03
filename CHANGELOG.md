@@ -1,5 +1,9 @@
 # Changelog
 
+1.4.3
+
+* Minor optimization.
+
 1.4.2
 
 * Optimize `TreeIndex::is_empty`.

@@ -115,7 +115,7 @@ where
             for i in 0..current_array.num_buckets() {
                 num_entries += current_array.bucket(i).num_entries();
             }
-            if num_entries == 0 {
+            if num_entries == 0 && self.minimum_capacity().load(Relaxed) == 0 {
                 self.try_resize(0, barrier);
             }
         }
@@ -139,7 +139,9 @@ where
                     return true;
                 }
             }
-            self.try_resize(0, barrier);
+            if self.minimum_capacity().load(Relaxed) == 0 {
+                self.try_resize(0, barrier);
+            }
         }
         false
     }
