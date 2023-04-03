@@ -8,9 +8,6 @@ use std::ptr::drop_in_place;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-/// The default length of the fixed-size array in a [`Bag`].
-const DEFAULT_ARRAY_LEN: usize = usize::BITS as usize / 2;
-
 /// [`Bag`] is a lock-free concurrent unordered instance container.
 ///
 /// [`Bag`] is a linearizable concurrent instance container where `ARRAY_LEN` instances are stored
@@ -28,12 +25,15 @@ pub struct Bag<T, const ARRAY_LEN: usize = DEFAULT_ARRAY_LEN> {
     stack: Stack<Storage<T, ARRAY_LEN>>,
 }
 
+/// The default length of the fixed-size array in a [`Bag`].
+const DEFAULT_ARRAY_LEN: usize = usize::BITS as usize / 2;
+
 impl<T, const ARRAY_LEN: usize> Bag<T, ARRAY_LEN> {
     /// Creates a new [`Bag`].
     ///
     /// # Panics
     ///
-    /// Panics if the specified `ARRAY_LEN` exceeds `usize::BITS / 2`.
+    /// Panics if the specified `ARRAY_LEN` value is larger than `usize::BITS / 2`.
     ///
     /// # Examples
     ///
@@ -45,7 +45,7 @@ impl<T, const ARRAY_LEN: usize> Bag<T, ARRAY_LEN> {
     #[inline]
     #[must_use]
     pub fn new() -> Bag<T, ARRAY_LEN> {
-        assert!(ARRAY_LEN <= usize::BITS as usize / 2);
+        assert!(ARRAY_LEN <= DEFAULT_ARRAY_LEN);
         Self {
             primary_storage: Storage::new(),
             stack: Stack::default(),
