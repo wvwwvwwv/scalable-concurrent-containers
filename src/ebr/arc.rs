@@ -138,10 +138,10 @@ impl<T> Arc<T> {
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let arc: Arc<usize> = Arc::new(10);
-    /// let arc_cloned: Arc<usize> = arc.clone();
+    /// let arc_clone: Arc<usize> = arc.clone();
     ///
-    /// assert_eq!(arc.as_ptr(), arc_cloned.as_ptr());
-    /// assert_eq!(unsafe { *arc.as_ptr() }, unsafe { *arc_cloned.as_ptr() });
+    /// assert_eq!(arc.as_ptr(), arc_clone.as_ptr());
+    /// assert_eq!(unsafe { *arc.as_ptr() }, unsafe { *arc_clone.as_ptr() });
     /// ```
     #[inline]
     #[must_use]

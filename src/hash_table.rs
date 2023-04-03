@@ -553,7 +553,7 @@ where
                         .as_mut()
                         .unwrap_unchecked()
                 };
-                let cloned_entry = Self::try_clone(old_entry);
+                let entry_clone = Self::try_clone(old_entry);
                 target_bucket.insert_with(
                     current_array.data_block_mut(new_index),
                     partial_hash,
@@ -561,7 +561,7 @@ where
                         // Stack unwinding during a call to `insert` will result in the entry being
                         // removed from the map, any map entry modification should take place after all
                         // the memory is reserved.
-                        cloned_entry.unwrap_or_else(|| {
+                        entry_clone.unwrap_or_else(|| {
                             old_locker.extract(old_data_block_mut, &mut entry_ptr, barrier)
                         })
                     },

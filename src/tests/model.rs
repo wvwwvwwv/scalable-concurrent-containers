@@ -82,7 +82,7 @@ mod ebr_model {
     fn ebr() {
         let mut model = loom::model::Builder::new();
         let reclaimed = Arc::new(AtomicUsize::new(0));
-        let reclaimed_cloned = reclaimed.clone();
+        let reclaimed_clone = reclaimed.clone();
         model.max_threads = 2;
         model.check(move || {
             let epoch: Arc<AtomicU8> = Arc::default();
@@ -117,7 +117,7 @@ mod ebr_model {
             collector_ref.end_barrier(epoch_ref, ptr_ref, &collectors.0);
 
             if ptr_ref.reclaimed.load(Relaxed) {
-                reclaimed_cloned.fetch_add(1, Relaxed);
+                reclaimed_clone.fetch_add(1, Relaxed);
             }
 
             drop(thread.join());

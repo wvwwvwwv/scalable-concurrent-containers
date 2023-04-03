@@ -397,15 +397,15 @@ impl<T> Queue<T> {
 impl<T: Clone> Clone for Queue<T> {
     #[inline]
     fn clone(&self) -> Self {
-        let cloned = Self::default();
+        let self_clone = Self::default();
         let barrier = Barrier::new();
         let mut current = self.oldest.load(Acquire, &barrier);
         while let Some(entry) = current.as_ref() {
             let next = entry.next_ptr(Acquire, &barrier);
-            let _result = cloned.push_if_internal((**entry).clone(), |_| true, &barrier);
+            let _result = self_clone.push_if_internal((**entry).clone(), |_| true, &barrier);
             current = next;
         }
-        cloned
+        self_clone
     }
 }
 

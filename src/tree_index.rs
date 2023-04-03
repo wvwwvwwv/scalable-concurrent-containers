@@ -578,11 +578,11 @@ where
 {
     #[inline]
     fn clone(&self) -> Self {
-        let cloned = Self::default();
+        let self_clone = Self::default();
         for (k, v) in self.iter(&Barrier::new()) {
-            let _reuslt = cloned.insert(k.clone(), v.clone());
+            let _reuslt = self_clone.insert(k.clone(), v.clone());
         }
-        cloned
+        self_clone
     }
 }
 

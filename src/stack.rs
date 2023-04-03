@@ -342,7 +342,7 @@ impl<T> Stack<T> {
 impl<T: Clone> Clone for Stack<T> {
     #[inline]
     fn clone(&self) -> Self {
-        let cloned = Self::default();
+        let self_clone = Self::default();
         let barrier = Barrier::new();
         let mut current = self.newest.load(Acquire, &barrier);
         let mut oldest: Option<Arc<Entry<T>>> = None;
@@ -353,14 +353,14 @@ impl<T: Clone> Clone for Stack<T> {
                     .next()
                     .swap((Some(new_entry.clone()), Tag::None), Relaxed);
             } else {
-                cloned
+                self_clone
                     .newest
                     .swap((Some(new_entry.clone()), Tag::None), Relaxed);
             }
             oldest.replace(new_entry);
             current = entry.next_ptr(Acquire, &barrier);
         }
-        cloned
+        self_clone
     }
 }
 

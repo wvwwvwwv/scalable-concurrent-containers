@@ -1112,26 +1112,26 @@ mod test {
                 .is_ok());
             let mut task_handles = Vec::with_capacity(num_tasks);
             for task_id in 0..num_tasks {
-                let barrier_cloned = barrier.clone();
-                let leaf_node_cloned = leaf_node.clone();
+                let barrier_clone = barrier.clone();
+                let leaf_node_clone = leaf_node.clone();
                 task_handles.push(tokio::task::spawn(async move {
-                    barrier_cloned.wait().await;
+                    barrier_clone.wait().await;
                     let barrier = Barrier::new();
                     let mut max_key = None;
                     let range = (task_id * workload_size)..((task_id + 1) * workload_size);
                     for id in range.clone() {
                         loop {
-                            if let Ok(r) = leaf_node_cloned.insert(id, id, &mut (), &barrier) {
+                            if let Ok(r) = leaf_node_clone.insert(id, id, &mut (), &barrier) {
                                 match r {
                                     InsertResult::Success => {
-                                        match leaf_node_cloned.insert(id, id, &mut (), &barrier) {
+                                        match leaf_node_clone.insert(id, id, &mut (), &barrier) {
                                             Ok(InsertResult::Duplicate(..)) | Err(_) => (),
                                             _ => unreachable!(),
                                         }
                                         break;
                                     }
                                     InsertResult::Full(..) => {
-                                        leaf_node_cloned.rollback(&barrier);
+                                        leaf_node_clone.rollback(&barrier);
                                         max_key.replace(id);
                                         break;
                                     }
@@ -1150,7 +1150,7 @@ mod test {
                         if max_key.map_or(false, |m| m == id) {
                             break;
                         }
-                        assert_eq!(leaf_node_cloned.search(&id, &barrier), Some(&id));
+                        assert_eq!(leaf_node_clone.search(&id, &barrier), Some(&id));
                     }
                     for id in range {
                         if max_key.map_or(false, |m| m == id) {
@@ -1158,7 +1158,7 @@ mod test {
                         }
                         let mut removed = false;
                         loop {
-                            match leaf_node_cloned.remove_if::<_, _, _>(
+                            match leaf_node_clone.remove_if::<_, _, _>(
                                 &id,
                                 &mut |_| true,
                                 &mut (),
@@ -1175,8 +1175,8 @@ mod test {
                                 Err(r) => removed |= r,
                             }
                         }
-                        assert!(leaf_node_cloned.search(&id, &barrier).is_none(), "{}", id);
-                        if let Ok(RemoveResult::Success) = leaf_node_cloned.remove_if::<_, _, _>(
+                        assert!(leaf_node_clone.search(&id, &barrier).is_none(), "{}", id);
+                        if let Ok(RemoveResult::Success) = leaf_node_clone.remove_if::<_, _, _>(
                             &id,
                             &mut |_| true,
                             &mut (),

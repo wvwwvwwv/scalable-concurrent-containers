@@ -2,6 +2,7 @@
 
 1.4.3
 
+* Add `const ARRAY_LEN: usize` type parameter to `Bag`.
 * Minor optimization.
 
 1.4.2

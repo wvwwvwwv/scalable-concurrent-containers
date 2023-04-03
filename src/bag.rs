@@ -8,25 +8,50 @@ use std::ptr::drop_in_place;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-/// The length of the fixed-size array in a [`Bag`].
-const STORAGE_LEN: u32 = usize::BITS / 2;
+/// The default length of the fixed-size array in a [`Bag`].
+const DEFAULT_ARRAY_LEN: usize = usize::BITS as usize / 2;
 
 /// [`Bag`] is a lock-free concurrent unordered instance container.
 ///
-/// [`Bag`] is a linearizable concurrent instance container where `usize::BITS / 2` instances are
-/// stored in a fixed-size array, and the rest are managed by its backup container which makes a
-/// [`Bag`] especially efficient if the expected number of instances does not exceed
-/// `usize::BITS / 2`.
+/// [`Bag`] is a linearizable concurrent instance container where `ARRAY_LEN` instances are stored
+/// in a fixed-size array, and the rest are managed by its backup container; this makes a [`Bag`]
+/// especially efficient if the expected number of instances does not exceed `ARRAY_LEN`.
+///
+/// The maximum value of `ARRAY_LEN` is limited to `usize::MAX / 2` which is the default value, and
+/// if a larger value is specified, [`Bag::new`] panics.
 #[derive(Debug)]
-pub struct Bag<T> {
+pub struct Bag<T, const ARRAY_LEN: usize = DEFAULT_ARRAY_LEN> {
     /// Primary storage.
-    primary_storage: Storage<T>,
+    primary_storage: Storage<T, ARRAY_LEN>,
 
     /// Fallback storage.
-    stack: Stack<Storage<T>>,
+    stack: Stack<Storage<T, ARRAY_LEN>>,
 }
 
-impl<T> Bag<T> {
+impl<T, const ARRAY_LEN: usize> Bag<T, ARRAY_LEN> {
+    /// Creates a new [`Bag`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the specified `ARRAY_LEN` exceeds `usize::BITS / 2`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::Bag;
+    ///
+    /// let bag: Bag<usize, 16> = Bag::new();
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn new() -> Bag<T, ARRAY_LEN> {
+        assert!(ARRAY_LEN <= usize::BITS as usize / 2);
+        Self {
+            primary_storage: Storage::new(),
+            stack: Stack::default(),
+        }
+    }
+
     /// Pushes an instance of `T`.
     ///
     /// # Examples
@@ -116,7 +141,7 @@ impl<T> Bag<T> {
     }
 }
 
-impl<T> Default for Bag<T> {
+impl<T> Default for Bag<T, DEFAULT_ARRAY_LEN> {
     #[inline]
     fn default() -> Self {
         Self {
@@ -126,7 +151,7 @@ impl<T> Default for Bag<T> {
     }
 }
 
-impl<T> Drop for Bag<T> {
+impl<T, const ARRAY_LEN: usize> Drop for Bag<T, ARRAY_LEN> {
     #[inline]
     fn drop(&mut self) {
         if needs_drop::<T>() {
@@ -139,9 +164,9 @@ impl<T> Drop for Bag<T> {
 }
 
 #[derive(Debug)]
-struct Storage<T> {
+struct Storage<T, const ARRAY_LEN: usize> {
     /// Storage.
-    storage: [MaybeUninit<T>; STORAGE_LEN as usize],
+    storage: [MaybeUninit<T>; ARRAY_LEN],
 
     /// Storage metadata.
     ///
@@ -157,9 +182,9 @@ struct Storage<T> {
     metadata: AtomicUsize,
 }
 
-impl<T> Storage<T> {
+impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
     /// Creates a new [`Storage`].
-    fn new() -> Storage<T> {
+    fn new() -> Storage<T, ARRAY_LEN> {
         #[allow(clippy::uninit_assumed_init)]
         Storage {
             storage: unsafe { MaybeUninit::uninit().assume_init() },
@@ -168,11 +193,11 @@ impl<T> Storage<T> {
     }
 
     /// Creates a new [`Storage`] with one inserted.
-    fn with_val(val: T) -> Storage<T> {
+    fn with_val(val: T) -> Storage<T, ARRAY_LEN> {
         #[allow(clippy::uninit_assumed_init)]
-        let mut storage = Storage::<T> {
+        let mut storage = Storage::<T, ARRAY_LEN> {
             storage: unsafe { MaybeUninit::uninit().assume_init() },
-            metadata: AtomicUsize::new(1_usize << STORAGE_LEN),
+            metadata: AtomicUsize::new(1_usize << ARRAY_LEN),
         };
         unsafe {
             storage.storage[0].as_mut_ptr().write(val);
@@ -190,9 +215,8 @@ impl<T> Storage<T> {
                 return Some(val);
             }
             let owned_bitmap = Self::owned_bitmap(metadata);
-            let mut index = instance_bitmap.trailing_ones();
-            while index != STORAGE_LEN {
-                debug_assert!(index < STORAGE_LEN);
+            let mut index = instance_bitmap.trailing_ones() as usize;
+            while index < ARRAY_LEN {
                 if (owned_bitmap & (1_u32 << index)) == 0 {
                     // Mark the slot `owned`.
                     let new = metadata | (1_usize << index);
@@ -203,17 +227,17 @@ impl<T> Storage<T> {
                         Ok(_) => {
                             // Now the free slot is owned by the thread.
                             unsafe {
-                                (self.storage[index as usize].as_ptr() as *mut T).write(val);
+                                (self.storage[index].as_ptr() as *mut T).write(val);
                             }
                             let result = self.metadata.fetch_update(Release, Relaxed, |m| {
                                 debug_assert_ne!(m & (1_usize << index), 0);
-                                debug_assert_eq!(m & (1_usize << (index + STORAGE_LEN)), 0);
+                                debug_assert_eq!(m & (1_usize << (index + ARRAY_LEN)), 0);
                                 if !allow_empty && Self::instance_bitmap(m) == 0 {
                                     // Disallowed to push a value into an empty array.
                                     None
                                 } else {
                                     let new = (m & (!(1_usize << index)))
-                                        | (1_usize << (index + STORAGE_LEN));
+                                        | (1_usize << (index + ARRAY_LEN));
                                     Some(new)
                                 }
                             });
@@ -222,7 +246,7 @@ impl<T> Storage<T> {
                             }
 
                             // The array was empty, thus rolling back the change.
-                            let val = unsafe { self.storage[index as usize].as_ptr().read() };
+                            let val = unsafe { self.storage[index].as_ptr().read() };
                             self.metadata.fetch_and(!(1_usize << index), Relaxed);
                             return Some(val);
                         }
@@ -236,7 +260,7 @@ impl<T> Storage<T> {
 
                 // Looking for another free slot.
                 instance_bitmap |= 1_u32 << index;
-                index = instance_bitmap.trailing_ones();
+                index = instance_bitmap.trailing_ones() as usize;
             }
 
             // No free slots or all the entries are owned.
@@ -251,9 +275,8 @@ impl<T> Storage<T> {
             // Looking for an instantiated, yet unowned entry.
             let instance_bitmap = Self::instance_bitmap(metadata);
             let owned_bitmap = Self::owned_bitmap(metadata);
-            let mut index = instance_bitmap.trailing_zeros();
-            while index != 32 {
-                debug_assert!(index < STORAGE_LEN);
+            let mut index = instance_bitmap.trailing_zeros() as usize;
+            while index < ARRAY_LEN {
                 if (owned_bitmap & (1_u32 << index)) == 0 {
                     // Mark the slot `owned`.
                     let new = metadata | (1_usize << index);
@@ -263,13 +286,13 @@ impl<T> Storage<T> {
                     {
                         Ok(_) => {
                             // Now the desired slot is owned by the thread.
-                            let inst = unsafe { self.storage[index as usize].as_ptr().read() };
+                            let inst = unsafe { self.storage[index].as_ptr().read() };
                             let mut empty = false;
                             let result = self.metadata.fetch_update(Relaxed, Relaxed, |m| {
                                 debug_assert_ne!(m & (1_usize << index), 0);
-                                debug_assert_ne!(m & (1_usize << (index + STORAGE_LEN)), 0);
-                                let new = m
-                                    & (!((1_usize << index) | (1_usize << (index + STORAGE_LEN))));
+                                debug_assert_ne!(m & (1_usize << (index + ARRAY_LEN)), 0);
+                                let new =
+                                    m & (!((1_usize << index) | (1_usize << (index + ARRAY_LEN))));
                                 empty = Self::instance_bitmap(new) == 0;
                                 Some(new)
                             });
@@ -285,8 +308,12 @@ impl<T> Storage<T> {
                 }
 
                 // Looking for another valid slot.
-                index = (instance_bitmap & (u32::MAX.wrapping_shl(index).wrapping_shl(1)))
-                    .trailing_zeros();
+                {
+                    #![allow(clippy::cast_possible_truncation)]
+                    index = (instance_bitmap
+                        & (u32::MAX.wrapping_shl(index as u32).wrapping_shl(1)))
+                    .trailing_zeros() as usize;
+                }
             }
 
             // All the entries are vacant or owned.
@@ -302,16 +329,16 @@ impl<T> Storage<T> {
 
     #[allow(clippy::cast_possible_truncation)]
     fn instance_bitmap(metadata: usize) -> u32 {
-        metadata.wrapping_shr(STORAGE_LEN) as u32
+        metadata.wrapping_shr(ARRAY_LEN as u32) as u32
     }
 
     #[allow(clippy::cast_possible_truncation)]
     fn owned_bitmap(metadata: usize) -> u32 {
-        (metadata % (1_usize << STORAGE_LEN)) as u32
+        (metadata % (1_usize << ARRAY_LEN)) as u32
     }
 }
 
-impl<T> Drop for Storage<T> {
+impl<T, const ARRAY_LEN: usize> Drop for Storage<T, ARRAY_LEN> {
     #[inline]
     fn drop(&mut self) {
         if needs_drop::<T>() {

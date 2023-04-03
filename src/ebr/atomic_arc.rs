@@ -275,8 +275,8 @@ impl<T> AtomicArc<T> {
     ///
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(59);
     /// let barrier = Barrier::new();
-    /// let atomic_arc_cloned = atomic_arc.clone(Relaxed, &barrier);
-    /// let ptr = atomic_arc_cloned.load(Relaxed, &barrier);
+    /// let atomic_arc_clone = atomic_arc.clone(Relaxed, &barrier);
+    /// let ptr = atomic_arc_clone.load(Relaxed, &barrier);
     /// assert_eq!(*ptr.as_ref().unwrap(), 59);
     /// ```
     #[inline]
