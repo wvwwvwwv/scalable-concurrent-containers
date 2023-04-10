@@ -2,7 +2,7 @@
 
 1.4.4
 
-* Major `Hash*` performance improvement by vectorizing loops in entry loop operations.
+* Major `Hash*` performance boost: vectorize `Hash*` bucket loopup operations.
 
 1.4.3
 
