@@ -1,5 +1,9 @@
 # Changelog
 
+1.4.4
+
+* Major `Hash*` performance improvement by vectorizing loops in entry loop operations.
+
 1.4.3
 
 * Add `const ARRAY_LEN: usize` type parameter to `Bag`.
