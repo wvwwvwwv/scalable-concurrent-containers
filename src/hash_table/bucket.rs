@@ -25,7 +25,7 @@ pub struct Bucket<K: Eq, V, const LOCK_FREE: bool> {
 }
 
 /// The size of a [`Bucket`].
-pub const BUCKET_LEN: usize = 32;
+pub const BUCKET_LEN: usize = u32::BITS as usize;
 
 /// [`DataBlock`] is a type alias of a raw memory chunk that may contain entry instances.
 pub type DataBlock<K, V, const LEN: usize> = [MaybeUninit<(K, V)>; LEN];
@@ -210,7 +210,6 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
     }
 
     /// Searches the given data block for an entry matching the key.
-    #[allow(clippy::cast_possible_truncation)]
     fn search_entry<'b, Q, const LEN: usize>(
         metadata: &'b Metadata<K, V, LEN>,
         data_block: &'b DataBlock<K, V, LEN>,
@@ -591,20 +590,13 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     ) -> EntryPtr<'b, K, V, LOCK_FREE> {
         assert!(self.bucket.num_entries != u32::MAX, "array overflow");
 
-        let free_index = Self::get_free_index::<BUCKET_LEN>(
-            self.bucket.metadata.occupied_bitmap,
-            partial_hash as usize % BUCKET_LEN,
-        );
+        let free_index = self.bucket.metadata.occupied_bitmap.trailing_ones() as usize;
         if free_index == BUCKET_LEN {
-            let preferred_index = partial_hash as usize % LINKED_BUCKET_LEN;
             let mut link_ptr = self.bucket.metadata.link.load(Acquire, barrier);
             while let Some(link_mut) = unsafe {
                 (link_ptr.as_raw() as *mut LinkedBucket<K, V, LINKED_BUCKET_LEN>).as_mut()
             } {
-                let free_index = Self::get_free_index::<LINKED_BUCKET_LEN>(
-                    link_mut.metadata.occupied_bitmap,
-                    preferred_index,
-                );
+                let free_index = link_mut.metadata.occupied_bitmap.trailing_ones() as usize;
                 if free_index != LINKED_BUCKET_LEN {
                     Self::insert_entry_with(
                         &mut link_mut.metadata,
@@ -629,11 +621,9 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
             unsafe {
                 let link_mut =
                     &mut *(link_ptr.as_raw() as *mut LinkedBucket<K, V, LINKED_BUCKET_LEN>);
-                link_mut.data_block[preferred_index]
-                    .as_mut_ptr()
-                    .write(constructor());
-                link_mut.metadata.partial_hash_array[preferred_index] = partial_hash;
-                link_mut.metadata.occupied_bitmap |= 1_u32 << preferred_index;
+                link_mut.data_block[0].as_mut_ptr().write(constructor());
+                link_mut.metadata.partial_hash_array[0] = partial_hash;
+                link_mut.metadata.occupied_bitmap = 1;
             }
             if let Some(head) = link.metadata.link.load(Relaxed, barrier).as_ref() {
                 head.prev_link.store(
@@ -648,7 +638,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
             self.bucket.num_entries += 1;
             EntryPtr {
                 current_link_ptr: link_ptr,
-                current_index: preferred_index,
+                current_index: 0,
             }
         } else {
             Self::insert_entry_with(
@@ -779,15 +769,6 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         *num_entries_field -= 1;
         metadata.occupied_bitmap &= !(1_u32 << index);
         unsafe { data_block[index].as_mut_ptr().read() }
-    }
-
-    /// Gets the most optimal free slot index from the given bitmap.
-    const fn get_free_index<const LEN: usize>(bitmap: u32, preferred_index: usize) -> usize {
-        let mut free_index = (bitmap | ((1_u32 << preferred_index) - 1)).trailing_ones() as usize;
-        if free_index == LEN {
-            free_index = bitmap.trailing_ones() as usize;
-        }
-        free_index
     }
 }
 

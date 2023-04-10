@@ -432,7 +432,6 @@ Comparison with [DashMap](https://github.com/xacrimon/dashmap).
 
 - [Results on Apple M1 (8 cores)](https://github.com/wvwwvwwv/conc-map-bench).
 - [Results on Intel Xeon (VM, 40 cores)](https://github.com/wvwwvwwv/conc-map-bench/tree/Intel).
-- The benchmark test is a fork of [conc-map-bench](https://github.com/xacrimon/conc-map-bench).
 - *Interpret the results cautiously as benchmarks usually do not represent real world workloads.*
 
 ### [EBR](#EBR)
