@@ -8,6 +8,7 @@ A collection of high performance containers and utilities for concurrent and asy
 
 #### Features
 
+- Almost linear scalability.
 - Asynchronous methods for blocking operations.
 - Formally verified [EBR](#EBR) implementation.
 - No spin-locks and no busy loops.
