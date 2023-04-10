@@ -230,31 +230,18 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
             fence(Acquire);
         }
 
-        let preferred_index = usize::from(partial_hash) % LEN;
-        if (bitmap & (1_u32 << preferred_index)) != 0
-            && metadata.partial_hash_array[preferred_index] == partial_hash
-        {
-            let entry_ref = unsafe { &(*data_block[preferred_index].as_ptr()) };
-            if entry_ref.0.borrow() == key {
-                return Some((preferred_index, entry_ref));
+        let mut matching: u32 = 0;
+        for i in 0..LEN {
+            if metadata.partial_hash_array[i] == partial_hash {
+                matching |= 1_u32 << i;
             }
         }
-
-        bitmap = if LEN == BUCKET_LEN {
-            debug_assert_eq!(LEN, 32);
-            bitmap.rotate_right(preferred_index as u32) & (!1_u32)
-        } else {
-            debug_assert_eq!(LEN, 8);
-            u32::from((bitmap as u8).rotate_right(preferred_index as u32) & (!1_u8))
-        };
+        bitmap &= matching;
         let mut offset = bitmap.trailing_zeros();
-        while offset != 32 {
-            let index = (preferred_index + offset as usize) % LEN;
-            if metadata.partial_hash_array[index] == partial_hash {
-                let entry_ref = unsafe { &(*data_block[index].as_ptr()) };
-                if entry_ref.0.borrow() == key {
-                    return Some((index, entry_ref));
-                }
+        while offset != u32::BITS {
+            let entry_ref = unsafe { &(*data_block[offset as usize].as_ptr()) };
+            if entry_ref.0.borrow() == key {
+                return Some((offset as usize, entry_ref));
             }
             bitmap -= 1_u32 << offset;
             offset = bitmap.trailing_zeros();
