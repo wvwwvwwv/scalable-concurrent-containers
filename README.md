@@ -437,6 +437,6 @@ Comparison with [DashMap](https://github.com/xacrimon/dashmap).
 
 ### [EBR](#EBR)
 
-- The average time taken to enter and exit a protected region: 2.1ns on Apple M1.
+- The average time taken to enter and exit a protected region: 2.1NS on Apple M1.
 
 ## [Changelog](https://github.com/wvwwvwwv/scalable-concurrent-containers/blob/main/CHANGELOG.md)

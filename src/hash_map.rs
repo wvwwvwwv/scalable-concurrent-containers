@@ -726,12 +726,12 @@ where
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.remove_if(&1, |v| *v == 1).is_none());
-    /// assert_eq!(hashmap.remove_if(&1, |v| *v == 0).unwrap(), (1, 0));
+    /// assert!(hashmap.remove_if(&1, |v| { *v += 1; false }).is_none());
+    /// assert_eq!(hashmap.remove_if(&1, |v| *v == 1).unwrap(), (1, 1));
     /// assert_eq!(hashmap.capacity(), 0);
     /// ```
     #[inline]
-    pub fn remove_if<Q, F: FnOnce(&V) -> bool>(&self, key: &Q, condition: F) -> Option<(K, V)>
+    pub fn remove_if<Q, F: FnOnce(&mut V) -> bool>(&self, key: &Q, condition: F) -> Option<(K, V)>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
@@ -762,7 +762,7 @@ where
     /// let future_remove = hashmap.remove_if_async(&11, |_| true);
     /// ```
     #[inline]
-    pub async fn remove_if_async<Q, F: FnOnce(&V) -> bool>(
+    pub async fn remove_if_async<Q, F: FnOnce(&mut V) -> bool>(
         &self,
         key: &Q,
         mut condition: F,

@@ -400,7 +400,7 @@ where
         self.remove_entry(
             key,
             self.hash(key),
-            condition,
+            |v: &mut V| condition(v),
             |r| r.is_some(),
             &mut (),
             &Barrier::new(),
@@ -423,12 +423,13 @@ where
     /// let future_remove = hashindex.remove_if_async(&11, |_| true);
     /// ```
     #[inline]
-    pub async fn remove_if_async<Q, F: FnOnce(&V) -> bool>(&self, key: &Q, mut condition: F) -> bool
+    pub async fn remove_if_async<Q, F: FnOnce(&V) -> bool>(&self, key: &Q, condition: F) -> bool
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
         let hash = self.hash(key);
+        let mut condition = |v: &mut V| condition(v);
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);

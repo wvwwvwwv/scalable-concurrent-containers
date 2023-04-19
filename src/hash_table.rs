@@ -300,7 +300,7 @@ where
 
     /// Removes an entry if the condition is met.
     #[inline]
-    fn remove_entry<Q, F: FnOnce(&V) -> bool, D, R, P: FnOnce(Option<Option<(K, V)>>) -> R>(
+    fn remove_entry<Q, F: FnOnce(&mut V) -> bool, D, R, P: FnOnce(Option<Option<(K, V)>>) -> R>(
         &self,
         key: &Q,
         hash: u64,
@@ -343,7 +343,9 @@ where
                     BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
                     barrier,
                 );
-                if entry_ptr.is_valid() && condition(&entry_ptr.get(data_block_mut).1) {
+                if entry_ptr.is_valid()
+                    && condition(&mut entry_ptr.get_mut(data_block_mut, &mut locker).1)
+                {
                     let result = locker.erase(data_block_mut, &mut entry_ptr);
                     if shrinkable
                         && (locker.num_entries() <= 1 || locker.need_rebuild())

@@ -1,5 +1,9 @@
 # Changelog
 
+1.5.0
+
+* API update: `HashMap::remove_if*` passes `&mut V` to the supplied predicate.
+
 1.4.4
 
 * Major `Hash*` performance boost: vectorize `Hash*` bucket loopup operations.
