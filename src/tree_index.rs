@@ -7,10 +7,8 @@ mod node;
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 use crate::wait_queue::AsyncWait;
-
 use leaf::{InsertResult, Leaf, RemoveResult, Scanner};
 use node::Node;
-
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::fmt::{self, Debug};

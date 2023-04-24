@@ -1,6 +1,5 @@
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 use crate::wait_queue::{AsyncWait, WaitQueue};
-
 use std::borrow::Borrow;
 use std::mem::{needs_drop, MaybeUninit};
 use std::ops::{Deref, DerefMut};

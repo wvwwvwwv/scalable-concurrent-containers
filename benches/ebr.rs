@@ -1,5 +1,4 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-
 use scc::ebr::Barrier;
 
 fn barrier_single(c: &mut Criterion) {

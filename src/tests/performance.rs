@@ -5,7 +5,6 @@
 mod benchmark {
     use crate::ebr;
     use crate::{HashIndex, HashMap, TreeIndex};
-
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hash};
     use std::ptr::addr_of;
@@ -683,13 +682,11 @@ mod benchmark {
 #[cfg(test)]
 mod benchmark_async {
     use crate::{HashIndex, HashMap, TreeIndex};
-
     use std::collections::hash_map::RandomState;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
-
     use tokio::sync::Barrier;
 
     #[derive(Clone)]

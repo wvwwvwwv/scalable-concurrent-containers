@@ -1,10 +1,8 @@
 use super::leaf::{InsertResult, Leaf, RemoveResult, Scanner, DIMENSION};
 use super::leaf_node::{LOCKED, RETIRED};
 use super::node::Node;
-
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
-
 use std::borrow::Borrow;
 use std::cmp::Ordering::{Equal, Greater, Less};
 use std::ptr;

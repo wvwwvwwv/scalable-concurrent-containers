@@ -1,7 +1,5 @@
 use super::bucket::{Bucket, DataBlock, BUCKET_LEN};
-
 use crate::ebr::{AtomicArc, Barrier, Ptr, Tag};
-
 use std::alloc::{alloc, alloc_zeroed, dealloc, Layout};
 use std::mem::{align_of, needs_drop, size_of};
 use std::sync::atomic::AtomicUsize;

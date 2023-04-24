@@ -1,7 +1,7 @@
 use super::ref_counted::RefCounted;
 use super::{Arc, Tag};
-
 use std::marker::PhantomData;
+use std::panic::UnwindSafe;
 use std::ptr::addr_of;
 use std::sync::atomic::Ordering::Relaxed;
 use std::{ops::Deref, ptr, ptr::NonNull};
@@ -259,3 +259,5 @@ impl<'b, T> PartialEq for Ptr<'b, T> {
         self.instance_ptr == other.instance_ptr
     }
 }
+
+impl<'b, T: UnwindSafe> UnwindSafe for Ptr<'b, T> {}

@@ -1,10 +1,8 @@
 use super::internal_node::{self, InternalNode};
 use super::leaf::{InsertResult, RemoveResult, Scanner};
 use super::leaf_node::{self, LeafNode};
-
 use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
 use crate::wait_queue::DeriveAsyncWait;
-
 use std::borrow::Borrow;
 use std::sync::atomic::Ordering::{self, Acquire, Relaxed, Release};
 

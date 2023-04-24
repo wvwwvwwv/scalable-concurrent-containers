@@ -1,7 +1,7 @@
 use super::ref_counted::RefCounted;
 use super::{Arc, Barrier, Ptr, Tag};
-
 use std::mem::forget;
+use std::panic::UnwindSafe;
 use std::ptr::{null_mut, NonNull};
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{self, Acquire, Relaxed};
@@ -379,4 +379,7 @@ impl<T> Drop for AtomicArc<T> {
 }
 
 unsafe impl<T: Send> Send for AtomicArc<T> {}
+
 unsafe impl<T: Sync> Sync for AtomicArc<T> {}
+
+impl<T: UnwindSafe> UnwindSafe for AtomicArc<T> {}

@@ -1,6 +1,5 @@
 use crate::ebr::{Arc, AtomicArc, Barrier};
 use crate::LinkedList;
-
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::mem::{needs_drop, MaybeUninit};

@@ -1,7 +1,6 @@
 //! [`HashSet`] is a concurrent and asynchronous hash set.
 
 use super::HashMap;
-
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};

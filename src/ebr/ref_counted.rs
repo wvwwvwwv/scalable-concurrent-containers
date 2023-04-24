@@ -1,10 +1,9 @@
+use super::Collectible;
 use std::mem::ManuallyDrop;
 use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{self, Relaxed};
-
-use super::Collectible;
 
 /// [`RefCounted`] stores an instance of type `T`, and a union of the link to the next
 /// [`RefCounted`] or the reference counter.

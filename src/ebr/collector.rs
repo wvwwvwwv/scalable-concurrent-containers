@@ -1,7 +1,5 @@
 use super::{Barrier, Collectible, Tag};
-
 use crate::exit_guard::ExitGuard;
-
 use std::panic;
 use std::ptr::{self, NonNull};
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release, SeqCst};

@@ -2,11 +2,9 @@
 
 use super::ebr::Barrier;
 use super::{HashIndex, HashMap, HashSet, TreeIndex};
-
 use serde::de::{Deserialize, MapAccess, SeqAccess, Visitor};
 use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
 use serde::Deserializer;
-
 use std::fmt;
 use std::hash::{BuildHasher, Hash};
 use std::marker::PhantomData;

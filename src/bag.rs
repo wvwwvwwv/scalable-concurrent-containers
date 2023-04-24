@@ -2,7 +2,6 @@
 
 use super::ebr::Barrier;
 use super::{LinkedList, Stack};
-
 use std::mem::{needs_drop, MaybeUninit};
 use std::ptr::drop_in_place;
 use std::sync::atomic::AtomicUsize;

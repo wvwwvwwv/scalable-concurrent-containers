@@ -1,8 +1,8 @@
 use super::ref_counted::RefCounted;
 use super::{Barrier, Collectible, Ptr};
-
 use std::mem::forget;
 use std::ops::Deref;
+use std::panic::UnwindSafe;
 use std::ptr::{addr_of, NonNull};
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -303,6 +303,8 @@ impl<T> Drop for Arc<T> {
         }
     }
 }
+
+impl<T: UnwindSafe> UnwindSafe for Arc<T> {}
 
 impl<'b, T> TryFrom<Ptr<'b, T>> for Arc<T> {
     type Error = Ptr<'b, T>;

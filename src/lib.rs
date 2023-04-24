@@ -25,6 +25,7 @@ pub mod hash_set;
 pub use hash_set::HashSet;
 
 mod linked_list;
+pub use linked_list::Entry as LinkedEntry;
 pub use linked_list::LinkedList;
 
 mod bag;

@@ -1,5 +1,10 @@
 # Changelog
 
+1.5.1
+
+* API update 1: all the data structures except for `OccupiedEntry` and `VacantEntry` are now `UnwindSafe`.
+* API update 2: export `linked_list::Entry` as `LinkedEntry`.
+
 1.5.0
 
 * API update: `HashMap::remove_if*` passes `&mut V` to the supplied predicate.

@@ -3,18 +3,24 @@ mod hashmap_test {
     use crate::hash_map::Entry;
     use crate::HashMap;
     use crate::{ebr, hash_map};
-
+    use proptest::prelude::*;
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
     use std::collections::BTreeSet;
     use std::hash::{Hash, Hasher};
+    use std::panic::UnwindSafe;
     use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
     use std::sync::atomic::{AtomicU64, AtomicUsize};
     use std::sync::{Arc, Barrier};
     use std::thread;
-
-    use proptest::prelude::*;
-    use proptest::strategy::{Strategy, ValueTree};
-    use proptest::test_runner::TestRunner;
     use tokio::sync::Barrier as AsyncBarrier;
+
+    static_assertions::assert_impl_all!(HashMap<String, String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_all!(HashMap<String, *const String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_impl_all!(hash_map::OccupiedEntry<String, String>: Send, Sync);
+    static_assertions::assert_not_impl_all!(hash_map::OccupiedEntry<String, *const String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_impl_all!(hash_map::VacantEntry<String, String>: Send, Sync);
+    static_assertions::assert_not_impl_all!(hash_map::VacantEntry<String, *const String>: Send, Sync, UnwindSafe);
 
     struct R(&'static AtomicUsize);
     impl R {
@@ -72,13 +78,6 @@ mod hashmap_test {
             self.data == other.data
         }
     }
-
-    static_assertions::assert_impl_all!(HashMap<String, String>: Send, Sync);
-    static_assertions::assert_not_impl_all!(HashMap<String, *const String>: Send, Sync);
-    static_assertions::assert_impl_all!(hash_map::OccupiedEntry<String, String>: Send, Sync);
-    static_assertions::assert_not_impl_all!(hash_map::OccupiedEntry<String, *const String>: Send, Sync);
-    static_assertions::assert_impl_all!(hash_map::VacantEntry<String, String>: Send, Sync);
-    static_assertions::assert_not_impl_all!(hash_map::VacantEntry<String, *const String>: Send, Sync);
 
     #[cfg_attr(miri, ignore)]
     #[tokio::test]
@@ -667,16 +666,18 @@ mod hashmap_test {
 mod hashindex_test {
     use crate::ebr;
     use crate::HashIndex;
-
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
     use std::collections::BTreeSet;
+    use std::panic::UnwindSafe;
     use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
     use std::sync::atomic::{AtomicU64, AtomicUsize};
     use std::sync::{Arc, Barrier};
     use std::thread;
-
-    use proptest::strategy::{Strategy, ValueTree};
-    use proptest::test_runner::TestRunner;
     use tokio::sync::Barrier as AsyncBarrier;
+
+    static_assertions::assert_impl_all!(HashIndex<String, String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_all!(HashIndex<String, *const String>: Send, Sync, UnwindSafe);
 
     struct R(&'static AtomicUsize);
     impl R {
@@ -696,9 +697,6 @@ mod hashindex_test {
             self.0.fetch_sub(1, Relaxed);
         }
     }
-
-    static_assertions::assert_impl_all!(HashIndex<String, String>: Send, Sync);
-    static_assertions::assert_not_impl_all!(HashIndex<String, *const String>: Send, Sync);
 
     #[cfg_attr(miri, ignore)]
     #[test]
@@ -941,9 +939,10 @@ mod hashindex_test {
 #[cfg(test)]
 mod hashset_test {
     use crate::HashSet;
+    use std::panic::UnwindSafe;
 
-    static_assertions::assert_impl_all!(HashSet<String>: Send, Sync);
-    static_assertions::assert_not_impl_all!(HashSet<*const String>: Send, Sync);
+    static_assertions::assert_impl_all!(HashSet<String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_all!(HashSet<*const String>: Send, Sync, UnwindSafe);
 
     #[cfg_attr(miri, ignore)]
     #[test]
@@ -973,16 +972,18 @@ mod hashset_test {
 mod treeindex_test {
     use crate::ebr;
     use crate::TreeIndex;
-
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
     use std::collections::BTreeSet;
+    use std::panic::UnwindSafe;
     use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
     use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::sync::{Arc, Barrier};
     use std::thread;
-
     use tokio::sync::Barrier as AsyncBarrier;
+
+    static_assertions::assert_impl_all!(TreeIndex<String, String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_all!(TreeIndex<String, *const String>: Send, Sync, UnwindSafe);
 
     struct R(&'static AtomicUsize);
     impl R {
@@ -1002,9 +1003,6 @@ mod treeindex_test {
             self.0.fetch_sub(1, Relaxed);
         }
     }
-
-    static_assertions::assert_impl_all!(TreeIndex<String, String>: Send, Sync);
-    static_assertions::assert_not_impl_all!(TreeIndex<String, *const String>: Send, Sync);
 
     #[cfg_attr(miri, ignore)]
     #[tokio::test]
@@ -1515,12 +1513,14 @@ mod treeindex_test {
 #[cfg(test)]
 mod bag_test {
     use crate::Bag;
-
+    use std::panic::UnwindSafe;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
     use std::sync::Arc;
-
     use tokio::sync::Barrier as AsyncBarrier;
+
+    static_assertions::assert_impl_all!(Bag<String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_all!(Bag<*const String>: Send, Sync, UnwindSafe);
 
     struct R(&'static AtomicUsize);
     impl R {
@@ -1540,9 +1540,6 @@ mod bag_test {
             self.0.fetch_sub(1, Relaxed);
         }
     }
-
-    static_assertions::assert_impl_all!(Bag<String>: Send, Sync);
-    static_assertions::assert_not_impl_all!(Bag<*const String>: Send, Sync);
 
     #[cfg_attr(miri, ignore)]
     #[test]
@@ -1609,12 +1606,14 @@ mod bag_test {
 #[cfg(test)]
 mod queue_test {
     use crate::Queue;
-
+    use std::panic::UnwindSafe;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
     use std::sync::Arc;
-
     use tokio::sync::Barrier as AsyncBarrier;
+
+    static_assertions::assert_impl_all!(Queue<String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_all!(Queue<*const String>: Send, Sync, UnwindSafe);
 
     struct R(usize, usize);
     impl R {
@@ -1622,9 +1621,6 @@ mod queue_test {
             R(task_id, seq)
         }
     }
-
-    static_assertions::assert_impl_all!(Queue<String>: Send, Sync);
-    static_assertions::assert_not_impl_all!(Queue<*const String>: Send, Sync);
 
     #[cfg_attr(miri, ignore)]
     #[test]
@@ -1699,10 +1695,11 @@ mod queue_test {
 #[cfg(test)]
 mod stack_test {
     use crate::Stack;
-
-    use std::sync::Arc;
-
+    use std::{panic::UnwindSafe, sync::Arc};
     use tokio::sync::Barrier as AsyncBarrier;
+
+    static_assertions::assert_impl_all!(Stack<String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_all!(Stack<*const String>: Send, Sync, UnwindSafe);
 
     #[derive(Debug)]
     struct R(usize, usize);
@@ -1711,9 +1708,6 @@ mod stack_test {
             R(task_id, seq)
         }
     }
-
-    static_assertions::assert_impl_all!(Stack<String>: Send, Sync);
-    static_assertions::assert_not_impl_all!(Stack<*const String>: Send, Sync);
 
     #[cfg_attr(miri, ignore)]
     #[test]
@@ -1777,12 +1771,21 @@ mod stack_test {
 
 #[cfg(test)]
 mod ebr_test {
-
-    use crate::ebr::{suspend, Arc, AtomicArc, Barrier, Tag};
-
+    use crate::ebr::{suspend, Arc, AtomicArc, Barrier, Ptr, Tag};
     use std::ops::Deref;
+    use std::panic::UnwindSafe;
     use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
     use std::sync::atomic::{AtomicBool, AtomicUsize};
+
+    static_assertions::assert_impl_all!(Arc<String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_impl_all!(AtomicArc<String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_impl_all!(Ptr<String>: UnwindSafe);
+    static_assertions::assert_not_impl_all!(Arc<*const u8>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_all!(AtomicArc<*const u8>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_all!(Ptr<String>: Send, Sync);
+    static_assertions::assert_not_impl_all!(Ptr<*const u8>: Send, Sync, UnwindSafe);
+    static_assertions::assert_impl_all!(Barrier: UnwindSafe);
+    static_assertions::assert_not_impl_all!(Barrier: Send, Sync);
 
     struct A(AtomicUsize, usize, &'static AtomicBool);
     impl Drop for A {

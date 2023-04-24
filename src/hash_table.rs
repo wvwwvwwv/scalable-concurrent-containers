@@ -1,13 +1,11 @@
 pub mod bucket;
 pub mod bucket_array;
 
-use bucket::{DataBlock, EntryPtr, Locker, Reader, BUCKET_LEN};
-use bucket_array::BucketArray;
-
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 use crate::exit_guard::ExitGuard;
 use crate::wait_queue::DeriveAsyncWait;
-
+use bucket::{DataBlock, EntryPtr, Locker, Reader, BUCKET_LEN};
+use bucket_array::BucketArray;
 use std::borrow::Borrow;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};

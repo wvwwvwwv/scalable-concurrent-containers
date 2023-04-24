@@ -2,7 +2,6 @@
 mod ebr_model {
     use loom::sync::atomic::fence;
     use loom::sync::atomic::{AtomicBool, AtomicU8};
-
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::{Relaxed, SeqCst};
     use std::sync::Arc;

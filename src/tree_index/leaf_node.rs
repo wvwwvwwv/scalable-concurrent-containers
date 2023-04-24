@@ -1,10 +1,8 @@
 use super::leaf::{InsertResult, RemoveResult, Scanner, DIMENSION};
 use super::Leaf;
-
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
 use crate::LinkedList;
-
 use std::borrow::Borrow;
 use std::cmp::Ordering::{Equal, Greater, Less};
 use std::ptr;

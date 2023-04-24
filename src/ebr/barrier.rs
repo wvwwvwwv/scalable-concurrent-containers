@@ -1,5 +1,6 @@
 use super::collectible::{Collectible, DeferredClosure, DeferredIncrementalClosure};
 use super::collector::Collector;
+use std::panic::UnwindSafe;
 
 /// [`Barrier`] allows the user to read [`AtomicArc`](super::AtomicArc) and keeps the
 /// underlying instance pinned to the thread.
@@ -148,3 +149,5 @@ impl Drop for Barrier {
         }
     }
 }
+
+impl UnwindSafe for Barrier {}

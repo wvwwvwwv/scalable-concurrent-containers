@@ -1,5 +1,4 @@
 use super::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
-
 use std::fmt::{self, Debug, Display};
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::Ordering::{self, Relaxed, Release};

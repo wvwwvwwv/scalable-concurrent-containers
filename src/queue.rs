@@ -2,7 +2,6 @@
 
 use super::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 use super::linked_list::{Entry, LinkedList};
-
 use std::fmt::{self, Debug};
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 

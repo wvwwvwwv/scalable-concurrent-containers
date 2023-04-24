@@ -5,7 +5,6 @@ use super::hash_table::bucket::{DataBlock, EntryPtr, Locker, Reader, BUCKET_LEN}
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::HashTable;
 use super::wait_queue::AsyncWait;
-
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};
