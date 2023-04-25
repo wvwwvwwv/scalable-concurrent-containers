@@ -539,22 +539,17 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     #[inline]
     pub(crate) fn release(bucket: &mut Bucket<K, V, LOCK_FREE>) {
         let mut current = bucket.state.load(Relaxed);
-        loop {
-            let wakeup = (current & WAITING) == WAITING;
-            match bucket.state.compare_exchange(
-                current,
-                current & (!(WAITING | LOCK)),
-                Release,
-                Relaxed,
-            ) {
-                Ok(_) => {
-                    if wakeup {
-                        bucket.wait_queue.signal();
-                    }
-                    break;
-                }
-                Err(result) => current = result,
-            }
+        while let Err(result) = bucket.state.compare_exchange_weak(
+            current,
+            current & (!(WAITING | LOCK)),
+            Release,
+            Relaxed,
+        ) {
+            current = result;
+        }
+
+        if (current & WAITING) == WAITING {
+            bucket.wait_queue.signal();
         }
     }
 
@@ -865,7 +860,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
             let next = (current - 1) & !(WAITING);
             match bucket
                 .state
-                .compare_exchange(current, next, Relaxed, Relaxed)
+                .compare_exchange_weak(current, next, Relaxed, Relaxed)
             {
                 Ok(_) => {
                     if wakeup {

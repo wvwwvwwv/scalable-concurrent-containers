@@ -27,7 +27,7 @@ impl WaitQueue {
         let mut entry = SyncWait::new(current);
         let mut entry_mut = Pin::new(&mut entry);
 
-        while let Err(actual) = self.wait_queue.compare_exchange(
+        while let Err(actual) = self.wait_queue.compare_exchange_weak(
             current,
             entry_mut.as_mut().get_mut() as *mut SyncWait as usize,
             AcqRel,
@@ -63,7 +63,7 @@ impl WaitQueue {
         async_wait.next = current;
         async_wait.mutex.replace(Mutex::new((false, None)));
 
-        while let Err(actual) = self.wait_queue.compare_exchange(
+        while let Err(actual) = self.wait_queue.compare_exchange_weak(
             current,
             (async_wait as *mut AsyncWait as usize) | ASYNC,
             AcqRel,
