@@ -49,6 +49,11 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 /// and non-blocking as long as no structural changes are required. However, when nodes are being
 /// split or merged by a write operation, other write operations on keys in the affected range are
 /// blocked.
+///
+/// ### Unwind safety
+///
+/// [`TreeIndex`] is impervious to out-of-memory errors and panics in user specified code on one
+/// condition; `K::drop` and `V::drop` must not panic.
 pub struct TreeIndex<K, V>
 where
     K: 'static + Clone + Ord,

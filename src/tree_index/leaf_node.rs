@@ -1,6 +1,7 @@
 use super::leaf::{InsertResult, RemoveResult, Scanner, DIMENSION};
 use super::Leaf;
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
+use crate::exit_guard::ExitGuard;
 use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
 use crate::LinkedList;
 use std::borrow::Borrow;
@@ -630,7 +631,7 @@ where
     /// # Errors
     ///
     /// Returns an error if a retry is required.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn split_leaf<D: DeriveAsyncWait>(
         &self,
         key: K,
@@ -672,6 +673,13 @@ where
         let mut high_key_leaf_arc = None;
 
         // Distribute entries to two leaves after make the target retired.
+        let mut guard = ExitGuard::new(true, |rollback| {
+            if rollback {
+                target.thaw();
+                self.split_op.reset();
+                self.unlock();
+            }
+        });
         target.freeze_and_distribute(&mut low_key_leaf_arc, &mut high_key_leaf_arc);
 
         if let Some(low_key_leaf) = low_key_leaf_arc.take() {
@@ -724,6 +732,7 @@ where
                     // Need to freeze the other leaf.
                     let frozen = high_key_leaf.freeze();
                     debug_assert!(frozen);
+                    *guard = false;
                     return Ok(InsertResult::Full(key, val));
                 }
             };
@@ -767,6 +776,7 @@ where
                 )
                 .0
         };
+        *guard = false;
 
         let origin = self.split_op.reset();
         self.unlock();

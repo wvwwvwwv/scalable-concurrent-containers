@@ -35,6 +35,11 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 /// * The expected number of atomic variables accessed during a single key operation: 2.
 /// * The number of entries managed by a single bucket without a linked list: 32.
 /// * The expected maximum linked list length when resize is triggered: log(capacity) / 8.
+///
+/// ### Unwind safety
+///
+/// [`HashIndex`] is impervious to out-of-memory errors and panics in user specified code on one
+/// condition; `K::drop` and `V::drop` must not panic.
 pub struct HashIndex<K, V, H = RandomState>
 where
     K: 'static + Clone + Eq + Hash,

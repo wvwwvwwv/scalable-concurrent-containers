@@ -2117,7 +2117,7 @@ mod ebr_test {
 mod random_failure_test {
     use crate::ebr;
     use crate::ebr::Arc;
-    use crate::{HashIndex, HashMap};
+    use crate::{HashIndex, HashMap, TreeIndex};
     use std::any::Any;
     use std::panic::catch_unwind;
     use std::sync::atomic::AtomicUsize;
@@ -2211,6 +2211,25 @@ mod random_failure_test {
             });
         }
         drop(hashmap);
+
+        while INST_CNT.load(Relaxed) != 0 {
+            let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
+                drop(ebr::Barrier::new());
+            });
+            std::thread::yield_now();
+        }
+
+        // TreeIndex.
+        let treeindex: TreeIndex<usize, R> = TreeIndex::default();
+        for k in 0..14 * 14 * 14 {
+            let _result: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
+                assert!(treeindex
+                    .insert(k, R::new_panic_free_drop(&INST_CNT))
+                    .is_ok());
+                assert!(treeindex.read(&k, |_, _| ()).is_some());
+            });
+        }
+        drop(treeindex);
 
         while INST_CNT.load(Relaxed) != 0 {
             let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {

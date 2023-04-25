@@ -2,6 +2,7 @@ use super::leaf::{InsertResult, Leaf, RemoveResult, Scanner, DIMENSION};
 use super::leaf_node::{LOCKED, RETIRED};
 use super::node::Node;
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
+use crate::exit_guard::ExitGuard;
 use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
 use std::borrow::Borrow;
 use std::cmp::Ordering::{Equal, Greater, Less};
@@ -410,6 +411,11 @@ where
                 .store(full_node_key as *const K as *mut K, Relaxed);
         }
 
+        let mut guard = ExitGuard::new(true, |rollback| {
+            if rollback {
+                self.rollback(barrier);
+            }
+        });
         match target {
             Node::Internal(full_internal_node) => {
                 // Copies nodes except for the known full node to the newly allocated internal node entries.
@@ -639,9 +645,11 @@ where
             }
             InsertResult::Full(..) | InsertResult::Retired(..) => {
                 // Insertion failed: expects that the parent splits this node.
+                *guard = false;
                 return Ok(InsertResult::Full(key, val));
             }
         };
+        *guard = false;
 
         // Replace the full node with the high-key node.
         let unused_node = full_node
