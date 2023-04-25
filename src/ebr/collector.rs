@@ -2,11 +2,12 @@ use super::{Barrier, Collectible, Tag};
 use crate::exit_guard::ExitGuard;
 use std::panic;
 use std::ptr::{self, NonNull};
-use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release, SeqCst};
+use std::sync::atomic::Ordering::{Acquire, Relaxed, Release, SeqCst};
 use std::sync::atomic::{fence, AtomicPtr, AtomicU8};
 
 /// [`Collector`] is a garbage collector that reclaims thread-locally unreachable instances
 /// when they are globally unreachable.
+#[derive(Debug)]
 pub(super) struct Collector {
     state: AtomicU8,
     announcement: u8,
@@ -33,11 +34,13 @@ impl Collector {
 
     /// Acknowledges a new [`Barrier`] being instantiated.
     ///
+    /// Returns `true` if a new epoch was announced.
+    ///
     /// # Panics
     ///
     /// The method may panic if the number of readers has reached `u32::MAX`.
     #[inline]
-    pub(super) fn new_barrier(&mut self) {
+    pub(super) fn new_barrier(&mut self) -> bool {
         if self.num_readers == 0 {
             debug_assert_eq!(self.state.load(Relaxed) & Self::INACTIVE, Self::INACTIVE);
             self.num_readers = 1;
@@ -55,15 +58,18 @@ impl Collector {
                 self.state.store(new_epoch, Relaxed);
                 fence(SeqCst);
             }
-            if self.announcement != new_epoch {
+            if self.announcement == new_epoch {
+                false
+            } else {
                 self.announcement = new_epoch;
-                self.epoch_updated();
+                true
             }
         } else if self.num_readers == u32::MAX {
             panic!("Too many EBR barriers");
         } else {
             debug_assert_eq!(self.state.load(Relaxed) & Self::INACTIVE, 0);
             self.num_readers += 1;
+            false
         }
     }
 
@@ -142,6 +148,34 @@ impl Collector {
             }
             true
         })
+    }
+
+    /// Acknowledges a new global epoch.
+    pub(super) fn epoch_updated(&mut self) {
+        debug_assert_eq!(self.state.load(Relaxed) & Self::INACTIVE, 0);
+        debug_assert_eq!(self.state.load(Relaxed), self.announcement);
+
+        std::sync::atomic::compiler_fence(Acquire);
+        let mut garbage_link = self.next_instance_link.take();
+        self.next_instance_link = self.previous_instance_link.take();
+        self.previous_instance_link = self.current_instance_link.take();
+        self.has_garbage =
+            self.next_instance_link.is_some() || self.previous_instance_link.is_some();
+        while let Some(mut instance_ptr) = garbage_link.take() {
+            garbage_link = unsafe { *instance_ptr.as_mut().next_ptr_mut() };
+            let mut guard = ExitGuard::new(garbage_link, |mut garbage_link| {
+                while let Some(mut instance_ptr) = garbage_link.take() {
+                    // Something went wrong during dropping and deallocating an instance.
+                    std::sync::atomic::compiler_fence(Acquire);
+                    garbage_link = unsafe { *instance_ptr.as_mut().next_ptr_mut() };
+                    self.reclaim(instance_ptr.as_ptr());
+                }
+            });
+            unsafe {
+                instance_ptr.as_mut().drop_and_dealloc();
+            }
+            garbage_link = guard.take();
+        }
     }
 
     /// Allocates a new [`Collector`].
@@ -268,40 +302,6 @@ impl Collector {
                     _ => 0,
                 };
                 EPOCH.store(next_epoch, Relaxed);
-                self.state.store(next_epoch, Relaxed);
-                self.announcement = next_epoch;
-                self.epoch_updated();
-            }
-        }
-    }
-
-    /// Acknowledges a new global epoch.
-    fn epoch_updated(&mut self) {
-        debug_assert_eq!(self.state.load(Relaxed) & Self::INACTIVE, 0);
-        debug_assert_eq!(self.state.load(Relaxed), self.announcement);
-
-        let mut garbage_link = self.next_instance_link.take();
-        self.next_instance_link = self.previous_instance_link.take();
-        self.previous_instance_link = self.current_instance_link.take();
-        self.has_garbage =
-            self.next_instance_link.is_some() || self.previous_instance_link.is_some();
-        let mut thread_collector = None;
-        while let Some(mut instance_ptr) = garbage_link.take() {
-            garbage_link = unsafe { *instance_ptr.as_mut().next_ptr_mut() };
-            if !unsafe { instance_ptr.as_mut().drop_and_dealloc() } {
-                // `self` may have been updated when the instance is deallocated, therefore any
-                // `load` after it must not pass through deallocating the instance.
-                std::sync::atomic::compiler_fence(AcqRel);
-
-                // The instance has yet to be completely dropped.
-                //
-                // Push the instance into the `Collector` of the current thread which may differ
-                // from `self` if the thread associated with `self` has been joined.
-                unsafe {
-                    let collector = thread_collector
-                        .get_or_insert_with(|| Self::current().as_mut().unwrap_unchecked());
-                    collector.reclaim(instance_ptr.as_ptr());
-                }
             }
         }
     }

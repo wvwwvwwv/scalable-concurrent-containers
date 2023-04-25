@@ -1810,37 +1810,6 @@ mod ebr_test {
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn deferred_incremental() {
-        static EXECUTED: AtomicUsize = AtomicUsize::new(0);
-
-        let iter = 2;
-        for _ in 0..iter {
-            let mut execution_count = 0;
-            let barrier = Barrier::new();
-            barrier.defer_incremental_execute(move || {
-                if execution_count == 2 {
-                    EXECUTED.fetch_add(1, Relaxed);
-                    true
-                } else {
-                    Barrier::new().defer_incremental_execute(move || {
-                        drop(Arc::new(10));
-                        EXECUTED.fetch_add(1, Relaxed);
-                        true
-                    });
-                    execution_count += 1;
-                    false
-                }
-            });
-            drop(barrier);
-        }
-
-        while EXECUTED.load(Relaxed) != 3 * iter {
-            drop(Barrier::new());
-        }
-    }
-
-    #[cfg_attr(miri, ignore)]
-    #[test]
     fn arc() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
 
@@ -2147,158 +2116,60 @@ mod ebr_test {
 #[cfg(test)]
 mod random_failure_test {
     use crate::ebr;
-    use crate::HashMap;
-    use rand::random;
-    use std::alloc::{GlobalAlloc, Layout, System};
-    use std::hash::{Hash, Hasher};
+    use crate::ebr::Arc;
     use std::panic::catch_unwind;
-    use std::sync::atomic::Ordering::Relaxed;
-    use std::sync::atomic::{AtomicBool, AtomicUsize};
-    use std::sync::Arc;
-    use std::sync::Mutex;
-    use std::thread;
-    use std::thread::ThreadId;
-
-    #[derive(Debug)]
-    struct PanicAllocator {
-        panic: AtomicBool,
-        threads: Mutex<Option<ThreadId>>,
-    }
-
-    #[global_allocator]
-    static ALLOCATOR: PanicAllocator = PanicAllocator {
-        panic: AtomicBool::new(false),
-        threads: Mutex::new(None),
-    };
-
-    unsafe impl GlobalAlloc for PanicAllocator {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            assert!(
-                random::<bool>()
-                    && self.panic.load(Relaxed)
-                    && self
-                        .threads
-                        .try_lock()
-                        .ok()
-                        .and_then(|t| t.as_ref().map(|i| *i == thread::current().id()))
-                        .map_or(false, |r| r),
-                "out-of-memory emulation"
-            );
-            System.alloc(layout)
-        }
-        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            System.dealloc(ptr, layout);
-        }
-    }
-
-    #[derive(Debug)]
-    struct PanicEmulationScope(bool);
-
-    impl PanicEmulationScope {
-        fn new() -> PanicEmulationScope {
-            let thread_id = thread::current().id();
-            if ALLOCATOR.panic.swap(true, Relaxed) {
-                ALLOCATOR.threads.lock().unwrap().replace(thread_id);
-                Self(true)
-            } else {
-                Self(false)
-            }
-        }
-    }
-
-    impl Drop for PanicEmulationScope {
-        fn drop(&mut self) {
-            if self.0 {
-                ALLOCATOR.threads.lock().unwrap().take();
-                ALLOCATOR.panic.swap(false, Relaxed);
-            }
-        }
-    }
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering::{AcqRel, Relaxed};
 
     struct R(&'static AtomicUsize);
     impl R {
         fn new(cnt: &'static AtomicUsize) -> R {
-            cnt.fetch_add(1, Relaxed);
+            assert!(rand::random::<u8>() % 4 != 0);
+            cnt.fetch_add(1, AcqRel);
             R(cnt)
         }
     }
     impl Clone for R {
         fn clone(&self) -> Self {
-            self.0.fetch_add(1, Relaxed);
-            R(self.0)
+            Self::new(self.0)
         }
     }
     impl Drop for R {
         fn drop(&mut self) {
-            self.0.fetch_sub(1, Relaxed);
-        }
-    }
-
-    struct Data {
-        data: usize,
-        checker: Arc<AtomicUsize>,
-    }
-
-    impl Data {
-        fn new(data: usize, checker: Arc<AtomicUsize>) -> Data {
-            checker.fetch_add(1, Relaxed);
-            Data { data, checker }
-        }
-    }
-
-    impl Clone for Data {
-        fn clone(&self) -> Self {
-            Data::new(self.data, self.checker.clone())
-        }
-    }
-
-    impl Drop for Data {
-        fn drop(&mut self) {
-            self.checker.fetch_sub(1, Relaxed);
-        }
-    }
-
-    impl Eq for Data {}
-
-    impl Hash for Data {
-        fn hash<H: Hasher>(&self, state: &mut H) {
-            self.data.hash(state);
-        }
-    }
-
-    impl PartialEq for Data {
-        fn eq(&self, other: &Self) -> bool {
-            self.data == other.data
+            self.0.fetch_sub(1, AcqRel);
+            assert!(rand::random::<u8>() % 16 != 0);
         }
     }
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn insert_panic() {
+    fn panic_safety() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
-        let hashmap: HashMap<usize, R> = HashMap::default();
 
-        let workload_size = 1024;
-        for k in 0..workload_size {
-            loop {
-                let result = catch_unwind(|| {
-                    let _panic_scope = PanicEmulationScope::new();
-                    assert!(hashmap.insert(k, R::new(&INST_CNT)).is_ok());
-                });
-                if let Err(err) = result {
-                    println!("Error: {err:?}");
-                } else {
-                    break;
-                }
+        let workload_size = u8::MAX;
+
+        // EBR.
+        for _ in 0..workload_size {
+            let result = catch_unwind(|| {
+                let r = Arc::new(R::new(&INST_CNT));
+                assert_ne!(INST_CNT.load(Relaxed), 0);
+                drop(r);
+            });
+            if let Err(err) = result {
+                println!("Error: {err:?}");
             }
         }
-        assert_eq!(INST_CNT.load(Relaxed), workload_size);
-        assert_eq!(hashmap.len(), workload_size);
-        drop(hashmap);
 
+        let mut panics = 0;
         while INST_CNT.load(Relaxed) != 0 {
-            drop(ebr::Barrier::new());
-            thread::yield_now();
+            let result = catch_unwind(|| {
+                drop(ebr::Barrier::new());
+            });
+            if let Err(err) = result {
+                panics += 1;
+                println!("Error: {panics} {err:?} {INST_CNT:?}");
+            }
+            std::thread::yield_now();
         }
     }
 }
