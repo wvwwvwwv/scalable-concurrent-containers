@@ -87,13 +87,14 @@ impl<T> RefCounted<T> {
         debug_assert_ne!(current, 0);
         loop {
             let new = if current <= 1 { 0 } else { current - 2 };
-            if let Err(actual) = self
+            match self
                 .ref_cnt()
                 .compare_exchange_weak(current, new, Relaxed, Relaxed)
             {
-                current = actual;
-            } else {
-                break;
+                Ok(_) => break,
+                Err(actual) => {
+                    current = actual;
+                }
             }
         }
         current == 1
