@@ -11,6 +11,7 @@ use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
 use std::iter::FusedIterator;
 use std::ops::Deref;
+use std::panic::UnwindSafe;
 use std::pin::Pin;
 use std::ptr;
 use std::sync::atomic::AtomicUsize;
@@ -1080,5 +1081,13 @@ where
     K: 'static + Clone + Eq + Hash,
     V: 'static + Clone,
     H: BuildHasher,
+{
+}
+
+impl<'h, 'b, K, V, H> UnwindSafe for Visitor<'h, 'b, K, V, H>
+where
+    K: 'static + Clone + Eq + Hash + UnwindSafe,
+    V: 'static + Clone + UnwindSafe,
+    H: BuildHasher + UnwindSafe,
 {
 }

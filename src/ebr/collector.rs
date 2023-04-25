@@ -155,7 +155,6 @@ impl Collector {
         debug_assert_eq!(self.state.load(Relaxed) & Self::INACTIVE, 0);
         debug_assert_eq!(self.state.load(Relaxed), self.announcement);
 
-        std::sync::atomic::compiler_fence(Acquire);
         let mut garbage_link = self.next_instance_link.take();
         self.next_instance_link = self.previous_instance_link.take();
         self.previous_instance_link = self.current_instance_link.take();
@@ -166,11 +165,16 @@ impl Collector {
             let mut guard = ExitGuard::new(garbage_link, |mut garbage_link| {
                 while let Some(mut instance_ptr) = garbage_link.take() {
                     // Something went wrong during dropping and deallocating an instance.
-                    std::sync::atomic::compiler_fence(Acquire);
                     garbage_link = unsafe { *instance_ptr.as_mut().next_ptr_mut() };
+
+                    // Previous `drop_and_dealloc` may have accessed `self.current_instance_link`.
+                    std::sync::atomic::compiler_fence(Acquire);
                     self.reclaim(instance_ptr.as_ptr());
                 }
             });
+
+            // `drop_and_dealloc` may access `self.current_instance_link`.
+            std::sync::atomic::compiler_fence(Acquire);
             unsafe {
                 instance_ptr.as_mut().drop_and_dealloc();
             }
@@ -312,13 +316,9 @@ impl Drop for Collector {
     fn drop(&mut self) {
         self.state.store(0, Relaxed);
         self.announcement = 0;
-
-        // The garbage instances in it shall be dropped and deallocated in a different thread.
-        self.epoch_updated();
-        self.epoch_updated();
-        self.epoch_updated();
-
-        debug_assert!(!self.has_garbage);
+        while self.has_garbage {
+            self.epoch_updated();
+        }
     }
 }
 
@@ -371,7 +371,7 @@ fn try_drop_local_collector() {
                     .is_ok()
             {
                 // If it is the head, and the only `Collector` in the global list, drop it here.
-                let barrier = Barrier::new();
+                let barrier = Barrier::new_for_drop();
                 while collector.has_garbage {
                     collector.epoch_updated();
                 }

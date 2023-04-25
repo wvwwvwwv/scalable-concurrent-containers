@@ -35,7 +35,7 @@ impl Barrier {
         let barrier = Barrier { collector_ptr };
         if epoch_updated {
             unsafe {
-                (*collector_ptr).epoch_updated();
+                (*barrier.collector_ptr).epoch_updated();
             }
         }
         barrier

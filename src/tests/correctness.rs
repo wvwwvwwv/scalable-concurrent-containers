@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod hashmap_test {
-    use crate::hash_map::Entry;
+    use crate::hash_map::{Entry, Reserve};
     use crate::HashMap;
     use crate::{ebr, hash_map};
     use proptest::prelude::*;
@@ -16,7 +16,9 @@ mod hashmap_test {
     use tokio::sync::Barrier as AsyncBarrier;
 
     static_assertions::assert_impl_all!(HashMap<String, String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_impl_all!(Reserve<String, String>: Send, Sync, UnwindSafe);
     static_assertions::assert_not_impl_all!(HashMap<String, *const String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_all!(Reserve<String, *const String>: Send, Sync, UnwindSafe);
     static_assertions::assert_impl_all!(hash_map::OccupiedEntry<String, String>: Send, Sync);
     static_assertions::assert_not_impl_all!(hash_map::OccupiedEntry<String, *const String>: Send, Sync, UnwindSafe);
     static_assertions::assert_impl_all!(hash_map::VacantEntry<String, String>: Send, Sync);
@@ -665,6 +667,7 @@ mod hashmap_test {
 #[cfg(test)]
 mod hashindex_test {
     use crate::ebr;
+    use crate::hash_index::Visitor;
     use crate::HashIndex;
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
@@ -677,7 +680,9 @@ mod hashindex_test {
     use tokio::sync::Barrier as AsyncBarrier;
 
     static_assertions::assert_impl_all!(HashIndex<String, String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_impl_all!(Visitor<'static, 'static, String, String>: UnwindSafe);
     static_assertions::assert_not_impl_all!(HashIndex<String, *const String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_all!(Visitor<'static, 'static, String, *const String>: Send, Sync, UnwindSafe);
 
     struct R(&'static AtomicUsize);
     impl R {
@@ -971,10 +976,12 @@ mod hashset_test {
 #[cfg(test)]
 mod treeindex_test {
     use crate::ebr;
+    use crate::tree_index::{Range, Visitor};
     use crate::TreeIndex;
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
     use std::collections::BTreeSet;
+    use std::ops::RangeInclusive;
     use std::panic::UnwindSafe;
     use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
     use std::sync::atomic::{AtomicBool, AtomicUsize};
@@ -983,7 +990,11 @@ mod treeindex_test {
     use tokio::sync::Barrier as AsyncBarrier;
 
     static_assertions::assert_impl_all!(TreeIndex<String, String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_impl_all!(Visitor<'static, 'static, String, String>: UnwindSafe);
+    static_assertions::assert_impl_all!(Range<'static, 'static, String, String, RangeInclusive<String>>: UnwindSafe);
     static_assertions::assert_not_impl_all!(TreeIndex<String, *const String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_all!(Visitor<'static, 'static, String, *const String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_all!(Range<'static, 'static, String, *const String, RangeInclusive<String>>: Send, Sync, UnwindSafe);
 
     struct R(&'static AtomicUsize);
     impl R {
@@ -2120,32 +2131,32 @@ mod random_failure_test {
     use crate::{HashIndex, HashMap, TreeIndex};
     use std::any::Any;
     use std::panic::catch_unwind;
-    use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::{AcqRel, Relaxed};
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
 
-    struct R(&'static AtomicUsize, bool);
+    struct R(&'static AtomicUsize, &'static AtomicBool, bool);
     impl R {
-        fn new(cnt: &'static AtomicUsize) -> R {
-            assert!(rand::random::<u8>() % 4 != 0);
+        fn new(cnt: &'static AtomicUsize, never_panic: &'static AtomicBool) -> R {
+            assert!(never_panic.load(Relaxed) || rand::random::<u8>() % 4 != 0);
             cnt.fetch_add(1, AcqRel);
-            R(cnt, false)
+            R(cnt, never_panic, false)
         }
-        fn new_panic_free_drop(cnt: &'static AtomicUsize) -> R {
+        fn new_panic_free_drop(cnt: &'static AtomicUsize, never_panic: &'static AtomicBool) -> R {
             cnt.fetch_add(1, AcqRel);
-            R(cnt, true)
+            R(cnt, never_panic, true)
         }
     }
     impl Clone for R {
         fn clone(&self) -> Self {
-            assert!(rand::random::<u8>() % 8 != 0);
+            assert!(self.1.load(Relaxed) || rand::random::<u8>() % 8 != 0);
             self.0.fetch_add(1, AcqRel);
-            Self(self.0, self.1)
+            Self(self.0, self.1, self.2)
         }
     }
     impl Drop for R {
         fn drop(&mut self) {
             self.0.fetch_sub(1, AcqRel);
-            assert!(self.1 || rand::random::<u8>() % 16 != 0);
+            assert!(self.1.load(Relaxed) || self.2 || rand::random::<u8>() % 16 != 0);
         }
     }
 
@@ -2153,13 +2164,14 @@ mod random_failure_test {
     #[test]
     fn panic_safety() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+        static NEVER_PANIC: AtomicBool = AtomicBool::new(false);
 
         let workload_size = u8::MAX;
 
         // EBR.
         for _ in 0..workload_size {
             let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
-                let r = Arc::new(R::new(&INST_CNT));
+                let r = Arc::new(R::new(&INST_CNT, &NEVER_PANIC));
                 assert_ne!(INST_CNT.load(Relaxed), 0);
                 drop(r);
             });
@@ -2178,15 +2190,18 @@ mod random_failure_test {
                 hashmap.upsert(
                     k as usize,
                     || {
-                        let mut r = R::new(&INST_CNT);
-                        r.1 = true;
+                        let mut r = R::new(&INST_CNT, &NEVER_PANIC);
+                        r.2 = true;
                         r
                     },
                     |_, _| (),
                 );
+                NEVER_PANIC.store(true, Relaxed);
                 for _ in 0..workload_size {
                     assert!(hashmap.read(&(k as usize), |_, _| ()).is_some());
                 }
+                NEVER_PANIC.store(false, Relaxed);
+                assert!(hashmap.read(&(k as usize), |_, _| ()).is_some());
             });
         }
         drop(hashmap);
@@ -2203,11 +2218,14 @@ mod random_failure_test {
         for k in 0..workload_size {
             let _result: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
                 assert!(hashmap
-                    .insert(k as usize, R::new_panic_free_drop(&INST_CNT))
+                    .insert(k as usize, R::new_panic_free_drop(&INST_CNT, &NEVER_PANIC))
                     .is_ok());
+                NEVER_PANIC.store(true, Relaxed);
                 for _ in 0..workload_size {
                     assert!(hashmap.read(&(k as usize), |_, _| ()).is_some());
                 }
+                NEVER_PANIC.store(false, Relaxed);
+                assert!(hashmap.read(&(k as usize), |_, _| ()).is_some());
             });
         }
         drop(hashmap);
@@ -2224,7 +2242,7 @@ mod random_failure_test {
         for k in 0..14 * 14 * 14 {
             let _result: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
                 assert!(treeindex
-                    .insert(k, R::new_panic_free_drop(&INST_CNT))
+                    .insert(k, R::new_panic_free_drop(&INST_CNT, &NEVER_PANIC))
                     .is_ok());
                 assert!(treeindex.read(&k, |_, _| ()).is_some());
             });

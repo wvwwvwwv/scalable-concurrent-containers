@@ -15,6 +15,7 @@ use std::fmt::{self, Debug};
 use std::iter::FusedIterator;
 use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::ops::RangeBounds;
+use std::panic::UnwindSafe;
 use std::pin::Pin;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 
@@ -710,6 +711,13 @@ where
 {
 }
 
+impl<'t, 'b, K, V> UnwindSafe for Visitor<'t, 'b, K, V>
+where
+    K: 'static + Clone + Ord + UnwindSafe,
+    V: 'static + Clone + UnwindSafe,
+{
+}
+
 /// [`Range`] represents a range of keys in the [`TreeIndex`].
 ///
 /// It is identical to [`Visitor`] except that it does not traverse keys outside of the given
@@ -883,5 +891,13 @@ where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
     R: RangeBounds<K>,
+{
+}
+
+impl<'t, 'b, K, V, R> UnwindSafe for Range<'t, 'b, K, V, R>
+where
+    K: 'static + Clone + Ord + UnwindSafe,
+    V: 'static + Clone + UnwindSafe,
+    R: RangeBounds<K> + UnwindSafe,
 {
 }
