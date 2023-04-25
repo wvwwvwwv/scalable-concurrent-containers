@@ -2117,27 +2117,35 @@ mod ebr_test {
 mod random_failure_test {
     use crate::ebr;
     use crate::ebr::Arc;
+    use crate::{HashIndex, HashMap};
+    use std::any::Any;
     use std::panic::catch_unwind;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::{AcqRel, Relaxed};
 
-    struct R(&'static AtomicUsize);
+    struct R(&'static AtomicUsize, bool);
     impl R {
         fn new(cnt: &'static AtomicUsize) -> R {
             assert!(rand::random::<u8>() % 4 != 0);
             cnt.fetch_add(1, AcqRel);
-            R(cnt)
+            R(cnt, false)
+        }
+        fn new_panic_free_drop(cnt: &'static AtomicUsize) -> R {
+            cnt.fetch_add(1, AcqRel);
+            R(cnt, true)
         }
     }
     impl Clone for R {
         fn clone(&self) -> Self {
-            Self::new(self.0)
+            assert!(rand::random::<u8>() % 8 != 0);
+            self.0.fetch_add(1, AcqRel);
+            Self(self.0, self.1)
         }
     }
     impl Drop for R {
         fn drop(&mut self) {
             self.0.fetch_sub(1, AcqRel);
-            assert!(rand::random::<u8>() % 16 != 0);
+            assert!(self.1 || rand::random::<u8>() % 16 != 0);
         }
     }
 
@@ -2150,25 +2158,64 @@ mod random_failure_test {
 
         // EBR.
         for _ in 0..workload_size {
-            let result = catch_unwind(|| {
+            let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
                 let r = Arc::new(R::new(&INST_CNT));
                 assert_ne!(INST_CNT.load(Relaxed), 0);
                 drop(r);
             });
-            if let Err(err) = result {
-                println!("Error: {err:?}");
-            }
         }
-
-        let mut panics = 0;
         while INST_CNT.load(Relaxed) != 0 {
-            let result = catch_unwind(|| {
+            let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
                 drop(ebr::Barrier::new());
             });
-            if let Err(err) = result {
-                panics += 1;
-                println!("Error: {panics} {err:?} {INST_CNT:?}");
-            }
+            std::thread::yield_now();
+        }
+
+        // HashMap.
+        let hashmap: HashMap<usize, R> = HashMap::default();
+        for k in 0..workload_size {
+            let _result: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
+                hashmap.upsert(
+                    k as usize,
+                    || {
+                        let mut r = R::new(&INST_CNT);
+                        r.1 = true;
+                        r
+                    },
+                    |_, _| (),
+                );
+                for _ in 0..workload_size {
+                    assert!(hashmap.read(&(k as usize), |_, _| ()).is_some());
+                }
+            });
+        }
+        drop(hashmap);
+
+        while INST_CNT.load(Relaxed) != 0 {
+            let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
+                drop(ebr::Barrier::new());
+            });
+            std::thread::yield_now();
+        }
+
+        // HashIndex.
+        let hashmap: HashIndex<usize, R> = HashIndex::default();
+        for k in 0..workload_size {
+            let _result: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
+                assert!(hashmap
+                    .insert(k as usize, R::new_panic_free_drop(&INST_CNT))
+                    .is_ok());
+                for _ in 0..workload_size {
+                    assert!(hashmap.read(&(k as usize), |_, _| ()).is_some());
+                }
+            });
+        }
+        drop(hashmap);
+
+        while INST_CNT.load(Relaxed) != 0 {
+            let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
+                drop(ebr::Barrier::new());
+            });
             std::thread::yield_now();
         }
     }
