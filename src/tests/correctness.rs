@@ -1810,37 +1810,6 @@ mod ebr_test {
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn deferred_incremental() {
-        static EXECUTED: AtomicUsize = AtomicUsize::new(0);
-
-        let iter = 2;
-        for _ in 0..iter {
-            let mut execution_count = 0;
-            let barrier = Barrier::new();
-            barrier.defer_incremental_execute(move || {
-                if execution_count == 2 {
-                    EXECUTED.fetch_add(1, Relaxed);
-                    true
-                } else {
-                    Barrier::new().defer_incremental_execute(move || {
-                        drop(Arc::new(10));
-                        EXECUTED.fetch_add(1, Relaxed);
-                        true
-                    });
-                    execution_count += 1;
-                    false
-                }
-            });
-            drop(barrier);
-        }
-
-        while EXECUTED.load(Relaxed) != 3 * iter {
-            drop(Barrier::new());
-        }
-    }
-
-    #[cfg_attr(miri, ignore)]
-    #[test]
     fn arc() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
 
@@ -2140,6 +2109,133 @@ mod ebr_test {
         }
         for r in futures::future::join_all(task_handles).await {
             assert!(r.is_ok());
+        }
+    }
+}
+
+#[cfg(test)]
+mod random_failure_test {
+    use crate::ebr;
+    use crate::ebr::Arc;
+    use crate::{HashIndex, HashMap, TreeIndex};
+    use std::any::Any;
+    use std::panic::catch_unwind;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering::{AcqRel, Relaxed};
+
+    struct R(&'static AtomicUsize, bool);
+    impl R {
+        fn new(cnt: &'static AtomicUsize) -> R {
+            assert!(rand::random::<u8>() % 4 != 0);
+            cnt.fetch_add(1, AcqRel);
+            R(cnt, false)
+        }
+        fn new_panic_free_drop(cnt: &'static AtomicUsize) -> R {
+            cnt.fetch_add(1, AcqRel);
+            R(cnt, true)
+        }
+    }
+    impl Clone for R {
+        fn clone(&self) -> Self {
+            assert!(rand::random::<u8>() % 8 != 0);
+            self.0.fetch_add(1, AcqRel);
+            Self(self.0, self.1)
+        }
+    }
+    impl Drop for R {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, AcqRel);
+            assert!(self.1 || rand::random::<u8>() % 16 != 0);
+        }
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn panic_safety() {
+        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+
+        let workload_size = u8::MAX;
+
+        // EBR.
+        for _ in 0..workload_size {
+            let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
+                let r = Arc::new(R::new(&INST_CNT));
+                assert_ne!(INST_CNT.load(Relaxed), 0);
+                drop(r);
+            });
+        }
+        while INST_CNT.load(Relaxed) != 0 {
+            let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
+                drop(ebr::Barrier::new());
+            });
+            std::thread::yield_now();
+        }
+
+        // HashMap.
+        let hashmap: HashMap<usize, R> = HashMap::default();
+        for k in 0..workload_size {
+            let _result: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
+                hashmap.upsert(
+                    k as usize,
+                    || {
+                        let mut r = R::new(&INST_CNT);
+                        r.1 = true;
+                        r
+                    },
+                    |_, _| (),
+                );
+                for _ in 0..workload_size {
+                    assert!(hashmap.read(&(k as usize), |_, _| ()).is_some());
+                }
+            });
+        }
+        drop(hashmap);
+
+        while INST_CNT.load(Relaxed) != 0 {
+            let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
+                drop(ebr::Barrier::new());
+            });
+            std::thread::yield_now();
+        }
+
+        // HashIndex.
+        let hashmap: HashIndex<usize, R> = HashIndex::default();
+        for k in 0..workload_size {
+            let _result: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
+                assert!(hashmap
+                    .insert(k as usize, R::new_panic_free_drop(&INST_CNT))
+                    .is_ok());
+                for _ in 0..workload_size {
+                    assert!(hashmap.read(&(k as usize), |_, _| ()).is_some());
+                }
+            });
+        }
+        drop(hashmap);
+
+        while INST_CNT.load(Relaxed) != 0 {
+            let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
+                drop(ebr::Barrier::new());
+            });
+            std::thread::yield_now();
+        }
+
+        // TreeIndex.
+        let treeindex: TreeIndex<usize, R> = TreeIndex::default();
+        for k in 0..14 * 14 * 14 {
+            let _result: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
+                assert!(treeindex
+                    .insert(k, R::new_panic_free_drop(&INST_CNT))
+                    .is_ok());
+                assert!(treeindex.read(&k, |_, _| ()).is_some());
+            });
+        }
+        drop(treeindex);
+
+        while INST_CNT.load(Relaxed) != 0 {
+            let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
+                drop(ebr::Barrier::new());
+            });
+            std::thread::yield_now();
         }
     }
 }

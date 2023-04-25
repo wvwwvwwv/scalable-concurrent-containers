@@ -218,14 +218,8 @@ impl<T> Arc<T> {
     #[must_use]
     pub unsafe fn release_drop_in_place(mut self) -> bool {
         let dropped = if self.underlying().drop_ref() {
-            if self.instance_ptr.as_mut().drop_and_dealloc() {
-                true
-            } else {
-                // The instance needs further cleanup.
-                let barrier = Barrier::new();
-                self.pass_underlying_to_collector(&barrier);
-                false
-            }
+            self.instance_ptr.as_mut().drop_and_dealloc();
+            true
         } else {
             false
         };
@@ -298,7 +292,7 @@ impl<T> Drop for Arc<T> {
     #[inline]
     fn drop(&mut self) {
         if self.underlying().drop_ref() {
-            let barrier = Barrier::new();
+            let barrier = Barrier::new_for_drop();
             self.pass_underlying_to_collector(&barrier);
         }
     }

@@ -1,4 +1,4 @@
-use super::collectible::{Collectible, DeferredClosure, DeferredIncrementalClosure};
+use super::collectible::{Collectible, DeferredClosure};
 use super::collector::Collector;
 use std::panic::UnwindSafe;
 
@@ -31,10 +31,14 @@ impl Barrier {
     #[must_use]
     pub fn new() -> Barrier {
         let collector_ptr = Collector::current();
-        unsafe {
-            (*collector_ptr).new_barrier();
+        let epoch_updated = unsafe { (*collector_ptr).new_barrier() };
+        let barrier = Barrier { collector_ptr };
+        if epoch_updated {
+            unsafe {
+                (*collector_ptr).epoch_updated();
+            }
         }
-        Barrier { collector_ptr }
+        barrier
     }
 
     /// Defers dropping and memory reclamation of the supplied [`Box`] of a type implementing
@@ -90,39 +94,14 @@ impl Barrier {
         self.defer(Box::new(DeferredClosure::new(f)));
     }
 
-    /// Executes the supplied closure incrementally at a later point of time.
-    ///
-    /// The closure will be repeatedly invoked until it returns `true`. The closure is able to keep
-    /// its internal state by capturing `mut` variables, thus making itself as a state machine;
-    /// this implies that the closure is able to emulate incremental execution of arbitrary
-    /// `'static` and `Sync` code.
-    ///
-    /// It is guaranteed that the closure will be executed when every [`Barrier`] at the moment
-    /// when the method was invoked is dropped, however it is totally non-deterministic when
-    /// exactly the closure will be executed.
-    ///
-    /// Note that the supplied closure is stored in the heap memory, and it has to be `Sync` as it
-    /// can be referred to by another thread. Furthermore, the closure can be invoked at any
-    /// arbitrary moment of time once after it was invoked for the first time.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::ebr::Barrier;
-    ///
-    /// let barrier = Barrier::new();
-    /// let mut data = 3;
-    /// barrier.defer_incremental_execute(move || {
-    ///     if data == 0 {
-    ///         return true;
-    ///     }
-    ///     data -= 1;
-    ///     false
-    /// });
-    /// ```
+    /// Creates a new [`Barrier`] for dropping an instance.
     #[inline]
-    pub fn defer_incremental_execute<F: 'static + FnMut() -> bool + Sync>(&self, f: F) {
-        self.defer(Box::new(DeferredIncrementalClosure::new(f)));
+    pub(super) fn new_for_drop() -> Barrier {
+        let collector_ptr = Collector::current();
+        unsafe {
+            (*collector_ptr).new_barrier();
+        }
+        Barrier { collector_ptr }
     }
 
     /// Reclaims the supplied instance.

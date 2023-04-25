@@ -42,13 +42,9 @@ pub trait Collectible {
     ///
     /// If the instance of the `Self` type is not created via [`Box::new`] or the like, this method
     /// has to be implemented for the type.
-    ///
-    /// Returns `true` if the instance has been completely dropped and deallocated. If a further
-    /// clean-up is needed, it returns `false` without deallocating the instance.
     #[inline]
-    fn drop_and_dealloc(&mut self) -> bool {
+    fn drop_and_dealloc(&mut self) {
         unsafe { Box::from_raw(self as *mut Self) };
-        true
     }
 }
 
@@ -77,44 +73,10 @@ impl<F: 'static + FnOnce() + Sync> Collectible for DeferredClosure<F> {
     }
 
     #[inline]
-    fn drop_and_dealloc(&mut self) -> bool {
+    fn drop_and_dealloc(&mut self) {
         if let Some(f) = self.f.take() {
             f();
         }
         unsafe { Box::from_raw(self as *mut Self) };
-        true
-    }
-}
-
-/// [`DeferredIncrementalClosure`] implements [`Collectible`] for a closure to execute it
-/// incrementally after all the readers in the process at the moment are gone.
-pub(super) struct DeferredIncrementalClosure<F: 'static + FnMut() -> bool + Sync> {
-    f: F,
-    link: Option<NonNull<dyn Collectible>>,
-}
-
-impl<F: 'static + FnMut() -> bool + Sync> DeferredIncrementalClosure<F> {
-    /// Creates a new [`DeferredClosure`].
-    #[inline]
-    pub fn new(f: F) -> DeferredIncrementalClosure<F> {
-        DeferredIncrementalClosure { f, link: None }
-    }
-}
-
-impl<F: 'static + FnMut() -> bool + Sync> Collectible for DeferredIncrementalClosure<F> {
-    #[inline]
-    fn next_ptr_mut(&mut self) -> &mut Option<NonNull<dyn Collectible>> {
-        &mut self.link
-    }
-
-    #[inline]
-    fn drop_and_dealloc(&mut self) -> bool {
-        if (self.f)() {
-            // Finished, thus drop `self`.
-            unsafe { Box::from_raw(self as *mut Self) };
-            true
-        } else {
-            false
-        }
     }
 }

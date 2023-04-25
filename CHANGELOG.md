@@ -1,9 +1,10 @@
 # Changelog
 
-1.5.1
+1.6.0
 
-* API update 1: all the data structures except for `OccupiedEntry` and `VacantEntry` are now `UnwindSafe`.
-* API update 2: export `linked_list::Entry` as `LinkedEntry`.
+* API update 1: remove `ebr::Barrier::defer_incremental_execute` in favor of unwind-safety.
+* API update 2: all the data structures except for `OccupiedEntry` and `VacantEntry` are now `UnwindSafe`.
+* API update 3: export `linked_list::Entry` as `LinkedEntry`.
 
 1.5.0
 

@@ -58,6 +58,11 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 /// pushing a new bucket array into a lock-free stack. Each individual entry in the old bucket
 /// array will be incrementally relocated to the new bucket array on future access to the
 /// [`HashMap`], and the old bucket array gets dropped when it becomes empty and unreachable.
+///
+/// ### Unwind safety
+///
+/// [`HashMap`] is impervious to out-of-memory errors and panics in user specified code on one
+/// condition; `K::drop` and `V::drop` must not panic.
 pub struct HashMap<K, V, H = RandomState>
 where
     K: Eq + Hash,
