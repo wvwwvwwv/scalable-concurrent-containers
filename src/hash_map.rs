@@ -116,7 +116,6 @@ where
 /// [`Reserve`] keeps the capacity of the associated [`HashMap`] higher than a certain level.
 ///
 /// The [`HashMap`] does not shrink the capacity below the reserved capacity.
-#[derive(Debug)]
 pub struct Reserve<'h, K, V, H = RandomState>
 where
     K: Eq + Hash,
@@ -1414,6 +1413,12 @@ where
     V: Debug,
     H: BuildHasher,
 {
+    /// Iterates over all the entries in the [`HashMap`] to print them.
+    ///
+    /// ## Locking behavior
+    ///
+    /// Shared locks on buckets are acquired during iteration, therefore any [`Entry`],
+    /// [`OccupiedEntry`] or [`VacantEntry`] owned by the current thread will lead to a deadlock.
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut d = f.debug_map();
@@ -2188,6 +2193,17 @@ where
     #[inline]
     fn as_ref(&self) -> &HashMap<K, V, H> {
         self.hashmap
+    }
+}
+
+impl<'h, K, V, H> Debug for Reserve<'h, K, V, H>
+where
+    K: Eq + Hash,
+    H: BuildHasher,
+{
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Reserve").field(&self.additional).finish()
     }
 }
 
