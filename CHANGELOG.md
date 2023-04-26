@@ -1,5 +1,9 @@
 # Changelog
 
+1.6.1
+
+* Replace `compare_exchange` with `compare_exchange_weak` where spurious failures do not cost much.
+
 1.6.0
 
 * API update 1: remove `ebr::Barrier::defer_incremental_execute` in favor of unwind-safety.

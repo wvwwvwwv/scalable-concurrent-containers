@@ -221,7 +221,7 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
                     let new = metadata | (1_usize << index);
                     match self
                         .metadata
-                        .compare_exchange(metadata, new, Acquire, Relaxed)
+                        .compare_exchange_weak(metadata, new, Acquire, Relaxed)
                     {
                         Ok(_) => {
                             // Now the free slot is owned by the thread.
@@ -281,7 +281,7 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
                     let new = metadata | (1_usize << index);
                     match self
                         .metadata
-                        .compare_exchange(metadata, new, Acquire, Relaxed)
+                        .compare_exchange_weak(metadata, new, Acquire, Relaxed)
                     {
                         Ok(_) => {
                             // Now the desired slot is owned by the thread.

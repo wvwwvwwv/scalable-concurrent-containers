@@ -2128,6 +2128,7 @@ mod ebr_test {
 mod random_failure_test {
     use crate::ebr;
     use crate::ebr::Arc;
+    use crate::hash_map::Entry;
     use crate::{HashIndex, HashMap, TreeIndex};
     use std::any::Any;
     use std::panic::catch_unwind;
@@ -2186,7 +2187,7 @@ mod random_failure_test {
         // HashMap.
         let hashmap: HashMap<usize, R> = HashMap::default();
         for k in 0..workload_size {
-            let _result: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
+            let result: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
                 hashmap.upsert(
                     k as usize,
                     || {
@@ -2196,13 +2197,32 @@ mod random_failure_test {
                     },
                     |_, _| (),
                 );
-                NEVER_PANIC.store(true, Relaxed);
-                for _ in 0..workload_size {
-                    assert!(hashmap.read(&(k as usize), |_, _| ()).is_some());
-                }
-                NEVER_PANIC.store(false, Relaxed);
-                assert!(hashmap.read(&(k as usize), |_, _| ()).is_some());
             });
+            NEVER_PANIC.store(true, Relaxed);
+            assert_eq!(
+                hashmap.read(&(k as usize), |_, _| ()).is_some(),
+                result.is_ok()
+            );
+            NEVER_PANIC.store(false, Relaxed);
+        }
+        drop(hashmap);
+
+        // HashMap.
+        let hashmap: HashMap<usize, R> = HashMap::default();
+        for k in 0..workload_size {
+            let result: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
+                let Entry::Vacant(entry) = hashmap.entry(k as usize) else {
+                    return;
+                };
+                entry
+                    .insert_entry(R::new(&INST_CNT, &NEVER_PANIC))
+                    .get_mut()
+                    .2 = true;
+            });
+            assert_eq!(
+                hashmap.read(&(k as usize), |_, _| ()).is_some(),
+                result.is_ok()
+            );
         }
         drop(hashmap);
 
@@ -2214,21 +2234,21 @@ mod random_failure_test {
         }
 
         // HashIndex.
-        let hashmap: HashIndex<usize, R> = HashIndex::default();
+        let hashindex: HashIndex<usize, R> = HashIndex::default();
         for k in 0..workload_size {
-            let _result: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
-                assert!(hashmap
+            let result: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
+                assert!(hashindex
                     .insert(k as usize, R::new_panic_free_drop(&INST_CNT, &NEVER_PANIC))
                     .is_ok());
-                NEVER_PANIC.store(true, Relaxed);
-                for _ in 0..workload_size {
-                    assert!(hashmap.read(&(k as usize), |_, _| ()).is_some());
-                }
-                NEVER_PANIC.store(false, Relaxed);
-                assert!(hashmap.read(&(k as usize), |_, _| ()).is_some());
             });
+            NEVER_PANIC.store(true, Relaxed);
+            assert_eq!(
+                hashindex.read(&(k as usize), |_, _| ()).is_some(),
+                result.is_ok()
+            );
+            NEVER_PANIC.store(false, Relaxed);
         }
-        drop(hashmap);
+        drop(hashindex);
 
         while INST_CNT.load(Relaxed) != 0 {
             let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
@@ -2240,12 +2260,13 @@ mod random_failure_test {
         // TreeIndex.
         let treeindex: TreeIndex<usize, R> = TreeIndex::default();
         for k in 0..14 * 14 * 14 {
-            let _result: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
+            let result: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
                 assert!(treeindex
                     .insert(k, R::new_panic_free_drop(&INST_CNT, &NEVER_PANIC))
                     .is_ok());
                 assert!(treeindex.read(&k, |_, _| ()).is_some());
             });
+            assert_eq!(treeindex.read(&k, |_, _| ()).is_some(), result.is_ok());
         }
         drop(treeindex);
 

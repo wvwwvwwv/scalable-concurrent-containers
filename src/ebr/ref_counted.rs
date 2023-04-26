@@ -57,11 +57,9 @@ impl<T> RefCounted<T> {
     #[inline]
     pub(super) fn add_ref(&self) {
         let mut current = self.ref_cnt().load(Relaxed);
-
         loop {
             debug_assert_eq!(current % 2, 1);
             debug_assert!(current <= usize::MAX - 2, "reference count overflow");
-
             match self
                 .ref_cnt()
                 .compare_exchange_weak(current, current + 2, Relaxed, Relaxed)
@@ -80,12 +78,10 @@ impl<T> RefCounted<T> {
     #[inline]
     pub(super) fn drop_ref(&self) -> bool {
         // It does not have to be a load-acquire as everything's synchronized via the global
-        // epoch. In addition to that, it also does not have to be read-modify-write as a
-        // reference count increment is guaranteed to be observed by the one that decrements
-        // the last reference.
+        // epoch.
         let mut current = self.ref_cnt().load(Relaxed);
-        debug_assert_ne!(current, 0);
         loop {
+            debug_assert_ne!(current, 0);
             let new = if current <= 1 { 0 } else { current - 2 };
             match self
                 .ref_cnt()
