@@ -1555,7 +1555,10 @@ where
 {
     /// Compares two [`HashMap`] instances.
     ///
-    /// It may lead to a deadlock if the instances are being modified by another thread.
+    /// ## Locking behavior
+    ///
+    /// Shared locks on buckets are acquired when comparing two instances of [`HashMap`], therefore
+    /// it may lead to a deadlock if the instances are being modified by another thread.
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         if !self.any(|k, v| other.read(k, |_, ov| v == ov) != Some(true)) {

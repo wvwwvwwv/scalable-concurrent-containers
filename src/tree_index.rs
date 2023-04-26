@@ -63,6 +63,38 @@ where
     root: AtomicArc<Node<K, V>>,
 }
 
+/// [`Range`] represents a range of keys in the [`TreeIndex`].
+///
+/// It is identical to [`Visitor`] except that it does not traverse keys outside of the given
+/// range.
+pub struct Range<'t, 'b, K, V, R>
+where
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
+    R: RangeBounds<K>,
+{
+    root: &'t AtomicArc<Node<K, V>>,
+    leaf_scanner: Option<Scanner<'b, K, V>>,
+    range: R,
+    check_lower_bound: bool,
+    check_upper_bound: bool,
+    barrier: &'b Barrier,
+}
+
+/// [`Visitor`] scans all the key-value pairs in the [`TreeIndex`].
+///
+/// It is guaranteed to visit all the key-value pairs that outlive the [`Visitor`], and it
+/// scans keys in monotonically increasing order.
+pub struct Visitor<'t, 'b, K, V>
+where
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
+{
+    root: &'t AtomicArc<Node<K, V>>,
+    leaf_scanner: Option<Scanner<'b, K, V>>,
+    barrier: &'b Barrier,
+}
+
 impl<K, V> TreeIndex<K, V>
 where
     K: 'static + Clone + Ord,
@@ -635,20 +667,6 @@ where
     }
 }
 
-/// [`Visitor`] scans all the key-value pairs in the [`TreeIndex`].
-///
-/// It is guaranteed to visit all the key-value pairs that outlive the [`Visitor`], and it
-/// scans keys in monotonically increasing order.
-pub struct Visitor<'t, 'b, K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
-    root: &'t AtomicArc<Node<K, V>>,
-    leaf_scanner: Option<Scanner<'b, K, V>>,
-    barrier: &'b Barrier,
-}
-
 impl<'t, 'b, K, V> Visitor<'t, 'b, K, V>
 where
     K: 'static + Clone + Ord,
@@ -661,6 +679,17 @@ where
             leaf_scanner: None,
             barrier,
         }
+    }
+}
+
+impl<'t, 'b, K, V> Debug for Visitor<'t, 'b, K, V>
+where
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
+{
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Visitor").finish()
     }
 }
 
@@ -716,24 +745,6 @@ where
     K: 'static + Clone + Ord + UnwindSafe,
     V: 'static + Clone + UnwindSafe,
 {
-}
-
-/// [`Range`] represents a range of keys in the [`TreeIndex`].
-///
-/// It is identical to [`Visitor`] except that it does not traverse keys outside of the given
-/// range.
-pub struct Range<'t, 'b, K, V, R>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-    R: RangeBounds<K>,
-{
-    root: &'t AtomicArc<Node<K, V>>,
-    leaf_scanner: Option<Scanner<'b, K, V>>,
-    range: R,
-    check_lower_bound: bool,
-    check_upper_bound: bool,
-    barrier: &'b Barrier,
 }
 
 impl<'t, 'b, K, V, R> Range<'t, 'b, K, V, R>
@@ -832,6 +843,21 @@ where
             }
         }
         None
+    }
+}
+
+impl<'t, 'b, K, V, R> Debug for Range<'t, 'b, K, V, R>
+where
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
+    R: RangeBounds<K>,
+{
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Range")
+            .field("check_lower_bound", &self.check_lower_bound)
+            .field("check_upper_bound", &self.check_upper_bound)
+            .finish()
     }
 }
 

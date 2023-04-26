@@ -950,6 +950,18 @@ where
     }
 }
 
+impl<'h, K, V, H> Debug for Reserve<'h, K, V, H>
+where
+    K: 'static + Clone + Eq + Hash,
+    V: 'static + Clone,
+    H: BuildHasher,
+{
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Reserve").field(&self.additional).finish()
+    }
+}
+
 impl<'h, K, V, H> Deref for Reserve<'h, K, V, H>
 where
     K: 'static + Clone + Eq + Hash,
@@ -978,6 +990,20 @@ where
             .fetch_sub(self.additional, Relaxed);
         self.hashindex.try_resize(0, &Barrier::new());
         debug_assert!(result >= self.additional);
+    }
+}
+
+impl<'h, 'b, K, V, H> Debug for Visitor<'h, 'b, K, V, H>
+where
+    K: 'static + Clone + Eq + Hash,
+    V: 'static + Clone,
+    H: BuildHasher,
+{
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Visitor")
+            .field("current_index", &self.current_index)
+            .finish()
     }
 }
 

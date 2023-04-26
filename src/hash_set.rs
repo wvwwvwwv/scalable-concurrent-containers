@@ -743,7 +743,10 @@ where
 {
     /// Compares two [`HashSet`] instances.
     ///
-    /// It may lead to a deadlock if the instances are being modified by another thread.
+    /// ## Locking behavior
+    ///
+    /// Shared locks on buckets are acquired when comparing two instances of [`HashSet`], therefore
+    /// it may lead to a deadlock if the instances are being modified by another thread.
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         if !self.any(|k| !other.contains(k)) {
