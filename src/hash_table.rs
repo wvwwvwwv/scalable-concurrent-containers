@@ -50,12 +50,13 @@ where
     fn reserve_capacity(&self, additional_capacity: usize) -> usize {
         let mut current_minimum_capacity = self.minimum_capacity().load(Relaxed);
         loop {
-            if usize::MAX - current_minimum_capacity <= additional_capacity {
+            let Some(new_minimum_capacity) = current_minimum_capacity.checked_add(additional_capacity) else {
                 return 0;
-            }
-            match self.minimum_capacity().compare_exchange(
+            };
+
+            match self.minimum_capacity().compare_exchange_weak(
                 current_minimum_capacity,
-                current_minimum_capacity + additional_capacity,
+                new_minimum_capacity,
                 Relaxed,
                 Relaxed,
             ) {

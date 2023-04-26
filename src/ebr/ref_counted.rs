@@ -57,13 +57,20 @@ impl<T> RefCounted<T> {
     #[inline]
     pub(super) fn add_ref(&self) {
         let mut current = self.ref_cnt().load(Relaxed);
-        debug_assert_eq!(current % 2, 1);
-        debug_assert!(current <= usize::MAX - 2, "reference count overflow");
-        while let Err(actual) =
-            self.ref_cnt()
-                .compare_exchange(current, current + 2, Relaxed, Relaxed)
-        {
-            current = actual;
+
+        loop {
+            debug_assert_eq!(current % 2, 1);
+            debug_assert!(current <= usize::MAX - 2, "reference count overflow");
+
+            match self
+                .ref_cnt()
+                .compare_exchange_weak(current, current + 2, Relaxed, Relaxed)
+            {
+                Ok(_) => break,
+                Err(actual) => {
+                    current = actual;
+                }
+            }
         }
     }
 
@@ -80,13 +87,14 @@ impl<T> RefCounted<T> {
         debug_assert_ne!(current, 0);
         loop {
             let new = if current <= 1 { 0 } else { current - 2 };
-            if let Err(actual) = self
+            match self
                 .ref_cnt()
-                .compare_exchange(current, new, Relaxed, Relaxed)
+                .compare_exchange_weak(current, new, Relaxed, Relaxed)
             {
-                current = actual;
-            } else {
-                break;
+                Ok(_) => break,
+                Err(actual) => {
+                    current = actual;
+                }
             }
         }
         current == 1
