@@ -1,7 +1,8 @@
 //! [`Bag`] is a lock-free concurrent unordered instance container.
 
 use super::ebr::Barrier;
-use super::{LinkedList, Stack};
+use super::{LinkedEntry, LinkedList, Stack};
+use std::iter::FusedIterator;
 use std::mem::{needs_drop, MaybeUninit};
 use std::ptr::drop_in_place;
 use std::sync::atomic::AtomicUsize;
@@ -24,8 +25,35 @@ pub struct Bag<T, const ARRAY_LEN: usize = DEFAULT_ARRAY_LEN> {
     stack: Stack<Storage<T, ARRAY_LEN>>,
 }
 
+/// [`Accessor`] iterates over all the entries in the [`Bag`] for mutable access to them.
+#[derive(Debug)]
+pub struct Accessor<'b, T, const ARRAY_LEN: usize = DEFAULT_ARRAY_LEN> {
+    bag: &'b mut Bag<T, ARRAY_LEN>,
+    current_index: u32,
+    current_stack_entry: Option<&'b mut LinkedEntry<Storage<T, ARRAY_LEN>>>,
+}
+
 /// The default length of the fixed-size array in a [`Bag`].
 const DEFAULT_ARRAY_LEN: usize = usize::BITS as usize / 2;
+
+#[derive(Debug)]
+struct Storage<T, const ARRAY_LEN: usize> {
+    /// Storage.
+    storage: [MaybeUninit<T>; ARRAY_LEN],
+
+    /// Storage metadata.
+    ///
+    /// The layout of the metadata is,
+    /// - Upper `usize::BITS / 2` bits = instantiation bitmap.
+    /// - Lower `usize::BITS / 2` bits = owned state bitmap.
+    ///
+    /// The metadata represents four possible states of a storage slot.
+    /// - !instantiated && !owned: initial state.
+    /// - !instantiated && owned: owned for instantiating.
+    /// - instantiated && !owned: valid and reachable.
+    /// - instantiated && owned: owned for moving out the instance.
+    metadata: AtomicUsize,
+}
 
 impl<T, const ARRAY_LEN: usize> Bag<T, ARRAY_LEN> {
     /// Creates a new [`Bag`].
@@ -138,6 +166,34 @@ impl<T, const ARRAY_LEN: usize> Bag<T, ARRAY_LEN> {
             false
         }
     }
+
+    /// Iterates over contained instances for modifying them.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::Bag;
+    ///
+    /// let mut bag: Bag<usize> = Bag::default();
+    ///
+    /// bag.push(3);
+    /// bag.push(3);
+    ///
+    /// assert_eq!(bag.iter_mut().count(), 2);
+    /// bag.iter_mut().for_each(|e| { *e += 1; });
+    ///
+    /// assert_eq!(bag.pop(), Some(4));
+    /// assert_eq!(bag.pop(), Some(4));
+    /// assert!(bag.pop().is_none());
+    /// ```
+    #[inline]
+    pub fn iter_mut(&mut self) -> Accessor<T, ARRAY_LEN> {
+        Accessor {
+            bag: self,
+            current_index: 0,
+            current_stack_entry: None,
+        }
+    }
 }
 
 impl<T> Default for Bag<T, DEFAULT_ARRAY_LEN> {
@@ -162,23 +218,54 @@ impl<T, const ARRAY_LEN: usize> Drop for Bag<T, ARRAY_LEN> {
     }
 }
 
-#[derive(Debug)]
-struct Storage<T, const ARRAY_LEN: usize> {
-    /// Storage.
-    storage: [MaybeUninit<T>; ARRAY_LEN],
+impl<'b, T, const ARRAY_LEN: usize> FusedIterator for Accessor<'b, T, ARRAY_LEN> {}
 
-    /// Storage metadata.
-    ///
-    /// The layout of the metadata is,
-    /// - Upper `usize::BITS / 2` bits = instantiation bitmap.
-    /// - Lower `usize::BITS / 2` bits = owned state bitmap.
-    ///
-    /// The metadata represents four possible states of a storage slot.
-    /// - !instantiated && !owned: initial state.
-    /// - !instantiated && owned: owned for instantiating.
-    /// - instantiated && !owned: valid and reachable.
-    /// - instantiated && owned: owned for moving out the instance.
-    metadata: AtomicUsize,
+impl<'b, T, const ARRAY_LEN: usize> Iterator for Accessor<'b, T, ARRAY_LEN> {
+    type Item = &'b mut T;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.current_index != u32::MAX {
+            let current_storage = if let Some(linked) = self.current_stack_entry.as_mut() {
+                &mut **linked
+            } else {
+                &mut self.bag.primary_storage
+            };
+
+            let instance_bitmap =
+                Storage::<T, ARRAY_LEN>::instance_bitmap(current_storage.metadata.load(Acquire));
+            let first_occupied =
+                (instance_bitmap.wrapping_shr(self.current_index)).trailing_zeros();
+            let next_occupied = self.current_index + first_occupied;
+            self.current_index = next_occupied + 1;
+            if (next_occupied as usize) < ARRAY_LEN {
+                return Some(unsafe {
+                    &mut *current_storage.storage[next_occupied as usize].as_mut_ptr()
+                });
+            }
+            self.current_index = u32::MAX;
+
+            if let Some(linked) = self.current_stack_entry.as_mut() {
+                let barrier = Barrier::new();
+                if let Some(next) = linked.next_ptr(Acquire, &barrier).as_ref() {
+                    let entry_mut = next as *const LinkedEntry<Storage<T, ARRAY_LEN>>
+                        as *mut LinkedEntry<Storage<T, ARRAY_LEN>>;
+                    self.current_stack_entry = unsafe { entry_mut.as_mut() };
+                    self.current_index = 0;
+                }
+            } else {
+                self.bag.stack.peek(|e| {
+                    if let Some(e) = e {
+                        let entry_mut = e as *const LinkedEntry<Storage<T, ARRAY_LEN>>
+                            as *mut LinkedEntry<Storage<T, ARRAY_LEN>>;
+                        self.current_stack_entry = unsafe { entry_mut.as_mut() };
+                        self.current_index = 0;
+                    }
+                });
+            }
+        }
+        None
+    }
 }
 
 impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {

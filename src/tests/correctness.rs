@@ -1557,11 +1557,15 @@ mod bag_test {
     fn reclaim() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         for workload_size in [2, 18, 32, 40, 120] {
-            let bag: Bag<R> = Bag::default();
+            let mut bag: Bag<R> = Bag::default();
             for _ in 0..workload_size {
                 bag.push(R::new(&INST_CNT));
             }
             assert_eq!(INST_CNT.load(Relaxed), workload_size);
+            assert_eq!(bag.iter_mut().count(), workload_size);
+            bag.iter_mut().for_each(|e| {
+                *e = R::new(&INST_CNT);
+            });
 
             for _ in 0..workload_size / 2 {
                 bag.pop();

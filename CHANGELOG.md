@@ -2,6 +2,7 @@
 
 1.6.1
 
+* API update: add a mutable `Bag` iterator.
 * Replace `compare_exchange` with `compare_exchange_weak` where spurious failures do not cost much.
 * Fix an issue with `hash_map::Reserve::fmt` which printed superfluous information.
 
