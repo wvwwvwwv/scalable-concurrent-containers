@@ -899,7 +899,7 @@ where
     /// ```
     /// use scc::HashIndex;
     ///
-    /// let hashindex: HashIndex<u64, u32, _> = HashIndex::default();
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
     /// let result = hashindex.capacity();
     /// assert_eq!(result, 0);
