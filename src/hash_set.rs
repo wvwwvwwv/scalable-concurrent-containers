@@ -713,10 +713,14 @@ impl<K: Eq + Hash> HashSet<K, RandomState> {
     }
 }
 
-impl<K: Eq + Hash> Default for HashSet<K, RandomState> {
+impl<K, H> Default for HashSet<K, H>
+where
+    K: Eq + Hash,
+    H: BuildHasher + Default,
+{
     /// Creates an empty default [`HashSet`].
     ///
-    /// The default hash builder is [`RandomState`], and the default capacity is `64`.
+    /// The default capacity is `64`.
     ///
     /// # Examples
     ///
