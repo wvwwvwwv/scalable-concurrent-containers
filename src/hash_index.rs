@@ -1037,6 +1037,7 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Visitor")
             .field("current_index", &self.current_index)
+            .field("current_entry_ptr", &self.current_entry_ptr)
             .finish()
     }
 }

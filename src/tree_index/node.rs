@@ -4,6 +4,7 @@ use super::leaf_node::{self, LeafNode};
 use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
 use crate::wait_queue::DeriveAsyncWait;
 use std::borrow::Borrow;
+use std::fmt::{self, Debug};
 use std::sync::atomic::Ordering::{self, Acquire, Relaxed, Release};
 
 /// [`Node`] is either [`Self::Internal`] or [`Self::Leaf`].
@@ -267,6 +268,20 @@ where
         match &self {
             Self::Internal(internal_node) => internal_node.cleanup_link(key, traverse_max, barrier),
             Self::Leaf(leaf_node) => leaf_node.cleanup_link(key, traverse_max, barrier),
+        }
+    }
+}
+
+impl<K, V> Debug for Node<K, V>
+where
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
+{
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Internal(_) => f.debug_tuple("Internal").finish(),
+            Self::Leaf(_) => f.debug_tuple("Leaf").finish(),
         }
     }
 }

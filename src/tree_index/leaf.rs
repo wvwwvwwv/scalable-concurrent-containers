@@ -2,6 +2,7 @@ use crate::ebr::{Arc, AtomicArc, Barrier};
 use crate::LinkedList;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
+use std::fmt::{self, Debug};
 use std::mem::{needs_drop, MaybeUninit};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
@@ -904,6 +905,20 @@ where
         } else {
             self.entry_index = index;
         }
+    }
+}
+
+impl<'l, K, V> Debug for Scanner<'l, K, V>
+where
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
+{
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Scanner")
+            .field("metadata", &self.metadata)
+            .field("entry_index", &self.entry_index)
+            .finish()
     }
 }
 

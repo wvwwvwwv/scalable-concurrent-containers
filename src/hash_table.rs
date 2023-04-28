@@ -362,6 +362,7 @@ where
     }
 
     /// Retains entries that satisfy the specified predicate.
+    #[inline]
     fn retain_entries<F: FnMut(&K, &mut V) -> bool>(&self, mut pred: F) -> (usize, usize) {
         let barrier = Barrier::new();
         let mut num_retained: usize = 0;

@@ -687,9 +687,11 @@ where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
 {
-    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Visitor").finish()
+        f.debug_struct("Visitor")
+            .field("root", &self.root)
+            .field("leaf_scanner", &self.leaf_scanner)
+            .finish()
     }
 }
 
@@ -855,6 +857,8 @@ where
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Range")
+            .field("root", &self.root)
+            .field("leaf_scanner", &self.leaf_scanner)
             .field("check_lower_bound", &self.check_lower_bound)
             .field("check_upper_bound", &self.check_upper_bound)
             .finish()

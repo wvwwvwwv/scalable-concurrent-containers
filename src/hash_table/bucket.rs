@@ -1,6 +1,7 @@
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 use crate::wait_queue::{AsyncWait, WaitQueue};
 use std::borrow::Borrow;
+use std::fmt::{self, Debug};
 use std::mem::{needs_drop, MaybeUninit};
 use std::ops::{Deref, DerefMut};
 use std::ptr;
@@ -467,6 +468,16 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
     }
 }
 
+impl<'b, K: Eq, V, const LOCK_FREE: bool> Debug for EntryPtr<'b, K, V, LOCK_FREE> {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EntryPtr")
+            .field("current_link_ptr", &self.current_link_ptr)
+            .field("current_index", &self.current_index)
+            .finish()
+    }
+}
+
 unsafe impl<'b, K: Eq + Sync, V: Sync, const LOCK_FREE: bool> Sync
     for EntryPtr<'b, K, V, LOCK_FREE>
 {
@@ -923,6 +934,13 @@ impl<K: Eq, V, const LEN: usize> LinkedBucket<K, V, LEN> {
             data_block: unsafe { MaybeUninit::uninit().assume_init() },
             prev_link: AtomicPtr::default(),
         }
+    }
+}
+
+impl<K: Eq, V, const LEN: usize> Debug for LinkedBucket<K, V, LEN> {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LinkedBucket").finish()
     }
 }
 
