@@ -4,7 +4,7 @@ use super::ebr::{Arc, AtomicArc, Barrier};
 use super::hash_table::bucket::{Bucket, EntryPtr, Locker};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::HashTable;
-use super::wait_queue::{AsyncWait, DeriveAsyncWait};
+use super::wait_queue::AsyncWait;
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};
@@ -542,6 +542,110 @@ where
         self.read(key, |_, _| ()).is_some()
     }
 
+    /// Retains the entries specified by the predicate.
+    ///
+    /// Entries that have existed since the invocation of the method are guaranteed to be visited
+    /// if they are not removed, however the same entry can be visited more than once if the
+    /// [`HashIndex`] gets resized by another thread.
+    ///
+    /// Returns `(number of remaining entries, number of removed entries)` where the number of
+    /// remaining entries can be larger than the actual number since the same entry can be visited
+    /// more than once.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// assert!(hashindex.insert(1, 0).is_ok());
+    /// assert!(hashindex.insert(2, 1).is_ok());
+    /// assert!(hashindex.insert(3, 2).is_ok());
+    ///
+    /// assert_eq!(hashindex.retain(|k, v| *k == 1 && *v == 0), (1, 2));
+    /// ```
+    #[inline]
+    pub fn retain<F: FnMut(&K, &V) -> bool>(&self, mut pred: F) -> (usize, usize) {
+        self.retain_entries(|k, v| pred(k, v))
+    }
+
+    /// Retains the entries specified by the predicate.
+    ///
+    /// Entries that have existed since the invocation of the method are guaranteed to be visited
+    /// if they are not removed, however the same entry can be visited more than once if the
+    /// [`HashIndex`] gets resized by another thread.
+    ///
+    /// Returns `(number of remaining entries, number of removed entries)` where the number of
+    /// remaining entries can be larger than the actual number since the same entry can be visited
+    /// more than once. It is an asynchronous method returning an `impl Future` for the caller to
+    /// await.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// let future_insert = hashindex.insert_async(1, 0);
+    /// let future_retain = hashindex.retain_async(|k, v| *k == 1);
+    /// ```
+    #[inline]
+    pub async fn retain_async<F: FnMut(&K, &V) -> bool>(&self, mut pred: F) -> (usize, usize) {
+        let mut num_retained: usize = 0;
+        let mut num_removed: usize = 0;
+        let mut current_array_holder = self.array.get_arc(Acquire, &Barrier::new());
+        while let Some(current_array) = current_array_holder.take() {
+            self.cleanse_old_array_async(&current_array).await;
+            for index in 0..current_array.num_buckets() {
+                loop {
+                    let mut async_wait = AsyncWait::default();
+                    let mut async_wait_pinned = Pin::new(&mut async_wait);
+                    {
+                        let barrier = Barrier::new();
+                        let bucket = current_array.bucket_mut(index);
+                        if let Ok(locker) =
+                            Locker::try_lock_or_wait(bucket, &mut async_wait_pinned, &barrier)
+                        {
+                            if let Some(mut locker) = locker {
+                                let data_block_mut = current_array.data_block_mut(index);
+                                let mut entry_ptr = EntryPtr::new(&barrier);
+                                while entry_ptr.next(&locker, &barrier) {
+                                    let (k, v) = entry_ptr.get(data_block_mut);
+                                    if pred(k, v) {
+                                        num_retained = num_retained.saturating_add(1);
+                                    } else {
+                                        locker.erase(data_block_mut, &mut entry_ptr);
+                                        num_removed = num_removed.saturating_add(1);
+                                    }
+                                }
+                            }
+                            break;
+                        };
+                    }
+                    async_wait_pinned.await;
+                }
+            }
+
+            if let Some(new_current_array) = self.array.get_arc(Acquire, &Barrier::new()) {
+                if new_current_array.as_ptr() == current_array.as_ptr() {
+                    break;
+                }
+                num_retained = 0;
+                current_array_holder.replace(new_current_array);
+                continue;
+            }
+            break;
+        }
+
+        if num_removed >= num_retained {
+            self.try_resize(0, &Barrier::new());
+        }
+
+        (num_retained, num_removed)
+    }
+
     /// Clears all the key-value pairs.
     ///
     /// # Examples
@@ -555,30 +659,7 @@ where
     /// assert_eq!(hashindex.clear(), 1);
     /// ```
     pub fn clear(&self) -> usize {
-        let mut num_removed: usize = 0;
-        let barrier = Barrier::new();
-        let mut current_array_ptr = self.array.load(Acquire, &barrier);
-        while let Some(current_array) = current_array_ptr.as_ref() {
-            self.clear_old_array(current_array, &barrier);
-            for index in 0..current_array.num_buckets() {
-                let bucket = current_array.bucket_mut(index);
-                if let Some(mut locker) = Locker::lock(bucket, &barrier) {
-                    let data_block_mut = current_array.data_block_mut(index);
-                    let mut entry_ptr = EntryPtr::new(&barrier);
-                    while entry_ptr.next(&locker, &barrier) {
-                        locker.erase(data_block_mut, &mut entry_ptr);
-                        num_removed = num_removed.saturating_add(1);
-                    }
-                }
-            }
-            let new_current_array_ptr = self.array.load(Acquire, &barrier);
-            if current_array_ptr.without_tag() == new_current_array_ptr.without_tag() {
-                self.try_resize(0, &barrier);
-                break;
-            }
-            current_array_ptr = new_current_array_ptr;
-        }
-        num_removed
+        self.retain(|_, _| false).1
     }
 
     /// Clears all the key-value pairs.
@@ -596,54 +677,7 @@ where
     /// let future_retain = hashindex.clear_async();
     /// ```
     pub async fn clear_async(&self) -> usize {
-        let mut num_removed: usize = 0;
-
-        // An acquire fence is required to correctly load the contents of the array.
-        let mut current_array_holder = self.array.get_arc(Acquire, &Barrier::new());
-        while let Some(current_array) = current_array_holder.take() {
-            self.cleanse_old_array_async(&current_array).await;
-            for index in 0..current_array.num_buckets() {
-                loop {
-                    let mut async_wait = AsyncWait::default();
-                    let mut async_wait_pinned = Pin::new(&mut async_wait);
-                    {
-                        let barrier = Barrier::new();
-                        let bucket = current_array.bucket_mut(index);
-                        if let Ok(locker) = Locker::try_lock_or_wait(
-                            bucket,
-                            unsafe { async_wait_pinned.derive().unwrap_unchecked() },
-                            &barrier,
-                        ) {
-                            if let Some(mut locker) = locker {
-                                let data_block_mut = current_array.data_block_mut(index);
-                                let mut entry_ptr = EntryPtr::new(&barrier);
-                                while entry_ptr.next(&locker, &barrier) {
-                                    locker.erase(data_block_mut, &mut entry_ptr);
-                                    num_removed = num_removed.saturating_add(1);
-                                }
-                            }
-                            break;
-                        };
-                    }
-                    async_wait_pinned.await;
-                }
-            }
-
-            if let Some(new_current_array) = self.array.get_arc(Acquire, &Barrier::new()) {
-                if new_current_array.as_ptr() == current_array.as_ptr() {
-                    break;
-                }
-                current_array_holder.replace(new_current_array);
-                continue;
-            }
-            break;
-        }
-
-        if num_removed != 0 {
-            self.try_resize(0, &Barrier::new());
-        }
-
-        num_removed
+        self.retain_async(|_, _| false).await.1
     }
 
     /// Returns the number of entries in the [`HashIndex`].

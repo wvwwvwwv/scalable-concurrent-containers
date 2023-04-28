@@ -1128,15 +1128,17 @@ where
         .await;
     }
 
-    /// Retains key-value pairs that satisfy the given predicate.
+    /// Retains the entries specified by the predicate.
     ///
-    /// This method allows modifying each value.
+    /// This method allows the predicate closure to modify the value field.
     ///
-    /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
-    /// visited if they are not removed, however the same key-value pair can be visited more than
-    /// once if the [`HashMap`] gets resized by another thread.
+    /// Entries that have existed since the invocation of the method are guaranteed to be visited
+    /// if they are not removed, however the same entry can be visited more than once if the
+    /// [`HashMap`] gets resized by another thread.
     ///
-    /// It returns the number of entries remaining and removed.
+    /// Returns `(number of remaining entries, number of removed entries)` where the number of
+    /// remaining entries can be larger than the actual number since the same entry can be visited
+    /// more than once.
     ///
     /// # Examples
     ///
@@ -1152,55 +1154,22 @@ where
     /// assert_eq!(hashmap.retain(|k, v| *k == 1 && *v == 0), (1, 2));
     /// ```
     #[inline]
-    pub fn retain<F: FnMut(&K, &mut V) -> bool>(&self, mut filter: F) -> (usize, usize) {
-        let barrier = Barrier::new();
-        let mut num_retained: usize = 0;
-        let mut num_removed: usize = 0;
-        let mut current_array_ptr = self.array.load(Acquire, &barrier);
-        while let Some(current_array) = current_array_ptr.as_ref() {
-            self.clear_old_array(current_array, &barrier);
-            for index in 0..current_array.num_buckets() {
-                let bucket = current_array.bucket_mut(index);
-                if let Some(mut locker) = Locker::lock(bucket, &barrier) {
-                    let data_block_mut = current_array.data_block_mut(index);
-                    let mut entry_ptr = EntryPtr::new(&barrier);
-                    while entry_ptr.next(&locker, &barrier) {
-                        let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
-                        if filter(k, v) {
-                            num_retained = num_retained.saturating_add(1);
-                        } else {
-                            locker.erase(data_block_mut, &mut entry_ptr);
-                            num_removed = num_removed.saturating_add(1);
-                        }
-                    }
-                }
-            }
-
-            let new_current_array_ptr = self.array.load(Acquire, &barrier);
-            if current_array_ptr.without_tag() == new_current_array_ptr.without_tag() {
-                break;
-            }
-            num_retained = 0;
-            current_array_ptr = new_current_array_ptr;
-        }
-
-        if num_removed >= num_retained {
-            self.try_resize(0, &barrier);
-        }
-
-        (num_retained, num_removed)
+    pub fn retain<F: FnMut(&K, &mut V) -> bool>(&self, pred: F) -> (usize, usize) {
+        self.retain_entries(pred)
     }
 
-    /// Retains key-value pairs that satisfy the given predicate.
+    /// Retains the entries specified by the predicate.
     ///
-    /// This method allows modifying each value.
+    /// This method allows the predicate closure to modify the value field.
     ///
-    /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
-    /// visited if they are not removed, however the same key-value pair can be visited more than
-    /// once if the [`HashMap`] gets resized by another task.
+    /// Entries that have existed since the invocation of the method are guaranteed to be visited
+    /// if they are not removed, however the same entry can be visited more than once if the
+    /// [`HashMap`] gets resized by another thread.
     ///
-    /// It returns the number of entries remaining and removed. It is an asynchronous method
-    /// returning an `impl Future` for the caller to await.
+    /// Returns `(number of remaining entries, number of removed entries)` where the number of
+    /// remaining entries can be larger than the actual number since the same entry can be visited
+    /// more than once. It is an asynchronous method returning an `impl Future` for the caller to
+    /// await.
     ///
     /// # Examples
     ///

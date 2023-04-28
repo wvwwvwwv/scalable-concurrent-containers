@@ -449,7 +449,11 @@ mod hashmap_test {
                     assert!(hashmap_clone.any(|k, _| range.contains(k)));
                     assert!(hashmap_clone.any_async(|k, _| range.contains(k)).await);
 
-                    let (_, removed) = hashmap_clone.retain_async(|k, _| !range.contains(k)).await;
+                    let (_, removed) = if task_id % 4 == 0 {
+                        hashmap_clone.retain(|k, _| !range.contains(k))
+                    } else {
+                        hashmap_clone.retain_async(|k, _| !range.contains(k)).await
+                    };
                     assert_eq!(removed, workload_size);
 
                     assert!(!hashmap_clone.any(|k, _| range.contains(k)));
@@ -937,6 +941,64 @@ mod hashindex_test {
                 removed.store(i, Release);
             }
             thread_handle.join().unwrap();
+        }
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn retain() {
+        let hashindex: Arc<HashIndex<usize, usize>> = Arc::new(HashIndex::default());
+        for _ in 0..256 {
+            let num_tasks = 8;
+            let workload_size = 256;
+            let mut task_handles = Vec::with_capacity(num_tasks);
+            let barrier = Arc::new(AsyncBarrier::new(num_tasks));
+            for task_id in 0..num_tasks {
+                let barrier_clone = barrier.clone();
+                let hashindex_clone = hashindex.clone();
+                task_handles.push(tokio::task::spawn(async move {
+                    barrier_clone.wait().await;
+                    let range = (task_id * workload_size)..((task_id + 1) * workload_size);
+                    for id in range.clone() {
+                        let result = hashindex_clone.insert_async(id, id).await;
+                        assert!(result.is_ok());
+                    }
+                    for id in range.clone() {
+                        let result = hashindex_clone.insert_async(id, id).await;
+                        assert_eq!(result, Err((id, id)));
+                    }
+                    let mut iterated = 0;
+                    hashindex_clone
+                        .iter(&ebr::Barrier::new())
+                        .for_each(|(k, _)| {
+                            if range.contains(k) {
+                                iterated += 1;
+                            }
+                        });
+                    assert!(iterated >= workload_size);
+                    assert!(hashindex_clone
+                        .iter(&ebr::Barrier::new())
+                        .any(|(k, _)| range.contains(k)));
+
+                    let (_, removed) = if task_id % 4 == 0 {
+                        hashindex_clone.retain(|k, _| !range.contains(k))
+                    } else {
+                        hashindex_clone
+                            .retain_async(|k, _| !range.contains(k))
+                            .await
+                    };
+                    assert_eq!(removed, workload_size);
+                    assert!(!hashindex_clone
+                        .iter(&ebr::Barrier::new())
+                        .any(|(k, _)| range.contains(k)));
+                }));
+            }
+
+            for r in futures::future::join_all(task_handles).await {
+                assert!(r.is_ok());
+            }
+
+            assert_eq!(hashindex.len(), 0);
         }
     }
 }
