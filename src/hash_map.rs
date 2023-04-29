@@ -1449,9 +1449,10 @@ where
     }
 }
 
-impl<K, V> Default for HashMap<K, V, RandomState>
+impl<K, V, H> Default for HashMap<K, V, H>
 where
     K: Eq + Hash,
+    H: BuildHasher + Default,
 {
     /// Creates an empty default [`HashMap`].
     ///
@@ -1470,7 +1471,7 @@ where
         HashMap {
             array: AtomicArc::null(),
             minimum_capacity: AtomicUsize::new(0),
-            build_hasher: RandomState::new(),
+            build_hasher: Default::default(),
         }
     }
 }

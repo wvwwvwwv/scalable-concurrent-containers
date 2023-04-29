@@ -884,21 +884,22 @@ where
     }
 }
 
-impl<K, V> Default for HashIndex<K, V, RandomState>
+impl<K, V, H> Default for HashIndex<K, V, H>
 where
     K: 'static + Clone + Eq + Hash,
     V: 'static + Clone,
+    H: BuildHasher + Default,
 {
     /// Creates an empty default [`HashIndex`].
     ///
-    /// The default hash builder is [`RandomState`], and the default capacity is `64`.
+    /// The default capacity is `64`.
     ///
     /// # Examples
     ///
     /// ```
     /// use scc::HashIndex;
     ///
-    /// let hashindex: HashIndex<u64, u32, _> = HashIndex::default();
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
     /// let result = hashindex.capacity();
     /// assert_eq!(result, 0);
@@ -908,7 +909,7 @@ where
         HashIndex {
             array: AtomicArc::null(),
             minimum_capacity: AtomicUsize::new(0),
-            build_hasher: RandomState::new(),
+            build_hasher: Default::default(),
         }
     }
 }
