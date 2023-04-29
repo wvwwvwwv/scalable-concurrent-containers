@@ -251,7 +251,7 @@ assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
 
 ## Bag
 
-[Bag](#Bag) is a concurrent lock-free unordered container. [Bag](#Bag) is completely opaque, disallowing access to contained instances until they are popped. [Bag](#Bag) is especially efficient if the number of contained instances can be maintained under `ARRAY_LEN (default: usize::MAX / 2)`
+[Bag](#Bag) is a concurrent lock-free unordered container. [Bag](#Bag) is completely opaque, disallowing access to contained instances until they are popped. [Bag](#Bag) is especially efficient if the number of contained instances can be maintained under `ARRAY_LEN (default: usize::BITS / 2)`
 
 ### Examples
 

@@ -14,7 +14,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 /// in a fixed-size array, and the rest are managed by its backup container; this makes a [`Bag`]
 /// especially efficient if the expected number of instances does not exceed `ARRAY_LEN`.
 ///
-/// The maximum value of `ARRAY_LEN` is limited to `usize::MAX / 2` which is the default value, and
+/// The maximum value of `ARRAY_LEN` is limited to `usize::BITS / 2` which is the default value, and
 /// if a larger value is specified, [`Bag::new`] panics.
 #[derive(Debug)]
 pub struct Bag<T, const ARRAY_LEN: usize = DEFAULT_ARRAY_LEN> {
