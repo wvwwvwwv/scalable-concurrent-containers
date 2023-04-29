@@ -166,6 +166,9 @@ let hashindex: HashIndex<u64, u32> = HashIndex::default();
 
 assert!(hashindex.insert(1, 0).is_ok());
 
+// Existing values can be replaced with new ones.
+assert!(hashindex.replace_if(1, |v| if *v == 0 { Some(1) } else { None }).is_ok());
+
 let barrier = Barrier::new();
 
 // An `ebr::Barrier` has to be supplied to `iter`.

@@ -1,5 +1,9 @@
 # Changelog
 
+1.6.3
+
+* API update: add `HashIndex::{replace_if, replace_if_async}`.
+
 1.6.2
 
 * API update: add `HashIndex::{retain, retain_async}`.

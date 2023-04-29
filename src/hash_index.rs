@@ -247,9 +247,123 @@ where
         }
     }
 
-    /// Updates an existing key-value pair.
+    /// Replaces the existing value corresponding to the key if the supplied closure constructs a
+    /// new value.
     ///
-    /// It returns `None` if the key does not exist.
+    /// `conditional_constructor` reads the current state of the value associated with the key, and
+    /// then returns `Some(V)` if the current value satisfies any conditions defined in it,
+    /// otherwise returns `None`.
+    ///
+    /// Returns `true` if the value was successfully replaced.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// assert!(unsafe { hashindex.update(&1, |_, _| true).is_none() });
+    /// assert!(hashindex.insert(1, 0).is_ok());
+    ///
+    /// assert!(!hashindex.replace_if(&1, |_, v| { if *v == 1 { Some(2) } else { None } }));
+    /// assert_eq!(hashindex.read(&1, |_, v| *v).unwrap(), 0);
+    ///
+    /// assert!(hashindex.replace_if(&1, |_, v| { if *v == 0 { Some(2) } else { None } }));
+    /// assert_eq!(hashindex.read(&1, |_, v| *v).unwrap(), 2);
+    /// ```
+    #[inline]
+    pub fn replace_if<Q, F>(&self, key: &Q, conditional_constructor: F) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+        F: FnOnce(&K, &V) -> Option<V>,
+    {
+        let barrier = Barrier::new();
+        let hash = self.hash(key);
+        let Ok((mut locker, data_block_mut, mut entry_ptr, _)) = self
+            .acquire_entry(key, hash, &mut (), &barrier) else {
+            return false;
+        };
+        if entry_ptr.is_valid() {
+            let (k, v) = entry_ptr.get(data_block_mut);
+            if let Some(new_v) = conditional_constructor(k, v) {
+                let new_k = k.clone();
+                locker.insert_with(
+                    data_block_mut,
+                    BucketArray::<K, V, false>::partial_hash(hash),
+                    || (new_k, new_v),
+                    &barrier,
+                );
+                locker.erase(data_block_mut, &mut entry_ptr);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Replaces the existing value corresponding to the key if the supplied closure constructs a
+    /// new value.
+    ///
+    /// `conditional_constructor` reads the current state of the value associated with the key, and
+    /// then returns `Some(V)` if the current value satisfies any conditions defined in it,
+    /// otherwise returns `None`.
+    ///
+    /// Returns `true` if the value was successfully replaced. It is an asynchronous method returning an
+    /// `impl Future` for the caller to await.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// assert!(hashindex.insert(1, 0).is_ok());
+    /// let future_replace = hashindex.replace_if_async(&1, |_, v| {
+    ///     if *v == 0 { Some(2) } else { None }
+    /// });
+    /// ```
+    #[inline]
+    pub async fn replace_if_async<Q, F>(&self, key: &Q, conditional_constructor: F) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+        F: FnOnce(&K, &V) -> Option<V>,
+    {
+        let hash = self.hash(key);
+        loop {
+            let mut async_wait = AsyncWait::default();
+            let mut async_wait_pinned = Pin::new(&mut async_wait);
+            {
+                let barrier = Barrier::new();
+                if let Ok((mut locker, data_block_mut, mut entry_ptr, _)) =
+                    self.acquire_entry(key, hash, &mut async_wait_pinned, &barrier)
+                {
+                    if entry_ptr.is_valid() {
+                        let (k, v) = entry_ptr.get(data_block_mut);
+                        if let Some(new_v) = conditional_constructor(k, v) {
+                            let new_k = k.clone();
+                            locker.insert_with(
+                                data_block_mut,
+                                BucketArray::<K, V, false>::partial_hash(hash),
+                                || (new_k, new_v),
+                                &barrier,
+                            );
+                            locker.erase(data_block_mut, &mut entry_ptr);
+                            return true;
+                        }
+                    }
+                    return false;
+                };
+            }
+            async_wait_pinned.await;
+        }
+    }
+
+    /// Updates the existing value corresponding to the key.
+    ///
+    /// Returns `None` if the key does not exist.
     ///
     /// # Safety
     ///
@@ -287,9 +401,9 @@ where
         None
     }
 
-    /// Updates an existing key-value pair.
+    /// Updates the existing value corresponding to the key.
     ///
-    /// It returns `None` if the key does not exist. It is an asynchronous method returning an
+    /// Returns `None` if the key does not exist. It is an asynchronous method returning an
     /// `impl Future` for the caller to await.
     ///
     /// # Safety
