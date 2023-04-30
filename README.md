@@ -145,6 +145,7 @@ let future_remove = hashset.remove_async(&1);
 The `read` method is completely lock-free.
 
 ```rust
+use scc::hash_index::ModifyAction;
 use scc::HashIndex;
 
 let hashindex: HashIndex<u64, u32> = HashIndex::default();
@@ -167,7 +168,9 @@ let hashindex: HashIndex<u64, u32> = HashIndex::default();
 assert!(hashindex.insert(1, 0).is_ok());
 
 // Existing values can be replaced with new ones.
-assert!(hashindex.replace_if(1, |v| if *v == 0 { Some(1) } else { None }).is_ok());
+assert!(hashindex.modify(
+    1,
+    |_, v| if *v == 0 { ModifyAction::Update(1) } else { ModifyAction::Remove }));
 
 let barrier = Barrier::new();
 

@@ -671,7 +671,7 @@ mod hashmap_test {
 #[cfg(test)]
 mod hashindex_test {
     use crate::ebr;
-    use crate::hash_index::Visitor;
+    use crate::hash_index::{ModifyAction, Visitor};
     use crate::HashIndex;
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
@@ -946,9 +946,9 @@ mod hashindex_test {
 
     #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-    async fn replace() {
+    async fn modify() {
+        let hashindex: Arc<HashIndex<usize, usize>> = Arc::new(HashIndex::default());
         for _ in 0..256 {
-            let hashindex: Arc<HashIndex<usize, usize>> = Arc::new(HashIndex::default());
             let num_tasks = 8;
             let workload_size = 256;
             let mut task_handles = Vec::with_capacity(num_tasks);
@@ -963,18 +963,18 @@ mod hashindex_test {
                         let result = hashindex_clone.insert_async(id, id).await;
                         assert!(result.is_ok());
                         if id % 4 == 0 {
-                            assert!(!hashindex_clone.replace_if(&id, |_, v| if *v == id {
-                                None
+                            assert!(!hashindex_clone.modify(&id, |_, v| if *v == id {
+                                ModifyAction::Keep
                             } else {
-                                Some(0)
+                                ModifyAction::Update(0)
                             }));
                         } else {
                             assert!(
                                 !hashindex_clone
-                                    .replace_if_async(&id, |_, v| if *v == id {
-                                        None
+                                    .modify_async(&id, |_, v| if *v == id {
+                                        ModifyAction::Keep
                                     } else {
-                                        Some(0)
+                                        ModifyAction::Update(0)
                                     })
                                     .await
                             );
@@ -983,16 +983,16 @@ mod hashindex_test {
                     for id in range.clone() {
                         hashindex_clone.read(&id, |k, v| assert_eq!(k, v));
                         if id % 4 == 0 {
-                            assert!(hashindex_clone.replace_if(&id, |_, v| if *v == id {
-                                Some(usize::MAX)
+                            assert!(hashindex_clone.modify(&id, |_, v| if *v == id {
+                                Some(Some(usize::MAX))
                             } else {
                                 None
                             }));
                         } else {
                             assert!(
                                 hashindex_clone
-                                    .replace_if_async(&id, |_, v| if *v == id {
-                                        Some(usize::MAX)
+                                    .modify_async(&id, |_, v| if *v == id {
+                                        Some(Some(usize::MAX))
                                     } else {
                                         None
                                     })
@@ -1002,6 +1002,15 @@ mod hashindex_test {
                     }
                     for id in range.clone() {
                         hashindex_clone.read(&id, |_, v| assert_eq!(*v, usize::MAX));
+                        if id % 4 == 0 {
+                            assert!(hashindex_clone.modify(&id, |_, _| Some(None)));
+                        } else {
+                            assert!(
+                                hashindex_clone
+                                    .modify_async(&id, |_, _| ModifyAction::Remove)
+                                    .await
+                            );
+                        }
                     }
                 }));
             }
@@ -1009,6 +1018,8 @@ mod hashindex_test {
             for r in futures::future::join_all(task_handles).await {
                 assert!(r.is_ok());
             }
+
+            assert_eq!(hashindex.len(), 0);
         }
     }
 
