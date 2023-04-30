@@ -83,7 +83,7 @@ where
     barrier: &'b Barrier,
 }
 
-/// Specifies possible actions of [`HashIndex::modify`] and [`HashIndex::modify_async`] on the
+/// Specifies possible actions of [`HashIndex::modify`] and [`HashIndex::modify_async`] on an
 /// entry.
 pub enum ModifyAction<V> {
     /// Do nothing.
