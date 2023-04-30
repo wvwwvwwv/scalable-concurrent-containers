@@ -83,6 +83,25 @@ where
     barrier: &'b Barrier,
 }
 
+/// Specifies possible actions of [`HashIndex::modify`] and [`HashIndex::modify_async`] on the
+/// entry.
+pub enum ModifyAction<V> {
+    /// Do nothing.
+    ///
+    /// [`Option::None`] is coerced to [`ModifyAction::Keep`].
+    Keep,
+
+    /// Do remove the entry.
+    ///
+    /// `Some(None)` is coerced to [`ModifyAction::Remove`].
+    Remove,
+
+    /// Do update the entry.
+    ///
+    /// `Some(Some(V))` is coerced to [`ModifyAction::Update`].
+    Update(V),
+}
+
 impl<K, V, H> HashIndex<K, V, H>
 where
     K: 'static + Clone + Eq + Hash,
@@ -247,9 +266,163 @@ where
         }
     }
 
-    /// Updates an existing key-value pair.
+    /// Modifies the existing entry associated with the specified key.
     ///
-    /// It returns `None` if the key does not exist.
+    /// The return value of the supplied closure denotes the type of an action this method should
+    /// take. The closure may return [`ModifyAction`] or `Option<new_version>` where the type of
+    /// `new_version` is `Option<V>`.
+    ///
+    /// To be specific, this method takes either one of the following actions if the key exists.
+    /// * Do nothing if [`ModifyAction::Keep`] or `None` is returned from the supplied closure.
+    /// * Remove the entry if [`ModifyAction::Remove`] or `Some(None)` is returned from the
+    /// supplied closure.
+    /// * A new version of the entry is created with the current version removed if the supplied
+    /// closure returns [`ModifyAction::Update`] or `Some(Some(new_value))`.
+    ///
+    /// Returns `true` if the entry was either removed or updated; in other words, `false` is
+    /// returned if the key does not exist or the entry was not removed and updated.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::hash_index::ModifyAction;
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// assert!(unsafe { hashindex.update(&1, |_, _| true).is_none() });
+    /// assert!(hashindex.insert(1, 0).is_ok());
+    ///
+    /// assert!(!hashindex.modify(&0, |_, v| Some(Some(1))));
+    /// assert!(hashindex.modify(&1, |_, v| ModifyAction::Update(1)));
+    /// assert_eq!(hashindex.read(&1, |_, v| *v).unwrap(), 1);
+    ///
+    /// assert!(hashindex.modify(&1, |_, v| ModifyAction::Remove));
+    /// assert!(hashindex.read(&1, |_, v| *v).is_none());
+    /// ```
+    #[inline]
+    pub fn modify<Q, F, R>(&self, key: &Q, updater: F) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+        F: FnOnce(&K, &V) -> R,
+        R: Into<ModifyAction<V>>,
+    {
+        let barrier = Barrier::new();
+        let hash = self.hash(key);
+        let Ok((mut locker, data_block_mut, mut entry_ptr, _)) = self
+            .acquire_entry(key, hash, &mut (), &barrier) else {
+            return false;
+        };
+        if entry_ptr.is_valid() {
+            let (k, v) = entry_ptr.get(data_block_mut);
+            let modify_action: ModifyAction<V> = updater(k, v).into();
+            let result = match modify_action {
+                ModifyAction::Keep => false,
+                ModifyAction::Remove => true,
+                ModifyAction::Update(new_v) => {
+                    // A new version of the entry will be created.
+                    let new_k = k.clone();
+                    locker.insert_with(
+                        data_block_mut,
+                        BucketArray::<K, V, false>::partial_hash(hash),
+                        || (new_k, new_v),
+                        &barrier,
+                    );
+                    true
+                }
+            };
+            if result {
+                // The entry was modified, and therefore the old version should be logically
+                // removed from the `HashIndex`.
+                locker.erase(data_block_mut, &mut entry_ptr);
+            }
+            return result;
+        }
+        false
+    }
+
+    /// Modifies the existing entry associated with the specified key.
+    ///
+    /// The return value of the supplied closure denotes the type of an action this method should
+    /// take. The closure may return [`ModifyAction`] or `Option<new_version>` where the type of
+    /// `new_version` is `Option<V>`.
+    ///
+    /// To be specific, this method takes either one of the following actions if the key exists.
+    /// * Do nothing if [`ModifyAction::Keep`] or `None` is returned from the supplied closure.
+    /// * Remove the entry if [`ModifyAction::Remove`] or `Some(None)` is returned from the
+    /// supplied closure.
+    /// * A new version of the entry is created with the current version removed if the supplied
+    /// closure returns [`ModifyAction::Update`] or `Some(Some(new_value))`.
+    ///
+    /// Returns `true` if the entry was either removed or updated; in other words, `false` is
+    /// returned if the key does not exist or the entry was not removed and updated. It is an
+    /// asynchronous method returning an `impl Future` for the caller to await.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::hash_index::ModifyAction;
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// assert!(hashindex.insert(1, 0).is_ok());
+    /// let future_update = hashindex.modify_async(&1, |_, v| Some(Some(2)));
+    /// let future_remove = hashindex.modify_async(&1, |_, v| ModifyAction::Remove);
+    /// ```
+    #[inline]
+    pub async fn modify_async<Q, F, R>(&self, key: &Q, updater: F) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+        F: FnOnce(&K, &V) -> R,
+        R: Into<ModifyAction<V>>,
+    {
+        let hash = self.hash(key);
+        loop {
+            let mut async_wait = AsyncWait::default();
+            let mut async_wait_pinned = Pin::new(&mut async_wait);
+            {
+                let barrier = Barrier::new();
+                if let Ok((mut locker, data_block_mut, mut entry_ptr, _)) =
+                    self.acquire_entry(key, hash, &mut async_wait_pinned, &barrier)
+                {
+                    if entry_ptr.is_valid() {
+                        let (k, v) = entry_ptr.get(data_block_mut);
+                        let modify_action: ModifyAction<V> = updater(k, v).into();
+                        let result = match modify_action {
+                            ModifyAction::Keep => false,
+                            ModifyAction::Remove => true,
+                            ModifyAction::Update(new_v) => {
+                                // A new version of the entry will be created.
+                                let new_k = k.clone();
+                                locker.insert_with(
+                                    data_block_mut,
+                                    BucketArray::<K, V, false>::partial_hash(hash),
+                                    || (new_k, new_v),
+                                    &barrier,
+                                );
+                                true
+                            }
+                        };
+                        if result {
+                            // The entry was modified, and therefore the old version should be
+                            // logically removed from the `HashIndex`.
+                            locker.erase(data_block_mut, &mut entry_ptr);
+                        }
+                        return result;
+                    }
+                    return false;
+                };
+            }
+            async_wait_pinned.await;
+        }
+    }
+
+    /// Updates the existing value corresponding to the key.
+    ///
+    /// Returns `None` if the key does not exist.
     ///
     /// # Safety
     ///
@@ -287,9 +460,9 @@ where
         None
     }
 
-    /// Updates an existing key-value pair.
+    /// Updates the existing value corresponding to the key.
     ///
-    /// It returns `None` if the key does not exist. It is an asynchronous method returning an
+    /// Returns `None` if the key does not exist. It is an asynchronous method returning an
     /// `impl Future` for the caller to await.
     ///
     /// # Safety
@@ -1152,4 +1325,26 @@ where
     V: 'static + Clone + UnwindSafe,
     H: BuildHasher + UnwindSafe,
 {
+}
+
+impl<V> Debug for ModifyAction<V> {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Keep => write!(f, "Nothing"),
+            Self::Remove => write!(f, "Remove"),
+            Self::Update(_) => f.debug_tuple("Update").finish(),
+        }
+    }
+}
+
+impl<V> From<Option<Option<V>>> for ModifyAction<V> {
+    #[inline]
+    fn from(value: Option<Option<V>>) -> Self {
+        match value {
+            Some(Some(value)) => Self::Update(value),
+            Some(None) => Self::Remove,
+            None => Self::Keep,
+        }
+    }
 }

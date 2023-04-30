@@ -1,5 +1,9 @@
 # Changelog
 
+1.6.3
+
+* API update [#96](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/96): add `HashIndex::{modify, modify_async}`, special thanks to [novacrazy](https://github.com/novacrazy).
+
 1.6.2
 
 * API update: add `HashIndex::{retain, retain_async}`.
