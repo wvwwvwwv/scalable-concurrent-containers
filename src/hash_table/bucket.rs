@@ -39,6 +39,16 @@ pub struct EntryPtr<'b, K: Eq, V, const LOCK_FREE: bool> {
     current_index: usize,
 }
 
+/// [`Locker`] owns a [`Bucket`] by holding the exclusive lock on it.
+pub struct Locker<'b, K: Eq, V, const LOCK_FREE: bool> {
+    bucket: &'b mut Bucket<K, V, LOCK_FREE>,
+}
+
+/// [`Locker`] owns a [`Bucket`] by holding a shared lock on it.
+pub struct Reader<'b, K: Eq, V, const LOCK_FREE: bool> {
+    bucket: &'b Bucket<K, V, LOCK_FREE>,
+}
+
 /// [`Metadata`] is a collection of metadata fields of [`Bucket`] and [`LinkedBucket`].
 pub(crate) struct Metadata<K: Eq, V, const LEN: usize> {
     /// Linked list of entries.
@@ -52,16 +62,6 @@ pub(crate) struct Metadata<K: Eq, V, const LEN: usize> {
 
     /// Partial hash array.
     partial_hash_array: [u8; LEN],
-}
-
-/// [`Locker`] owns a [`Bucket`] by holding the exclusive lock on it.
-pub struct Locker<'b, K: Eq, V, const LOCK_FREE: bool> {
-    bucket: &'b mut Bucket<K, V, LOCK_FREE>,
-}
-
-/// [`Locker`] owns a [`Bucket`] by holding a shared lock on it.
-pub struct Reader<'b, K: Eq, V, const LOCK_FREE: bool> {
-    bucket: &'b Bucket<K, V, LOCK_FREE>,
 }
 
 /// The size of the linked data block.
@@ -586,7 +586,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     ///
     /// `C` must not panic otherwise it leads to undefined behavior.
     #[inline]
-    pub(crate) fn insert_with<C: FnOnce() -> (K, V)>(
+    pub(crate) fn insert_with<C: FnOnce() -> (K, V), const ALLOW_EVICTION: bool>(
         &mut self,
         data_block: &mut DataBlock<K, V, BUCKET_LEN>,
         partial_hash: u8,
@@ -596,6 +596,11 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         assert!(self.bucket.num_entries != u32::MAX, "array overflow");
 
         let free_index = self.bucket.metadata.occupied_bitmap.trailing_ones() as usize;
+        let free_index = if ALLOW_EVICTION && free_index == BUCKET_LEN {
+            self.evict_one()
+        } else {
+            free_index
+        };
         if free_index == BUCKET_LEN {
             let mut link_ptr = self.bucket.metadata.link.load(Acquire, barrier);
             while let Some(link_mut) = unsafe {
@@ -760,6 +765,12 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
             }
             metadata.occupied_bitmap |= 1_u32 << index;
         }
+    }
+
+    /// Evicts an entry and returns the index of it.
+    #[allow(clippy::unused_self)]
+    fn evict_one(&mut self) -> usize {
+        unimplemented!()
     }
 
     /// Extracts and removes the key-value pair in the slot.
@@ -1018,7 +1029,7 @@ mod test {
                     }
                     assert_eq!(sum % 256, 0);
                     if i == 0 {
-                        exclusive_locker.insert_with(
+                        exclusive_locker.insert_with::<_, false>(
                             data_block_mut,
                             partial_hash,
                             || (task_id, 0),
@@ -1117,7 +1128,7 @@ mod test {
                                         as *mut DataBlock<usize, usize, BUCKET_LEN>)
                                 };
                                 let mut exclusive_locker = exclusive_locker.unwrap();
-                                exclusive_locker.insert_with(
+                                exclusive_locker.insert_with::<_, false>(
                                     data_block_mut,
                                     partial_hash,
                                     || (task_id, 0),

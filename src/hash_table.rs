@@ -43,6 +43,9 @@ where
     /// Returns the minimum allowed capacity.
     fn minimum_capacity(&self) -> &AtomicUsize;
 
+    /// Returns `true` if the capacity is fixed.
+    fn is_capacity_fixed(&self) -> bool;
+
     /// Reserves the specified capacity.
     ///
     /// Returns the actually allocated capacity.
@@ -195,7 +198,7 @@ where
 
     /// Inserts an entry into the [`HashTable`].
     #[inline]
-    fn insert_entry<D: DeriveAsyncWait>(
+    fn insert_entry<D: DeriveAsyncWait, const ALLOW_EVICTION: bool>(
         &self,
         key: K,
         val: V,
@@ -203,12 +206,12 @@ where
         async_wait: &mut D,
         barrier: &Barrier,
     ) -> Result<Option<(K, V)>, (K, V)> {
-        match self.acquire_entry(&key, hash, async_wait, barrier) {
+        match self.acquire_entry::<_, _, ALLOW_EVICTION>(&key, hash, async_wait, barrier) {
             Ok((mut locker, data_block_mut, entry_ptr, _)) => {
                 if entry_ptr.is_valid() {
                     return Ok(Some((key, val)));
                 }
-                locker.insert_with(
+                locker.insert_with::<_, false>(
                     data_block_mut,
                     BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
                     || (key, val),
@@ -222,7 +225,7 @@ where
 
     /// Reads an entry from the [`HashTable`].
     #[inline]
-    fn read_entry<'b, Q, D>(
+    fn read_entry<'b, Q, D, const ALLOW_EVICTION: bool>(
         &self,
         key: &Q,
         hash: u64,
@@ -238,8 +241,11 @@ where
         while let Some(current_array) = current_array_ptr.as_ref() {
             if let Some(old_array) = current_array.old_array(barrier).as_ref() {
                 if LOCK_FREE {
-                    if self.incremental_rehash::<Q, D, true>(current_array, async_wait, barrier)
-                        != Ok(true)
+                    if self.incremental_rehash::<Q, D, true, ALLOW_EVICTION>(
+                        current_array,
+                        async_wait,
+                        barrier,
+                    ) != Ok(true)
                     {
                         let index = old_array.calculate_bucket_index(hash);
                         if let Some((k, v)) = old_array.bucket(index).search(
@@ -252,7 +258,13 @@ where
                         }
                     }
                 } else {
-                    self.move_entry(current_array, old_array, hash, async_wait, barrier)?;
+                    self.move_entry::<_, _, ALLOW_EVICTION>(
+                        current_array,
+                        old_array,
+                        hash,
+                        async_wait,
+                        barrier,
+                    )?;
                 }
             };
 
@@ -299,7 +311,14 @@ where
 
     /// Removes an entry if the condition is met.
     #[inline]
-    fn remove_entry<Q, F: FnOnce(&mut V) -> bool, D, R, P: FnOnce(Option<Option<(K, V)>>) -> R>(
+    fn remove_entry<
+        Q,
+        F: FnOnce(&mut V) -> bool,
+        D,
+        R,
+        P: FnOnce(Option<Option<(K, V)>>) -> R,
+        const ALLOW_EVICTION: bool,
+    >(
         &self,
         key: &Q,
         hash: u64,
@@ -316,7 +335,13 @@ where
         while let Some(current_array) = self.bucket_array().load(Acquire, barrier).as_ref() {
             // The reasoning behind this loop can be found in `acquire_entry`.
             let shrinkable = if let Some(old_array) = current_array.old_array(barrier).as_ref() {
-                match self.move_entry(current_array, old_array, hash, async_wait, barrier) {
+                match self.move_entry::<_, _, ALLOW_EVICTION>(
+                    current_array,
+                    old_array,
+                    hash,
+                    async_wait,
+                    barrier,
+                ) {
                     Ok(r) => r,
                     Err(_) => return Err(condition),
                 }
@@ -363,13 +388,16 @@ where
 
     /// Retains entries that satisfy the specified predicate.
     #[inline]
-    fn retain_entries<F: FnMut(&K, &mut V) -> bool>(&self, mut pred: F) -> (usize, usize) {
+    fn retain_entries<F: FnMut(&K, &mut V) -> bool, const ALLOW_EVICTION: bool>(
+        &self,
+        mut pred: F,
+    ) -> (usize, usize) {
         let barrier = Barrier::new();
         let mut num_retained: usize = 0;
         let mut num_removed: usize = 0;
         let mut current_array_ptr = self.bucket_array().load(Acquire, &barrier);
         while let Some(current_array) = current_array_ptr.as_ref() {
-            self.clear_old_array(current_array, &barrier);
+            self.clear_old_array::<ALLOW_EVICTION>(current_array, &barrier);
             for index in 0..current_array.num_buckets() {
                 let bucket = current_array.bucket_mut(index);
                 if let Some(mut locker) = Locker::lock(bucket, &barrier) {
@@ -408,7 +436,7 @@ where
     /// otherwise `None` is returned.
     #[allow(clippy::type_complexity)]
     #[inline]
-    fn acquire_entry<'b, Q, D>(
+    fn acquire_entry<'b, Q, D, const ALLOW_EVICTION: bool>(
         &self,
         key: &Q,
         hash: u64,
@@ -443,7 +471,13 @@ where
         loop {
             let current_array = self.get_current_array(barrier);
             let resizable = if let Some(old_array) = current_array.old_array(barrier).as_ref() {
-                self.move_entry(current_array, old_array, hash, async_wait, barrier)?;
+                self.move_entry::<_, _, ALLOW_EVICTION>(
+                    current_array,
+                    old_array,
+                    hash,
+                    async_wait,
+                    barrier,
+                )?;
                 false
             } else {
                 true
@@ -484,7 +518,7 @@ where
     ///
     /// Returns `true` if no old array is attached to the current one.
     #[inline]
-    fn move_entry<Q, D>(
+    fn move_entry<Q, D, const ALLOW_EVICTION: bool>(
         &self,
         current_array: &BucketArray<K, V, LOCK_FREE>,
         old_array: &BucketArray<K, V, LOCK_FREE>,
@@ -497,7 +531,11 @@ where
         Q: Hash + Eq + ?Sized,
         D: DeriveAsyncWait,
     {
-        if !self.incremental_rehash::<Q, D, false>(current_array, async_wait, barrier)? {
+        if !self.incremental_rehash::<Q, D, false, ALLOW_EVICTION>(
+            current_array,
+            async_wait,
+            barrier,
+        )? {
             let index = old_array.calculate_bucket_index(hash);
             let bucket = old_array.bucket_mut(index);
             let lock_result = if let Some(async_wait) = async_wait.derive() {
@@ -506,7 +544,7 @@ where
                 Locker::lock(bucket, barrier)
             };
             if let Some(mut locker) = lock_result {
-                self.relocate_bucket::<Q, _, false>(
+                self.relocate_bucket::<Q, _, false, ALLOW_EVICTION>(
                     current_array,
                     old_array,
                     index,
@@ -524,7 +562,7 @@ where
     ///
     /// It returns an error if locking failed.
     #[inline]
-    fn relocate_bucket<Q, D, const TRY_LOCK: bool>(
+    fn relocate_bucket<Q, D, const TRY_LOCK: bool, const ALLOW_EVICTION: bool>(
         &self,
         current_array: &BucketArray<K, V, LOCK_FREE>,
         old_array: &BucketArray<K, V, LOCK_FREE>,
@@ -596,7 +634,7 @@ where
                         .unwrap_unchecked()
                 };
                 let entry_clone = Self::try_clone(old_entry);
-                target_bucket.insert_with(
+                target_bucket.insert_with::<_, ALLOW_EVICTION>(
                     current_array.data_block_mut(new_index),
                     partial_hash,
                     || {
@@ -623,9 +661,18 @@ where
     }
 
     /// Clears the old array.
-    fn clear_old_array(&self, current_array: &BucketArray<K, V, LOCK_FREE>, barrier: &Barrier) {
+    fn clear_old_array<const ALLOW_EVICTION: bool>(
+        &self,
+        current_array: &BucketArray<K, V, LOCK_FREE>,
+        barrier: &Barrier,
+    ) {
         while !current_array.old_array(barrier).is_null() {
-            if self.incremental_rehash::<_, _, false>(current_array, &mut (), barrier) == Ok(true) {
+            if self.incremental_rehash::<_, _, false, ALLOW_EVICTION>(
+                current_array,
+                &mut (),
+                barrier,
+            ) == Ok(true)
+            {
                 break;
             }
         }
@@ -634,7 +681,7 @@ where
     /// Relocates a fixed number of buckets from the old array to the current array.
     ///
     /// Returns `true` if `old_array` is null.
-    fn incremental_rehash<Q, D, const TRY_LOCK: bool>(
+    fn incremental_rehash<Q, D, const TRY_LOCK: bool, const ALLOW_EVICTION: bool>(
         &self,
         current_array: &BucketArray<K, V, LOCK_FREE>,
         async_wait: &mut D,
@@ -710,7 +757,7 @@ where
                     Locker::lock(old_bucket, barrier)
                 };
                 if let Some(mut locker) = lock_result {
-                    self.relocate_bucket::<Q, D, TRY_LOCK>(
+                    self.relocate_bucket::<Q, D, TRY_LOCK, ALLOW_EVICTION>(
                         current_array,
                         old_array,
                         index,

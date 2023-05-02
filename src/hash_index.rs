@@ -225,7 +225,7 @@ where
     pub fn insert(&self, key: K, val: V) -> Result<(), (K, V)> {
         let barrier = Barrier::new();
         let hash = self.hash(key.borrow());
-        if let Ok(Some((k, v))) = self.insert_entry(key, val, hash, &mut (), &barrier) {
+        if let Ok(Some((k, v))) = self.insert_entry::<_, false>(key, val, hash, &mut (), &barrier) {
             Err((k, v))
         } else {
             Ok(())
@@ -254,7 +254,13 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            match self.insert_entry(key, val, hash, &mut async_wait_pinned, &Barrier::new()) {
+            match self.insert_entry::<_, false>(
+                key,
+                val,
+                hash,
+                &mut async_wait_pinned,
+                &Barrier::new(),
+            ) {
                 Ok(Some(returned)) => return Err(returned),
                 Ok(None) => return Ok(()),
                 Err(returned) => {
@@ -311,7 +317,7 @@ where
         let barrier = Barrier::new();
         let hash = self.hash(key);
         let Ok((mut locker, data_block_mut, mut entry_ptr, _)) = self
-            .acquire_entry(key, hash, &mut (), &barrier) else {
+            .acquire_entry::<_, _, false>(key, hash, &mut (), &barrier) else {
             return false;
         };
         if entry_ptr.is_valid() {
@@ -323,7 +329,7 @@ where
                 ModifyAction::Update(new_v) => {
                     // A new version of the entry will be created.
                     let new_k = k.clone();
-                    locker.insert_with(
+                    locker.insert_with::<_, false>(
                         data_block_mut,
                         BucketArray::<K, V, false>::partial_hash(hash),
                         || (new_k, new_v),
@@ -386,7 +392,7 @@ where
             {
                 let barrier = Barrier::new();
                 if let Ok((mut locker, data_block_mut, mut entry_ptr, _)) =
-                    self.acquire_entry(key, hash, &mut async_wait_pinned, &barrier)
+                    self.acquire_entry::<_, _, false>(key, hash, &mut async_wait_pinned, &barrier)
                 {
                     if entry_ptr.is_valid() {
                         let (k, v) = entry_ptr.get(data_block_mut);
@@ -397,7 +403,7 @@ where
                             ModifyAction::Update(new_v) => {
                                 // A new version of the entry will be created.
                                 let new_k = k.clone();
-                                locker.insert_with(
+                                locker.insert_with::<_, false>(
                                     data_block_mut,
                                     BucketArray::<K, V, false>::partial_hash(hash),
                                     || (new_k, new_v),
@@ -451,7 +457,7 @@ where
     {
         let barrier = Barrier::new();
         let (mut locker, data_block_mut, mut entry_ptr, _) = self
-            .acquire_entry(key, self.hash(key), &mut (), &barrier)
+            .acquire_entry::<_, _, false>(key, self.hash(key), &mut (), &barrier)
             .ok()?;
         if entry_ptr.is_valid() {
             let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
@@ -492,8 +498,8 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if let Ok((mut locker, data_block_mut, mut entry_ptr, _)) =
-                self.acquire_entry(key, hash, &mut async_wait_pinned, &Barrier::new())
+            if let Ok((mut locker, data_block_mut, mut entry_ptr, _)) = self
+                .acquire_entry::<_, _, false>(key, hash, &mut async_wait_pinned, &Barrier::new())
             {
                 if entry_ptr.is_valid() {
                     let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
@@ -575,7 +581,7 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.remove_entry(
+        self.remove_entry::<_, _, _, _, _, false>(
             key,
             self.hash(key),
             |v: &mut V| condition(v),
@@ -611,7 +617,7 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            match self.remove_entry(
+            match self.remove_entry::<_, _, _, _, _, false>(
                 key,
                 hash,
                 condition,
@@ -650,7 +656,7 @@ where
         Q: Eq + Hash + ?Sized,
     {
         let barrier = Barrier::new();
-        self.read_entry(key, self.hash(key), &mut (), &barrier)
+        self.read_entry::<_, _, false>(key, self.hash(key), &mut (), &barrier)
             .ok()
             .flatten()
             .map(|(k, v)| reader(k, v))
@@ -687,7 +693,7 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.read_entry(key, self.hash(key), &mut (), barrier)
+        self.read_entry::<_, _, false>(key, self.hash(key), &mut (), barrier)
             .ok()
             .flatten()
             .map(|(k, v)| reader(k, v))
@@ -740,7 +746,7 @@ where
     /// ```
     #[inline]
     pub fn retain<F: FnMut(&K, &V) -> bool>(&self, mut pred: F) -> (usize, usize) {
-        self.retain_entries(|k, v| pred(k, v))
+        self.retain_entries::<_, false>(|k, v| pred(k, v))
     }
 
     /// Retains the entries specified by the predicate.
@@ -963,7 +969,7 @@ where
         while !current_array.old_array(&Barrier::new()).is_null() {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if self.incremental_rehash::<_, _, false>(
+            if self.incremental_rehash::<_, _, false, false>(
                 current_array,
                 &mut async_wait_pinned,
                 &Barrier::new(),
@@ -1108,6 +1114,10 @@ where
     #[inline]
     fn minimum_capacity(&self) -> &AtomicUsize {
         &self.minimum_capacity
+    }
+    #[inline]
+    fn is_capacity_fixed(&self) -> bool {
+        false
     }
 }
 
