@@ -38,8 +38,8 @@ where
     /// let hashset: HashSet<u64, RandomState> = HashSet::with_hasher(RandomState::new());
     /// ```
     #[inline]
-    pub fn with_hasher(build_hasher: H) -> HashSet<K, H> {
-        HashSet {
+    pub fn with_hasher(build_hasher: H) -> Self {
+        Self {
             map: HashMap::with_hasher(build_hasher),
         }
     }
@@ -61,8 +61,8 @@ where
     /// assert_eq!(result, 1024);
     /// ```
     #[inline]
-    pub fn with_capacity_and_hasher(capacity: usize, build_hasher: H) -> HashSet<K, H> {
-        HashSet {
+    pub fn with_capacity_and_hasher(capacity: usize, build_hasher: H) -> Self {
+        Self {
             map: HashMap::with_capacity_and_hasher(capacity, build_hasher),
         }
     }
@@ -706,8 +706,8 @@ impl<K: Eq + Hash> HashSet<K, RandomState> {
     /// ```
     #[inline]
     #[must_use]
-    pub fn with_capacity(capacity: usize) -> HashSet<K, RandomState> {
-        HashSet {
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
             map: HashMap::with_capacity(capacity),
         }
     }
@@ -734,7 +734,7 @@ where
     /// ```
     #[inline]
     fn default() -> Self {
-        HashSet {
+        Self {
             map: HashMap::default(),
         }
     }

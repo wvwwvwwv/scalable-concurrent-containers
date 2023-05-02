@@ -31,9 +31,9 @@ impl<T: 'static> Arc<T> {
     /// let arc: Arc<usize> = Arc::new(31);
     /// ```
     #[inline]
-    pub fn new(t: T) -> Arc<T> {
+    pub fn new(t: T) -> Self {
         let boxed = Box::new(RefCounted::new(t));
-        Arc {
+        Self {
             instance_ptr: unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) },
         }
     }
@@ -61,9 +61,9 @@ impl<T> Arc<T> {
     /// assert!(unsafe { arc.release_drop_in_place() });
     /// ```
     #[inline]
-    pub unsafe fn new_unchecked(t: T) -> Arc<T> {
+    pub unsafe fn new_unchecked(t: T) -> Self {
         let boxed = Box::new(RefCounted::new(t));
-        Arc {
+        Self {
             instance_ptr: unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) },
         }
     }
@@ -235,7 +235,7 @@ impl<T> Arc<T> {
 
     /// Creates a new [`Arc`] from the given pointer.
     #[inline]
-    pub(super) fn from(ptr: NonNull<RefCounted<T>>) -> Arc<T> {
+    pub(super) fn from(ptr: NonNull<RefCounted<T>>) -> Self {
         debug_assert_ne!(
             unsafe {
                 ptr.as_ref()
@@ -244,7 +244,7 @@ impl<T> Arc<T> {
             },
             0
         );
-        Arc { instance_ptr: ptr }
+        Self { instance_ptr: ptr }
     }
 
     /// Returns a reference to the underlying instance.

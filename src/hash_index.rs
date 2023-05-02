@@ -120,8 +120,8 @@ where
     ///     HashIndex::with_hasher(RandomState::new());
     /// ```
     #[inline]
-    pub fn with_hasher(build_hasher: H) -> HashIndex<K, V, H> {
-        HashIndex {
+    pub fn with_hasher(build_hasher: H) -> Self {
+        Self {
             array: AtomicArc::null(),
             minimum_capacity: AtomicUsize::new(0),
             build_hasher,
@@ -145,12 +145,17 @@ where
     /// assert_eq!(result, 1024);
     /// ```
     #[inline]
-    pub fn with_capacity_and_hasher(capacity: usize, build_hasher: H) -> HashIndex<K, V, H> {
-        HashIndex {
-            array: AtomicArc::from(Arc::new(BucketArray::<K, V, OPTIMISTIC>::new(
+    pub fn with_capacity_and_hasher(capacity: usize, build_hasher: H) -> Self {
+        let array = if capacity == 0 {
+            AtomicArc::null()
+        } else {
+            AtomicArc::from(Arc::new(BucketArray::<K, V, OPTIMISTIC>::new(
                 capacity,
                 AtomicArc::null(),
-            ))),
+            )))
+        };
+        Self {
+            array,
             minimum_capacity: AtomicUsize::new(capacity),
             build_hasher,
         }
@@ -1045,15 +1050,8 @@ where
     /// ```
     #[inline]
     #[must_use]
-    pub fn with_capacity(capacity: usize) -> HashIndex<K, V, RandomState> {
-        HashIndex {
-            array: AtomicArc::from(Arc::new(BucketArray::<K, V, OPTIMISTIC>::new(
-                capacity,
-                AtomicArc::null(),
-            ))),
-            minimum_capacity: AtomicUsize::new(capacity),
-            build_hasher: RandomState::new(),
-        }
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self::with_capacity_and_hasher(capacity, RandomState::new())
     }
 }
 
@@ -1079,11 +1077,7 @@ where
     /// ```
     #[inline]
     fn default() -> Self {
-        HashIndex {
-            array: AtomicArc::null(),
-            minimum_capacity: AtomicUsize::new(0),
-            build_hasher: Default::default(),
-        }
+        Self::with_hasher(H::default())
     }
 }
 

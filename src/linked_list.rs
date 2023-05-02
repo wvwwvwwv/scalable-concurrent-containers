@@ -336,8 +336,8 @@ pub struct Entry<T> {
 impl<T> Entry<T> {
     /// Creates a new [`Entry`].
     #[inline]
-    pub(super) fn new(val: T) -> Entry<T> {
-        Entry {
+    pub(super) fn new(val: T) -> Self {
+        Self {
             instance: Some(val),
             next: AtomicArc::default(),
         }

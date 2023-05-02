@@ -15,7 +15,7 @@ pub(super) struct RefCounted<T> {
 impl<T> RefCounted<T> {
     // Creates a new underlying instance.
     #[inline]
-    pub(super) const fn new(t: T) -> RefCounted<T> {
+    pub(super) const fn new(t: T) -> Self {
         RefCounted {
             instance: t,
             next_or_refcnt: LinkOrRefCnt::new(),

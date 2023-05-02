@@ -58,7 +58,7 @@ pub(super) struct DeferredClosure<F: 'static + FnOnce() + Sync> {
 impl<F: 'static + FnOnce() + Sync> DeferredClosure<F> {
     /// Creates a new [`DeferredClosure`].
     #[inline]
-    pub fn new(f: F) -> DeferredClosure<F> {
+    pub fn new(f: F) -> Self {
         DeferredClosure {
             f: Some(f),
             link: None,

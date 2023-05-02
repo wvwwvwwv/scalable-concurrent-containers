@@ -199,9 +199,9 @@ struct SyncWait {
 
 impl SyncWait {
     /// Creates a new [`SyncWait`].
-    const fn new(next: usize) -> SyncWait {
+    const fn new(next: usize) -> Self {
         #[allow(clippy::mutex_atomic)]
-        SyncWait {
+        Self {
             next,
             condvar: Condvar::new(),
             mutex: Mutex::new(false),
