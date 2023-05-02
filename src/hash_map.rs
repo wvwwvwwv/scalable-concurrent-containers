@@ -62,7 +62,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 /// ### Unwind safety
 ///
 /// [`HashMap`] is impervious to out-of-memory errors and panics in user specified code on one
-/// condition; `K::drop` and `V::drop` must not panic.
+/// condition; `H::Hasher::hash`, `K::drop` and `V::drop` must not panic.
 pub struct HashMap<K, V, H = RandomState>
 where
     K: Eq + Hash,
@@ -141,8 +141,8 @@ where
     /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::with_hasher(RandomState::new());
     /// ```
     #[inline]
-    pub fn with_hasher(build_hasher: H) -> HashMap<K, V, H> {
-        HashMap {
+    pub fn with_hasher(build_hasher: H) -> Self {
+        Self {
             array: AtomicArc::null(),
             minimum_capacity: AtomicUsize::new(0),
             build_hasher,
@@ -166,15 +166,19 @@ where
     /// assert_eq!(result, 1024);
     /// ```
     #[inline]
-    pub fn with_capacity_and_hasher(capacity: usize, build_hasher: H) -> HashMap<K, V, H> {
-        let array = unsafe {
-            Arc::new_unchecked(BucketArray::<K, V, SEQUENTIAL>::new(
-                capacity,
-                AtomicArc::null(),
-            ))
+    pub fn with_capacity_and_hasher(capacity: usize, build_hasher: H) -> Self {
+        let array = if capacity == 0 {
+            AtomicArc::null()
+        } else {
+            AtomicArc::from(unsafe {
+                Arc::new_unchecked(BucketArray::<K, V, SEQUENTIAL>::new(
+                    capacity,
+                    AtomicArc::null(),
+                ))
+            })
         };
-        HashMap {
-            array: AtomicArc::from(array),
+        Self {
+            array,
             minimum_capacity: AtomicUsize::new(capacity),
             build_hasher,
         }
@@ -1440,18 +1444,8 @@ where
     /// ```
     #[inline]
     #[must_use]
-    pub fn with_capacity(capacity: usize) -> HashMap<K, V, RandomState> {
-        let array = unsafe {
-            Arc::new_unchecked(BucketArray::<K, V, SEQUENTIAL>::new(
-                capacity,
-                AtomicArc::null(),
-            ))
-        };
-        HashMap {
-            array: AtomicArc::from(array),
-            minimum_capacity: AtomicUsize::new(capacity),
-            build_hasher: RandomState::new(),
-        }
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self::with_capacity_and_hasher(capacity, RandomState::new())
     }
 }
 
@@ -1474,11 +1468,7 @@ where
     /// ```
     #[inline]
     fn default() -> Self {
-        HashMap {
-            array: AtomicArc::null(),
-            minimum_capacity: AtomicUsize::new(0),
-            build_hasher: Default::default(),
-        }
+        Self::with_hasher(H::default())
     }
 }
 
@@ -1513,6 +1503,8 @@ where
     fn try_clone(_: &(K, V)) -> Option<(K, V)> {
         None
     }
+    #[inline]
+    fn try_reset(_: &mut V) {}
     #[inline]
     fn bucket_array(&self) -> &AtomicArc<BucketArray<K, V, SEQUENTIAL>> {
         &self.array

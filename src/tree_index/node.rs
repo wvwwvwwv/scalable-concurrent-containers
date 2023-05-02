@@ -27,13 +27,13 @@ where
 {
     /// Creates a new [`InternalNode`].
     #[inline]
-    pub(super) fn new_internal_node() -> Node<K, V> {
+    pub(super) fn new_internal_node() -> Self {
         Self::Internal(InternalNode::new())
     }
 
     /// Creates a new [`LeafNode`].
     #[inline]
-    pub(super) fn new_leaf_node() -> Node<K, V> {
+    pub(super) fn new_leaf_node() -> Self {
         Self::Leaf(LeafNode::new())
     }
 

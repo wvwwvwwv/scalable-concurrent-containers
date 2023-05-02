@@ -71,7 +71,7 @@ impl<T, const ARRAY_LEN: usize> Bag<T, ARRAY_LEN> {
     /// ```
     #[inline]
     #[must_use]
-    pub fn new() -> Bag<T, ARRAY_LEN> {
+    pub fn new() -> Self {
         assert!(ARRAY_LEN <= DEFAULT_ARRAY_LEN);
         Self {
             primary_storage: Storage::new(),
@@ -270,7 +270,7 @@ impl<'b, T, const ARRAY_LEN: usize> Iterator for Accessor<'b, T, ARRAY_LEN> {
 
 impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
     /// Creates a new [`Storage`].
-    fn new() -> Storage<T, ARRAY_LEN> {
+    fn new() -> Self {
         #[allow(clippy::uninit_assumed_init)]
         Storage {
             storage: unsafe { MaybeUninit::uninit().assume_init() },
@@ -279,9 +279,9 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
     }
 
     /// Creates a new [`Storage`] with one inserted.
-    fn with_val(val: T) -> Storage<T, ARRAY_LEN> {
+    fn with_val(val: T) -> Self {
         #[allow(clippy::uninit_assumed_init)]
-        let mut storage = Storage::<T, ARRAY_LEN> {
+        let mut storage = Self {
             storage: unsafe { MaybeUninit::uninit().assume_init() },
             metadata: AtomicUsize::new(1_usize << ARRAY_LEN),
         };

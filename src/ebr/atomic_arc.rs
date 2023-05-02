@@ -30,9 +30,9 @@ impl<T: 'static> AtomicArc<T> {
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(10);
     /// ```
     #[inline]
-    pub fn new(t: T) -> AtomicArc<T> {
+    pub fn new(t: T) -> Self {
         let boxed = Box::new(RefCounted::new(t));
-        AtomicArc {
+        Self {
             instance_ptr: AtomicPtr::new(Box::into_raw(boxed)),
         }
     }
@@ -51,10 +51,10 @@ impl<T> AtomicArc<T> {
     /// ```
     #[inline]
     #[must_use]
-    pub const fn from(arc: Arc<T>) -> AtomicArc<T> {
+    pub const fn from(arc: Arc<T>) -> Self {
         let ptr = arc.get_underlying_ptr();
         forget(arc);
-        AtomicArc {
+        Self {
             instance_ptr: AtomicPtr::new(ptr),
         }
     }
@@ -70,8 +70,8 @@ impl<T> AtomicArc<T> {
     /// ```
     #[inline]
     #[must_use]
-    pub const fn null() -> AtomicArc<T> {
-        AtomicArc {
+    pub const fn null() -> Self {
+        Self {
             instance_ptr: AtomicPtr::new(null_mut()),
         }
     }
@@ -363,7 +363,7 @@ impl<T> Clone for AtomicArc<T> {
 impl<T> Default for AtomicArc<T> {
     #[inline]
     fn default() -> Self {
-        AtomicArc::null()
+        Self::null()
     }
 }
 

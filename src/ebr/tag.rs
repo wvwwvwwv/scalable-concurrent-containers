@@ -28,7 +28,7 @@ impl Tag {
 
     /// Returns the tag embedded in the pointer.
     #[inline]
-    pub(super) fn into_tag<P>(ptr: *const P) -> Tag {
+    pub(super) fn into_tag<P>(ptr: *const P) -> Self {
         match ((ptr as usize & 1) == 1, (ptr as usize & 2) == 2) {
             (false, false) => Tag::None,
             (true, false) => Tag::First,

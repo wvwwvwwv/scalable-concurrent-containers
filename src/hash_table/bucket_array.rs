@@ -34,10 +34,7 @@ impl<K: Eq, V, const TYPE: char> BucketArray<K, V, TYPE> {
     /// Creates a new [`BucketArray`] of the given capacity.
     ///
     /// `capacity` is the desired number entries, not the number of [`Bucket`] instances.
-    pub(crate) fn new(
-        capacity: usize,
-        old_array: AtomicArc<BucketArray<K, V, TYPE>>,
-    ) -> BucketArray<K, V, TYPE> {
+    pub(crate) fn new(capacity: usize, old_array: AtomicArc<BucketArray<K, V, TYPE>>) -> Self {
         let log2_array_len = Self::calculate_log2_array_size(capacity);
         assert_ne!(log2_array_len, 0);
 
@@ -83,7 +80,7 @@ impl<K: Eq, V, const TYPE: char> BucketArray<K, V, TYPE> {
 
             let sample_size = u16::from(log2_array_len).next_power_of_two();
 
-            BucketArray {
+            Self {
                 bucket_ptr: bucket_array_ptr,
                 data_block_ptr: data_block_array_ptr,
                 array_len,

@@ -111,8 +111,8 @@ where
     /// ```
     #[inline]
     #[must_use]
-    pub const fn new() -> TreeIndex<K, V> {
-        TreeIndex {
+    pub const fn new() -> Self {
+        Self {
             root: AtomicArc::null(),
         }
     }
@@ -650,7 +650,7 @@ where
     /// ```
     #[inline]
     fn default() -> Self {
-        TreeIndex::new()
+        Self::new()
     }
 }
 

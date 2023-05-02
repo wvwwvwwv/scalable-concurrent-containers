@@ -25,8 +25,8 @@ impl<'b, T> Ptr<'b, T> {
     /// ```
     #[inline]
     #[must_use]
-    pub const fn null() -> Ptr<'b, T> {
-        Ptr {
+    pub const fn null() -> Self {
+        Self {
             instance_ptr: ptr::null(),
             _phantom: PhantomData,
         }
@@ -160,8 +160,8 @@ impl<'b, T> Ptr<'b, T> {
     /// ```
     #[inline]
     #[must_use]
-    pub fn with_tag(self, tag: Tag) -> Ptr<'b, T> {
-        Ptr::from(Tag::update_tag(self.instance_ptr, tag))
+    pub fn with_tag(self, tag: Tag) -> Self {
+        Self::from(Tag::update_tag(self.instance_ptr, tag))
     }
 
     /// Returns a copy of `self` with its [`Tag`] erased.
@@ -180,8 +180,8 @@ impl<'b, T> Ptr<'b, T> {
     /// ```
     #[inline]
     #[must_use]
-    pub fn without_tag(self) -> Ptr<'b, T> {
-        Ptr::from(Tag::unset_tag(self.instance_ptr))
+    pub fn without_tag(self) -> Self {
+        Self::from(Tag::unset_tag(self.instance_ptr))
     }
 
     /// Tries to convert itself into an [`Arc`].
@@ -218,8 +218,8 @@ impl<'b, T> Ptr<'b, T> {
 
     /// Creates a new [`Ptr`] from a raw pointer.
     #[inline]
-    pub(super) const fn from(ptr: *const RefCounted<T>) -> Ptr<'b, T> {
-        Ptr {
+    pub(super) const fn from(ptr: *const RefCounted<T>) -> Self {
+        Self {
             instance_ptr: ptr,
             _phantom: std::marker::PhantomData,
         }
@@ -247,7 +247,7 @@ impl<'b, T> Copy for Ptr<'b, T> {}
 impl<'b, T> Default for Ptr<'b, T> {
     #[inline]
     fn default() -> Self {
-        Ptr::null()
+        Self::null()
     }
 }
 

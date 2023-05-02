@@ -29,10 +29,10 @@ impl Barrier {
     /// ```
     #[inline]
     #[must_use]
-    pub fn new() -> Barrier {
+    pub fn new() -> Self {
         let collector_ptr = Collector::current();
         let epoch_updated = unsafe { (*collector_ptr).new_barrier() };
-        let barrier = Barrier { collector_ptr };
+        let barrier = Self { collector_ptr };
         if epoch_updated {
             unsafe {
                 (*barrier.collector_ptr).epoch_updated();
@@ -96,12 +96,12 @@ impl Barrier {
 
     /// Creates a new [`Barrier`] for dropping an instance.
     #[inline]
-    pub(super) fn new_for_drop() -> Barrier {
+    pub(super) fn new_for_drop() -> Self {
         let collector_ptr = Collector::current();
         unsafe {
             (*collector_ptr).new_barrier();
         }
-        Barrier { collector_ptr }
+        Self { collector_ptr }
     }
 
     /// Reclaims the supplied instance.
