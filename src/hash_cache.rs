@@ -1,9 +1,10 @@
-//! [`HashMap`] is a concurrent and asynchronous hash map.
+//! [`HashCache`] is a concurrent and asynchronous pseudo-LRU cache backed by
+//! [`HashMap`](super::HashMap).
 
 #![allow(dead_code, unused_imports)]
 
 use super::ebr::{Arc, AtomicArc, Barrier, Tag};
-use super::hash_table::bucket::{DataBlock, EntryPtr, Locker, Reader, BUCKET_LEN};
+use super::hash_table::bucket::{DataBlock, EntryPtr, Locker, Reader, CACHE, BUCKET_LEN};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::HashTable;
 use super::wait_queue::AsyncWait;
@@ -27,7 +28,6 @@ where
     K: Eq + Hash,
     H: BuildHasher,
 {
-    array: AtomicArc<BucketArray<K, V, false>>,
-    max_capacity: usize,
+    array: AtomicArc<BucketArray<K, V, CACHE>>,
     build_hasher: H,
 }

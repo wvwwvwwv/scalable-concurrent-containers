@@ -1,7 +1,7 @@
 //! [`HashIndex`] is a read-optimized concurrent and asynchronous hash map.
 
 use super::ebr::{Arc, AtomicArc, Barrier};
-use super::hash_table::bucket::{Bucket, EntryPtr, Locker};
+use super::hash_table::bucket::{Bucket, EntryPtr, Locker, OPTIMISTIC};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::HashTable;
 use super::wait_queue::AsyncWait;
@@ -47,7 +47,7 @@ where
     V: 'static + Clone,
     H: BuildHasher,
 {
-    array: AtomicArc<BucketArray<K, V, true>>,
+    array: AtomicArc<BucketArray<K, V, OPTIMISTIC>>,
     minimum_capacity: AtomicUsize,
     build_hasher: H,
 }
@@ -76,10 +76,10 @@ where
     H: BuildHasher,
 {
     hashindex: &'h HashIndex<K, V, H>,
-    current_array: Option<&'b BucketArray<K, V, true>>,
+    current_array: Option<&'b BucketArray<K, V, OPTIMISTIC>>,
     current_index: usize,
-    current_bucket: Option<&'b Bucket<K, V, true>>,
-    current_entry_ptr: EntryPtr<'b, K, V, true>,
+    current_bucket: Option<&'b Bucket<K, V, OPTIMISTIC>>,
+    current_entry_ptr: EntryPtr<'b, K, V, OPTIMISTIC>,
     barrier: &'b Barrier,
 }
 
@@ -147,7 +147,7 @@ where
     #[inline]
     pub fn with_capacity_and_hasher(capacity: usize, build_hasher: H) -> HashIndex<K, V, H> {
         HashIndex {
-            array: AtomicArc::from(Arc::new(BucketArray::<K, V, true>::new(
+            array: AtomicArc::from(Arc::new(BucketArray::<K, V, OPTIMISTIC>::new(
                 capacity,
                 AtomicArc::null(),
             ))),
@@ -225,7 +225,7 @@ where
     pub fn insert(&self, key: K, val: V) -> Result<(), (K, V)> {
         let barrier = Barrier::new();
         let hash = self.hash(key.borrow());
-        if let Ok(Some((k, v))) = self.insert_entry::<_, false>(key, val, hash, &mut (), &barrier) {
+        if let Ok(Some((k, v))) = self.insert_entry(key, val, hash, &mut (), &barrier) {
             Err((k, v))
         } else {
             Ok(())
@@ -254,13 +254,7 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            match self.insert_entry::<_, false>(
-                key,
-                val,
-                hash,
-                &mut async_wait_pinned,
-                &Barrier::new(),
-            ) {
+            match self.insert_entry(key, val, hash, &mut async_wait_pinned, &Barrier::new()) {
                 Ok(Some(returned)) => return Err(returned),
                 Ok(None) => return Ok(()),
                 Err(returned) => {
@@ -317,7 +311,7 @@ where
         let barrier = Barrier::new();
         let hash = self.hash(key);
         let Ok((mut locker, data_block_mut, mut entry_ptr, _)) = self
-            .acquire_entry::<_, _, false>(key, hash, &mut (), &barrier) else {
+            .acquire_entry(key, hash, &mut (), &barrier) else {
             return false;
         };
         if entry_ptr.is_valid() {
@@ -329,9 +323,9 @@ where
                 ModifyAction::Update(new_v) => {
                     // A new version of the entry will be created.
                     let new_k = k.clone();
-                    locker.insert_with::<_, false>(
+                    locker.insert_with(
                         data_block_mut,
-                        BucketArray::<K, V, false>::partial_hash(hash),
+                        BucketArray::<K, V, OPTIMISTIC>::partial_hash(hash),
                         || (new_k, new_v),
                         &barrier,
                     );
@@ -392,7 +386,7 @@ where
             {
                 let barrier = Barrier::new();
                 if let Ok((mut locker, data_block_mut, mut entry_ptr, _)) =
-                    self.acquire_entry::<_, _, false>(key, hash, &mut async_wait_pinned, &barrier)
+                    self.acquire_entry(key, hash, &mut async_wait_pinned, &barrier)
                 {
                     if entry_ptr.is_valid() {
                         let (k, v) = entry_ptr.get(data_block_mut);
@@ -403,9 +397,9 @@ where
                             ModifyAction::Update(new_v) => {
                                 // A new version of the entry will be created.
                                 let new_k = k.clone();
-                                locker.insert_with::<_, false>(
+                                locker.insert_with(
                                     data_block_mut,
-                                    BucketArray::<K, V, false>::partial_hash(hash),
+                                    BucketArray::<K, V, OPTIMISTIC>::partial_hash(hash),
                                     || (new_k, new_v),
                                     &barrier,
                                 );
@@ -457,7 +451,7 @@ where
     {
         let barrier = Barrier::new();
         let (mut locker, data_block_mut, mut entry_ptr, _) = self
-            .acquire_entry::<_, _, false>(key, self.hash(key), &mut (), &barrier)
+            .acquire_entry(key, self.hash(key), &mut (), &barrier)
             .ok()?;
         if entry_ptr.is_valid() {
             let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
@@ -498,8 +492,8 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if let Ok((mut locker, data_block_mut, mut entry_ptr, _)) = self
-                .acquire_entry::<_, _, false>(key, hash, &mut async_wait_pinned, &Barrier::new())
+            if let Ok((mut locker, data_block_mut, mut entry_ptr, _)) =
+                self.acquire_entry(key, hash, &mut async_wait_pinned, &Barrier::new())
             {
                 if entry_ptr.is_valid() {
                     let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
@@ -581,7 +575,7 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.remove_entry::<_, _, _, _, _, false>(
+        self.remove_entry(
             key,
             self.hash(key),
             |v: &mut V| condition(v),
@@ -617,7 +611,7 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            match self.remove_entry::<_, _, _, _, _, false>(
+            match self.remove_entry(
                 key,
                 hash,
                 condition,
@@ -656,7 +650,7 @@ where
         Q: Eq + Hash + ?Sized,
     {
         let barrier = Barrier::new();
-        self.read_entry::<_, _, false>(key, self.hash(key), &mut (), &barrier)
+        self.read_entry(key, self.hash(key), &mut (), &barrier)
             .ok()
             .flatten()
             .map(|(k, v)| reader(k, v))
@@ -693,7 +687,7 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.read_entry::<_, _, false>(key, self.hash(key), &mut (), barrier)
+        self.read_entry(key, self.hash(key), &mut (), barrier)
             .ok()
             .flatten()
             .map(|(k, v)| reader(k, v))
@@ -746,7 +740,7 @@ where
     /// ```
     #[inline]
     pub fn retain<F: FnMut(&K, &V) -> bool>(&self, mut pred: F) -> (usize, usize) {
-        self.retain_entries::<_, false>(|k, v| pred(k, v))
+        self.retain_entries(|k, v| pred(k, v))
     }
 
     /// Retains the entries specified by the predicate.
@@ -965,11 +959,11 @@ where
     }
 
     /// Clears the old array asynchronously.
-    async fn cleanse_old_array_async(&self, current_array: &BucketArray<K, V, true>) {
+    async fn cleanse_old_array_async(&self, current_array: &BucketArray<K, V, OPTIMISTIC>) {
         while !current_array.old_array(&Barrier::new()).is_null() {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if self.incremental_rehash::<_, _, false, false>(
+            if self.incremental_rehash::<_, _, false>(
                 current_array,
                 &mut async_wait_pinned,
                 &Barrier::new(),
@@ -1053,7 +1047,7 @@ where
     #[must_use]
     pub fn with_capacity(capacity: usize) -> HashIndex<K, V, RandomState> {
         HashIndex {
-            array: AtomicArc::from(Arc::new(BucketArray::<K, V, true>::new(
+            array: AtomicArc::from(Arc::new(BucketArray::<K, V, OPTIMISTIC>::new(
                 capacity,
                 AtomicArc::null(),
             ))),
@@ -1093,7 +1087,7 @@ where
     }
 }
 
-impl<K, V, H> HashTable<K, V, H, true> for HashIndex<K, V, H>
+impl<K, V, H> HashTable<K, V, H, OPTIMISTIC> for HashIndex<K, V, H>
 where
     K: 'static + Clone + Eq + Hash,
     V: 'static + Clone,
@@ -1108,7 +1102,7 @@ where
         Some((entry.0.clone(), entry.1.clone()))
     }
     #[inline]
-    fn bucket_array(&self) -> &AtomicArc<BucketArray<K, V, true>> {
+    fn bucket_array(&self) -> &AtomicArc<BucketArray<K, V, OPTIMISTIC>> {
         &self.array
     }
     #[inline]
@@ -1116,8 +1110,8 @@ where
         &self.minimum_capacity
     }
     #[inline]
-    fn is_capacity_fixed(&self) -> bool {
-        false
+    fn maximum_capacity(&self) -> usize {
+        1_usize << (usize::BITS - 1)
     }
 }
 

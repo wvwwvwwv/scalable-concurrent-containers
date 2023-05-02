@@ -1,7 +1,7 @@
 //! [`HashMap`] is a concurrent and asynchronous hash map.
 
 use super::ebr::{Arc, AtomicArc, Barrier, Tag};
-use super::hash_table::bucket::{DataBlock, EntryPtr, Locker, Reader, BUCKET_LEN};
+use super::hash_table::bucket::{DataBlock, EntryPtr, Locker, Reader, BUCKET_LEN, SEQUENTIAL};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::HashTable;
 use super::wait_queue::AsyncWait;
@@ -68,7 +68,7 @@ where
     K: Eq + Hash,
     H: BuildHasher,
 {
-    array: AtomicArc<BucketArray<K, V, false>>,
+    array: AtomicArc<BucketArray<K, V, SEQUENTIAL>>,
     minimum_capacity: AtomicUsize,
     build_hasher: H,
 }
@@ -95,8 +95,8 @@ where
     hashmap: &'h HashMap<K, V, H>,
     index: usize,
     data_block_mut: &'h mut DataBlock<K, V, BUCKET_LEN>,
-    locker: Locker<'h, K, V, false>,
-    entry_ptr: EntryPtr<'h, K, V, false>,
+    locker: Locker<'h, K, V, SEQUENTIAL>,
+    entry_ptr: EntryPtr<'h, K, V, SEQUENTIAL>,
 }
 
 /// [`VacantEntry`] is a view into a vacant entry in a [`HashMap`].
@@ -110,7 +110,7 @@ where
     hash: u64,
     index: usize,
     data_block_mut: &'h mut DataBlock<K, V, BUCKET_LEN>,
-    locker: Locker<'h, K, V, false>,
+    locker: Locker<'h, K, V, SEQUENTIAL>,
 }
 
 /// [`Reserve`] keeps the capacity of the associated [`HashMap`] higher than a certain level.
@@ -168,7 +168,10 @@ where
     #[inline]
     pub fn with_capacity_and_hasher(capacity: usize, build_hasher: H) -> HashMap<K, V, H> {
         let array = unsafe {
-            Arc::new_unchecked(BucketArray::<K, V, false>::new(capacity, AtomicArc::null()))
+            Arc::new_unchecked(BucketArray::<K, V, SEQUENTIAL>::new(
+                capacity,
+                AtomicArc::null(),
+            ))
         };
         HashMap {
             array: AtomicArc::from(array),
@@ -248,7 +251,7 @@ where
         let barrier = Barrier::new();
         let hash = self.hash(key.borrow());
         let (locker, data_block_mut, entry_ptr, index) = unsafe {
-            self.acquire_entry::<_, _, false>(
+            self.acquire_entry(
                 key.borrow(),
                 hash,
                 &mut (),
@@ -298,14 +301,12 @@ where
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             {
                 let barrier = Barrier::new();
-                if let Ok((locker, data_block_mut, entry_ptr, index)) = self
-                    .acquire_entry::<_, _, false>(
-                        key.borrow(),
-                        hash,
-                        &mut async_wait_pinned,
-                        self.prolonged_barrier_ref(&barrier),
-                    )
-                {
+                if let Ok((locker, data_block_mut, entry_ptr, index)) = self.acquire_entry(
+                    key.borrow(),
+                    hash,
+                    &mut async_wait_pinned,
+                    self.prolonged_barrier_ref(&barrier),
+                ) {
                     if entry_ptr.is_valid() {
                         return Entry::Occupied(OccupiedEntry {
                             hashmap: self,
@@ -355,7 +356,7 @@ where
         let prolonged_barrier = self.prolonged_barrier_ref(&barrier);
         let mut current_array_ptr = self.array.load(Acquire, prolonged_barrier);
         while let Some(current_array) = current_array_ptr.as_ref() {
-            self.clear_old_array::<false>(current_array, &barrier);
+            self.clear_old_array(current_array, &barrier);
             for index in 0..current_array.num_buckets() {
                 let bucket = current_array.bucket_mut(index);
                 if let Some(locker) = Locker::lock(bucket, prolonged_barrier) {
@@ -403,7 +404,7 @@ where
     pub async fn first_occupied_entry_async(&self) -> Option<OccupiedEntry<K, V, H>> {
         let mut current_array_holder = self.array.get_arc(Acquire, &Barrier::new());
         while let Some(current_array) = current_array_holder.take() {
-            self.cleanse_old_array_async::<false>(&current_array).await;
+            self.cleanse_old_array_async(&current_array).await;
             for index in 0..current_array.num_buckets() {
                 loop {
                     let mut async_wait = AsyncWait::default();
@@ -471,7 +472,7 @@ where
     pub fn insert(&self, key: K, val: V) -> Result<(), (K, V)> {
         let barrier = Barrier::new();
         let hash = self.hash(key.borrow());
-        if let Ok(Some((k, v))) = self.insert_entry::<_, false>(key, val, hash, &mut (), &barrier) {
+        if let Ok(Some((k, v))) = self.insert_entry(key, val, hash, &mut (), &barrier) {
             Err((k, v))
         } else {
             Ok(())
@@ -500,13 +501,7 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            match self.insert_entry::<_, false>(
-                key,
-                val,
-                hash,
-                &mut async_wait_pinned,
-                &Barrier::new(),
-            ) {
+            match self.insert_entry(key, val, hash, &mut async_wait_pinned, &Barrier::new()) {
                 Ok(Some(returned)) => return Err(returned),
                 Ok(None) => return Ok(()),
                 Err(returned) => {
@@ -543,7 +538,7 @@ where
     {
         let barrier = Barrier::new();
         let (mut locker, data_block_mut, mut entry_ptr, _) = self
-            .acquire_entry::<_, _, false>(key, self.hash(key.borrow()), &mut (), &barrier)
+            .acquire_entry(key, self.hash(key.borrow()), &mut (), &barrier)
             .ok()?;
         if entry_ptr.is_valid() {
             let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
@@ -578,8 +573,8 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if let Ok((mut locker, data_block_mut, mut entry_ptr, _)) = self
-                .acquire_entry::<_, _, false>(key, hash, &mut async_wait_pinned, &Barrier::new())
+            if let Ok((mut locker, data_block_mut, mut entry_ptr, _)) =
+                self.acquire_entry(key, hash, &mut async_wait_pinned, &Barrier::new())
             {
                 if entry_ptr.is_valid() {
                     let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
@@ -615,7 +610,7 @@ where
         let barrier = Barrier::new();
         let hash = self.hash(key.borrow());
         if let Ok((mut locker, data_block_mut, mut entry_ptr, _)) =
-            self.acquire_entry::<_, _, false>(&key, hash, &mut (), &barrier)
+            self.acquire_entry(&key, hash, &mut (), &barrier)
         {
             if entry_ptr.is_valid() {
                 let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
@@ -623,9 +618,9 @@ where
                 return;
             }
             let val = constructor();
-            locker.insert_with::<_, false>(
+            locker.insert_with(
                 data_block_mut,
-                BucketArray::<K, V, false>::partial_hash(hash),
+                BucketArray::<K, V, SEQUENTIAL>::partial_hash(hash),
                 || (key, val),
                 &barrier,
             );
@@ -659,16 +654,16 @@ where
             {
                 let barrier = Barrier::new();
                 if let Ok((mut locker, data_block_mut, mut entry_ptr, _)) =
-                    self.acquire_entry::<_, _, false>(&key, hash, &mut async_wait_pinned, &barrier)
+                    self.acquire_entry(&key, hash, &mut async_wait_pinned, &barrier)
                 {
                     if entry_ptr.is_valid() {
                         let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
                         updater(k, v);
                     } else {
                         let val = constructor();
-                        locker.insert_with::<_, false>(
+                        locker.insert_with(
                             data_block_mut,
-                            BucketArray::<K, V, false>::partial_hash(hash),
+                            BucketArray::<K, V, SEQUENTIAL>::partial_hash(hash),
                             || (key, val),
                             &barrier,
                         );
@@ -747,7 +742,7 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.remove_entry::<_, _, _, _, _, false>(
+        self.remove_entry(
             key,
             self.hash(key.borrow()),
             condition,
@@ -786,7 +781,7 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            match self.remove_entry::<_, _, _, _, _, false>(
+            match self.remove_entry(
                 key,
                 hash,
                 condition,
@@ -822,7 +817,7 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.read_entry::<_, _, false>(key, self.hash(key), &mut (), &Barrier::new())
+        self.read_entry(key, self.hash(key), &mut (), &Barrier::new())
             .ok()
             .flatten()
             .map(|(k, v)| reader(k, v))
@@ -852,8 +847,7 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if let Ok(result) =
-                self.read_entry::<_, _, false>(key, hash, &mut async_wait_pinned, &Barrier::new())
+            if let Ok(result) = self.read_entry(key, hash, &mut async_wait_pinned, &Barrier::new())
             {
                 return result.map(|(k, v)| reader(k, v));
             }
@@ -985,7 +979,7 @@ where
         let barrier = Barrier::new();
         let mut current_array_ptr = self.array.load(Acquire, &barrier);
         while let Some(current_array) = current_array_ptr.as_ref() {
-            self.clear_old_array::<false>(current_array, &barrier);
+            self.clear_old_array(current_array, &barrier);
             for index in 0..current_array.num_buckets() {
                 let bucket = current_array.bucket(index);
                 if let Some(locker) = Reader::lock(bucket, &barrier) {
@@ -1034,7 +1028,7 @@ where
     pub async fn any_async<P: FnMut(&K, &V) -> bool>(&self, mut pred: P) -> bool {
         let mut current_array_holder = self.array.get_arc(Acquire, &Barrier::new());
         while let Some(current_array) = current_array_holder.take() {
-            self.cleanse_old_array_async::<false>(&current_array).await;
+            self.cleanse_old_array_async(&current_array).await;
             for index in 0..current_array.num_buckets() {
                 loop {
                     let mut async_wait = AsyncWait::default();
@@ -1164,7 +1158,7 @@ where
     /// ```
     #[inline]
     pub fn retain<F: FnMut(&K, &mut V) -> bool>(&self, pred: F) -> (usize, usize) {
-        self.retain_entries::<_, false>(pred)
+        self.retain_entries(pred)
     }
 
     /// Retains the entries specified by the predicate.
@@ -1199,7 +1193,7 @@ where
         let mut num_removed: usize = 0;
         let mut current_array_holder = self.array.get_arc(Acquire, &Barrier::new());
         while let Some(current_array) = current_array_holder.take() {
-            self.cleanse_old_array_async::<false>(&current_array).await;
+            self.cleanse_old_array_async(&current_array).await;
             for index in 0..current_array.num_buckets() {
                 loop {
                     let mut async_wait = AsyncWait::default();
@@ -1346,14 +1340,11 @@ where
     }
 
     /// Clears the old array asynchronously.
-    async fn cleanse_old_array_async<const ALLOW_EVICTION: bool>(
-        &self,
-        current_array: &BucketArray<K, V, false>,
-    ) {
+    async fn cleanse_old_array_async(&self, current_array: &BucketArray<K, V, SEQUENTIAL>) {
         while !current_array.old_array(&Barrier::new()).is_null() {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if self.incremental_rehash::<_, _, false, ALLOW_EVICTION>(
+            if self.incremental_rehash::<_, _, false>(
                 current_array,
                 &mut async_wait_pinned,
                 &Barrier::new(),
@@ -1451,7 +1442,10 @@ where
     #[must_use]
     pub fn with_capacity(capacity: usize) -> HashMap<K, V, RandomState> {
         let array = unsafe {
-            Arc::new_unchecked(BucketArray::<K, V, false>::new(capacity, AtomicArc::null()))
+            Arc::new_unchecked(BucketArray::<K, V, SEQUENTIAL>::new(
+                capacity,
+                AtomicArc::null(),
+            ))
         };
         HashMap {
             array: AtomicArc::from(array),
@@ -1506,7 +1500,7 @@ where
     }
 }
 
-impl<K, V, H> HashTable<K, V, H, false> for HashMap<K, V, H>
+impl<K, V, H> HashTable<K, V, H, SEQUENTIAL> for HashMap<K, V, H>
 where
     K: Eq + Hash,
     H: BuildHasher,
@@ -1520,7 +1514,7 @@ where
         None
     }
     #[inline]
-    fn bucket_array(&self) -> &AtomicArc<BucketArray<K, V, false>> {
+    fn bucket_array(&self) -> &AtomicArc<BucketArray<K, V, SEQUENTIAL>> {
         &self.array
     }
     #[inline]
@@ -1528,8 +1522,8 @@ where
         &self.minimum_capacity
     }
     #[inline]
-    fn is_capacity_fixed(&self) -> bool {
-        false
+    fn maximum_capacity(&self) -> usize {
+        1_usize << (usize::BITS - 1)
     }
 }
 
@@ -2133,9 +2127,9 @@ where
     #[inline]
     pub fn insert_entry(mut self, val: V) -> OccupiedEntry<'h, K, V, H> {
         let barrier = Barrier::new();
-        let entry_ptr = self.locker.insert_with::<_, false>(
+        let entry_ptr = self.locker.insert_with(
             self.data_block_mut,
-            BucketArray::<K, V, false>::partial_hash(self.hash),
+            BucketArray::<K, V, SEQUENTIAL>::partial_hash(self.hash),
             || (self.key, val),
             self.hashmap.prolonged_barrier_ref(&barrier),
         );

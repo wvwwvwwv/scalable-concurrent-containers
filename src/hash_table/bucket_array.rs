@@ -1,4 +1,4 @@
-use super::bucket::{Bucket, DataBlock, BUCKET_LEN};
+use super::bucket::{Bucket, DataBlock, BUCKET_LEN, OPTIMISTIC};
 use crate::ebr::{AtomicArc, Barrier, Ptr, Tag};
 use std::alloc::{alloc, alloc_zeroed, dealloc, Layout};
 use std::mem::{align_of, needs_drop, size_of};
@@ -6,18 +6,18 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 
 /// [`BucketArray`] is a special purpose array to manage [`Bucket`] and [`DataBlock`].
-pub struct BucketArray<K: Eq, V, const LOCK_FREE: bool> {
-    bucket_ptr: *const Bucket<K, V, LOCK_FREE>,
+pub struct BucketArray<K: Eq, V, const TYPE: char> {
+    bucket_ptr: *const Bucket<K, V, TYPE>,
     data_block_ptr: *const DataBlock<K, V, BUCKET_LEN>,
     array_len: usize,
     hash_offset: u32,
     sample_size: u16,
     bucket_ptr_offset: u16,
-    old_array: AtomicArc<BucketArray<K, V, LOCK_FREE>>,
+    old_array: AtomicArc<BucketArray<K, V, TYPE>>,
     num_cleared_buckets: AtomicUsize,
 }
 
-impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
+impl<K: Eq, V, const TYPE: char> BucketArray<K, V, TYPE> {
     /// Returns the minimum capacity.
     #[inline]
     pub const fn minimum_capacity() -> usize {
@@ -36,15 +36,15 @@ impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
     /// `capacity` is the desired number entries, not the number of [`Bucket`] instances.
     pub(crate) fn new(
         capacity: usize,
-        old_array: AtomicArc<BucketArray<K, V, LOCK_FREE>>,
-    ) -> BucketArray<K, V, LOCK_FREE> {
+        old_array: AtomicArc<BucketArray<K, V, TYPE>>,
+    ) -> BucketArray<K, V, TYPE> {
         let log2_array_len = Self::calculate_log2_array_size(capacity);
         assert_ne!(log2_array_len, 0);
 
         let array_len = 1_usize << log2_array_len;
         unsafe {
             let (bucket_size, bucket_array_allocation_size, bucket_array_layout) =
-                Self::calculate_memory_layout::<Bucket<K, V, LOCK_FREE>>(array_len);
+                Self::calculate_memory_layout::<Bucket<K, V, TYPE>>(array_len);
             let bucket_array_ptr = alloc_zeroed(bucket_array_layout);
             assert!(
                 !bucket_array_ptr.is_null(),
@@ -61,10 +61,9 @@ impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
             );
 
             #[allow(clippy::cast_ptr_alignment)]
-            let bucket_array_ptr =
-                bucket_array_ptr
-                    .add(bucket_array_ptr_offset)
-                    .cast::<Bucket<K, V, LOCK_FREE>>();
+            let bucket_array_ptr = bucket_array_ptr
+                .add(bucket_array_ptr_offset)
+                .cast::<Bucket<K, V, TYPE>>();
             #[allow(clippy::cast_possible_truncation)]
             let bucket_array_ptr_offset = bucket_array_ptr_offset as u16;
 
@@ -99,7 +98,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
 
     /// Returns a reference to a [`Bucket`] at the given position.
     #[inline]
-    pub(crate) fn bucket(&self, index: usize) -> &Bucket<K, V, LOCK_FREE> {
+    pub(crate) fn bucket(&self, index: usize) -> &Bucket<K, V, TYPE> {
         debug_assert!(index < self.num_buckets());
         unsafe { &(*(self.bucket_ptr.add(index))) }
     }
@@ -107,9 +106,9 @@ impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
     /// Returns a mutable reference to a [`Bucket`] at the given position.
     #[allow(clippy::mut_from_ref)]
     #[inline]
-    pub(crate) fn bucket_mut(&self, index: usize) -> &mut Bucket<K, V, LOCK_FREE> {
+    pub(crate) fn bucket_mut(&self, index: usize) -> &mut Bucket<K, V, TYPE> {
         debug_assert!(index < self.num_buckets());
-        unsafe { &mut (*(self.bucket_ptr.add(index) as *mut Bucket<K, V, LOCK_FREE>)) }
+        unsafe { &mut (*(self.bucket_ptr.add(index) as *mut Bucket<K, V, TYPE>)) }
     }
 
     /// Returns a reference to its rehashing metadata.
@@ -165,10 +164,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
 
     /// Returns a [`Ptr`] to the old array.
     #[inline]
-    pub(crate) fn old_array<'b>(
-        &self,
-        barrier: &'b Barrier,
-    ) -> Ptr<'b, BucketArray<K, V, LOCK_FREE>> {
+    pub(crate) fn old_array<'b>(&self, barrier: &'b Barrier) -> Ptr<'b, BucketArray<K, V, TYPE>> {
         self.old_array.load(Relaxed, barrier)
     }
 
@@ -221,9 +217,9 @@ impl<K: Eq, V, const LOCK_FREE: bool> BucketArray<K, V, LOCK_FREE> {
     }
 }
 
-impl<K: Eq, V, const LOCK_FREE: bool> Drop for BucketArray<K, V, LOCK_FREE> {
+impl<K: Eq, V, const TYPE: char> Drop for BucketArray<K, V, TYPE> {
     fn drop(&mut self) {
-        if !LOCK_FREE && !self.old_array.is_null(Relaxed) {
+        if TYPE != OPTIMISTIC && !self.old_array.is_null(Relaxed) {
             // The `BucketArray` should be dropped immediately.
             unsafe {
                 self.old_array
@@ -233,7 +229,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> Drop for BucketArray<K, V, LOCK_FREE> {
             }
         }
 
-        let num_cleared_buckets = if LOCK_FREE && needs_drop::<(K, V)>() {
+        let num_cleared_buckets = if TYPE == OPTIMISTIC && needs_drop::<(K, V)>() {
             // No instances are dropped when the array is reachable.
             0
         } else {
@@ -253,10 +249,10 @@ impl<K: Eq, V, const LOCK_FREE: bool> Drop for BucketArray<K, V, LOCK_FREE> {
 
         unsafe {
             dealloc(
-                (self.bucket_ptr as *mut Bucket<K, V, LOCK_FREE>)
+                (self.bucket_ptr as *mut Bucket<K, V, TYPE>)
                     .cast::<u8>()
                     .sub(self.bucket_ptr_offset as usize),
-                Self::calculate_memory_layout::<Bucket<K, V, LOCK_FREE>>(self.array_len).2,
+                Self::calculate_memory_layout::<Bucket<K, V, TYPE>>(self.array_len).2,
             );
             dealloc(
                 (self.data_block_ptr as *mut DataBlock<K, V, BUCKET_LEN>).cast::<u8>(),
@@ -270,8 +266,8 @@ impl<K: Eq, V, const LOCK_FREE: bool> Drop for BucketArray<K, V, LOCK_FREE> {
     }
 }
 
-unsafe impl<K: Eq + Send, V: Send, const LOCK_FREE: bool> Send for BucketArray<K, V, LOCK_FREE> {}
-unsafe impl<K: Eq + Sync, V: Sync, const LOCK_FREE: bool> Sync for BucketArray<K, V, LOCK_FREE> {}
+unsafe impl<K: Eq + Send, V: Send, const TYPE: char> Send for BucketArray<K, V, TYPE> {}
+unsafe impl<K: Eq + Sync, V: Sync, const TYPE: char> Sync for BucketArray<K, V, TYPE> {}
 
 #[cfg(test)]
 mod test {
@@ -282,7 +278,7 @@ mod test {
     #[test]
     fn alloc() {
         let start = Instant::now();
-        let array: BucketArray<usize, usize, true> =
+        let array: BucketArray<usize, usize, OPTIMISTIC> =
             BucketArray::new(1024 * 1024 * 32, AtomicArc::default());
         assert_eq!(array.num_buckets(), 1024 * 1024);
         let after_alloc = Instant::now();
@@ -296,7 +292,8 @@ mod test {
     #[test]
     fn array() {
         for s in 0..BUCKET_LEN * 4 {
-            let array: BucketArray<usize, usize, true> = BucketArray::new(s, AtomicArc::default());
+            let array: BucketArray<usize, usize, OPTIMISTIC> =
+                BucketArray::new(s, AtomicArc::default());
             assert!(
                 array.num_buckets() >= (s.max(1) + BUCKET_LEN - 1) / BUCKET_LEN,
                 "{s} {}",
