@@ -62,7 +62,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 /// ### Unwind safety
 ///
 /// [`HashMap`] is impervious to out-of-memory errors and panics in user specified code on one
-/// condition; `K::drop` and `V::drop` must not panic.
+/// condition; `H::Hasher::hash`, `K::drop` and `V::drop` must not panic.
 pub struct HashMap<K, V, H = RandomState>
 where
     K: Eq + Hash,
@@ -1513,6 +1513,8 @@ where
     fn try_clone(_: &(K, V)) -> Option<(K, V)> {
         None
     }
+    #[inline]
+    fn try_reset(_: &mut V) {}
     #[inline]
     fn bucket_array(&self) -> &AtomicArc<BucketArray<K, V, SEQUENTIAL>> {
         &self.array

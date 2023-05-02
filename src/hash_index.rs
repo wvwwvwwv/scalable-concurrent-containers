@@ -40,7 +40,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 /// ### Unwind safety
 ///
 /// [`HashIndex`] is impervious to out-of-memory errors and panics in user specified code on one
-/// condition; `K::drop` and `V::drop` must not panic.
+/// condition; `H::Hasher::hash`, `K::drop` and `V::drop` must not panic.
 pub struct HashIndex<K, V, H = RandomState>
 where
     K: 'static + Clone + Eq + Hash,
@@ -1101,6 +1101,8 @@ where
     fn try_clone(entry: &(K, V)) -> Option<(K, V)> {
         Some((entry.0.clone(), entry.1.clone()))
     }
+    #[inline]
+    fn try_reset(_: &mut V) {}
     #[inline]
     fn bucket_array(&self) -> &AtomicArc<BucketArray<K, V, OPTIMISTIC>> {
         &self.array

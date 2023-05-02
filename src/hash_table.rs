@@ -37,6 +37,11 @@ where
     /// It does not clone unless `TYPE` is `OPTIMISTIC` thus `K` and `V` both being `Clone`.
     fn try_clone(entry: &(K, V)) -> Option<(K, V)>;
 
+    /// Tries to reset the instances pointed by `entry`.
+    ///
+    /// It does not clone unless `TYPE` is `OPTIMISTIC` thus `K` and `V` both being `Clone`.
+    fn try_reset(value: &mut V);
+
     /// Returns a reference to the [`BucketArray`] pointer.
     fn bucket_array(&self) -> &AtomicArc<BucketArray<K, V, TYPE>>;
 
@@ -601,6 +606,15 @@ where
                         .as_mut()
                         .unwrap_unchecked()
                 };
+                if TYPE == CACHE && target_bucket.num_entries() == BUCKET_LEN {
+                    // The bucket is full, dispose of the entry.
+                    //
+                    // No panic handling required as relocation of a bucket is infallible if
+                    // `TYPE = CACHE`
+                    drop(old_locker.extract(old_data_block_mut, &mut entry_ptr, barrier));
+                    continue;
+                }
+
                 let entry_clone = Self::try_clone(old_entry);
                 target_bucket.insert_with(
                     current_array.data_block_mut(new_index),
@@ -610,7 +624,14 @@ where
                         // removed from the map, any map entry modification should take place after all
                         // the memory is reserved.
                         entry_clone.unwrap_or_else(|| {
-                            old_locker.extract(old_data_block_mut, &mut entry_ptr, barrier)
+                            let (k, mut v) =
+                                old_locker.extract(old_data_block_mut, &mut entry_ptr, barrier);
+
+                            // If there is linked list information left in the value instance, it has to be
+                            // reset.
+                            Self::try_reset(&mut v);
+
+                            (k, v)
                         })
                     },
                     barrier,
