@@ -10,7 +10,10 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{fence, AtomicU32};
 
 /// [`Bucket`] is a fixed-size hash table with linear probing.
-pub struct Bucket<K: Eq, V, const LOCK_FREE: bool> {
+///
+///
+/// `TYPE` is either one of [`SEQUENTIAL`], [`OPTIMISTIC`], or [`CACHE`].
+pub struct Bucket<K: Eq, V, const TYPE: char> {
     /// The state of the [`Bucket`].
     state: AtomicU32,
 
@@ -24,6 +27,15 @@ pub struct Bucket<K: Eq, V, const LOCK_FREE: bool> {
     wait_queue: WaitQueue,
 }
 
+/// The type of [`Bucket`] only allows sequential access to it.
+pub const SEQUENTIAL: char = 'S';
+
+/// The type of [`Bucket`] allows lock-free read.
+pub const OPTIMISTIC: char = 'O';
+
+/// The type of [`Bucket`] acts as an LRU cache.
+pub const CACHE: char = 'C';
+
 /// The size of a [`Bucket`].
 pub const BUCKET_LEN: usize = u32::BITS as usize;
 
@@ -31,12 +43,22 @@ pub const BUCKET_LEN: usize = u32::BITS as usize;
 pub type DataBlock<K, V, const LEN: usize> = [MaybeUninit<(K, V)>; LEN];
 
 /// [`EntryPtr`] points to an occupied slot in a [`Bucket`].
-pub struct EntryPtr<'b, K: Eq, V, const LOCK_FREE: bool> {
+pub struct EntryPtr<'b, K: Eq, V, const TYPE: char> {
     /// Points to the current [`LinkedBucket`].
     current_link_ptr: Ptr<'b, LinkedBucket<K, V, LINKED_BUCKET_LEN>>,
 
     /// Points to the current slot.
     current_index: usize,
+}
+
+/// [`Locker`] owns a [`Bucket`] by holding the exclusive lock on it.
+pub struct Locker<'b, K: Eq, V, const TYPE: char> {
+    bucket: &'b mut Bucket<K, V, TYPE>,
+}
+
+/// [`Locker`] owns a [`Bucket`] by holding a shared lock on it.
+pub struct Reader<'b, K: Eq, V, const TYPE: char> {
+    bucket: &'b Bucket<K, V, TYPE>,
 }
 
 /// [`Metadata`] is a collection of metadata fields of [`Bucket`] and [`LinkedBucket`].
@@ -54,16 +76,6 @@ pub(crate) struct Metadata<K: Eq, V, const LEN: usize> {
     partial_hash_array: [u8; LEN],
 }
 
-/// [`Locker`] owns a [`Bucket`] by holding the exclusive lock on it.
-pub struct Locker<'b, K: Eq, V, const LOCK_FREE: bool> {
-    bucket: &'b mut Bucket<K, V, LOCK_FREE>,
-}
-
-/// [`Locker`] owns a [`Bucket`] by holding a shared lock on it.
-pub struct Reader<'b, K: Eq, V, const LOCK_FREE: bool> {
-    bucket: &'b Bucket<K, V, LOCK_FREE>,
-}
-
 /// The size of the linked data block.
 const LINKED_BUCKET_LEN: usize = BUCKET_LEN / 4;
 
@@ -74,7 +86,7 @@ const LOCK: u32 = 1_u32 << 29;
 const SLOCK_MAX: u32 = LOCK - 1;
 const LOCK_MASK: u32 = LOCK | SLOCK_MAX;
 
-impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
+impl<K: Eq, V, const TYPE: char> Bucket<K, V, TYPE> {
     /// Returns the number of occupied and reachable slots in the [`Bucket`].
     #[inline]
     pub(crate) const fn num_entries(&self) -> usize {
@@ -88,7 +100,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
     /// possible.
     #[inline]
     pub(crate) const fn need_rebuild(&self) -> bool {
-        LOCK_FREE && self.metadata.removed_bitmap == (u32::MAX >> (32 - BUCKET_LEN))
+        TYPE == OPTIMISTIC && self.metadata.removed_bitmap == (u32::MAX >> (32 - BUCKET_LEN))
     }
 
     /// Returns `true` if the [`Bucket`] has been killed.
@@ -136,7 +148,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
     /// Kills the bucket by marking it `KILLED` and unlinking [`LinkedBucket`].
     #[inline]
     pub(crate) fn kill(&mut self, barrier: &Barrier) {
-        if LOCK_FREE {
+        if TYPE == OPTIMISTIC {
             self.metadata.removed_bitmap = self.metadata.occupied_bitmap;
         }
         self.state.fetch_or(KILLED, Release);
@@ -176,7 +188,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
         key: &Q,
         partial_hash: u8,
         barrier: &'b Barrier,
-    ) -> EntryPtr<'b, K, V, LOCK_FREE>
+    ) -> EntryPtr<'b, K, V, TYPE>
     where
         K: Borrow<Q>,
         Q: Eq + ?Sized,
@@ -220,12 +232,12 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
         K: Borrow<Q>,
         Q: Eq + ?Sized,
     {
-        let mut bitmap = if LOCK_FREE {
+        let mut bitmap = if TYPE == OPTIMISTIC {
             metadata.occupied_bitmap & (!metadata.removed_bitmap)
         } else {
             metadata.occupied_bitmap
         };
-        if LOCK_FREE {
+        if TYPE == OPTIMISTIC {
             fence(Acquire);
         }
 
@@ -254,7 +266,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
         if let (Some(mut next), _) = self.metadata.link.swap((None, Tag::None), Acquire) {
             loop {
                 let next_next = next.metadata.link.swap((None, Tag::None), Acquire);
-                let released = if LOCK_FREE {
+                let released = if TYPE == OPTIMISTIC {
                     next.release(barrier)
                 } else {
                     // The `LinkedBucket` should be dropped immediately.
@@ -285,7 +297,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
             return None;
         }
 
-        let bitmap = if LOCK_FREE {
+        let bitmap = if TYPE == OPTIMISTIC {
             (metadata.occupied_bitmap & (!metadata.removed_bitmap))
                 & (!((1_u32 << current_index) - 1))
         } else {
@@ -294,7 +306,7 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
 
         let next_index = bitmap.trailing_zeros() as usize;
         if next_index < LEN {
-            if LOCK_FREE {
+            if TYPE == OPTIMISTIC {
                 fence(Acquire);
             }
             return Some(next_index);
@@ -304,10 +316,10 @@ impl<K: Eq, V, const LOCK_FREE: bool> Bucket<K, V, LOCK_FREE> {
     }
 }
 
-impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
+impl<'b, K: Eq, V, const TYPE: char> EntryPtr<'b, K, V, TYPE> {
     /// Creates a new invalid [`EntryPtr`].
     #[inline]
-    pub(crate) const fn new(_barrier: &'b Barrier) -> EntryPtr<'b, K, V, LOCK_FREE> {
+    pub(crate) const fn new(_barrier: &'b Barrier) -> EntryPtr<'b, K, V, TYPE> {
         EntryPtr {
             current_link_ptr: Ptr::null(),
             current_index: BUCKET_LEN,
@@ -324,7 +336,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
     ///
     /// Returns `true` if it successfully found the next occupied entry.
     #[inline]
-    pub(crate) fn next(&mut self, bucket: &Bucket<K, V, LOCK_FREE>, barrier: &'b Barrier) -> bool {
+    pub(crate) fn next(&mut self, bucket: &Bucket<K, V, TYPE>, barrier: &'b Barrier) -> bool {
         if self.current_index != usize::MAX {
             if self.current_link_ptr.is_null() && self.next_entry(&bucket.metadata, barrier) {
                 return true;
@@ -364,7 +376,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
     pub(crate) fn get_mut(
         &mut self,
         data_block: &mut DataBlock<K, V, BUCKET_LEN>,
-        _locker: &mut Locker<K, V, LOCK_FREE>,
+        _locker: &mut Locker<K, V, TYPE>,
     ) -> &mut (K, V) {
         debug_assert_ne!(self.current_index, usize::MAX);
         let link_ptr = self.current_link_ptr.as_raw() as *mut LinkedBucket<K, V, LINKED_BUCKET_LEN>;
@@ -380,7 +392,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
     ///
     /// The [`EntryPtr`] must point to an occupied entry.
     #[inline]
-    pub(crate) fn partial_hash(&self, bucket: &Bucket<K, V, LOCK_FREE>) -> u8 {
+    pub(crate) fn partial_hash(&self, bucket: &Bucket<K, V, TYPE>) -> u8 {
         debug_assert_ne!(self.current_index, usize::MAX);
         if let Some(link) = self.current_link_ptr.as_ref() {
             link.metadata.partial_hash_array[self.current_index]
@@ -394,12 +406,12 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
     /// It should only be invoked when the caller is holding a [`Locker`] on the [`Bucket`].
     fn unlink(
         &mut self,
-        locker: &Locker<K, V, LOCK_FREE>,
+        locker: &Locker<K, V, TYPE>,
         link: &LinkedBucket<K, V, LINKED_BUCKET_LEN>,
         barrier: &'b Barrier,
     ) {
         let prev_link_ptr = link.prev_link.load(Relaxed);
-        let next_link = if LOCK_FREE {
+        let next_link = if TYPE == OPTIMISTIC {
             link.metadata.link.get_arc(Relaxed, barrier)
         } else {
             link.metadata.link.swap((None, Tag::None), Relaxed).0
@@ -426,7 +438,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
                 .0
         };
         let released = old_link.map_or(true, |l| {
-            if LOCK_FREE {
+            if TYPE == OPTIMISTIC {
                 l.release(barrier)
             } else {
                 // The `LinkedBucket` should be dropped immediately.
@@ -456,7 +468,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
         } else {
             self.current_index + 1
         };
-        if let Some(index) = Bucket::<K, V, LOCK_FREE>::next_entry(metadata, current_index) {
+        if let Some(index) = Bucket::<K, V, TYPE>::next_entry(metadata, current_index) {
             self.current_index = index;
             return true;
         }
@@ -468,7 +480,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> EntryPtr<'b, K, V, LOCK_FREE> {
     }
 }
 
-impl<'b, K: Eq, V, const LOCK_FREE: bool> Debug for EntryPtr<'b, K, V, LOCK_FREE> {
+impl<'b, K: Eq, V, const TYPE: char> Debug for EntryPtr<'b, K, V, TYPE> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EntryPtr")
@@ -478,19 +490,16 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Debug for EntryPtr<'b, K, V, LOCK_FREE
     }
 }
 
-unsafe impl<'b, K: Eq + Sync, V: Sync, const LOCK_FREE: bool> Sync
-    for EntryPtr<'b, K, V, LOCK_FREE>
-{
-}
+unsafe impl<'b, K: Eq + Sync, V: Sync, const TYPE: char> Sync for EntryPtr<'b, K, V, TYPE> {}
 
-impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
+impl<'b, K: Eq, V, const TYPE: char> Locker<'b, K, V, TYPE> {
     /// Locks the [`Bucket`].
     #[inline]
     pub(crate) fn lock(
-        bucket: &'b mut Bucket<K, V, LOCK_FREE>,
+        bucket: &'b mut Bucket<K, V, TYPE>,
         barrier: &'b Barrier,
-    ) -> Option<Locker<'b, K, V, LOCK_FREE>> {
-        let bucket_ptr = bucket as *mut Bucket<K, V, LOCK_FREE>;
+    ) -> Option<Locker<'b, K, V, TYPE>> {
+        let bucket_ptr = bucket as *mut Bucket<K, V, TYPE>;
         loop {
             if let Ok(locker) = Self::try_lock(unsafe { &mut *bucket_ptr }, barrier) {
                 return locker;
@@ -508,9 +517,9 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     /// Tries to lock the [`Bucket`].
     #[inline]
     pub(crate) fn try_lock(
-        bucket: &'b mut Bucket<K, V, LOCK_FREE>,
+        bucket: &'b mut Bucket<K, V, TYPE>,
         _barrier: &'b Barrier,
-    ) -> Result<Option<Locker<'b, K, V, LOCK_FREE>>, ()> {
+    ) -> Result<Option<Locker<'b, K, V, TYPE>>, ()> {
         let current = bucket.state.load(Relaxed) & (!LOCK_MASK);
         if (current & KILLED) == KILLED {
             return Ok(None);
@@ -529,11 +538,11 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     /// Tries to lock the [`Bucket`], and if it fails, pushes an [`AsyncWait`].
     #[inline]
     pub(crate) fn try_lock_or_wait(
-        bucket: &'b mut Bucket<K, V, LOCK_FREE>,
+        bucket: &'b mut Bucket<K, V, TYPE>,
         async_wait: &mut AsyncWait,
         barrier: &'b Barrier,
-    ) -> Result<Option<Locker<'b, K, V, LOCK_FREE>>, ()> {
-        let bucket_ptr = bucket as *mut Bucket<K, V, LOCK_FREE>;
+    ) -> Result<Option<Locker<'b, K, V, TYPE>>, ()> {
+        let bucket_ptr = bucket as *mut Bucket<K, V, TYPE>;
         if let Ok(locker) = Self::try_lock(unsafe { &mut *bucket_ptr }, barrier) {
             return Ok(locker);
         }
@@ -548,7 +557,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
 
     /// Releases the lock.
     #[inline]
-    pub(crate) fn release(bucket: &mut Bucket<K, V, LOCK_FREE>) {
+    pub(crate) fn release(bucket: &mut Bucket<K, V, TYPE>) {
         let mut current = bucket.state.load(Relaxed);
         while let Err(result) = bucket.state.compare_exchange_weak(
             current,
@@ -574,7 +583,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         key: &Q,
         partial_hash: u8,
         barrier: &'b Barrier,
-    ) -> EntryPtr<'b, K, V, LOCK_FREE>
+    ) -> EntryPtr<'b, K, V, TYPE>
     where
         K: Borrow<Q>,
         Q: Eq + ?Sized,
@@ -592,10 +601,15 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         partial_hash: u8,
         constructor: C,
         barrier: &'b Barrier,
-    ) -> EntryPtr<'b, K, V, LOCK_FREE> {
+    ) -> EntryPtr<'b, K, V, TYPE> {
         assert!(self.bucket.num_entries != u32::MAX, "array overflow");
 
         let free_index = self.bucket.metadata.occupied_bitmap.trailing_ones() as usize;
+        let free_index = if TYPE == CACHE && free_index == BUCKET_LEN {
+            self.evict_one()
+        } else {
+            free_index
+        };
         if free_index == BUCKET_LEN {
             let mut link_ptr = self.bucket.metadata.link.load(Acquire, barrier);
             while let Some(link_mut) = unsafe {
@@ -666,7 +680,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     pub(crate) fn erase(
         &mut self,
         data_block: &mut DataBlock<K, V, BUCKET_LEN>,
-        entry_ptr: &mut EntryPtr<K, V, LOCK_FREE>,
+        entry_ptr: &mut EntryPtr<K, V, TYPE>,
     ) -> Option<(K, V)> {
         debug_assert_ne!(entry_ptr.current_index, usize::MAX);
 
@@ -674,7 +688,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         let link_ptr =
             entry_ptr.current_link_ptr.as_raw() as *mut LinkedBucket<K, V, LINKED_BUCKET_LEN>;
         if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
-            if LOCK_FREE {
+            if TYPE == OPTIMISTIC {
                 debug_assert_eq!(
                     link_mut.metadata.removed_bitmap & (1_u32 << entry_ptr.current_index),
                     0
@@ -692,7 +706,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
                         .read()
                 });
             }
-        } else if LOCK_FREE {
+        } else if TYPE == OPTIMISTIC {
             debug_assert_eq!(
                 self.bucket.metadata.removed_bitmap & (1_u32 << entry_ptr.current_index),
                 0
@@ -715,10 +729,10 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     pub(crate) fn extract<'e>(
         &mut self,
         data_block: &mut DataBlock<K, V, BUCKET_LEN>,
-        entry_ptr: &mut EntryPtr<'e, K, V, LOCK_FREE>,
+        entry_ptr: &mut EntryPtr<'e, K, V, TYPE>,
         barrier: &'e Barrier,
     ) -> (K, V) {
-        debug_assert!(!LOCK_FREE);
+        debug_assert_ne!(TYPE, OPTIMISTIC);
         let link_ptr =
             entry_ptr.current_link_ptr.as_raw() as *mut LinkedBucket<K, V, LINKED_BUCKET_LEN>;
         if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
@@ -755,11 +769,17 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
         unsafe {
             data_block[index].as_mut_ptr().write(constructor());
             metadata.partial_hash_array[index] = partial_hash;
-            if LOCK_FREE {
+            if TYPE == OPTIMISTIC {
                 fence(Release);
             }
             metadata.occupied_bitmap |= 1_u32 << index;
         }
+    }
+
+    /// Evicts an entry and returns the index of it.
+    #[allow(clippy::unused_self)]
+    fn evict_one(&mut self) -> usize {
+        unimplemented!()
     }
 
     /// Extracts and removes the key-value pair in the slot.
@@ -777,8 +797,8 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Locker<'b, K, V, LOCK_FREE> {
     }
 }
 
-impl<'b, K: Eq, V, const LOCK_FREE: bool> Deref for Locker<'b, K, V, LOCK_FREE> {
-    type Target = Bucket<K, V, LOCK_FREE>;
+impl<'b, K: Eq, V, const TYPE: char> Deref for Locker<'b, K, V, TYPE> {
+    type Target = Bucket<K, V, TYPE>;
 
     #[inline]
     fn deref(&self) -> &Self::Target {
@@ -786,28 +806,28 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Deref for Locker<'b, K, V, LOCK_FREE> 
     }
 }
 
-impl<'b, K: Eq, V, const LOCK_FREE: bool> DerefMut for Locker<'b, K, V, LOCK_FREE> {
+impl<'b, K: Eq, V, const TYPE: char> DerefMut for Locker<'b, K, V, TYPE> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.bucket
     }
 }
 
-impl<'b, K: Eq, V, const LOCK_FREE: bool> Drop for Locker<'b, K, V, LOCK_FREE> {
+impl<'b, K: Eq, V, const TYPE: char> Drop for Locker<'b, K, V, TYPE> {
     #[inline]
     fn drop(&mut self) {
         Self::release(self.bucket);
     }
 }
 
-impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
+impl<'b, K: Eq, V, const TYPE: char> Reader<'b, K, V, TYPE> {
     /// Locks the given [`Bucket`].
     ///
     /// Returns `None` if the [`Bucket`] has been killed or empty.
     #[inline]
     pub(crate) fn lock(
-        bucket: &'b Bucket<K, V, LOCK_FREE>,
+        bucket: &'b Bucket<K, V, TYPE>,
         barrier: &'b Barrier,
-    ) -> Option<Reader<'b, K, V, LOCK_FREE>> {
+    ) -> Option<Reader<'b, K, V, TYPE>> {
         loop {
             if let Ok(reader) = Self::try_lock(bucket, barrier) {
                 return reader;
@@ -825,10 +845,10 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
     /// Tries to lock the [`Bucket`], and if it fails, pushes an [`AsyncWait`].
     #[inline]
     pub(crate) fn try_lock_or_wait(
-        bucket: &'b Bucket<K, V, LOCK_FREE>,
+        bucket: &'b Bucket<K, V, TYPE>,
         async_wait: &mut AsyncWait,
         barrier: &'b Barrier,
-    ) -> Result<Option<Reader<'b, K, V, LOCK_FREE>>, ()> {
+    ) -> Result<Option<Reader<'b, K, V, TYPE>>, ()> {
         if let Ok(reader) = Self::try_lock(bucket, barrier) {
             return Ok(reader);
         }
@@ -841,9 +861,9 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
 
     /// Tries to lock the [`Bucket`].
     pub(crate) fn try_lock(
-        bucket: &'b Bucket<K, V, LOCK_FREE>,
+        bucket: &'b Bucket<K, V, TYPE>,
         _barrier: &'b Barrier,
-    ) -> Result<Option<Reader<'b, K, V, LOCK_FREE>>, ()> {
+    ) -> Result<Option<Reader<'b, K, V, TYPE>>, ()> {
         let current = bucket.state.load(Relaxed);
         if (current & LOCK_MASK) >= SLOCK_MAX {
             return Err(());
@@ -864,7 +884,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
 
     /// Releases the lock.
     #[inline]
-    pub(crate) fn release(bucket: &Bucket<K, V, LOCK_FREE>) {
+    pub(crate) fn release(bucket: &Bucket<K, V, TYPE>) {
         let mut current = bucket.state.load(Relaxed);
         loop {
             let wakeup = (current & WAITING) == WAITING;
@@ -885,8 +905,8 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Reader<'b, K, V, LOCK_FREE> {
     }
 }
 
-impl<'b, K: Eq, V, const LOCK_FREE: bool> Deref for Reader<'b, K, V, LOCK_FREE> {
-    type Target = &'b Bucket<K, V, LOCK_FREE>;
+impl<'b, K: Eq, V, const TYPE: char> Deref for Reader<'b, K, V, TYPE> {
+    type Target = &'b Bucket<K, V, TYPE>;
 
     #[inline]
     fn deref(&self) -> &Self::Target {
@@ -894,7 +914,7 @@ impl<'b, K: Eq, V, const LOCK_FREE: bool> Deref for Reader<'b, K, V, LOCK_FREE> 
     }
 }
 
-impl<'b, K: Eq, V, const LOCK_FREE: bool> Drop for Reader<'b, K, V, LOCK_FREE> {
+impl<'b, K: Eq, V, const TYPE: char> Drop for Reader<'b, K, V, TYPE> {
     #[inline]
     fn drop(&mut self) {
         Self::release(self.bucket);
@@ -972,9 +992,9 @@ mod test {
 
     use tokio::sync;
 
-    static_assertions::assert_eq_size!(Bucket<String, String, false>, [u8; BUCKET_LEN * 2]);
+    static_assertions::assert_eq_size!(Bucket<String, String, OPTIMISTIC>, [u8; BUCKET_LEN * 2]);
 
-    fn default_bucket<K: Eq, V>() -> Bucket<K, V, true> {
+    fn default_bucket<K: Eq, V>() -> Bucket<K, V, OPTIMISTIC> {
         Bucket {
             state: AtomicU32::new(0),
             num_entries: 0,
@@ -990,7 +1010,7 @@ mod test {
         let barrier = Arc::new(sync::Barrier::new(num_tasks));
         let data_block: Arc<DataBlock<usize, usize, BUCKET_LEN>> =
             Arc::new(unsafe { MaybeUninit::uninit().assume_init() });
-        let mut bucket: Arc<Bucket<usize, usize, true>> = Arc::new(default_bucket());
+        let mut bucket: Arc<Bucket<usize, usize, OPTIMISTIC>> = Arc::new(default_bucket());
         let mut data: [u64; 128] = [0; 128];
         let mut task_handles = Vec::with_capacity(num_tasks);
         for task_id in 0..num_tasks {
@@ -1001,8 +1021,9 @@ mod test {
             task_handles.push(tokio::spawn(async move {
                 barrier_clone.wait().await;
                 let partial_hash = (task_id % BUCKET_LEN).try_into().unwrap();
-                let bucket_mut =
-                    unsafe { &mut *(bucket_clone.as_ptr() as *mut Bucket<usize, usize, true>) };
+                let bucket_mut = unsafe {
+                    &mut *(bucket_clone.as_ptr() as *mut Bucket<usize, usize, OPTIMISTIC>)
+                };
                 let data_block_mut = unsafe {
                     &mut *(data_block_clone.as_ptr() as *mut DataBlock<usize, usize, BUCKET_LEN>)
                 };
@@ -1089,7 +1110,7 @@ mod test {
         let barrier = Arc::new(sync::Barrier::new(num_tasks));
         let data_block: Arc<DataBlock<usize, usize, BUCKET_LEN>> =
             Arc::new(unsafe { MaybeUninit::uninit().assume_init() });
-        let bucket: Arc<Bucket<usize, usize, true>> = Arc::new(default_bucket());
+        let bucket: Arc<Bucket<usize, usize, OPTIMISTIC>> = Arc::new(default_bucket());
         let mut task_handles = Vec::with_capacity(num_tasks);
         for task_id in 0..num_tasks {
             let barrier_clone = barrier.clone();
@@ -1107,7 +1128,7 @@ mod test {
                             if let Ok(exclusive_locker) = Locker::try_lock_or_wait(
                                 unsafe {
                                     &mut *(bucket_clone.as_ptr()
-                                        as *mut Bucket<usize, usize, false>)
+                                        as *mut Bucket<usize, usize, SEQUENTIAL>)
                                 },
                                 async_wait_pinned.derive().unwrap(),
                                 &barrier,
@@ -1157,7 +1178,7 @@ mod test {
                     }
                     {
                         let bucket_mut = unsafe {
-                            &mut *(bucket_clone.as_ptr() as *mut Bucket<usize, usize, false>)
+                            &mut *(bucket_clone.as_ptr() as *mut Bucket<usize, usize, SEQUENTIAL>)
                         };
                         let data_block_mut = unsafe {
                             &mut *(data_block_clone.as_ptr()

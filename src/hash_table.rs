@@ -4,7 +4,7 @@ pub mod bucket_array;
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 use crate::exit_guard::ExitGuard;
 use crate::wait_queue::DeriveAsyncWait;
-use bucket::{DataBlock, EntryPtr, Locker, Reader, BUCKET_LEN};
+use bucket::{DataBlock, EntryPtr, Locker, Reader, BUCKET_LEN, CACHE, OPTIMISTIC};
 use bucket_array::BucketArray;
 use std::borrow::Borrow;
 use std::hash::{BuildHasher, Hash, Hasher};
@@ -12,7 +12,7 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 use std::sync::atomic::{fence, AtomicUsize};
 
 /// `HashTable` defines common functions for hash table implementations.
-pub(super) trait HashTable<K, V, H, const LOCK_FREE: bool>
+pub(super) trait HashTable<K, V, H, const TYPE: char>
 where
     K: Eq + Hash,
     H: BuildHasher,
@@ -34,14 +34,19 @@ where
 
     /// Tries to clone the instances pointed by `entry`.
     ///
-    /// It does not clone unless `LOCK_FREE` is `true` thus `K` and `V` both being `Clone`.
+    /// It does not clone unless `TYPE` is `OPTIMISTIC` thus `K` and `V` both being `Clone`.
     fn try_clone(entry: &(K, V)) -> Option<(K, V)>;
 
     /// Returns a reference to the [`BucketArray`] pointer.
-    fn bucket_array(&self) -> &AtomicArc<BucketArray<K, V, LOCK_FREE>>;
+    fn bucket_array(&self) -> &AtomicArc<BucketArray<K, V, TYPE>>;
 
     /// Returns the minimum allowed capacity.
     fn minimum_capacity(&self) -> &AtomicUsize;
+
+    /// Returns the maximum capacity.
+    ///
+    /// The maximum capacity must be a power of `2`.
+    fn maximum_capacity(&self) -> usize;
 
     /// Reserves the specified capacity.
     ///
@@ -73,7 +78,7 @@ where
     ///
     /// If no array has been allocated, it allocates a new one and returns it.
     #[inline]
-    fn get_current_array<'b>(&self, barrier: &'b Barrier) -> &'b BucketArray<K, V, LOCK_FREE> {
+    fn get_current_array<'b>(&self, barrier: &'b Barrier) -> &'b BucketArray<K, V, TYPE> {
         // An acquire fence is required to correctly load the contents of the array.
         let current_array_ptr = self.bucket_array().load(Acquire, barrier);
         if let Some(current_array) = current_array_ptr.as_ref() {
@@ -84,7 +89,7 @@ where
             let current_array_ptr = match self.bucket_array().compare_exchange(
                 Ptr::null(),
                 (
-                    Some(Arc::new_unchecked(BucketArray::<K, V, LOCK_FREE>::new(
+                    Some(Arc::new_unchecked(BucketArray::<K, V, TYPE>::new(
                         self.minimum_capacity().load(Relaxed),
                         AtomicArc::null(),
                     ))),
@@ -158,7 +163,7 @@ where
     /// Estimates the number of entries by sampling the specified number of buckets.
     #[inline]
     fn sample(
-        current_array: &BucketArray<K, V, LOCK_FREE>,
+        current_array: &BucketArray<K, V, TYPE>,
         sampling_index: usize,
         sample_size: usize,
     ) -> usize {
@@ -174,7 +179,7 @@ where
     /// Checks whether rebuilding the entire hash table is required.
     #[inline]
     fn check_rebuild(
-        current_array: &BucketArray<K, V, LOCK_FREE>,
+        current_array: &BucketArray<K, V, TYPE>,
         sampling_index: usize,
         sample_size: usize,
     ) -> bool {
@@ -210,7 +215,7 @@ where
                 }
                 locker.insert_with(
                     data_block_mut,
-                    BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
+                    BucketArray::<K, V, TYPE>::partial_hash(hash),
                     || (key, val),
                     barrier,
                 );
@@ -237,7 +242,7 @@ where
         let mut current_array_ptr = self.bucket_array().load(Acquire, barrier);
         while let Some(current_array) = current_array_ptr.as_ref() {
             if let Some(old_array) = current_array.old_array(barrier).as_ref() {
-                if LOCK_FREE {
+                if TYPE == OPTIMISTIC {
                     if self.incremental_rehash::<Q, D, true>(current_array, async_wait, barrier)
                         != Ok(true)
                     {
@@ -245,7 +250,7 @@ where
                         if let Some((k, v)) = old_array.bucket(index).search(
                             old_array.data_block(index),
                             key,
-                            BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
+                            BucketArray::<K, V, TYPE>::partial_hash(hash),
                             barrier,
                         ) {
                             return Ok(Some((k, v)));
@@ -258,11 +263,11 @@ where
 
             let index = current_array.calculate_bucket_index(hash);
             let bucket = current_array.bucket(index);
-            if LOCK_FREE {
+            if TYPE == OPTIMISTIC {
                 if let Some(entry) = bucket.search(
                     current_array.data_block(index),
                     key,
-                    BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
+                    BucketArray::<K, V, TYPE>::partial_hash(hash),
                     barrier,
                 ) {
                     return Ok(Some((&entry.0, &entry.1)));
@@ -277,7 +282,7 @@ where
                     if let Some((key, val)) = reader.search(
                         current_array.data_block(index),
                         key,
-                        BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
+                        BucketArray::<K, V, TYPE>::partial_hash(hash),
                         barrier,
                     ) {
                         return Ok(Some((key, val)));
@@ -339,7 +344,7 @@ where
                 let mut entry_ptr = locker.get(
                     data_block_mut,
                     key,
-                    BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
+                    BucketArray::<K, V, TYPE>::partial_hash(hash),
                     barrier,
                 );
                 if entry_ptr.is_valid()
@@ -416,9 +421,9 @@ where
         barrier: &'b Barrier,
     ) -> Result<
         (
-            Locker<'b, K, V, LOCK_FREE>,
+            Locker<'b, K, V, TYPE>,
             &'b mut DataBlock<K, V, BUCKET_LEN>,
-            EntryPtr<'b, K, V, LOCK_FREE>,
+            EntryPtr<'b, K, V, TYPE>,
             usize,
         ),
         (),
@@ -454,6 +459,7 @@ where
 
             // Try to resize the array.
             if resizable
+                && (TYPE != CACHE || current_array.num_entries() < self.maximum_capacity())
                 && current_array.within_sampling_range(index)
                 && bucket.num_entries() >= BUCKET_LEN - 1
             {
@@ -470,7 +476,7 @@ where
                 let entry_ptr = locker.get(
                     data_block_mut,
                     key,
-                    BucketArray::<K, V, LOCK_FREE>::partial_hash(hash),
+                    BucketArray::<K, V, TYPE>::partial_hash(hash),
                     barrier,
                 );
                 return Ok((locker, data_block_mut, entry_ptr, index));
@@ -486,8 +492,8 @@ where
     #[inline]
     fn move_entry<Q, D>(
         &self,
-        current_array: &BucketArray<K, V, LOCK_FREE>,
-        old_array: &BucketArray<K, V, LOCK_FREE>,
+        current_array: &BucketArray<K, V, TYPE>,
+        old_array: &BucketArray<K, V, TYPE>,
         hash: u64,
         async_wait: &mut D,
         barrier: &Barrier,
@@ -526,10 +532,10 @@ where
     #[inline]
     fn relocate_bucket<Q, D, const TRY_LOCK: bool>(
         &self,
-        current_array: &BucketArray<K, V, LOCK_FREE>,
-        old_array: &BucketArray<K, V, LOCK_FREE>,
+        current_array: &BucketArray<K, V, TYPE>,
+        old_array: &BucketArray<K, V, TYPE>,
         old_index: usize,
-        old_locker: &mut Locker<K, V, LOCK_FREE>,
+        old_locker: &mut Locker<K, V, TYPE>,
         async_wait: &mut D,
         barrier: &Barrier,
     ) -> Result<(), ()>
@@ -549,7 +555,7 @@ where
                 old_index * ratio
             };
 
-            let mut target_buckets: [Option<Locker<K, V, LOCK_FREE>>; usize::BITS as usize / 2] =
+            let mut target_buckets: [Option<Locker<K, V, TYPE>>; usize::BITS as usize / 2] =
                 Default::default();
             let mut max_index = 0;
             let mut entry_ptr = EntryPtr::new(barrier);
@@ -570,7 +576,7 @@ where
                             new_index - target_index
                                 < (current_array.num_buckets() / old_array.num_buckets())
                         );
-                        let partial_hash = BucketArray::<K, V, LOCK_FREE>::partial_hash(hash);
+                        let partial_hash = BucketArray::<K, V, TYPE>::partial_hash(hash);
                         (new_index, partial_hash)
                     };
 
@@ -610,7 +616,7 @@ where
                     barrier,
                 );
 
-                if LOCK_FREE {
+                if TYPE == OPTIMISTIC {
                     // In order for readers that have observed the following erasure to see the above
                     // insertion, a `Release` fence is needed.
                     fence(Release);
@@ -623,7 +629,7 @@ where
     }
 
     /// Clears the old array.
-    fn clear_old_array(&self, current_array: &BucketArray<K, V, LOCK_FREE>, barrier: &Barrier) {
+    fn clear_old_array(&self, current_array: &BucketArray<K, V, TYPE>, barrier: &Barrier) {
         while !current_array.old_array(barrier).is_null() {
             if self.incremental_rehash::<_, _, false>(current_array, &mut (), barrier) == Ok(true) {
                 break;
@@ -636,7 +642,7 @@ where
     /// Returns `true` if `old_array` is null.
     fn incremental_rehash<Q, D, const TRY_LOCK: bool>(
         &self,
-        current_array: &BucketArray<K, V, LOCK_FREE>,
+        current_array: &BucketArray<K, V, TYPE>,
         async_wait: &mut D,
         barrier: &Barrier,
     ) -> Result<bool, ()>
@@ -710,7 +716,7 @@ where
                     Locker::lock(old_bucket, barrier)
                 };
                 if let Some(mut locker) = lock_result {
-                    self.relocate_bucket::<Q, D, TRY_LOCK>(
+                    self.relocate_bucket::<_, _, TRY_LOCK>(
                         current_array,
                         old_array,
                         index,
@@ -731,7 +737,7 @@ where
     #[inline]
     fn try_enlarge(
         &self,
-        current_array: &BucketArray<K, V, LOCK_FREE>,
+        current_array: &BucketArray<K, V, TYPE>,
         index: usize,
         mut num_entries: usize,
         barrier: &Barrier,
@@ -755,14 +761,14 @@ where
     #[inline]
     fn try_shrink_or_rebuild(
         &self,
-        current_array: &BucketArray<K, V, LOCK_FREE>,
+        current_array: &BucketArray<K, V, TYPE>,
         index: usize,
         barrier: &Barrier,
     ) {
         debug_assert!(current_array.old_array(barrier).is_null());
 
         if current_array.num_entries() > self.minimum_capacity().load(Relaxed).next_power_of_two()
-            || LOCK_FREE
+            || TYPE == OPTIMISTIC
         {
             let sample_size = current_array.sample_size();
             let shrink_threshold = sample_size * BUCKET_LEN / 16;
@@ -773,13 +779,13 @@ where
                 let bucket = current_array.bucket((index + i) % current_array.num_buckets());
                 num_entries += bucket.num_entries();
                 if num_entries >= shrink_threshold
-                    && (!LOCK_FREE
+                    && (TYPE != OPTIMISTIC
                         || num_buckets_to_rebuild + (sample_size - i) < rebuild_threshold)
                 {
                     // Early exit.
                     return;
                 }
-                if LOCK_FREE && bucket.need_rebuild() {
+                if TYPE == OPTIMISTIC && bucket.need_rebuild() {
                     if num_buckets_to_rebuild >= rebuild_threshold {
                         self.try_resize(index, barrier);
                         return;
@@ -787,7 +793,7 @@ where
                     num_buckets_to_rebuild += 1;
                 }
             }
-            if !LOCK_FREE || num_entries < shrink_threshold {
+            if TYPE != OPTIMISTIC || num_entries < shrink_threshold {
                 self.try_resize(index, barrier);
             }
         }
@@ -815,15 +821,14 @@ where
             let sample_size = current_array.full_sample_size();
             let estimated_num_entries = Self::sample(current_array, sampling_index, sample_size);
             let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
-                let max_capacity = 1_usize << (usize::BITS - 1);
-                if capacity == max_capacity {
+                if capacity == self.maximum_capacity() {
                     // Do not resize if the capacity cannot be increased.
                     capacity
                 } else {
                     let mut new_capacity = capacity;
                     while new_capacity <= (estimated_num_entries / 8) * 15 {
                         // Double `new_capacity` until the expected load factor is below 0.5.
-                        if new_capacity == max_capacity {
+                        if new_capacity == self.maximum_capacity() {
                             break;
                         }
                         if new_capacity / capacity == 32 {
@@ -837,7 +842,7 @@ where
                 // Shrink to fit.
                 estimated_num_entries
                     .max(minimum_capacity)
-                    .max(BucketArray::<K, V, LOCK_FREE>::minimum_capacity())
+                    .max(BucketArray::<K, V, TYPE>::minimum_capacity())
                     .next_power_of_two()
             } else {
                 capacity
@@ -845,7 +850,7 @@ where
 
             let try_resize = new_capacity != capacity;
             let try_drop_table = estimated_num_entries == 0 && minimum_capacity == 0;
-            let try_rebuild = LOCK_FREE
+            let try_rebuild = TYPE == OPTIMISTIC
                 && !try_resize
                 && Self::check_rebuild(current_array, sampling_index, sample_size);
 
@@ -896,7 +901,7 @@ where
                     }
                 }
 
-                let allocated_array: Option<Arc<BucketArray<K, V, LOCK_FREE>>> = None;
+                let allocated_array: Option<Arc<BucketArray<K, V, TYPE>>> = None;
                 let mut mutex_guard = ExitGuard::new(allocated_array, |allocated_array| {
                     if let Some(allocated_array) = allocated_array {
                         // A new array was allocated.
@@ -910,7 +915,7 @@ where
                 });
                 if try_resize || try_rebuild {
                     mutex_guard.replace(unsafe {
-                        Arc::new_unchecked(BucketArray::<K, V, LOCK_FREE>::new(
+                        Arc::new_unchecked(BucketArray::<K, V, TYPE>::new(
                             new_capacity,
                             self.bucket_array().clone(Relaxed, barrier),
                         ))

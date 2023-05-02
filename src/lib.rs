@@ -5,6 +5,7 @@
 //! * [`HashMap`]: concurrent and asynchronous hash map.
 //! * [`HashSet`]: concurrent and asynchronous hash set.
 //! * [`HashIndex`]: read-optimized concurrent and asynchronous hash map.
+//! * [`HashCache`]: concurrent and asynchronous pseudo-LRU cache backed by [`HashMap`].
 //! * [`TreeIndex`]: read-optimized concurrent and asynchronous B+ tree.
 //!
 //! Utilities for concurrent programming.
@@ -18,11 +19,14 @@
 pub mod hash_map;
 pub use hash_map::HashMap;
 
+pub mod hash_set;
+pub use hash_set::HashSet;
+
 pub mod hash_index;
 pub use hash_index::HashIndex;
 
-pub mod hash_set;
-pub use hash_set::HashSet;
+pub mod hash_cache;
+pub use hash_cache::HashCache;
 
 mod linked_list;
 pub use linked_list::Entry as LinkedEntry;

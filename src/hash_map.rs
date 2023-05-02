@@ -1,7 +1,7 @@
 //! [`HashMap`] is a concurrent and asynchronous hash map.
 
 use super::ebr::{Arc, AtomicArc, Barrier, Tag};
-use super::hash_table::bucket::{DataBlock, EntryPtr, Locker, Reader, BUCKET_LEN};
+use super::hash_table::bucket::{DataBlock, EntryPtr, Locker, Reader, BUCKET_LEN, SEQUENTIAL};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::HashTable;
 use super::wait_queue::AsyncWait;
@@ -68,7 +68,7 @@ where
     K: Eq + Hash,
     H: BuildHasher,
 {
-    array: AtomicArc<BucketArray<K, V, false>>,
+    array: AtomicArc<BucketArray<K, V, SEQUENTIAL>>,
     minimum_capacity: AtomicUsize,
     build_hasher: H,
 }
@@ -95,8 +95,8 @@ where
     hashmap: &'h HashMap<K, V, H>,
     index: usize,
     data_block_mut: &'h mut DataBlock<K, V, BUCKET_LEN>,
-    locker: Locker<'h, K, V, false>,
-    entry_ptr: EntryPtr<'h, K, V, false>,
+    locker: Locker<'h, K, V, SEQUENTIAL>,
+    entry_ptr: EntryPtr<'h, K, V, SEQUENTIAL>,
 }
 
 /// [`VacantEntry`] is a view into a vacant entry in a [`HashMap`].
@@ -110,7 +110,7 @@ where
     hash: u64,
     index: usize,
     data_block_mut: &'h mut DataBlock<K, V, BUCKET_LEN>,
-    locker: Locker<'h, K, V, false>,
+    locker: Locker<'h, K, V, SEQUENTIAL>,
 }
 
 /// [`Reserve`] keeps the capacity of the associated [`HashMap`] higher than a certain level.
@@ -168,7 +168,10 @@ where
     #[inline]
     pub fn with_capacity_and_hasher(capacity: usize, build_hasher: H) -> HashMap<K, V, H> {
         let array = unsafe {
-            Arc::new_unchecked(BucketArray::<K, V, false>::new(capacity, AtomicArc::null()))
+            Arc::new_unchecked(BucketArray::<K, V, SEQUENTIAL>::new(
+                capacity,
+                AtomicArc::null(),
+            ))
         };
         HashMap {
             array: AtomicArc::from(array),
@@ -617,7 +620,7 @@ where
             let val = constructor();
             locker.insert_with(
                 data_block_mut,
-                BucketArray::<K, V, false>::partial_hash(hash),
+                BucketArray::<K, V, SEQUENTIAL>::partial_hash(hash),
                 || (key, val),
                 &barrier,
             );
@@ -660,7 +663,7 @@ where
                         let val = constructor();
                         locker.insert_with(
                             data_block_mut,
-                            BucketArray::<K, V, false>::partial_hash(hash),
+                            BucketArray::<K, V, SEQUENTIAL>::partial_hash(hash),
                             || (key, val),
                             &barrier,
                         );
@@ -1337,7 +1340,7 @@ where
     }
 
     /// Clears the old array asynchronously.
-    async fn cleanse_old_array_async(&self, current_array: &BucketArray<K, V, false>) {
+    async fn cleanse_old_array_async(&self, current_array: &BucketArray<K, V, SEQUENTIAL>) {
         while !current_array.old_array(&Barrier::new()).is_null() {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
@@ -1439,7 +1442,10 @@ where
     #[must_use]
     pub fn with_capacity(capacity: usize) -> HashMap<K, V, RandomState> {
         let array = unsafe {
-            Arc::new_unchecked(BucketArray::<K, V, false>::new(capacity, AtomicArc::null()))
+            Arc::new_unchecked(BucketArray::<K, V, SEQUENTIAL>::new(
+                capacity,
+                AtomicArc::null(),
+            ))
         };
         HashMap {
             array: AtomicArc::from(array),
@@ -1494,7 +1500,7 @@ where
     }
 }
 
-impl<K, V, H> HashTable<K, V, H, false> for HashMap<K, V, H>
+impl<K, V, H> HashTable<K, V, H, SEQUENTIAL> for HashMap<K, V, H>
 where
     K: Eq + Hash,
     H: BuildHasher,
@@ -1508,12 +1514,16 @@ where
         None
     }
     #[inline]
-    fn bucket_array(&self) -> &AtomicArc<BucketArray<K, V, false>> {
+    fn bucket_array(&self) -> &AtomicArc<BucketArray<K, V, SEQUENTIAL>> {
         &self.array
     }
     #[inline]
     fn minimum_capacity(&self) -> &AtomicUsize {
         &self.minimum_capacity
+    }
+    #[inline]
+    fn maximum_capacity(&self) -> usize {
+        1_usize << (usize::BITS - 1)
     }
 }
 
@@ -2119,7 +2129,7 @@ where
         let barrier = Barrier::new();
         let entry_ptr = self.locker.insert_with(
             self.data_block_mut,
-            BucketArray::<K, V, false>::partial_hash(self.hash),
+            BucketArray::<K, V, SEQUENTIAL>::partial_hash(self.hash),
             || (self.key, val),
             self.hashmap.prolonged_barrier_ref(&barrier),
         );

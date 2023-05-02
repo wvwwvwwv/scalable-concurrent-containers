@@ -1,7 +1,7 @@
 //! [`HashIndex`] is a read-optimized concurrent and asynchronous hash map.
 
 use super::ebr::{Arc, AtomicArc, Barrier};
-use super::hash_table::bucket::{Bucket, EntryPtr, Locker};
+use super::hash_table::bucket::{Bucket, EntryPtr, Locker, OPTIMISTIC};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::HashTable;
 use super::wait_queue::AsyncWait;
@@ -47,7 +47,7 @@ where
     V: 'static + Clone,
     H: BuildHasher,
 {
-    array: AtomicArc<BucketArray<K, V, true>>,
+    array: AtomicArc<BucketArray<K, V, OPTIMISTIC>>,
     minimum_capacity: AtomicUsize,
     build_hasher: H,
 }
@@ -76,10 +76,10 @@ where
     H: BuildHasher,
 {
     hashindex: &'h HashIndex<K, V, H>,
-    current_array: Option<&'b BucketArray<K, V, true>>,
+    current_array: Option<&'b BucketArray<K, V, OPTIMISTIC>>,
     current_index: usize,
-    current_bucket: Option<&'b Bucket<K, V, true>>,
-    current_entry_ptr: EntryPtr<'b, K, V, true>,
+    current_bucket: Option<&'b Bucket<K, V, OPTIMISTIC>>,
+    current_entry_ptr: EntryPtr<'b, K, V, OPTIMISTIC>,
     barrier: &'b Barrier,
 }
 
@@ -147,7 +147,7 @@ where
     #[inline]
     pub fn with_capacity_and_hasher(capacity: usize, build_hasher: H) -> HashIndex<K, V, H> {
         HashIndex {
-            array: AtomicArc::from(Arc::new(BucketArray::<K, V, true>::new(
+            array: AtomicArc::from(Arc::new(BucketArray::<K, V, OPTIMISTIC>::new(
                 capacity,
                 AtomicArc::null(),
             ))),
@@ -325,7 +325,7 @@ where
                     let new_k = k.clone();
                     locker.insert_with(
                         data_block_mut,
-                        BucketArray::<K, V, false>::partial_hash(hash),
+                        BucketArray::<K, V, OPTIMISTIC>::partial_hash(hash),
                         || (new_k, new_v),
                         &barrier,
                     );
@@ -399,7 +399,7 @@ where
                                 let new_k = k.clone();
                                 locker.insert_with(
                                     data_block_mut,
-                                    BucketArray::<K, V, false>::partial_hash(hash),
+                                    BucketArray::<K, V, OPTIMISTIC>::partial_hash(hash),
                                     || (new_k, new_v),
                                     &barrier,
                                 );
@@ -959,7 +959,7 @@ where
     }
 
     /// Clears the old array asynchronously.
-    async fn cleanse_old_array_async(&self, current_array: &BucketArray<K, V, true>) {
+    async fn cleanse_old_array_async(&self, current_array: &BucketArray<K, V, OPTIMISTIC>) {
         while !current_array.old_array(&Barrier::new()).is_null() {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
@@ -1047,7 +1047,7 @@ where
     #[must_use]
     pub fn with_capacity(capacity: usize) -> HashIndex<K, V, RandomState> {
         HashIndex {
-            array: AtomicArc::from(Arc::new(BucketArray::<K, V, true>::new(
+            array: AtomicArc::from(Arc::new(BucketArray::<K, V, OPTIMISTIC>::new(
                 capacity,
                 AtomicArc::null(),
             ))),
@@ -1087,7 +1087,7 @@ where
     }
 }
 
-impl<K, V, H> HashTable<K, V, H, true> for HashIndex<K, V, H>
+impl<K, V, H> HashTable<K, V, H, OPTIMISTIC> for HashIndex<K, V, H>
 where
     K: 'static + Clone + Eq + Hash,
     V: 'static + Clone,
@@ -1102,12 +1102,16 @@ where
         Some((entry.0.clone(), entry.1.clone()))
     }
     #[inline]
-    fn bucket_array(&self) -> &AtomicArc<BucketArray<K, V, true>> {
+    fn bucket_array(&self) -> &AtomicArc<BucketArray<K, V, OPTIMISTIC>> {
         &self.array
     }
     #[inline]
     fn minimum_capacity(&self) -> &AtomicUsize {
         &self.minimum_capacity
+    }
+    #[inline]
+    fn maximum_capacity(&self) -> usize {
+        1_usize << (usize::BITS - 1)
     }
 }
 

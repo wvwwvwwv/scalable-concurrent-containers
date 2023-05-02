@@ -20,6 +20,7 @@ A collection of high performance containers and utilities for concurrent and asy
 - [HashMap](#HashMap) is a concurrent and asynchronous hash map.
 - [HashSet](#HashSet) is a concurrent and asynchronous hash set.
 - [HashIndex](#HashIndex) is a read-optimized concurrent and asynchronous hash map.
+- [HashCache](#HashCache) is a pseudo-LRU cache backed by [HashMap](#HashMap).
 - [TreeIndex](#TreeIndex) is a read-optimized concurrent and asynchronous B+ tree.
 
 #### Utilities for Concurrent Programming
@@ -186,6 +187,10 @@ drop(hashindex);
 // The entry can be read after `hashindex` is dropped.
 assert_eq!(entry_ref, (&1, &0));
 ```
+
+## HashCache
+
+WORK-IN-PROGRESS. [HashCache](#HashCache) is a concurrent pseudo-LRU cache that is based on [HashMap](#HashMap) implementation.
 
 ## TreeIndex
 
