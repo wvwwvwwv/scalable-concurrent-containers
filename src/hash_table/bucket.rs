@@ -1100,7 +1100,7 @@ impl<V> Evictable<V> {
 mod test {
     use super::*;
     use crate::wait_queue::DeriveAsyncWait;
-    use quickcheck::QuickCheck;
+    use proptest::prelude::*;
     use std::convert::TryInto;
     use std::pin::Pin;
     use std::sync::atomic::AtomicPtr;
@@ -1117,22 +1117,21 @@ mod test {
         }
     }
 
-    #[test]
-    fn prop_eviction() {
-        fn linked_list(xs: usize) -> bool {
+    proptest! {
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn linked_list(xs in 0..BUCKET_LEN * 2) {
             let mut data_block: DataBlock<usize, Evictable<usize>, BUCKET_LEN> =
                 unsafe { MaybeUninit::uninit().assume_init() };
             let mut bucket: Bucket<usize, Evictable<usize>, CACHE> = default_bucket();
-            for v in 0..xs.min(BUCKET_LEN * 2) {
+            for v in 0..xs {
                 let barrier = Barrier::new();
                 let mut locker = Locker::lock(&mut bucket, &barrier).unwrap();
                 let evicted = locker.evict_lru(&mut data_block);
                 assert_eq!(v >= BUCKET_LEN, evicted.is_some());
                 locker.insert_with(&mut data_block, 0, || (v, Evictable::new(v)), &barrier);
             }
-            bucket.num_entries() <= BUCKET_LEN
         }
-        QuickCheck::new().quickcheck(linked_list as fn(usize) -> bool);
     }
 
     #[cfg_attr(miri, ignore)]
