@@ -1128,7 +1128,7 @@ mod test {
                             if let Ok(exclusive_locker) = Locker::try_lock_or_wait(
                                 unsafe {
                                     &mut *(bucket_clone.as_ptr()
-                                        as *mut Bucket<usize, usize, OPTIMISTIC>)
+                                        as *mut Bucket<usize, usize, SEQUENTIAL>)
                                 },
                                 async_wait_pinned.derive().unwrap(),
                                 &barrier,
@@ -1178,7 +1178,7 @@ mod test {
                     }
                     {
                         let bucket_mut = unsafe {
-                            &mut *(bucket_clone.as_ptr() as *mut Bucket<usize, usize, OPTIMISTIC>)
+                            &mut *(bucket_clone.as_ptr() as *mut Bucket<usize, usize, SEQUENTIAL>)
                         };
                         let data_block_mut = unsafe {
                             &mut *(data_block_clone.as_ptr()
