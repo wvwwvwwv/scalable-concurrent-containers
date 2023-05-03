@@ -213,7 +213,7 @@ where
         async_wait: &mut D,
         barrier: &Barrier,
     ) -> Result<Option<(K, V)>, (K, V)> {
-        match self.acquire_entry(&key, hash, async_wait, barrier) {
+        match self.reserve_entry(&key, hash, async_wait, barrier) {
             Ok((mut locker, data_block_mut, entry_ptr, _)) => {
                 if entry_ptr.is_valid() {
                     return Ok(Some((key, val)));
@@ -307,7 +307,9 @@ where
         Ok(None)
     }
 
-    /// Gets an entry from the [`HashTable`].
+    /// Gets the occupied entry corresponding to the key.
+    ///
+    /// Returns an error if locking failed.
     #[allow(clippy::type_complexity)]
     #[inline]
     fn get_entry<'b, Q, D>(
@@ -368,6 +370,8 @@ where
     }
 
     /// Removes an entry if the condition is met.
+    ///
+    /// Returns an error if locking failed.
     #[inline]
     fn remove_entry<Q, F: FnOnce(&mut V) -> bool, D, R, P: FnOnce(Option<Option<(K, V)>>) -> R>(
         &self,
@@ -472,13 +476,14 @@ where
         (num_retained, num_removed)
     }
 
-    /// Acquires a [`Locker`] and [`EntryPtr`] corresponding to the key.
+    /// Reserves an entry and returns a [`Locker`] and [`EntryPtr`] corresponding to the key.
     ///
-    /// It returns an error if locking failed, or returns an [`EntryPtr`] if the key exists,
-    /// otherwise `None` is returned.
+    /// The returned [`EntryPtr`] may point to an occupied entry if the key exists.
+    ///
+    /// Returns an error if locking failed
     #[allow(clippy::type_complexity)]
     #[inline]
-    fn acquire_entry<'b, Q, D>(
+    fn reserve_entry<'b, Q, D>(
         &self,
         key: &Q,
         hash: u64,

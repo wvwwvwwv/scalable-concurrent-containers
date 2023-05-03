@@ -400,7 +400,7 @@ where
                     .origin_leaf_key
                     .load(Relaxed)
                     .as_ref()
-                    .map_or_else(|| false, |key| entry.0.borrow() == key)
+                    .map_or_else(|| false, |key| entry.0 == key)
             } {
                 entry_array[num_entries].replace((
                     Some(middle_key_ref),

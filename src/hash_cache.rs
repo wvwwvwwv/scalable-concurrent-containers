@@ -166,16 +166,11 @@ where
     #[inline]
     pub fn entry(&self, key: K) -> Entry<K, V, H> {
         let barrier = Barrier::new();
-        let hash = self.hash(key.borrow());
+        let hash = self.hash(&key);
         let (locker, data_block_mut, entry_ptr, index) = unsafe {
-            self.acquire_entry(
-                key.borrow(),
-                hash,
-                &mut (),
-                self.prolonged_barrier_ref(&barrier),
-            )
-            .ok()
-            .unwrap_unchecked()
+            self.reserve_entry(&key, hash, &mut (), self.prolonged_barrier_ref(&barrier))
+                .ok()
+                .unwrap_unchecked()
         };
         if entry_ptr.is_valid() {
             Entry::Occupied(OccupiedEntry {
@@ -212,14 +207,14 @@ where
     /// ```
     #[inline]
     pub async fn entry_async(&self, key: K) -> Entry<K, V, H> {
-        let hash = self.hash(key.borrow());
+        let hash = self.hash(&key);
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             {
                 let barrier = Barrier::new();
-                if let Ok((locker, data_block_mut, entry_ptr, index)) = self.acquire_entry(
-                    key.borrow(),
+                if let Ok((locker, data_block_mut, entry_ptr, index)) = self.reserve_entry(
+                    &key,
                     hash,
                     &mut async_wait_pinned,
                     self.prolonged_barrier_ref(&barrier),
@@ -268,8 +263,8 @@ where
     #[inline]
     pub fn put(&self, key: K, val: V) -> Result<Option<(K, V)>, (K, V)> {
         let barrier = Barrier::new();
-        let hash = self.hash(key.borrow());
-        let result = match self.acquire_entry(&key, hash, &mut (), &barrier) {
+        let hash = self.hash(&key);
+        let result = match self.reserve_entry(&key, hash, &mut (), &barrier) {
             Ok((mut locker, data_block_mut, entry_ptr, _)) => {
                 if entry_ptr.is_valid() {
                     return Err((key, val));
@@ -307,14 +302,14 @@ where
     /// ```
     #[inline]
     pub async fn put_async(&self, key: K, val: V) -> Result<Option<(K, V)>, (K, V)> {
-        let hash = self.hash(key.borrow());
+        let hash = self.hash(&key);
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             {
                 let barrier = Barrier::new();
                 if let Ok((mut locker, data_block_mut, entry_ptr, _)) =
-                    self.acquire_entry(&key, hash, &mut async_wait_pinned, &barrier)
+                    self.reserve_entry(&key, hash, &mut async_wait_pinned, &barrier)
                 {
                     if entry_ptr.is_valid() {
                         return Err((key, val));

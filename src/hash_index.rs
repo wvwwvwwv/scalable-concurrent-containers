@@ -229,7 +229,7 @@ where
     #[inline]
     pub fn insert(&self, key: K, val: V) -> Result<(), (K, V)> {
         let barrier = Barrier::new();
-        let hash = self.hash(key.borrow());
+        let hash = self.hash(&key);
         if let Ok(Some((k, v))) = self.insert_entry(key, val, hash, &mut (), &barrier) {
             Err((k, v))
         } else {
@@ -255,7 +255,7 @@ where
     /// ```
     #[inline]
     pub async fn insert_async(&self, mut key: K, mut val: V) -> Result<(), (K, V)> {
-        let hash = self.hash(key.borrow());
+        let hash = self.hash(&key);
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
@@ -315,11 +315,9 @@ where
     {
         let barrier = Barrier::new();
         let hash = self.hash(key);
-        let Ok((mut locker, data_block_mut, mut entry_ptr, _)) = self
-            .acquire_entry(key, hash, &mut (), &barrier) else {
-            return false;
-        };
-        if entry_ptr.is_valid() {
+        if let Ok(Some((mut locker, data_block_mut, mut entry_ptr))) =
+            self.get_entry(key, hash, &mut (), &barrier)
+        {
             let (k, v) = entry_ptr.get(data_block_mut);
             let modify_action: ModifyAction<V> = updater(k, v).into();
             let result = match modify_action {
@@ -390,10 +388,8 @@ where
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             {
                 let barrier = Barrier::new();
-                if let Ok((mut locker, data_block_mut, mut entry_ptr, _)) =
-                    self.acquire_entry(key, hash, &mut async_wait_pinned, &barrier)
-                {
-                    if entry_ptr.is_valid() {
+                if let Ok(result) = self.get_entry(key, hash, &mut async_wait_pinned, &barrier) {
+                    if let Some((mut locker, data_block_mut, mut entry_ptr)) = result {
                         let (k, v) = entry_ptr.get(data_block_mut);
                         let modify_action: ModifyAction<V> = updater(k, v).into();
                         let result = match modify_action {

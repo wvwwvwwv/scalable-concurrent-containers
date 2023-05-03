@@ -178,7 +178,7 @@ where
                 mutable_metadata >>= DIMENSION.num_bits_per_entry;
             }
 
-            if self.search_slot(key.borrow(), metadata).is_some() {
+            if self.search_slot(&key, metadata).is_some() {
                 return InsertResult::Duplicate(key, val);
             }
             return InsertResult::Full(key, val);
