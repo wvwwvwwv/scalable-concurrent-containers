@@ -1,23 +1,19 @@
 //! [`HashCache`] is a concurrent and asynchronous pseudo-LRU cache backed by
 //! [`HashMap`](super::HashMap).
 
-#![allow(dead_code, unused_imports)]
-
-use super::ebr::{Arc, AtomicArc, Barrier, Tag};
-use super::hash_table::bucket::{
-    DataBlock, EntryPtr, Evictable, Locker, Reader, BUCKET_LEN, CACHE,
-};
+use super::ebr::{Arc, AtomicArc, Barrier};
+use super::hash_table::bucket::{DataBlock, EntryPtr, Evictable, Locker, BUCKET_LEN, CACHE};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::HashTable;
 use super::wait_queue::AsyncWait;
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};
-use std::hash::{BuildHasher, Hash, Hasher};
+use std::hash::{BuildHasher, Hash};
 use std::mem::replace;
 use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::{Acquire, Relaxed};
+use std::sync::atomic::Ordering::Acquire;
 
 /// Scalable concurrent pseudo-LRU cache based on [`HashMap`](super::HashMap).
 ///
@@ -245,6 +241,67 @@ where
                         data_block_mut,
                         locker,
                     });
+                }
+            }
+            async_wait_pinned.await;
+        }
+    }
+
+    /// Puts a key-value pair into the [`HashCache`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error along with the supplied key-value pair if the key exists.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    ///
+    /// assert!(hashcache.insert(1, 0).is_ok());
+    /// assert_eq!(hashmap.insert(1, 1).unwrap_err(), (1, 1));
+    /// ```
+    #[inline]
+    pub fn insert(&self, key: K, val: V) -> Result<(), (K, V)> {
+        let barrier = Barrier::new();
+        let hash = self.hash(key.borrow());
+        if let Ok(Some((k, v))) = self.insert_entry(key, val, hash, &mut (), &barrier) {
+            Err((k, v))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Inserts a key-value pair into the [`HashMap`].
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error along with the supplied key-value pair if the key exists.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    /// let future_insert = hashmap.insert_async(11, 17);
+    /// ```
+    #[inline]
+    pub async fn insert_async(&self, mut key: K, mut val: V) -> Result<(), (K, V)> {
+        let hash = self.hash(key.borrow());
+        loop {
+            let mut async_wait = AsyncWait::default();
+            let mut async_wait_pinned = Pin::new(&mut async_wait);
+            match self.insert_entry(key, val, hash, &mut async_wait_pinned, &Barrier::new()) {
+                Ok(Some(returned)) => return Err(returned),
+                Ok(None) => return Ok(()),
+                Err(returned) => {
+                    key = returned.0;
+                    val = returned.1;
                 }
             }
             async_wait_pinned.await;
