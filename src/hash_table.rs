@@ -323,6 +323,7 @@ where
             Locker<'b, K, V, TYPE>,
             &'b mut DataBlock<K, V, BUCKET_LEN>,
             EntryPtr<'b, K, V, TYPE>,
+            usize,
         )>,
         (),
     >
@@ -353,7 +354,7 @@ where
                     barrier,
                 );
                 if entry_ptr.is_valid() {
-                    return Ok(Some((locker, data_block_mut, entry_ptr)));
+                    return Ok(Some((locker, data_block_mut, entry_ptr, index)));
                 }
             }
 

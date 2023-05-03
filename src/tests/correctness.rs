@@ -283,6 +283,8 @@ mod hashmap_test {
                     assert_eq!(result, Some(id + 1));
                     let result = hashmap_clone.read(&id, |_, v| *v);
                     assert_eq!(result, Some(id + 1));
+                    assert_eq!(*hashmap_clone.get(&id).unwrap().get(), id + 1);
+                    assert_eq!(*hashmap_clone.get_async(&id).await.unwrap().get(), id + 1);
                 }
                 for id in range.clone() {
                     if id % 2 == 0 {
@@ -292,6 +294,10 @@ mod hashmap_test {
                         let result = hashmap_clone.remove_if(&id, |v| *v == id + 1);
                         assert_eq!(result, Some((id, id + 1)));
                     }
+                    assert!(hashmap_clone.read_async(&id, |_, v| *v).await.is_none());
+                    assert!(hashmap_clone.read(&id, |_, v| *v).is_none());
+                    assert!(hashmap_clone.get(&id).is_none());
+                    assert!(hashmap_clone.get_async(&id).await.is_none());
                 }
                 for id in range {
                     let result = hashmap_clone.remove_if_async(&id, |v| *v == id + 1).await;
@@ -328,6 +334,7 @@ mod hashmap_test {
                     }
                     for id in range.clone() {
                         assert!(hashmap_clone.read_async(&id, |_, _| ()).await.is_some());
+                        assert_eq!(*hashmap_clone.get_async(&id).await.unwrap().get(), id);
                     }
                     for id in range.clone() {
                         assert!(hashmap_clone.remove_async(&id).await.is_some());

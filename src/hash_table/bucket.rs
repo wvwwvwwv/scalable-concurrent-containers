@@ -840,8 +840,8 @@ impl<'b, K: Eq, V> Locker<'b, K, Evictable<V>, CACHE> {
     }
 
     /// Sets the entry having been just accessed.
-    #[allow(dead_code, clippy::cast_possible_truncation)]
-    pub(super) fn mark_accessed(
+    #[allow(clippy::cast_possible_truncation)]
+    pub(crate) fn mark_accessed(
         &mut self,
         data_block: &mut DataBlock<K, Evictable<V>, BUCKET_LEN>,
         entry_ptr: &mut EntryPtr<K, Evictable<V>, CACHE>,

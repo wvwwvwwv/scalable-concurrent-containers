@@ -536,7 +536,7 @@ where
         U: FnOnce(&K, &mut V) -> R,
     {
         let barrier = Barrier::new();
-        let (mut locker, data_block_mut, mut entry_ptr) = self
+        let (mut locker, data_block_mut, mut entry_ptr, _) = self
             .get_entry(key, self.hash(key.borrow()), &mut (), &barrier)
             .ok()
             .flatten()?;
@@ -571,7 +571,7 @@ where
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             if let Ok(result) = self.get_entry(key, hash, &mut async_wait_pinned, &Barrier::new()) {
-                if let Some((mut locker, data_block_mut, mut entry_ptr)) = result {
+                if let Some((mut locker, data_block_mut, mut entry_ptr, _)) = result {
                     let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
                     return Some(updater(k, v));
                 }
@@ -787,6 +787,91 @@ where
                 Ok(r) => return r,
                 Err(c) => condition = c,
             };
+            async_wait_pinned.await;
+        }
+    }
+
+    /// Gets an occupied entry corresponding to the key.
+    ///
+    /// Returns `None` if the key does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// assert!(hashmap.get(&1).is_none());
+    /// assert!(hashmap.insert(1, 10).is_ok());
+    /// assert_eq!(*hashmap.get(&1).unwrap().get(), 10);
+    /// ```
+    #[inline]
+    pub fn get<Q>(&self, key: &Q) -> Option<OccupiedEntry<K, V, H>>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        let barrier = Barrier::new();
+        let (locker, data_block_mut, entry_ptr, index) = self
+            .get_entry(
+                key,
+                self.hash(key.borrow()),
+                &mut (),
+                self.prolonged_barrier_ref(&barrier),
+            )
+            .ok()
+            .flatten()?;
+        Some(OccupiedEntry {
+            hashmap: self,
+            index,
+            data_block_mut,
+            locker,
+            entry_ptr,
+        })
+    }
+
+    /// Gets an occupied entry corresponding to the key.
+    ///
+    /// Returns `None` if the key does not exist. It is an asynchronous method returning an
+    /// `impl Future` for the caller to await.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    /// let future_insert = hashmap.insert_async(11, 17);
+    /// let future_get = hashmap.get_async(&11);
+    /// ```
+    #[inline]
+    pub async fn get_async<Q>(&self, key: &Q) -> Option<OccupiedEntry<K, V, H>>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        let hash = self.hash(key);
+        loop {
+            let mut async_wait = AsyncWait::default();
+            let mut async_wait_pinned = Pin::new(&mut async_wait);
+            if let Ok(result) = self.get_entry(
+                key,
+                hash,
+                &mut async_wait_pinned,
+                self.prolonged_barrier_ref(&Barrier::new()),
+            ) {
+                if let Some((locker, data_block_mut, entry_ptr, index)) = result {
+                    return Some(OccupiedEntry {
+                        hashmap: self,
+                        index,
+                        data_block_mut,
+                        locker,
+                        entry_ptr,
+                    });
+                }
+                return None;
+            }
             async_wait_pinned.await;
         }
     }

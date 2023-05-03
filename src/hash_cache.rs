@@ -159,9 +159,9 @@ where
     ///     hashcache.entry(ch).and_modify(|counter| *counter += 1).or_insert(1);
     /// }
     ///
-    /// assert_eq!(hashcache.read(&'s', |_, v| *v), Some(2));
-    /// assert_eq!(hashcache.read(&'t', |_, v| *v), Some(3));
-    /// assert!(hashcache.read(&'y', |_, v| *v).is_none());
+    /// assert_eq!(*hashcache.get(&'s').unwrap().get(), 2);
+    /// assert_eq!(*hashcache.get(&'t').unwrap().get(), 3);
+    /// assert!(hashcache.get(&'y').is_none());
     /// ```
     #[inline]
     pub fn entry(&self, key: K) -> Entry<K, V, H> {
@@ -328,9 +328,9 @@ where
         }
     }
 
-    /// Reads a key-value pair.
+    /// Gets an occupied entry corresponding to the key.
     ///
-    /// It returns `None` if the key does not exist.
+    /// Returns `None` if the key does not exist.
     ///
     /// # Examples
     ///
@@ -339,25 +339,39 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// assert!(hashcache.read(&1, |_, v| *v).is_none());
+    /// assert!(hashcache.get(&1).is_none());
     /// assert!(hashcache.put(1, 10).is_ok());
-    /// assert_eq!(hashcache.read(&1, |_, v| *v).unwrap(), 10);
+    /// assert_eq!(*hashcache.get(&1).unwrap().get(), 10);
     /// ```
     #[inline]
-    pub fn read<Q, R, F: FnOnce(&K, &V) -> R>(&self, key: &Q, reader: F) -> Option<R>
+    pub fn get<Q>(&self, key: &Q) -> Option<OccupiedEntry<K, V, H>>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.read_entry(key, self.hash(key), &mut (), &Barrier::new())
+        let barrier = Barrier::new();
+        let (mut locker, data_block_mut, mut entry_ptr, index) = self
+            .get_entry(
+                key,
+                self.hash(key.borrow()),
+                &mut (),
+                self.prolonged_barrier_ref(&barrier),
+            )
             .ok()
-            .flatten()
-            .map(|(k, v)| reader(k, v))
+            .flatten()?;
+        locker.mark_accessed(data_block_mut, &mut entry_ptr);
+        Some(OccupiedEntry {
+            hashcache: self,
+            index,
+            data_block_mut,
+            locker,
+            entry_ptr,
+        })
     }
 
-    /// Reads a key-value pair.
+    /// Gets an occupied entry corresponding to the key.
     ///
-    /// It returns `None` if the key does not exist. It is an asynchronous method returning an
+    /// Returns `None` if the key does not exist. It is an asynchronous method returning an
     /// `impl Future` for the caller to await.
     ///
     /// # Examples
@@ -367,10 +381,10 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     /// let future_put = hashcache.put_async(11, 17);
-    /// let future_read = hashcache.read_async(&11, |_, v| *v);
+    /// let future_get = hashcache.get_async(&11);
     /// ```
     #[inline]
-    pub async fn read_async<Q, R, F: FnOnce(&K, &V) -> R>(&self, key: &Q, reader: F) -> Option<R>
+    pub async fn get_async<Q>(&self, key: &Q) -> Option<OccupiedEntry<K, V, H>>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
@@ -379,9 +393,23 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if let Ok(result) = self.read_entry(key, hash, &mut async_wait_pinned, &Barrier::new())
-            {
-                return result.map(|(k, v)| reader(k, v));
+            if let Ok(result) = self.get_entry(
+                key,
+                hash,
+                &mut async_wait_pinned,
+                self.prolonged_barrier_ref(&Barrier::new()),
+            ) {
+                if let Some((mut locker, data_block_mut, mut entry_ptr, index)) = result {
+                    locker.mark_accessed(data_block_mut, &mut entry_ptr);
+                    return Some(OccupiedEntry {
+                        hashcache: self,
+                        index,
+                        data_block_mut,
+                        locker,
+                        entry_ptr,
+                    });
+                }
+                return None;
             }
             async_wait_pinned.await;
         }
@@ -398,7 +426,7 @@ where
     /// let hashcache_default: HashCache<u64, u32, RandomState> = HashCache::default();
     /// assert_eq!(hashcache_default.capacity(), 0);
     ///
-    /// let hashcache: HashCache<u64, u32, RandomState> = HashCache::with_capacity(1000000, 2000000);
+    /// let hashcache: HashCache<u64, u32> = HashCache::with_capacity(1000000, 2000000);
     /// assert_eq!(hashcache.capacity(), 1048576);
     /// ```
     #[inline]
@@ -529,7 +557,7 @@ where
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
     /// hashcache.entry(3).or_insert(7);
-    /// assert_eq!(hashcache.read(&3, |_, v| *v), Some(7));
+    /// assert_eq!(*hashcache.get(&3).unwrap().get(), 7);
     /// ```
     #[inline]
     pub fn or_insert(self, val: V) -> OccupiedEntry<'h, K, V, H> {
@@ -546,7 +574,7 @@ where
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
     /// hashcache.entry(19).or_insert_with(|| 5);
-    /// assert_eq!(hashcache.read(&19, |_, v| *v), Some(5));
+    /// assert_eq!(*hashcache.get(&19).unwrap().get(), 5);
     /// ```
     #[inline]
     pub fn or_insert_with<F: FnOnce() -> V>(self, constructor: F) -> OccupiedEntry<'h, K, V, H> {
@@ -566,7 +594,7 @@ where
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
     /// hashcache.entry(11).or_insert_with_key(|k| if *k == 11 { 7 } else { 3 });
-    /// assert_eq!(hashcache.read(&11, |_, v| *v), Some(7));
+    /// assert_eq!(*hashcache.get(&11).unwrap().get(), 7);
     /// ```
     #[inline]
     pub fn or_insert_with_key<F: FnOnce(&K) -> V>(
@@ -610,10 +638,10 @@ where
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
     /// hashcache.entry(37).and_modify(|v| { *v += 1 }).or_insert(47);
-    /// assert_eq!(hashcache.read(&37, |_, v| *v), Some(47));
+    /// assert_eq!(*hashcache.get(&37).unwrap().get(), 47);
     ///
     /// hashcache.entry(37).and_modify(|v| { *v += 1 }).or_insert(3);
-    /// assert_eq!(hashcache.read(&37, |_, v| *v), Some(48));
+    /// assert_eq!(*hashcache.get(&37).unwrap().get(), 48);
     /// ```
     #[inline]
     #[must_use]
@@ -668,7 +696,7 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     /// hashcache.entry(11).or_default();
-    /// assert_eq!(hashcache.read(&11, |_, v| *v), Some(0));
+    /// assert_eq!(*hashcache.get(&11).unwrap().get(), 0);
     /// ```
     #[inline]
     pub fn or_default(self) -> OccupiedEntry<'h, K, V, H> {
@@ -795,7 +823,7 @@ where
     ///     assert_eq!(*o.get(), 29);
     /// }
     ///
-    /// assert_eq!(hashcache.read(&37, |_, v| *v), Some(29));
+    /// assert_eq!(*hashcache.get(&37).unwrap().get(), 29);
     /// ```
     #[inline]
     pub fn get_mut(&mut self) -> &mut V {
@@ -821,7 +849,7 @@ where
     ///     assert_eq!(o.insert(17), 11);
     /// }
     ///
-    /// assert_eq!(hashcache.read(&37, |_, v| *v), Some(17));
+    /// assert_eq!(*hashcache.get(&37).unwrap().get(), 17);
     /// ```
     #[inline]
     pub fn insert(&mut self, val: V) -> V {
@@ -928,7 +956,7 @@ where
     ///     o.insert_entry(29);
     /// }
     ///
-    /// assert_eq!(hashcache.read(&19, |_, v| *v), Some(29));
+    /// assert_eq!(*hashcache.get(&19).unwrap().get(), 29);
     /// ```
     #[inline]
     pub fn insert_entry(mut self, val: V) -> OccupiedEntry<'h, K, V, H> {
