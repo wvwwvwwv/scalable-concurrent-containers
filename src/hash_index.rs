@@ -455,14 +455,12 @@ where
         F: FnOnce(&K, &mut V) -> R,
     {
         let barrier = Barrier::new();
-        let (mut locker, data_block_mut, mut entry_ptr, _) = self
-            .acquire_entry(key, self.hash(key), &mut (), &barrier)
-            .ok()?;
-        if entry_ptr.is_valid() {
-            let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
-            return Some(updater(k, v));
-        }
-        None
+        let (mut locker, data_block_mut, mut entry_ptr) = self
+            .get_entry(key, self.hash(key), &mut (), &barrier)
+            .ok()
+            .flatten()?;
+        let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
+        Some(updater(k, v))
     }
 
     /// Updates the existing value corresponding to the key.
@@ -497,10 +495,8 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if let Ok((mut locker, data_block_mut, mut entry_ptr, _)) =
-                self.acquire_entry(key, hash, &mut async_wait_pinned, &Barrier::new())
-            {
-                if entry_ptr.is_valid() {
+            if let Ok(result) = self.get_entry(key, hash, &mut async_wait_pinned, &Barrier::new()) {
+                if let Some((mut locker, data_block_mut, mut entry_ptr)) = result {
                     let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
                     return Some(updater(k, v));
                 }

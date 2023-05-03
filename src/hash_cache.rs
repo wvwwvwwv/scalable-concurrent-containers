@@ -249,6 +249,8 @@ where
 
     /// Puts a key-value pair into the [`HashCache`].
     ///
+    /// Returns `Some` if an entry was evicted for the new key-value pair.
+    ///
     /// # Errors
     ///
     /// Returns an error along with the supplied key-value pair if the key exists.
@@ -260,23 +262,36 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// assert!(hashcache.insert(1, 0).is_ok());
-    /// assert_eq!(hashmap.insert(1, 1).unwrap_err(), (1, 1));
+    /// assert!(hashcache.put(1, 0).is_ok());
+    /// assert_eq!(hashcache.put(1, 1).unwrap_err(), (1, 1));
     /// ```
     #[inline]
-    pub fn insert(&self, key: K, val: V) -> Result<(), (K, V)> {
+    pub fn put(&self, key: K, val: V) -> Result<Option<(K, V)>, (K, V)> {
         let barrier = Barrier::new();
         let hash = self.hash(key.borrow());
-        if let Ok(Some((k, v))) = self.insert_entry(key, val, hash, &mut (), &barrier) {
-            Err((k, v))
-        } else {
-            Ok(())
-        }
+        let result = match self.acquire_entry(&key, hash, &mut (), &barrier) {
+            Ok((mut locker, data_block_mut, entry_ptr, _)) => {
+                if entry_ptr.is_valid() {
+                    return Err((key, val));
+                }
+                let evicted = locker.evict_lru(data_block_mut).map(|(k, v)| (k, v.take()));
+                locker.insert_with(
+                    data_block_mut,
+                    BucketArray::<K, V, CACHE>::partial_hash(hash),
+                    || (key, Evictable::new(val)),
+                    &barrier,
+                );
+                Ok(evicted)
+            }
+            Err(_) => Err((key, val)),
+        };
+        result
     }
 
-    /// Inserts a key-value pair into the [`HashMap`].
+    /// Puts a key-value pair into the [`HashCache`].
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
+    /// Returns `Some` if an entry was evicted for the new key-value pair. It is an asynchronous
+    /// method returning an `impl Future` for the caller to await.
     ///
     /// # Errors
     ///
@@ -285,24 +300,34 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::HashMap;
+    /// use scc::HashCache;
     ///
-    /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    /// let future_insert = hashmap.insert_async(11, 17);
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    /// let future_put = hashcache.put_async(11, 17);
     /// ```
     #[inline]
-    pub async fn insert_async(&self, mut key: K, mut val: V) -> Result<(), (K, V)> {
+    pub async fn put_async(&self, key: K, val: V) -> Result<Option<(K, V)>, (K, V)> {
         let hash = self.hash(key.borrow());
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            match self.insert_entry(key, val, hash, &mut async_wait_pinned, &Barrier::new()) {
-                Ok(Some(returned)) => return Err(returned),
-                Ok(None) => return Ok(()),
-                Err(returned) => {
-                    key = returned.0;
-                    val = returned.1;
-                }
+            {
+                let barrier = Barrier::new();
+                if let Ok((mut locker, data_block_mut, entry_ptr, _)) =
+                    self.acquire_entry(&key, hash, &mut async_wait_pinned, &barrier)
+                {
+                    if entry_ptr.is_valid() {
+                        return Err((key, val));
+                    }
+                    let evicted = locker.evict_lru(data_block_mut).map(|(k, v)| (k, v.take()));
+                    locker.insert_with(
+                        data_block_mut,
+                        BucketArray::<K, V, CACHE>::partial_hash(hash),
+                        || (key, Evictable::new(val)),
+                        &barrier,
+                    );
+                    return Ok(evicted);
+                };
             }
             async_wait_pinned.await;
         }
@@ -320,8 +345,8 @@ where
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
     /// assert!(hashcache.read(&1, |_, v| *v).is_none());
-    /// // TODO: assert!(hashcache.insert(1, 10).is_ok());
-    /// // TODO: assert_eq!(hashcache.read(&1, |_, v| *v).unwrap(), 10);
+    /// assert!(hashcache.put(1, 10).is_ok());
+    /// assert_eq!(hashcache.read(&1, |_, v| *v).unwrap(), 10);
     /// ```
     #[inline]
     pub fn read<Q, R, F: FnOnce(&K, &V) -> R>(&self, key: &Q, reader: F) -> Option<R>
@@ -346,8 +371,8 @@ where
     /// use scc::HashCache;
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
-    /// // let future_insert = hashmap.insert_async(11, 17);
-    /// // let future_read = hashmap.read_async(&11, |_, v| *v);
+    /// let future_put = hashcache.put_async(11, 17);
+    /// let future_read = hashcache.read_async(&11, |_, v| *v);
     /// ```
     #[inline]
     pub async fn read_async<Q, R, F: FnOnce(&K, &V) -> R>(&self, key: &Q, reader: F) -> Option<R>

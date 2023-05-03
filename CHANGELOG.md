@@ -1,5 +1,10 @@
 # Changelog
 
+1.6.4
+
+* Optimize `Hash*::update*`.
+* Work-in-progress `HashCache` implementation.
+
 1.6.3
 
 * API update 1: [#96](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/96) - add `HashIndex::{modify, modify_async}`, special thanks to [novacrazy](https://github.com/novacrazy).

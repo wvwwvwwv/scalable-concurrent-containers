@@ -807,8 +807,8 @@ impl<'b, K: Eq, V, const TYPE: char> Locker<'b, K, V, TYPE> {
 
 impl<'b, K: Eq, V> Locker<'b, K, Evictable<V>, CACHE> {
     /// Evicts the least recently used entry if the [`Bucket`] is full.
-    #[allow(dead_code, clippy::cast_possible_truncation, clippy::cast_lossless)]
-    pub(super) fn evict_lru(
+    #[allow(clippy::cast_possible_truncation, clippy::cast_lossless)]
+    pub(crate) fn evict_lru(
         &mut self,
         data_block: &mut DataBlock<K, Evictable<V>, BUCKET_LEN>,
     ) -> Option<(K, Evictable<V>)> {

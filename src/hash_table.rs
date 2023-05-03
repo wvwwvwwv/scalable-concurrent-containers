@@ -307,6 +307,66 @@ where
         Ok(None)
     }
 
+    /// Gets an entry from the [`HashTable`].
+    #[allow(clippy::type_complexity)]
+    #[inline]
+    fn get_entry<'b, Q, D>(
+        &self,
+        key: &Q,
+        hash: u64,
+        async_wait: &mut D,
+        barrier: &'b Barrier,
+    ) -> Result<
+        Option<(
+            Locker<'b, K, V, TYPE>,
+            &'b mut DataBlock<K, V, BUCKET_LEN>,
+            EntryPtr<'b, K, V, TYPE>,
+        )>,
+        (),
+    >
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+        D: DeriveAsyncWait,
+    {
+        let mut current_array_ptr = self.bucket_array().load(Acquire, barrier);
+        while let Some(current_array) = current_array_ptr.as_ref() {
+            if let Some(old_array) = current_array.old_array(barrier).as_ref() {
+                self.move_entry(current_array, old_array, hash, async_wait, barrier)?;
+            };
+
+            let index = current_array.calculate_bucket_index(hash);
+            let bucket = current_array.bucket_mut(index);
+            let lock_result = if let Some(async_wait) = async_wait.derive() {
+                Locker::try_lock_or_wait(bucket, async_wait, barrier)?
+            } else {
+                Locker::lock(bucket, barrier)
+            };
+            if let Some(locker) = lock_result {
+                let data_block_mut = current_array.data_block_mut(index);
+                let entry_ptr = locker.get(
+                    data_block_mut,
+                    key,
+                    BucketArray::<K, V, TYPE>::partial_hash(hash),
+                    barrier,
+                );
+                if entry_ptr.is_valid() {
+                    return Ok(Some((locker, data_block_mut, entry_ptr)));
+                }
+            }
+
+            let new_current_array_ptr = self.bucket_array().load(Acquire, barrier);
+            if current_array_ptr == new_current_array_ptr {
+                break;
+            }
+
+            // A new array has been allocated.
+            current_array_ptr = new_current_array_ptr;
+        }
+
+        Ok(None)
+    }
+
     /// Removes an entry if the condition is met.
     #[inline]
     fn remove_entry<Q, F: FnOnce(&mut V) -> bool, D, R, P: FnOnce(Option<Option<(K, V)>>) -> R>(
