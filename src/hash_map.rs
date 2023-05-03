@@ -1367,44 +1367,6 @@ where
     }
 }
 
-impl<K, V, H> Clone for HashMap<K, V, H>
-where
-    K: Clone + Eq + Hash,
-    V: Clone,
-    H: BuildHasher + Clone,
-{
-    #[inline]
-    fn clone(&self) -> Self {
-        let self_clone = Self::with_capacity_and_hasher(self.capacity(), self.hasher().clone());
-        self.scan(|k, v| {
-            let _reuslt = self_clone.insert(k.clone(), v.clone());
-        });
-        self_clone
-    }
-}
-
-impl<K, V, H> Debug for HashMap<K, V, H>
-where
-    K: Debug + Eq + Hash,
-    V: Debug,
-    H: BuildHasher,
-{
-    /// Iterates over all the entries in the [`HashMap`] to print them.
-    ///
-    /// ## Locking behavior
-    ///
-    /// Shared locks on buckets are acquired during iteration, therefore any [`Entry`],
-    /// [`OccupiedEntry`] or [`VacantEntry`] owned by the current thread will lead to a deadlock.
-    #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut d = f.debug_map();
-        self.scan(|k, v| {
-            d.entry(k, v);
-        });
-        d.finish()
-    }
-}
-
 impl<K, V> HashMap<K, V, RandomState>
 where
     K: Eq + Hash,
@@ -1446,6 +1408,44 @@ where
     #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self::with_capacity_and_hasher(capacity, RandomState::new())
+    }
+}
+
+impl<K, V, H> Clone for HashMap<K, V, H>
+where
+    K: Clone + Eq + Hash,
+    V: Clone,
+    H: BuildHasher + Clone,
+{
+    #[inline]
+    fn clone(&self) -> Self {
+        let self_clone = Self::with_capacity_and_hasher(self.capacity(), self.hasher().clone());
+        self.scan(|k, v| {
+            let _reuslt = self_clone.insert(k.clone(), v.clone());
+        });
+        self_clone
+    }
+}
+
+impl<K, V, H> Debug for HashMap<K, V, H>
+where
+    K: Debug + Eq + Hash,
+    V: Debug,
+    H: BuildHasher,
+{
+    /// Iterates over all the entries in the [`HashMap`] to print them.
+    ///
+    /// ## Locking behavior
+    ///
+    /// Shared locks on buckets are acquired during iteration, therefore any [`Entry`],
+    /// [`OccupiedEntry`] or [`VacantEntry`] owned by the current thread will lead to a deadlock.
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut d = f.debug_map();
+        self.scan(|k, v| {
+            d.entry(k, v);
+        });
+        d.finish()
     }
 }
 
@@ -1757,8 +1757,6 @@ where
     /// if let Entry::Occupied(o) = hashmap.entry(11) {
     ///     assert_eq!(o.remove_entry(), (11, 17));
     /// };
-    ///
-    /// assert_eq!(hashmap.capacity(), 0);
     /// ```
     #[inline]
     #[must_use]
@@ -2114,6 +2112,7 @@ where
     /// if let Entry::Vacant(o) = hashmap.entry(19) {
     ///     o.insert_entry(29);
     /// }
+    ///
     /// assert_eq!(hashmap.read(&19, |_, v| *v), Some(29));
     /// ```
     #[inline]

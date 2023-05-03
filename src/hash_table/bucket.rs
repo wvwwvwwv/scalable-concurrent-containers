@@ -333,94 +333,6 @@ impl<K: Eq, V, const TYPE: char> Bucket<K, V, TYPE> {
     }
 }
 
-impl<K: Eq, V> Bucket<K, Evictable<V>, CACHE> {
-    /// Evicts the least recently used entry if the [`Bucket`] is full.
-    #[allow(dead_code, clippy::cast_possible_truncation, clippy::cast_lossless)]
-    pub(super) fn evict_lru(
-        &mut self,
-        data_block: &mut DataBlock<K, Evictable<V>, BUCKET_LEN>,
-    ) -> Option<(K, Evictable<V>)> {
-        if self.num_entries() == BUCKET_LEN {
-            self.num_entries -= 1;
-            if self.metadata.removed_bitmap_or_mru_head == 0 {
-                // Evict the first occupied entry.
-                debug_assert_ne!(self.metadata.occupied_bitmap & 1_u32, 0);
-                self.metadata.occupied_bitmap &= !1_u32;
-                return Some(unsafe { data_block[0].as_mut_ptr().read() });
-            }
-
-            let head_index = self.metadata.removed_bitmap_or_mru_head as usize - 1;
-            let (_, head) = unsafe { &mut *data_block[head_index].as_mut_ptr() };
-            let lru_index = head.prev as usize - 1;
-            let (k, v) = unsafe { data_block[lru_index].as_mut_ptr().read() };
-            let (_, new_lru) = unsafe { &mut *data_block[v.prev as usize - 1].as_mut_ptr() };
-            new_lru.next = self.metadata.removed_bitmap_or_mru_head as u8;
-            head.prev = v.prev;
-            self.metadata.occupied_bitmap &= !(1_u32 << lru_index);
-
-            if self.metadata.removed_bitmap_or_mru_head as usize == head.prev as usize {
-                self.metadata.removed_bitmap_or_mru_head = 0;
-            }
-
-            return Some((k, v));
-        }
-        None
-    }
-
-    /// Sets the entry having been just accessed.
-    #[allow(dead_code, clippy::cast_possible_truncation)]
-    pub(super) fn mark_accessed(
-        &mut self,
-        data_block: &mut DataBlock<K, Evictable<V>, BUCKET_LEN>,
-        entry_ptr: &mut EntryPtr<K, Evictable<V>, CACHE>,
-    ) {
-        let entry_index = entry_ptr.current_index;
-        if self.metadata.removed_bitmap_or_mru_head as usize == entry_index + 1 {
-            // Already the head of the linked list.
-            return;
-        }
-
-        let (_, current) = unsafe { &mut *data_block[entry_index].as_mut_ptr() };
-
-        if self.metadata.removed_bitmap_or_mru_head == 0 {
-            // The linked list is empty.
-            self.metadata.removed_bitmap_or_mru_head = (entry_index + 1) as u32;
-            current.prev = (entry_index + 1) as u8;
-            current.next = (entry_index + 1) as u8;
-            return;
-        }
-
-        if current.prev != 0 {
-            // Adjust `prev -> current`.
-            let (_, prev) = unsafe { &mut *data_block[current.prev as usize - 1].as_mut_ptr() };
-            debug_assert_eq!(prev.next as usize, entry_index + 1);
-            prev.next = current.next;
-        }
-        if current.next != 0 {
-            // Adjust `next -> current`.
-            let (_, next) = unsafe { &mut *data_block[current.next as usize - 1].as_mut_ptr() };
-            debug_assert_eq!(next.prev as usize, entry_index + 1);
-            next.prev = current.prev;
-        }
-
-        let head_index = self.metadata.removed_bitmap_or_mru_head as usize - 1;
-        let (_, head) = unsafe { &mut *data_block[head_index].as_mut_ptr() };
-
-        // Adjust `oldest -> head`.
-        let (_, oldest) = unsafe { &mut *data_block[head.prev as usize - 1].as_mut_ptr() };
-        debug_assert_eq!(oldest.next as usize, head_index + 1);
-        oldest.next = (entry_index + 1) as u8;
-        current.prev = head.prev;
-
-        // Adjust `head -> new head`
-        head.prev = (entry_index + 1) as u8;
-        current.next = (head_index + 1) as u8;
-
-        // Update `head`.
-        self.metadata.removed_bitmap_or_mru_head = (entry_index + 1) as u32;
-    }
-}
-
 impl<'b, K: Eq, V, const TYPE: char> EntryPtr<'b, K, V, TYPE> {
     /// Creates a new invalid [`EntryPtr`].
     #[inline]
@@ -893,6 +805,94 @@ impl<'b, K: Eq, V, const TYPE: char> Locker<'b, K, V, TYPE> {
     }
 }
 
+impl<'b, K: Eq, V> Locker<'b, K, Evictable<V>, CACHE> {
+    /// Evicts the least recently used entry if the [`Bucket`] is full.
+    #[allow(dead_code, clippy::cast_possible_truncation, clippy::cast_lossless)]
+    pub(super) fn evict_lru(
+        &mut self,
+        data_block: &mut DataBlock<K, Evictable<V>, BUCKET_LEN>,
+    ) -> Option<(K, Evictable<V>)> {
+        if self.num_entries() == BUCKET_LEN {
+            self.num_entries -= 1;
+            if self.metadata.removed_bitmap_or_mru_head == 0 {
+                // Evict the first occupied entry.
+                debug_assert_ne!(self.metadata.occupied_bitmap & 1_u32, 0);
+                self.metadata.occupied_bitmap &= !1_u32;
+                return Some(unsafe { data_block[0].as_mut_ptr().read() });
+            }
+
+            let head_index = self.metadata.removed_bitmap_or_mru_head as usize - 1;
+            let (_, head) = unsafe { &mut *data_block[head_index].as_mut_ptr() };
+            let lru_index = head.prev as usize - 1;
+            let (k, v) = unsafe { data_block[lru_index].as_mut_ptr().read() };
+            let (_, new_lru) = unsafe { &mut *data_block[v.prev as usize - 1].as_mut_ptr() };
+            new_lru.next = self.metadata.removed_bitmap_or_mru_head as u8;
+            head.prev = v.prev;
+            self.metadata.occupied_bitmap &= !(1_u32 << lru_index);
+
+            if self.metadata.removed_bitmap_or_mru_head as usize == head.prev as usize {
+                self.metadata.removed_bitmap_or_mru_head = 0;
+            }
+
+            return Some((k, v));
+        }
+        None
+    }
+
+    /// Sets the entry having been just accessed.
+    #[allow(dead_code, clippy::cast_possible_truncation)]
+    pub(super) fn mark_accessed(
+        &mut self,
+        data_block: &mut DataBlock<K, Evictable<V>, BUCKET_LEN>,
+        entry_ptr: &mut EntryPtr<K, Evictable<V>, CACHE>,
+    ) {
+        let entry_index = entry_ptr.current_index;
+        if self.metadata.removed_bitmap_or_mru_head as usize == entry_index + 1 {
+            // Already the head of the linked list.
+            return;
+        }
+
+        let (_, current) = unsafe { &mut *data_block[entry_index].as_mut_ptr() };
+
+        if self.metadata.removed_bitmap_or_mru_head == 0 {
+            // The linked list is empty.
+            self.metadata.removed_bitmap_or_mru_head = (entry_index + 1) as u32;
+            current.prev = (entry_index + 1) as u8;
+            current.next = (entry_index + 1) as u8;
+            return;
+        }
+
+        if current.prev != 0 {
+            // Adjust `prev -> current`.
+            let (_, prev) = unsafe { &mut *data_block[current.prev as usize - 1].as_mut_ptr() };
+            debug_assert_eq!(prev.next as usize, entry_index + 1);
+            prev.next = current.next;
+        }
+        if current.next != 0 {
+            // Adjust `next -> current`.
+            let (_, next) = unsafe { &mut *data_block[current.next as usize - 1].as_mut_ptr() };
+            debug_assert_eq!(next.prev as usize, entry_index + 1);
+            next.prev = current.prev;
+        }
+
+        let head_index = self.metadata.removed_bitmap_or_mru_head as usize - 1;
+        let (_, head) = unsafe { &mut *data_block[head_index].as_mut_ptr() };
+
+        // Adjust `oldest -> head`.
+        let (_, oldest) = unsafe { &mut *data_block[head.prev as usize - 1].as_mut_ptr() };
+        debug_assert_eq!(oldest.next as usize, head_index + 1);
+        oldest.next = (entry_index + 1) as u8;
+        current.prev = head.prev;
+
+        // Adjust `head -> new head`
+        head.prev = (entry_index + 1) as u8;
+        current.next = (head_index + 1) as u8;
+
+        // Update `head`.
+        self.metadata.removed_bitmap_or_mru_head = (entry_index + 1) as u32;
+    }
+}
+
 impl<'b, K: Eq, V, const TYPE: char> Deref for Locker<'b, K, V, TYPE> {
     type Target = Bucket<K, V, TYPE>;
 
@@ -1078,7 +1078,6 @@ impl<K: Eq, V, const LEN: usize> Drop for LinkedBucket<K, V, LEN> {
 
 impl<V> Evictable<V> {
     /// Creates a new [`Evictable`].
-    #[allow(dead_code)]
     pub(crate) fn new(value: V) -> Self {
         Self {
             value,
@@ -1091,6 +1090,27 @@ impl<V> Evictable<V> {
     pub(crate) fn reset_link(&mut self) {
         self.prev = 0;
         self.next = 0;
+    }
+
+    /// Takes the instance of `V` out of [`Evictable`].
+    pub(crate) fn take(self) -> V {
+        self.value
+    }
+}
+
+impl<V> Deref for Evictable<V> {
+    type Target = V;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+impl<V> DerefMut for Evictable<V> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.value
     }
 }
 
