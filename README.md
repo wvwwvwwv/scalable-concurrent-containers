@@ -190,7 +190,9 @@ assert_eq!(entry_ref, (&1, &0));
 
 ## HashCache
 
-WORK-IN-PROGRESS. [HashCache](#HashCache) is a concurrent pseudo-LRU cache that is based on [HashMap](#HashMap) implementation.
+_WORK-IN-PROGRESS_.
+
+[HashCache](#HashCache) is a concurrent pseudo-LRU cache that is based on [HashMap](#HashMap) implementation.
 
 ## TreeIndex
 

@@ -253,16 +253,11 @@ where
     #[inline]
     pub fn entry(&self, key: K) -> Entry<K, V, H> {
         let barrier = Barrier::new();
-        let hash = self.hash(key.borrow());
+        let hash = self.hash(&key);
         let (locker, data_block_mut, entry_ptr, index) = unsafe {
-            self.acquire_entry(
-                key.borrow(),
-                hash,
-                &mut (),
-                self.prolonged_barrier_ref(&barrier),
-            )
-            .ok()
-            .unwrap_unchecked()
+            self.reserve_entry(&key, hash, &mut (), self.prolonged_barrier_ref(&barrier))
+                .ok()
+                .unwrap_unchecked()
         };
         if entry_ptr.is_valid() {
             Entry::Occupied(OccupiedEntry {
@@ -299,14 +294,14 @@ where
     /// ```
     #[inline]
     pub async fn entry_async(&self, key: K) -> Entry<K, V, H> {
-        let hash = self.hash(key.borrow());
+        let hash = self.hash(&key);
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             {
                 let barrier = Barrier::new();
-                if let Ok((locker, data_block_mut, entry_ptr, index)) = self.acquire_entry(
-                    key.borrow(),
+                if let Ok((locker, data_block_mut, entry_ptr, index)) = self.reserve_entry(
+                    &key,
                     hash,
                     &mut async_wait_pinned,
                     self.prolonged_barrier_ref(&barrier),
@@ -475,7 +470,7 @@ where
     #[inline]
     pub fn insert(&self, key: K, val: V) -> Result<(), (K, V)> {
         let barrier = Barrier::new();
-        let hash = self.hash(key.borrow());
+        let hash = self.hash(&key);
         if let Ok(Some((k, v))) = self.insert_entry(key, val, hash, &mut (), &barrier) {
             Err((k, v))
         } else {
@@ -501,7 +496,7 @@ where
     /// ```
     #[inline]
     pub async fn insert_async(&self, mut key: K, mut val: V) -> Result<(), (K, V)> {
-        let hash = self.hash(key.borrow());
+        let hash = self.hash(&key);
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
@@ -542,13 +537,11 @@ where
     {
         let barrier = Barrier::new();
         let (mut locker, data_block_mut, mut entry_ptr, _) = self
-            .acquire_entry(key, self.hash(key.borrow()), &mut (), &barrier)
-            .ok()?;
-        if entry_ptr.is_valid() {
-            let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
-            return Some(updater(k, v));
-        }
-        None
+            .get_entry(key, self.hash(key.borrow()), &mut (), &barrier)
+            .ok()
+            .flatten()?;
+        let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
+        Some(updater(k, v))
     }
 
     /// Updates an existing key-value pair.
@@ -577,10 +570,8 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if let Ok((mut locker, data_block_mut, mut entry_ptr, _)) =
-                self.acquire_entry(key, hash, &mut async_wait_pinned, &Barrier::new())
-            {
-                if entry_ptr.is_valid() {
+            if let Ok(result) = self.get_entry(key, hash, &mut async_wait_pinned, &Barrier::new()) {
+                if let Some((mut locker, data_block_mut, mut entry_ptr, _)) = result {
                     let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
                     return Some(updater(k, v));
                 }
@@ -612,9 +603,9 @@ where
         updater: U,
     ) {
         let barrier = Barrier::new();
-        let hash = self.hash(key.borrow());
+        let hash = self.hash(&key);
         if let Ok((mut locker, data_block_mut, mut entry_ptr, _)) =
-            self.acquire_entry(&key, hash, &mut (), &barrier)
+            self.reserve_entry(&key, hash, &mut (), &barrier)
         {
             if entry_ptr.is_valid() {
                 let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
@@ -651,14 +642,14 @@ where
         constructor: C,
         updater: U,
     ) {
-        let hash = self.hash(key.borrow());
+        let hash = self.hash(&key);
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             {
                 let barrier = Barrier::new();
                 if let Ok((mut locker, data_block_mut, mut entry_ptr, _)) =
-                    self.acquire_entry(&key, hash, &mut async_wait_pinned, &barrier)
+                    self.reserve_entry(&key, hash, &mut async_wait_pinned, &barrier)
                 {
                     if entry_ptr.is_valid() {
                         let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
@@ -796,6 +787,91 @@ where
                 Ok(r) => return r,
                 Err(c) => condition = c,
             };
+            async_wait_pinned.await;
+        }
+    }
+
+    /// Gets an occupied entry corresponding to the key.
+    ///
+    /// Returns `None` if the key does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// assert!(hashmap.get(&1).is_none());
+    /// assert!(hashmap.insert(1, 10).is_ok());
+    /// assert_eq!(*hashmap.get(&1).unwrap().get(), 10);
+    /// ```
+    #[inline]
+    pub fn get<Q>(&self, key: &Q) -> Option<OccupiedEntry<K, V, H>>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        let barrier = Barrier::new();
+        let (locker, data_block_mut, entry_ptr, index) = self
+            .get_entry(
+                key,
+                self.hash(key.borrow()),
+                &mut (),
+                self.prolonged_barrier_ref(&barrier),
+            )
+            .ok()
+            .flatten()?;
+        Some(OccupiedEntry {
+            hashmap: self,
+            index,
+            data_block_mut,
+            locker,
+            entry_ptr,
+        })
+    }
+
+    /// Gets an occupied entry corresponding to the key.
+    ///
+    /// Returns `None` if the key does not exist. It is an asynchronous method returning an
+    /// `impl Future` for the caller to await.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    /// let future_insert = hashmap.insert_async(11, 17);
+    /// let future_get = hashmap.get_async(&11);
+    /// ```
+    #[inline]
+    pub async fn get_async<Q>(&self, key: &Q) -> Option<OccupiedEntry<K, V, H>>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        let hash = self.hash(key);
+        loop {
+            let mut async_wait = AsyncWait::default();
+            let mut async_wait_pinned = Pin::new(&mut async_wait);
+            if let Ok(result) = self.get_entry(
+                key,
+                hash,
+                &mut async_wait_pinned,
+                self.prolonged_barrier_ref(&Barrier::new()),
+            ) {
+                if let Some((locker, data_block_mut, entry_ptr, index)) = result {
+                    return Some(OccupiedEntry {
+                        hashmap: self,
+                        index,
+                        data_block_mut,
+                        locker,
+                        entry_ptr,
+                    });
+                }
+                return None;
+            }
             async_wait_pinned.await;
         }
     }
@@ -1367,44 +1443,6 @@ where
     }
 }
 
-impl<K, V, H> Clone for HashMap<K, V, H>
-where
-    K: Clone + Eq + Hash,
-    V: Clone,
-    H: BuildHasher + Clone,
-{
-    #[inline]
-    fn clone(&self) -> Self {
-        let self_clone = Self::with_capacity_and_hasher(self.capacity(), self.hasher().clone());
-        self.scan(|k, v| {
-            let _reuslt = self_clone.insert(k.clone(), v.clone());
-        });
-        self_clone
-    }
-}
-
-impl<K, V, H> Debug for HashMap<K, V, H>
-where
-    K: Debug + Eq + Hash,
-    V: Debug,
-    H: BuildHasher,
-{
-    /// Iterates over all the entries in the [`HashMap`] to print them.
-    ///
-    /// ## Locking behavior
-    ///
-    /// Shared locks on buckets are acquired during iteration, therefore any [`Entry`],
-    /// [`OccupiedEntry`] or [`VacantEntry`] owned by the current thread will lead to a deadlock.
-    #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut d = f.debug_map();
-        self.scan(|k, v| {
-            d.entry(k, v);
-        });
-        d.finish()
-    }
-}
-
 impl<K, V> HashMap<K, V, RandomState>
 where
     K: Eq + Hash,
@@ -1446,6 +1484,44 @@ where
     #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self::with_capacity_and_hasher(capacity, RandomState::new())
+    }
+}
+
+impl<K, V, H> Clone for HashMap<K, V, H>
+where
+    K: Clone + Eq + Hash,
+    V: Clone,
+    H: BuildHasher + Clone,
+{
+    #[inline]
+    fn clone(&self) -> Self {
+        let self_clone = Self::with_capacity_and_hasher(self.capacity(), self.hasher().clone());
+        self.scan(|k, v| {
+            let _reuslt = self_clone.insert(k.clone(), v.clone());
+        });
+        self_clone
+    }
+}
+
+impl<K, V, H> Debug for HashMap<K, V, H>
+where
+    K: Debug + Eq + Hash,
+    V: Debug,
+    H: BuildHasher,
+{
+    /// Iterates over all the entries in the [`HashMap`] to print them.
+    ///
+    /// ## Locking behavior
+    ///
+    /// Shared locks on buckets are acquired during iteration, therefore any [`Entry`],
+    /// [`OccupiedEntry`] or [`VacantEntry`] owned by the current thread will lead to a deadlock.
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut d = f.debug_map();
+        self.scan(|k, v| {
+            d.entry(k, v);
+        });
+        d.finish()
     }
 }
 
@@ -1757,8 +1833,6 @@ where
     /// if let Entry::Occupied(o) = hashmap.entry(11) {
     ///     assert_eq!(o.remove_entry(), (11, 17));
     /// };
-    ///
-    /// assert_eq!(hashmap.capacity(), 0);
     /// ```
     #[inline]
     #[must_use]
@@ -2114,6 +2188,7 @@ where
     /// if let Entry::Vacant(o) = hashmap.entry(19) {
     ///     o.insert_entry(29);
     /// }
+    ///
     /// assert_eq!(hashmap.read(&19, |_, v| *v), Some(29));
     /// ```
     #[inline]

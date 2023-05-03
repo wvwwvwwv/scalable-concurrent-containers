@@ -1,5 +1,11 @@
 # Changelog
 
+1.7.0
+
+* Optimize `Hash*::update*` and `HashIndex::modify*`.
+* API update 1: _WORK IN PROGRESS_ `HashCache` implementation.
+* API update 2: add `HashMap::{get, get_async}` returning an `OccupiedEntry`.
+
 1.6.3
 
 * API update 1: [#96](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/96) - add `HashIndex::{modify, modify_async}`, special thanks to [novacrazy](https://github.com/novacrazy).

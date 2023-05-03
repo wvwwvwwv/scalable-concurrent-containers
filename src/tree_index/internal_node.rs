@@ -236,7 +236,7 @@ where
                             }
                             InsertResult::Retry(k, v) => {
                                 // `child` has been split, therefore it can be retried.
-                                if self.cleanup_link(k.borrow(), false, barrier) {
+                                if self.cleanup_link(&k, false, barrier) {
                                     key = k;
                                     val = v;
                                     continue;
@@ -288,7 +288,7 @@ where
                         return Err((k, v));
                     }
                     InsertResult::Retry(k, v) => {
-                        if self.cleanup_link(k.borrow(), false, barrier) {
+                        if self.cleanup_link(&k, false, barrier) {
                             key = k;
                             val = v;
                             continue;
@@ -444,7 +444,7 @@ where
                             .origin_node_key
                             .load(Relaxed)
                             .as_ref()
-                            .map_or_else(|| false, |key| entry.0.borrow() == key)
+                            .map_or_else(|| false, |key| entry.0 == key)
                     } {
                         let low_key_node_ptr = full_internal_node
                             .split_op
