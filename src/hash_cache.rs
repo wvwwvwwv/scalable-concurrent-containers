@@ -26,6 +26,10 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 /// occupied entries which is updated on access to entries in order to keep track of the least
 /// recently used entry within the bucket.
 ///
+/// [`HashCache`] and [`HashMap`](super::HashMap) share the same runtime characteristic, except
+/// that [`HashCache`] does not allow a bucket to allocate a linked list of entries when it is
+/// full, instead [`HashCache`] starts evicting the least recently used entries.
+///
 /// ### Unwind safety
 ///
 /// [`HashCache`] is impervious to out-of-memory errors and panics in user specified code on one
@@ -91,8 +95,7 @@ where
 {
     /// Creates an empty [`HashCache`] with the given [`BuildHasher`].
     ///
-    /// The minimum capacity is set to `0`, and the maximum capacity is set to
-    /// [`DEFAULT_MAXIMUM_CAPACITY`].
+    /// The maximum capacity is set to [`DEFAULT_MAXIMUM_CAPACITY`].
     ///
     /// # Examples
     ///
@@ -949,6 +952,8 @@ where
     H: BuildHasher + Default,
 {
     /// Creates an empty default [`HashCache`].
+    ///
+    /// The maximum capacity is set to [`DEFAULT_MAXIMUM_CAPACITY`].
     ///
     /// # Examples
     ///

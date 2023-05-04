@@ -63,7 +63,6 @@ pub struct EntryPtr<'b, K: Eq, V, const TYPE: char> {
 
 pub struct Evictable<V> {
     /// The actual value.
-    #[allow(dead_code)]
     value: V,
 
     /// A link to the previous recently used entry.

@@ -193,7 +193,7 @@ assert_eq!(entry_ref, (&1, &0));
 _WORK-IN-PROGRESS_.
 
 * _No `Serde` support_.
-* _No benchmark results_.
+* _No cache performance measurement_.
 
 [HashCache](#HashCache) is a concurrent sampling-based LRU cache that is based on the [HashMap](#HashMap) implementation. [HashCache](#HashCache) does not keep track of the least recently used entry in the entire cache, instead each bucket maintains a doubly linked list of occupied entries which is updated on access to entries in order to keep track of the least recently used entry within the bucket.
 
@@ -204,16 +204,20 @@ The LRU entry in a bucket is evicted when a new entry is being inserted and the 
 ```rust
 use scc::HashCache;
 
-let hashcache: HashCache<u64, u32> = HashCache::default();
+let hashcache: HashCache<u64, u32> = HashCache::with_capacity(100, 2000);
 
-/// If the bucket corresponding to `1` is full, the RLU entry will be evicted.
+/// The capacity cannot exceed the maximum capacity.
+assert_eq!(hashcache.capacity_range(), 128..=2048);
+
+/// If the bucket corresponding to `1` or `2` is full, the LRU entry will be evicted.
 assert!(hashcache.put(1, 0).is_ok());
+assert!(hashcache.put(2, 0).is_ok());
 
-/// `1` becomes the most recently accessed entry.
+/// `1` becomes the most recently accessed entry in the bucket.
 assert!(hashcache.get(&1).is_some());
 
 /// An entry can be normally removed.
-assert_eq!(hashcache.remove(&1).unwrap(), (1, 0));
+assert_eq!(hashcache.remove(&2).unwrap(), (2, 0));
 ```
 
 ## TreeIndex
