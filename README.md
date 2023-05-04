@@ -20,7 +20,7 @@ A collection of high performance containers and utilities for concurrent and asy
 - [HashMap](#HashMap) is a concurrent and asynchronous hash map.
 - [HashSet](#HashSet) is a concurrent and asynchronous hash set.
 - [HashIndex](#HashIndex) is a read-optimized concurrent and asynchronous hash map.
-- [HashCache](#HashCache) is a pseudo-LRU cache backed by [HashMap](#HashMap).
+- [HashCache](#HashCache) is a sampling-based LRU cache backed by [HashMap](#HashMap).
 - [TreeIndex](#TreeIndex) is a read-optimized concurrent and asynchronous B+ tree.
 
 #### Utilities for Concurrent Programming
@@ -192,7 +192,29 @@ assert_eq!(entry_ref, (&1, &0));
 
 _WORK-IN-PROGRESS_.
 
-[HashCache](#HashCache) is a concurrent pseudo-LRU cache that is based on [HashMap](#HashMap) implementation.
+* _No `Serde` support_.
+* _No benchmark results_.
+
+[HashCache](#HashCache) is a concurrent sampling-based LRU cache that is based on the [HashMap](#HashMap) implementation. [HashCache](#HashCache) does not keep track of the least recently used entry in the entire cache, instead each bucket maintains a doubly linked list of occupied entries which is updated on access to entries in order to keep track of the least recently used entry within the bucket.
+
+### Examples
+
+The LRU entry in a bucket is evicted when a new entry is being inserted and the bucket is full.
+
+```rust
+use scc::HashCache;
+
+let hashcache: HashCache<u64, u32> = HashCache::default();
+
+/// If the bucket corresponding to `1` is full, the RLU entry will be evicted.
+assert!(hashcache.put(1, 0).is_ok());
+
+/// `1` becomes the most recently accessed entry.
+assert!(hashcache.get(&1).is_some());
+
+/// An entry can be normally removed.
+assert_eq!(hashcache.remove(&1).unwrap(), (1, 0));
+```
 
 ## TreeIndex
 
