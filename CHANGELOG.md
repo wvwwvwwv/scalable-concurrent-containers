@@ -3,7 +3,7 @@
 1.7.0
 
 * Optimize `Hash*::update*` and `HashIndex::modify*`.
-* API update 1: _WORK IN PROGRESS_ `HashCache` implementation.
+* API update 1: a _WORK IN PROGRESS_ `HashCache` minimal implementation.
 * API update 2: add `HashMap::{get, get_async}` returning an `OccupiedEntry`.
 * API update 3: add `Hash*::capacity_range`.
 

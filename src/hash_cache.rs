@@ -2,7 +2,9 @@
 //! [`HashMap`](super::HashMap).
 
 use super::ebr::{Arc, AtomicArc, Barrier, Tag};
-use super::hash_table::bucket::{DataBlock, EntryPtr, Evictable, Locker, BUCKET_LEN, CACHE};
+use super::hash_table::bucket::{
+    DataBlock, EntryPtr, Evictable, Locker, Reader, BUCKET_LEN, CACHE,
+};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::HashTable;
 use super::wait_queue::AsyncWait;
@@ -16,7 +18,13 @@ use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
-/// Scalable concurrent pseudo-LRU cache based on [`HashMap`](super::HashMap).
+/// Scalable concurrent sampling-based LRU cache based on [`HashMap`](super::HashMap).
+///
+/// [`HashCache`] is a concurrent sampling-based LRU cache that is based on the
+/// [`HashMap`](super::HashMap) implementation. [`HashCache`] does not keep track of the least
+/// recently used entry in the entire cache, instead each bucket maintains a doubly linked list of
+/// occupied entries which is updated on access to entries in order to keep track of the least
+/// recently used entry within the bucket.
 ///
 /// ### Unwind safety
 ///
@@ -537,6 +545,259 @@ where
         None
     }
 
+    /// Scans all the entries.
+    ///
+    /// This method does not affect the LRU information in each bucket.
+    ///
+    /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
+    /// visited if they are not removed, however the same key-value pair can be visited more than
+    /// once if the [`HashCache`] gets resized by another thread.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<usize, usize> = HashCache::default();
+    ///
+    /// assert!(hashcache.put(1, 0).is_ok());
+    /// assert!(hashcache.put(2, 1).is_ok());
+    ///
+    /// let mut sum = 0;
+    /// hashcache.scan(|k, v| { sum += *k + *v; });
+    /// assert_eq!(sum, 4);
+    /// ```
+    #[inline]
+    pub fn scan<F: FnMut(&K, &V)>(&self, mut scanner: F) {
+        let barrier = Barrier::new();
+        let mut current_array_ptr = self.array.load(Acquire, &barrier);
+        while let Some(current_array) = current_array_ptr.as_ref() {
+            self.clear_old_array(current_array, &barrier);
+            for index in 0..current_array.num_buckets() {
+                let bucket = current_array.bucket(index);
+                if let Some(locker) = Reader::lock(bucket, &barrier) {
+                    let data_block = current_array.data_block(index);
+                    let mut entry_ptr = EntryPtr::new(&barrier);
+                    while entry_ptr.next(*locker, &barrier) {
+                        let (k, v) = entry_ptr.get(data_block);
+                        scanner(k, v);
+                    }
+                }
+            }
+            let new_current_array_ptr = self.array.load(Acquire, &barrier);
+            if current_array_ptr.without_tag() == new_current_array_ptr.without_tag() {
+                break;
+            }
+            current_array_ptr = new_current_array_ptr;
+        }
+    }
+
+    /// Scans all the entries.
+    ///
+    /// This method does not affect the LRU information in each bucket.
+    ///
+    /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
+    /// visited if they are not removed, however the same key-value pair can be visited more than
+    /// once if the [`HashCache`] gets resized by another task.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<usize, usize> = HashCache::default();
+    ///
+    /// let future_put = hashcache.put_async(1, 0);
+    /// let future_scan = hashcache.scan_async(|k, v| println!("{k} {v}"));
+    /// ```
+    #[inline]
+    pub async fn scan_async<F: FnMut(&K, &V)>(&self, mut scanner: F) {
+        let mut current_array_holder = self.array.get_arc(Acquire, &Barrier::new());
+        while let Some(current_array) = current_array_holder.take() {
+            self.cleanse_old_array_async(&current_array).await;
+            for index in 0..current_array.num_buckets() {
+                loop {
+                    let mut async_wait = AsyncWait::default();
+                    let mut async_wait_pinned = Pin::new(&mut async_wait);
+                    {
+                        let barrier = Barrier::new();
+                        let bucket = current_array.bucket(index);
+                        if let Ok(reader) =
+                            Reader::try_lock_or_wait(bucket, &mut async_wait_pinned, &barrier)
+                        {
+                            if let Some(reader) = reader {
+                                let data_block = current_array.data_block(index);
+                                let mut entry_ptr = EntryPtr::new(&barrier);
+                                while entry_ptr.next(*reader, &barrier) {
+                                    let (k, v) = entry_ptr.get(data_block);
+                                    scanner(k, v);
+                                }
+                            }
+                            break;
+                        };
+                    }
+                    async_wait_pinned.await;
+                }
+            }
+
+            if let Some(new_current_array) = self.array.get_arc(Acquire, &Barrier::new()) {
+                if new_current_array.as_ptr() == current_array.as_ptr() {
+                    break;
+                }
+                current_array_holder.replace(new_current_array);
+                continue;
+            }
+            break;
+        }
+    }
+
+    /// Retains the entries specified by the predicate.
+    ///
+    /// This method allows the predicate closure to modify the value field.
+    ///
+    /// Entries that have existed since the invocation of the method are guaranteed to be visited
+    /// if they are not removed, however the same entry can be visited more than once if the
+    /// [`HashCache`] gets resized by another thread.
+    ///
+    /// Returns `(number of remaining entries, number of removed entries)` where the number of
+    /// remaining entries can be larger than the actual number since the same entry can be visited
+    /// more than once.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    ///
+    /// assert!(hashcache.put(1, 0).is_ok());
+    /// assert!(hashcache.put(2, 1).is_ok());
+    /// assert!(hashcache.put(3, 2).is_ok());
+    ///
+    /// assert_eq!(hashcache.retain(|k, v| *k == 1 && *v == 0), (1, 2));
+    /// ```
+    #[inline]
+    pub fn retain<F: FnMut(&K, &mut V) -> bool>(&self, mut pred: F) -> (usize, usize) {
+        self.retain_entries(|k, v| pred(k, v))
+    }
+
+    /// Retains the entries specified by the predicate.
+    ///
+    /// This method allows the predicate closure to modify the value field.
+    ///
+    /// Entries that have existed since the invocation of the method are guaranteed to be visited
+    /// if they are not removed, however the same entry can be visited more than once if the
+    /// [`HashCache`] gets resized by another thread.
+    ///
+    /// Returns `(number of remaining entries, number of removed entries)` where the number of
+    /// remaining entries can be larger than the actual number since the same entry can be visited
+    /// more than once. It is an asynchronous method returning an `impl Future` for the caller to
+    /// await.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    ///
+    /// let future_put = hashcache.put_async(1, 0);
+    /// let future_retain = hashcache.retain_async(|k, v| *k == 1);
+    /// ```
+    #[inline]
+    pub async fn retain_async<F: FnMut(&K, &mut V) -> bool>(
+        &self,
+        mut filter: F,
+    ) -> (usize, usize) {
+        let mut num_retained: usize = 0;
+        let mut num_removed: usize = 0;
+        let mut current_array_holder = self.array.get_arc(Acquire, &Barrier::new());
+        while let Some(current_array) = current_array_holder.take() {
+            self.cleanse_old_array_async(&current_array).await;
+            for index in 0..current_array.num_buckets() {
+                loop {
+                    let mut async_wait = AsyncWait::default();
+                    let mut async_wait_pinned = Pin::new(&mut async_wait);
+                    {
+                        let barrier = Barrier::new();
+                        let bucket = current_array.bucket_mut(index);
+                        if let Ok(locker) =
+                            Locker::try_lock_or_wait(bucket, &mut async_wait_pinned, &barrier)
+                        {
+                            if let Some(mut locker) = locker {
+                                let data_block_mut = current_array.data_block_mut(index);
+                                let mut entry_ptr = EntryPtr::new(&barrier);
+                                while entry_ptr.next(&locker, &barrier) {
+                                    let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
+                                    if filter(k, v) {
+                                        num_retained = num_retained.saturating_add(1);
+                                    } else {
+                                        locker.erase(data_block_mut, &mut entry_ptr);
+                                        num_removed = num_removed.saturating_add(1);
+                                    }
+                                }
+                            }
+                            break;
+                        };
+                    }
+                    async_wait_pinned.await;
+                }
+            }
+
+            if let Some(new_current_array) = self.array.get_arc(Acquire, &Barrier::new()) {
+                if new_current_array.as_ptr() == current_array.as_ptr() {
+                    break;
+                }
+                num_retained = 0;
+                current_array_holder.replace(new_current_array);
+                continue;
+            }
+            break;
+        }
+
+        if num_removed >= num_retained {
+            self.try_resize(0, &Barrier::new());
+        }
+
+        (num_retained, num_removed)
+    }
+
+    /// Clears all the key-value pairs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    ///
+    /// assert!(hashcache.put(1, 0).is_ok());
+    /// assert_eq!(hashcache.clear(), 1);
+    /// ```
+    #[inline]
+    pub fn clear(&self) -> usize {
+        self.retain(|_, _| false).1
+    }
+
+    /// Clears all the key-value pairs.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    ///
+    /// let future_put = hashcache.put_async(1, 0);
+    /// let future_clear = hashcache.clear_async();
+    /// ```
+    #[inline]
+    pub async fn clear_async(&self) -> usize {
+        self.retain_async(|_, _| false).await.1
+    }
+
     /// Returns the number of entries in the [`HashCache`].
     ///
     /// It reads the entire metadata area of the bucket array to calculate the number of valid
@@ -608,6 +869,23 @@ where
     #[inline]
     pub fn capacity_range(&self) -> RangeInclusive<usize> {
         self.minimum_capacity.load(Relaxed)..=self.maximum_capacity()
+    }
+
+    /// Clears the old array asynchronously.
+    async fn cleanse_old_array_async(&self, current_array: &BucketArray<K, Evictable<V>, CACHE>) {
+        while !current_array.old_array(&Barrier::new()).is_null() {
+            let mut async_wait = AsyncWait::default();
+            let mut async_wait_pinned = Pin::new(&mut async_wait);
+            if self.incremental_rehash::<_, _, false>(
+                current_array,
+                &mut async_wait_pinned,
+                &Barrier::new(),
+            ) == Ok(true)
+            {
+                break;
+            }
+            async_wait_pinned.await;
+        }
     }
 
     /// Returns a reference to the specified [`Barrier`] whose lifetime matches that of `self`.
@@ -683,6 +961,28 @@ where
     #[inline]
     fn default() -> Self {
         Self::with_hasher(H::default())
+    }
+}
+
+impl<K, V, H> Debug for HashCache<K, V, H>
+where
+    K: Debug + Eq + Hash,
+    V: Debug,
+    H: BuildHasher,
+{
+    /// Iterates over all the entries in the [`HashCache`] to print them.
+    ///
+    /// ## Locking behavior
+    ///
+    /// Shared locks on buckets are acquired during iteration, therefore any [`Entry`],
+    /// [`OccupiedEntry`] or [`VacantEntry`] owned by the current thread will lead to a deadlock.
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut d = f.debug_map();
+        self.scan(|k, v| {
+            d.entry(k, v);
+        });
+        d.finish()
     }
 }
 
