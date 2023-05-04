@@ -1,4 +1,4 @@
-//! [`HashCache`] is a concurrent and asynchronous pseudo-LRU cache backed by
+//! [`HashCache`] is a concurrent and asynchronous sampling-based LRU cache backed by
 //! [`HashMap`](super::HashMap).
 
 use super::ebr::{Arc, AtomicArc, Barrier, Tag};
@@ -18,7 +18,7 @@ use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
-/// Scalable concurrent sampling-based LRU cache based on [`HashMap`](super::HashMap).
+/// Scalable concurrent sampling-based LRU cache backed by [`HashMap`](super::HashMap).
 ///
 /// [`HashCache`] is a concurrent sampling-based LRU cache that is based on the
 /// [`HashMap`](super::HashMap) implementation. [`HashCache`] does not keep track of the least
@@ -287,12 +287,13 @@ where
                 let evicted = locker
                     .evict_lru_head(data_block_mut)
                     .map(|(k, v)| (k, v.take()));
-                locker.insert_with(
+                let entry_ptr = locker.insert_with(
                     data_block_mut,
                     BucketArray::<K, V, CACHE>::partial_hash(hash),
                     || (key, Evictable::new(val)),
                     &barrier,
                 );
+                locker.update_lru_tail(data_block_mut, &entry_ptr);
                 Ok(evicted)
             }
             Err(_) => Err((key, val)),
@@ -334,12 +335,13 @@ where
                     let evicted = locker
                         .evict_lru_head(data_block_mut)
                         .map(|(k, v)| (k, v.take()));
-                    locker.insert_with(
+                    let entry_ptr = locker.insert_with(
                         data_block_mut,
                         BucketArray::<K, V, CACHE>::partial_hash(hash),
                         || (key, Evictable::new(val)),
                         &barrier,
                     );
+                    locker.update_lru_tail(data_block_mut, &entry_ptr);
                     return Ok(evicted);
                 };
             }
@@ -1462,6 +1464,7 @@ where
             || (self.key, Evictable::new(val)),
             self.hashcache.prolonged_barrier_ref(&barrier),
         );
+        self.locker.update_lru_tail(self.data_block_mut, &entry_ptr);
         OccupiedEntry {
             hashcache: self.hashcache,
             index: self.index,
