@@ -537,6 +537,45 @@ where
         None
     }
 
+    /// Returns the number of entries in the [`HashCache`].
+    ///
+    /// It reads the entire metadata area of the bucket array to calculate the number of valid
+    /// entries, making its time complexity `O(N)`. Furthermore, it may overcount entries if an old
+    /// bucket array has yet to be dropped.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    ///
+    /// assert!(hashcache.put(1, 0).is_ok());
+    /// assert_eq!(hashcache.len(), 1);
+    /// ```
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.num_entries(&Barrier::new())
+    }
+
+    /// Returns `true` if the [`HashCache`] is empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    ///
+    /// assert!(hashcache.is_empty());
+    /// assert!(hashcache.put(1, 0).is_ok());
+    /// assert!(!hashcache.is_empty());
+    /// ```
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        !self.has_entry(&Barrier::new())
+    }
+
     /// Returns the capacity of the [`HashCache`].
     ///
     /// # Examples

@@ -1110,6 +1110,8 @@ mod hashcache_test {
     use std::panic::UnwindSafe;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
+    use std::sync::Arc;
+    use tokio::sync::Barrier as AsyncBarrier;
 
     static_assertions::assert_impl_all!(HashCache<String, String>: Send, Sync, UnwindSafe);
     static_assertions::assert_not_impl_all!(HashCache<String, *const String>: Send, Sync, UnwindSafe);
@@ -1148,6 +1150,69 @@ mod hashcache_test {
             assert!(hashcache.put_async(k, R::new(&INST_CNT)).await.is_ok());
         }
         assert!(INST_CNT.load(Relaxed) <= hashcache.capacity());
+        drop(hashcache);
+        assert_eq!(INST_CNT.load(Relaxed), 0);
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn put_get_remove() {
+        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+        let hashcache: Arc<HashCache<usize, R>> = Arc::new(HashCache::default());
+        for _ in 0..256 {
+            let num_tasks = 8;
+            let workload_size = 256;
+            let mut task_handles = Vec::with_capacity(num_tasks);
+            let barrier = Arc::new(AsyncBarrier::new(num_tasks));
+            for task_id in 0..num_tasks {
+                let barrier_clone = barrier.clone();
+                let hashcache_clone = hashcache.clone();
+                task_handles.push(tokio::task::spawn(async move {
+                    barrier_clone.wait().await;
+                    let range = (task_id * workload_size)..((task_id + 1) * workload_size);
+                    for id in range.clone() {
+                        if id % 8 == 0 {
+                            assert!(hashcache_clone.put(id, R::new(&INST_CNT)).is_ok());
+                        } else {
+                            assert!(hashcache_clone
+                                .put_async(id, R::new(&INST_CNT))
+                                .await
+                                .is_ok());
+                        }
+                    }
+                    let mut hit_count = 0;
+                    for id in range.clone() {
+                        let hit = if id % 8 == 0 {
+                            hashcache_clone.get(&id).is_some()
+                        } else {
+                            hashcache_clone.get_async(&id).await.is_some()
+                        };
+                        if hit {
+                            hit_count += 1;
+                        }
+                    }
+                    assert!(hit_count <= *hashcache_clone.capacity_range().end());
+                    let mut remove_count = 0;
+                    for id in range.clone() {
+                        let removed = if id % 8 == 0 {
+                            hashcache_clone.remove(&id).is_some()
+                        } else {
+                            hashcache_clone.remove_async(&id).await.is_some()
+                        };
+                        if removed {
+                            remove_count += 1;
+                        }
+                    }
+                    assert!(remove_count <= hit_count);
+                }));
+            }
+
+            for r in futures::future::join_all(task_handles).await {
+                assert!(r.is_ok());
+            }
+
+            assert_eq!(hashcache.len(), 0);
+        }
         drop(hashcache);
         assert_eq!(INST_CNT.load(Relaxed), 0);
     }
