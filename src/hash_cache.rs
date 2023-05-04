@@ -1,7 +1,7 @@
 //! [`HashCache`] is a concurrent and asynchronous pseudo-LRU cache backed by
 //! [`HashMap`](super::HashMap).
 
-use super::ebr::{Arc, AtomicArc, Barrier};
+use super::ebr::{Arc, AtomicArc, Barrier, Tag};
 use super::hash_table::bucket::{DataBlock, EntryPtr, Evictable, Locker, BUCKET_LEN, CACHE};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::HashTable;
@@ -11,9 +11,10 @@ use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
 use std::mem::replace;
+use std::ops::Range;
 use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::Acquire;
+use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
 /// Scalable concurrent pseudo-LRU cache based on [`HashMap`](super::HashMap).
 ///
@@ -125,22 +126,24 @@ where
         maximum_capacity: usize,
         build_hasher: H,
     ) -> Self {
-        let array = if minimum_capacity == 0 {
-            AtomicArc::null()
+        let (array, minimum_capacity) = if minimum_capacity == 0 {
+            (AtomicArc::null(), AtomicUsize::new(0))
         } else {
-            AtomicArc::from(unsafe {
+            let array = unsafe {
                 Arc::new_unchecked(BucketArray::<K, Evictable<V>, CACHE>::new(
                     minimum_capacity,
                     AtomicArc::null(),
                 ))
-            })
+            };
+            let minimum_capacity = array.num_entries();
+            (AtomicArc::from(array), AtomicUsize::new(minimum_capacity))
         };
         let maximum_capacity = maximum_capacity
             .min(1_usize << (usize::BITS - 1))
             .next_power_of_two();
         HashCache {
             array,
-            minimum_capacity: AtomicUsize::new(minimum_capacity),
+            minimum_capacity,
             maximum_capacity,
             build_hasher,
         }
@@ -421,9 +424,8 @@ where
     ///
     /// ```
     /// use scc::HashCache;
-    /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashcache_default: HashCache<u64, u32, RandomState> = HashCache::default();
+    /// let hashcache_default: HashCache<u64, u32> = HashCache::default();
     /// assert_eq!(hashcache_default.capacity(), 0);
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::with_capacity(1000000, 2000000);
@@ -432,6 +434,22 @@ where
     #[inline]
     pub fn capacity(&self) -> usize {
         self.num_slots(&Barrier::new())
+    }
+
+    /// Returns the current capacity range of the [`HashCache`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    ///
+    /// assert_eq!(hashcache.capacity_range(), 0..256);
+    /// ```
+    #[inline]
+    pub fn capacity_range(&self) -> Range<usize> {
+        self.minimum_capacity.load(Relaxed)..self.maximum_capacity()
     }
 
     /// Returns a reference to the specified [`Barrier`] whose lifetime matches that of `self`.
@@ -474,9 +492,8 @@ where
     ///
     /// ```
     /// use scc::HashCache;
-    /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashcache: HashCache<u64, u32, RandomState> = HashCache::with_capacity(1000, 2000);
+    /// let hashcache: HashCache<u64, u32> = HashCache::with_capacity(1000, 2000);
     ///
     /// let result = hashcache.capacity();
     /// assert_eq!(result, 1024);
@@ -508,6 +525,24 @@ where
     #[inline]
     fn default() -> Self {
         Self::with_hasher(H::default())
+    }
+}
+
+impl<K, V, H> Drop for HashCache<K, V, H>
+where
+    K: Eq + Hash,
+    H: BuildHasher,
+{
+    #[inline]
+    fn drop(&mut self) {
+        self.array
+            .swap((None, Tag::None), Relaxed)
+            .0
+            .map(|a| unsafe {
+                // The entire array does not need to wait for an epoch change as no references will
+                // remain outside the lifetime of the `HashMap`.
+                a.release_drop_in_place()
+            });
     }
 }
 

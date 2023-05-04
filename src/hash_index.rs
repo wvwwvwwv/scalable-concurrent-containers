@@ -10,7 +10,7 @@ use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
 use std::iter::FusedIterator;
-use std::ops::Deref;
+use std::ops::{Deref, Range};
 use std::panic::UnwindSafe;
 use std::pin::Pin;
 use std::ptr;
@@ -146,17 +146,21 @@ where
     /// ```
     #[inline]
     pub fn with_capacity_and_hasher(capacity: usize, build_hasher: H) -> Self {
-        let array = if capacity == 0 {
-            AtomicArc::null()
+        let (array, minimum_capacity) = if capacity == 0 {
+            (AtomicArc::null(), AtomicUsize::new(0))
         } else {
-            AtomicArc::from(Arc::new(BucketArray::<K, V, OPTIMISTIC>::new(
-                capacity,
-                AtomicArc::null(),
-            )))
+            let array = unsafe {
+                Arc::new_unchecked(BucketArray::<K, V, OPTIMISTIC>::new(
+                    capacity,
+                    AtomicArc::null(),
+                ))
+            };
+            let minimum_capacity = array.num_entries();
+            (AtomicArc::from(array), AtomicUsize::new(minimum_capacity))
         };
         Self {
             array,
-            minimum_capacity: AtomicUsize::new(capacity),
+            minimum_capacity,
             build_hasher,
         }
     }
@@ -178,9 +182,8 @@ where
     ///
     /// ```
     /// use scc::HashIndex;
-    /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashindex: HashIndex<usize, usize, RandomState> = HashIndex::with_capacity(1000);
+    /// let hashindex: HashIndex<usize, usize> = HashIndex::with_capacity(1000);
     /// assert_eq!(hashindex.capacity(), 1024);
     ///
     /// let reserved = hashindex.reserve(10000);
@@ -895,20 +898,38 @@ where
     ///
     /// ```
     /// use scc::HashIndex;
-    /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashindex_default: HashIndex<u64, u32, RandomState> = HashIndex::default();
+    /// let hashindex_default: HashIndex<u64, u32> = HashIndex::default();
     /// assert_eq!(hashindex_default.capacity(), 0);
     ///
     /// assert!(hashindex_default.insert(1, 0).is_ok());
     /// assert_eq!(hashindex_default.capacity(), 64);
     ///
-    /// let hashindex: HashIndex<u64, u32, RandomState> = HashIndex::with_capacity(1000000);
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::with_capacity(1000000);
     /// assert_eq!(hashindex.capacity(), 1048576);
     /// ```
     #[inline]
     pub fn capacity(&self) -> usize {
         self.num_slots(&Barrier::new())
+    }
+
+    /// Returns the current capacity range of the [`HashIndex`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// assert_eq!(hashindex.capacity_range(), 0..(1_usize << (usize::BITS - 1)));
+    ///
+    /// let reserved = hashindex.reserve(1000);
+    /// assert_eq!(hashindex.capacity_range(), 1000..(1_usize << (usize::BITS - 1)));
+    /// ```
+    #[inline]
+    pub fn capacity_range(&self) -> Range<usize> {
+        self.minimum_capacity.load(Relaxed)..self.maximum_capacity()
     }
 
     /// Returns a [`Visitor`] that iterates over all the entries in the [`HashIndex`].
@@ -1033,9 +1054,8 @@ where
     ///
     /// ```
     /// use scc::HashIndex;
-    /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashindex: HashIndex<u64, u32, RandomState> = HashIndex::with_capacity(1000);
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::with_capacity(1000);
     ///
     /// let result = hashindex.capacity();
     /// assert_eq!(result, 1024);

@@ -1,8 +1,7 @@
 #[cfg(test)]
 mod hashmap_test {
-    use crate::hash_map::{Entry, Reserve};
+    use crate::hash_map::{self, Entry, Reserve};
     use crate::HashMap;
-    use crate::{ebr, hash_map};
     use proptest::prelude::*;
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
@@ -85,8 +84,8 @@ mod hashmap_test {
     #[tokio::test]
     async fn insert_drop() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
-        let hashmap: HashMap<usize, R> = HashMap::default();
 
+        let hashmap: HashMap<usize, R> = HashMap::default();
         let workload_size = 1024;
         for k in 0..workload_size {
             assert!(hashmap.insert_async(k, R::new(&INST_CNT)).await.is_ok());
@@ -94,21 +93,16 @@ mod hashmap_test {
         assert_eq!(INST_CNT.load(Relaxed), workload_size);
         assert_eq!(hashmap.len(), workload_size);
         drop(hashmap);
-
-        while INST_CNT.load(Relaxed) != 0 {
-            drop(ebr::Barrier::new());
-            tokio::task::yield_now().await;
-        }
+        assert_eq!(INST_CNT.load(Relaxed), 0);
     }
 
     #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn clear() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+
         let hashmap: HashMap<usize, R> = HashMap::default();
-
         let workload_size = 1_usize << 18;
-
         for _ in 0..2 {
             for k in 0..workload_size {
                 assert!(hashmap.insert_async(k, R::new(&INST_CNT)).await.is_ok());
@@ -116,11 +110,7 @@ mod hashmap_test {
             assert_eq!(INST_CNT.load(Relaxed), workload_size);
             assert_eq!(hashmap.len(), workload_size);
             assert_eq!(hashmap.clear_async().await, workload_size);
-        }
-
-        while INST_CNT.load(Relaxed) != 0 {
-            drop(ebr::Barrier::new());
-            tokio::task::yield_now().await;
+            assert_eq!(INST_CNT.load(Relaxed), 0);
         }
     }
 
@@ -128,10 +118,9 @@ mod hashmap_test {
     #[tokio::test]
     async fn clone() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+
         let hashmap: HashMap<usize, R> = HashMap::default();
-
         let workload_size = 1024;
-
         for k in 0..workload_size {
             assert!(hashmap.insert_async(k, R::new(&INST_CNT)).await.is_ok());
         }
@@ -141,11 +130,7 @@ mod hashmap_test {
             assert!(hashmap_clone.read(&k, |_, _| ()).is_some());
         }
         hashmap_clone.clear();
-
-        while INST_CNT.load(Relaxed) != 0 {
-            drop(ebr::Barrier::new());
-            tokio::task::yield_now().await;
-        }
+        assert_eq!(INST_CNT.load(Relaxed), 0);
     }
 
     #[cfg_attr(miri, ignore)]
@@ -666,11 +651,7 @@ mod hashmap_test {
             }
             assert_eq!(checker.load(Relaxed), range * 2);
             drop(hashmap);
-
-            while checker.load(Relaxed) != 0 {
-                drop(ebr::Barrier::new());
-                std::thread::yield_now();
-            }
+            assert_eq!(checker.load(Relaxed), 0);
         }
     }
 }
@@ -1118,6 +1099,69 @@ mod hashset_test {
 
         assert!(hashset1.remove("Hi").is_some());
         assert_ne!(hashset1, hashset2);
+    }
+}
+
+#[cfg(test)]
+mod hashcache_test {
+    use crate::hash_cache;
+    use crate::HashCache;
+    use proptest::prelude::*;
+    use std::panic::UnwindSafe;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering::Relaxed;
+
+    static_assertions::assert_impl_all!(HashCache<String, String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_all!(HashCache<String, *const String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_impl_all!(hash_cache::OccupiedEntry<String, String>: Send, Sync);
+    static_assertions::assert_not_impl_all!(hash_cache::OccupiedEntry<String, *const String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_impl_all!(hash_cache::VacantEntry<String, String>: Send, Sync);
+    static_assertions::assert_not_impl_all!(hash_cache::VacantEntry<String, *const String>: Send, Sync, UnwindSafe);
+
+    struct R(&'static AtomicUsize);
+    impl R {
+        fn new(cnt: &'static AtomicUsize) -> R {
+            cnt.fetch_add(1, Relaxed);
+            R(cnt)
+        }
+    }
+    impl Clone for R {
+        fn clone(&self) -> Self {
+            self.0.fetch_add(1, Relaxed);
+            R(self.0)
+        }
+    }
+    impl Drop for R {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Relaxed);
+        }
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test]
+    async fn put_drop() {
+        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+        let hashcache: HashCache<usize, R> = HashCache::default();
+
+        let workload_size = 1024;
+        for k in 0..workload_size {
+            assert!(hashcache.put_async(k, R::new(&INST_CNT)).await.is_ok());
+        }
+        assert!(INST_CNT.load(Relaxed) <= hashcache.capacity());
+        drop(hashcache);
+        assert_eq!(INST_CNT.load(Relaxed), 0);
+    }
+
+    proptest! {
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn capacity(key in 0_usize..256) {
+            let hashcache: HashCache<usize, usize> = HashCache::with_capacity(0, 64);
+            for k in 0..key {
+                assert!(hashcache.put(k, k).is_ok());
+            }
+            assert!(hashcache.capacity() <= 64);
+         }
     }
 }
 
