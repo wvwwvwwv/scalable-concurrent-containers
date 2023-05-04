@@ -599,7 +599,7 @@ where
 
     /// Relocates the bucket to the current bucket array.
     ///
-    /// It returns an error if locking failed.
+    /// Returns an error if locking failed.
     #[inline]
     fn relocate_bucket<Q, D, const TRY_LOCK: bool>(
         &self,

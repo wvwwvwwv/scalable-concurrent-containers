@@ -11,7 +11,7 @@ use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
 use std::mem::replace;
-use std::ops::Range;
+use std::ops::RangeInclusive;
 use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
@@ -139,6 +139,8 @@ where
             (AtomicArc::from(array), AtomicUsize::new(minimum_capacity))
         };
         let maximum_capacity = maximum_capacity
+            .max(minimum_capacity.load(Relaxed))
+            .max(BucketArray::<K, Evictable<V>, CACHE>::minimum_capacity())
             .min(1_usize << (usize::BITS - 1))
             .next_power_of_two();
         HashCache {
@@ -170,12 +172,13 @@ where
     pub fn entry(&self, key: K) -> Entry<K, V, H> {
         let barrier = Barrier::new();
         let hash = self.hash(&key);
-        let (locker, data_block_mut, entry_ptr, index) = unsafe {
+        let (mut locker, data_block_mut, entry_ptr, index) = unsafe {
             self.reserve_entry(&key, hash, &mut (), self.prolonged_barrier_ref(&barrier))
                 .ok()
                 .unwrap_unchecked()
         };
         if entry_ptr.is_valid() {
+            locker.update_lru_tail(data_block_mut, &entry_ptr);
             Entry::Occupied(OccupiedEntry {
                 hashcache: self,
                 index,
@@ -216,13 +219,14 @@ where
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             {
                 let barrier = Barrier::new();
-                if let Ok((locker, data_block_mut, entry_ptr, index)) = self.reserve_entry(
+                if let Ok((mut locker, data_block_mut, entry_ptr, index)) = self.reserve_entry(
                     &key,
                     hash,
                     &mut async_wait_pinned,
                     self.prolonged_barrier_ref(&barrier),
                 ) {
                     if entry_ptr.is_valid() {
+                        locker.update_lru_tail(data_block_mut, &entry_ptr);
                         return Entry::Occupied(OccupiedEntry {
                             hashcache: self,
                             index,
@@ -272,7 +276,9 @@ where
                 if entry_ptr.is_valid() {
                     return Err((key, val));
                 }
-                let evicted = locker.evict_lru(data_block_mut).map(|(k, v)| (k, v.take()));
+                let evicted = locker
+                    .evict_lru_head(data_block_mut)
+                    .map(|(k, v)| (k, v.take()));
                 locker.insert_with(
                     data_block_mut,
                     BucketArray::<K, V, CACHE>::partial_hash(hash),
@@ -317,7 +323,9 @@ where
                     if entry_ptr.is_valid() {
                         return Err((key, val));
                     }
-                    let evicted = locker.evict_lru(data_block_mut).map(|(k, v)| (k, v.take()));
+                    let evicted = locker
+                        .evict_lru_head(data_block_mut)
+                        .map(|(k, v)| (k, v.take()));
                     locker.insert_with(
                         data_block_mut,
                         BucketArray::<K, V, CACHE>::partial_hash(hash),
@@ -353,7 +361,7 @@ where
         Q: Eq + Hash + ?Sized,
     {
         let barrier = Barrier::new();
-        let (mut locker, data_block_mut, mut entry_ptr, index) = self
+        let (mut locker, data_block_mut, entry_ptr, index) = self
             .get_entry(
                 key,
                 self.hash(key.borrow()),
@@ -362,7 +370,7 @@ where
             )
             .ok()
             .flatten()?;
-        locker.mark_accessed(data_block_mut, &mut entry_ptr);
+        locker.update_lru_tail(data_block_mut, &entry_ptr);
         Some(OccupiedEntry {
             hashcache: self,
             index,
@@ -402,8 +410,8 @@ where
                 &mut async_wait_pinned,
                 self.prolonged_barrier_ref(&Barrier::new()),
             ) {
-                if let Some((mut locker, data_block_mut, mut entry_ptr, index)) = result {
-                    locker.mark_accessed(data_block_mut, &mut entry_ptr);
+                if let Some((mut locker, data_block_mut, entry_ptr, index)) = result {
+                    locker.update_lru_tail(data_block_mut, &entry_ptr);
                     return Some(OccupiedEntry {
                         hashcache: self,
                         index,
@@ -416,6 +424,117 @@ where
             }
             async_wait_pinned.await;
         }
+    }
+
+    /// Removes a key-value pair if the key exists.
+    ///
+    /// Returns `None` if the key does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    ///
+    /// assert!(hashcache.remove(&1).is_none());
+    /// assert!(hashcache.put(1, 0).is_ok());
+    /// assert_eq!(hashcache.remove(&1).unwrap(), (1, 0));
+    /// assert_eq!(hashcache.capacity(), 0);
+    /// ```
+    #[inline]
+    pub fn remove<Q>(&self, key: &Q) -> Option<(K, V)>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.remove_if(key, |_| true)
+    }
+
+    /// Removes a key-value pair if the key exists.
+    ///
+    /// Returns `None` if the key does not exist. It is an asynchronous method returning an
+    /// `impl Future` for the caller to await.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    /// let future_put = hashcache.put_async(11, 17);
+    /// let future_remove = hashcache.remove_async(&11);
+    /// ```
+    #[inline]
+    pub async fn remove_async<Q>(&self, key: &Q) -> Option<(K, V)>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.remove_if_async(key, |_| true).await
+    }
+
+    /// Removes a key-value pair if the key exists and the given condition is met.
+    ///
+    /// Returns `None` if the key does not exist or the condition was not met.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    ///
+    /// assert!(hashcache.put(1, 0).is_ok());
+    /// assert!(hashcache.remove_if(&1, |v| { *v += 1; false }).is_none());
+    /// assert_eq!(hashcache.remove_if(&1, |v| *v == 1).unwrap(), (1, 1));
+    /// assert_eq!(hashcache.capacity(), 0);
+    /// ```
+    #[inline]
+    pub fn remove_if<Q, F: FnOnce(&mut V) -> bool>(&self, key: &Q, condition: F) -> Option<(K, V)>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.get(key).and_then(|mut o| {
+            if condition(o.get_mut()) {
+                Some(o.remove_entry())
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Removes a key-value pair if the key exists and the given condition is met.
+    ///
+    /// Returns `None` if the key does not exist or the condition was not met. It is an
+    /// asynchronous method returning an `impl Future` for the caller to await.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    /// let future_insert = hashcache.put_async(11, 17);
+    /// let future_remove = hashcache.remove_if_async(&11, |_| true);
+    /// ```
+    #[inline]
+    pub async fn remove_if_async<Q, F: FnOnce(&mut V) -> bool>(
+        &self,
+        key: &Q,
+        condition: F,
+    ) -> Option<(K, V)>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        if let Some(mut occupied_entry) = self.get_async(key).await {
+            if condition(occupied_entry.get_mut()) {
+                return Some(occupied_entry.remove_entry());
+            }
+        }
+        None
     }
 
     /// Returns the capacity of the [`HashCache`].
@@ -445,11 +564,11 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// assert_eq!(hashcache.capacity_range(), 0..256);
+    /// assert_eq!(hashcache.capacity_range(), 0..=256);
     /// ```
     #[inline]
-    pub fn capacity_range(&self) -> Range<usize> {
-        self.minimum_capacity.load(Relaxed)..self.maximum_capacity()
+    pub fn capacity_range(&self) -> RangeInclusive<usize> {
+        self.minimum_capacity.load(Relaxed)..=self.maximum_capacity()
     }
 
     /// Returns a reference to the specified [`Barrier`] whose lifetime matches that of `self`.
@@ -799,6 +918,8 @@ where
     #[must_use]
     pub fn remove_entry(mut self) -> (K, V) {
         let (k, v) = unsafe {
+            self.locker
+                .remove_from_lru_list(self.data_block_mut, &self.entry_ptr);
             self.locker
                 .erase(self.data_block_mut, &mut self.entry_ptr)
                 .unwrap_unchecked()

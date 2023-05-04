@@ -10,7 +10,7 @@ use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
 use std::mem::replace;
-use std::ops::{Deref, Range};
+use std::ops::{Deref, RangeInclusive};
 use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
@@ -515,7 +515,7 @@ where
 
     /// Updates an existing key-value pair.
     ///
-    /// It returns `None` if the key does not exist.
+    /// Returns `None` if the key does not exist.
     ///
     /// # Examples
     ///
@@ -547,7 +547,7 @@ where
 
     /// Updates an existing key-value pair.
     ///
-    /// It returns `None` if the key does not exist. It is an asynchronous method returning an
+    /// Returns `None` if the key does not exist. It is an asynchronous method returning an
     /// `impl Future` for the caller to await.
     ///
     /// # Examples
@@ -673,7 +673,7 @@ where
 
     /// Removes a key-value pair if the key exists.
     ///
-    /// It returns `None` if the key does not exist.
+    /// Returns `None` if the key does not exist.
     ///
     /// # Examples
     ///
@@ -698,7 +698,8 @@ where
 
     /// Removes a key-value pair if the key exists.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
+    /// Returns `None` if the key does not exist. It is an asynchronous method returning an
+    /// `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -719,6 +720,8 @@ where
     }
 
     /// Removes a key-value pair if the key exists and the given condition is met.
+    ///
+    /// Returns `None` if the key does not exist or the condition was not met.
     ///
     /// # Examples
     ///
@@ -752,7 +755,8 @@ where
 
     /// Removes a key-value pair if the key exists and the given condition is met.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
+    /// Returns `None` if the key does not exist or the condition was not met. It is an
+    /// asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -879,7 +883,7 @@ where
 
     /// Reads a key-value pair.
     ///
-    /// It returns `None` if the key does not exist.
+    /// Returns `None` if the key does not exist.
     ///
     /// # Examples
     ///
@@ -906,7 +910,7 @@ where
 
     /// Reads a key-value pair.
     ///
-    /// It returns `None` if the key does not exist. It is an asynchronous method returning an
+    /// Returns `None` if the key does not exist. It is an asynchronous method returning an
     /// `impl Future` for the caller to await.
     ///
     /// # Examples
@@ -1039,7 +1043,7 @@ where
     /// visited if they are not removed, however the same key-value pair can be visited more than
     /// once if the [`HashMap`] gets resized by another thread.
     ///
-    /// It returns `true` if an entry satisfying the predicate is found.
+    /// Returns `true` if an entry satisfying the predicate is found.
     ///
     /// # Examples
     ///
@@ -1093,7 +1097,7 @@ where
     ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
-    /// It returns `true` if an entry satisfying the predicate is found.
+    /// Returns `true` if an entry satisfying the predicate is found.
     ///
     /// # Examples
     ///
@@ -1428,14 +1432,14 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// assert_eq!(hashmap.capacity_range(), 0..(1_usize << (usize::BITS - 1)));
+    /// assert_eq!(hashmap.capacity_range(), 0..=(1_usize << (usize::BITS - 1)));
     ///
     /// let reserved = hashmap.reserve(1000);
-    /// assert_eq!(hashmap.capacity_range(), 1000..(1_usize << (usize::BITS - 1)));
+    /// assert_eq!(hashmap.capacity_range(), 1000..=(1_usize << (usize::BITS - 1)));
     /// ```
     #[inline]
-    pub fn capacity_range(&self) -> Range<usize> {
-        self.minimum_capacity.load(Relaxed)..self.maximum_capacity()
+    pub fn capacity_range(&self) -> RangeInclusive<usize> {
+        self.minimum_capacity.load(Relaxed)..=self.maximum_capacity()
     }
 
     /// Clears the old array asynchronously.

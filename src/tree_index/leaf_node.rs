@@ -139,7 +139,7 @@ where
     /// Returns a [`Scanner`] pointing to an entry that is close enough to the entry with the
     /// maximum key among those keys smaller than the given key.
     ///
-    /// It returns `None` if all the keys in the [`LeafNode`] is equal to or greater than the given
+    /// Returns `None` if all the keys in the [`LeafNode`] is equal to or greater than the given
     /// key.
     #[inline]
     pub(super) fn max_le_appr<'b, Q>(

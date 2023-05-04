@@ -10,7 +10,7 @@ use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
 use std::iter::FusedIterator;
-use std::ops::{Deref, Range};
+use std::ops::{Deref, RangeInclusive};
 use std::panic::UnwindSafe;
 use std::pin::Pin;
 use std::ptr;
@@ -507,8 +507,10 @@ where
 
     /// Removes a key-value pair if the key exists.
     ///
-    /// It returns `false` if the key does not exist. This method only marks the entry unreachable,
-    /// and the memory will be reclaimed later.
+    /// Returns `false` if the key does not exist.
+    ///
+    /// Returns `true` if the key existed and the condition was met after marking the entry
+    /// unreachable; the memory will be reclaimed later.
     ///
     /// # Examples
     ///
@@ -533,7 +535,11 @@ where
 
     /// Removes a key-value pair if the key exists.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
+    /// Returns `false` if the key does not exist. It is an asynchronous method returning an
+    /// `impl Future` for the caller to await.
+    ///
+    /// Returns `true` if the key existed and the condition was met after marking the entry
+    /// unreachable; the memory will be reclaimed later.
     ///
     /// # Examples
     ///
@@ -555,7 +561,10 @@ where
 
     /// Removes a key-value pair if the key exists and the given condition is met.
     ///
-    /// This method only marks the entry unreachable, and the memory will be reclaimed later.
+    /// Returns `false` if the key does not exist or the condition was not met.
+    ///
+    /// Returns `true` if the key existed and the condition was met after marking the entry
+    /// unreachable; the memory will be reclaimed later.
     ///
     /// # Examples
     ///
@@ -589,7 +598,11 @@ where
 
     /// Removes a key-value pair if the key exists and the given condition is met.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
+    /// Returns `false` if the key does not exist or the condition was not met. It is an
+    /// asynchronous method returning an `impl Future` for the caller to await.
+    ///
+    /// Returns `true` if the key existed and the condition was met after marking the entry
+    /// unreachable; the memory will be reclaimed later.
     ///
     /// # Examples
     ///
@@ -628,7 +641,7 @@ where
 
     /// Reads a key-value pair.
     ///
-    /// It returns `None` if the key does not exist. This method is not linearizable; the key-value
+    /// Returns `None` if the key does not exist. This method is not linearizable; the key-value
     /// pair being read by this method can be removed from the container or copied to a different
     /// memory location.
     ///
@@ -658,9 +671,9 @@ where
 
     /// Reads a key-value pair using the supplied [`Barrier`].
     ///
-    /// It enables the caller to use the value reference outside the method. It returns `None`
-    /// if the key does not exist. This method is not linearizable; the key-value pair being read
-    /// by this method can be removed from the container or copied to a different memory location.
+    /// Returns `None` if the key does not exist. It enables the caller to use the value reference
+    /// outside the method. This method is not linearizable; the key-value pair being read by this
+    /// method can be removed from the container or copied to a different memory location.
     ///
     /// # Examples
     ///
@@ -922,14 +935,14 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// assert_eq!(hashindex.capacity_range(), 0..(1_usize << (usize::BITS - 1)));
+    /// assert_eq!(hashindex.capacity_range(), 0..=(1_usize << (usize::BITS - 1)));
     ///
     /// let reserved = hashindex.reserve(1000);
-    /// assert_eq!(hashindex.capacity_range(), 1000..(1_usize << (usize::BITS - 1)));
+    /// assert_eq!(hashindex.capacity_range(), 1000..=(1_usize << (usize::BITS - 1)));
     /// ```
     #[inline]
-    pub fn capacity_range(&self) -> Range<usize> {
-        self.minimum_capacity.load(Relaxed)..self.maximum_capacity()
+    pub fn capacity_range(&self) -> RangeInclusive<usize> {
+        self.minimum_capacity.load(Relaxed)..=self.maximum_capacity()
     }
 
     /// Returns a [`Visitor`] that iterates over all the entries in the [`HashIndex`].

@@ -74,7 +74,7 @@ impl<T> RefCounted<T> {
 
     /// Drops a strong reference to the underlying instance.
     ///
-    /// It returns `true` if it the last reference was dropped.
+    /// Returns `true` if it the last reference was dropped.
     #[inline]
     pub(super) fn drop_ref(&self) -> bool {
         // It does not have to be a load-acquire as everything's synchronized via the global

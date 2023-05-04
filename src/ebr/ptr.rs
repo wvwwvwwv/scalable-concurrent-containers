@@ -108,7 +108,7 @@ impl<'b, T> Ptr<'b, T> {
 
     /// Sets a [`Tag`], overwriting its existing [`Tag`].
     ///
-    /// It returns the previous tag value.
+    /// Returns the previous tag value.
     ///
     /// # Examples
     ///
@@ -128,7 +128,7 @@ impl<'b, T> Ptr<'b, T> {
 
     /// Clears its [`Tag`].
     ///
-    /// It returns the previous tag value.
+    /// Returns the previous tag value.
     ///
     /// # Examples
     ///

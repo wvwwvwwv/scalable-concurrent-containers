@@ -5,7 +5,7 @@ use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
-use std::ops::Range;
+use std::ops::RangeInclusive;
 
 /// Scalable concurrent hash set.
 ///
@@ -156,7 +156,7 @@ where
 
     /// Removes a key if the key exists.
     ///
-    /// It returns `None` if the key does not exist.
+    /// Returns `None` if the key does not exist.
     ///
     /// # Examples
     ///
@@ -181,7 +181,8 @@ where
 
     /// Removes a key if the key exists.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
+    /// Returns `None` if the key does not exist. It is an asynchronous method returning an
+    /// `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -206,7 +207,7 @@ where
 
     /// Removes a key if the key exists and the given condition is met.
     ///
-    /// The key is locked while evaluating the condition.
+    /// Returns `None` if the key does not exist or the condition was not met.
     ///
     /// # Examples
     ///
@@ -231,7 +232,8 @@ where
 
     /// Removes a key if the key exists and the given condition is met.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
+    /// Returns `None` if the key does not exist or the condition was not met. It is an
+    /// asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -256,7 +258,7 @@ where
 
     /// Reads a key.
     ///
-    /// It returns `None` if the key does not exist.
+    /// Returns `None` if the key does not exist.
     ///
     /// # Examples
     ///
@@ -280,7 +282,7 @@ where
 
     /// Reads a key.
     ///
-    /// It returns `None` if the key does not exist. It is an asynchronous method returning an
+    /// Returns `None` if the key does not exist. It is an asynchronous method returning an
     /// `impl Future` for the caller to await.
     ///
     /// # Examples
@@ -397,7 +399,7 @@ where
     /// they are not removed, however the same key can be visited more than once if the [`HashSet`]
     /// gets resized by another task.
     ///
-    /// It returns `true` if a key satisfying the predicate is found.
+    /// Returns `true` if a key satisfying the predicate is found.
     ///
     /// # Examples
     ///
@@ -426,7 +428,7 @@ where
     ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
-    /// It returns `true` if a key satisfying the predicate is found.
+    /// Returns `true` if a key satisfying the predicate is found.
     ///
     /// # Examples
     ///
@@ -500,7 +502,9 @@ where
     /// they are not removed, however the same key can be visited more than once if the [`HashSet`]
     /// gets resized by another thread.
     ///
-    /// It returns the number of keys remaining and removed.
+    /// Returns `(number of remaining entries, number of removed entries)` where the number of
+    /// remaining entries can be larger than the actual number since the same entry can be visited
+    /// more than once.
     ///
     /// # Examples
     ///
@@ -526,8 +530,10 @@ where
     /// they are not removed, however the same key can be visited more than once if the [`HashSet`]
     /// gets resized by another task.
     ///
-    /// It returns the number of entries remaining and removed. It is an asynchronous method
-    /// returning an `impl Future` for the caller to await.
+    /// Returns `(number of remaining entries, number of removed entries)` where the number of
+    /// remaining entries can be larger than the actual number since the same entry can be visited
+    /// more than once. It is an asynchronous method returning an `impl Future` for the caller to
+    /// await.
     ///
     /// # Examples
     ///
@@ -649,13 +655,13 @@ where
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
-    /// assert_eq!(hashset.capacity_range(), 0..(1_usize << (usize::BITS - 1)));
+    /// assert_eq!(hashset.capacity_range(), 0..=(1_usize << (usize::BITS - 1)));
     ///
     /// let reserved = hashset.reserve(1000);
-    /// assert_eq!(hashset.capacity_range(), 1000..(1_usize << (usize::BITS - 1)));
+    /// assert_eq!(hashset.capacity_range(), 1000..=(1_usize << (usize::BITS - 1)));
     /// ```
     #[inline]
-    pub fn capacity_range(&self) -> Range<usize> {
+    pub fn capacity_range(&self) -> RangeInclusive<usize> {
         self.map.capacity_range()
     }
 }

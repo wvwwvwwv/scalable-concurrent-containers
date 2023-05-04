@@ -1155,12 +1155,22 @@ mod hashcache_test {
     proptest! {
         #[cfg_attr(miri, ignore)]
         #[test]
-        fn capacity(key in 0_usize..256) {
+        fn capacity(xs in 0_usize..256) {
             let hashcache: HashCache<usize, usize> = HashCache::with_capacity(0, 64);
-            for k in 0..key {
+            for k in 0..xs {
                 assert!(hashcache.put(k, k).is_ok());
             }
             assert!(hashcache.capacity() <= 64);
+
+            let hashcache: HashCache<usize, usize> = HashCache::with_capacity(xs, xs * 2);
+            for k in 0..xs {
+                assert!(hashcache.put(k, k).is_ok());
+            }
+            if xs == 0 {
+                assert_eq!(hashcache.capacity_range(), 0..=64);
+            } else {
+                assert_eq!(hashcache.capacity_range(), xs.next_power_of_two().max(64)..=(xs * 2).next_power_of_two().max(64));
+            }
          }
     }
 }
@@ -2325,7 +2335,7 @@ mod random_failure_test {
     use crate::ebr;
     use crate::ebr::Arc;
     use crate::hash_map::Entry;
-    use crate::{HashIndex, HashMap, TreeIndex};
+    use crate::{HashCache, HashIndex, HashMap, TreeIndex};
     use std::any::Any;
     use std::panic::catch_unwind;
     use std::sync::atomic::Ordering::{AcqRel, Relaxed};
@@ -2357,6 +2367,7 @@ mod random_failure_test {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     #[cfg_attr(miri, ignore)]
     #[test]
     fn panic_safety() {
@@ -2445,6 +2456,28 @@ mod random_failure_test {
             NEVER_PANIC.store(false, Relaxed);
         }
         drop(hashindex);
+
+        while INST_CNT.load(Relaxed) != 0 {
+            let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
+                drop(ebr::Barrier::new());
+            });
+            std::thread::yield_now();
+        }
+
+        // HashCache.
+        let hashcache: HashCache<usize, R> = HashCache::default();
+        for k in 0..workload_size {
+            let result: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
+                assert!(hashcache
+                    .put(k as usize, R::new(&INST_CNT, &NEVER_PANIC))
+                    .is_ok());
+                if let Some(mut o) = hashcache.get(&(k as usize)) {
+                    o.get_mut().2 = true;
+                }
+            });
+            assert_eq!(hashcache.get(&(k as usize)).is_some(), result.is_ok());
+        }
+        drop(hashcache);
 
         while INST_CNT.load(Relaxed) != 0 {
             let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {

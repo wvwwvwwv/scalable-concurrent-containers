@@ -42,7 +42,7 @@ pub trait LinkedList: Sized {
 
     /// Marks `self` with an internal flag to denote that `self` is in a special state.
     ///
-    /// It returns `false` if a flag has already been marked on `self`.
+    /// Returns `false` if a flag has already been marked on `self`.
     ///
     /// # Examples
     ///
@@ -70,7 +70,7 @@ pub trait LinkedList: Sized {
 
     /// Removes the mark from `self`.
     ///
-    /// It returns `false` if no flag has been marked on `self`.
+    /// Returns `false` if no flag has been marked on `self`.
     ///
     /// # Examples
     ///
@@ -128,7 +128,7 @@ pub trait LinkedList: Sized {
 
     /// Deletes `self`.
     ///
-    /// It returns `false` if `self` already has `deleted` marked on it.
+    /// Returns `false` if `self` already has `deleted` marked on it.
     ///
     /// # Examples
     ///
@@ -194,7 +194,7 @@ pub trait LinkedList: Sized {
     ///
     /// # Errors
     ///
-    /// It returns the supplied [`Arc`] when it finds `self` deleted.
+    /// Returns the supplied [`Arc`] when it finds `self` deleted.
     ///
     /// # Examples
     ///

@@ -457,8 +457,8 @@ where
     /// Returns the recommended number of entries that the left-side node shall store when a
     /// [`Leaf`] is split.
     ///
-    /// It returns a number in `[1, len(leaf))` that represents the recommended number of entries
-    /// in the left-side node. The number is calculated as, for each adjacent slots,
+    /// Returns a number in `[1, len(leaf))` that represents the recommended number of entries in
+    /// the left-side node. The number is calculated as, for each adjacent slots,
     /// - Initial `score` = `len(leaf)`.
     /// - Rank increased: `score -= 1`.
     /// - Rank decreased: `score += 1`.

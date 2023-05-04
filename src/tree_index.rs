@@ -270,7 +270,10 @@ where
 
     /// Removes a key-value pair.
     ///
-    /// It returns `false` if the key does not exist.
+    /// Returns `false` if the key does not exist.
+    ///
+    /// Returns `true` if the key existed and the condition was met after marking the entry
+    /// unreachable; the memory will be reclaimed later.
     ///
     /// # Examples
     ///
@@ -294,7 +297,11 @@ where
 
     /// Removes a key-value pair.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
+    /// Returns `false` if the key does not exist. It is an asynchronous method returning an
+    /// `impl Future` for the caller to await.
+    ///
+    /// Returns `true` if the key existed and the condition was met after marking the entry
+    /// unreachable; the memory will be reclaimed later.
     ///
     /// # Examples
     ///
@@ -314,6 +321,11 @@ where
     }
 
     /// Removes a key-value pair if the given condition is met.
+    ///
+    /// Returns `false` if the key does not exist or the condition was not met.
+    ///
+    /// Returns `true` if the key existed and the condition was met after marking the entry
+    /// unreachable; the memory will be reclaimed later.
     ///
     /// # Examples
     ///
@@ -367,7 +379,11 @@ where
 
     /// Removes a key-value pair if the given condition is met.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
+    /// Returns `false` if the key does not exist or the condition was not met. It is an
+    /// asynchronous method returning an `impl Future` for the caller to await.
+    ///
+    /// Returns `true` if the key existed and the condition was met after marking the entry
+    /// unreachable; the memory will be reclaimed later.
     ///
     /// # Examples
     ///
@@ -430,7 +446,7 @@ where
 
     /// Reads a key-value pair.
     ///
-    /// It returns `None` if the key does not exist.
+    /// Returns `None` if the key does not exist.
     ///
     /// # Examples
     ///
@@ -452,8 +468,8 @@ where
 
     /// Reads a key-value pair using the supplied [`Barrier`].
     ///
-    /// It enables the caller to use the value reference outside the method. It returns `None`
-    /// if the key does not exist.
+    /// Returns `None` if the key does not exist. It enables the caller to use the value reference
+    /// outside the method.
     ///
     /// # Examples
     ///

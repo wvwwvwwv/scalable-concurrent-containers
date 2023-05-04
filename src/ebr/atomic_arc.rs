@@ -164,7 +164,7 @@ impl<T> AtomicArc<T> {
 
     /// Sets a new [`Tag`] if the given condition is met.
     ///
-    /// It returns `true` if the new [`Tag`] has been successfully set.
+    /// Returns `true` if the new [`Tag`] has been successfully set.
     ///
     /// # Examples
     ///
@@ -197,12 +197,12 @@ impl<T> AtomicArc<T> {
 
     /// Performs CAS on the [`AtomicArc`].
     ///
-    /// It returns `Ok` with the previously held [`Arc`] and the updated [`Ptr`] upon a
-    /// successful operation.
+    /// Returns `Ok` with the previously held [`Arc`] and the updated [`Ptr`] upon a successful
+    /// operation.
     ///
     /// # Errors
     ///
-    /// It returns `Err` with the supplied [`Arc`] and the current [`Ptr`].
+    /// Returns `Err` with the supplied [`Arc`] and the current [`Ptr`].
     ///
     /// # Examples
     ///
