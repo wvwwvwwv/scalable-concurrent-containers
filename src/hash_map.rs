@@ -10,7 +10,7 @@ use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
 use std::mem::replace;
-use std::ops::Deref;
+use std::ops::{Deref, Range};
 use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
@@ -167,19 +167,21 @@ where
     /// ```
     #[inline]
     pub fn with_capacity_and_hasher(capacity: usize, build_hasher: H) -> Self {
-        let array = if capacity == 0 {
-            AtomicArc::null()
+        let (array, minimum_capacity) = if capacity == 0 {
+            (AtomicArc::null(), AtomicUsize::new(0))
         } else {
-            AtomicArc::from(unsafe {
+            let array = unsafe {
                 Arc::new_unchecked(BucketArray::<K, V, SEQUENTIAL>::new(
                     capacity,
                     AtomicArc::null(),
                 ))
-            })
+            };
+            let minimum_capacity = array.num_entries();
+            (AtomicArc::from(array), AtomicUsize::new(minimum_capacity))
         };
         Self {
             array,
-            minimum_capacity: AtomicUsize::new(capacity),
+            minimum_capacity,
             build_hasher,
         }
     }
@@ -201,9 +203,8 @@ where
     ///
     /// ```
     /// use scc::HashMap;
-    /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<usize, usize, RandomState> = HashMap::with_capacity(1000);
+    /// let hashmap: HashMap<usize, usize> = HashMap::with_capacity(1000);
     /// assert_eq!(hashmap.capacity(), 1024);
     ///
     /// let reserved = hashmap.reserve(10000);
@@ -1403,20 +1404,38 @@ where
     ///
     /// ```
     /// use scc::HashMap;
-    /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap_default: HashMap<u64, u32, RandomState> = HashMap::default();
+    /// let hashmap_default: HashMap<u64, u32> = HashMap::default();
     /// assert_eq!(hashmap_default.capacity(), 0);
     ///
     /// assert!(hashmap_default.insert(1, 0).is_ok());
     /// assert_eq!(hashmap_default.capacity(), 64);
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::with_capacity(1000000);
+    /// let hashmap: HashMap<u64, u32> = HashMap::with_capacity(1000000);
     /// assert_eq!(hashmap.capacity(), 1048576);
     /// ```
     #[inline]
     pub fn capacity(&self) -> usize {
         self.num_slots(&Barrier::new())
+    }
+
+    /// Returns the current capacity range of the [`HashMap`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// assert_eq!(hashmap.capacity_range(), 0..(1_usize << (usize::BITS - 1)));
+    ///
+    /// let reserved = hashmap.reserve(1000);
+    /// assert_eq!(hashmap.capacity_range(), 1000..(1_usize << (usize::BITS - 1)));
+    /// ```
+    #[inline]
+    pub fn capacity_range(&self) -> Range<usize> {
+        self.minimum_capacity.load(Relaxed)..self.maximum_capacity()
     }
 
     /// Clears the old array asynchronously.
@@ -1473,9 +1492,8 @@ where
     ///
     /// ```
     /// use scc::HashMap;
-    /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::with_capacity(1000);
+    /// let hashmap: HashMap<u64, u32> = HashMap::with_capacity(1000);
     ///
     /// let result = hashmap.capacity();
     /// assert_eq!(result, 1024);

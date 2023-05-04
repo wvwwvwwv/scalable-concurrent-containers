@@ -9,7 +9,7 @@ readme = "README.md"
 repository = "https://github.com/wvwwvwwv/scalable-concurrent-containers/"
 license = "Apache-2.0"
 categories = ["asynchronous", "concurrency", "data-structures", "memory-management"]
-keywords = ["async", "concurrent", "garbage", "hashmap", "tree"]
+keywords = ["async", "cache", "concurrent", "hashmap", "tree"]
 
 [dependencies]
 serde = { version = "1.0", optional = true }
@@ -38,6 +38,10 @@ harness = false
 
 [[bench]]
 name = "hash_index"
+harness = false
+
+[[bench]]
+name = "hash_cache"
 harness = false
 
 [[bench]]

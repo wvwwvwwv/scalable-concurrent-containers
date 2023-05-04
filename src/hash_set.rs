@@ -5,6 +5,7 @@ use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
+use std::ops::Range;
 
 /// Scalable concurrent hash set.
 ///
@@ -84,9 +85,8 @@ where
     ///
     /// ```
     /// use scc::HashSet;
-    /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashset: HashSet<usize, RandomState> = HashSet::with_capacity(1000);
+    /// let hashset: HashSet<usize> = HashSet::with_capacity(1000);
     /// assert_eq!(hashset.capacity(), 1024);
     ///
     /// let reserved = hashset.reserve(10000);
@@ -625,20 +625,38 @@ where
     ///
     /// ```
     /// use scc::HashSet;
-    /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashset_default: HashSet<u64, RandomState> = HashSet::default();
+    /// let hashset_default: HashSet<u64> = HashSet::default();
     /// assert_eq!(hashset_default.capacity(), 0);
     ///
     /// assert!(hashset_default.insert(1).is_ok());
     /// assert_eq!(hashset_default.capacity(), 64);
     ///
-    /// let hashset: HashSet<u64, RandomState> = HashSet::with_capacity(1000000);
+    /// let hashset: HashSet<u64> = HashSet::with_capacity(1000000);
     /// assert_eq!(hashset.capacity(), 1048576);
     /// ```
     #[inline]
     pub fn capacity(&self) -> usize {
         self.map.capacity()
+    }
+
+    /// Returns the current capacity range of the [`HashSet`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    ///
+    /// let hashset: HashSet<u64> = HashSet::default();
+    ///
+    /// assert_eq!(hashset.capacity_range(), 0..(1_usize << (usize::BITS - 1)));
+    ///
+    /// let reserved = hashset.reserve(1000);
+    /// assert_eq!(hashset.capacity_range(), 1000..(1_usize << (usize::BITS - 1)));
+    /// ```
+    #[inline]
+    pub fn capacity_range(&self) -> Range<usize> {
+        self.map.capacity_range()
     }
 }
 
@@ -697,9 +715,8 @@ impl<K: Eq + Hash> HashSet<K, RandomState> {
     ///
     /// ```
     /// use scc::HashSet;
-    /// use std::collections::hash_map::RandomState;
     ///
-    /// let hashset: HashSet<u64, RandomState> = HashSet::with_capacity(1000);
+    /// let hashset: HashSet<u64> = HashSet::with_capacity(1000);
     ///
     /// let result = hashset.capacity();
     /// assert_eq!(result, 1024);

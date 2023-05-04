@@ -5,6 +5,7 @@
 * Optimize `Hash*::update*` and `HashIndex::modify*`.
 * API update 1: _WORK IN PROGRESS_ `HashCache` implementation.
 * API update 2: add `HashMap::{get, get_async}` returning an `OccupiedEntry`.
+* API update 3: add `Hash*::capacity_range`.
 
 1.6.3
 
