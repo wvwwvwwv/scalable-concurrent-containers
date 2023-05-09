@@ -21,7 +21,7 @@ A collection of high performance containers and utilities for concurrent and asy
 - [HashSet](#HashSet) is a concurrent and asynchronous hash set.
 - [HashIndex](#HashIndex) is a read-optimized concurrent and asynchronous hash map.
 - [HashCache](#HashCache) is a sampling-based LRU cache backed by [HashMap](#HashMap).
-- [TreeIndex](#TreeIndex) is a read-optimized concurrent and asynchronous B+ tree.
+- [TreeIndex](#TreeIndex) is a read-optimized concurrent and asynchronous B-plus tree.
 
 #### Utilities for Concurrent Programming
 
@@ -222,7 +222,7 @@ assert_eq!(hashcache.remove(&2).unwrap(), (2, 0));
 
 ## TreeIndex
 
-[TreeIndex](#TreeIndex) is a B+ tree variant optimized for read operations. [EBR](#EBR) protects the memory used by individual entries, thus enabling lock-free read access to them.
+[TreeIndex](#TreeIndex) is a B-plus tree variant optimized for read operations. [EBR](#EBR) protects the memory used by individual entries, thus enabling lock-free read access to them.
 
 ### Locking behavior
 
@@ -464,6 +464,6 @@ Comparison with [DashMap](https://github.com/xacrimon/dashmap).
 
 ### [EBR](#EBR)
 
-- The average time taken to enter and exit a protected region: 2.1NS on Apple M1.
+- The average time taken to enter and exit a protected region: 2.1 nanoseconds on Apple M1.
 
 ## [Changelog](https://github.com/wvwwvwwv/scalable-concurrent-containers/blob/main/CHANGELOG.md)

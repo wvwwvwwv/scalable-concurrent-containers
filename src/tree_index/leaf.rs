@@ -19,12 +19,12 @@ where
     /// The metadata containing information about the [`Leaf`] and individual entries.
     ///
     /// The state of each entry is as follows.
-    /// * 0: `uninit`.
-    /// * 1-ARRAY_SIZE: `rank`.
-    /// * ARRAY_SIZE + 1: `removed`.
+    /// * `0`: `uninit`.
+    /// * `1-ARRAY_SIZE`: `rank`.
+    /// * `ARRAY_SIZE + 1`: `removed`.
     ///
     /// The entry state transitions as follows.
-    /// * `uninit` -> `removed` -> `rank` -> `removed`.
+    /// * `uninit -> removed -> rank -> removed`.
     metadata: AtomicUsize,
 
     /// The array of key-value pairs.
@@ -402,7 +402,7 @@ where
 
     /// Freezes the [`Leaf`] temporarily.
     ///
-    /// A frozen [`Leaf`] cannot store more entries, and on-going insertion is cancelled.
+    /// A frozen [`Leaf`] cannot store more entries, and on-going insertion is canceled.
     #[inline]
     pub(super) fn freeze(&self) -> bool {
         self.metadata
@@ -459,7 +459,7 @@ where
     ///
     /// Returns a number in `[1, len(leaf))` that represents the recommended number of entries in
     /// the left-side node. The number is calculated as, for each adjacent slots,
-    /// - Initial `score` = `len(leaf)`.
+    /// - Initial `score = len(leaf)`.
     /// - Rank increased: `score -= 1`.
     /// - Rank decreased: `score += 1`.
     /// - Clamp `score` in `[len(leaf) / 2 + 1, len(leaf) / 2 + len(leaf) - 1)`.
@@ -749,16 +749,16 @@ impl Dimension {
 
 /// The maximum number of entries and the number of metadata bits per entry in a [`Leaf`].
 ///
-/// * M = The maximum number of entries.
-/// * B = The minimum number of bits to express the state of an entry.
-/// * 2 = The number of special states of an entry: uninit, removed.
-/// * 2 = The number of special states of a [`Leaf`]: frozen, retired.
-/// * U = `usize::BITS`.
-/// * Eq1 = M + 2 <= 2^B: B bits represent at least M + 2 states.
-/// * Eq2 = B * M + 2 <= U: M entries + 2 special state.
-/// * Eq3 = Ceil(Log2(M + 2)) * M + 2 <= U: derived from Eq1 and Eq2.
+/// * `M`: The maximum number of entries.
+/// * `B`: The minimum number of bits to express the state of an entry.
+/// * `2`: The number of special states of an entry: uninitialized, removed.
+/// * `2`: The number of special states of a [`Leaf`]: frozen, retired.
+/// * `U`: `usize::BITS`.
+/// * `Eq1 = M + 2 <= 2^B`: `B` bits represent at least `M + 2` states.
+/// * `Eq2 = B * M + 2 <= U`: `M entries + 2` special state.
+/// * `Eq3 = Ceil(Log2(M + 2)) * M + 2 <= U`: derived from `Eq1` and `Eq2`.
 ///
-/// Therefore, when U = 64 => M = 14 / B = 4, and U = 32 => M = 7 / B = 4.
+/// Therefore, when `U = 64 => M = 14 / B = 4`, and `U = 32 => M = 7 / B = 4`.
 pub const DIMENSION: Dimension = match usize::BITS / 8 {
     1 => Dimension {
         num_entries: 2,

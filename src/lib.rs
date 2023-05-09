@@ -6,7 +6,7 @@
 //! * [`HashSet`]: concurrent and asynchronous hash set.
 //! * [`HashIndex`]: read-optimized concurrent and asynchronous hash map.
 //! * [`HashCache`]: concurrent and asynchronous sampling-based LRU cache backed by [`HashMap`].
-//! * [`TreeIndex`]: read-optimized concurrent and asynchronous B+ tree.
+//! * [`TreeIndex`]: read-optimized concurrent and asynchronous B-plus tree.
 //!
 //! Utilities for concurrent programming.
 //!

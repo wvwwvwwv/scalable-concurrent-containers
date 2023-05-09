@@ -44,14 +44,14 @@ struct Storage<T, const ARRAY_LEN: usize> {
     /// Storage metadata.
     ///
     /// The layout of the metadata is,
-    /// - Upper `usize::BITS / 2` bits = instantiation bitmap.
-    /// - Lower `usize::BITS / 2` bits = owned state bitmap.
+    /// - Upper `usize::BITS / 2` bits: initialization bitmap.
+    /// - Lower `usize::BITS / 2` bits: owned state bitmap.
     ///
     /// The metadata represents four possible states of a storage slot.
-    /// - !instantiated && !owned: initial state.
-    /// - !instantiated && owned: owned for instantiating.
-    /// - instantiated && !owned: valid and reachable.
-    /// - instantiated && owned: owned for moving out the instance.
+    /// - `!instantiated && !owned`: initial state.
+    /// - `!instantiated && owned`: owned for instantiating.
+    /// - `instantiated && !owned`: valid and reachable.
+    /// - `instantiated && owned`: owned for moving out the instance.
     metadata: AtomicUsize,
 }
 
@@ -358,7 +358,7 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
     fn pop(&self) -> (Option<T>, bool) {
         let mut metadata = self.metadata.load(Relaxed);
         'after_read_metadata: loop {
-            // Looking for an instantiated, yet unowned entry.
+            // Looking for an instantiated, yet to be owned entry.
             let instance_bitmap = Self::instance_bitmap(metadata);
             let owned_bitmap = Self::owned_bitmap(metadata);
             let mut index = instance_bitmap.trailing_zeros() as usize;

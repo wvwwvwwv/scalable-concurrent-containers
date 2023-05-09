@@ -20,7 +20,7 @@ pub(crate) struct WaitQueue {
 }
 
 impl WaitQueue {
-    /// Waits for the condition to be met or signalled.
+    /// Waits for the condition to be met or signaled.
     #[inline]
     pub(crate) fn wait_sync<T, F: FnOnce() -> Result<T, ()>>(&self, f: F) -> Result<T, ()> {
         let mut current = self.wait_queue.load(Relaxed);
@@ -189,7 +189,7 @@ impl Future for AsyncWait {
 }
 
 /// [`SyncWait`] is inserted into [`WaitQueue`] for the caller to synchronously wait until
-/// signalled.
+/// signaled.
 #[derive(Debug)]
 struct SyncWait {
     next: usize,

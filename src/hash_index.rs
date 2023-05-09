@@ -128,7 +128,7 @@ where
         }
     }
 
-    /// Creates an empty [`HashIndex`] with the specified capacity and build hasher.
+    /// Creates an empty [`HashIndex`] with the specified capacity and [`BuildHasher`].
     ///
     /// The actual capacity is equal to or greater than the specified capacity.
     ///

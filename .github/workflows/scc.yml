@@ -31,6 +31,11 @@ jobs:
           rustup component add rustfmt --toolchain nightly;
           rustup component add clippy --toolchain nightly;
           rustup component add miri --toolchain nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-spellcheck
+      - name: Spell-check
+        run: cargo spellcheck
       - name: Lint
         run:
           cargo clippy --all;

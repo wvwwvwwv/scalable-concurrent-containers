@@ -901,8 +901,8 @@ where
             }
 
             // The resizing policies are as follows.
-            //  - The estimated load factor >= `7/8`, then the hash table grows up to 32x.
-            //  - The estimated load factor <= `1/16`, then the hash table shrinks to fit.
+            //  - `The estimated load factor >= 7/8`, then the hash table grows up to `32x`.
+            //  - `The estimated load factor <= 1/16`, then the hash table shrinks to fit.
             let minimum_capacity = self.minimum_capacity().load(Relaxed);
             let capacity = current_array.num_entries();
             let sample_size = current_array.full_sample_size();

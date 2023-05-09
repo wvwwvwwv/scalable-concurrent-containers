@@ -18,7 +18,7 @@ pub const LOCKED: Tag = Tag::Second;
 
 /// [`LeafNode`] contains a list of instances of `K, V` [`Leaf`].
 ///
-/// The layout of a leaf node: |ptr(entry array)/max(child keys)|...|ptr(entry array)|
+/// The layout of a leaf node: `|ptr(entry array)/max(child keys)|...|ptr(entry array)|`
 pub struct LeafNode<K, V>
 where
     K: 'static + Clone + Ord,
@@ -300,7 +300,7 @@ where
     ///
     /// # Errors
     ///
-    /// Returns an error if a retry is required with a boolean flag indicating that an entry has been removed.
+    /// Returns an error if a retry is required with a Boolean flag indicating that an entry has been removed.
     #[inline]
     pub(super) fn remove_if<Q, F: FnMut(&V) -> bool, D: DeriveAsyncWait>(
         &self,
