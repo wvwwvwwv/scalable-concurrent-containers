@@ -330,7 +330,6 @@ impl Collectible for Collector {
 }
 
 /// [`CollectorAnchor`] helps allocate and cleanup the thread-local [`Collector`].
-#[derive(Default)]
 struct CollectorAnchor;
 
 impl CollectorAnchor {
@@ -386,7 +385,7 @@ fn try_drop_local_collector() {
 }
 
 thread_local! {
-    static COLLECTOR_ANCHOR: CollectorAnchor = CollectorAnchor::default();
+    static COLLECTOR_ANCHOR: CollectorAnchor = CollectorAnchor;
     static LOCAL_COLLECTOR: AtomicPtr<Collector> = AtomicPtr::default();
 }
 
