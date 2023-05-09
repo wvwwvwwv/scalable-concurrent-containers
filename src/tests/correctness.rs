@@ -441,10 +441,31 @@ mod hashmap_test {
                     assert!(hashmap_clone.any(|k, _| range.contains(k)));
                     assert!(hashmap_clone.any_async(|k, _| range.contains(k)).await);
 
-                    let (_, removed) = if task_id % 4 == 0 {
-                        hashmap_clone.retain(|k, _| !range.contains(k))
+                    let removed = if task_id % 3 == 0 {
+                        hashmap_clone.retain(|k, _| !range.contains(k)).1
+                    } else if task_id % 2 == 0 {
+                        hashmap_clone
+                            .retain_async(|k, _| !range.contains(k))
+                            .await
+                            .1
                     } else {
-                        hashmap_clone.retain_async(|k, _| !range.contains(k)).await
+                        let mut num_removed = 0;
+                        let mut entry = hashmap_clone.first_occupied_entry();
+                        while let Some(occupied_entry) = entry {
+                            entry = if range.contains(occupied_entry.key()) {
+                                num_removed += 1;
+                                if num_removed % 2 == 0 {
+                                    occupied_entry.remove_and_next().1
+                                } else {
+                                    occupied_entry.remove_and_next_async().await.1
+                                }
+                            } else if num_removed % 2 == 0 {
+                                occupied_entry.next()
+                            } else {
+                                occupied_entry.next_async().await
+                            };
+                        }
+                        num_removed
                     };
                     assert_eq!(removed, workload_size);
 

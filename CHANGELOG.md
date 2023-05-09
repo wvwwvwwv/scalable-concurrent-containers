@@ -1,5 +1,9 @@
 # Changelog
 
+1.7.1
+
+* API update: add `hash_map::OccupiedEntry::{remove_and_next, remove_and_next_async}`.
+
 1.7.0
 
 * Optimize `Hash*::update*` and `HashIndex::modify*`.
