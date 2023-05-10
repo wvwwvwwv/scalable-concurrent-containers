@@ -892,12 +892,6 @@ where
             async_wait_pinned.await;
         }
     }
-
-    /// Returns a reference to the specified [`Barrier`] whose lifetime matches that of `self`.
-    fn prolonged_barrier_ref<'h>(&'h self, barrier: &Barrier) -> &'h Barrier {
-        let _: &HashCache<_, _, _> = self;
-        unsafe { std::mem::transmute::<&Barrier, &'h Barrier>(barrier) }
-    }
 }
 
 impl<K, V> HashCache<K, V, RandomState>

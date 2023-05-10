@@ -1458,12 +1458,6 @@ where
             async_wait_pinned.await;
         }
     }
-
-    /// Returns a reference to the specified [`Barrier`] whose lifetime matches that of `self`.
-    fn prolonged_barrier_ref<'h>(&'h self, barrier: &Barrier) -> &'h Barrier {
-        let _: &HashMap<_, _, _> = self;
-        unsafe { std::mem::transmute::<&Barrier, &'h Barrier>(barrier) }
-    }
 }
 
 impl<K, V> HashMap<K, V, RandomState>
@@ -2002,43 +1996,53 @@ where
     /// ```
     #[inline]
     #[must_use]
-    pub fn next(self) -> Option<Self> {
-        self.maybe_remove_and_next::<false>().1
-    }
+    pub fn next(mut self) -> Option<Self> {
+        let barrier = Barrier::new();
+        let prolonged_barrier = self.hashmap.prolonged_barrier_ref(&barrier);
 
-    /// Removes the current entry and gets the next closest occupied entry.
-    ///
-    /// [`HashMap::first_occupied_entry`], [`HashMap::first_occupied_entry_async`], and this method
-    /// together enables the [`OccupiedEntry`] to effectively act as a call to [`HashMap::retain`].
-    /// The method never acquires more than one lock even when it searches other buckets
-    /// for the next closest occupied entry.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashMap;
-    /// use scc::hash_map::Entry;
-    ///
-    /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.insert(2, 0).is_ok());
-    ///
-    /// let first_entry = hashmap.first_occupied_entry().unwrap();
-    /// let ((first_key, first_value), second_entry) = first_entry.remove_and_next();
-    /// assert_eq!(first_value, 0);
-    ///
-    /// let second_entry = second_entry.unwrap();
-    /// let second_key = *second_entry.key();
-    /// assert_eq!(first_key + second_key, 3);
-    ///
-    /// assert!(second_entry.next().is_none());
-    /// ```
-    #[inline]
-    #[must_use]
-    pub fn remove_and_next(self) -> ((K, V), Option<Self>) {
-        let (entry, next) = self.maybe_remove_and_next::<true>();
-        (unsafe { entry.unwrap_unchecked() }, next)
+        if self.entry_ptr.next(
+            &self.locker,
+            self.hashmap.prolonged_barrier_ref(prolonged_barrier),
+        ) {
+            return Some(self);
+        }
+
+        let hashmap = self.hashmap;
+        let current_array_ptr = hashmap.array.load(Acquire, prolonged_barrier);
+
+        if let Some(current_array) = current_array_ptr.as_ref() {
+            if !current_array.old_array(prolonged_barrier).is_null() {
+                drop(self);
+                return hashmap.first_occupied_entry();
+            }
+
+            let prev_index = self.index;
+            drop(self);
+
+            for index in (prev_index + 1)..current_array.num_buckets() {
+                let bucket = current_array.bucket_mut(index);
+                if let Some(locker) = Locker::lock(bucket, prolonged_barrier) {
+                    let data_block_mut = current_array.data_block_mut(index);
+                    let mut entry_ptr = EntryPtr::new(prolonged_barrier);
+                    if entry_ptr.next(&locker, prolonged_barrier) {
+                        return Some(OccupiedEntry {
+                            hashmap,
+                            index,
+                            data_block_mut,
+                            locker,
+                            entry_ptr,
+                        });
+                    }
+                }
+            }
+
+            let new_current_array_ptr = hashmap.array.load(Relaxed, prolonged_barrier);
+            if current_array_ptr.without_tag() != new_current_array_ptr.without_tag() {
+                return hashmap.first_occupied_entry();
+            }
+        }
+
+        None
     }
 
     /// Gets the next closest occupied entry.
@@ -2064,111 +2068,12 @@ where
     /// let second_entry_future = hashmap.first_occupied_entry().unwrap().next_async();
     /// ```
     #[inline]
-    pub async fn next_async(self) -> Option<OccupiedEntry<'h, K, V, H>> {
-        self.maybe_remove_next_async::<false>().await.1
-    }
-
-    /// Removes the current entry and gets the next closest occupied entry.
-    ///
-    /// [`HashMap::first_occupied_entry`], [`HashMap::first_occupied_entry_async`], and this method
-    /// together enables the [`OccupiedEntry`] to effectively act as a call to [`HashMap::retain`].
-    /// The method never acquires more than one lock even when it searches other buckets for the
-    /// next closest occupied entry.
-    ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashMap;
-    /// use scc::hash_map::Entry;
-    ///
-    /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.insert(2, 0).is_ok());
-    ///
-    /// async {
-    ///     let first_entry = hashmap.first_occupied_entry().unwrap();
-    ///     let ((first_key, first_value), entry) = first_entry.remove_and_next_async().await;
-    /// };
-    /// ```
-    #[inline]
-    pub async fn remove_and_next_async(self) -> ((K, V), Option<OccupiedEntry<'h, K, V, H>>) {
-        let (entry, next) = self.maybe_remove_next_async::<true>().await;
-        (unsafe { entry.unwrap_unchecked() }, next)
-    }
-
-    /// Removes the current entry if `REMOVE = true` and goes to the next occupied entry.
-    fn maybe_remove_and_next<const REMOVE: bool>(mut self) -> (Option<(K, V)>, Option<Self>) {
-        let removed = if REMOVE {
-            self.locker.erase(self.data_block_mut, &mut self.entry_ptr)
-        } else {
-            None
-        };
-
-        let barrier = Barrier::new();
-        let prolonged_barrier = self.hashmap.prolonged_barrier_ref(&barrier);
-
-        if self.entry_ptr.next(&self.locker, prolonged_barrier) {
-            return (removed, Some(self));
-        }
-
-        let hashmap = self.hashmap;
-        let current_array_ptr = hashmap.array.load(Acquire, prolonged_barrier);
-        if let Some(current_array) = current_array_ptr.as_ref() {
-            if !current_array.old_array(&Barrier::new()).is_null() {
-                drop(self);
-                return (removed, hashmap.first_occupied_entry());
-            }
-
-            let prev_index = self.index;
-            drop(self);
-
-            for index in (prev_index + 1)..current_array.num_buckets() {
-                let bucket = current_array.bucket_mut(index);
-                if let Some(locker) = Locker::lock(bucket, prolonged_barrier) {
-                    let data_block_mut = current_array.data_block_mut(index);
-                    let mut entry_ptr = EntryPtr::new(prolonged_barrier);
-                    if entry_ptr.next(&locker, prolonged_barrier) {
-                        return (
-                            removed,
-                            Some(OccupiedEntry {
-                                hashmap,
-                                index,
-                                data_block_mut,
-                                locker,
-                                entry_ptr,
-                            }),
-                        );
-                    }
-                }
-            }
-
-            let new_current_array_ptr = hashmap.array.load(Relaxed, prolonged_barrier);
-            if current_array_ptr.without_tag() != new_current_array_ptr.without_tag() {
-                return (removed, hashmap.first_occupied_entry());
-            }
-        }
-
-        (removed, None)
-    }
-
-    /// Removes the current entry if `REMOVE = true` and goes to the next occupied entry.
-    async fn maybe_remove_next_async<const REMOVE: bool>(
-        mut self,
-    ) -> (Option<(K, V)>, Option<OccupiedEntry<'h, K, V, H>>) {
-        let removed = if REMOVE {
-            self.locker.erase(self.data_block_mut, &mut self.entry_ptr)
-        } else {
-            None
-        };
-
+    pub async fn next_async(mut self) -> Option<OccupiedEntry<'h, K, V, H>> {
         if self.entry_ptr.next(
             &self.locker,
             self.hashmap.prolonged_barrier_ref(&Barrier::new()),
         ) {
-            return (removed, Some(self));
+            return Some(self);
         }
 
         let hashmap = self.hashmap;
@@ -2176,7 +2081,7 @@ where
         if let Some(current_array) = current_array_holder {
             if !current_array.old_array(&Barrier::new()).is_null() {
                 drop(self);
-                return (removed, hashmap.first_occupied_entry_async().await);
+                return hashmap.first_occupied_entry_async().await;
             }
 
             let prev_index = self.index;
@@ -2200,16 +2105,13 @@ where
                                 let data_block_mut = prolonged_current_array.data_block_mut(index);
                                 let mut entry_ptr = EntryPtr::new(prolonged_barrier);
                                 if entry_ptr.next(&locker, prolonged_barrier) {
-                                    return (
-                                        removed,
-                                        Some(OccupiedEntry {
-                                            hashmap,
-                                            index,
-                                            data_block_mut,
-                                            locker,
-                                            entry_ptr,
-                                        }),
-                                    );
+                                    return Some(OccupiedEntry {
+                                        hashmap,
+                                        index,
+                                        data_block_mut,
+                                        locker,
+                                        entry_ptr,
+                                    });
                                 }
                             }
                             break;
@@ -2222,12 +2124,11 @@ where
             current_array_holder = hashmap.array.get_arc(Relaxed, &Barrier::new());
             if let Some(new_current_array) = current_array_holder {
                 if new_current_array.as_ptr() != current_array.as_ptr() {
-                    return (removed, hashmap.first_occupied_entry_async().await);
+                    return hashmap.first_occupied_entry_async().await;
                 }
             }
         }
-
-        (removed, None)
+        None
     }
 }
 

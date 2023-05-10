@@ -8,9 +8,9 @@ A collection of high performance containers and utilities for concurrent and asy
 
 #### Features
 
-- Almost linear scalability.
 - Asynchronous methods for blocking operations.
 - Formally verified [EBR](#EBR) implementation.
+- Near-linear scalability.
 - No spin-locks and no busy loops.
 - Zero dependencies on other crates.
 - [Serde](https://serde.rs) support: `features = ["serde"]`.
@@ -27,8 +27,8 @@ A collection of high performance containers and utilities for concurrent and asy
 
 - [EBR](#EBR) implements epoch-based reclamation.
 - [LinkedList](#LinkedList) is a type trait implementing a lock-free concurrent singly linked list.
-- [Queue](#Queue) is an [EBR](#EBR) backed concurrent lock-free first-in-first-out container.
-- [Stack](#Stack) is an [EBR](#EBR) backed concurrent lock-free last-in-first-out container.
+- [Queue](#Queue) is a concurrent lock-free first-in-first-out container.
+- [Stack](#Stack) is a concurrent lock-free last-in-first-out container.
 - [Bag](#Bag) is a concurrent lock-free unordered opaque container.
 
 ## HashMap
