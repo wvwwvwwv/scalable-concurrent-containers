@@ -1,7 +1,7 @@
 //! This module implements helper types and traits for `serde`.
 
 use super::ebr::Barrier;
-use super::{HashIndex, HashMap, HashSet, TreeIndex};
+use super::{HashCache, HashIndex, HashMap, HashSet, TreeIndex};
 use serde::de::{Deserialize, MapAccess, SeqAccess, Visitor};
 use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
 use serde::Deserializer;
@@ -157,7 +157,7 @@ where
     {
         let mut seq = serializer.serialize_seq(Some(self.len()))?;
         let mut error = None;
-        self.for_each(|k| {
+        self.scan(|k| {
             if error.is_none() {
                 if let Err(e) = seq.serialize_element(k) {
                     error.replace(e);
@@ -247,6 +247,90 @@ where
                 true
             } else {
                 false
+            }
+        });
+        if let Some(e) = error {
+            return Err(e);
+        }
+        map.end()
+    }
+}
+
+/// Helper type to allow `serde` to access [`HashCache`] entries.
+pub struct HashCacheVisitor<K: Eq + Hash, V, H: BuildHasher> {
+    #[allow(clippy::type_complexity)]
+    marker: PhantomData<fn() -> HashCache<K, V, H>>,
+}
+
+impl<K, V, H> HashCacheVisitor<K, V, H>
+where
+    K: Eq + Hash,
+    H: BuildHasher,
+{
+    fn new() -> Self {
+        HashCacheVisitor {
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<'d, K, V, H> Visitor<'d> for HashCacheVisitor<K, V, H>
+where
+    K: Deserialize<'d> + Eq + Hash,
+    V: Deserialize<'d>,
+    H: BuildHasher + Default,
+{
+    type Value = HashCache<K, V, H>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("HashCache")
+    }
+
+    fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error>
+    where
+        M: MapAccess<'d>,
+    {
+        let capacity = access.size_hint().unwrap_or(0);
+        let hashcache = HashCache::with_capacity_and_hasher(0, capacity, H::default());
+        while let Some((key, val)) = access.next_entry()? {
+            let _result = hashcache.put(key, val);
+        }
+        Ok(hashcache)
+    }
+}
+
+impl<'d, K, V, H> Deserialize<'d> for HashCache<K, V, H>
+where
+    K: Deserialize<'d> + Eq + Hash,
+    V: Deserialize<'d>,
+    H: BuildHasher + Default,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'d>,
+    {
+        deserializer.deserialize_map(HashCacheVisitor::<K, V, H>::new())
+    }
+}
+
+impl<K, V, H> Serialize for HashCache<K, V, H>
+where
+    K: Eq + Hash + Serialize,
+    V: Serialize,
+    H: BuildHasher,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let capacity_range = self.capacity_range();
+        let mut map = serializer.serialize_map(Some(*capacity_range.end()))?;
+        let mut error = None;
+        self.scan(|k, v| {
+            if error.is_none() {
+                if let Err(e) = map.serialize_entry(k, v) {
+                    error.replace(e);
+                }
             }
         });
         if let Some(e) = error {

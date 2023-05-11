@@ -2,7 +2,7 @@
 
 1.7.1
 
-* Minor optimization.
+* Add `Serde` support to `HashCache`.
 
 1.7.0
 

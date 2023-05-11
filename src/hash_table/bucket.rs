@@ -257,6 +257,7 @@ impl<K: Eq, V, const TYPE: char> Bucket<K, V, TYPE> {
             fence(Acquire);
         }
 
+        // Expect that the loop is vectorized by the compiler.
         let mut matching: u32 = 0;
         for i in 0..LEN {
             if metadata.partial_hash_array[i] == partial_hash {
@@ -264,6 +265,7 @@ impl<K: Eq, V, const TYPE: char> Bucket<K, V, TYPE> {
             }
         }
         bitmap &= matching;
+
         let mut offset = bitmap.trailing_zeros();
         while offset != u32::BITS {
             let entry_ref = unsafe { &(*data_block[offset as usize].as_ptr()) };

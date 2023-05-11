@@ -1,4 +1,4 @@
-43
+44
 CAS
 Changelog
 crossbeam_epoch
@@ -39,6 +39,7 @@ unordered
 unlink
 unlinks
 updatable
+vectorized
 VM
 Workflow
 Xeon

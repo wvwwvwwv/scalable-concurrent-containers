@@ -1032,6 +1032,27 @@ where
     }
 }
 
+impl<K, V, H> PartialEq for HashCache<K, V, H>
+where
+    K: Eq + Hash,
+    V: PartialEq,
+    H: BuildHasher,
+{
+    /// Compares two [`HashCache`] instances.
+    ///
+    /// ## Locking behavior
+    ///
+    /// Shared locks on buckets are acquired when comparing two instances of [`HashCache`], therefore
+    /// it may lead to a deadlock if the instances are being modified by another thread.
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        let mut identical = true;
+        self.scan(|k, v| identical = identical && other.get(k).map_or(false, |o| o.get() == v));
+        other.scan(|k, v| identical = identical && self.get(k).map_or(false, |o| o.get() == v));
+        identical
+    }
+}
+
 impl<'h, K, V, H> Entry<'h, K, V, H>
 where
     K: Eq + Hash,

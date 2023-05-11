@@ -3,12 +3,13 @@ use scc::HashCache;
 use std::time::Instant;
 
 fn get(c: &mut Criterion) {
-    let hashcache: HashCache<u64, u64> = HashCache::with_capacity(64, 64);
-    for k in 0..256 {
-        assert!(hashcache.put(k, k).is_ok());
-    }
     c.bench_function("HashCache: get", |b| {
         b.iter_custom(|iters| {
+            let hashcache: HashCache<u64, u64> =
+                HashCache::with_capacity(iters as usize * 2, iters as usize * 2);
+            for i in 0..iters {
+                assert!(hashcache.put(i, i).is_ok());
+            }
             let start = Instant::now();
             for i in 0..iters {
                 drop(hashcache.get(&i));

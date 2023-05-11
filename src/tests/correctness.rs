@@ -2579,7 +2579,7 @@ mod random_failure_test {
 #[cfg(feature = "serde")]
 #[cfg(test)]
 mod serde_test {
-    use crate::{HashIndex, HashMap, HashSet, TreeIndex};
+    use crate::{HashCache, HashIndex, HashMap, HashSet, TreeIndex};
 
     use serde_test::{assert_tokens, Token};
 
@@ -2616,6 +2616,24 @@ mod serde_test {
             &hashindex,
             &[
                 Token::Map { len: Some(1) },
+                Token::U64(2),
+                Token::I16(-6),
+                Token::MapEnd,
+            ],
+        );
+    }
+
+    #[test]
+    fn hashcache() {
+        let hashcache: HashCache<u64, i16> = HashCache::new();
+        let capacity_range = hashcache.capacity_range();
+        assert!(hashcache.put(2, -6).is_ok());
+        assert_tokens(
+            &hashcache,
+            &[
+                Token::Map {
+                    len: Some(*capacity_range.end()),
+                },
                 Token::U64(2),
                 Token::I16(-6),
                 Token::MapEnd,
