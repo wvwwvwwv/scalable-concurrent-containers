@@ -1,9 +1,9 @@
 //! [`HashMap`] is a concurrent and asynchronous hash map.
 
 use super::ebr::{Arc, AtomicArc, Barrier, Tag};
-use super::hash_table::bucket::{DataBlock, EntryPtr, Locker, Reader, BUCKET_LEN, SEQUENTIAL};
+use super::hash_table::bucket::{EntryPtr, Locker, Reader, SEQUENTIAL};
 use super::hash_table::bucket_array::BucketArray;
-use super::hash_table::HashTable;
+use super::hash_table::{HashTable, LockedEntry};
 use super::wait_queue::AsyncWait;
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
@@ -93,10 +93,7 @@ where
     H: BuildHasher,
 {
     hashmap: &'h HashMap<K, V, H>,
-    index: usize,
-    data_block_mut: &'h mut DataBlock<K, V, BUCKET_LEN>,
-    locker: Locker<'h, K, V, SEQUENTIAL>,
-    entry_ptr: EntryPtr<'h, K, V, SEQUENTIAL>,
+    locked_entry: LockedEntry<'h, K, V, SEQUENTIAL>,
 }
 
 /// [`VacantEntry`] is a view into a vacant entry in a [`HashMap`].
@@ -108,9 +105,7 @@ where
     hashmap: &'h HashMap<K, V, H>,
     key: K,
     hash: u64,
-    index: usize,
-    data_block_mut: &'h mut DataBlock<K, V, BUCKET_LEN>,
-    locker: Locker<'h, K, V, SEQUENTIAL>,
+    locked_entry: LockedEntry<'h, K, V, SEQUENTIAL>,
 }
 
 /// [`Reserve`] keeps the capacity of the associated [`HashMap`] higher than a certain level.
@@ -255,27 +250,22 @@ where
     pub fn entry(&self, key: K) -> Entry<K, V, H> {
         let barrier = Barrier::new();
         let hash = self.hash(&key);
-        let (locker, data_block_mut, entry_ptr, index) = unsafe {
+        let locked_entry = unsafe {
             self.reserve_entry(&key, hash, &mut (), self.prolonged_barrier_ref(&barrier))
                 .ok()
                 .unwrap_unchecked()
         };
-        if entry_ptr.is_valid() {
+        if locked_entry.entry_ptr.is_valid() {
             Entry::Occupied(OccupiedEntry {
                 hashmap: self,
-                index,
-                data_block_mut,
-                locker,
-                entry_ptr,
+                locked_entry,
             })
         } else {
             Entry::Vacant(VacantEntry {
                 hashmap: self,
                 key,
                 hash,
-                index,
-                data_block_mut,
-                locker,
+                locked_entry,
             })
         }
     }
@@ -301,28 +291,23 @@ where
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             {
                 let barrier = Barrier::new();
-                if let Ok((locker, data_block_mut, entry_ptr, index)) = self.reserve_entry(
+                if let Ok(locked_entry) = self.reserve_entry(
                     &key,
                     hash,
                     &mut async_wait_pinned,
                     self.prolonged_barrier_ref(&barrier),
                 ) {
-                    if entry_ptr.is_valid() {
+                    if locked_entry.entry_ptr.is_valid() {
                         return Entry::Occupied(OccupiedEntry {
                             hashmap: self,
-                            index,
-                            data_block_mut,
-                            locker,
-                            entry_ptr,
+                            locked_entry,
                         });
                     }
                     return Entry::Vacant(VacantEntry {
                         hashmap: self,
                         key,
                         hash,
-                        index,
-                        data_block_mut,
-                        locker,
+                        locked_entry,
                     });
                 }
             }
@@ -354,33 +339,12 @@ where
     pub fn first_occupied_entry(&self) -> Option<OccupiedEntry<K, V, H>> {
         let barrier = Barrier::new();
         let prolonged_barrier = self.prolonged_barrier_ref(&barrier);
-        let mut current_array_ptr = self.array.load(Acquire, prolonged_barrier);
-        while let Some(current_array) = current_array_ptr.as_ref() {
-            self.clear_old_array(current_array, &barrier);
-            for index in 0..current_array.num_buckets() {
-                let bucket = current_array.bucket_mut(index);
-                if let Some(locker) = Locker::lock(bucket, prolonged_barrier) {
-                    let data_block_mut = current_array.data_block_mut(index);
-                    let mut entry_ptr = EntryPtr::new(prolonged_barrier);
-                    if entry_ptr.next(&locker, prolonged_barrier) {
-                        return Some(OccupiedEntry {
-                            hashmap: self,
-                            index,
-                            data_block_mut,
-                            locker,
-                            entry_ptr,
-                        });
-                    }
-                }
-            }
-
-            let new_current_array_ptr = self.array.load(Acquire, prolonged_barrier);
-            if current_array_ptr.without_tag() == new_current_array_ptr.without_tag() {
-                break;
-            }
-            current_array_ptr = new_current_array_ptr;
+        if let Some(locked_entry) = self.lock_first_occupied_entry(prolonged_barrier) {
+            return Some(OccupiedEntry {
+                hashmap: self,
+                locked_entry,
+            });
         }
-
         None
     }
 
@@ -425,10 +389,12 @@ where
                                 if entry_ptr.next(&locker, prolonged_barrier) {
                                     return Some(OccupiedEntry {
                                         hashmap: self,
-                                        index,
-                                        data_block_mut,
-                                        locker,
-                                        entry_ptr,
+                                        locked_entry: LockedEntry {
+                                            locker,
+                                            data_block_mut,
+                                            entry_ptr,
+                                            index,
+                                        },
                                     });
                                 }
                             }
@@ -537,7 +503,12 @@ where
         U: FnOnce(&K, &mut V) -> R,
     {
         let barrier = Barrier::new();
-        let (mut locker, data_block_mut, mut entry_ptr, _) = self
+        let LockedEntry {
+            mut locker,
+            data_block_mut,
+            mut entry_ptr,
+            index: _,
+        } = self
             .get_entry(key, self.hash(key.borrow()), &mut (), &barrier)
             .ok()
             .flatten()?;
@@ -572,7 +543,13 @@ where
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             if let Ok(result) = self.get_entry(key, hash, &mut async_wait_pinned, &Barrier::new()) {
-                if let Some((mut locker, data_block_mut, mut entry_ptr, _)) = result {
+                if let Some(LockedEntry {
+                    mut locker,
+                    data_block_mut,
+                    mut entry_ptr,
+                    index: _,
+                }) = result
+                {
                     let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
                     return Some(updater(k, v));
                 }
@@ -605,8 +582,12 @@ where
     ) {
         let barrier = Barrier::new();
         let hash = self.hash(&key);
-        if let Ok((mut locker, data_block_mut, mut entry_ptr, _)) =
-            self.reserve_entry(&key, hash, &mut (), &barrier)
+        if let Ok(LockedEntry {
+            mut locker,
+            data_block_mut,
+            mut entry_ptr,
+            index: _,
+        }) = self.reserve_entry(&key, hash, &mut (), &barrier)
         {
             if entry_ptr.is_valid() {
                 let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
@@ -649,8 +630,12 @@ where
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             {
                 let barrier = Barrier::new();
-                if let Ok((mut locker, data_block_mut, mut entry_ptr, _)) =
-                    self.reserve_entry(&key, hash, &mut async_wait_pinned, &barrier)
+                if let Ok(LockedEntry {
+                    mut locker,
+                    data_block_mut,
+                    mut entry_ptr,
+                    index: _,
+                }) = self.reserve_entry(&key, hash, &mut async_wait_pinned, &barrier)
                 {
                     if entry_ptr.is_valid() {
                         let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
@@ -818,7 +803,7 @@ where
         Q: Eq + Hash + ?Sized,
     {
         let barrier = Barrier::new();
-        let (locker, data_block_mut, entry_ptr, index) = self
+        let locked_entry = self
             .get_entry(
                 key,
                 self.hash(key.borrow()),
@@ -829,10 +814,7 @@ where
             .flatten()?;
         Some(OccupiedEntry {
             hashmap: self,
-            index,
-            data_block_mut,
-            locker,
-            entry_ptr,
+            locked_entry,
         })
     }
 
@@ -866,13 +848,10 @@ where
                 &mut async_wait_pinned,
                 self.prolonged_barrier_ref(&Barrier::new()),
             ) {
-                if let Some((locker, data_block_mut, entry_ptr, index)) = result {
+                if let Some(locked_entry) = result {
                     return Some(OccupiedEntry {
                         hashmap: self,
-                        index,
-                        data_block_mut,
-                        locker,
-                        entry_ptr,
+                        locked_entry,
                     });
                 }
                 return None;
@@ -1831,7 +1810,11 @@ where
     #[inline]
     #[must_use]
     pub fn key(&self) -> &K {
-        &self.entry_ptr.get(self.data_block_mut).0
+        &self
+            .locked_entry
+            .entry_ptr
+            .get(self.locked_entry.data_block_mut)
+            .0
     }
 
     /// Takes ownership of the key and value from the [`HashMap`].
@@ -1854,16 +1837,20 @@ where
     #[must_use]
     pub fn remove_entry(mut self) -> (K, V) {
         let entry = unsafe {
-            self.locker
-                .erase(self.data_block_mut, &mut self.entry_ptr)
+            self.locked_entry
+                .locker
+                .erase(
+                    self.locked_entry.data_block_mut,
+                    &mut self.locked_entry.entry_ptr,
+                )
                 .unwrap_unchecked()
         };
-        if self.locker.num_entries() <= 1 || self.locker.need_rebuild() {
+        if self.locked_entry.locker.num_entries() <= 1 || self.locked_entry.locker.need_rebuild() {
             let barrier = Barrier::new();
             let hashmap = self.hashmap;
             if let Some(current_array) = hashmap.bucket_array().load(Acquire, &barrier).as_ref() {
                 if current_array.old_array(&barrier).is_null() {
-                    let index = self.index;
+                    let index = self.locked_entry.index;
                     if current_array.within_sampling_range(index) {
                         drop(self);
                         hashmap.try_shrink_or_rebuild(current_array, index, &barrier);
@@ -1893,7 +1880,11 @@ where
     #[inline]
     #[must_use]
     pub fn get(&self) -> &V {
-        &self.entry_ptr.get(self.data_block_mut).1
+        &self
+            .locked_entry
+            .entry_ptr
+            .get(self.locked_entry.data_block_mut)
+            .1
     }
 
     /// Gets a mutable reference to the value in the entry.
@@ -1918,8 +1909,12 @@ where
     #[inline]
     pub fn get_mut(&mut self) -> &mut V {
         &mut self
+            .locked_entry
             .entry_ptr
-            .get_mut(self.data_block_mut, &mut self.locker)
+            .get_mut(
+                self.locked_entry.data_block_mut,
+                &mut self.locked_entry.locker,
+            )
             .1
     }
 
@@ -2000,8 +1995,8 @@ where
         let barrier = Barrier::new();
         let prolonged_barrier = self.hashmap.prolonged_barrier_ref(&barrier);
 
-        if self.entry_ptr.next(
-            &self.locker,
+        if self.locked_entry.entry_ptr.next(
+            &self.locked_entry.locker,
             self.hashmap.prolonged_barrier_ref(prolonged_barrier),
         ) {
             return Some(self);
@@ -2016,7 +2011,7 @@ where
                 return hashmap.first_occupied_entry();
             }
 
-            let prev_index = self.index;
+            let prev_index = self.locked_entry.index;
             drop(self);
 
             for index in (prev_index + 1)..current_array.num_buckets() {
@@ -2027,10 +2022,12 @@ where
                     if entry_ptr.next(&locker, prolonged_barrier) {
                         return Some(OccupiedEntry {
                             hashmap,
-                            index,
-                            data_block_mut,
-                            locker,
-                            entry_ptr,
+                            locked_entry: LockedEntry {
+                                locker,
+                                data_block_mut,
+                                entry_ptr,
+                                index,
+                            },
                         });
                     }
                 }
@@ -2069,8 +2066,8 @@ where
     /// ```
     #[inline]
     pub async fn next_async(mut self) -> Option<OccupiedEntry<'h, K, V, H>> {
-        if self.entry_ptr.next(
-            &self.locker,
+        if self.locked_entry.entry_ptr.next(
+            &self.locked_entry.locker,
             self.hashmap.prolonged_barrier_ref(&Barrier::new()),
         ) {
             return Some(self);
@@ -2084,7 +2081,7 @@ where
                 return hashmap.first_occupied_entry_async().await;
             }
 
-            let prev_index = self.index;
+            let prev_index = self.locked_entry.index;
             drop(self);
 
             for index in (prev_index + 1)..current_array.num_buckets() {
@@ -2107,10 +2104,12 @@ where
                                 if entry_ptr.next(&locker, prolonged_barrier) {
                                     return Some(OccupiedEntry {
                                         hashmap,
-                                        index,
-                                        data_block_mut,
-                                        locker,
-                                        entry_ptr,
+                                        locked_entry: LockedEntry {
+                                            locker,
+                                            data_block_mut,
+                                            entry_ptr,
+                                            index,
+                                        },
                                     });
                                 }
                             }
@@ -2145,15 +2144,6 @@ where
             .field("value", self.get())
             .finish_non_exhaustive()
     }
-}
-
-/// [`OccupiedEntry`] can be sent across threads and awaits with the lock on the bucket held in it.
-unsafe impl<'h, K, V, H> Send for OccupiedEntry<'h, K, V, H>
-where
-    K: Eq + Hash + Send,
-    V: Send,
-    H: BuildHasher,
-{
 }
 
 impl<'h, K, V, H> VacantEntry<'h, K, V, H>
@@ -2214,18 +2204,20 @@ where
     #[inline]
     pub fn insert_entry(mut self, val: V) -> OccupiedEntry<'h, K, V, H> {
         let barrier = Barrier::new();
-        let entry_ptr = self.locker.insert_with(
-            self.data_block_mut,
+        let entry_ptr = self.locked_entry.locker.insert_with(
+            self.locked_entry.data_block_mut,
             BucketArray::<K, V, SEQUENTIAL>::partial_hash(self.hash),
             || (self.key, val),
             self.hashmap.prolonged_barrier_ref(&barrier),
         );
         OccupiedEntry {
             hashmap: self.hashmap,
-            index: self.index,
-            data_block_mut: self.data_block_mut,
-            locker: self.locker,
-            entry_ptr,
+            locked_entry: LockedEntry {
+                index: self.locked_entry.index,
+                data_block_mut: self.locked_entry.data_block_mut,
+                locker: self.locked_entry.locker,
+                entry_ptr,
+            },
         }
     }
 }

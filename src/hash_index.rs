@@ -3,7 +3,7 @@
 use super::ebr::{Arc, AtomicArc, Barrier};
 use super::hash_table::bucket::{Bucket, EntryPtr, Locker, OPTIMISTIC};
 use super::hash_table::bucket_array::BucketArray;
-use super::hash_table::HashTable;
+use super::hash_table::{HashTable, LockedEntry};
 use super::wait_queue::AsyncWait;
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
@@ -318,8 +318,12 @@ where
     {
         let barrier = Barrier::new();
         let hash = self.hash(key);
-        if let Ok(Some((mut locker, data_block_mut, mut entry_ptr, _))) =
-            self.get_entry(key, hash, &mut (), &barrier)
+        if let Ok(Some(LockedEntry {
+            mut locker,
+            data_block_mut,
+            mut entry_ptr,
+            index: _,
+        })) = self.get_entry(key, hash, &mut (), &barrier)
         {
             let (k, v) = entry_ptr.get(data_block_mut);
             let modify_action: ModifyAction<V> = updater(k, v).into();
@@ -392,7 +396,13 @@ where
             {
                 let barrier = Barrier::new();
                 if let Ok(result) = self.get_entry(key, hash, &mut async_wait_pinned, &barrier) {
-                    if let Some((mut locker, data_block_mut, mut entry_ptr, _)) = result {
+                    if let Some(LockedEntry {
+                        mut locker,
+                        data_block_mut,
+                        mut entry_ptr,
+                        index: _,
+                    }) = result
+                    {
                         let (k, v) = entry_ptr.get(data_block_mut);
                         let modify_action: ModifyAction<V> = updater(k, v).into();
                         let result = match modify_action {
@@ -454,7 +464,12 @@ where
         F: FnOnce(&K, &mut V) -> R,
     {
         let barrier = Barrier::new();
-        let (mut locker, data_block_mut, mut entry_ptr, _) = self
+        let LockedEntry {
+            mut locker,
+            data_block_mut,
+            mut entry_ptr,
+            index: _,
+        } = self
             .get_entry(key, self.hash(key), &mut (), &barrier)
             .ok()
             .flatten()?;
@@ -495,7 +510,13 @@ where
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             if let Ok(result) = self.get_entry(key, hash, &mut async_wait_pinned, &Barrier::new()) {
-                if let Some((mut locker, data_block_mut, mut entry_ptr, _)) = result {
+                if let Some(LockedEntry {
+                    mut locker,
+                    data_block_mut,
+                    mut entry_ptr,
+                    index: _,
+                }) = result
+                {
                     let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
                     return Some(updater(k, v));
                 }

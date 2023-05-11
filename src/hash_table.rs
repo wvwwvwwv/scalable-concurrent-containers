@@ -214,7 +214,12 @@ where
         barrier: &Barrier,
     ) -> Result<Option<(K, V)>, (K, V)> {
         match self.reserve_entry(&key, hash, async_wait, barrier) {
-            Ok((mut locker, data_block_mut, entry_ptr, _)) => {
+            Ok(LockedEntry {
+                mut locker,
+                data_block_mut,
+                entry_ptr,
+                index: _,
+            }) => {
                 if entry_ptr.is_valid() {
                     return Ok(Some((key, val)));
                 }
@@ -228,6 +233,41 @@ where
             }
             Err(_) => Err((key, val)),
         }
+    }
+
+    /// Returns a [`LockedEntry`] pointing to the first occupied entry.
+    #[inline]
+    fn lock_first_occupied_entry<'b>(
+        &self,
+        barrier: &'b Barrier,
+    ) -> Option<LockedEntry<'b, K, V, TYPE>> {
+        let mut current_array_ptr = self.bucket_array().load(Acquire, barrier);
+        while let Some(current_array) = current_array_ptr.as_ref() {
+            self.clear_old_array(current_array, barrier);
+            for index in 0..current_array.num_buckets() {
+                let bucket = current_array.bucket_mut(index);
+                let lock_result = Locker::lock(bucket, barrier);
+                if let Some(locker) = lock_result {
+                    let data_block_mut = current_array.data_block_mut(index);
+                    let mut entry_ptr = EntryPtr::new(barrier);
+                    if entry_ptr.next(&locker, barrier) {
+                        return Some(LockedEntry {
+                            locker,
+                            data_block_mut,
+                            entry_ptr,
+                            index,
+                        });
+                    }
+                }
+            }
+
+            let new_current_array_ptr = self.bucket_array().load(Acquire, barrier);
+            if current_array_ptr.without_tag() == new_current_array_ptr.without_tag() {
+                break;
+            }
+            current_array_ptr = new_current_array_ptr;
+        }
+        None
     }
 
     /// Reads an entry from the [`HashTable`].
@@ -310,7 +350,6 @@ where
     /// Gets the occupied entry corresponding to the key.
     ///
     /// Returns an error if locking failed.
-    #[allow(clippy::type_complexity)]
     #[inline]
     fn get_entry<'b, Q, D>(
         &self,
@@ -318,15 +357,7 @@ where
         hash: u64,
         async_wait: &mut D,
         barrier: &'b Barrier,
-    ) -> Result<
-        Option<(
-            Locker<'b, K, V, TYPE>,
-            &'b mut DataBlock<K, V, BUCKET_LEN>,
-            EntryPtr<'b, K, V, TYPE>,
-            usize,
-        )>,
-        (),
-    >
+    ) -> Result<Option<LockedEntry<'b, K, V, TYPE>>, ()>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
@@ -354,7 +385,12 @@ where
                     barrier,
                 );
                 if entry_ptr.is_valid() {
-                    return Ok(Some((locker, data_block_mut, entry_ptr, index)));
+                    return Ok(Some(LockedEntry {
+                        locker,
+                        data_block_mut,
+                        entry_ptr,
+                        index,
+                    }));
                 }
             }
 
@@ -482,7 +518,6 @@ where
     /// The returned [`EntryPtr`] may point to an occupied entry if the key exists.
     ///
     /// Returns an error if locking failed
-    #[allow(clippy::type_complexity)]
     #[inline]
     fn reserve_entry<'b, Q, D>(
         &self,
@@ -490,15 +525,7 @@ where
         hash: u64,
         async_wait: &mut D,
         barrier: &'b Barrier,
-    ) -> Result<
-        (
-            Locker<'b, K, V, TYPE>,
-            &'b mut DataBlock<K, V, BUCKET_LEN>,
-            EntryPtr<'b, K, V, TYPE>,
-            usize,
-        ),
-        (),
-    >
+    ) -> Result<LockedEntry<'b, K, V, TYPE>, ()>
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
@@ -550,7 +577,12 @@ where
                     BucketArray::<K, V, TYPE>::partial_hash(hash),
                     barrier,
                 );
-                return Ok((locker, data_block_mut, entry_ptr, index));
+                return Ok(LockedEntry {
+                    locker,
+                    data_block_mut,
+                    entry_ptr,
+                    index,
+                });
             }
 
             // Reaching here means that `self.bucket_array()` has been updated.
@@ -1018,3 +1050,21 @@ where
         unsafe { std::mem::transmute::<&Barrier, &'h Barrier>(barrier) }
     }
 }
+
+/// [`LockedEntry`] comprises pieces of data that are required for exclusive access to an entry.
+pub(super) struct LockedEntry<'b, K: Eq, V, const TYPE: char> {
+    /// The [`Locker`] holding the exclusive lock on the bucket.
+    pub(super) locker: Locker<'b, K, V, TYPE>,
+
+    /// The [`DataBlock`] that may contain desired entry data.
+    pub(super) data_block_mut: &'b mut DataBlock<K, V, BUCKET_LEN>,
+
+    /// [`EntryPtr`] pointing to the actual entry in the bucket.
+    pub(super) entry_ptr: EntryPtr<'b, K, V, TYPE>,
+
+    /// The index in the bucket array.
+    pub(super) index: usize,
+}
+
+/// [`LockedEntry`] is safe to be sent across threads and awaits as long as the entry is.
+unsafe impl<'b, K: Eq + Send, V: Send, const TYPE: char> Send for LockedEntry<'b, K, V, TYPE> {}

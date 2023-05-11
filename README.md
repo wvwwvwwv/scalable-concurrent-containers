@@ -25,7 +25,7 @@ A collection of high performance containers and utilities for concurrent and asy
 
 #### Utilities for Concurrent Programming
 
-- [EBR](#EBR) implements epoch-based reclamation.
+- [EBR](#EBR) implements lock-free epoch-based reclamation.
 - [LinkedList](#LinkedList) is a type trait implementing a lock-free concurrent singly linked list.
 - [Queue](#Queue) is a concurrent lock-free first-in-first-out container.
 - [Stack](#Stack) is a concurrent lock-free last-in-first-out container.

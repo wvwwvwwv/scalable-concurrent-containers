@@ -10,7 +10,7 @@
 //!
 //! Utilities for concurrent programming.
 //!
-//! * [`ebr`]: epoch-based reclamation.
+//! * [`ebr`]: lock-free epoch-based reclamation.
 //! * [`LinkedList`]: lock-free concurrent linked list type trait.
 //! * [`Bag`]: lock-free concurrent unordered instance container.
 //! * [`Queue`]: lock-free concurrent first-in-first-out container.

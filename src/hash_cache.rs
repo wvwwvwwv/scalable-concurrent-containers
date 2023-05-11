@@ -1,10 +1,10 @@
 //! [`HashCache`] is a concurrent and asynchronous sampling-based LRU cache backed by
 //! [`HashMap`](super::HashMap).
 
+use crate::hash_table::LockedEntry;
+
 use super::ebr::{Arc, AtomicArc, Barrier, Tag};
-use super::hash_table::bucket::{
-    DataBlock, EntryPtr, Evictable, Locker, Reader, BUCKET_LEN, CACHE,
-};
+use super::hash_table::bucket::{EntryPtr, Evictable, Locker, Reader, CACHE};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::HashTable;
 use super::wait_queue::AsyncWait;
@@ -68,10 +68,7 @@ where
     H: BuildHasher,
 {
     hashcache: &'h HashCache<K, V, H>,
-    index: usize,
-    data_block_mut: &'h mut DataBlock<K, Evictable<V>, BUCKET_LEN>,
-    locker: Locker<'h, K, Evictable<V>, CACHE>,
-    entry_ptr: EntryPtr<'h, K, Evictable<V>, CACHE>,
+    locked_entry: LockedEntry<'h, K, Evictable<V>, CACHE>,
 }
 
 /// [`VacantEntry`] is a view into a vacant cache entry in a [`HashCache`].
@@ -83,9 +80,7 @@ where
     hashcache: &'h HashCache<K, V, H>,
     key: K,
     hash: u64,
-    index: usize,
-    data_block_mut: &'h mut DataBlock<K, Evictable<V>, BUCKET_LEN>,
-    locker: Locker<'h, K, Evictable<V>, CACHE>,
+    locked_entry: LockedEntry<'h, K, Evictable<V>, CACHE>,
 }
 
 impl<K, V, H> HashCache<K, V, H>
@@ -183,28 +178,25 @@ where
     pub fn entry(&self, key: K) -> Entry<K, V, H> {
         let barrier = Barrier::new();
         let hash = self.hash(&key);
-        let (mut locker, data_block_mut, entry_ptr, index) = unsafe {
+        let mut locked_entry = unsafe {
             self.reserve_entry(&key, hash, &mut (), self.prolonged_barrier_ref(&barrier))
                 .ok()
                 .unwrap_unchecked()
         };
-        if entry_ptr.is_valid() {
-            locker.update_lru_tail(data_block_mut, &entry_ptr);
+        if locked_entry.entry_ptr.is_valid() {
+            locked_entry
+                .locker
+                .update_lru_tail(locked_entry.data_block_mut, &locked_entry.entry_ptr);
             Entry::Occupied(OccupiedEntry {
                 hashcache: self,
-                index,
-                data_block_mut,
-                locker,
-                entry_ptr,
+                locked_entry,
             })
         } else {
             Entry::Vacant(VacantEntry {
                 hashcache: self,
                 key,
                 hash,
-                index,
-                data_block_mut,
-                locker,
+                locked_entry,
             })
         }
     }
@@ -230,29 +222,26 @@ where
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             {
                 let barrier = Barrier::new();
-                if let Ok((mut locker, data_block_mut, entry_ptr, index)) = self.reserve_entry(
+                if let Ok(mut locked_entry) = self.reserve_entry(
                     &key,
                     hash,
                     &mut async_wait_pinned,
                     self.prolonged_barrier_ref(&barrier),
                 ) {
-                    if entry_ptr.is_valid() {
-                        locker.update_lru_tail(data_block_mut, &entry_ptr);
+                    if locked_entry.entry_ptr.is_valid() {
+                        locked_entry
+                            .locker
+                            .update_lru_tail(locked_entry.data_block_mut, &locked_entry.entry_ptr);
                         return Entry::Occupied(OccupiedEntry {
                             hashcache: self,
-                            index,
-                            data_block_mut,
-                            locker,
-                            entry_ptr,
+                            locked_entry,
                         });
                     }
                     return Entry::Vacant(VacantEntry {
                         hashcache: self,
                         key,
                         hash,
-                        index,
-                        data_block_mut,
-                        locker,
+                        locked_entry,
                     });
                 }
             }
@@ -283,7 +272,12 @@ where
         let barrier = Barrier::new();
         let hash = self.hash(&key);
         let result = match self.reserve_entry(&key, hash, &mut (), &barrier) {
-            Ok((mut locker, data_block_mut, entry_ptr, _)) => {
+            Ok(LockedEntry {
+                mut locker,
+                data_block_mut,
+                entry_ptr,
+                index: _,
+            }) => {
                 if entry_ptr.is_valid() {
                     return Err((key, val));
                 }
@@ -329,8 +323,12 @@ where
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             {
                 let barrier = Barrier::new();
-                if let Ok((mut locker, data_block_mut, entry_ptr, _)) =
-                    self.reserve_entry(&key, hash, &mut async_wait_pinned, &barrier)
+                if let Ok(LockedEntry {
+                    mut locker,
+                    data_block_mut,
+                    entry_ptr,
+                    index: _,
+                }) = self.reserve_entry(&key, hash, &mut async_wait_pinned, &barrier)
                 {
                     if entry_ptr.is_valid() {
                         return Err((key, val));
@@ -374,7 +372,7 @@ where
         Q: Eq + Hash + ?Sized,
     {
         let barrier = Barrier::new();
-        let (mut locker, data_block_mut, entry_ptr, index) = self
+        let mut locked_entry = self
             .get_entry(
                 key,
                 self.hash(key.borrow()),
@@ -383,13 +381,12 @@ where
             )
             .ok()
             .flatten()?;
-        locker.update_lru_tail(data_block_mut, &entry_ptr);
+        locked_entry
+            .locker
+            .update_lru_tail(locked_entry.data_block_mut, &locked_entry.entry_ptr);
         Some(OccupiedEntry {
             hashcache: self,
-            index,
-            data_block_mut,
-            locker,
-            entry_ptr,
+            locked_entry,
         })
     }
 
@@ -423,14 +420,13 @@ where
                 &mut async_wait_pinned,
                 self.prolonged_barrier_ref(&Barrier::new()),
             ) {
-                if let Some((mut locker, data_block_mut, entry_ptr, index)) = result {
-                    locker.update_lru_tail(data_block_mut, &entry_ptr);
+                if let Some(mut locked_entry) = result {
+                    locked_entry
+                        .locker
+                        .update_lru_tail(locked_entry.data_block_mut, &locked_entry.entry_ptr);
                     return Some(OccupiedEntry {
                         hashcache: self,
-                        index,
-                        data_block_mut,
-                        locker,
-                        entry_ptr,
+                        locked_entry,
                     });
                 }
                 return None;
@@ -1235,7 +1231,11 @@ where
     #[inline]
     #[must_use]
     pub fn key(&self) -> &K {
-        &self.entry_ptr.get(self.data_block_mut).0
+        &self
+            .locked_entry
+            .entry_ptr
+            .get(self.locked_entry.data_block_mut)
+            .0
     }
 
     /// Takes ownership of the key and value from the [`HashCache`].
@@ -1258,18 +1258,24 @@ where
     #[must_use]
     pub fn remove_entry(mut self) -> (K, V) {
         let (k, v) = unsafe {
-            self.locker
-                .remove_from_lru_list(self.data_block_mut, &self.entry_ptr);
-            self.locker
-                .erase(self.data_block_mut, &mut self.entry_ptr)
+            self.locked_entry.locker.remove_from_lru_list(
+                self.locked_entry.data_block_mut,
+                &self.locked_entry.entry_ptr,
+            );
+            self.locked_entry
+                .locker
+                .erase(
+                    self.locked_entry.data_block_mut,
+                    &mut self.locked_entry.entry_ptr,
+                )
                 .unwrap_unchecked()
         };
-        if self.locker.num_entries() <= 1 || self.locker.need_rebuild() {
+        if self.locked_entry.locker.num_entries() <= 1 || self.locked_entry.locker.need_rebuild() {
             let barrier = Barrier::new();
             let hashcache = self.hashcache;
             if let Some(current_array) = hashcache.bucket_array().load(Acquire, &barrier).as_ref() {
                 if current_array.old_array(&barrier).is_null() {
-                    let index = self.index;
+                    let index = self.locked_entry.index;
                     if current_array.within_sampling_range(index) {
                         drop(self);
                         hashcache.try_shrink_or_rebuild(current_array, index, &barrier);
@@ -1299,7 +1305,11 @@ where
     #[inline]
     #[must_use]
     pub fn get(&self) -> &V {
-        &self.entry_ptr.get(self.data_block_mut).1
+        &self
+            .locked_entry
+            .entry_ptr
+            .get(self.locked_entry.data_block_mut)
+            .1
     }
 
     /// Gets a mutable reference to the value in the entry.
@@ -1324,8 +1334,12 @@ where
     #[inline]
     pub fn get_mut(&mut self) -> &mut V {
         &mut self
+            .locked_entry
             .entry_ptr
-            .get_mut(self.data_block_mut, &mut self.locker)
+            .get_mut(
+                self.locked_entry.data_block_mut,
+                &mut self.locked_entry.locker,
+            )
             .1
     }
 
@@ -1390,15 +1404,6 @@ where
     }
 }
 
-/// [`OccupiedEntry`] can be sent across threads and awaits with the lock on the bucket held in it.
-unsafe impl<'h, K, V, H> Send for OccupiedEntry<'h, K, V, H>
-where
-    K: Eq + Hash + Send,
-    V: Send,
-    H: BuildHasher,
-{
-}
-
 impl<'h, K, V, H> VacantEntry<'h, K, V, H>
 where
     K: Eq + Hash,
@@ -1457,19 +1462,23 @@ where
     #[inline]
     pub fn insert_entry(mut self, val: V) -> OccupiedEntry<'h, K, V, H> {
         let barrier = Barrier::new();
-        let entry_ptr = self.locker.insert_with(
-            self.data_block_mut,
+        let entry_ptr = self.locked_entry.locker.insert_with(
+            self.locked_entry.data_block_mut,
             BucketArray::<K, V, CACHE>::partial_hash(self.hash),
             || (self.key, Evictable::new(val)),
             self.hashcache.prolonged_barrier_ref(&barrier),
         );
-        self.locker.update_lru_tail(self.data_block_mut, &entry_ptr);
+        self.locked_entry
+            .locker
+            .update_lru_tail(self.locked_entry.data_block_mut, &entry_ptr);
         OccupiedEntry {
             hashcache: self.hashcache,
-            index: self.index,
-            data_block_mut: self.data_block_mut,
-            locker: self.locker,
-            entry_ptr,
+            locked_entry: LockedEntry {
+                index: self.locked_entry.index,
+                data_block_mut: self.locked_entry.data_block_mut,
+                locker: self.locked_entry.locker,
+                entry_ptr,
+            },
         }
     }
 }
