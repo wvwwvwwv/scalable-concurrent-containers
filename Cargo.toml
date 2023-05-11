@@ -8,7 +8,7 @@ edition = "2021"
 readme = "README.md"
 repository = "https://github.com/wvwwvwwv/scalable-concurrent-containers/"
 license = "Apache-2.0"
-categories = ["asynchronous", "concurrency", "data-structures", "memory-management"]
+categories = ["asynchronous", "caching", "concurrency", "data-structures", "memory-management"]
 keywords = ["async", "cache", "concurrent", "hashmap", "tree"]
 
 [dependencies]
