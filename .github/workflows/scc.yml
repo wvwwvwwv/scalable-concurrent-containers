@@ -42,8 +42,8 @@ jobs:
           cargo +nightly clippy --all
       - name: Format
         run:
-          cargo fmt --all;
-          cargo +nightly fmt --all
+          cargo fmt --all --check;
+          cargo +nightly fmt --all --check
       - name: Doc
         run:
           cargo doc --document-private-items;

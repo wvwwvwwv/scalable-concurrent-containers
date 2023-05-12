@@ -1,5 +1,9 @@
 # Changelog
 
+1.7.2
+
+* Add `HashCache::{any, any_async, read, read_async}`.
+
 1.7.1
 
 * Add `Serde` support to `HashCache`.

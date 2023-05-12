@@ -435,6 +435,65 @@ where
         }
     }
 
+    /// Reads a key-value pair.
+    ///
+    /// Returns `None` if the key does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    ///
+    /// assert!(hashcache.read(&1, |_, v| *v).is_none());
+    /// assert!(hashcache.put(1, 10).is_ok());
+    /// assert_eq!(hashcache.read(&1, |_, v| *v).unwrap(), 10);
+    /// ```
+    #[inline]
+    pub fn read<Q, R, F: FnOnce(&K, &V) -> R>(&self, key: &Q, reader: F) -> Option<R>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.read_entry(key, self.hash(key), &mut (), &Barrier::new())
+            .ok()
+            .flatten()
+            .map(|(k, v)| reader(k, v))
+    }
+
+    /// Reads a key-value pair.
+    ///
+    /// Returns `None` if the key does not exist. It is an asynchronous method returning an
+    /// `impl Future` for the caller to await.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    /// let future_put = hashcache.put_async(11, 17);
+    /// let future_read = hashcache.read_async(&11, |_, v| *v);
+    /// ```
+    #[inline]
+    pub async fn read_async<Q, R, F: FnOnce(&K, &V) -> R>(&self, key: &Q, reader: F) -> Option<R>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        let hash = self.hash(key);
+        loop {
+            let mut async_wait = AsyncWait::default();
+            let mut async_wait_pinned = Pin::new(&mut async_wait);
+            if let Ok(result) = self.read_entry(key, hash, &mut async_wait_pinned, &Barrier::new())
+            {
+                return result.map(|(k, v)| reader(k, v));
+            }
+            async_wait_pinned.await;
+        }
+    }
+
     /// Removes a key-value pair if the key exists.
     ///
     /// Returns `None` if the key does not exist.
@@ -650,6 +709,99 @@ where
             }
             break;
         }
+    }
+
+    /// Searches for any entry that satisfies the given predicate.
+    ///
+    /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
+    /// visited if they are not removed, however the same key-value pair can be visited more than
+    /// once if the [`HashCache`] gets resized by another thread.
+    ///
+    /// Returns `true` as soon as an entry satisfying the predicate is found.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    ///
+    /// assert!(hashcache.put(1, 0).is_ok());
+    /// assert!(hashcache.put(2, 1).is_ok());
+    /// assert!(hashcache.put(3, 2).is_ok());
+    ///
+    /// assert!(hashcache.any(|k, v| *k == 1 && *v == 0));
+    /// assert!(!hashcache.any(|k, v| *k == 2 && *v == 0));
+    /// ```
+    #[inline]
+    pub fn any<P: FnMut(&K, &V) -> bool>(&self, mut pred: P) -> bool {
+        self.any_entry(|k, v| pred(k, v))
+    }
+
+    /// Searches for any entry that satisfies the given predicate.
+    ///
+    /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
+    /// visited if they are not removed, however the same key-value pair can be visited more than
+    /// once if the [`HashMap`] gets resized by another task.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
+    ///
+    /// Returns `true` as soon as an entry satisfying the predicate is found.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    ///
+    /// let future_put = hashcache.put_async(1, 0);
+    /// let future_any = hashcache.any_async(|k, _| *k == 1);
+    /// ```
+    #[inline]
+    pub async fn any_async<P: FnMut(&K, &V) -> bool>(&self, mut pred: P) -> bool {
+        let mut current_array_holder = self.array.get_arc(Acquire, &Barrier::new());
+        while let Some(current_array) = current_array_holder.take() {
+            self.cleanse_old_array_async(&current_array).await;
+            for index in 0..current_array.num_buckets() {
+                loop {
+                    let mut async_wait = AsyncWait::default();
+                    let mut async_wait_pinned = Pin::new(&mut async_wait);
+                    {
+                        let barrier = Barrier::new();
+                        let bucket = current_array.bucket(index);
+                        if let Ok(reader) =
+                            Reader::try_lock_or_wait(bucket, &mut async_wait_pinned, &barrier)
+                        {
+                            if let Some(reader) = reader {
+                                let data_block = current_array.data_block(index);
+                                let mut entry_ptr = EntryPtr::new(&barrier);
+                                while entry_ptr.next(*reader, &barrier) {
+                                    let (k, v) = entry_ptr.get(data_block);
+                                    if pred(k, v) {
+                                        // Found one entry satisfying the predicate.
+                                        return true;
+                                    }
+                                }
+                            }
+                            break;
+                        };
+                    }
+                    async_wait_pinned.await;
+                }
+            }
+
+            if let Some(new_current_array) = self.array.get_arc(Acquire, &Barrier::new()) {
+                if new_current_array.as_ptr() == current_array.as_ptr() {
+                    break;
+                }
+                current_array_holder.replace(new_current_array);
+                continue;
+            }
+            break;
+        }
+
+        false
     }
 
     /// Retains the entries specified by the predicate.
@@ -1046,10 +1198,10 @@ where
     /// it may lead to a deadlock if the instances are being modified by another thread.
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        let mut identical = true;
-        self.scan(|k, v| identical = identical && other.get(k).map_or(false, |o| o.get() == v));
-        other.scan(|k, v| identical = identical && self.get(k).map_or(false, |o| o.get() == v));
-        identical
+        if !self.any(|k, v| other.read(k, |_, ov| v == ov) != Some(true)) {
+            return !other.any(|k, v| self.read(k, |_, sv| v == sv) != Some(true));
+        }
+        false
     }
 }
 

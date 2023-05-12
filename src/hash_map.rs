@@ -1022,7 +1022,7 @@ where
     /// visited if they are not removed, however the same key-value pair can be visited more than
     /// once if the [`HashMap`] gets resized by another thread.
     ///
-    /// Returns `true` if an entry satisfying the predicate is found.
+    /// Returns `true` as soon as an entry satisfying the predicate is found.
     ///
     /// # Examples
     ///
@@ -1039,33 +1039,8 @@ where
     /// assert!(!hashmap.any(|k, v| *k == 2 && *v == 0));
     /// ```
     #[inline]
-    pub fn any<P: FnMut(&K, &V) -> bool>(&self, mut pred: P) -> bool {
-        let barrier = Barrier::new();
-        let mut current_array_ptr = self.array.load(Acquire, &barrier);
-        while let Some(current_array) = current_array_ptr.as_ref() {
-            self.clear_old_array(current_array, &barrier);
-            for index in 0..current_array.num_buckets() {
-                let bucket = current_array.bucket(index);
-                if let Some(locker) = Reader::lock(bucket, &barrier) {
-                    let data_block = current_array.data_block(index);
-                    let mut entry_ptr = EntryPtr::new(&barrier);
-                    while entry_ptr.next(*locker, &barrier) {
-                        let (k, v) = entry_ptr.get(data_block);
-                        if pred(k, v) {
-                            return true;
-                        }
-                    }
-                }
-            }
-
-            let new_current_array_ptr = self.array.load(Acquire, &barrier);
-            if current_array_ptr.without_tag() == new_current_array_ptr.without_tag() {
-                break;
-            }
-            current_array_ptr = new_current_array_ptr;
-        }
-
-        false
+    pub fn any<P: FnMut(&K, &V) -> bool>(&self, pred: P) -> bool {
+        self.any_entry(pred)
     }
 
     /// Searches for any entry that satisfies the given predicate.
@@ -1076,7 +1051,7 @@ where
     ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
-    /// Returns `true` if an entry satisfying the predicate is found.
+    /// Returns `true` as soon as an entry satisfying the predicate is found.
     ///
     /// # Examples
     ///
