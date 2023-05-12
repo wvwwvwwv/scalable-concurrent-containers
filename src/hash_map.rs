@@ -1109,9 +1109,7 @@ where
         false
     }
 
-    /// Iterates over all the entries in the [`HashMap`].
-    ///
-    /// This method allows modifying each value.
+    /// Iterates over all the entries in the [`HashMap`] allowing modifying each value.
     ///
     /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
     /// visited if they are not removed, however the same key-value pair can be visited more than
@@ -1141,9 +1139,7 @@ where
         });
     }
 
-    /// Iterates over all the entries in the [`HashMap`].
-    ///
-    /// This method allows modifying each value.
+    /// Iterates over all the entries in the [`HashMap`] allowing modifying each value.
     ///
     /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
     /// visited if they are not removed, however the same key-value pair can be visited more than

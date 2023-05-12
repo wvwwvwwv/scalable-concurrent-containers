@@ -742,7 +742,7 @@ where
     ///
     /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
     /// visited if they are not removed, however the same key-value pair can be visited more than
-    /// once if the [`HashMap`] gets resized by another task.
+    /// once if the [`HashCache`] gets resized by another task.
     ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
@@ -802,6 +802,63 @@ where
         }
 
         false
+    }
+
+    /// Iterates over all the entries in the [`HashCache`] allowing modifying each value.
+    ///
+    /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
+    /// visited if they are not removed, however the same key-value pair can be visited more than
+    /// once if the [`HashCache`] gets resized by another thread.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    ///
+    /// assert!(hashcache.put(1, 0).is_ok());
+    /// assert!(hashcache.put(2, 1).is_ok());
+    ///
+    /// let mut acc = 0;
+    /// hashcache.for_each(|k, v| { acc += *k; *v = 2; });
+    /// assert_eq!(acc, 3);
+    /// assert_eq!(hashcache.read(&1, |_, v| *v).unwrap(), 2);
+    /// assert_eq!(hashcache.read(&2, |_, v| *v).unwrap(), 2);
+    /// ```
+    #[inline]
+    pub fn for_each<F: FnMut(&K, &mut V)>(&self, mut f: F) {
+        self.retain(|k, v| {
+            f(k, v);
+            true
+        });
+    }
+
+    /// Iterates over all the entries in the [`HashCache`] allowing modifying each value.
+    ///
+    /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
+    /// visited if they are not removed, however the same key-value pair can be visited more than
+    /// once if the [`HashCache`] gets resized by another task.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    ///
+    /// let future_insert = hashcache.put_async(1, 0);
+    /// let future_for_each = hashcache.for_each_async(|k, v| println!("{} {}", k, v));
+    /// ```
+    #[inline]
+    pub async fn for_each_async<F: FnMut(&K, &mut V)>(&self, mut f: F) {
+        self.retain_async(|k, v| {
+            f(k, v);
+            true
+        })
+        .await;
     }
 
     /// Retains the entries specified by the predicate.
@@ -1147,7 +1204,7 @@ where
             .0
             .map(|a| unsafe {
                 // The entire array does not need to wait for an epoch change as no references will
-                // remain outside the lifetime of the `HashMap`.
+                // remain outside the lifetime of the `HashCache`.
                 a.release_drop_in_place()
             });
     }

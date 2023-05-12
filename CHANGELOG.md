@@ -2,7 +2,7 @@
 
 1.7.2
 
-* Add `HashCache::{any, any_async, read, read_async}`.
+* Add `HashCache::{any, any_async, for_each, for_each_async, read, read_async}`.
 
 1.7.1
 
