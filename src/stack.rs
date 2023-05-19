@@ -200,6 +200,7 @@ impl<T> Stack<T> {
     ///
     /// assert_eq!(stack.pop().map(|e| **e), Some(1));
     /// assert!(stack.pop().is_none());
+    /// assert!(stack.is_empty());
     ///
     /// assert_eq!(popped.pop().map(|e| **e), Some(3));
     /// assert_eq!(popped.pop().map(|e| **e), Some(37));

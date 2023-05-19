@@ -1852,24 +1852,24 @@ mod bag_test {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         const NUM_TASKS: usize = 6;
         let workload_size = 256;
-        let bag: Arc<Bag<R>> = Arc::new(Bag::default());
+        let bag32: Arc<Bag<R>> = Arc::new(Bag::default());
         let bag17: Arc<Bag<R, 17>> = Arc::new(Bag::new());
         for _ in 0..256 {
             let mut task_handles = Vec::with_capacity(NUM_TASKS);
             let barrier = Arc::new(AsyncBarrier::new(NUM_TASKS));
             for _ in 0..NUM_TASKS {
                 let barrier_clone = barrier.clone();
-                let bag_clone = bag.clone();
+                let bag32_clone = bag32.clone();
                 let bag17_clone = bag17.clone();
                 task_handles.push(tokio::task::spawn(async move {
                     barrier_clone.wait().await;
                     for _ in 0..workload_size {
-                        bag_clone.push(R::new(&INST_CNT));
+                        bag32_clone.push(R::new(&INST_CNT));
                         bag17_clone.push(R::new(&INST_CNT));
                     }
                     for _ in 0..workload_size {
-                        assert!(!bag_clone.is_empty());
-                        assert!(bag_clone.pop().is_some());
+                        assert!(!bag32_clone.is_empty());
+                        assert!(bag32_clone.pop().is_some());
                         assert!(!bag17_clone.is_empty());
                         assert!(bag17_clone.pop().is_some());
                     }
@@ -1879,10 +1879,61 @@ mod bag_test {
             for r in futures::future::join_all(task_handles).await {
                 assert!(r.is_ok());
             }
-            assert!(bag.pop().is_none());
-            assert!(bag.is_empty());
+            assert!(bag32.pop().is_none());
+            assert!(bag32.is_empty());
             assert!(bag17.pop().is_none());
             assert!(bag17.is_empty());
+        }
+        assert_eq!(INST_CNT.load(Relaxed), 0);
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    async fn mpsc() {
+        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+        const NUM_TASKS: usize = 6;
+        let workload_size = 256;
+        let bag32: Arc<Bag<R>> = Arc::new(Bag::default());
+        let bag7: Arc<Bag<R, 7>> = Arc::new(Bag::new());
+        for _ in 0..256 {
+            let mut task_handles = Vec::with_capacity(NUM_TASKS);
+            let barrier = Arc::new(AsyncBarrier::new(NUM_TASKS));
+            for task_id in 0..NUM_TASKS {
+                let barrier_clone = barrier.clone();
+                let bag32_clone = bag32.clone();
+                let bag7_clone = bag7.clone();
+                task_handles.push(tokio::task::spawn(async move {
+                    barrier_clone.wait().await;
+                    let mut cnt = 0;
+                    while task_id == 0 && cnt < workload_size * (NUM_TASKS - 1) * 2 {
+                        cnt += bag32_clone.pop_all(0, |a, _| a + 1);
+                        cnt += bag7_clone.pop_all(0, |a, _| a + 1);
+                        tokio::task::yield_now().await;
+                    }
+                    if task_id != 0 {
+                        for _ in 0..workload_size {
+                            bag32_clone.push(R::new(&INST_CNT));
+                            bag7_clone.push(R::new(&INST_CNT));
+                        }
+                        for _ in 0..workload_size / 16 {
+                            if bag32_clone.pop().is_some() {
+                                bag32_clone.push(R::new(&INST_CNT));
+                            }
+                            if bag7_clone.pop().is_some() {
+                                bag7_clone.push(R::new(&INST_CNT));
+                            }
+                        }
+                    }
+                }));
+            }
+
+            for r in futures::future::join_all(task_handles).await {
+                assert!(r.is_ok());
+            }
+            assert!(bag32.pop().is_none());
+            assert!(bag32.is_empty());
+            assert!(bag7.pop().is_none());
+            assert!(bag7.is_empty());
         }
         assert_eq!(INST_CNT.load(Relaxed), 0);
     }
@@ -2080,6 +2131,11 @@ mod stack_test {
                     if task_id != 0 {
                         for seq in 0..workload_size {
                             assert_eq!(stack_clone.push(R::new(task_id, seq)).1, seq);
+                        }
+                        for seq in 0..workload_size / 16 {
+                            if stack_clone.pop().is_some() {
+                                assert_eq!(stack_clone.push(R::new(task_id, seq)).1, seq);
+                            }
                         }
                     }
                 }));

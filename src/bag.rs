@@ -142,11 +142,34 @@ impl<T, const ARRAY_LEN: usize> Bag<T, ARRAY_LEN> {
         })
     }
 
-    /// Pops all the entries at once, and passes each one of the popped entries to the supplied
-    /// closure.
+    /// Pops all the entries at once, and folds them into an accumulator.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::Bag;
+    ///
+    /// let bag: Bag<usize> = Bag::default();
+    ///
+    /// bag.push(7);
+    /// bag.push(17);
+    /// bag.push(37);
+    ///
+    /// assert_eq!(bag.pop_all(0, |a, v| a + v), 61);
+    ///
+    /// bag.push(47);
+    /// assert_eq!(bag.pop(), Some(47));
+    /// assert!(bag.pop().is_none());
+    /// assert!(bag.is_empty());
+    /// ```
     #[inline]
-    pub fn pop_all<R, C: FnMut(T) -> R>(&self, _consumer: C) {
-        let _popped = self.stack.pop_all();
+    pub fn pop_all<B, F: FnMut(B, T) -> B>(&self, init: B, mut fold: F) -> B {
+        let mut acc = init;
+        let popped = self.stack.pop_all();
+        while let Some(storage) = popped.pop() {
+            acc = storage.pop_all(acc, &mut fold, false);
+        }
+        self.primary_storage.pop_all(acc, &mut fold, true)
     }
 
     /// Returns `true` if the [`Bag`] is empty.
@@ -302,12 +325,14 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
     fn push(&self, val: T, allow_empty: bool) -> Option<T> {
         let mut metadata = self.metadata.load(Relaxed);
         'after_read_metadata: loop {
-            // Looking for a free slot.
+            // Look for a free slot.
             let mut instance_bitmap = Self::instance_bitmap(metadata);
-            if !allow_empty && instance_bitmap == 0 {
+            let owned_bitmap = Self::owned_bitmap(metadata);
+
+            // Regard entries being removed as removed ones.
+            if !allow_empty && (instance_bitmap & (!owned_bitmap)) == 0 {
                 return Some(val);
             }
-            let owned_bitmap = Self::owned_bitmap(metadata);
             let mut index = instance_bitmap.trailing_ones() as usize;
             while index < ARRAY_LEN {
                 if (owned_bitmap & (1_u32 << index)) == 0 {
@@ -325,8 +350,10 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
                             let result = self.metadata.fetch_update(Release, Relaxed, |m| {
                                 debug_assert_ne!(m & (1_usize << index), 0);
                                 debug_assert_eq!(m & (1_usize << (index + ARRAY_LEN)), 0);
-                                if !allow_empty && Self::instance_bitmap(m) == 0 {
-                                    // Disallowed to push a value into an empty array.
+                                if !allow_empty
+                                    && (Self::instance_bitmap(m) & (!Self::owned_bitmap(m))) == 0
+                                {
+                                    // Disallow pushing a value into an empty array.
                                     None
                                 } else {
                                     let new = (m & (!(1_usize << index)))
@@ -351,7 +378,7 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
                     }
                 }
 
-                // Looking for another free slot.
+                // Look for another free slot.
                 instance_bitmap |= 1_u32 << index;
                 index = instance_bitmap.trailing_ones() as usize;
             }
@@ -365,7 +392,7 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
     fn pop(&self) -> (Option<T>, bool) {
         let mut metadata = self.metadata.load(Relaxed);
         'after_read_metadata: loop {
-            // Looking for an instantiated, yet to be owned entry.
+            // Look for an instantiated, yet to be owned entry.
             let instance_bitmap = Self::instance_bitmap(metadata);
             let owned_bitmap = Self::owned_bitmap(metadata);
             let mut index = instance_bitmap.trailing_zeros() as usize;
@@ -400,7 +427,7 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
                     }
                 }
 
-                // Looking for another valid slot.
+                // Look for another valid slot.
                 {
                     #![allow(clippy::cast_possible_truncation)]
                     index = (instance_bitmap
@@ -411,6 +438,66 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
 
             // All the entries are vacant or owned.
             return (None, instance_bitmap == 0);
+        }
+    }
+
+    /// Pops all the values, and folds them.
+    #[allow(clippy::cast_possible_truncation)]
+    fn pop_all<B, F: FnMut(B, T) -> B>(&self, init: B, fold: &mut F, allow_nonempty: bool) -> B {
+        let mut acc = init;
+        let mut metadata = self.metadata.load(Relaxed);
+        loop {
+            // Look for an instantiated, and reachable entries.
+            let instance_bitmap = Self::instance_bitmap(metadata) as usize;
+            let owned_bitmap = Self::owned_bitmap(metadata) as usize;
+            let instances_to_pop = instance_bitmap & (!owned_bitmap);
+            debug_assert_eq!(instances_to_pop & owned_bitmap, 0);
+
+            if instances_to_pop == 0 {
+                return acc;
+            }
+
+            let marked_for_removal = metadata | instances_to_pop;
+            match self.metadata.compare_exchange_weak(
+                metadata,
+                marked_for_removal,
+                Acquire,
+                Relaxed,
+            ) {
+                Ok(_) => {
+                    // Now all the valid slots are locked for removal.
+                    let mut index = instances_to_pop.trailing_zeros() as usize;
+                    while index < ARRAY_LEN {
+                        acc = fold(acc, unsafe { self.storage[index].as_ptr().read() });
+                        index = (instances_to_pop & (!((1_usize << (index + 1) as u32) - 1)))
+                            .trailing_zeros() as usize;
+                    }
+
+                    metadata = marked_for_removal;
+                    loop {
+                        let new_metadata =
+                            metadata & (!((instances_to_pop << ARRAY_LEN) | instances_to_pop));
+                        match self.metadata.compare_exchange_weak(
+                            metadata,
+                            new_metadata,
+                            Release,
+                            Relaxed,
+                        ) {
+                            Ok(_) => {
+                                if allow_nonempty {
+                                    return acc;
+                                }
+
+                                // Need to check if a new instance was inserted.
+                                metadata = new_metadata;
+                                break;
+                            }
+                            Err(actual) => metadata = actual,
+                        }
+                    }
+                }
+                Err(actual) => metadata = actual,
+            }
         }
     }
 
