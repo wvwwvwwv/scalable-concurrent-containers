@@ -181,6 +181,40 @@ impl<T> Stack<T> {
         }
     }
 
+    /// Pops all the entries at once, and passes each one of the popped entries to the supplied
+    /// closure.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::Stack;
+    ///
+    /// let stack: Stack<usize> = Stack::default();
+    ///
+    /// stack.push(37);
+    /// stack.push(3);
+    ///
+    /// let popped = stack.pop_all();
+    ///
+    /// stack.push(1);
+    ///
+    /// assert_eq!(stack.pop().map(|e| **e), Some(1));
+    /// assert!(stack.pop().is_none());
+    ///
+    /// assert_eq!(popped.pop().map(|e| **e), Some(3));
+    /// assert_eq!(popped.pop().map(|e| **e), Some(37));
+    /// assert!(popped.pop().is_none());
+    /// ```
+
+    #[inline]
+    #[must_use]
+    pub fn pop_all(&self) -> Self {
+        let head = self.newest.swap((None, Tag::None), AcqRel).0;
+        Self {
+            newest: head.map_or_else(AtomicArc::default, AtomicArc::from),
+        }
+    }
+
     /// Pops the newest entry if the entry satisfies the given condition.
     ///
     /// Returns `None` if the [`Stack`] is empty.

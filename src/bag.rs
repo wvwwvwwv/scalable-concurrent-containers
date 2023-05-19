@@ -142,6 +142,13 @@ impl<T, const ARRAY_LEN: usize> Bag<T, ARRAY_LEN> {
         })
     }
 
+    /// Pops all the entries at once, and passes each one of the popped entries to the supplied
+    /// closure.
+    #[inline]
+    pub fn pop_all<R, C: FnMut(T) -> R>(&self, _consumer: C) {
+        let _popped = self.stack.pop_all();
+    }
+
     /// Returns `true` if the [`Bag`] is empty.
     ///
     /// # Examples

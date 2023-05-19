@@ -2052,6 +2052,45 @@ mod stack_test {
         }
         assert!(stack.is_empty());
     }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    async fn mpsc() {
+        const NUM_TASKS: usize = 12;
+        let stack: Arc<Stack<R>> = Arc::new(Stack::default());
+        let workload_size = 256;
+        for _ in 0..16 {
+            let mut task_handles = Vec::with_capacity(NUM_TASKS);
+            let barrier = Arc::new(AsyncBarrier::new(NUM_TASKS));
+            for task_id in 0..NUM_TASKS {
+                let barrier_clone = barrier.clone();
+                let stack_clone = stack.clone();
+                task_handles.push(tokio::task::spawn(async move {
+                    barrier_clone.wait().await;
+                    let mut cnt = 0;
+                    while task_id == 0 && cnt < workload_size * (NUM_TASKS - 1) {
+                        // Consumer.
+                        let popped = stack_clone.pop_all();
+                        while let Some(e) = popped.pop() {
+                            assert_ne!(e.0, 0);
+                            cnt += 1;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                    if task_id != 0 {
+                        for seq in 0..workload_size {
+                            assert_eq!(stack_clone.push(R::new(task_id, seq)).1, seq);
+                        }
+                    }
+                }));
+            }
+
+            for r in futures::future::join_all(task_handles).await {
+                assert!(r.is_ok());
+            }
+        }
+        assert!(stack.is_empty());
+    }
 }
 
 #[cfg(test)]

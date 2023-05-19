@@ -1,5 +1,9 @@
 # Changelog
 
+1.7.3
+
+* Add `Bag::pop_all` and `Stack::pop_all`.
+
 1.7.2
 
 * Add `HashCache::{any, any_async, for_each, for_each_async, read, read_async}`.
