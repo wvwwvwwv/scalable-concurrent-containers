@@ -1,5 +1,9 @@
 # Changelog
 
+1.8.0
+
+* API update: overhaul `HashCache::Entry` API; values can be evicted through `HashCache::Entry` API.
+
 1.7.3
 
 * Add `Bag::pop_all` and `Stack::pop_all`.

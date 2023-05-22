@@ -1176,6 +1176,11 @@ mod hashcache_test {
                     for id in range.clone() {
                         if id % 8 == 0 {
                             assert!(hashcache_clone.put(id, R::new(&INST_CNT)).is_ok());
+                        } else if id % 4 == 0 {
+                            hashcache_clone
+                                .entry_async(id)
+                                .await
+                                .or_put(R::new(&INST_CNT));
                         } else {
                             assert!(hashcache_clone
                                 .put_async(id, R::new(&INST_CNT))

@@ -48,6 +48,9 @@ where
 /// The default maximum capacity of a [`HashCache`] is `256`.
 pub const DEFAULT_MAXIMUM_CAPACITY: usize = 256;
 
+/// [`EvictedEntry`] is a type alias for `Option<(K, V)>`.
+pub type EvictedEntry<K, V> = Option<(K, V)>;
+
 /// [`Entry`] represents a single cache entry in a [`HashCache`].
 pub enum Entry<'h, K, V, H = RandomState>
 where
@@ -167,7 +170,7 @@ where
     /// let hashcache: HashCache<char, u32> = HashCache::default();
     ///
     /// for ch in "a short treatise on fungi".chars() {
-    ///     hashcache.entry(ch).and_modify(|counter| *counter += 1).or_insert(1);
+    ///     hashcache.entry(ch).and_modify(|counter| *counter += 1).or_put(1);
     /// }
     ///
     /// assert_eq!(*hashcache.get(&'s').unwrap().get(), 2);
@@ -268,7 +271,7 @@ where
     /// assert_eq!(hashcache.put(1, 1).unwrap_err(), (1, 1));
     /// ```
     #[inline]
-    pub fn put(&self, key: K, val: V) -> Result<Option<(K, V)>, (K, V)> {
+    pub fn put(&self, key: K, val: V) -> Result<EvictedEntry<K, V>, (K, V)> {
         let barrier = Barrier::new();
         let hash = self.hash(&key);
         let result = match self.reserve_entry(&key, hash, &mut (), &barrier) {
@@ -316,7 +319,7 @@ where
     /// let future_put = hashcache.put_async(11, 17);
     /// ```
     #[inline]
-    pub async fn put_async(&self, key: K, val: V) -> Result<Option<(K, V)>, (K, V)> {
+    pub async fn put_async(&self, key: K, val: V) -> Result<EvictedEntry<K, V>, (K, V)> {
         let hash = self.hash(&key);
         loop {
             let mut async_wait = AsyncWait::default();
@@ -584,7 +587,7 @@ where
     /// use scc::HashCache;
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
-    /// let future_insert = hashcache.put_async(11, 17);
+    /// let future_put = hashcache.put_async(11, 17);
     /// let future_remove = hashcache.remove_if_async(&11, |_| true);
     /// ```
     #[inline]
@@ -849,7 +852,7 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// let future_insert = hashcache.put_async(1, 0);
+    /// let future_put = hashcache.put_async(1, 0);
     /// let future_for_each = hashcache.for_each_async(|k, v| println!("{} {}", k, v));
     /// ```
     #[inline]
@@ -1267,7 +1270,7 @@ where
     K: Eq + Hash,
     H: BuildHasher,
 {
-    /// Ensures a value is in the entry by inserting the supplied instance if empty.
+    /// Ensures a value is in the entry by putting the supplied instance if empty.
     ///
     /// # Examples
     ///
@@ -1276,15 +1279,15 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// hashcache.entry(3).or_insert(7);
+    /// hashcache.entry(3).or_put(7);
     /// assert_eq!(*hashcache.get(&3).unwrap().get(), 7);
     /// ```
     #[inline]
-    pub fn or_insert(self, val: V) -> OccupiedEntry<'h, K, V, H> {
-        self.or_insert_with(|| val)
+    pub fn or_put(self, val: V) -> (EvictedEntry<K, V>, OccupiedEntry<'h, K, V, H>) {
+        self.or_put_with(|| val)
     }
 
-    /// Ensures a value is in the entry by inserting the result of the supplied closure if empty.
+    /// Ensures a value is in the entry by putting the result of the supplied closure if empty.
     ///
     /// # Examples
     ///
@@ -1293,15 +1296,18 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// hashcache.entry(19).or_insert_with(|| 5);
+    /// hashcache.entry(19).or_put_with(|| 5);
     /// assert_eq!(*hashcache.get(&19).unwrap().get(), 5);
     /// ```
     #[inline]
-    pub fn or_insert_with<F: FnOnce() -> V>(self, constructor: F) -> OccupiedEntry<'h, K, V, H> {
-        self.or_insert_with_key(|_| constructor())
+    pub fn or_put_with<F: FnOnce() -> V>(
+        self,
+        constructor: F,
+    ) -> (EvictedEntry<K, V>, OccupiedEntry<'h, K, V, H>) {
+        self.or_put_with_key(|_| constructor())
     }
 
-    /// Ensures a value is in the entry by inserting the result of the supplied closure if empty.
+    /// Ensures a value is in the entry by putting the result of the supplied closure if empty.
     ///
     /// The reference to the moved key is provided, therefore cloning or copying the key is
     /// unnecessary.
@@ -1313,19 +1319,19 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// hashcache.entry(11).or_insert_with_key(|k| if *k == 11 { 7 } else { 3 });
+    /// hashcache.entry(11).or_put_with_key(|k| if *k == 11 { 7 } else { 3 });
     /// assert_eq!(*hashcache.get(&11).unwrap().get(), 7);
     /// ```
     #[inline]
-    pub fn or_insert_with_key<F: FnOnce(&K) -> V>(
+    pub fn or_put_with_key<F: FnOnce(&K) -> V>(
         self,
         constructor: F,
-    ) -> OccupiedEntry<'h, K, V, H> {
+    ) -> (EvictedEntry<K, V>, OccupiedEntry<'h, K, V, H>) {
         match self {
-            Self::Occupied(o) => o,
+            Self::Occupied(o) => (None, o),
             Self::Vacant(v) => {
                 let val = constructor(v.key());
-                v.insert_entry(val)
+                v.put_entry(val)
             }
         }
     }
@@ -1357,10 +1363,10 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// hashcache.entry(37).and_modify(|v| { *v += 1 }).or_insert(47);
+    /// hashcache.entry(37).and_modify(|v| { *v += 1 }).or_put(47);
     /// assert_eq!(*hashcache.get(&37).unwrap().get(), 47);
     ///
-    /// hashcache.entry(37).and_modify(|v| { *v += 1 }).or_insert(3);
+    /// hashcache.entry(37).and_modify(|v| { *v += 1 }).or_put(3);
     /// assert_eq!(*hashcache.get(&37).unwrap().get(), 48);
     /// ```
     #[inline]
@@ -1386,17 +1392,17 @@ where
     /// use scc::HashCache;
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
-    /// let entry = hashcache.entry(11).insert_entry(17);
+    /// let entry = hashcache.entry(11).put_entry(17).1;
     /// assert_eq!(entry.key(), &11);
     /// ```
     #[inline]
-    pub fn insert_entry(self, val: V) -> OccupiedEntry<'h, K, V, H> {
+    pub fn put_entry(self, val: V) -> (EvictedEntry<K, V>, OccupiedEntry<'h, K, V, H>) {
         match self {
             Self::Occupied(mut o) => {
-                o.insert(val);
-                o
+                o.put(val);
+                (None, o)
             }
-            Self::Vacant(v) => v.insert_entry(val),
+            Self::Vacant(v) => v.put_entry(val),
         }
     }
 }
@@ -1407,7 +1413,7 @@ where
     V: Default,
     H: BuildHasher,
 {
-    /// Ensures a value is in the entry by inserting the default value if empty.
+    /// Ensures a value is in the entry by putting the default value if empty.
     ///
     /// # Examples
     ///
@@ -1419,10 +1425,10 @@ where
     /// assert_eq!(*hashcache.get(&11).unwrap().get(), 0);
     /// ```
     #[inline]
-    pub fn or_default(self) -> OccupiedEntry<'h, K, V, H> {
+    pub fn or_default(self) -> (EvictedEntry<K, V>, OccupiedEntry<'h, K, V, H>) {
         match self {
-            Self::Occupied(o) => o,
-            Self::Vacant(v) => v.insert_entry(Default::default()),
+            Self::Occupied(o) => (None, o),
+            Self::Vacant(v) => v.put_entry(Default::default()),
         }
     }
 }
@@ -1456,7 +1462,7 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// assert_eq!(hashcache.entry(29).or_default().key(), &29);
+    /// assert_eq!(hashcache.entry(29).or_default().1.key(), &29);
     /// ```
     #[inline]
     #[must_use]
@@ -1478,7 +1484,7 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// hashcache.entry(11).or_insert(17);
+    /// hashcache.entry(11).or_put(17);
     ///
     /// if let Entry::Occupied(o) = hashcache.entry(11) {
     ///     assert_eq!(o.remove_entry(), (11, 17));
@@ -1526,7 +1532,7 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// hashcache.entry(19).or_insert(11);
+    /// hashcache.entry(19).or_put(11);
     ///
     /// if let Entry::Occupied(o) = hashcache.entry(19) {
     ///     assert_eq!(o.get(), &11);
@@ -1552,7 +1558,7 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// hashcache.entry(37).or_insert(11);
+    /// hashcache.entry(37).or_put(11);
     ///
     /// if let Entry::Occupied(mut o) = hashcache.entry(37) {
     ///     *o.get_mut() += 18;
@@ -1583,16 +1589,16 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// hashcache.entry(37).or_insert(11);
+    /// hashcache.entry(37).or_put(11);
     ///
     /// if let Entry::Occupied(mut o) = hashcache.entry(37) {
-    ///     assert_eq!(o.insert(17), 11);
+    ///     assert_eq!(o.put(17), 11);
     /// }
     ///
     /// assert_eq!(*hashcache.get(&37).unwrap().get(), 17);
     /// ```
     #[inline]
-    pub fn insert(&mut self, val: V) -> V {
+    pub fn put(&mut self, val: V) -> V {
         replace(self.get_mut(), val)
     }
 
@@ -1606,7 +1612,7 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// hashcache.entry(11).or_insert(17);
+    /// hashcache.entry(11).or_put(17);
     ///
     /// if let Entry::Occupied(o) = hashcache.entry(11) {
     ///     assert_eq!(o.remove(), 17);
@@ -1675,6 +1681,8 @@ where
 
     /// Sets the value of the entry with its key, and returns an [`OccupiedEntry`].
     ///
+    /// Returns a key-value pair if an entry was evicted for the new key-value pair.
+    ///
     /// # Examples
     ///
     /// ```
@@ -1684,24 +1692,30 @@ where
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
     /// if let Entry::Vacant(o) = hashcache.entry(19) {
-    ///     o.insert_entry(29);
+    ///     o.put_entry(29);
     /// }
     ///
     /// assert_eq!(*hashcache.get(&19).unwrap().get(), 29);
     /// ```
     #[inline]
-    pub fn insert_entry(mut self, val: V) -> OccupiedEntry<'h, K, V, H> {
-        let barrier = Barrier::new();
+    pub fn put_entry(mut self, val: V) -> (EvictedEntry<K, V>, OccupiedEntry<'h, K, V, H>) {
+        let evicted = self
+            .locked_entry
+            .locker
+            .evict_lru_head(self.locked_entry.data_block_mut)
+            .map(|(k, v)| (k, v.take()));
+
         let entry_ptr = self.locked_entry.locker.insert_with(
             self.locked_entry.data_block_mut,
             BucketArray::<K, V, CACHE>::partial_hash(self.hash),
             || (self.key, Evictable::new(val)),
-            self.hashcache.prolonged_barrier_ref(&barrier),
+            self.hashcache.prolonged_barrier_ref(&Barrier::new()),
         );
         self.locked_entry
             .locker
             .update_lru_tail(self.locked_entry.data_block_mut, &entry_ptr);
-        OccupiedEntry {
+
+        let occupied = OccupiedEntry {
             hashcache: self.hashcache,
             locked_entry: LockedEntry {
                 index: self.locked_entry.index,
@@ -1709,7 +1723,9 @@ where
                 locker: self.locked_entry.locker,
                 entry_ptr,
             },
-        }
+        };
+
+        (evicted, occupied)
     }
 }
 
