@@ -101,6 +101,12 @@ impl<T> RefCounted<T> {
     pub(super) fn ref_cnt(&self) -> &AtomicUsize {
         unsafe { &self.next_or_refcnt.refcnt.0 }
     }
+
+    /// Returns a `dyn Collectible` reference to `self`.
+    #[inline]
+    pub(super) fn as_collectible(&self) -> &dyn Collectible {
+        self
+    }
 }
 
 impl<T> Deref for RefCounted<T> {

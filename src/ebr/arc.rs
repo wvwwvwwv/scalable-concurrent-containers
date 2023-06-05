@@ -255,8 +255,8 @@ impl<T> Arc<T> {
 
     #[inline]
     fn pass_underlying_to_collector(&mut self, barrier: &Barrier) {
-        let dyn_mut_ptr: *mut dyn Collectible =
-            self.instance_ptr.as_ptr() as *const dyn Collectible as *mut dyn Collectible;
+        let dyn_ref = self.underlying().as_collectible();
+        let dyn_mut_ptr: *mut dyn Collectible = unsafe { std::mem::transmute(dyn_ref) };
         barrier.collect(dyn_mut_ptr);
     }
 }
