@@ -206,8 +206,7 @@ impl<'b, T> Ptr<'b, T> {
     #[must_use]
     pub fn get_arc(self) -> Option<Arc<T>> {
         unsafe {
-            if let Some(ptr) = NonNull::new(Tag::unset_tag(self.instance_ptr) as *mut RefCounted<T>)
-            {
+            if let Some(ptr) = NonNull::new(Tag::unset_tag(self.instance_ptr).cast_mut()) {
                 if ptr.as_ref().try_add_ref(Relaxed) {
                     return Some(Arc::from(ptr));
                 }

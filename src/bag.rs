@@ -278,16 +278,14 @@ impl<'b, T, const ARRAY_LEN: usize> Iterator for Accessor<'b, T, ARRAY_LEN> {
             if let Some(linked) = self.current_stack_entry.as_mut() {
                 let barrier = Barrier::new();
                 if let Some(next) = linked.next_ptr(Acquire, &barrier).as_ref() {
-                    let entry_mut = next as *const LinkedEntry<Storage<T, ARRAY_LEN>>
-                        as *mut LinkedEntry<Storage<T, ARRAY_LEN>>;
+                    let entry_mut = (next as *const LinkedEntry<Storage<T, ARRAY_LEN>>).cast_mut();
                     self.current_stack_entry = unsafe { entry_mut.as_mut() };
                     self.current_index = 0;
                 }
             } else {
                 self.bag.stack.peek(|e| {
                     if let Some(e) = e {
-                        let entry_mut = e as *const LinkedEntry<Storage<T, ARRAY_LEN>>
-                            as *mut LinkedEntry<Storage<T, ARRAY_LEN>>;
+                        let entry_mut = (e as *const LinkedEntry<Storage<T, ARRAY_LEN>>).cast_mut();
                         self.current_stack_entry = unsafe { entry_mut.as_mut() };
                         self.current_index = 0;
                     }
@@ -345,7 +343,7 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
                         Ok(_) => {
                             // Now the free slot is owned by the thread.
                             unsafe {
-                                (self.storage[index].as_ptr() as *mut T).write(val);
+                                (self.storage[index].as_ptr().cast_mut()).write(val);
                             }
                             let result = self.metadata.fetch_update(Release, Relaxed, |m| {
                                 debug_assert_ne!(m & (1_usize << index), 0);

@@ -105,7 +105,7 @@ impl<K: Eq, V, const TYPE: char> BucketArray<K, V, TYPE> {
     #[inline]
     pub(crate) fn bucket_mut(&self, index: usize) -> &mut Bucket<K, V, TYPE> {
         debug_assert!(index < self.num_buckets());
-        unsafe { &mut (*(self.bucket_ptr.add(index) as *mut Bucket<K, V, TYPE>)) }
+        unsafe { &mut *self.bucket_ptr.add(index).cast_mut() }
     }
 
     /// Returns a reference to its rehashing metadata.
@@ -126,7 +126,7 @@ impl<K: Eq, V, const TYPE: char> BucketArray<K, V, TYPE> {
     #[inline]
     pub(crate) fn data_block_mut(&self, index: usize) -> &mut DataBlock<K, V, BUCKET_LEN> {
         debug_assert!(index < self.num_buckets());
-        unsafe { &mut (*(self.data_block_ptr.add(index) as *mut DataBlock<K, V, BUCKET_LEN>)) }
+        unsafe { &mut *self.data_block_ptr.add(index).cast_mut() }
     }
 
     /// Checks if the index is within the sampling range of the array.
@@ -246,13 +246,14 @@ impl<K: Eq, V, const TYPE: char> Drop for BucketArray<K, V, TYPE> {
 
         unsafe {
             dealloc(
-                (self.bucket_ptr as *mut Bucket<K, V, TYPE>)
+                self.bucket_ptr
+                    .cast_mut()
                     .cast::<u8>()
                     .sub(self.bucket_ptr_offset as usize),
                 Self::calculate_memory_layout::<Bucket<K, V, TYPE>>(self.array_len).2,
             );
             dealloc(
-                (self.data_block_ptr as *mut DataBlock<K, V, BUCKET_LEN>).cast::<u8>(),
+                self.data_block_ptr.cast_mut().cast::<u8>(),
                 Layout::from_size_align(
                     size_of::<DataBlock<K, V, BUCKET_LEN>>() * self.array_len,
                     align_of::<[DataBlock<K, V, BUCKET_LEN>; 0]>(),

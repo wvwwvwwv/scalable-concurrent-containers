@@ -613,8 +613,8 @@ where
 
     fn write(&self, index: usize, key: K, val: V) {
         unsafe {
-            (self.entry_array.0[index].as_ptr() as *mut K).write(key);
-            (self.entry_array.1[index].as_ptr() as *mut V).write(val);
+            (self.entry_array.0[index].as_ptr().cast_mut()).write(key);
+            (self.entry_array.1[index].as_ptr().cast_mut()).write(val);
         }
     }
 

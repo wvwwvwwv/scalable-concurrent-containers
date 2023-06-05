@@ -397,7 +397,7 @@ impl<'b, K: Eq, V, const TYPE: char> EntryPtr<'b, K, V, TYPE> {
         _locker: &mut Locker<K, V, TYPE>,
     ) -> &mut (K, V) {
         debug_assert_ne!(self.current_index, usize::MAX);
-        let link_ptr = self.current_link_ptr.as_raw() as *mut LinkedBucket<K, V, LINKED_BUCKET_LEN>;
+        let link_ptr = self.current_link_ptr.as_raw().cast_mut();
         let entry_ptr = if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
             link_mut.data_block[self.current_index].as_mut_ptr()
         } else {
@@ -625,9 +625,7 @@ impl<'b, K: Eq, V, const TYPE: char> Locker<'b, K, V, TYPE> {
 
         if free_index == BUCKET_LEN {
             let mut link_ptr = self.bucket.metadata.link.load(Acquire, barrier);
-            while let Some(link_mut) = unsafe {
-                (link_ptr.as_raw() as *mut LinkedBucket<K, V, LINKED_BUCKET_LEN>).as_mut()
-            } {
+            while let Some(link_mut) = unsafe { link_ptr.as_raw().cast_mut().as_mut() } {
                 let free_index = link_mut.metadata.occupied_bitmap.trailing_ones() as usize;
                 if free_index != LINKED_BUCKET_LEN {
                     Self::insert_entry_with(
@@ -651,17 +649,13 @@ impl<'b, K: Eq, V, const TYPE: char> Locker<'b, K, V, TYPE> {
             let link = unsafe { Arc::new_unchecked(LinkedBucket::new(head)) };
             let link_ptr = link.ptr(barrier);
             unsafe {
-                let link_mut =
-                    &mut *(link_ptr.as_raw() as *mut LinkedBucket<K, V, LINKED_BUCKET_LEN>);
+                let link_mut = &mut *link_ptr.as_raw().cast_mut();
                 link_mut.data_block[0].as_mut_ptr().write(constructor());
                 link_mut.metadata.partial_hash_array[0] = partial_hash;
                 link_mut.metadata.occupied_bitmap = 1;
             }
             if let Some(head) = link.metadata.link.load(Relaxed, barrier).as_ref() {
-                head.prev_link.store(
-                    link.as_ptr() as *mut LinkedBucket<K, V, LINKED_BUCKET_LEN>,
-                    Relaxed,
-                );
+                head.prev_link.store(link.as_ptr().cast_mut(), Relaxed);
             }
             self.bucket
                 .metadata
@@ -698,8 +692,7 @@ impl<'b, K: Eq, V, const TYPE: char> Locker<'b, K, V, TYPE> {
         debug_assert_ne!(entry_ptr.current_index, usize::MAX);
 
         self.bucket.num_entries -= 1;
-        let link_ptr =
-            entry_ptr.current_link_ptr.as_raw() as *mut LinkedBucket<K, V, LINKED_BUCKET_LEN>;
+        let link_ptr = entry_ptr.current_link_ptr.as_raw().cast_mut();
         if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
             if TYPE == OPTIMISTIC {
                 debug_assert_eq!(
@@ -748,8 +741,7 @@ impl<'b, K: Eq, V, const TYPE: char> Locker<'b, K, V, TYPE> {
         barrier: &'e Barrier,
     ) -> (K, V) {
         debug_assert_ne!(TYPE, OPTIMISTIC);
-        let link_ptr =
-            entry_ptr.current_link_ptr.as_raw() as *mut LinkedBucket<K, V, LINKED_BUCKET_LEN>;
+        let link_ptr = entry_ptr.current_link_ptr.as_raw().cast_mut();
         if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
             let extracted = Self::extract_entry(
                 &mut link_mut.metadata,

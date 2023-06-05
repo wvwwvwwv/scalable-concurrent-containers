@@ -408,7 +408,7 @@ where
         if let Some(full_node_key) = full_node_key {
             self.split_op
                 .origin_node_key
-                .store(full_node_key as *const K as *mut K, Relaxed);
+                .store((full_node_key as *const K).cast_mut(), Relaxed);
         }
 
         let mut guard = ExitGuard::new(true, |rollback| {
@@ -556,7 +556,7 @@ where
                                 if let Some(&k) = k.as_ref() {
                                     self.split_op
                                         .middle_key
-                                        .store(k as *const K as *mut K, Relaxed);
+                                        .store((k as *const K).cast_mut(), Relaxed);
                                 }
                                 low_key_nodes
                                     .unbounded_child
@@ -609,11 +609,12 @@ where
                     };
 
                 self.split_op.middle_key.store(
-                    full_leaf_node.split_leaf_node(
+                    (full_leaf_node.split_leaf_node(
                         low_key_leaf_node.unwrap(),
                         high_key_leaf_node.unwrap(),
                         barrier,
-                    ) as *const K as *mut K,
+                    ) as *const K)
+                        .cast_mut(),
                     Relaxed,
                 );
 

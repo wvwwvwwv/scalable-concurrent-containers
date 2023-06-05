@@ -372,11 +372,11 @@ where
         // whole split operation is protected under a single `ebr::Barrier`, and the pointers are
         // only dereferenced during the operation.
         self.split_op.low_key_leaf_node.swap(
-            low_key_leaf_node as *const LeafNode<K, V> as *mut _,
+            (low_key_leaf_node as *const LeafNode<K, V>).cast_mut(),
             Relaxed,
         );
         self.split_op.high_key_leaf_node.swap(
-            high_key_leaf_node as *const LeafNode<K, V> as *mut _,
+            (high_key_leaf_node as *const LeafNode<K, V>).cast_mut(),
             Relaxed,
         );
 
@@ -665,7 +665,7 @@ where
         if let Some(full_leaf_key) = full_leaf_key {
             self.split_op
                 .origin_leaf_key
-                .store(full_leaf_key as *const K as *mut K, Relaxed);
+                .store((full_leaf_key as *const K).cast_mut(), Relaxed);
         }
 
         let target = full_leaf_ptr.as_ref().unwrap();

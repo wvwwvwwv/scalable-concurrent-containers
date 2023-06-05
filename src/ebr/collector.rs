@@ -200,12 +200,12 @@ impl Collector {
         let mut current = GLOBAL_ANCHOR.load(Relaxed);
         loop {
             unsafe {
-                (*ptr).next_collector = Tag::unset_tag(current) as *mut Collector;
+                (*ptr).next_collector = Tag::unset_tag(current).cast_mut();
             }
 
             // It keeps the tag intact.
             let tag = Tag::into_tag(current);
-            let new = Tag::update_tag(ptr, tag) as *mut Collector;
+            let new = Tag::update_tag(ptr, tag).cast_mut();
             if let Err(actual) = GLOBAL_ANCHOR.compare_exchange(current, new, Release, Relaxed) {
                 current = actual;
             } else {
@@ -228,10 +228,10 @@ impl Collector {
                 if tag == Tag::First || tag == Tag::Both {
                     None
                 } else {
-                    Some(Tag::update_tag(p, Tag::First) as *mut Collector)
+                    Some(Tag::update_tag(p, Tag::First).cast_mut())
                 }
             })
-            .map(|p| Tag::unset_tag(p) as *mut Collector);
+            .map(|p| Tag::unset_tag(p).cast_mut());
         if let Ok(mut collector_ptr) = lock_result {
             #[allow(clippy::blocks_in_if_conditions)]
             let _guard = ExitGuard::new(&GLOBAL_ANCHOR, |a| {
@@ -245,7 +245,7 @@ impl Collector {
                         } else {
                             Tag::None
                         };
-                        Some(Tag::update_tag(p, new_tag) as *mut Collector)
+                        Some(Tag::update_tag(p, new_tag).cast_mut())
                     })
                     .is_err()
                 {}
@@ -266,11 +266,13 @@ impl Collector {
                                         let tag = Tag::into_tag(p);
                                         debug_assert!(tag == Tag::First || tag == Tag::Both);
                                         if ptr::eq(Tag::unset_tag(p), collector_ptr) {
-                                            Some(Tag::update_tag(
-                                                other_collector.next_collector,
-                                                tag,
+                                            Some(
+                                                Tag::update_tag(
+                                                    other_collector.next_collector,
+                                                    tag,
+                                                )
+                                                .cast_mut(),
                                             )
-                                                as *mut Collector)
                                         } else {
                                             None
                                         }
@@ -284,7 +286,7 @@ impl Collector {
                         );
                         if reclaimable {
                             collector_ptr = other_collector.next_collector;
-                            let ptr = other_collector as *const Collector as *mut Collector;
+                            let ptr = (other_collector as *const Collector).cast_mut();
                             self.reclaim(ptr);
                             continue;
                         }
@@ -355,7 +357,7 @@ fn mark_scan_enforced() {
             Tag::First => Tag::Both,
             Tag::Second | Tag::Both => return None,
         };
-        Some(Tag::update_tag(p, new_tag) as *mut _)
+        Some(Tag::update_tag(p, new_tag).cast_mut())
     });
 }
 
