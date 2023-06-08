@@ -1,5 +1,9 @@
 # Changelog
 
+1.8.1
+
+* API update: add `HashCache::{contains, contains_async}`.
+
 1.8.0
 
 * API update: overhaul `HashCache::Entry` API; values can be evicted through `HashCache::Entry` API.

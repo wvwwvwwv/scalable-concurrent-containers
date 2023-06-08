@@ -497,6 +497,50 @@ where
         }
     }
 
+    /// Checks if the key exists.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    ///
+    /// assert!(!hashcache.contains(&1));
+    /// assert!(hashcache.put(1, 0).is_ok());
+    /// assert!(hashcache.contains(&1));
+    /// ```
+    #[inline]
+    pub fn contains<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.read(key, |_, _| ()).is_some()
+    }
+
+    /// Checks if the key exists.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    ///
+    /// let future_contains = hashcache.contains_async(&1);
+    /// ```
+    #[inline]
+    pub async fn contains_async<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.read_async(key, |_, _| ()).await.is_some()
+    }
+
     /// Removes a key-value pair if the key exists.
     ///
     /// Returns `None` if the key does not exist.
