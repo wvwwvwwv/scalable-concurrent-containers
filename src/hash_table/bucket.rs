@@ -732,6 +732,66 @@ impl<'b, K: Eq, V, const TYPE: char> Locker<'b, K, V, TYPE> {
         None
     }
 
+    /// Keeps or consumes the key-value pair being pointed by the given [`EntryPtr`].
+    ///
+    /// Returns `true` if the entry was consumed.
+    #[inline]
+    pub(crate) fn keep_or_consume<F: FnMut(&K, V) -> Option<V>>(
+        &mut self,
+        data_block: &mut DataBlock<K, V, BUCKET_LEN>,
+        entry_ptr: &mut EntryPtr<K, V, TYPE>,
+        det: &mut F,
+    ) -> bool {
+        debug_assert_ne!(TYPE, OPTIMISTIC);
+        debug_assert_ne!(entry_ptr.current_index, usize::MAX);
+
+        // `det` may panic, therefore it is safe to assume that the entry will be consumed.
+        self.bucket.num_entries -= 1;
+
+        let link_ptr = entry_ptr.current_link_ptr.as_raw().cast_mut();
+        if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
+            debug_assert_ne!(
+                link_mut.metadata.occupied_bitmap & (1_u32 << entry_ptr.current_index),
+                0
+            );
+            let (k, v) = unsafe {
+                link_mut.data_block[entry_ptr.current_index]
+                    .as_mut_ptr()
+                    .read()
+            };
+            link_mut.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
+            if let Some(v) = det(&k, v) {
+                // The instances returned: revive the entry.
+                unsafe {
+                    link_mut.data_block[entry_ptr.current_index]
+                        .as_mut_ptr()
+                        .write((k, v));
+                }
+                link_mut.metadata.occupied_bitmap |= 1_u32 << entry_ptr.current_index;
+                self.bucket.num_entries += 1;
+                return false;
+            }
+        } else {
+            debug_assert_ne!(
+                self.bucket.metadata.occupied_bitmap & (1_u32 << entry_ptr.current_index),
+                0
+            );
+            self.bucket.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
+            let (k, v) = unsafe { data_block[entry_ptr.current_index].as_mut_ptr().read() };
+            if let Some(v) = det(&k, v) {
+                unsafe {
+                    data_block[entry_ptr.current_index]
+                        .as_mut_ptr()
+                        .write((k, v));
+                }
+                self.bucket.metadata.occupied_bitmap |= 1_u32 << entry_ptr.current_index;
+                self.bucket.num_entries += 1;
+                return false;
+            }
+        }
+        true
+    }
+
     /// Extracts the key-value pair being pointed by the [`EntryPtr`].
     #[inline]
     pub(crate) fn extract<'e>(

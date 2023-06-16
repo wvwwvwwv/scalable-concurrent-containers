@@ -543,6 +543,42 @@ where
         (num_retained, num_removed)
     }
 
+    /// Keeps entries that satisfy the specified predicate.
+    ///
+    /// Returns the number of consumed entries.
+    #[inline]
+    fn keep_entries<F: FnMut(&K, V) -> Option<V>>(&self, mut pred: F) -> usize {
+        let barrier = Barrier::new();
+        let mut num_consumed: usize = 0;
+        let mut current_array_ptr = self.bucket_array().load(Acquire, &barrier);
+        while let Some(current_array) = current_array_ptr.as_ref() {
+            self.clear_old_array(current_array, &barrier);
+            for index in 0..current_array.num_buckets() {
+                let bucket = current_array.bucket_mut(index);
+                if let Some(mut locker) = Locker::lock(bucket, &barrier) {
+                    let data_block_mut = current_array.data_block_mut(index);
+                    let mut entry_ptr = EntryPtr::new(&barrier);
+                    while entry_ptr.next(&locker, &barrier) {
+                        if locker.keep_or_consume(data_block_mut, &mut entry_ptr, &mut pred) {
+                            num_consumed += 1;
+                        }
+                    }
+                }
+            }
+
+            let new_current_array_ptr = self.bucket_array().load(Acquire, &barrier);
+            if current_array_ptr.without_tag() == new_current_array_ptr.without_tag() {
+                break;
+            }
+            current_array_ptr = new_current_array_ptr;
+        }
+
+        if num_consumed != 0 {
+            self.try_resize(0, &barrier);
+        }
+        num_consumed
+    }
+
     /// Reserves an entry and returns a [`Locker`] and [`EntryPtr`] corresponding to the key.
     ///
     /// The returned [`EntryPtr`] may point to an occupied entry if the key exists.

@@ -442,7 +442,8 @@ where
     ///
     /// The caller has to make sure that there is no reader of the entry, e.g., a reader keeping a
     /// reference to the entry via [`HashIndex::iter`], [`HashIndex::read`], or
-    /// [`HashIndex::read_with`].
+    /// [`HashIndex::read_with`], unless an instance of `V` can be safely read when there is a
+    /// single writer, e.g., `V = [u8; 32]`.
     ///
     /// # Examples
     ///
@@ -486,7 +487,8 @@ where
     ///
     /// The caller has to make sure that there is no reader of the entry, e.g., a reader keeping a
     /// reference to the entry via [`HashIndex::iter`], [`HashIndex::read`], or
-    /// [`HashIndex::read_with`].
+    /// [`HashIndex::read_with`], unless an instance of `V` can be safely read when there is a
+    /// single writer, e.g., `V = [u8; 32]`.
     ///
     /// # Examples
     ///
