@@ -1,5 +1,9 @@
 # Changelog
 
+1.8.2
+
+* API update: [#107](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/107) add `HashMap::{prune, prune_async}`.
+
 1.8.1
 
 * API update: add `HashCache::{contains, contains_async}`.
