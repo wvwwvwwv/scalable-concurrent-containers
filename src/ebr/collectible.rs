@@ -44,7 +44,9 @@ pub trait Collectible {
     /// has to be implemented for the type.
     #[inline]
     fn drop_and_dealloc(&mut self) {
-        unsafe { Box::from_raw(self as *mut Self) };
+        unsafe {
+            let _: Box<Self> = Box::from_raw(self as *mut Self);
+        }
     }
 }
 
@@ -77,6 +79,8 @@ impl<F: 'static + FnOnce() + Sync> Collectible for DeferredClosure<F> {
         if let Some(f) = self.f.take() {
             f();
         }
-        unsafe { Box::from_raw(self as *mut Self) };
+        unsafe {
+            let _: Box<Self> = Box::from_raw(self as *mut Self);
+        }
     }
 }

@@ -408,6 +408,60 @@ mod hashmap_test {
 
     #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn prune() {
+        let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
+        for _ in 0..256 {
+            let num_tasks = 8;
+            let workload_size = 256;
+            let mut task_handles = Vec::with_capacity(num_tasks);
+            let barrier = Arc::new(AsyncBarrier::new(num_tasks));
+            for task_id in 0..num_tasks {
+                let barrier_clone = barrier.clone();
+                let hashmap_clone = hashmap.clone();
+                task_handles.push(tokio::task::spawn(async move {
+                    barrier_clone.wait().await;
+                    let range = (task_id * workload_size)..((task_id + 1) * workload_size);
+                    for id in range.clone() {
+                        let result = hashmap_clone.insert_async(id, id).await;
+                        assert!(result.is_ok());
+                    }
+                    assert!(hashmap_clone.any(|k, _| range.contains(k)));
+                    let removed = if task_id % 3 == 0 {
+                        hashmap_clone.prune(|k, v| {
+                            if range.contains(k) {
+                                assert_eq!(*k, v);
+                                None
+                            } else {
+                                Some(v)
+                            }
+                        })
+                    } else {
+                        hashmap_clone
+                            .prune_async(|k, v| {
+                                if range.contains(k) {
+                                    assert_eq!(*k, v);
+                                    None
+                                } else {
+                                    Some(v)
+                                }
+                            })
+                            .await
+                    };
+                    assert_eq!(removed, workload_size);
+                    assert!(!hashmap_clone.any_async(|k, _| range.contains(k)).await);
+                }));
+            }
+
+            for r in futures::future::join_all(task_handles).await {
+                assert!(r.is_ok());
+            }
+
+            assert_eq!(hashmap.len(), 0);
+        }
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn retain_for_each_any() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
         for _ in 0..256 {

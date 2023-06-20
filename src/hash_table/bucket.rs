@@ -740,12 +740,12 @@ impl<'b, K: Eq, V, const TYPE: char> Locker<'b, K, V, TYPE> {
         &mut self,
         data_block: &mut DataBlock<K, V, BUCKET_LEN>,
         entry_ptr: &mut EntryPtr<K, V, TYPE>,
-        det: &mut F,
+        pred: &mut F,
     ) -> bool {
         debug_assert_ne!(TYPE, OPTIMISTIC);
         debug_assert_ne!(entry_ptr.current_index, usize::MAX);
 
-        // `det` may panic, therefore it is safe to assume that the entry will be consumed.
+        // `pred` may panic, therefore it is safe to assume that the entry will be consumed.
         self.bucket.num_entries -= 1;
 
         let link_ptr = entry_ptr.current_link_ptr.as_raw().cast_mut();
@@ -760,7 +760,7 @@ impl<'b, K: Eq, V, const TYPE: char> Locker<'b, K, V, TYPE> {
                     .read()
             };
             link_mut.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
-            if let Some(v) = det(&k, v) {
+            if let Some(v) = pred(&k, v) {
                 // The instances returned: revive the entry.
                 unsafe {
                     link_mut.data_block[entry_ptr.current_index]
@@ -778,7 +778,7 @@ impl<'b, K: Eq, V, const TYPE: char> Locker<'b, K, V, TYPE> {
             );
             self.bucket.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
             let (k, v) = unsafe { data_block[entry_ptr.current_index].as_mut_ptr().read() };
-            if let Some(v) = det(&k, v) {
+            if let Some(v) = pred(&k, v) {
                 unsafe {
                     data_block[entry_ptr.current_index]
                         .as_mut_ptr()

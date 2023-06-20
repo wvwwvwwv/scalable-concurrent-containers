@@ -1267,17 +1267,17 @@ where
             break;
         }
 
-        if num_removed >= num_retained {
+        if num_removed != 0 {
             self.try_resize(0, &Barrier::new());
         }
 
         (num_retained, num_removed)
     }
 
-    /// Keeps the entries specified by the predicate, and returns the number of removed entries.
+    /// Prunes the entries specified by the predicate, and returns the number of removed entries.
     ///
-    /// The predicate may return `Some(V)` if it does not want the entry to be removed, or `None`
-    /// if the entry shall be removed.
+    /// If the value is consumed by the predicate, in other words, if the predicate returns `None`,
+    /// the entry is removed, otherwise the entry is retained.
     ///
     /// Entries that have existed since the invocation of the method are guaranteed to be visited
     /// if they are not removed, however the same entry can be visited more than once if the
@@ -1294,14 +1294,18 @@ where
     /// assert!(hashmap.insert(2, 1).is_ok());
     /// assert!(hashmap.insert(3, 2).is_ok());
     ///
-    /// assert_eq!(hashmap.keep(|k, v| if *k == 1 { Some(v) } else { None }), 2);
+    /// assert_eq!(hashmap.prune(|k, v| if *k == 1 { Some(v) } else { None }), 2);
+    /// assert_eq!(hashmap.len(), 1);
     /// ```
     #[inline]
-    pub fn keep<F: FnMut(&K, V) -> Option<V>>(&self, pred: F) -> usize {
-        self.keep_entries(pred)
+    pub fn prune<F: FnMut(&K, V) -> Option<V>>(&self, pred: F) -> usize {
+        self.prune_entries(pred)
     }
 
-    /// Keeps the entries specified by the predicate, and returns the number of removed entries.
+    /// Prunes the entries specified by the predicate, and returns the number of removed entries.
+    ///
+    /// If the value is consumed by the predicate, in other words, if the predicate returns `None`,
+    /// the entry is removed, otherwise the entry is retained.
     ///
     /// Entries that have existed since the invocation of the method are guaranteed to be visited
     /// if they are not removed, however the same entry can be visited more than once if the
@@ -1317,10 +1321,10 @@ where
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// let future_insert = hashmap.insert_async(1, 0);
-    /// let future_keep = hashmap.keep_async(|k, v| if *k == 1 { Some(v) } else { None });
+    /// let future_prune = hashmap.prune_async(|k, v| if *k == 1 { Some(v) } else { None });
     /// ```
     #[inline]
-    pub async fn keep_async<F: FnMut(&K, V) -> Option<V>>(&self, mut pred: F) -> usize {
+    pub async fn prune_async<F: FnMut(&K, V) -> Option<V>>(&self, mut pred: F) -> usize {
         let mut num_consumed: usize = 0;
         let mut current_array_holder = self.array.get_arc(Acquire, &Barrier::new());
         while let Some(current_array) = current_array_holder.take() {
