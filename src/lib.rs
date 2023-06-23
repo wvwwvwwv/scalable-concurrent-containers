@@ -1,20 +1,5 @@
 #![deny(missing_docs, warnings, clippy::all, clippy::pedantic)]
-
-//! Concurrent and asynchronous containers.
-//!
-//! * [`HashMap`]: concurrent and asynchronous hash map.
-//! * [`HashSet`]: concurrent and asynchronous hash set.
-//! * [`HashIndex`]: read-optimized concurrent and asynchronous hash map.
-//! * [`HashCache`]: concurrent and asynchronous sampling-based LRU cache backed by [`HashMap`].
-//! * [`TreeIndex`]: read-optimized concurrent and asynchronous B-plus tree.
-//!
-//! Utilities for concurrent programming.
-//!
-//! * [`ebr`]: lock-free epoch-based reclamation.
-//! * [`LinkedList`]: lock-free concurrent linked list type trait.
-//! * [`Bag`]: lock-free concurrent unordered instance container.
-//! * [`Queue`]: lock-free concurrent first-in-first-out container.
-//! * [`Stack`]: lock-free concurrent last-in-first-out container.
+#![doc = include_str!("../README.md")]
 
 pub mod hash_map;
 pub use hash_map::HashMap;

@@ -55,7 +55,7 @@ use scc::HashMap;
 let hashmap: HashMap<u64, u32> = HashMap::default();
 
 assert!(hashmap.insert(1, 0).is_ok());
-assert_eq!(hashmap.update(&1, |v| { *v = 2; *v }).unwrap(), 2);
+assert_eq!(hashmap.update(&1, |_, v| { *v = 2; *v }).unwrap(), 2);
 assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
 assert_eq!(hashmap.remove(&1).unwrap(), (1, 2));
 
@@ -103,17 +103,17 @@ assert!(hashmap.insert(3, 2).is_ok());
 assert!(hashmap.any(|k, _| *k == 3));
 
 // `retain` enables entry removal.
-assert_eq!(hashmap.retain(|k, v| *k == 1 && *v == 0), (1, 2));
+assert_eq!(hashmap.retain(|k, v| *k == 1 && *v == 2), (1, 2));
 
 // `hash_map::OccupiedEntry` also can return the next closest occupied entry.
 let first_entry = hashmap.first_occupied_entry();
+assert!(first_entry.is_some());
 let second_entry = first_entry.and_then(|e| e.next());
-assert!(first_entry.is_some() && second_entry.is_some());
-assert!(second_entry.and_then(|e| e.next()).is_none());
+assert!(second_entry.is_none());
 
 // Asynchronous iteration over entries using `scan_async` and `for_each_async`.
 let future_scan = hashmap.scan_async(|k, v| println!("{k} {v}"));
-let future_for_each = hashmap.for_each_async(|k, v_mut| { *v_mut = *k; });
+let future_for_each = hashmap.for_each_async(|_, v_mut| { *v_mut = 0; });
 ```
 
 ## HashSet
@@ -146,7 +146,6 @@ let future_remove = hashset.remove_async(&1);
 The `read` method is completely lock-free.
 
 ```rust
-use scc::hash_index::ModifyAction;
 use scc::HashIndex;
 
 let hashindex: HashIndex<u64, u32> = HashIndex::default();
@@ -162,6 +161,7 @@ An [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is impleme
 
 ```rust
 use scc::ebr::Barrier;
+use scc::hash_index::ModifyAction;
 use scc::HashIndex;
 
 let hashindex: HashIndex<u64, u32> = HashIndex::default();
@@ -170,7 +170,7 @@ assert!(hashindex.insert(1, 0).is_ok());
 
 // Existing values can be replaced with new ones.
 assert!(hashindex.modify(
-    1,
+    &1,
     |_, v| if *v == 0 { ModifyAction::Update(1) } else { ModifyAction::Remove }));
 
 let barrier = Barrier::new();
@@ -185,7 +185,7 @@ assert_eq!(iter.next(), None);
 drop(hashindex);
 
 // The entry can be read after `hashindex` is dropped.
-assert_eq!(entry_ref, (&1, &0));
+assert_eq!(entry_ref, (&1, &1));
 ```
 
 ## HashCache
@@ -312,8 +312,8 @@ use scc::Queue;
 let queue: Queue<usize> = Queue::default();
 
 queue.push(1);
-assert!(queue.push_if(2, |e| e.map_or(false, |x| *x == 1)).is_ok());
-assert!(queue.push_if(3, |e| e.map_or(false, |x| *x == 1)).is_err());
+assert!(queue.push_if(2, |e| e.map_or(false, |x| **x == 1)).is_ok());
+assert!(queue.push_if(3, |e| e.map_or(false, |x| **x == 1)).is_err());
 assert_eq!(queue.pop().map(|e| **e), Some(1));
 assert_eq!(queue.pop().map(|e| **e), Some(2));
 assert!(queue.pop().is_none());
