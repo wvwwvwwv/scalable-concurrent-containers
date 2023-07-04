@@ -234,10 +234,7 @@ impl<'b, T> Ptr<'b, T> {
 impl<'b, T> Clone for Ptr<'b, T> {
     #[inline]
     fn clone(&self) -> Self {
-        Self {
-            instance_ptr: self.instance_ptr,
-            _phantom: std::marker::PhantomData,
-        }
+        *self
     }
 }
 

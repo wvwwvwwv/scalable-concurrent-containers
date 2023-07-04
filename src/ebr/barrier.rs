@@ -69,7 +69,7 @@ impl Barrier {
     /// ```
     #[inline]
     pub fn defer(&self, collectible: Box<dyn Collectible>) {
-        self.collect(Box::into_raw(collectible) as *mut dyn Collectible);
+        self.collect(Box::into_raw(collectible));
     }
 
     /// Executes the supplied closure at a later point of time.
