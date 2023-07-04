@@ -60,7 +60,9 @@ where
     fn reserve_capacity(&self, additional_capacity: usize) -> usize {
         let mut current_minimum_capacity = self.minimum_capacity().load(Relaxed);
         loop {
-            let Some(new_minimum_capacity) = current_minimum_capacity.checked_add(additional_capacity) else {
+            let Some(new_minimum_capacity) =
+                current_minimum_capacity.checked_add(additional_capacity)
+            else {
                 return 0;
             };
 
