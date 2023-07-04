@@ -161,7 +161,9 @@ where
                 &mut (),
                 barrier,
             );
-            let Ok(InsertResult::Retry(key, val)) = result else { unreachable!() };
+            let Ok(InsertResult::Retry(key, val)) = result else {
+                unreachable!()
+            };
 
             // Updates the pointer before unlocking the root.
             let new_root_ref = new_root.ptr(barrier).as_ref();

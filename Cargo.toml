@@ -17,12 +17,12 @@ serde = { version = "1.0", optional = true }
 [dev-dependencies]
 criterion = "0.5"
 futures = "0.3"
-loom = "0.5"
+loom = "0.6"
 proptest = "1.2"
 rand = "0.8"
 serde_test = "1.0"
 static_assertions = "1.1"
-tokio = { version = "1.28", features = ["full"] }
+tokio = { version = "1.29", features = ["full"] }
 
 [[bench]]
 name = "bag"
