@@ -237,7 +237,7 @@ pub trait LinkedList: Sized {
             entry
                 .link_ref()
                 .swap((next_ptr.get_arc(), Tag::None), Relaxed);
-            match self.link_ref().compare_exchange(
+            match self.link_ref().compare_exchange_weak(
                 next_ptr,
                 (Some(entry), new_tag),
                 order,

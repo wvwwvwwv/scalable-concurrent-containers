@@ -852,7 +852,7 @@ where
                     // Only `BUCKET_LEN - 1` threads are allowed to rehash a `Bucket` at a moment.
                     return Ok(current_array.old_array(barrier).is_null());
                 }
-                match rehashing_metadata.compare_exchange(
+                match rehashing_metadata.compare_exchange_weak(
                     current,
                     current + BUCKET_LEN + 1,
                     Relaxed,
@@ -885,7 +885,9 @@ where
                             let ref_cnt = current & (BUCKET_LEN - 1);
                             prev | (ref_cnt - 1)
                         };
-                        match rehashing_metadata.compare_exchange(current, new, Relaxed, Relaxed) {
+                        match rehashing_metadata
+                            .compare_exchange_weak(current, new, Relaxed, Relaxed)
+                        {
                             Ok(_) => break,
                             Err(actual) => current = actual,
                         }

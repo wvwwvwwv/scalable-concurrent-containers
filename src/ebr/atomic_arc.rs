@@ -13,6 +13,9 @@ pub struct AtomicArc<T> {
     instance_ptr: AtomicPtr<RefCounted<T>>,
 }
 
+/// A pair of [`Arc`] and [`Ptr`] of the same type.
+pub type ArcPtrPair<'b, T> = (Option<Arc<T>>, Ptr<'b, T>);
+
 impl<T: 'static> AtomicArc<T> {
     /// Creates a new [`AtomicArc`] from an instance of `T`.
     ///
@@ -196,10 +199,9 @@ impl<T> AtomicArc<T> {
             .is_ok()
     }
 
-    /// Performs CAS on the [`AtomicArc`].
+    /// Stores `new` into the [`AtomicArc`] if the current value is the same as `current`.
     ///
-    /// Returns `Ok` with the previously held [`Arc`] and the updated [`Ptr`] upon a successful
-    /// operation.
+    /// Returns the previously held value and the updated [`Ptr`].
     ///
     /// # Errors
     ///
@@ -231,7 +233,6 @@ impl<T> AtomicArc<T> {
     ///     ptr, (Some(Arc::new(19)), Tag::None), Relaxed, Relaxed, &barrier).is_err());
     /// assert_eq!(*ptr.as_ref().unwrap(), 17);
     /// ```
-    #[allow(clippy::type_complexity)]
     #[inline]
     pub fn compare_exchange<'b>(
         &self,
@@ -240,7 +241,7 @@ impl<T> AtomicArc<T> {
         success: Ordering,
         failure: Ordering,
         _barrier: &'b Barrier,
-    ) -> Result<(Option<Arc<T>>, Ptr<'b, T>), (Option<Arc<T>>, Ptr<'b, T>)> {
+    ) -> Result<ArcPtrPair<'b, T>, ArcPtrPair<'b, T>> {
         let desired = Tag::update_tag(
             new.0
                 .as_ref()
@@ -263,6 +264,70 @@ impl<T> AtomicArc<T> {
         }
     }
 
+    /// Stores `new` into the [`AtomicArc`] if the current value is the same as `current`.
+    ///
+    /// This method is allowed to spuriously fail even when the comparison succeeds.
+    ///
+    /// Returns the previously held value and the updated [`Ptr`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with the supplied [`Arc`] and the current [`Ptr`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::{Arc, AtomicArc, Barrier, Tag};
+    /// use std::sync::atomic::Ordering::Relaxed;
+    ///
+    /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(17);
+    /// let barrier = Barrier::new();
+    ///
+    /// let mut ptr = atomic_arc.load(Relaxed, &barrier);
+    /// assert_eq!(*ptr.as_ref().unwrap(), 17);
+    ///
+    /// while let Err((_, actual)) = atomic_arc.compare_exchange_weak(
+    ///     ptr,
+    ///     (Some(Arc::new(18)), Tag::First),
+    ///     Relaxed,
+    ///     Relaxed,
+    ///     &barrier) {
+    ///     ptr = actual;
+    /// }
+    ///
+    /// let mut ptr = atomic_arc.load(Relaxed, &barrier);
+    /// assert_eq!(*ptr.as_ref().unwrap(), 18);
+    /// ```
+    #[inline]
+    pub fn compare_exchange_weak<'b>(
+        &self,
+        current: Ptr<'b, T>,
+        new: (Option<Arc<T>>, Tag),
+        success: Ordering,
+        failure: Ordering,
+        _barrier: &'b Barrier,
+    ) -> Result<ArcPtrPair<'b, T>, ArcPtrPair<'b, T>> {
+        let desired = Tag::update_tag(
+            new.0
+                .as_ref()
+                .map_or_else(null_mut, Arc::get_underlying_ptr),
+            new.1,
+        )
+        .cast_mut();
+        match self.instance_ptr.compare_exchange_weak(
+            current.as_underlying_ptr().cast_mut(),
+            desired,
+            success,
+            failure,
+        ) {
+            Ok(prev) => {
+                let prev_arc = NonNull::new(Tag::unset_tag(prev).cast_mut()).map(Arc::from);
+                forget(new);
+                Ok((prev_arc, Ptr::from(desired)))
+            }
+            Err(actual) => Err((new.0, Ptr::from(actual))),
+        }
+    }
     /// Clones `self` including tags.
     ///
     /// If `self` is not supposed to be an `AtomicArc::null`, this will never return an

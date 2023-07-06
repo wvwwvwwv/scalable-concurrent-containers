@@ -206,7 +206,8 @@ impl Collector {
             // It keeps the tag intact.
             let tag = Tag::into_tag(current);
             let new = Tag::update_tag(ptr, tag).cast_mut();
-            if let Err(actual) = GLOBAL_ANCHOR.compare_exchange(current, new, Release, Relaxed) {
+            if let Err(actual) = GLOBAL_ANCHOR.compare_exchange_weak(current, new, Release, Relaxed)
+            {
                 current = actual;
             } else {
                 break;
