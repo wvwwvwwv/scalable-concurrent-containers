@@ -1,5 +1,9 @@
 # Changelog
 
+1.9.0
+
+* API update: add `ebr::Boxed` for boxing non-reference-counted instances.
+
 1.8.3
 
 * API update: add `ebr::AtomicArc::compare_exchange_weak`.

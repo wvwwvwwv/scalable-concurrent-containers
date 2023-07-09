@@ -5,20 +5,29 @@ use std::ptr::NonNull;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{self, Relaxed};
 
-/// [`RefCounted`] stores an instance of type `T`, and a union of the link to the next
-/// [`RefCounted`] or the reference counter.
+/// [`RefCounted`] stores an instance of type `T`, and a union of a link to the next
+/// [`Collectible`] or the reference counter.
 pub(super) struct RefCounted<T> {
     instance: T,
     next_or_refcnt: LinkOrRefCnt,
 }
 
 impl<T> RefCounted<T> {
-    // Creates a new underlying instance.
+    // Creates a new [`RefCounted`].
     #[inline]
     pub(super) const fn new(t: T) -> Self {
-        RefCounted {
+        Self {
             instance: t,
             next_or_refcnt: LinkOrRefCnt::new(),
+        }
+    }
+
+    // Creates a new [`RefCounted`] that disallows reference counting.
+    #[inline]
+    pub(super) const fn new_unique(t: T) -> Self {
+        Self {
+            instance: t,
+            next_or_refcnt: LinkOrRefCnt::new_unique(),
         }
     }
 
@@ -51,6 +60,13 @@ impl<T> RefCounted<T> {
         } else {
             None
         }
+    }
+
+    /// Returns a mutable reference to the instance if it is uniquely owned.
+    #[inline]
+    pub(super) fn get_mut_unique(&mut self) -> &mut T {
+        debug_assert_eq!(self.ref_cnt().load(Relaxed), 0);
+        &mut self.instance
     }
 
     /// Adds a strong reference to the underlying instance.
@@ -136,6 +152,13 @@ impl LinkOrRefCnt {
     const fn new() -> Self {
         LinkOrRefCnt {
             refcnt: ManuallyDrop::new((AtomicUsize::new(1), 0)),
+        }
+    }
+
+    #[inline]
+    const fn new_unique() -> Self {
+        LinkOrRefCnt {
+            refcnt: ManuallyDrop::new((AtomicUsize::new(0), 0)),
         }
     }
 }

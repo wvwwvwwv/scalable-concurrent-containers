@@ -341,6 +341,10 @@ assert!(stack.pop().is_none());
 
 The `ebr` module implements epoch-based reclamation and various types of auxiliary data structures to make use of it safely. Its epoch-based reclamation algorithm is similar to that implemented in [crossbeam_epoch](https://docs.rs/crossbeam-epoch/), however users may find it easier to use as the lifetime of an instance is safely managed. For instance, `ebr::AtomicArc` and `ebr::Arc` hold a strong reference to the underlying instance, and the instance is automatically passed to the garbage collector when the reference count drops to zero.
 
+### Memory Overhead
+
+Retired instances are stored in an intrusive queue in thread-local storage, and therefore each instance must provide a 16-byte `NonNull<dyn Collectible>` for the intrusive queue.
+
 ### Examples
 
 The `ebr` module can be used without an `unsafe` block.

@@ -73,6 +73,9 @@ pub use arc::Arc;
 mod atomic_arc;
 pub use atomic_arc::AtomicArc;
 
+mod owned;
+pub use owned::Owned;
+
 mod barrier;
 pub use barrier::Barrier;
 

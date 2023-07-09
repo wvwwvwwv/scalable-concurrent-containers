@@ -19,9 +19,9 @@ impl<T: 'static> Arc<T> {
     ///
     /// The type of the instance must be determined at compile-time, must not contain non-static
     /// references, and must not be a non-static reference since the instance can, theoretically,
-    /// live as long as the process. For instance, `struct Disallowed<'l, T>(&'l T)` is not
-    /// allowed, because an instance of the type cannot outlive `'l` whereas the garbage collector
-    /// does not guarantee that the instance is dropped within `'l`.
+    /// survive the process. For instance, `struct Disallowed<'l, T>(&'l T)` is not allowed,
+    /// because an instance of the type cannot outlive `'l` whereas the garbage collector does not
+    /// guarantee that the instance is dropped within `'l`.
     ///
     /// # Examples
     ///
@@ -40,7 +40,7 @@ impl<T: 'static> Arc<T> {
 }
 
 impl<T> Arc<T> {
-    /// Creates a new instance of [`Arc`] without checking the lifetime of `T`.
+    /// Creates a new [`Arc`] without checking the lifetime of `T`.
     ///
     /// # Safety
     ///
@@ -110,7 +110,8 @@ impl<T> Arc<T> {
     /// # Safety
     ///
     /// The method is `unsafe` since there can be a [`Ptr`] to the instance; in other words, it is
-    /// safe as long as there is no [`Ptr`] to the instance.
+    /// safe as long as there is no [`Ptr`] to the instance and `self` has the only strong
+    /// reference count.
     ///
     /// # Examples
     ///

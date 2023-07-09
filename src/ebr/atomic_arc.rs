@@ -445,7 +445,5 @@ impl<T> Drop for AtomicArc<T> {
 }
 
 unsafe impl<T: Send> Send for AtomicArc<T> {}
-
 unsafe impl<T: Sync> Sync for AtomicArc<T> {}
-
 impl<T: UnwindSafe> UnwindSafe for AtomicArc<T> {}
