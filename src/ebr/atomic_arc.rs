@@ -328,6 +328,7 @@ impl<T> AtomicArc<T> {
             Err(actual) => Err((new.0, Ptr::from(actual))),
         }
     }
+
     /// Clones `self` including tags.
     ///
     /// If `self` is not supposed to be an `AtomicArc::null`, this will never return an

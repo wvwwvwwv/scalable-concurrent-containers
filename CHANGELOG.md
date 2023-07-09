@@ -2,7 +2,7 @@
 
 1.9.0
 
-* API update: add `ebr::Boxed` for boxing non-reference-counted instances.
+* API update: add `ebr::{AtomicOwned, Owned}` for boxing non-reference-counted instances.
 
 1.8.3
 

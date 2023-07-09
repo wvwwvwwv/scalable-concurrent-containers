@@ -200,7 +200,6 @@ impl<T> Drop for Owned<T> {
     }
 }
 
-impl<T: UnwindSafe> UnwindSafe for Owned<T> {}
-
 unsafe impl<T: Send> Send for Owned<T> {}
 unsafe impl<T: Sync> Sync for Owned<T> {}
+impl<T: UnwindSafe> UnwindSafe for Owned<T> {}

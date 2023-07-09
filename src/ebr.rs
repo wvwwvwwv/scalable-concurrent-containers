@@ -73,14 +73,17 @@ pub use arc::Arc;
 mod atomic_arc;
 pub use atomic_arc::AtomicArc;
 
-mod owned;
-pub use owned::Owned;
+mod atomic_owned;
+pub use atomic_owned::AtomicOwned;
 
 mod barrier;
 pub use barrier::Barrier;
 
 mod collectible;
 pub use collectible::Collectible;
+
+mod owned;
+pub use owned::Owned;
 
 mod ptr;
 pub use ptr::Ptr;
