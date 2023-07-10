@@ -358,7 +358,7 @@ use std::sync::atomic::Ordering::Relaxed;
 let atomic_arc: AtomicArc<usize> = AtomicArc::new(17);
 
 // `atomic_owned` owns `19`.
-let atomic_owned: AtomicOwned<usize> = Atomic::new(19);
+let atomic_owned: AtomicOwned<usize> = AtomicOwned::new(19);
 
 // `barrier` prevents the garbage collector from dropping reachable instances.
 let barrier: Barrier = Barrier::new();

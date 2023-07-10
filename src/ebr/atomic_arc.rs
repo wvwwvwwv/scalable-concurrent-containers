@@ -437,8 +437,7 @@ impl<T> Default for AtomicArc<T> {
 impl<T> Drop for AtomicArc<T> {
     #[inline]
     fn drop(&mut self) {
-        if let Some(ptr) =
-            NonNull::new(Tag::unset_tag(self.instance_ptr.swap(null_mut(), Relaxed)).cast_mut())
+        if let Some(ptr) = NonNull::new(Tag::unset_tag(self.instance_ptr.load(Relaxed)).cast_mut())
         {
             drop(Arc::from(ptr));
         }

@@ -47,7 +47,7 @@ impl<T> AtomicOwned<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Owned, AtomicOwned};
+    /// use scc::ebr::{AtomicOwned, Owned};
     ///
     /// let owned: Owned<usize> = Owned::new(10);
     /// let atomic_owned: AtomicOwned<usize> = AtomicOwned::from(owned);
@@ -119,7 +119,7 @@ impl<T> AtomicOwned<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Owned, AtomicOwned, Barrier, Tag};
+    /// use scc::ebr::{AtomicOwned, Barrier, Owned, Tag};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_owned: AtomicOwned<usize> = AtomicOwned::new(14);
@@ -210,7 +210,7 @@ impl<T> AtomicOwned<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Owned, AtomicOwned, Barrier, Tag};
+    /// use scc::ebr::{AtomicOwned, Barrier, Owned, Tag};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_owned: AtomicOwned<usize> = AtomicOwned::new(17);
@@ -277,7 +277,7 @@ impl<T> AtomicOwned<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Owned, AtomicOwned, Barrier, Tag};
+    /// use scc::ebr::{AtomicOwned, Owned, Barrier, Tag};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_owned: AtomicOwned<usize> = AtomicOwned::new(17);
@@ -334,7 +334,7 @@ impl<T> AtomicOwned<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Owned, AtomicOwned};
+    /// use scc::ebr::{AtomicOwned, Owned};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_owned: AtomicOwned<usize> = AtomicOwned::new(55);
@@ -361,8 +361,7 @@ impl<T> Default for AtomicOwned<T> {
 impl<T> Drop for AtomicOwned<T> {
     #[inline]
     fn drop(&mut self) {
-        if let Some(ptr) =
-            NonNull::new(Tag::unset_tag(self.instance_ptr.swap(null_mut(), Relaxed)).cast_mut())
+        if let Some(ptr) = NonNull::new(Tag::unset_tag(self.instance_ptr.load(Relaxed)).cast_mut())
         {
             drop(Owned::from(ptr));
         }

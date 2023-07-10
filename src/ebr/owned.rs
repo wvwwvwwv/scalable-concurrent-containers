@@ -4,7 +4,7 @@ use std::ops::Deref;
 use std::panic::UnwindSafe;
 use std::ptr::{addr_of, NonNull};
 
-/// [`Owned`] is an owned handle to an instance.
+/// [`Owned`] is uniquely owns an instance.
 ///
 /// The underlying instance it passed to the `EBR` garbage collector when the [`Owned`] is dropped.
 #[derive(Debug)]
@@ -147,7 +147,6 @@ impl<T> Owned<T> {
     }
 
     /// Creates a new [`Owned`] from the given pointer.
-    #[allow(dead_code)]
     #[inline]
     pub(super) fn from(ptr: NonNull<RefCounted<T>>) -> Self {
         debug_assert_eq!(
