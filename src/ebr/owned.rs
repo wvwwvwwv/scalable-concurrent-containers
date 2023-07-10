@@ -97,8 +97,7 @@ impl<T> Owned<T> {
         unsafe { std::mem::transmute(&**self.underlying()) }
     }
 
-    /// Returns a mutable reference to the underlying instance if the instance is exclusively
-    /// owned.
+    /// Returns a mutable reference to the underlying instance.
     ///
     /// # Safety
     ///

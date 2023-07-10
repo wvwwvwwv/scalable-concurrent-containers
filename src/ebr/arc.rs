@@ -32,7 +32,7 @@ impl<T: 'static> Arc<T> {
     /// ```
     #[inline]
     pub fn new(t: T) -> Self {
-        let boxed = Box::new(RefCounted::new(t));
+        let boxed = Box::new(RefCounted::new_shared(t));
         Self {
             instance_ptr: unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) },
         }
@@ -62,7 +62,7 @@ impl<T> Arc<T> {
     /// ```
     #[inline]
     pub unsafe fn new_unchecked(t: T) -> Self {
-        let boxed = Box::new(RefCounted::new(t));
+        let boxed = Box::new(RefCounted::new_shared(t));
         Self {
             instance_ptr: unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) },
         }
@@ -126,7 +126,7 @@ impl<T> Arc<T> {
     /// ```
     #[inline]
     pub unsafe fn get_mut(&mut self) -> Option<&mut T> {
-        self.instance_ptr.as_mut().get_mut()
+        self.instance_ptr.as_mut().get_mut_shared()
     }
 
     /// Provides a raw pointer to the underlying instance.
@@ -299,8 +299,6 @@ impl<T> Drop for Arc<T> {
     }
 }
 
-impl<T: UnwindSafe> UnwindSafe for Arc<T> {}
-
 impl<'b, T> TryFrom<Ptr<'b, T>> for Arc<T> {
     type Error = Ptr<'b, T>;
 
@@ -316,3 +314,4 @@ impl<'b, T> TryFrom<Ptr<'b, T>> for Arc<T> {
 
 unsafe impl<T: Send> Send for Arc<T> {}
 unsafe impl<T: Sync> Sync for Arc<T> {}
+impl<T: UnwindSafe> UnwindSafe for Arc<T> {}

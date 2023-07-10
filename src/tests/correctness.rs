@@ -2210,7 +2210,7 @@ mod stack_test {
 
 #[cfg(test)]
 mod ebr_test {
-    use crate::ebr::{suspend, Arc, AtomicArc, Barrier, Ptr, Tag};
+    use crate::ebr::{suspend, Arc, AtomicArc, AtomicOwned, Barrier, Owned, Ptr, Tag};
     use std::ops::Deref;
     use std::panic::UnwindSafe;
     use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -2287,13 +2287,42 @@ mod ebr_test {
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn arc_send() {
+    fn owned() {
+        static DESTROYED: AtomicBool = AtomicBool::new(false);
+
+        let mut owned = Owned::new(A(AtomicUsize::new(10), 10, &DESTROYED));
+        unsafe {
+            *owned.get_mut().0.get_mut() += 2;
+            owned.get_mut().1 += 2;
+        }
+        assert_eq!(owned.deref().0.load(Relaxed), 12);
+        assert_eq!(owned.deref().1, 12);
+
+        let barrier = Barrier::new();
+        let ptr = owned.ptr(&barrier);
+        assert!(ptr.get_arc().is_none());
+
+        drop(owned);
+        assert!(!DESTROYED.load(Relaxed));
+
+        drop(barrier);
+
+        while !DESTROYED.load(Relaxed) {
+            drop(Barrier::new());
+        }
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn sendable() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
 
         let arc = Arc::new(A(AtomicUsize::new(14), 14, &DESTROYED));
+        let owned = Owned::new(A(AtomicUsize::new(15), 15, &DESTROYED));
         let arc_clone = arc.clone();
         let thread = std::thread::spawn(move || {
             assert_eq!(arc_clone.0.load(Relaxed), arc_clone.1);
+            assert_eq!(owned.1, 15);
         });
         assert!(thread.join().is_ok());
         assert_eq!(arc.0.load(Relaxed), arc.1);
@@ -2359,6 +2388,30 @@ mod ebr_test {
         atomic_arc_clone.update_tag_if(Tag::Second, |_| true, Relaxed, Relaxed);
 
         drop(atomic_arc_clone);
+        drop(barrier);
+
+        while !DESTROYED.load(Relaxed) {
+            drop(Barrier::new());
+        }
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn atomic_owned() {
+        static DESTROYED: AtomicBool = AtomicBool::new(false);
+
+        let atomic_owned = AtomicOwned::new(A(AtomicUsize::new(10), 10, &DESTROYED));
+        assert!(!DESTROYED.load(Relaxed));
+
+        let barrier = Barrier::new();
+        let ptr = atomic_owned.load(Relaxed, &barrier);
+        assert_eq!(ptr.as_ref().map(|a| a.1), Some(10));
+
+        atomic_owned.update_tag_if(Tag::Second, |_| true, Relaxed, Relaxed);
+
+        drop(atomic_owned);
+        assert_eq!(ptr.as_ref().map(|a| a.1), Some(10));
+
         drop(barrier);
 
         while !DESTROYED.load(Relaxed) {

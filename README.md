@@ -343,19 +343,22 @@ The `ebr` module implements epoch-based reclamation and various types of auxilia
 
 ### Memory Overhead
 
-Retired instances are stored in an intrusive queue in thread-local storage, and therefore each instance must provide a 16-byte `NonNull<dyn Collectible>` for the intrusive queue.
+Retired instances are stored in intrusive queues in thread-local storage, and therefore each instance must provide 16-byte space for the intrusive queue data structure to access `Option<NonNull<dyn Collectible>>`.
 
 ### Examples
 
 The `ebr` module can be used without an `unsafe` block.
 
 ```rust
-use scc::ebr::{suspend, Arc, AtomicArc, Barrier, Ptr, Tag};
+use scc::ebr::{suspend, Arc, AtomicArc, AtomicOwned, Barrier, Ptr, Tag};
 
 use std::sync::atomic::Ordering::Relaxed;
 
 // `atomic_arc` holds a strong reference to `17`.
 let atomic_arc: AtomicArc<usize> = AtomicArc::new(17);
+
+// `atomic_owned` owns `19`.
+let atomic_owned: AtomicOwned<usize> = Atomic::new(19);
 
 // `barrier` prevents the garbage collector from dropping reachable instances.
 let barrier: Barrier = Barrier::new();
@@ -394,8 +397,9 @@ drop(prev);
 let arc: Arc<usize> = atomic_arc.try_into_arc(Relaxed).unwrap();
 assert_eq!(*arc, 18);
 
-// `18` will be garbage-collected later.
+// `18` and `19` will be garbage-collected later.
 drop(arc);
+drop(atomic_owned);
 
 // `17` is still valid as `barrier` keeps the garbage collector from dropping it.
 assert_eq!(*ptr.as_ref().unwrap(), 17);

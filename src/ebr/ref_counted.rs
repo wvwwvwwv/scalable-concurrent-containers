@@ -13,16 +13,18 @@ pub(super) struct RefCounted<T> {
 }
 
 impl<T> RefCounted<T> {
-    // Creates a new [`RefCounted`].
+    /// Creates a new [`RefCounted`] that allows ownership sharing.
     #[inline]
-    pub(super) const fn new(t: T) -> Self {
+    pub(super) const fn new_shared(t: T) -> Self {
         Self {
             instance: t,
-            next_or_refcnt: LinkOrRefCnt::new(),
+            next_or_refcnt: LinkOrRefCnt::new_shared(),
         }
     }
 
-    // Creates a new [`RefCounted`] that disallows reference counting.
+    /// Creates a new [`RefCounted`] that disallows reference counting.
+    ///
+    /// The reference counter field is never used until the instance is retired.
     #[inline]
     pub(super) const fn new_unique(t: T) -> Self {
         Self {
@@ -33,8 +35,8 @@ impl<T> RefCounted<T> {
 
     /// Tries to add a strong reference to the underlying instance.
     ///
-    // `order` must be as strong as `Acquire` for the caller to correctly validate the newest state
-    // of the pointer.
+    /// `order` must be as strong as `Acquire` for the caller to correctly validate the newest
+    /// state of the pointer.
     #[inline]
     pub(super) fn try_add_ref(&self, order: Ordering) -> bool {
         self.ref_cnt()
@@ -52,9 +54,9 @@ impl<T> RefCounted<T> {
             .is_ok()
     }
 
-    /// Returns a mutable reference to the instance if it is owned exclusively.
+    /// Returns a mutable reference to the instance if the number of owners is `1`.
     #[inline]
-    pub(super) fn get_mut(&mut self) -> Option<&mut T> {
+    pub(super) fn get_mut_shared(&mut self) -> Option<&mut T> {
         if self.ref_cnt().load(Relaxed) == 1 {
             Some(&mut self.instance)
         } else {
@@ -149,7 +151,7 @@ pub(super) union LinkOrRefCnt {
 
 impl LinkOrRefCnt {
     #[inline]
-    const fn new() -> Self {
+    const fn new_shared() -> Self {
         LinkOrRefCnt {
             refcnt: ManuallyDrop::new((AtomicUsize::new(1), 0)),
         }

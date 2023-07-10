@@ -34,7 +34,7 @@ impl<T: 'static> AtomicArc<T> {
     /// ```
     #[inline]
     pub fn new(t: T) -> Self {
-        let boxed = Box::new(RefCounted::new(t));
+        let boxed = Box::new(RefCounted::new_shared(t));
         Self {
             instance_ptr: AtomicPtr::new(Box::into_raw(boxed)),
         }
