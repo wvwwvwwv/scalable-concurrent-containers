@@ -3,11 +3,12 @@ pub mod bucket_array;
 
 use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
 use crate::exit_guard::ExitGuard;
-use crate::wait_queue::DeriveAsyncWait;
+use crate::wait_queue::{AsyncWait, DeriveAsyncWait};
 use bucket::{DataBlock, EntryPtr, Locker, Reader, BUCKET_LEN, CACHE, OPTIMISTIC};
 use bucket_array::BucketArray;
 use std::borrow::Borrow;
 use std::hash::{BuildHasher, Hash, Hasher};
+use std::pin::Pin;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 use std::sync::atomic::{fence, AtomicUsize};
 
@@ -1122,19 +1123,206 @@ where
 }
 
 /// [`LockedEntry`] comprises pieces of data that are required for exclusive access to an entry.
-pub(super) struct LockedEntry<'b, K: Eq, V, const TYPE: char> {
+pub(super) struct LockedEntry<'h, K: Eq + Hash, V, const TYPE: char> {
     /// The [`Locker`] holding the exclusive lock on the bucket.
-    pub(super) locker: Locker<'b, K, V, TYPE>,
+    pub(super) locker: Locker<'h, K, V, TYPE>,
 
     /// The [`DataBlock`] that may contain desired entry data.
-    pub(super) data_block_mut: &'b mut DataBlock<K, V, BUCKET_LEN>,
+    pub(super) data_block_mut: &'h mut DataBlock<K, V, BUCKET_LEN>,
 
     /// [`EntryPtr`] pointing to the actual entry in the bucket.
-    pub(super) entry_ptr: EntryPtr<'b, K, V, TYPE>,
+    pub(super) entry_ptr: EntryPtr<'h, K, V, TYPE>,
 
     /// The index in the bucket array.
     pub(super) index: usize,
 }
 
+impl<'h, K: Eq + Hash, V, const TYPE: char> LockedEntry<'h, K, V, TYPE> {
+    /// Gets the first occupied entry.
+    pub(super) async fn first_occupied_entry_async<H: BuildHasher, T: HashTable<K, V, H, TYPE>>(
+        hash_table: &'h T,
+    ) -> Option<LockedEntry<'h, K, V, TYPE>> {
+        let mut current_array_holder = hash_table.bucket_array().get_arc(Acquire, &Barrier::new());
+        while let Some(current_array) = current_array_holder.take() {
+            while !current_array.old_array(&Barrier::new()).is_null() {
+                let mut async_wait = AsyncWait::default();
+                let mut async_wait_pinned = Pin::new(&mut async_wait);
+                if hash_table.incremental_rehash::<_, _, false>(
+                    current_array.as_ref(),
+                    &mut async_wait_pinned,
+                    &Barrier::new(),
+                ) == Ok(true)
+                {
+                    break;
+                }
+                async_wait_pinned.await;
+            }
+            for index in 0..current_array.num_buckets() {
+                loop {
+                    let mut async_wait = AsyncWait::default();
+                    let mut async_wait_pinned = Pin::new(&mut async_wait);
+                    {
+                        let barrier = Barrier::new();
+                        let prolonged_barrier = hash_table.prolonged_barrier_ref(&barrier);
+                        let prolonged_current_array = current_array.get_ref_with(prolonged_barrier);
+                        let bucket = prolonged_current_array.bucket_mut(index);
+                        if let Ok(locker) = Locker::try_lock_or_wait(
+                            bucket,
+                            &mut async_wait_pinned,
+                            prolonged_barrier,
+                        ) {
+                            if let Some(locker) = locker {
+                                let data_block_mut = prolonged_current_array.data_block_mut(index);
+                                let mut entry_ptr = EntryPtr::new(prolonged_barrier);
+                                if entry_ptr.next(&locker, prolonged_barrier) {
+                                    return Some(LockedEntry {
+                                        locker,
+                                        data_block_mut,
+                                        entry_ptr,
+                                        index,
+                                    });
+                                }
+                            }
+                            break;
+                        };
+                    }
+                    async_wait_pinned.await;
+                }
+            }
+
+            if let Some(new_current_array) =
+                hash_table.bucket_array().get_arc(Acquire, &Barrier::new())
+            {
+                if new_current_array.as_ptr() == current_array.as_ptr() {
+                    break;
+                }
+                current_array_holder.replace(new_current_array);
+                continue;
+            }
+            break;
+        }
+
+        None
+    }
+
+    /// Returns a [`LockedEntry`] owning the next entry.
+    pub(super) fn next<H: BuildHasher, T: HashTable<K, V, H, TYPE>>(
+        mut self,
+        hash_table: &'h T,
+    ) -> Option<Self> {
+        let barrier = Barrier::new();
+        let prolonged_barrier = hash_table.prolonged_barrier_ref(&barrier);
+
+        if self.entry_ptr.next(
+            &self.locker,
+            hash_table.prolonged_barrier_ref(prolonged_barrier),
+        ) {
+            return Some(self);
+        }
+
+        let current_array_ptr = hash_table.bucket_array().load(Acquire, prolonged_barrier);
+        if let Some(current_array) = current_array_ptr.as_ref() {
+            if !current_array.old_array(prolonged_barrier).is_null() {
+                drop(self);
+                return hash_table.lock_first_occupied_entry(prolonged_barrier);
+            }
+
+            let prev_index = self.index;
+            drop(self);
+
+            for index in (prev_index + 1)..current_array.num_buckets() {
+                let bucket = current_array.bucket_mut(index);
+                if let Some(locker) = Locker::lock(bucket, prolonged_barrier) {
+                    let data_block_mut = current_array.data_block_mut(index);
+                    let mut entry_ptr = EntryPtr::new(prolonged_barrier);
+                    if entry_ptr.next(&locker, prolonged_barrier) {
+                        return Some(LockedEntry {
+                            locker,
+                            data_block_mut,
+                            entry_ptr,
+                            index,
+                        });
+                    }
+                }
+            }
+
+            let new_current_array_ptr = hash_table.bucket_array().load(Relaxed, prolonged_barrier);
+            if current_array_ptr.without_tag() != new_current_array_ptr.without_tag() {
+                return hash_table.lock_first_occupied_entry(prolonged_barrier);
+            }
+        }
+
+        None
+    }
+
+    /// Returns a [`LockedEntry`] owning the next entry.
+    pub(super) async fn next_async<H: BuildHasher, T: HashTable<K, V, H, TYPE>>(
+        mut self,
+        hash_table: &'h T,
+    ) -> Option<LockedEntry<'h, K, V, TYPE>> {
+        if self.entry_ptr.next(
+            &self.locker,
+            hash_table.prolonged_barrier_ref(&Barrier::new()),
+        ) {
+            return Some(self);
+        }
+
+        let mut current_array_holder = hash_table.bucket_array().get_arc(Acquire, &Barrier::new());
+        if let Some(current_array) = current_array_holder {
+            if !current_array.old_array(&Barrier::new()).is_null() {
+                drop(self);
+                return Self::first_occupied_entry_async(hash_table).await;
+            }
+
+            let prev_index = self.index;
+            drop(self);
+
+            for index in (prev_index + 1)..current_array.num_buckets() {
+                loop {
+                    let mut async_wait = AsyncWait::default();
+                    let mut async_wait_pinned = Pin::new(&mut async_wait);
+                    {
+                        let barrier = Barrier::new();
+                        let prolonged_barrier = hash_table.prolonged_barrier_ref(&barrier);
+                        let prolonged_current_array = current_array.get_ref_with(prolonged_barrier);
+                        let bucket = prolonged_current_array.bucket_mut(index);
+                        if let Ok(locker) = Locker::try_lock_or_wait(
+                            bucket,
+                            &mut async_wait_pinned,
+                            prolonged_barrier,
+                        ) {
+                            if let Some(locker) = locker {
+                                let data_block_mut = prolonged_current_array.data_block_mut(index);
+                                let mut entry_ptr = EntryPtr::new(prolonged_barrier);
+                                if entry_ptr.next(&locker, prolonged_barrier) {
+                                    return Some(Self {
+                                        locker,
+                                        data_block_mut,
+                                        entry_ptr,
+                                        index,
+                                    });
+                                }
+                            }
+                            break;
+                        };
+                    }
+                    async_wait_pinned.await;
+                }
+            }
+
+            current_array_holder = hash_table.bucket_array().get_arc(Relaxed, &Barrier::new());
+            if let Some(new_current_array) = current_array_holder {
+                if new_current_array.as_ptr() != current_array.as_ptr() {
+                    return Self::first_occupied_entry_async(hash_table).await;
+                }
+            }
+        }
+        None
+    }
+}
+
 /// [`LockedEntry`] is safe to be sent across threads and awaits as long as the entry is.
-unsafe impl<'b, K: Eq + Send, V: Send, const TYPE: char> Send for LockedEntry<'b, K, V, TYPE> {}
+unsafe impl<'h, K: Eq + Hash + Send, V: Send, const TYPE: char> Send
+    for LockedEntry<'h, K, V, TYPE>
+{
+}

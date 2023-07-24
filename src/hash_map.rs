@@ -366,55 +366,12 @@ where
     /// ```
     #[inline]
     pub async fn first_occupied_entry_async(&self) -> Option<OccupiedEntry<K, V, H>> {
-        let mut current_array_holder = self.array.get_arc(Acquire, &Barrier::new());
-        while let Some(current_array) = current_array_holder.take() {
-            self.cleanse_old_array_async(&current_array).await;
-            for index in 0..current_array.num_buckets() {
-                loop {
-                    let mut async_wait = AsyncWait::default();
-                    let mut async_wait_pinned = Pin::new(&mut async_wait);
-                    {
-                        let barrier = Barrier::new();
-                        let prolonged_barrier = self.prolonged_barrier_ref(&barrier);
-                        let prolonged_current_array = current_array.get_ref_with(prolonged_barrier);
-                        let bucket = prolonged_current_array.bucket_mut(index);
-                        if let Ok(locker) = Locker::try_lock_or_wait(
-                            bucket,
-                            &mut async_wait_pinned,
-                            prolonged_barrier,
-                        ) {
-                            if let Some(locker) = locker {
-                                let data_block_mut = prolonged_current_array.data_block_mut(index);
-                                let mut entry_ptr = EntryPtr::new(prolonged_barrier);
-                                if entry_ptr.next(&locker, prolonged_barrier) {
-                                    return Some(OccupiedEntry {
-                                        hashmap: self,
-                                        locked_entry: LockedEntry {
-                                            locker,
-                                            data_block_mut,
-                                            entry_ptr,
-                                            index,
-                                        },
-                                    });
-                                }
-                            }
-                            break;
-                        };
-                    }
-                    async_wait_pinned.await;
-                }
-            }
-
-            if let Some(new_current_array) = self.array.get_arc(Acquire, &Barrier::new()) {
-                if new_current_array.as_ptr() == current_array.as_ptr() {
-                    break;
-                }
-                current_array_holder.replace(new_current_array);
-                continue;
-            }
-            break;
+        if let Some(locked_entry) = LockedEntry::first_occupied_entry_async(self).await {
+            return Some(OccupiedEntry {
+                hashmap: self,
+                locked_entry,
+            });
         }
-
         None
     }
 
@@ -2058,54 +2015,14 @@ where
     /// ```
     #[inline]
     #[must_use]
-    pub fn next(mut self) -> Option<Self> {
-        let barrier = Barrier::new();
-        let prolonged_barrier = self.hashmap.prolonged_barrier_ref(&barrier);
-
-        if self.locked_entry.entry_ptr.next(
-            &self.locked_entry.locker,
-            self.hashmap.prolonged_barrier_ref(prolonged_barrier),
-        ) {
-            return Some(self);
-        }
-
+    pub fn next(self) -> Option<Self> {
         let hashmap = self.hashmap;
-        let current_array_ptr = hashmap.array.load(Acquire, prolonged_barrier);
-
-        if let Some(current_array) = current_array_ptr.as_ref() {
-            if !current_array.old_array(prolonged_barrier).is_null() {
-                drop(self);
-                return hashmap.first_occupied_entry();
-            }
-
-            let prev_index = self.locked_entry.index;
-            drop(self);
-
-            for index in (prev_index + 1)..current_array.num_buckets() {
-                let bucket = current_array.bucket_mut(index);
-                if let Some(locker) = Locker::lock(bucket, prolonged_barrier) {
-                    let data_block_mut = current_array.data_block_mut(index);
-                    let mut entry_ptr = EntryPtr::new(prolonged_barrier);
-                    if entry_ptr.next(&locker, prolonged_barrier) {
-                        return Some(OccupiedEntry {
-                            hashmap,
-                            locked_entry: LockedEntry {
-                                locker,
-                                data_block_mut,
-                                entry_ptr,
-                                index,
-                            },
-                        });
-                    }
-                }
-            }
-
-            let new_current_array_ptr = hashmap.array.load(Relaxed, prolonged_barrier);
-            if current_array_ptr.without_tag() != new_current_array_ptr.without_tag() {
-                return hashmap.first_occupied_entry();
-            }
+        if let Some(locked_entry) = self.locked_entry.next(hashmap) {
+            return Some(OccupiedEntry {
+                hashmap,
+                locked_entry,
+            });
         }
-
         None
     }
 
@@ -2132,67 +2049,13 @@ where
     /// let second_entry_future = hashmap.first_occupied_entry().unwrap().next_async();
     /// ```
     #[inline]
-    pub async fn next_async(mut self) -> Option<OccupiedEntry<'h, K, V, H>> {
-        if self.locked_entry.entry_ptr.next(
-            &self.locked_entry.locker,
-            self.hashmap.prolonged_barrier_ref(&Barrier::new()),
-        ) {
-            return Some(self);
-        }
-
+    pub async fn next_async(self) -> Option<OccupiedEntry<'h, K, V, H>> {
         let hashmap = self.hashmap;
-        let mut current_array_holder = hashmap.array.get_arc(Acquire, &Barrier::new());
-        if let Some(current_array) = current_array_holder {
-            if !current_array.old_array(&Barrier::new()).is_null() {
-                drop(self);
-                return hashmap.first_occupied_entry_async().await;
-            }
-
-            let prev_index = self.locked_entry.index;
-            drop(self);
-
-            for index in (prev_index + 1)..current_array.num_buckets() {
-                loop {
-                    let mut async_wait = AsyncWait::default();
-                    let mut async_wait_pinned = Pin::new(&mut async_wait);
-                    {
-                        let barrier = Barrier::new();
-                        let prolonged_barrier = hashmap.prolonged_barrier_ref(&barrier);
-                        let prolonged_current_array = current_array.get_ref_with(prolonged_barrier);
-                        let bucket = prolonged_current_array.bucket_mut(index);
-                        if let Ok(locker) = Locker::try_lock_or_wait(
-                            bucket,
-                            &mut async_wait_pinned,
-                            prolonged_barrier,
-                        ) {
-                            if let Some(locker) = locker {
-                                let data_block_mut = prolonged_current_array.data_block_mut(index);
-                                let mut entry_ptr = EntryPtr::new(prolonged_barrier);
-                                if entry_ptr.next(&locker, prolonged_barrier) {
-                                    return Some(OccupiedEntry {
-                                        hashmap,
-                                        locked_entry: LockedEntry {
-                                            locker,
-                                            data_block_mut,
-                                            entry_ptr,
-                                            index,
-                                        },
-                                    });
-                                }
-                            }
-                            break;
-                        };
-                    }
-                    async_wait_pinned.await;
-                }
-            }
-
-            current_array_holder = hashmap.array.get_arc(Relaxed, &Barrier::new());
-            if let Some(new_current_array) = current_array_holder {
-                if new_current_array.as_ptr() != current_array.as_ptr() {
-                    return hashmap.first_occupied_entry_async().await;
-                }
-            }
+        if let Some(locked_entry) = self.locked_entry.next_async(hashmap).await {
+            return Some(OccupiedEntry {
+                hashmap,
+                locked_entry,
+            });
         }
         None
     }
