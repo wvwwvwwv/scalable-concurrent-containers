@@ -52,6 +52,44 @@ where
     build_hasher: H,
 }
 
+/// [`Entry`] represents a single entry in a [`HashIndex`].
+pub enum Entry<'h, K, V, H = RandomState>
+where
+    K: 'static + Clone + Eq + Hash,
+    V: 'static + Clone,
+    H: BuildHasher,
+{
+    /// An occupied entry.
+    Occupied(OccupiedEntry<'h, K, V, H>),
+
+    /// A vacant entry.
+    Vacant(VacantEntry<'h, K, V, H>),
+}
+
+/// [`OccupiedEntry`] is a view into an occupied entry in a [`HashIndex`].
+pub struct OccupiedEntry<'h, K, V, H = RandomState>
+where
+    K: 'static + Clone + Eq + Hash,
+    V: 'static + Clone,
+    H: BuildHasher,
+{
+    hashindex: &'h HashIndex<K, V, H>,
+    locked_entry: LockedEntry<'h, K, V, OPTIMISTIC>,
+}
+
+/// [`VacantEntry`] is a view into a vacant entry in a [`HashIndex`].
+pub struct VacantEntry<'h, K, V, H = RandomState>
+where
+    K: 'static + Clone + Eq + Hash,
+    V: 'static + Clone,
+    H: BuildHasher,
+{
+    hashindex: &'h HashIndex<K, V, H>,
+    key: K,
+    hash: u64,
+    locked_entry: LockedEntry<'h, K, V, OPTIMISTIC>,
+}
+
 /// [`Reserve`] keeps the capacity of the associated [`HashIndex`] higher than a certain level.
 ///
 /// The [`HashIndex`] does not shrink the capacity below the reserved capacity.
@@ -211,6 +249,156 @@ where
                 additional,
             })
         }
+    }
+
+    /// Gets the entry associated with the given key in the map for in-place manipulation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<char, u32> = HashIndex::default();
+    ///
+    /// for ch in "a short treatise on fungi".chars() {
+    ///     unsafe {
+    ///         hashindex.entry(ch).and_modify(|counter| *counter += 1).or_insert(1);
+    ///     }
+    /// }
+    ///
+    /// assert_eq!(hashindex.read(&'s', |_, v| *v), Some(2));
+    /// assert_eq!(hashindex.read(&'t', |_, v| *v), Some(3));
+    /// assert!(hashindex.read(&'y', |_, v| *v).is_none());
+    /// ```
+    #[inline]
+    pub fn entry(&self, key: K) -> Entry<K, V, H> {
+        let barrier = Barrier::new();
+        let hash = self.hash(&key);
+        let locked_entry = unsafe {
+            self.reserve_entry(&key, hash, &mut (), self.prolonged_barrier_ref(&barrier))
+                .ok()
+                .unwrap_unchecked()
+        };
+        if locked_entry.entry_ptr.is_valid() {
+            Entry::Occupied(OccupiedEntry {
+                hashindex: self,
+                locked_entry,
+            })
+        } else {
+            Entry::Vacant(VacantEntry {
+                hashindex: self,
+                key,
+                hash,
+                locked_entry,
+            })
+        }
+    }
+
+    /// Gets the entry associated with the given key in the map for in-place manipulation.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<char, u32> = HashIndex::default();
+    ///
+    /// let future_entry = hashindex.entry_async('b');
+    /// ```
+    #[inline]
+    pub async fn entry_async(&self, key: K) -> Entry<K, V, H> {
+        let hash = self.hash(&key);
+        loop {
+            let mut async_wait = AsyncWait::default();
+            let mut async_wait_pinned = Pin::new(&mut async_wait);
+            {
+                let barrier = Barrier::new();
+                if let Ok(locked_entry) = self.reserve_entry(
+                    &key,
+                    hash,
+                    &mut async_wait_pinned,
+                    self.prolonged_barrier_ref(&barrier),
+                ) {
+                    if locked_entry.entry_ptr.is_valid() {
+                        return Entry::Occupied(OccupiedEntry {
+                            hashindex: self,
+                            locked_entry,
+                        });
+                    }
+                    return Entry::Vacant(VacantEntry {
+                        hashindex: self,
+                        key,
+                        hash,
+                        locked_entry,
+                    });
+                }
+            }
+            async_wait_pinned.await;
+        }
+    }
+
+    /// Gets the first occupied entry for in-place manipulation.
+    ///
+    /// The returned [`OccupiedEntry`] in combination with [`OccupiedEntry::next`] or
+    /// [`OccupiedEntry::next_async`] can act as a mutable iterator over entries.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// assert!(hashindex.insert(1, 0).is_ok());
+    ///
+    /// let mut first_entry = hashindex.first_occupied_entry().unwrap();
+    /// unsafe {
+    ///     *first_entry.get_mut() = 2;
+    /// }
+    ///
+    /// assert!(first_entry.next().is_none());
+    /// assert_eq!(hashindex.read(&1, |_, v| *v), Some(2));
+    /// ```
+    #[inline]
+    pub fn first_occupied_entry(&self) -> Option<OccupiedEntry<K, V, H>> {
+        let barrier = Barrier::new();
+        let prolonged_barrier = self.prolonged_barrier_ref(&barrier);
+        if let Some(locked_entry) = self.lock_first_occupied_entry(prolonged_barrier) {
+            return Some(OccupiedEntry {
+                hashindex: self,
+                locked_entry,
+            });
+        }
+        None
+    }
+
+    /// Gets the first occupied entry for in-place manipulation.
+    ///
+    /// The returned [`OccupiedEntry`] in combination with [`OccupiedEntry::next`] or
+    /// [`OccupiedEntry::next_async`] can act as a mutable iterator over entries.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<char, u32> = HashIndex::default();
+    ///
+    /// let future_entry = hashindex.first_occupied_entry_async();
+    /// ```
+    #[inline]
+    pub async fn first_occupied_entry_async(&self) -> Option<OccupiedEntry<K, V, H>> {
+        if let Some(locked_entry) = LockedEntry::first_occupied_entry_async(self).await {
+            return Some(OccupiedEntry {
+                hashindex: self,
+                locked_entry,
+            });
+        }
+        None
     }
 
     /// Inserts a key-value pair into the [`HashIndex`].
@@ -658,6 +846,85 @@ where
                 Ok(r) => return r,
                 Err(c) => condition = c,
             };
+            async_wait_pinned.await;
+        }
+    }
+
+    /// Gets an occupied entry corresponding to the key.
+    ///
+    /// Returns `None` if the key does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// assert!(hashindex.get(&1).is_none());
+    /// assert!(hashindex.insert(1, 10).is_ok());
+    /// assert_eq!(*hashindex.get(&1).unwrap().get(), 10);
+    /// ```
+    #[inline]
+    pub fn get<Q>(&self, key: &Q) -> Option<OccupiedEntry<K, V, H>>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        let barrier = Barrier::new();
+        let locked_entry = self
+            .get_entry(
+                key,
+                self.hash(key.borrow()),
+                &mut (),
+                self.prolonged_barrier_ref(&barrier),
+            )
+            .ok()
+            .flatten()?;
+        Some(OccupiedEntry {
+            hashindex: self,
+            locked_entry,
+        })
+    }
+
+    /// Gets an occupied entry corresponding to the key.
+    ///
+    /// Returns `None` if the key does not exist. It is an asynchronous method returning an
+    /// `impl Future` for the caller to await.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    /// let future_insert = hashindex.insert_async(11, 17);
+    /// let future_get = hashindex.get_async(&11);
+    /// ```
+    #[inline]
+    pub async fn get_async<Q>(&self, key: &Q) -> Option<OccupiedEntry<K, V, H>>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        let hash = self.hash(key);
+        loop {
+            let mut async_wait = AsyncWait::default();
+            let mut async_wait_pinned = Pin::new(&mut async_wait);
+            if let Ok(result) = self.get_entry(
+                key,
+                hash,
+                &mut async_wait_pinned,
+                self.prolonged_barrier_ref(&Barrier::new()),
+            ) {
+                if let Some(locked_entry) = result {
+                    return Some(OccupiedEntry {
+                        hashindex: self,
+                        locked_entry,
+                    });
+                }
+                return None;
+            }
             async_wait_pinned.await;
         }
     }
@@ -1177,6 +1444,483 @@ where
                 .any(|(k, v)| self.read(k, |_, sv| v == sv) != Some(true));
         }
         false
+    }
+}
+
+impl<'h, K, V, H> Entry<'h, K, V, H>
+where
+    K: 'static + Clone + Eq + Hash,
+    V: 'static + Clone,
+    H: BuildHasher,
+{
+    /// Ensures a value is in the entry by inserting the supplied instance if empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// hashindex.entry(3).or_insert(7);
+    /// assert_eq!(hashindex.read(&3, |_, v| *v), Some(7));
+    /// ```
+    #[inline]
+    pub fn or_insert(self, val: V) -> OccupiedEntry<'h, K, V, H> {
+        self.or_insert_with(|| val)
+    }
+
+    /// Ensures a value is in the entry by inserting the result of the supplied closure if empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// hashindex.entry(19).or_insert_with(|| 5);
+    /// assert_eq!(hashindex.read(&19, |_, v| *v), Some(5));
+    /// ```
+    #[inline]
+    pub fn or_insert_with<F: FnOnce() -> V>(self, constructor: F) -> OccupiedEntry<'h, K, V, H> {
+        self.or_insert_with_key(|_| constructor())
+    }
+
+    /// Ensures a value is in the entry by inserting the result of the supplied closure if empty.
+    ///
+    /// The reference to the moved key is provided, therefore cloning or copying the key is
+    /// unnecessary.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// hashindex.entry(11).or_insert_with_key(|k| if *k == 11 { 7 } else { 3 });
+    /// assert_eq!(hashindex.read(&11, |_, v| *v), Some(7));
+    /// ```
+    #[inline]
+    pub fn or_insert_with_key<F: FnOnce(&K) -> V>(
+        self,
+        constructor: F,
+    ) -> OccupiedEntry<'h, K, V, H> {
+        match self {
+            Self::Occupied(o) => o,
+            Self::Vacant(v) => {
+                let val = constructor(v.key());
+                v.insert_entry(val)
+            }
+        }
+    }
+
+    /// Returns a reference to the key of this entry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    /// assert_eq!(hashindex.entry(31).key(), &31);
+    /// ```
+    #[inline]
+    pub fn key(&self) -> &K {
+        match self {
+            Self::Occupied(o) => o.key(),
+            Self::Vacant(v) => v.key(),
+        }
+    }
+
+    /// Provides in-place mutable access to an occupied entry.
+    ///
+    /// # Safety
+    ///
+    /// The caller has to make sure that there is no reader of the entry, e.g., a reader keeping a
+    /// reference to the entry via [`HashIndex::iter`], [`HashIndex::read`], or
+    /// [`HashIndex::read_with`], unless an instance of `V` can be safely read when there is a
+    /// single writer, e.g., `V = [u8; 32]`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// unsafe {
+    ///     hashindex.entry(37).and_modify(|v| { *v += 1 }).or_insert(47);
+    /// }
+    /// assert_eq!(hashindex.read(&37, |_, v| *v), Some(47));
+    ///
+    /// unsafe {
+    ///     hashindex.entry(37).and_modify(|v| { *v += 1 }).or_insert(3);
+    /// }
+    /// assert_eq!(hashindex.read(&37, |_, v| *v), Some(48));
+    /// ```
+    #[inline]
+    #[must_use]
+    pub unsafe fn and_modify<F>(self, f: F) -> Self
+    where
+        F: FnOnce(&mut V),
+    {
+        match self {
+            Self::Occupied(mut o) => {
+                f(o.get_mut());
+                Self::Occupied(o)
+            }
+            Self::Vacant(_) => self,
+        }
+    }
+}
+
+impl<'h, K, V, H> Entry<'h, K, V, H>
+where
+    K: 'static + Clone + Eq + Hash,
+    V: 'static + Clone + Default,
+    H: BuildHasher,
+{
+    /// Ensures a value is in the entry by inserting the default value if empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    /// hashindex.entry(11).or_default();
+    /// assert_eq!(hashindex.read(&11, |_, v| *v), Some(0));
+    /// ```
+    #[inline]
+    pub fn or_default(self) -> OccupiedEntry<'h, K, V, H> {
+        match self {
+            Self::Occupied(o) => o,
+            Self::Vacant(v) => v.insert_entry(Default::default()),
+        }
+    }
+}
+
+impl<'h, K, V, H> Debug for Entry<'h, K, V, H>
+where
+    K: 'static + Clone + Debug + Eq + Hash,
+    V: 'static + Clone + Debug,
+    H: BuildHasher,
+{
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Vacant(v) => f.debug_tuple("Entry").field(v).finish(),
+            Self::Occupied(o) => f.debug_tuple("Entry").field(o).finish(),
+        }
+    }
+}
+
+impl<'h, K, V, H> OccupiedEntry<'h, K, V, H>
+where
+    K: 'static + Clone + Eq + Hash,
+    V: 'static + Clone,
+    H: BuildHasher,
+{
+    /// Gets a reference to the key in the entry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// assert_eq!(hashindex.entry(29).or_default().key(), &29);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn key(&self) -> &K {
+        &self
+            .locked_entry
+            .entry_ptr
+            .get(self.locked_entry.data_block_mut)
+            .0
+    }
+
+    /// Marks that the entry is removed from the [`HashIndex`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    /// use scc::hash_index::Entry;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// hashindex.entry(11).or_insert(17);
+    ///
+    /// if let Entry::Occupied(o) = hashindex.entry(11) {
+    ///     o.remove_entry();
+    /// };
+    /// assert_eq!(hashindex.read(&11, |_, v| *v), None);
+    /// ```
+    #[inline]
+    pub fn remove_entry(mut self) {
+        self.locked_entry.locker.erase(
+            self.locked_entry.data_block_mut,
+            &self.locked_entry.entry_ptr,
+        );
+        if self.locked_entry.locker.num_entries() <= 1 || self.locked_entry.locker.need_rebuild() {
+            let barrier = Barrier::new();
+            let hashindex = self.hashindex;
+            if let Some(current_array) = hashindex.bucket_array().load(Acquire, &barrier).as_ref() {
+                if current_array.old_array(&barrier).is_null() {
+                    let index = self.locked_entry.index;
+                    if current_array.within_sampling_range(index) {
+                        drop(self);
+                        hashindex.try_shrink_or_rebuild(current_array, index, &barrier);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Gets a reference to the value in the entry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    /// use scc::hash_index::Entry;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// hashindex.entry(19).or_insert(11);
+    ///
+    /// if let Entry::Occupied(o) = hashindex.entry(19) {
+    ///     assert_eq!(o.get(), &11);
+    /// };
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn get(&self) -> &V {
+        &self
+            .locked_entry
+            .entry_ptr
+            .get(self.locked_entry.data_block_mut)
+            .1
+    }
+
+    /// Gets a mutable reference to the value in the entry.
+    ///
+    /// # Safety
+    ///
+    /// The caller has to make sure that there is no reader of the entry, e.g., a reader keeping a
+    /// reference to the entry via [`HashIndex::iter`], [`HashIndex::read`], or
+    /// [`HashIndex::read_with`], unless an instance of `V` can be safely read when there is a
+    /// single writer, e.g., `V = [u8; 32]`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    /// use scc::hash_index::Entry;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// hashindex.entry(37).or_insert(11);
+    ///
+    /// if let Entry::Occupied(mut o) = hashindex.entry(37) {
+    ///     unsafe { *o.get_mut() += 18; }
+    ///     assert_eq!(*o.get(), 29);
+    /// }
+    ///
+    /// assert_eq!(hashindex.read(&37, |_, v| *v), Some(29));
+    /// ```
+    #[inline]
+    pub unsafe fn get_mut(&mut self) -> &mut V {
+        &mut self
+            .locked_entry
+            .entry_ptr
+            .get_mut(
+                self.locked_entry.data_block_mut,
+                &mut self.locked_entry.locker,
+            )
+            .1
+    }
+
+    /// Gets the next closest occupied entry.
+    ///
+    /// [`HashIndex::first_occupied_entry`], [`HashIndex::first_occupied_entry_async`], and this
+    /// method together enables the [`OccupiedEntry`] to effectively act as a mutable iterator over
+    /// entries. The method never acquires more than one lock even when it searches other buckets
+    /// for the next closest occupied entry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    /// use scc::hash_index::Entry;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// assert!(hashindex.insert(1, 0).is_ok());
+    /// assert!(hashindex.insert(2, 0).is_ok());
+    ///
+    /// let first_entry = hashindex.first_occupied_entry().unwrap();
+    /// let first_key = *first_entry.key();
+    /// let second_entry = first_entry.next().unwrap();
+    /// let second_key = *second_entry.key();
+    ///
+    /// assert!(second_entry.next().is_none());
+    /// assert_eq!(first_key + second_key, 3);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn next(self) -> Option<Self> {
+        let hashindex = self.hashindex;
+        if let Some(locked_entry) = self.locked_entry.next(hashindex) {
+            return Some(OccupiedEntry {
+                hashindex,
+                locked_entry,
+            });
+        }
+        None
+    }
+
+    /// Gets the next closest occupied entry.
+    ///
+    /// [`HashIndex::first_occupied_entry`], [`HashIndex::first_occupied_entry_async`], and this
+    /// method together enables the [`OccupiedEntry`] to effectively act as a mutable iterator over
+    /// entries. The method never acquires more than one lock even when it searches other buckets
+    /// for the next closest occupied entry.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    /// use scc::hash_index::Entry;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// assert!(hashindex.insert(1, 0).is_ok());
+    /// assert!(hashindex.insert(2, 0).is_ok());
+    ///
+    /// let second_entry_future = hashindex.first_occupied_entry().unwrap().next_async();
+    /// ```
+    #[inline]
+    pub async fn next_async(self) -> Option<OccupiedEntry<'h, K, V, H>> {
+        let hashindex = self.hashindex;
+        if let Some(locked_entry) = self.locked_entry.next_async(hashindex).await {
+            return Some(OccupiedEntry {
+                hashindex,
+                locked_entry,
+            });
+        }
+        None
+    }
+}
+
+impl<'h, K, V, H> Debug for OccupiedEntry<'h, K, V, H>
+where
+    K: 'static + Clone + Debug + Eq + Hash,
+    V: 'static + Clone + Debug,
+    H: BuildHasher,
+{
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OccupiedEntry")
+            .field("key", self.key())
+            .field("value", self.get())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'h, K, V, H> VacantEntry<'h, K, V, H>
+where
+    K: 'static + Clone + Eq + Hash,
+    V: 'static + Clone,
+    H: BuildHasher,
+{
+    /// Gets a reference to the key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    /// assert_eq!(hashindex.entry(11).key(), &11);
+    /// ```
+    #[inline]
+    pub fn key(&self) -> &K {
+        &self.key
+    }
+
+    /// Takes ownership of the key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    /// use scc::hash_index::Entry;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// if let Entry::Vacant(v) = hashindex.entry(17) {
+    ///     assert_eq!(v.into_key(), 17);
+    /// };
+    /// ```
+    #[inline]
+    pub fn into_key(self) -> K {
+        self.key
+    }
+
+    /// Sets the value of the entry with its key, and returns an [`OccupiedEntry`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    /// use scc::hash_index::Entry;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// if let Entry::Vacant(o) = hashindex.entry(19) {
+    ///     o.insert_entry(29);
+    /// }
+    ///
+    /// assert_eq!(hashindex.read(&19, |_, v| *v), Some(29));
+    /// ```
+    #[inline]
+    pub fn insert_entry(mut self, val: V) -> OccupiedEntry<'h, K, V, H> {
+        let barrier = Barrier::new();
+        let entry_ptr = self.locked_entry.locker.insert_with(
+            self.locked_entry.data_block_mut,
+            BucketArray::<K, V, OPTIMISTIC>::partial_hash(self.hash),
+            || (self.key, val),
+            self.hashindex.prolonged_barrier_ref(&barrier),
+        );
+        OccupiedEntry {
+            hashindex: self.hashindex,
+            locked_entry: LockedEntry {
+                index: self.locked_entry.index,
+                data_block_mut: self.locked_entry.data_block_mut,
+                locker: self.locked_entry.locker,
+                entry_ptr,
+            },
+        }
+    }
+}
+
+impl<'h, K, V, H> Debug for VacantEntry<'h, K, V, H>
+where
+    K: 'static + Clone + Debug + Eq + Hash,
+    V: 'static + Clone + Debug,
+    H: BuildHasher,
+{
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("VacantEntry").field(self.key()).finish()
     }
 }
 
