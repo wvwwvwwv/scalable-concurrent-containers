@@ -1,5 +1,9 @@
 # Changelog
 
+1.9.1
+
+* API update: add `hash_index::Entry` API.
+
 1.9.0
 
 * API update: add `ebr::{AtomicOwned, Owned}` for non-reference-counted instances.
@@ -18,7 +22,7 @@
 
 1.8.0
 
-* API update: overhaul `HashCache::Entry` API; values can be evicted through `HashCache::Entry` API.
+* API update: overhaul `hash_cache::Entry` API; values can be evicted through `hash_cache::Entry` API.
 
 1.7.3
 

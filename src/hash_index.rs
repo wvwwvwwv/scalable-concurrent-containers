@@ -628,8 +628,8 @@ where
     ///
     /// # Safety
     ///
-    /// The caller has to make sure that there is no reader of the entry, e.g., a reader keeping a
-    /// reference to the entry via [`HashIndex::iter`], [`HashIndex::read`], or
+    /// The caller has to make sure that there are no readers of the entry, e.g., a reader keeping
+    /// a reference to the entry via [`HashIndex::iter`], [`HashIndex::read`], or
     /// [`HashIndex::read_with`], unless an instance of `V` can be safely read when there is a
     /// single writer, e.g., `V = [u8; 32]`.
     ///
@@ -673,8 +673,8 @@ where
     ///
     /// # Safety
     ///
-    /// The caller has to make sure that there is no reader of the entry, e.g., a reader keeping a
-    /// reference to the entry via [`HashIndex::iter`], [`HashIndex::read`], or
+    /// The caller has to make sure that there are no readers of the entry, e.g., a reader keeping
+    /// a reference to the entry via [`HashIndex::iter`], [`HashIndex::read`], or
     /// [`HashIndex::read_with`], unless an instance of `V` can be safely read when there is a
     /// single writer, e.g., `V = [u8; 32]`.
     ///
@@ -1538,8 +1538,8 @@ where
     ///
     /// # Safety
     ///
-    /// The caller has to make sure that there is no reader of the entry, e.g., a reader keeping a
-    /// reference to the entry via [`HashIndex::iter`], [`HashIndex::read`], or
+    /// The caller has to make sure that there are no readers of the entry, e.g., a reader keeping
+    /// a reference to the entry via [`HashIndex::iter`], [`HashIndex::read`], or
     /// [`HashIndex::read_with`], unless an instance of `V` can be safely read when there is a
     /// single writer, e.g., `V = [u8; 32]`.
     ///
@@ -1712,8 +1712,8 @@ where
     ///
     /// # Safety
     ///
-    /// The caller has to make sure that there is no reader of the entry, e.g., a reader keeping a
-    /// reference to the entry via [`HashIndex::iter`], [`HashIndex::read`], or
+    /// The caller has to make sure that there are no readers of the entry, e.g., a reader keeping
+    /// a reference to the entry via [`HashIndex::iter`], [`HashIndex::read`], or
     /// [`HashIndex::read_with`], unless an instance of `V` can be safely read when there is a
     /// single writer, e.g., `V = [u8; 32]`.
     ///
@@ -1728,6 +1728,7 @@ where
     /// hashindex.entry(37).or_insert(11);
     ///
     /// if let Entry::Occupied(mut o) = hashindex.entry(37) {
+    ///     // Safety: `u32` can be safely read while being modified.
     ///     unsafe { *o.get_mut() += 18; }
     ///     assert_eq!(*o.get(), 29);
     /// }
