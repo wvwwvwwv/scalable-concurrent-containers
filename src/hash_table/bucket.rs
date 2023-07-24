@@ -573,24 +573,6 @@ impl<'b, K: Eq, V, const TYPE: char> Locker<'b, K, V, TYPE> {
             })
     }
 
-    /// Releases the lock.
-    #[inline]
-    pub(crate) fn release(bucket: &mut Bucket<K, V, TYPE>) {
-        let mut current = bucket.state.load(Relaxed);
-        while let Err(result) = bucket.state.compare_exchange_weak(
-            current,
-            current & (!(WAITING | LOCK)),
-            Release,
-            Relaxed,
-        ) {
-            current = result;
-        }
-
-        if (current & WAITING) == WAITING {
-            bucket.wait_queue.signal();
-        }
-    }
-
     /// Gets an [`EntryPtr`] pointing to an entry associated with the given key.
     ///
     /// The returned [`EntryPtr`] points to an occupied entry if the key is found.
@@ -687,7 +669,7 @@ impl<'b, K: Eq, V, const TYPE: char> Locker<'b, K, V, TYPE> {
     pub(crate) fn erase(
         &mut self,
         data_block: &mut DataBlock<K, V, BUCKET_LEN>,
-        entry_ptr: &mut EntryPtr<K, V, TYPE>,
+        entry_ptr: &EntryPtr<K, V, TYPE>,
     ) -> Option<(K, V)> {
         debug_assert_ne!(entry_ptr.current_index, usize::MAX);
 
@@ -739,7 +721,7 @@ impl<'b, K: Eq, V, const TYPE: char> Locker<'b, K, V, TYPE> {
     pub(crate) fn keep_or_consume<F: FnMut(&K, V) -> Option<V>>(
         &mut self,
         data_block: &mut DataBlock<K, V, BUCKET_LEN>,
-        entry_ptr: &mut EntryPtr<K, V, TYPE>,
+        entry_ptr: &EntryPtr<K, V, TYPE>,
         pred: &mut F,
     ) -> bool {
         debug_assert_ne!(TYPE, OPTIMISTIC);
@@ -1011,7 +993,19 @@ impl<'b, K: Eq, V, const TYPE: char> DerefMut for Locker<'b, K, V, TYPE> {
 impl<'b, K: Eq, V, const TYPE: char> Drop for Locker<'b, K, V, TYPE> {
     #[inline]
     fn drop(&mut self) {
-        Self::release(self.bucket);
+        let mut current = self.bucket.state.load(Relaxed);
+        while let Err(result) = self.bucket.state.compare_exchange_weak(
+            current,
+            current & (!(WAITING | LOCK)),
+            Release,
+            Relaxed,
+        ) {
+            current = result;
+        }
+
+        if (current & WAITING) == WAITING {
+            self.bucket.wait_queue.signal();
+        }
     }
 }
 
@@ -1508,16 +1502,14 @@ mod test {
                         };
                         let barrier = Barrier::new();
                         let mut exclusive_locker = Locker::lock(bucket_mut, &barrier).unwrap();
-                        let mut entry_ptr = exclusive_locker.get(
+                        let entry_ptr = exclusive_locker.get(
                             &data_block_clone,
                             &task_id,
                             partial_hash,
                             &barrier,
                         );
                         assert_eq!(
-                            exclusive_locker
-                                .erase(data_block_mut, &mut entry_ptr)
-                                .unwrap(),
+                            exclusive_locker.erase(data_block_mut, &entry_ptr).unwrap(),
                             (task_id, 0_usize)
                         );
                     }

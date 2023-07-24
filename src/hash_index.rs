@@ -321,7 +321,7 @@ where
         if let Ok(Some(LockedEntry {
             mut locker,
             data_block_mut,
-            mut entry_ptr,
+            entry_ptr,
             index: _,
         })) = self.get_entry(key, hash, &mut (), &barrier)
         {
@@ -345,7 +345,7 @@ where
             if result {
                 // The entry was modified, and therefore the old version should be logically
                 // removed from the `HashIndex`.
-                locker.erase(data_block_mut, &mut entry_ptr);
+                locker.erase(data_block_mut, &entry_ptr);
             }
             return result;
         }
@@ -399,7 +399,7 @@ where
                     if let Some(LockedEntry {
                         mut locker,
                         data_block_mut,
-                        mut entry_ptr,
+                        entry_ptr,
                         index: _,
                     }) = result
                     {
@@ -423,7 +423,7 @@ where
                         if result {
                             // The entry was modified, and therefore the old version should be
                             // logically removed from the `HashIndex`.
-                            locker.erase(data_block_mut, &mut entry_ptr);
+                            locker.erase(data_block_mut, &entry_ptr);
                         }
                         return result;
                     }
@@ -825,7 +825,7 @@ where
                                     if pred(k, v) {
                                         num_retained = num_retained.saturating_add(1);
                                     } else {
-                                        locker.erase(data_block_mut, &mut entry_ptr);
+                                        locker.erase(data_block_mut, &entry_ptr);
                                         num_removed = num_removed.saturating_add(1);
                                     }
                                 }

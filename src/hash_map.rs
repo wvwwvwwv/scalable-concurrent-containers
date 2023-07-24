@@ -1244,7 +1244,7 @@ where
                                     if pred(k, v) {
                                         num_retained = num_retained.saturating_add(1);
                                     } else {
-                                        locker.erase(data_block_mut, &mut entry_ptr);
+                                        locker.erase(data_block_mut, &entry_ptr);
                                         num_removed = num_removed.saturating_add(1);
                                     }
                                 }
@@ -1343,11 +1343,8 @@ where
                                 let data_block_mut = current_array.data_block_mut(index);
                                 let mut entry_ptr = EntryPtr::new(&barrier);
                                 while entry_ptr.next(&locker, &barrier) {
-                                    if locker.keep_or_consume(
-                                        data_block_mut,
-                                        &mut entry_ptr,
-                                        &mut pred,
-                                    ) {
+                                    if locker.keep_or_consume(data_block_mut, &entry_ptr, &mut pred)
+                                    {
                                         num_consumed += 1;
                                     }
                                 }
@@ -1911,7 +1908,7 @@ where
                 .locker
                 .erase(
                     self.locked_entry.data_block_mut,
-                    &mut self.locked_entry.entry_ptr,
+                    &self.locked_entry.entry_ptr,
                 )
                 .unwrap_unchecked()
         };

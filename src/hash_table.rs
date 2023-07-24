@@ -458,7 +458,7 @@ where
                 if entry_ptr.is_valid()
                     && condition(&mut entry_ptr.get_mut(data_block_mut, &mut locker).1)
                 {
-                    let result = locker.erase(data_block_mut, &mut entry_ptr);
+                    let result = locker.erase(data_block_mut, &entry_ptr);
                     if shrinkable
                         && (locker.num_entries() <= 1 || locker.need_rebuild())
                         && current_array.within_sampling_range(index)
@@ -523,7 +523,7 @@ where
                         if pred(k, v) {
                             num_retained = num_retained.saturating_add(1);
                         } else {
-                            locker.erase(data_block_mut, &mut entry_ptr);
+                            locker.erase(data_block_mut, &entry_ptr);
                             num_removed = num_removed.saturating_add(1);
                         }
                     }
@@ -561,7 +561,7 @@ where
                     let data_block_mut = current_array.data_block_mut(index);
                     let mut entry_ptr = EntryPtr::new(&barrier);
                     while entry_ptr.next(&locker, &barrier) {
-                        if locker.keep_or_consume(data_block_mut, &mut entry_ptr, &mut pred) {
+                        if locker.keep_or_consume(data_block_mut, &entry_ptr, &mut pred) {
                             num_pruned += 1;
                         }
                     }
@@ -807,7 +807,7 @@ where
                     // In order for readers that have observed the following erasure to see the above
                     // insertion, a `Release` fence is needed.
                     fence(Release);
-                    old_locker.erase(old_data_block_mut, &mut entry_ptr);
+                    old_locker.erase(old_data_block_mut, &entry_ptr);
                 }
             }
         }

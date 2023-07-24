@@ -989,7 +989,7 @@ where
                                     if filter(k, v) {
                                         num_retained = num_retained.saturating_add(1);
                                     } else {
-                                        locker.erase(data_block_mut, &mut entry_ptr);
+                                        locker.erase(data_block_mut, &entry_ptr);
                                         num_removed = num_removed.saturating_add(1);
                                     }
                                 }
@@ -1546,7 +1546,7 @@ where
                 .locker
                 .erase(
                     self.locked_entry.data_block_mut,
-                    &mut self.locked_entry.entry_ptr,
+                    &self.locked_entry.entry_ptr,
                 )
                 .unwrap_unchecked()
         };
