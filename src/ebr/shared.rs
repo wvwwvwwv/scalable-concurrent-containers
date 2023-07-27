@@ -10,11 +10,11 @@ use std::sync::atomic::Ordering::Relaxed;
 ///
 /// The instance is passed to the EBR garbage collector when the last strong reference is dropped.
 #[derive(Debug)]
-pub struct Arc<T> {
+pub struct Shared<T> {
     instance_ptr: NonNull<RefCounted<T>>,
 }
 
-impl<T: 'static> Arc<T> {
+impl<T: 'static> Shared<T> {
     /// Creates a new instance of [`Arc`].
     ///
     /// The type of the instance must be determined at compile-time, must not contain non-static
@@ -26,9 +26,9 @@ impl<T: 'static> Arc<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::Arc;
+    /// use scc::ebr::Shared;
     ///
-    /// let arc: Arc<usize> = Arc::new(31);
+    /// let shared: Shared<usize> = Shared::new(31);
     /// ```
     #[inline]
     pub fn new(t: T) -> Self {
@@ -39,7 +39,7 @@ impl<T: 'static> Arc<T> {
     }
 }
 
-impl<T> Arc<T> {
+impl<T> Shared<T> {
     /// Creates a new [`Arc`] without checking the lifetime of `T`.
     ///
     /// # Safety
@@ -53,12 +53,12 @@ impl<T> Arc<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::Arc;
+    /// use scc::ebr::Shared;
     ///
     /// let hello = String::from("hello");
-    /// let arc: Arc<&str> = unsafe { Arc::new_unchecked(hello.as_str()) };
+    /// let shared: Shared<&str> = unsafe { Shared::new_unchecked(hello.as_str()) };
     ///
-    /// assert!(unsafe { arc.release_drop_in_place() });
+    /// assert!(unsafe { shared.release_drop_in_place() });
     /// ```
     #[inline]
     pub unsafe fn new_unchecked(t: T) -> Self {
@@ -73,11 +73,11 @@ impl<T> Arc<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Arc, Guard};
+    /// use scc::ebr::{Guard, Shared};
     ///
-    /// let arc: Arc<usize> = Arc::new(37);
+    /// let shared: Shared<usize> = Shared::new(37);
     /// let guard = Guard::new();
-    /// let ptr = arc.ptr(&guard);
+    /// let ptr = shared.ptr(&guard);
     /// assert_eq!(*ptr.as_ref().unwrap(), 37);
     /// ```
     #[inline]
@@ -91,11 +91,11 @@ impl<T> Arc<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Arc, Guard};
+    /// use scc::ebr::{Guard, Shared};
     ///
-    /// let arc: Arc<usize> = Arc::new(37);
+    /// let shared: Shared<usize> = Shared::new(37);
     /// let guard = Guard::new();
-    /// let ref_b = arc.get_ref_with(&guard);
+    /// let ref_b = shared.get_ref_with(&guard);
     /// assert_eq!(*ref_b, 37);
     /// ```
     #[inline]
@@ -116,13 +116,13 @@ impl<T> Arc<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::Arc;
+    /// use scc::ebr::Shared;
     ///
-    /// let mut arc: Arc<usize> = Arc::new(38);
+    /// let mut shared: Shared<usize> = Shared::new(38);
     /// unsafe {
-    ///     *arc.get_mut().unwrap() += 1;
+    ///     *shared.get_mut().unwrap() += 1;
     /// }
-    /// assert_eq!(*arc, 39);
+    /// assert_eq!(*shared, 39);
     /// ```
     #[inline]
     pub unsafe fn get_mut(&mut self) -> Option<&mut T> {
@@ -134,15 +134,15 @@ impl<T> Arc<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::Arc;
+    /// use scc::ebr::Shared;
     /// use std::sync::atomic::AtomicBool;
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
-    /// let arc: Arc<usize> = Arc::new(10);
-    /// let arc_clone: Arc<usize> = arc.clone();
+    /// let shared: Shared<usize> = Shared::new(10);
+    /// let shared_clone: Shared<usize> = shared.clone();
     ///
-    /// assert_eq!(arc.as_ptr(), arc_clone.as_ptr());
-    /// assert_eq!(unsafe { *arc.as_ptr() }, unsafe { *arc_clone.as_ptr() });
+    /// assert_eq!(shared.as_ptr(), shared_clone.as_ptr());
+    /// assert_eq!(unsafe { *shared.as_ptr() }, unsafe { *shared_clone.as_ptr() });
     /// ```
     #[inline]
     #[must_use]
@@ -157,13 +157,13 @@ impl<T> Arc<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Arc, Guard};
+    /// use scc::ebr::{Guard, Shared};
     ///
-    /// let arc: Arc<usize> = Arc::new(47);
-    /// let arc_clone = arc.clone();
+    /// let shared: Shared<usize> = Shared::new(47);
+    /// let shared_clone = shared.clone();
     /// let guard = Guard::new();
-    /// assert!(!arc.release(&guard));
-    /// assert!(arc_clone.release(&guard));
+    /// assert!(!shared.release(&guard));
+    /// assert!(shared_clone.release(&guard));
     /// ```
     #[inline]
     #[must_use]
@@ -193,7 +193,7 @@ impl<T> Arc<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::Arc;
+    /// use scc::ebr::Shared;
     /// use std::sync::atomic::AtomicBool;
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
@@ -205,13 +205,13 @@ impl<T> Arc<T> {
     ///     }
     /// }
     ///
-    /// let arc: Arc<T> = Arc::new(T(&DROPPED));
-    /// let arc_clone = arc.clone();
+    /// let shared: Shared<T> = Shared::new(T(&DROPPED));
+    /// let shared_clone = shared.clone();
     ///
     /// unsafe {
-    ///     assert!(!arc.release_drop_in_place());
+    ///     assert!(!shared.release_drop_in_place());
     ///     assert!(!DROPPED.load(Relaxed));
-    ///     assert!(arc_clone.release_drop_in_place());
+    ///     assert!(shared_clone.release_drop_in_place());
     ///     assert!(DROPPED.load(Relaxed));
     /// }
     /// ```
@@ -262,14 +262,14 @@ impl<T> Arc<T> {
     }
 }
 
-impl<T> AsRef<T> for Arc<T> {
+impl<T> AsRef<T> for Shared<T> {
     #[inline]
     fn as_ref(&self) -> &T {
         self.underlying()
     }
 }
 
-impl<T> Clone for Arc<T> {
+impl<T> Clone for Shared<T> {
     #[inline]
     fn clone(&self) -> Self {
         debug_assert_ne!(self.underlying().ref_cnt().load(Relaxed), 0);
@@ -280,7 +280,7 @@ impl<T> Clone for Arc<T> {
     }
 }
 
-impl<T> Deref for Arc<T> {
+impl<T> Deref for Shared<T> {
     type Target = T;
 
     #[inline]
@@ -289,7 +289,7 @@ impl<T> Deref for Arc<T> {
     }
 }
 
-impl<T> Drop for Arc<T> {
+impl<T> Drop for Shared<T> {
     #[inline]
     fn drop(&mut self) {
         if self.underlying().drop_ref() {
@@ -299,21 +299,21 @@ impl<T> Drop for Arc<T> {
     }
 }
 
-impl<'g, T> TryFrom<Ptr<'g, T>> for Arc<T> {
+impl<'g, T> TryFrom<Ptr<'g, T>> for Shared<T> {
     type Error = Ptr<'g, T>;
 
     #[inline]
     fn try_from(ptr: Ptr<'g, T>) -> Result<Self, Self::Error> {
-        if let Some(arc) = ptr.get_arc() {
-            Ok(arc)
+        if let Some(shared) = ptr.get_shared() {
+            Ok(shared)
         } else {
             Err(ptr)
         }
     }
 }
 
-unsafe impl<T: Send> Send for Arc<T> {}
+unsafe impl<T: Send> Send for Shared<T> {}
 
-unsafe impl<T: Sync> Sync for Arc<T> {}
+unsafe impl<T: Sync> Sync for Shared<T> {}
 
-impl<T: UnwindSafe> UnwindSafe for Arc<T> {}
+impl<T: UnwindSafe> UnwindSafe for Shared<T> {}

@@ -2322,16 +2322,16 @@ mod stack_test {
 
 #[cfg(test)]
 mod ebr_test {
-    use crate::ebr::{suspend, Arc, AtomicArc, AtomicOwned, Guard, Owned, Ptr, Tag};
+    use crate::ebr::{suspend, AtomicArc, AtomicOwned, Guard, Owned, Ptr, Shared, Tag};
     use std::ops::Deref;
     use std::panic::UnwindSafe;
     use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
     use std::sync::atomic::{AtomicBool, AtomicUsize};
 
-    static_assertions::assert_impl_all!(Arc<String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_impl_all!(Shared<String>: Send, Sync, UnwindSafe);
     static_assertions::assert_impl_all!(AtomicArc<String>: Send, Sync, UnwindSafe);
     static_assertions::assert_impl_all!(Ptr<String>: UnwindSafe);
-    static_assertions::assert_not_impl_all!(Arc<*const u8>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_all!(Shared<*const u8>: Send, Sync, UnwindSafe);
     static_assertions::assert_not_impl_all!(AtomicArc<*const u8>: Send, Sync, UnwindSafe);
     static_assertions::assert_not_impl_all!(Ptr<String>: Send, Sync);
     static_assertions::assert_not_impl_all!(Ptr<*const u8>: Send, Sync, UnwindSafe);
@@ -2364,7 +2364,7 @@ mod ebr_test {
     fn arc() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
 
-        let mut arc = Arc::new(A(AtomicUsize::new(10), 10, &DESTROYED));
+        let mut arc = Shared::new(A(AtomicUsize::new(10), 10, &DESTROYED));
         if let Some(mut_ref) = unsafe { arc.get_mut() } {
             mut_ref.1 += 1;
         }
@@ -2412,7 +2412,7 @@ mod ebr_test {
 
         let guard = Guard::new();
         let ptr = owned.ptr(&guard);
-        assert!(ptr.get_arc().is_none());
+        assert!(ptr.get_shared().is_none());
 
         drop(owned);
         assert!(!DESTROYED.load(Relaxed));
@@ -2429,7 +2429,7 @@ mod ebr_test {
     fn sendable() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
 
-        let arc = Arc::new(A(AtomicUsize::new(14), 14, &DESTROYED));
+        let arc = Shared::new(A(AtomicUsize::new(14), 14, &DESTROYED));
         let owned = Owned::new(A(AtomicUsize::new(15), 15, &DESTROYED));
         let arc_clone = arc.clone();
         let thread = std::thread::spawn(move || {
@@ -2445,7 +2445,7 @@ mod ebr_test {
     fn arc_arc_send() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
 
-        let arc = Arc::new(A(AtomicUsize::new(14), 14, &DESTROYED));
+        let arc = Shared::new(A(AtomicUsize::new(14), 14, &DESTROYED));
         let arc_clone = arc.clone();
         let thread = std::thread::spawn(move || {
             assert_eq!(arc_clone.0.load(Relaxed), 14);
@@ -2468,9 +2468,9 @@ mod ebr_test {
     fn arc_nested() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
 
-        struct Nest(Arc<A>);
+        struct Nest(Shared<A>);
 
-        let nested_arc = Arc::new(Nest(Arc::new(A(AtomicUsize::new(10), 10, &DESTROYED))));
+        let nested_arc = Shared::new(Nest(Shared::new(A(AtomicUsize::new(10), 10, &DESTROYED))));
         assert!(!DESTROYED.load(Relaxed));
         drop(nested_arc);
 
@@ -2561,7 +2561,7 @@ mod ebr_test {
 
         let guard = Guard::new();
 
-        let arc = atomic_arc.get_arc(Relaxed, &guard);
+        let arc = atomic_arc.get_shared(Relaxed, &guard);
 
         drop(atomic_arc);
         assert!(!DESTROYED.load(Relaxed));
@@ -2587,7 +2587,7 @@ mod ebr_test {
 
         let guard = Guard::new();
 
-        let arc = atomic_arc.try_into_arc(Relaxed);
+        let arc = atomic_arc.try_into_shared(Relaxed);
         assert!(!DESTROYED.load(Relaxed));
 
         if let Some(arc) = arc {
@@ -2604,8 +2604,8 @@ mod ebr_test {
     #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn atomic_arc_parallel() {
-        let atomic_arc: Arc<AtomicArc<String>> =
-            Arc::new(AtomicArc::new(String::from("How are you?")));
+        let atomic_arc: Shared<AtomicArc<String>> =
+            Shared::new(AtomicArc::new(String::from("How are you?")));
         let mut task_handles = Vec::new();
         for _ in 0..16 {
             let atomic_arc = atomic_arc.clone();
@@ -2617,14 +2617,14 @@ mod ebr_test {
                     if let Some(str_ref) = ptr.as_ref() {
                         assert!(str_ref == "How are you?" || str_ref == "How can I help you?");
                     }
-                    let converted: Result<Arc<String>, _> = Arc::try_from(ptr);
+                    let converted: Result<Shared<String>, _> = Shared::try_from(ptr);
                     if let Ok(arc) = converted {
                         assert!(*arc == "How are you?" || *arc == "How can I help you?");
                     }
                     while let Err((passed, current)) = atomic_arc.compare_exchange(
                         ptr,
                         (
-                            Some(Arc::new(String::from("How can I help you?"))),
+                            Some(Shared::new(String::from("How can I help you?"))),
                             Tag::Second,
                         ),
                         Release,
@@ -2656,7 +2656,7 @@ mod ebr_test {
                     drop(guard);
 
                     let (old, _) = atomic_arc.swap(
-                        (Some(Arc::new(String::from("How are you?"))), Tag::Second),
+                        (Some(Shared::new(String::from("How are you?"))), Tag::Second),
                         Release,
                     );
                     if let Some(arc) = old {
@@ -2673,8 +2673,8 @@ mod ebr_test {
     #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn atomic_arc_clone() {
-        let atomic_arc: Arc<AtomicArc<String>> =
-            Arc::new(AtomicArc::new(String::from("How are you?")));
+        let atomic_arc: Shared<AtomicArc<String>> =
+            Shared::new(AtomicArc::new(String::from("How are you?")));
         let mut task_handles = Vec::new();
         for t in 0..4 {
             let atomic_arc = atomic_arc.clone();
@@ -2688,8 +2688,10 @@ mod ebr_test {
                         } else {
                             Tag::None
                         };
-                        let (old, _) = atomic_arc
-                            .swap((Some(Arc::new(String::from("How are you?"))), tag), Release);
+                        let (old, _) = atomic_arc.swap(
+                            (Some(Shared::new(String::from("How are you?"))), tag),
+                            Release,
+                        );
                         assert!(old.is_some());
                         if let Some(arc) = old {
                             assert!(*arc == "How are you?");
@@ -2702,7 +2704,7 @@ mod ebr_test {
                         if let Some(arc) = arc_clone {
                             assert!(*arc == "How are you?");
                         }
-                        let arc_clone = atomic_arc.get_arc(Acquire, &Guard::new());
+                        let arc_clone = atomic_arc.get_shared(Acquire, &Guard::new());
                         assert!(arc_clone.is_some());
                         if let Some(arc) = arc_clone {
                             assert!(*arc == "How are you?");
@@ -2719,7 +2721,7 @@ mod ebr_test {
 
 #[cfg(test)]
 mod random_failure_test {
-    use crate::ebr::{Arc, Guard};
+    use crate::ebr::{Guard, Shared};
     use crate::hash_map::Entry;
     use crate::{HashCache, HashIndex, HashMap, TreeIndex};
     use std::any::Any;
@@ -2765,7 +2767,7 @@ mod random_failure_test {
         // EBR.
         for _ in 0..workload_size {
             let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
-                let r = Arc::new(R::new(&INST_CNT, &NEVER_PANIC));
+                let r = Shared::new(R::new(&INST_CNT, &NEVER_PANIC));
                 assert_ne!(INST_CNT.load(Relaxed), 0);
                 drop(r);
             });

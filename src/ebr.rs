@@ -4,9 +4,6 @@
 //! that of [`crossbeam_epoch`](https://docs.rs/crossbeam-epoch/), however the API set is vastly
 //! different, for instance, `unsafe` blocks are not required to read an instance subject to EBR.
 
-mod arc;
-pub use arc::Arc;
-
 mod atomic_arc;
 pub use atomic_arc::AtomicArc;
 
@@ -25,6 +22,9 @@ pub use owned::Owned;
 mod ptr;
 pub use ptr::Ptr;
 
+mod shared;
+pub use shared::Shared;
+
 mod tag;
 pub use tag::Tag;
 
@@ -39,22 +39,22 @@ mod ref_counted;
 /// # Examples
 ///
 /// ```
-/// use scc::ebr::{suspend, Arc, Guard};
+/// use scc::ebr::{suspend, Guard, Shared};
 ///
 /// assert!(suspend());
 ///
 /// {
-///     let arc: Arc<usize> = Arc::new(47);
+///     let shared: Shared<usize> = Shared::new(47);
 ///     let guard = Guard::new();
-///     arc.release(&guard);
+///     shared.release(&guard);
 ///     assert!(!suspend());
 /// }
 ///
 /// assert!(suspend());
 ///
-/// let new_arc: Arc<usize> = Arc::new(17);
+/// let new_shared: Shared<usize> = Shared::new(17);
 /// let guard = Guard::new();
-/// new_arc.release(&guard);
+/// new_shared.release(&guard);
 /// ```
 #[inline]
 #[must_use]

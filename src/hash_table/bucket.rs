@@ -1,4 +1,4 @@
-use crate::ebr::{Arc, AtomicArc, Guard, Ptr, Tag};
+use crate::ebr::{AtomicArc, Guard, Ptr, Shared, Tag};
 use crate::wait_queue::{AsyncWait, WaitQueue};
 use std::borrow::Borrow;
 use std::fmt::{self, Debug};
@@ -430,7 +430,7 @@ impl<'g, K: Eq, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
     ) {
         let prev_link_ptr = link.prev_link.load(Relaxed);
         let next_link = if TYPE == OPTIMISTIC {
-            link.metadata.link.get_arc(Relaxed, guard)
+            link.metadata.link.get_shared(Relaxed, guard)
         } else {
             link.metadata.link.swap((None, Tag::None), Relaxed).0
         };
@@ -625,8 +625,8 @@ impl<'g, K: Eq, V, const TYPE: char> Locker<'g, K, V, TYPE> {
             }
 
             // Insert a new `LinkedBucket` at the linked list head.
-            let head = self.bucket.metadata.link.get_arc(Relaxed, guard);
-            let link = unsafe { Arc::new_unchecked(LinkedBucket::new(head)) };
+            let head = self.bucket.metadata.link.get_shared(Relaxed, guard);
+            let link = unsafe { Shared::new_unchecked(LinkedBucket::new(head)) };
             let link_ptr = link.ptr(guard);
             unsafe {
                 let link_mut = &mut *link_ptr.as_raw().cast_mut();
@@ -1130,7 +1130,7 @@ pub(crate) struct LinkedBucket<K: Eq, V, const LEN: usize> {
 
 impl<K: Eq, V, const LEN: usize> LinkedBucket<K, V, LEN> {
     /// Creates an empty [`LinkedBucket`].
-    fn new(next: Option<Arc<LinkedBucket<K, V, LINKED_BUCKET_LEN>>>) -> Self {
+    fn new(next: Option<Shared<LinkedBucket<K, V, LINKED_BUCKET_LEN>>>) -> Self {
         #[allow(clippy::uninit_assumed_init)]
         Self {
             metadata: Metadata {
@@ -1321,10 +1321,10 @@ mod test {
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn bucket_lock_sync() {
         let num_tasks = BUCKET_LEN + 2;
-        let barrier = Arc::new(Barrier::new(num_tasks));
-        let data_block: Arc<DataBlock<usize, usize, BUCKET_LEN>> =
-            Arc::new(unsafe { MaybeUninit::uninit().assume_init() });
-        let mut bucket: Arc<Bucket<usize, usize, SEQUENTIAL>> = Arc::new(default_bucket());
+        let barrier = Shared::new(Barrier::new(num_tasks));
+        let data_block: Shared<DataBlock<usize, usize, BUCKET_LEN>> =
+            Shared::new(unsafe { MaybeUninit::uninit().assume_init() });
+        let mut bucket: Shared<Bucket<usize, usize, SEQUENTIAL>> = Shared::new(default_bucket());
         let mut data: [u64; 128] = [0; 128];
         let mut task_handles = Vec::with_capacity(num_tasks);
         for task_id in 0..num_tasks {
@@ -1420,10 +1420,10 @@ mod test {
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn bucket_lock_async() {
         let num_tasks = BUCKET_LEN + 2;
-        let barrier = Arc::new(Barrier::new(num_tasks));
-        let data_block: Arc<DataBlock<usize, usize, BUCKET_LEN>> =
-            Arc::new(unsafe { MaybeUninit::uninit().assume_init() });
-        let bucket: Arc<Bucket<usize, usize, SEQUENTIAL>> = Arc::new(default_bucket());
+        let barrier = Shared::new(Barrier::new(num_tasks));
+        let data_block: Shared<DataBlock<usize, usize, BUCKET_LEN>> =
+            Shared::new(unsafe { MaybeUninit::uninit().assume_init() });
+        let bucket: Shared<Bucket<usize, usize, SEQUENTIAL>> = Shared::new(default_bucket());
         let mut task_handles = Vec::with_capacity(num_tasks);
         for task_id in 0..num_tasks {
             let barrier_clone = barrier.clone();

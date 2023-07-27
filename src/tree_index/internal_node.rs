@@ -1,7 +1,7 @@
 use super::leaf::{InsertResult, Leaf, RemoveResult, Scanner, DIMENSION};
 use super::leaf_node::{LOCKED, RETIRED};
 use super::node::Node;
-use crate::ebr::{Arc, AtomicArc, Guard, Ptr, Tag};
+use crate::ebr::{AtomicArc, Guard, Ptr, Shared, Tag};
 use crate::exit_guard::ExitGuard;
 use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
 use std::borrow::Borrow;
@@ -397,7 +397,7 @@ where
         let prev = self
             .split_op
             .origin_node
-            .swap((full_node.get_arc(Relaxed, guard), Tag::None), Relaxed)
+            .swap((full_node.get_shared(Relaxed, guard), Tag::None), Relaxed)
             .0;
         debug_assert!(prev.is_none());
 
@@ -416,8 +416,8 @@ where
             Node::Internal(full_internal_node) => {
                 // Copies nodes except for the known full node to the newly allocated internal node entries.
                 let internal_nodes = (
-                    Arc::new(Node::new_internal_node()),
-                    Arc::new(Node::new_internal_node()),
+                    Shared::new(Node::new_internal_node()),
+                    Shared::new(Node::new_internal_node()),
                 );
                 let Node::Internal(low_key_nodes) = internal_nodes.0.as_ref() else {
                     unreachable!()
@@ -556,7 +556,7 @@ where
                                 }
                                 low_key_nodes
                                     .unbounded_child
-                                    .swap((v.get_arc(Relaxed, guard), Tag::None), Relaxed);
+                                    .swap((v.get_shared(Relaxed, guard), Tag::None), Relaxed);
                             }
                             Greater => {
                                 if let Some(k) = k.cloned() {
@@ -568,7 +568,7 @@ where
                                 } else {
                                     high_key_nodes
                                         .unbounded_child
-                                        .swap((v.get_arc(Relaxed, guard), Tag::None), Relaxed);
+                                        .swap((v.get_shared(Relaxed, guard), Tag::None), Relaxed);
                                 }
                             }
                         };
@@ -588,8 +588,8 @@ where
             Node::Leaf(full_leaf_node) => {
                 // Copies leaves except for the known full leaf to the newly allocated leaf node entries.
                 let leaf_nodes = (
-                    Arc::new(Node::new_leaf_node()),
-                    Arc::new(Node::new_leaf_node()),
+                    Shared::new(Node::new_leaf_node()),
+                    Shared::new(Node::new_leaf_node()),
                 );
                 let low_key_leaf_node = if let Node::Leaf(low_key_leaf_node) = leaf_nodes.0.as_ref()
                 {
@@ -652,7 +652,7 @@ where
         let unused_node = full_node
             .swap(
                 (
-                    self.split_op.high_key_node.get_arc(Relaxed, guard),
+                    self.split_op.high_key_node.get_shared(Relaxed, guard),
                     Tag::None,
                 ),
                 Release,
@@ -787,7 +787,10 @@ where
                     if let Some((key, max_key_child)) = max_key_entry {
                         if let Some(obsolete_node) = self
                             .unbounded_child
-                            .swap((max_key_child.get_arc(Relaxed, guard), Tag::None), Release)
+                            .swap(
+                                (max_key_child.get_shared(Relaxed, guard), Tag::None),
+                                Release,
+                            )
                             .0
                         {
                             debug_assert!(obsolete_node.retired(Relaxed));
@@ -938,7 +941,7 @@ where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
 {
-    fn reset(&self) -> Option<Arc<Node<K, V>>> {
+    fn reset(&self) -> Option<Shared<Node<K, V>>> {
         self.origin_node_key.store(ptr::null_mut(), Relaxed);
         self.low_key_node.swap((None, Tag::None), Relaxed);
         self.middle_key.store(ptr::null_mut(), Relaxed);
@@ -1046,9 +1049,9 @@ mod test {
     async fn parallel() {
         let num_tasks = 8;
         let workload_size = 64;
-        let barrier = Arc::new(Barrier::new(num_tasks));
+        let barrier = Shared::new(Barrier::new(num_tasks));
         for _ in 0..64 {
-            let internal_node = Arc::new(new_level_3_node());
+            let internal_node = Shared::new(new_level_3_node());
             assert!(internal_node
                 .insert(usize::MAX, usize::MAX, &mut (), &Guard::new())
                 .is_ok());
@@ -1148,9 +1151,9 @@ mod test {
         for k in 0..64 {
             let fixed_point = k * 16;
             for _ in 0..=num_iterations {
-                let barrier = Arc::new(Barrier::new(num_tasks));
-                let internal_node = Arc::new(new_level_3_node());
-                let inserted: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+                let barrier = Shared::new(Barrier::new(num_tasks));
+                let internal_node = Shared::new(new_level_3_node());
+                let inserted: Shared<AtomicBool> = Shared::new(AtomicBool::new(false));
                 let mut task_handles = Vec::with_capacity(num_tasks);
                 for _ in 0..num_tasks {
                     let barrier_clone = barrier.clone();
@@ -1180,7 +1183,7 @@ mod test {
                             );
                         }
                         {
-                            guard_clone.wait().await;
+                            barrier_clone.wait().await;
                             let guard = Guard::new();
                             for i in 0..workload_size {
                                 if i != fixed_point {

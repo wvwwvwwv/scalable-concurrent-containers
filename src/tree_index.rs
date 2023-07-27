@@ -5,7 +5,7 @@ mod leaf;
 mod leaf_node;
 mod node;
 
-use crate::ebr::{Arc, AtomicArc, Guard, Ptr, Tag};
+use crate::ebr::{AtomicArc, Guard, Ptr, Shared, Tag};
 use crate::wait_queue::AsyncWait;
 use leaf::{InsertResult, Leaf, RemoveResult, Scanner};
 use node::Node;
@@ -168,7 +168,7 @@ where
             let node = if let Some(new_root) = new_root.take() {
                 new_root
             } else {
-                Arc::new(Node::new_leaf_node())
+                Shared::new(Node::new_leaf_node())
             };
             if let Err((node, _)) = self.root.compare_exchange(
                 Ptr::null(),
@@ -251,7 +251,7 @@ where
             let node = if let Some(new_root) = new_root.take() {
                 new_root
             } else {
-                Arc::new(Node::new_leaf_node())
+                Shared::new(Node::new_leaf_node())
             };
             if let Err((node, _)) = self.root.compare_exchange(
                 Ptr::null(),

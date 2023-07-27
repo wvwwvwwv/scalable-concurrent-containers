@@ -1,6 +1,6 @@
 //! [`Stack`] is a lock-free concurrent last-in-first-out container.
 
-use super::ebr::{Arc, AtomicArc, Guard, Ptr, Tag};
+use super::ebr::{AtomicArc, Guard, Ptr, Shared, Tag};
 use super::linked_list::{Entry, LinkedList};
 use std::fmt::{self, Debug};
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
@@ -14,7 +14,7 @@ pub struct Stack<T> {
 impl<T: 'static> Stack<T> {
     /// Pushes an instance of `T`.
     ///
-    /// Returns an [`Arc`] holding a strong reference to the newly pushed entry.
+    /// Returns a [`Shared`] holding a strong reference to the newly pushed entry.
     ///
     /// # Examples
     ///
@@ -26,7 +26,7 @@ impl<T: 'static> Stack<T> {
     /// assert_eq!(**stack.push(11), 11);
     /// ```
     #[inline]
-    pub fn push(&self, val: T) -> Arc<Entry<T>> {
+    pub fn push(&self, val: T) -> Shared<Entry<T>> {
         match self.push_if_internal(val, |_| true, &Guard::new()) {
             Ok(entry) => entry,
             Err(_) => {
@@ -58,7 +58,7 @@ impl<T: 'static> Stack<T> {
         &self,
         val: T,
         cond: F,
-    ) -> Result<Arc<Entry<T>>, T> {
+    ) -> Result<Shared<Entry<T>>, T> {
         self.push_if_internal(val, cond, &Guard::new())
     }
 
@@ -95,7 +95,7 @@ impl<T: 'static> Stack<T> {
 impl<T> Stack<T> {
     /// Pushes an instance of `T` without checking the lifetime of `T`.
     ///
-    /// Returns an [`Arc`] holding a strong reference to the newly pushed entry.
+    /// Returns a [`Shared`] holding a strong reference to the newly pushed entry.
     ///
     /// # Safety
     ///
@@ -113,7 +113,7 @@ impl<T> Stack<T> {
     /// assert_eq!(unsafe { **stack.push_unchecked(hello.as_str()) }, "hello");
     /// ```
     #[inline]
-    pub unsafe fn push_unchecked(&self, val: T) -> Arc<Entry<T>> {
+    pub unsafe fn push_unchecked(&self, val: T) -> Shared<Entry<T>> {
         match self.push_if_internal(val, |_| true, &Guard::new()) {
             Ok(entry) => entry,
             Err(_) => {
@@ -149,7 +149,7 @@ impl<T> Stack<T> {
         &self,
         val: T,
         cond: F,
-    ) -> Result<Arc<Entry<T>>, T> {
+    ) -> Result<Shared<Entry<T>>, T> {
         self.push_if_internal(val, cond, &Guard::new())
     }
 
@@ -174,7 +174,7 @@ impl<T> Stack<T> {
     /// assert!(stack.pop().is_none());
     /// ```
     #[inline]
-    pub fn pop(&self) -> Option<Arc<Entry<T>>> {
+    pub fn pop(&self) -> Option<Shared<Entry<T>>> {
         match self.pop_if(|_| true) {
             Ok(result) => result,
             Err(_) => unreachable!(),
@@ -244,11 +244,11 @@ impl<T> Stack<T> {
     pub fn pop_if<F: FnMut(&Entry<T>) -> bool>(
         &self,
         mut cond: F,
-    ) -> Result<Option<Arc<Entry<T>>>, Arc<Entry<T>>> {
+    ) -> Result<Option<Shared<Entry<T>>>, Shared<Entry<T>>> {
         let guard = Guard::new();
         let mut newest_ptr = self.cleanup_newest(self.newest.load(Acquire, &guard), &guard);
         while !newest_ptr.is_null() {
-            if let Some(newest_entry) = newest_ptr.get_arc() {
+            if let Some(newest_entry) = newest_ptr.get_shared() {
                 if !newest_entry.is_deleted(Relaxed) && !cond(&*newest_entry) {
                     return Err(newest_entry);
                 }
@@ -313,18 +313,18 @@ impl<T> Stack<T> {
         val: T,
         mut cond: F,
         guard: &Guard,
-    ) -> Result<Arc<Entry<T>>, T> {
+    ) -> Result<Shared<Entry<T>>, T> {
         let mut newest_ptr = self.cleanup_newest(self.newest.load(Acquire, guard), guard);
         if !cond(newest_ptr.as_ref()) {
             // The condition is not met.
             return Err(val);
         }
 
-        let mut new_entry = unsafe { Arc::new_unchecked(Entry::new(val)) };
+        let mut new_entry = unsafe { Shared::new_unchecked(Entry::new(val)) };
         loop {
             new_entry
                 .next()
-                .swap((newest_ptr.get_arc(), Tag::None), Relaxed);
+                .swap((newest_ptr.get_shared(), Tag::None), Relaxed);
             let result = self.newest.compare_exchange(
                 newest_ptr,
                 (Some(new_entry.clone()), Tag::None),
@@ -358,7 +358,10 @@ impl<T> Stack<T> {
             if newest_entry.is_deleted(Relaxed) {
                 match self.newest.compare_exchange(
                     newest_ptr,
-                    (newest_entry.next_ptr(Acquire, guard).get_arc(), Tag::None),
+                    (
+                        newest_entry.next_ptr(Acquire, guard).get_shared(),
+                        Tag::None,
+                    ),
                     AcqRel,
                     Acquire,
                     guard,
@@ -379,9 +382,9 @@ impl<T: Clone> Clone for Stack<T> {
         let self_clone = Self::default();
         let guard = Guard::new();
         let mut current = self.newest.load(Acquire, &guard);
-        let mut oldest: Option<Arc<Entry<T>>> = None;
+        let mut oldest: Option<Shared<Entry<T>>> = None;
         while let Some(entry) = current.as_ref() {
-            let new_entry = unsafe { Arc::new_unchecked(Entry::new((**entry).clone())) };
+            let new_entry = unsafe { Shared::new_unchecked(Entry::new((**entry).clone())) };
             if let Some(oldest) = oldest.take() {
                 oldest
                     .next()

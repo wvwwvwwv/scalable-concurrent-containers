@@ -9,6 +9,9 @@
 - `ebr::Barrier` -> `ebr::Guard`.
 - `ebr::Arc` -> `ebr::Shared`.
 - `ebr::AtomicArc` -> `ebr::AtomicShared`.
+- `ebr::AtomicArc::get_arc` -> `ebr::AtomicShared::get_shared`.
+- `ebr::AtomicArc::try_into_arc` -> `ebr::AtomicShared::try_into_shared`.
+- `ebr::Ptr::get_arc` -> `ebr::Ptr::get_shared`.
 - `*::first_occupied_entry*` -> `*::first_entry*`.
 - Remove `HashIndex::update*` and `HashIndex::modify*`: superseded by `HashIndex::entry*`, `HashIndex::get*`, and `hash_index::OccupiedEntry::update`.
 - Remove `Hash*::for_each*`: superseded by `HashMap::retain*`.

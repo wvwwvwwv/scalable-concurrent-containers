@@ -335,7 +335,7 @@ assert!(stack.pop().is_none());
 
 ## EBR
 
-The `ebr` module implements epoch-based reclamation and various types of auxiliary data structures to make use of it safely. Its epoch-based reclamation algorithm is similar to that implemented in [crossbeam_epoch](https://docs.rs/crossbeam-epoch/), however users may find it easier to use as the lifetime of an instance is safely managed. For instance, `ebr::AtomicArc` and `ebr::Arc` hold a strong reference to the underlying instance, and the instance is automatically passed to the garbage collector when the reference count drops to zero.
+The `ebr` module implements epoch-based reclamation and various types of auxiliary data structures to make use of it safely. Its epoch-based reclamation algorithm is similar to that implemented in [crossbeam_epoch](https://docs.rs/crossbeam-epoch/), however users may find it easier to use as the lifetime of an instance is safely managed. For instance, `ebr::AtomicArc` and `ebr::Shared` hold a strong reference to the underlying instance, and the instance is automatically passed to the garbage collector when the reference count drops to zero.
 
 ### Memory Overhead
 
@@ -346,7 +346,7 @@ Retired instances are stored in intrusive queues in thread-local storage, and th
 The `ebr` module can be used without an `unsafe` block.
 
 ```rust
-use scc::ebr::{suspend, Arc, AtomicArc, AtomicOwned, Guard, Ptr, Tag};
+use scc::ebr::{suspend, AtomicArc, AtomicOwned, Guard, Ptr, Shared, Tag};
 
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -369,7 +369,7 @@ atomic_arc.update_tag_if(Tag::First, |p| p.tag() == Tag::None, Relaxed, Relaxed)
 // `ptr` is not tagged, so CAS fails.
 assert!(atomic_arc.compare_exchange(
     ptr,
-    (Some(Arc::new(18)), Tag::First),
+    (Some(Shared::new(18)), Tag::First),
     Relaxed,
     Relaxed,
     &guard).is_err());
@@ -378,9 +378,9 @@ assert!(atomic_arc.compare_exchange(
 ptr.set_tag(Tag::First);
 
 // The return value of CAS is a handle to the instance that `atomic_arc` previously owned.
-let prev: Arc<usize> = atomic_arc.compare_exchange(
+let prev: Shared<usize> = atomic_arc.compare_exchange(
     ptr,
-    (Some(Arc::new(18)), Tag::Second),
+    (Some(Shared::new(18)), Tag::Second),
     Relaxed,
     Relaxed,
     &guard).unwrap().0.unwrap();
@@ -389,12 +389,12 @@ assert_eq!(*prev, 17);
 // `17` will be garbage-collected later.
 drop(prev);
 
-// `ebr::AtomicArc` can be converted into `ebr::Arc`.
-let arc: Arc<usize> = atomic_arc.try_into_arc(Relaxed).unwrap();
-assert_eq!(*arc, 18);
+// `ebr::AtomicArc` can be converted into `ebr::Shared`.
+let shared: Shared<usize> = atomic_arc.try_into_shared(Relaxed).unwrap();
+assert_eq!(*shared, 18);
 
 // `18` and `19` will be garbage-collected later.
-drop(arc);
+drop(shared);
 drop(atomic_owned);
 
 // `17` is still valid as `guard` keeps the garbage collector from dropping it.
@@ -416,7 +416,7 @@ suspend();
 ### Examples
 
 ```rust
-use scc::ebr::{Arc, AtomicArc, Guard};
+use scc::ebr::{AtomicArc, Shared, Guard};
 use scc::LinkedList;
 
 use std::sync::atomic::Ordering::Relaxed;
@@ -432,7 +432,7 @@ impl LinkedList for L {
 let guard = Guard::new();
 
 let head: L = L::default();
-let tail: Arc<L> = Arc::new(L(AtomicArc::null(), 1));
+let tail: Shared<L> = Shared::new(L(AtomicArc::null(), 1));
 
 // A new entry is pushed.
 assert!(head.push_back(tail.clone(), false, Relaxed, &guard).is_ok());

@@ -1,4 +1,4 @@
-use crate::ebr::{Arc, AtomicArc, Guard};
+use crate::ebr::{AtomicArc, Guard, Shared};
 use crate::LinkedList;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
@@ -420,8 +420,8 @@ where
     #[inline]
     pub(super) fn freeze_and_distribute(
         &self,
-        low_key_leaf: &mut Option<Arc<Leaf<K, V>>>,
-        high_key_leaf: &mut Option<Arc<Leaf<K, V>>>,
+        low_key_leaf: &mut Option<Shared<Leaf<K, V>>>,
+        high_key_leaf: &mut Option<Shared<Leaf<K, V>>>,
     ) {
         let metadata = unsafe {
             self.metadata
@@ -444,11 +444,11 @@ where
         for (i, (k, v)) in scanner.enumerate() {
             if i < boundary {
                 low_key_leaf
-                    .get_or_insert_with(|| Arc::new(Leaf::new()))
+                    .get_or_insert_with(|| Shared::new(Leaf::new()))
                     .insert_unchecked(k.clone(), v.clone(), i);
             } else {
                 high_key_leaf
-                    .get_or_insert_with(|| Arc::new(Leaf::new()))
+                    .get_or_insert_with(|| Shared::new(Leaf::new()))
                     .insert_unchecked(k.clone(), v.clone(), i - boundary);
             };
         }
@@ -1139,10 +1139,10 @@ mod test {
         let num_excess = 3;
         let num_tasks = DIMENSION.num_entries + num_excess;
         for _ in 0..256 {
-            let barrier = Arc::new(Barrier::new(num_tasks));
-            let leaf: Arc<Leaf<usize, usize>> = Arc::new(Leaf::new());
-            let full: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
-            let retire: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+            let barrier = Shared::new(Barrier::new(num_tasks));
+            let leaf: Shared<Leaf<usize, usize>> = Shared::new(Leaf::new());
+            let full: Shared<AtomicUsize> = Shared::new(AtomicUsize::new(0));
+            let retire: Shared<AtomicUsize> = Shared::new(AtomicUsize::new(0));
             let mut task_handles = Vec::with_capacity(num_tasks);
             for t in 1..=num_tasks {
                 let barrier_clone = barrier.clone();
@@ -1214,9 +1214,9 @@ mod test {
         let workload_size = 8_usize;
         for _ in 0..16 {
             for k in 0..=workload_size {
-                let barrier = Arc::new(Barrier::new(num_tasks));
-                let leaf: Arc<Leaf<usize, usize>> = Arc::new(Leaf::new());
-                let inserted: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+                let barrier = Shared::new(Barrier::new(num_tasks));
+                let leaf: Shared<Leaf<usize, usize>> = Shared::new(Leaf::new());
+                let inserted: Shared<AtomicBool> = Shared::new(AtomicBool::new(false));
                 let mut task_handles = Vec::with_capacity(num_tasks);
                 for _ in 0..num_tasks {
                     let barrier_clone = barrier.clone();

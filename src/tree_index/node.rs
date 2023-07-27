@@ -1,7 +1,7 @@
 use super::internal_node::{self, InternalNode};
 use super::leaf::{InsertResult, RemoveResult, Scanner};
 use super::leaf_node::{self, LeafNode};
-use crate::ebr::{Arc, AtomicArc, Guard, Tag};
+use crate::ebr::{AtomicArc, Guard, Shared, Tag};
 use crate::wait_queue::DeriveAsyncWait;
 use std::borrow::Borrow;
 use std::fmt::{self, Debug};
@@ -144,7 +144,7 @@ where
     ) -> (K, V) {
         // The fact that the `TreeIndex` calls this function means that the root is full and
         // locked.
-        let mut new_root = Arc::new(Node::new_internal_node());
+        let mut new_root = Shared::new(Node::new_internal_node());
         if let Some(Self::Internal(internal_node)) = unsafe { new_root.get_mut() } {
             internal_node.unbounded_child = root.clone(Relaxed, guard);
             let result = internal_node.split_node(

@@ -1,5 +1,5 @@
 use super::ref_counted::RefCounted;
-use super::{Arc, Guard, Ptr, Tag};
+use super::{Guard, Ptr, Shared, Tag};
 use std::mem::forget;
 use std::panic::UnwindSafe;
 use std::ptr::{null_mut, NonNull};
@@ -13,8 +13,8 @@ pub struct AtomicArc<T> {
     instance_ptr: AtomicPtr<RefCounted<T>>,
 }
 
-/// A pair of [`Arc`] and [`Ptr`] of the same type.
-pub type ArcPtrPair<'g, T> = (Option<Arc<T>>, Ptr<'g, T>);
+/// A pair of [`Shared`] and [`Ptr`] of the same type.
+pub type SharedPtrPair<'g, T> = (Option<Shared<T>>, Ptr<'g, T>);
 
 impl<T: 'static> AtomicArc<T> {
     /// Creates a new [`AtomicArc`] from an instance of `T`.
@@ -42,19 +42,19 @@ impl<T: 'static> AtomicArc<T> {
 }
 
 impl<T> AtomicArc<T> {
-    /// Creates a new [`AtomicArc`] from an [`Arc`] of `T`.
+    /// Creates a new [`AtomicArc`] from a [`Shared`] of `T`.
     ///
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Arc, AtomicArc};
+    /// use scc::ebr::{AtomicArc, Shared};
     ///
-    /// let arc: Arc<usize> = Arc::new(10);
-    /// let atomic_arc: AtomicArc<usize> = AtomicArc::from(arc);
+    /// let shared: Shared<usize> = Shared::new(10);
+    /// let atomic_arc: AtomicArc<usize> = AtomicArc::from(shared);
     /// ```
     #[inline]
     #[must_use]
-    pub const fn from(arc: Arc<T>) -> Self {
+    pub const fn from(arc: Shared<T>) -> Self {
         let ptr = arc.get_underlying_ptr();
         forget(arc);
         Self {
@@ -119,12 +119,12 @@ impl<T> AtomicArc<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Arc, AtomicArc, Guard, Tag};
+    /// use scc::ebr::{AtomicArc, Guard, Shared, Tag};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(14);
     /// let guard = Guard::new();
-    /// let (old, tag) = atomic_arc.swap((Some(Arc::new(15)), Tag::Second), Relaxed);
+    /// let (old, tag) = atomic_arc.swap((Some(Shared::new(15)), Tag::Second), Relaxed);
     /// assert_eq!(tag, Tag::None);
     /// assert_eq!(*old.unwrap(), 14);
     /// let (old, tag) = atomic_arc.swap((None, Tag::First), Relaxed);
@@ -135,11 +135,11 @@ impl<T> AtomicArc<T> {
     /// assert!(old.is_none());
     /// ```
     #[inline]
-    pub fn swap(&self, new: (Option<Arc<T>>, Tag), order: Ordering) -> (Option<Arc<T>>, Tag) {
+    pub fn swap(&self, new: (Option<Shared<T>>, Tag), order: Ordering) -> (Option<Shared<T>>, Tag) {
         let desired = Tag::update_tag(
             new.0
                 .as_ref()
-                .map_or_else(null_mut, Arc::get_underlying_ptr),
+                .map_or_else(null_mut, Shared::get_underlying_ptr),
             new.1,
         )
         .cast_mut();
@@ -147,7 +147,7 @@ impl<T> AtomicArc<T> {
         let tag = Tag::into_tag(prev);
         let prev_ptr = Tag::unset_tag(prev).cast_mut();
         forget(new);
-        (NonNull::new(prev_ptr).map(Arc::from), tag)
+        (NonNull::new(prev_ptr).map(Shared::from), tag)
     }
 
     /// Returns its [`Tag`].
@@ -205,12 +205,12 @@ impl<T> AtomicArc<T> {
     ///
     /// # Errors
     ///
-    /// Returns `Err` with the supplied [`Arc`] and the current [`Ptr`].
+    /// Returns `Err` with the supplied [`Shared`] and the current [`Ptr`].
     ///
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Arc, AtomicArc, Guard, Tag};
+    /// use scc::ebr::{AtomicArc, Guard, Shared, Tag};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(17);
@@ -221,31 +221,35 @@ impl<T> AtomicArc<T> {
     ///
     /// atomic_arc.update_tag_if(Tag::Both, |_| true, Relaxed, Relaxed);
     /// assert!(atomic_arc.compare_exchange(
-    ///     ptr, (Some(Arc::new(18)), Tag::First), Relaxed, Relaxed, &guard).is_err());
+    ///     ptr, (Some(Shared::new(18)), Tag::First), Relaxed, Relaxed, &guard).is_err());
     ///
     /// ptr.set_tag(Tag::Both);
-    /// let old: Arc<usize> = atomic_arc.compare_exchange(
-    ///     ptr, (Some(Arc::new(18)), Tag::First), Relaxed, Relaxed, &guard).unwrap().0.unwrap();
+    /// let old: Shared<usize> = atomic_arc.compare_exchange(
+    ///     ptr,
+    ///     (Some(Shared::new(18)), Tag::First),
+    ///     Relaxed,
+    ///     Relaxed,
+    ///     &guard).unwrap().0.unwrap();
     /// assert_eq!(*old, 17);
     /// drop(old);
     ///
     /// assert!(atomic_arc.compare_exchange(
-    ///     ptr, (Some(Arc::new(19)), Tag::None), Relaxed, Relaxed, &guard).is_err());
+    ///     ptr, (Some(Shared::new(19)), Tag::None), Relaxed, Relaxed, &guard).is_err());
     /// assert_eq!(*ptr.as_ref().unwrap(), 17);
     /// ```
     #[inline]
     pub fn compare_exchange<'g>(
         &self,
         current: Ptr<'g, T>,
-        new: (Option<Arc<T>>, Tag),
+        new: (Option<Shared<T>>, Tag),
         success: Ordering,
         failure: Ordering,
         _guard: &'g Guard,
-    ) -> Result<ArcPtrPair<'g, T>, ArcPtrPair<'g, T>> {
+    ) -> Result<SharedPtrPair<'g, T>, SharedPtrPair<'g, T>> {
         let desired = Tag::update_tag(
             new.0
                 .as_ref()
-                .map_or_else(null_mut, Arc::get_underlying_ptr),
+                .map_or_else(null_mut, Shared::get_underlying_ptr),
             new.1,
         )
         .cast_mut();
@@ -256,7 +260,7 @@ impl<T> AtomicArc<T> {
             failure,
         ) {
             Ok(prev) => {
-                let prev_arc = NonNull::new(Tag::unset_tag(prev).cast_mut()).map(Arc::from);
+                let prev_arc = NonNull::new(Tag::unset_tag(prev).cast_mut()).map(Shared::from);
                 forget(new);
                 Ok((prev_arc, Ptr::from(desired)))
             }
@@ -272,12 +276,12 @@ impl<T> AtomicArc<T> {
     ///
     /// # Errors
     ///
-    /// Returns `Err` with the supplied [`Arc`] and the current [`Ptr`].
+    /// Returns `Err` with the supplied [`Shared`] and the current [`Ptr`].
     ///
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Arc, AtomicArc, Guard, Tag};
+    /// use scc::ebr::{AtomicArc, Guard, Shared, Tag};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(17);
@@ -288,7 +292,7 @@ impl<T> AtomicArc<T> {
     ///
     /// while let Err((_, actual)) = atomic_arc.compare_exchange_weak(
     ///     ptr,
-    ///     (Some(Arc::new(18)), Tag::First),
+    ///     (Some(Shared::new(18)), Tag::First),
     ///     Relaxed,
     ///     Relaxed,
     ///     &guard) {
@@ -302,15 +306,15 @@ impl<T> AtomicArc<T> {
     pub fn compare_exchange_weak<'g>(
         &self,
         current: Ptr<'g, T>,
-        new: (Option<Arc<T>>, Tag),
+        new: (Option<Shared<T>>, Tag),
         success: Ordering,
         failure: Ordering,
         _guard: &'g Guard,
-    ) -> Result<ArcPtrPair<'g, T>, ArcPtrPair<'g, T>> {
+    ) -> Result<SharedPtrPair<'g, T>, SharedPtrPair<'g, T>> {
         let desired = Tag::update_tag(
             new.0
                 .as_ref()
-                .map_or_else(null_mut, Arc::get_underlying_ptr),
+                .map_or_else(null_mut, Shared::get_underlying_ptr),
             new.1,
         )
         .cast_mut();
@@ -321,7 +325,7 @@ impl<T> AtomicArc<T> {
             failure,
         ) {
             Ok(prev) => {
-                let prev_arc = NonNull::new(Tag::unset_tag(prev).cast_mut()).map(Arc::from);
+                let prev_arc = NonNull::new(Tag::unset_tag(prev).cast_mut()).map(Shared::from);
                 forget(new);
                 Ok((prev_arc, Ptr::from(desired)))
             }
@@ -337,7 +341,7 @@ impl<T> AtomicArc<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Arc, AtomicArc, Guard};
+    /// use scc::ebr::{AtomicArc, Guard};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(59);
@@ -367,27 +371,27 @@ impl<T> AtomicArc<T> {
         }
     }
 
-    /// Tries to create an [`Arc`] out of `self`.
+    /// Tries to create a [`Shared`] out of `self`.
     ///
     /// If `self` is not supposed to be an `AtomicArc::null`, this will never return `None`.
     ///
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Arc, AtomicArc, Guard};
+    /// use scc::ebr::{AtomicArc, Guard, Shared};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(47);
     /// let guard = Guard::new();
-    /// let arc: Arc<usize> = atomic_arc.get_arc(Relaxed, &guard).unwrap();
-    /// assert_eq!(*arc, 47);
+    /// let shared: Shared<usize> = atomic_arc.get_shared(Relaxed, &guard).unwrap();
+    /// assert_eq!(*shared, 47);
     /// ```
     #[inline]
-    pub fn get_arc(&self, order: Ordering, _guard: &Guard) -> Option<Arc<T>> {
+    pub fn get_shared(&self, order: Ordering, _guard: &Guard) -> Option<Shared<T>> {
         let mut ptr = Tag::unset_tag(self.instance_ptr.load(order));
         while let Some(underlying_ptr) = NonNull::new(ptr.cast_mut()) {
             if unsafe { underlying_ptr.as_ref() }.try_add_ref(Acquire) {
-                return Some(Arc::from(underlying_ptr));
+                return Some(Shared::from(underlying_ptr));
             }
             let ptr_again = Tag::unset_tag(self.instance_ptr.load(order));
             if ptr == ptr_again {
@@ -398,23 +402,23 @@ impl<T> AtomicArc<T> {
         None
     }
 
-    /// Tries to convert `self` into an [`Arc`].
+    /// Tries to convert `self` into a [`Shared`].
     ///
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Arc, AtomicArc};
+    /// use scc::ebr::{AtomicArc, Shared};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(55);
-    /// let arc: Arc<usize> = atomic_arc.try_into_arc(Relaxed).unwrap();
-    /// assert_eq!(*arc, 55);
+    /// let shared: Shared<usize> = atomic_arc.try_into_shared(Relaxed).unwrap();
+    /// assert_eq!(*shared, 55);
     /// ```
     #[inline]
-    pub fn try_into_arc(self, order: Ordering) -> Option<Arc<T>> {
+    pub fn try_into_shared(self, order: Ordering) -> Option<Shared<T>> {
         let ptr = self.instance_ptr.swap(null_mut(), order);
         if let Some(underlying_ptr) = NonNull::new(Tag::unset_tag(ptr).cast_mut()) {
-            return Some(Arc::from(underlying_ptr));
+            return Some(Shared::from(underlying_ptr));
         }
         None
     }
@@ -439,7 +443,7 @@ impl<T> Drop for AtomicArc<T> {
     fn drop(&mut self) {
         if let Some(ptr) = NonNull::new(Tag::unset_tag(self.instance_ptr.load(Relaxed)).cast_mut())
         {
-            drop(Arc::from(ptr));
+            drop(Shared::from(ptr));
         }
     }
 }

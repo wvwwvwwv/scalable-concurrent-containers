@@ -1,7 +1,7 @@
 pub mod bucket;
 pub mod bucket_array;
 
-use crate::ebr::{Arc, AtomicArc, Guard, Ptr, Tag};
+use crate::ebr::{AtomicArc, Guard, Ptr, Shared, Tag};
 use crate::exit_guard::ExitGuard;
 use crate::wait_queue::{AsyncWait, DeriveAsyncWait};
 use bucket::{DataBlock, EntryPtr, Locker, Reader, BUCKET_LEN, CACHE, OPTIMISTIC};
@@ -97,7 +97,7 @@ where
             let current_array_ptr = match self.bucket_array().compare_exchange(
                 Ptr::null(),
                 (
-                    Some(Arc::new_unchecked(BucketArray::<K, V, TYPE>::new(
+                    Some(Shared::new_unchecked(BucketArray::<K, V, TYPE>::new(
                         self.minimum_capacity().load(Relaxed),
                         AtomicArc::null(),
                     ))),
@@ -1078,7 +1078,7 @@ where
                     }
                 }
 
-                let allocated_array: Option<Arc<BucketArray<K, V, TYPE>>> = None;
+                let allocated_array: Option<Shared<BucketArray<K, V, TYPE>>> = None;
                 let mut mutex_guard = ExitGuard::new(allocated_array, |allocated_array| {
                     if let Some(allocated_array) = allocated_array {
                         // A new array was allocated.
@@ -1092,7 +1092,7 @@ where
                 });
                 if try_resize || try_rebuild {
                     mutex_guard.replace(unsafe {
-                        Arc::new_unchecked(BucketArray::<K, V, TYPE>::new(
+                        Shared::new_unchecked(BucketArray::<K, V, TYPE>::new(
                             new_capacity,
                             self.bucket_array().clone(Relaxed, guard),
                         ))
@@ -1129,7 +1129,7 @@ impl<'h, K: Eq + Hash, V, const TYPE: char> LockedEntry<'h, K, V, TYPE> {
     pub(super) async fn first_entry_async<H: BuildHasher, T: HashTable<K, V, H, TYPE>>(
         hash_table: &'h T,
     ) -> Option<LockedEntry<'h, K, V, TYPE>> {
-        let mut current_array_holder = hash_table.bucket_array().get_arc(Acquire, &Guard::new());
+        let mut current_array_holder = hash_table.bucket_array().get_shared(Acquire, &Guard::new());
         while let Some(current_array) = current_array_holder.take() {
             while !current_array.old_array(&Guard::new()).is_null() {
                 let mut async_wait = AsyncWait::default();
@@ -1178,7 +1178,7 @@ impl<'h, K: Eq + Hash, V, const TYPE: char> LockedEntry<'h, K, V, TYPE> {
             }
 
             if let Some(new_current_array) =
-                hash_table.bucket_array().get_arc(Acquire, &Guard::new())
+                hash_table.bucket_array().get_shared(Acquire, &Guard::new())
             {
                 if new_current_array.as_ptr() == current_array.as_ptr() {
                     break;
@@ -1254,7 +1254,7 @@ impl<'h, K: Eq + Hash, V, const TYPE: char> LockedEntry<'h, K, V, TYPE> {
             return Some(self);
         }
 
-        let mut current_array_holder = hash_table.bucket_array().get_arc(Acquire, &Guard::new());
+        let mut current_array_holder = hash_table.bucket_array().get_shared(Acquire, &Guard::new());
         if let Some(current_array) = current_array_holder {
             if !current_array.old_array(&Guard::new()).is_null() {
                 drop(self);
@@ -1297,7 +1297,7 @@ impl<'h, K: Eq + Hash, V, const TYPE: char> LockedEntry<'h, K, V, TYPE> {
                 }
             }
 
-            current_array_holder = hash_table.bucket_array().get_arc(Relaxed, &Guard::new());
+            current_array_holder = hash_table.bucket_array().get_shared(Relaxed, &Guard::new());
             if let Some(new_current_array) = current_array_holder {
                 if new_current_array.as_ptr() != current_array.as_ptr() {
                     return Self::first_entry_async(hash_table).await;

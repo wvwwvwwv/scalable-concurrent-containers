@@ -1,6 +1,6 @@
 //! [`HashIndex`] is a read-optimized concurrent and asynchronous hash map.
 
-use super::ebr::{Arc, AtomicArc, Guard};
+use super::ebr::{AtomicArc, Guard, Shared};
 use super::hash_table::bucket::{Bucket, EntryPtr, Locker, OPTIMISTIC};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::{HashTable, LockedEntry};
@@ -168,7 +168,7 @@ where
             (AtomicArc::null(), AtomicUsize::new(0))
         } else {
             let array = unsafe {
-                Arc::new_unchecked(BucketArray::<K, V, OPTIMISTIC>::new(
+                Shared::new_unchecked(BucketArray::<K, V, OPTIMISTIC>::new(
                     capacity,
                     AtomicArc::null(),
                 ))
@@ -793,7 +793,7 @@ where
     #[inline]
     pub async fn retain_async<F: FnMut(&K, &V) -> bool>(&self, mut pred: F) {
         let mut removed = false;
-        let mut current_array_holder = self.array.get_arc(Acquire, &Guard::new());
+        let mut current_array_holder = self.array.get_shared(Acquire, &Guard::new());
         while let Some(current_array) = current_array_holder.take() {
             self.cleanse_old_array_async(&current_array).await;
             for index in 0..current_array.num_buckets() {
@@ -824,7 +824,7 @@ where
                 }
             }
 
-            if let Some(new_current_array) = self.array.get_arc(Acquire, &Guard::new()) {
+            if let Some(new_current_array) = self.array.get_shared(Acquire, &Guard::new()) {
                 if new_current_array.as_ptr() == current_array.as_ptr() {
                     break;
                 }

@@ -1,4 +1,4 @@
-use super::ebr::{Arc, AtomicArc, Guard, Ptr, Tag};
+use super::ebr::{AtomicArc, Guard, Ptr, Shared, Tag};
 use std::fmt::{self, Debug, Display};
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::Ordering::{self, Relaxed, Release};
@@ -134,7 +134,7 @@ pub trait LinkedList: Sized {
     ///
     /// ```
     /// use scc::LinkedList;
-    /// use scc::ebr::{Arc, AtomicArc, Guard};
+    /// use scc::ebr::{AtomicArc, Guard, Shared};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
@@ -148,7 +148,7 @@ pub trait LinkedList: Sized {
     /// let guard = Guard::new();
     ///
     /// let head: L = L::default();
-    /// let tail: Arc<L> = Arc::new(L::default());
+    /// let tail: Shared<L> = Shared::new(L::default());
     /// assert!(head.push_back(tail.clone(), false, Relaxed, &guard).is_ok());
     ///
     /// tail.delete_self(Relaxed);
@@ -194,13 +194,13 @@ pub trait LinkedList: Sized {
     ///
     /// # Errors
     ///
-    /// Returns the supplied [`Arc`] when it finds `self` deleted.
+    /// Returns the supplied [`Shared`] when it finds `self` deleted.
     ///
     /// # Examples
     ///
     /// ```
     /// use scc::LinkedList;
-    /// use scc::ebr::{Arc, AtomicArc, Guard};
+    /// use scc::ebr::{AtomicArc, Guard, Shared};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
@@ -214,29 +214,29 @@ pub trait LinkedList: Sized {
     /// let guard = Guard::new();
     ///
     /// let head: L = L::default();
-    /// assert!(head.push_back(Arc::new(L::default()), true, Relaxed, &guard).is_ok());
+    /// assert!(head.push_back(Shared::new(L::default()), true, Relaxed, &guard).is_ok());
     /// assert!(head.is_marked(Relaxed));
-    /// assert!(head.push_back(Arc::new(L::default()), false, Relaxed, &guard).is_ok());
+    /// assert!(head.push_back(Shared::new(L::default()), false, Relaxed, &guard).is_ok());
     /// assert!(!head.is_marked(Relaxed));
     ///
     /// head.delete_self(Relaxed);
     /// assert!(!head.is_marked(Relaxed));
-    /// assert!(head.push_back(Arc::new(L::default()), false, Relaxed, &guard).is_err());
+    /// assert!(head.push_back(Shared::new(L::default()), false, Relaxed, &guard).is_err());
     /// ```
     #[inline]
     fn push_back<'g>(
         &self,
-        mut entry: Arc<Self>,
+        mut entry: Shared<Self>,
         mark: bool,
         order: Ordering,
         guard: &'g Guard,
-    ) -> Result<Ptr<'g, Self>, Arc<Self>> {
+    ) -> Result<Ptr<'g, Self>, Shared<Self>> {
         let new_tag = if mark { Tag::First } else { Tag::None };
         let mut next_ptr = self.link_ref().load(Relaxed, guard);
         while next_ptr.tag() != Tag::Second {
             entry
                 .link_ref()
-                .swap((next_ptr.get_arc(), Tag::None), Relaxed);
+                .swap((next_ptr.get_shared(), Tag::None), Relaxed);
             match self.link_ref().compare_exchange_weak(
                 next_ptr,
                 (Some(entry), new_tag),
@@ -266,7 +266,7 @@ pub trait LinkedList: Sized {
     ///
     /// ```
     /// use scc::LinkedList;
-    /// use scc::ebr::{Arc, AtomicArc, Guard};
+    /// use scc::ebr::{AtomicArc, Guard, Shared};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
@@ -280,7 +280,8 @@ pub trait LinkedList: Sized {
     /// let guard = Guard::new();
     ///
     /// let head: L = L::default();
-    /// assert!(head.push_back(Arc::new(L(AtomicArc::null(), 1)), false, Relaxed, &guard).is_ok());
+    /// assert!(
+    ///     head.push_back(Shared::new(L(AtomicArc::null(), 1)), false, Relaxed, &guard).is_ok());
     /// head.mark(Relaxed);
     ///
     /// let next_ptr = head.next_ptr(Relaxed, &guard);
@@ -311,7 +312,7 @@ pub trait LinkedList: Sized {
             self.link_ref()
                 .compare_exchange(
                     self_next_ptr,
-                    (next_valid_ptr.get_arc(), self_tag),
+                    (next_valid_ptr.get_shared(), self_tag),
                     Release,
                     Relaxed,
                     guard,

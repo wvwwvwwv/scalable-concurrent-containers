@@ -1,6 +1,6 @@
 //! [`Queue`] is a lock-free concurrent first-in-first-out container.
 
-use super::ebr::{Arc, AtomicArc, Guard, Ptr, Tag};
+use super::ebr::{AtomicArc, Guard, Ptr, Shared, Tag};
 use super::linked_list::{Entry, LinkedList};
 use std::fmt::{self, Debug};
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
@@ -17,7 +17,7 @@ pub struct Queue<T> {
 impl<T: 'static> Queue<T> {
     /// Pushes an instance of `T`.
     ///
-    /// Returns an [`Arc`] holding a strong reference to the newly pushed entry.
+    /// Returns a [`Shared`] holding a strong reference to the newly pushed entry.
     ///
     /// # Examples
     ///
@@ -29,7 +29,7 @@ impl<T: 'static> Queue<T> {
     /// assert_eq!(**queue.push(11), 11);
     /// ```
     #[inline]
-    pub fn push(&self, val: T) -> Arc<Entry<T>> {
+    pub fn push(&self, val: T) -> Shared<Entry<T>> {
         match self.push_if_internal(val, |_| true, &Guard::new()) {
             Ok(entry) => entry,
             Err(_) => {
@@ -61,7 +61,7 @@ impl<T: 'static> Queue<T> {
         &self,
         val: T,
         cond: F,
-    ) -> Result<Arc<Entry<T>>, T> {
+    ) -> Result<Shared<Entry<T>>, T> {
         self.push_if_internal(val, cond, &Guard::new())
     }
 
@@ -103,7 +103,7 @@ impl<T: 'static> Queue<T> {
 impl<T> Queue<T> {
     /// Pushes an instance of `T` without checking the lifetime of `T`.
     ///
-    /// Returns an [`Arc`] holding a strong reference to the newly pushed entry.
+    /// Returns a [`Shared`] holding a strong reference to the newly pushed entry.
     ///
     /// # Safety
     ///
@@ -121,7 +121,7 @@ impl<T> Queue<T> {
     /// assert_eq!(unsafe { **queue.push_unchecked(hello.as_str()) }, "hello");
     /// ```
     #[inline]
-    pub unsafe fn push_unchecked(&self, val: T) -> Arc<Entry<T>> {
+    pub unsafe fn push_unchecked(&self, val: T) -> Shared<Entry<T>> {
         match self.push_if_internal(val, |_| true, &Guard::new()) {
             Ok(entry) => entry,
             Err(_) => {
@@ -157,7 +157,7 @@ impl<T> Queue<T> {
         &self,
         val: T,
         cond: F,
-    ) -> Result<Arc<Entry<T>>, T> {
+    ) -> Result<Shared<Entry<T>>, T> {
         self.push_if_internal(val, cond, &Guard::new())
     }
 
@@ -182,7 +182,7 @@ impl<T> Queue<T> {
     /// assert!(queue.pop().is_none());
     /// ```
     #[inline]
-    pub fn pop(&self) -> Option<Arc<Entry<T>>> {
+    pub fn pop(&self) -> Option<Shared<Entry<T>>> {
         match self.pop_if(|_| true) {
             Ok(result) => result,
             Err(_) => unreachable!(),
@@ -215,11 +215,11 @@ impl<T> Queue<T> {
     pub fn pop_if<F: FnMut(&Entry<T>) -> bool>(
         &self,
         mut cond: F,
-    ) -> Result<Option<Arc<Entry<T>>>, Arc<Entry<T>>> {
+    ) -> Result<Option<Shared<Entry<T>>>, Shared<Entry<T>>> {
         let guard = Guard::new();
         let mut current = self.oldest.load(Acquire, &guard);
         while !current.is_null() {
-            if let Some(oldest_entry) = current.get_arc() {
+            if let Some(oldest_entry) = current.get_shared() {
                 if !oldest_entry.is_deleted(Relaxed) && !cond(&*oldest_entry) {
                     return Err(oldest_entry);
                 }
@@ -287,7 +287,7 @@ impl<T> Queue<T> {
         val: T,
         mut cond: F,
         guard: &Guard,
-    ) -> Result<Arc<Entry<T>>, T> {
+    ) -> Result<Shared<Entry<T>>, T> {
         let mut newest_ptr = self.newest.load(Acquire, guard);
         if newest_ptr.is_null() {
             // Traverse from the oldest.
@@ -300,7 +300,7 @@ impl<T> Queue<T> {
             return Err(val);
         }
 
-        let mut new_entry = unsafe { Arc::new_unchecked(Entry::new(val)) };
+        let mut new_entry = unsafe { Shared::new_unchecked(Entry::new(val)) };
         loop {
             let result = if let Some(newest_entry) = newest_ptr.as_ref() {
                 newest_entry.next().compare_exchange(
@@ -358,7 +358,10 @@ impl<T> Queue<T> {
             if oldest_entry.is_deleted(Relaxed) {
                 match self.oldest.compare_exchange(
                     oldest_ptr,
-                    (oldest_entry.next_ptr(Acquire, guard).get_arc(), Tag::None),
+                    (
+                        oldest_entry.next_ptr(Acquire, guard).get_shared(),
+                        Tag::None,
+                    ),
                     AcqRel,
                     Acquire,
                     guard,
