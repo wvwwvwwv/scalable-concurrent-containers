@@ -109,7 +109,7 @@ mod hashmap_test {
             }
             assert_eq!(INST_CNT.load(Relaxed), workload_size);
             assert_eq!(hashmap.len(), workload_size);
-            assert_eq!(hashmap.clear_async().await, workload_size);
+            hashmap.clear_async().await;
             assert_eq!(INST_CNT.load(Relaxed), 0);
         }
     }
@@ -179,13 +179,19 @@ mod hashmap_test {
         for k in 0..workload_size {
             assert!(hashmap.insert(k, L::new(&cnt)).is_ok());
         }
-        hashmap.for_each(|k, _| assert!(*k < workload_size));
+        hashmap.retain(|k, _| {
+            assert!(*k < workload_size);
+            true
+        });
         assert_eq!(cnt.load(Relaxed), workload_size);
 
         for k in 0..workload_size / 2 {
             assert!(hashmap.remove(&k).is_some());
         }
-        hashmap.for_each(|k, _| assert!(*k >= workload_size / 2));
+        hashmap.retain(|k, _| {
+            assert!(*k >= workload_size / 2);
+            true
+        });
         assert_eq!(cnt.load(Relaxed), workload_size / 2);
 
         drop(hashmap);
@@ -361,9 +367,9 @@ mod hashmap_test {
                     let mut call_async = false;
                     let mut in_range = 0;
                     let mut entry = if task_id % 2 == 0 {
-                        hashmap_clone.first_occupied_entry()
+                        hashmap_clone.first_entry()
                     } else {
-                        hashmap_clone.first_occupied_entry_async().await
+                        hashmap_clone.first_entry_async().await
                     };
                     while let Some(current_entry) = entry.take() {
                         if range.contains(current_entry.key()) {
@@ -378,13 +384,23 @@ mod hashmap_test {
                     }
                     assert!(in_range >= workload_size, "{in_range} {workload_size}");
 
-                    let (_, removed) = hashmap_clone.retain_async(|k, _| !range.contains(k)).await;
+                    let mut removed = 0;
+                    hashmap_clone
+                        .retain_async(|k, _| {
+                            if range.contains(k) {
+                                removed += 1;
+                                false
+                            } else {
+                                true
+                            }
+                        })
+                        .await;
                     assert_eq!(removed, workload_size);
 
                     let mut entry = if task_id % 2 == 0 {
-                        hashmap_clone.first_occupied_entry()
+                        hashmap_clone.first_entry()
                     } else {
-                        hashmap_clone.first_occupied_entry_async().await
+                        hashmap_clone.first_entry_async().await
                     };
                     while let Some(current_entry) = entry.take() {
                         assert!(!range.contains(current_entry.key()));
@@ -426,26 +442,29 @@ mod hashmap_test {
                         assert!(result.is_ok());
                     }
                     assert!(hashmap_clone.any(|k, _| range.contains(k)));
-                    let removed = if task_id % 3 == 0 {
+                    let mut removed = 0;
+                    if task_id % 3 == 0 {
                         hashmap_clone.prune(|k, v| {
                             if range.contains(k) {
                                 assert_eq!(*k, v);
+                                removed += 1;
                                 None
                             } else {
                                 Some(v)
                             }
-                        })
+                        });
                     } else {
                         hashmap_clone
                             .prune_async(|k, v| {
                                 if range.contains(k) {
                                     assert_eq!(*k, v);
+                                    removed += 1;
                                     None
                                 } else {
                                     Some(v)
                                 }
                             })
-                            .await
+                            .await;
                     };
                     assert_eq!(removed, workload_size);
                     assert!(!hashmap_clone.any_async(|k, _| range.contains(k)).await);
@@ -462,7 +481,7 @@ mod hashmap_test {
 
     #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-    async fn retain_for_each_any() {
+    async fn retain_any() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
         for _ in 0..256 {
             let num_tasks = 8;
@@ -485,23 +504,38 @@ mod hashmap_test {
                     }
                     let mut iterated = 0;
                     hashmap_clone
-                        .for_each_async(|k, _| {
+                        .retain_async(|k, _| {
                             if range.contains(k) {
                                 iterated += 1;
                             }
+                            true
                         })
                         .await;
                     assert!(iterated >= workload_size);
                     assert!(hashmap_clone.any(|k, _| range.contains(k)));
                     assert!(hashmap_clone.any_async(|k, _| range.contains(k)).await);
 
-                    let removed = if task_id % 3 == 0 {
-                        hashmap_clone.retain(|k, _| !range.contains(k)).1
+                    let mut removed = 0;
+                    if task_id % 3 == 0 {
+                        hashmap_clone.retain(|k, _| {
+                            if range.contains(k) {
+                                removed += 1;
+                                false
+                            } else {
+                                true
+                            }
+                        });
                     } else {
                         hashmap_clone
-                            .retain_async(|k, _| !range.contains(k))
-                            .await
-                            .1
+                            .retain_async(|k, _| {
+                                if range.contains(k) {
+                                    removed += 1;
+                                    false
+                                } else {
+                                    true
+                                }
+                            })
+                            .await;
                     };
                     assert_eq!(removed, workload_size);
 
@@ -560,7 +594,7 @@ mod hashmap_test {
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn accessor() {
+    fn iter() {
         let data_size = 4096;
         for _ in 0..16 {
             let hashmap: Arc<HashMap<u64, u64>> = Arc::new(HashMap::default());
@@ -578,9 +612,10 @@ mod hashmap_test {
                     let mut scanned = 0;
                     let mut checker = BTreeSet::new();
                     let max = inserted_copied.load(Acquire);
-                    hashmap_copied.for_each(|k, _| {
+                    hashmap_copied.retain(|k, _| {
                         scanned += 1;
                         checker.insert(*k);
+                        true
                     });
                     for key in 0..max {
                         assert!(checker.contains(&key));
@@ -591,9 +626,10 @@ mod hashmap_test {
                     barrier_copied.wait();
                     let mut scanned = 0;
                     let max = removed_copied.load(Acquire);
-                    hashmap_copied.for_each(|k, _| {
+                    hashmap_copied.retain(|k, _| {
                         scanned += 1;
                         assert!(*k < max);
+                        true
                     });
                 }
             });
@@ -674,15 +710,17 @@ mod hashmap_test {
                 hashmap.upsert(Data::new(d, checker.clone()), || Data::new(d, checker.clone()), |_, v| *v = Data::new(d + 1, checker.clone()));
             }
 
-            let result = hashmap.retain(|k, _| k.data < key + range);
-            assert_eq!(result, (range, range));
+            let mut removed = 0;
+            hashmap.retain(|k, _| if k.data  >= key + range { removed += 1; false } else { true });
+            assert_eq!(removed, range);
 
             assert_eq!(hashmap.len(), range);
             let mut found_keys = 0;
-            hashmap.for_each(|k, v| {
+            hashmap.retain(|k, v| {
                 assert!(k.data < key + range);
                 assert!(v.data >= key);
                 found_keys += 1;
+                true
             });
             assert_eq!(found_keys, range);
             assert_eq!(checker.load(Relaxed), range * 2);
@@ -698,8 +736,7 @@ mod hashmap_test {
                 assert!(hashmap.insert(Data::new(d, checker.clone()), Data::new(d, checker.clone())).is_ok());
                 hashmap.upsert(Data::new(d, checker.clone()), || Data::new(d, checker.clone()), |_, v| *v = Data::new(d + 2, checker.clone()));
             }
-            let result = hashmap.clear();
-            assert_eq!(result, range);
+            hashmap.clear();
             assert_eq!(checker.load(Relaxed), 0);
 
             for d in key..(key + range) {
@@ -715,8 +752,8 @@ mod hashmap_test {
 
 #[cfg(test)]
 mod hashindex_test {
-    use crate::ebr;
-    use crate::hash_index::{ModifyAction, Visitor};
+    use crate::ebr::Guard;
+    use crate::hash_index::Iter;
     use crate::HashIndex;
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
@@ -729,9 +766,9 @@ mod hashindex_test {
     use tokio::sync::Barrier as AsyncBarrier;
 
     static_assertions::assert_impl_all!(HashIndex<String, String>: Send, Sync, UnwindSafe);
-    static_assertions::assert_impl_all!(Visitor<'static, 'static, String, String>: UnwindSafe);
+    static_assertions::assert_impl_all!(Iter<'static, 'static, String, String>: UnwindSafe);
     static_assertions::assert_not_impl_all!(HashIndex<String, *const String>: Send, Sync, UnwindSafe);
-    static_assertions::assert_not_impl_all!(Visitor<'static, 'static, String, *const String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_all!(Iter<'static, 'static, String, *const String>: Send, Sync, UnwindSafe);
 
     struct R(&'static AtomicUsize);
     impl R {
@@ -789,12 +826,12 @@ mod hashindex_test {
             }
             assert!(INST_CNT.load(Relaxed) >= workload_size);
             assert_eq!(hashindex.len(), workload_size);
-            assert_eq!(hashindex.clear_async().await, workload_size);
+            hashindex.clear_async().await;
         }
         drop(hashindex);
 
         while INST_CNT.load(Relaxed) != 0 {
-            drop(ebr::Barrier::new());
+            drop(Guard::new());
             tokio::task::yield_now().await;
         }
     }
@@ -818,7 +855,7 @@ mod hashindex_test {
         drop(hashindex_clone);
 
         while INST_CNT.load(Relaxed) != 0 {
-            drop(ebr::Barrier::new());
+            drop(Guard::new());
             tokio::task::yield_now().await;
         }
     }
@@ -957,9 +994,9 @@ mod hashindex_test {
                     let mut call_async = false;
                     let mut in_range = 0;
                     let mut entry = if task_id % 2 == 0 {
-                        hashindex_clone.first_occupied_entry()
+                        hashindex_clone.first_entry()
                     } else {
-                        hashindex_clone.first_occupied_entry_async().await
+                        hashindex_clone.first_entry_async().await
                     };
                     while let Some(current_entry) = entry.take() {
                         if range.contains(current_entry.key()) {
@@ -974,15 +1011,23 @@ mod hashindex_test {
                     }
                     assert!(in_range >= workload_size, "{in_range} {workload_size}");
 
-                    let (_, removed) = hashindex_clone
-                        .retain_async(|k, _| !range.contains(k))
+                    let mut removed = 0;
+                    hashindex_clone
+                        .retain_async(|k, _| {
+                            if range.contains(k) {
+                                removed += 1;
+                                false
+                            } else {
+                                true
+                            }
+                        })
                         .await;
                     assert_eq!(removed, workload_size);
 
                     let mut entry = if task_id % 2 == 0 {
-                        hashindex_clone.first_occupied_entry()
+                        hashindex_clone.first_entry()
                     } else {
-                        hashindex_clone.first_occupied_entry_async().await
+                        hashindex_clone.first_entry_async().await
                     };
                     while let Some(current_entry) = entry.take() {
                         assert!(!range.contains(current_entry.key()));
@@ -1006,7 +1051,7 @@ mod hashindex_test {
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn visitor() {
+    fn iter() {
         let data_size = 4096;
         for _ in 0..64 {
             let hashindex: Arc<HashIndex<u64, u64>> = Arc::new(HashIndex::default());
@@ -1023,7 +1068,7 @@ mod hashindex_test {
                     barrier_copied.wait();
                     let mut checker = BTreeSet::new();
                     let max = inserted_copied.load(Acquire);
-                    for iter in hashindex_copied.iter(&ebr::Barrier::new()) {
+                    for iter in hashindex_copied.iter(&Guard::new()) {
                         checker.insert(*iter.0);
                     }
                     for key in 0..max {
@@ -1034,7 +1079,7 @@ mod hashindex_test {
                 for _ in 0..2 {
                     barrier_copied.wait();
                     let max = removed_copied.load(Acquire);
-                    for iter in hashindex_copied.iter(&ebr::Barrier::new()) {
+                    for iter in hashindex_copied.iter(&Guard::new()) {
                         assert!(*iter.0 < max);
                     }
                 }
@@ -1064,7 +1109,7 @@ mod hashindex_test {
 
     #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-    async fn modify() {
+    async fn update() {
         let hashindex: Arc<HashIndex<usize, usize>> = Arc::new(HashIndex::default());
         for _ in 0..256 {
             let num_tasks = 8;
@@ -1080,55 +1125,34 @@ mod hashindex_test {
                     for id in range.clone() {
                         let result = hashindex_clone.insert_async(id, id).await;
                         assert!(result.is_ok());
-                        if id % 4 == 0 {
-                            assert!(!hashindex_clone.modify(&id, |_, v| if *v == id {
-                                ModifyAction::Keep
-                            } else {
-                                ModifyAction::Update(0)
-                            }));
+                        let entry = if id % 4 == 0 {
+                            hashindex_clone.get(&id).unwrap()
                         } else {
-                            assert!(
-                                !hashindex_clone
-                                    .modify_async(&id, |_, v| if *v == id {
-                                        ModifyAction::Keep
-                                    } else {
-                                        ModifyAction::Update(0)
-                                    })
-                                    .await
-                            );
+                            hashindex_clone.get_async(&id).await.unwrap()
+                        };
+                        if *entry.get() != id {
+                            entry.update(0);
                         }
                     }
                     for id in range.clone() {
                         hashindex_clone.read(&id, |k, v| assert_eq!(k, v));
-                        if id % 4 == 0 {
-                            assert!(hashindex_clone.modify(&id, |_, v| if *v == id {
-                                Some(Some(usize::MAX))
-                            } else {
-                                None
-                            }));
+                        let entry = if id % 4 == 0 {
+                            hashindex_clone.get(&id).unwrap()
                         } else {
-                            assert!(
-                                hashindex_clone
-                                    .modify_async(&id, |_, v| if *v == id {
-                                        Some(Some(usize::MAX))
-                                    } else {
-                                        None
-                                    })
-                                    .await
-                            );
+                            hashindex_clone.get_async(&id).await.unwrap()
+                        };
+                        if *entry.get() == id {
+                            entry.update(usize::MAX);
                         }
                     }
                     for id in range.clone() {
                         hashindex_clone.read(&id, |_, v| assert_eq!(*v, usize::MAX));
-                        if id % 4 == 0 {
-                            assert!(hashindex_clone.modify(&id, |_, _| Some(None)));
+                        let entry = if id % 4 == 0 {
+                            hashindex_clone.get(&id).unwrap()
                         } else {
-                            assert!(
-                                hashindex_clone
-                                    .modify_async(&id, |_, _| ModifyAction::Remove)
-                                    .await
-                            );
-                        }
+                            hashindex_clone.get_async(&id).await.unwrap()
+                        };
+                        entry.remove_entry();
                     }
                 }));
             }
@@ -1165,28 +1189,41 @@ mod hashindex_test {
                         assert_eq!(result, Err((id, id)));
                     }
                     let mut iterated = 0;
-                    hashindex_clone
-                        .iter(&ebr::Barrier::new())
-                        .for_each(|(k, _)| {
-                            if range.contains(k) {
-                                iterated += 1;
-                            }
-                        });
+                    hashindex_clone.iter(&Guard::new()).for_each(|(k, _)| {
+                        if range.contains(k) {
+                            iterated += 1;
+                        }
+                    });
                     assert!(iterated >= workload_size);
                     assert!(hashindex_clone
-                        .iter(&ebr::Barrier::new())
+                        .iter(&Guard::new())
                         .any(|(k, _)| range.contains(k)));
 
-                    let (_, removed) = if task_id % 4 == 0 {
-                        hashindex_clone.retain(|k, _| !range.contains(k))
+                    let mut removed = 0;
+                    if task_id % 4 == 0 {
+                        hashindex_clone.retain(|k, _| {
+                            if range.contains(k) {
+                                removed += 1;
+                                false
+                            } else {
+                                true
+                            }
+                        });
                     } else {
                         hashindex_clone
-                            .retain_async(|k, _| !range.contains(k))
-                            .await
+                            .retain_async(|k, _| {
+                                if range.contains(k) {
+                                    removed += 1;
+                                    false
+                                } else {
+                                    true
+                                }
+                            })
+                            .await;
                     };
                     assert_eq!(removed, workload_size);
                     assert!(!hashindex_clone
-                        .iter(&ebr::Barrier::new())
+                        .iter(&Guard::new())
                         .any(|(k, _)| range.contains(k)));
                 }));
             }
@@ -1377,8 +1414,8 @@ mod hashcache_test {
 
 #[cfg(test)]
 mod treeindex_test {
-    use crate::ebr;
-    use crate::tree_index::{Range, Visitor};
+    use crate::ebr::Guard;
+    use crate::tree_index::{Iter, Range};
     use crate::TreeIndex;
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
@@ -1392,10 +1429,10 @@ mod treeindex_test {
     use tokio::sync::Barrier as AsyncBarrier;
 
     static_assertions::assert_impl_all!(TreeIndex<String, String>: Send, Sync, UnwindSafe);
-    static_assertions::assert_impl_all!(Visitor<'static, 'static, String, String>: UnwindSafe);
+    static_assertions::assert_impl_all!(Iter<'static, 'static, String, String>: UnwindSafe);
     static_assertions::assert_impl_all!(Range<'static, 'static, String, String, RangeInclusive<String>>: UnwindSafe);
     static_assertions::assert_not_impl_all!(TreeIndex<String, *const String>: Send, Sync, UnwindSafe);
-    static_assertions::assert_not_impl_all!(Visitor<'static, 'static, String, *const String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_all!(Iter<'static, 'static, String, *const String>: Send, Sync, UnwindSafe);
     static_assertions::assert_not_impl_all!(Range<'static, 'static, String, *const String, RangeInclusive<String>>: Send, Sync, UnwindSafe);
 
     struct R(&'static AtomicUsize);
@@ -1432,7 +1469,7 @@ mod treeindex_test {
         drop(tree);
 
         while INST_CNT.load(Relaxed) != 0 {
-            drop(ebr::Barrier::new());
+            drop(Guard::new());
             tokio::task::yield_now().await;
         }
     }
@@ -1455,7 +1492,7 @@ mod treeindex_test {
         assert_eq!(tree.len(), 0);
 
         while INST_CNT.load(Relaxed) != 0 {
-            drop(ebr::Barrier::new());
+            drop(Guard::new());
             tokio::task::yield_now().await;
         }
     }
@@ -1475,7 +1512,7 @@ mod treeindex_test {
         tree.clear();
 
         while INST_CNT.load(Relaxed) != 0 {
-            drop(ebr::Barrier::new());
+            drop(Guard::new());
             tokio::task::yield_now().await;
         }
     }
@@ -1498,7 +1535,7 @@ mod treeindex_test {
         tree_clone.clear();
 
         while INST_CNT.load(Relaxed) != 0 {
-            drop(ebr::Barrier::new());
+            drop(Guard::new());
             tokio::task::yield_now().await;
         }
     }
@@ -1575,8 +1612,8 @@ mod treeindex_test {
 
         let mut cnt = 0;
         while INST_CNT.load(Relaxed) > 0 {
-            let barrier = ebr::Barrier::new();
-            drop(barrier);
+            let guard = Guard::new();
+            drop(guard);
             cnt += 1;
         }
         println!("{cnt}");
@@ -1589,8 +1626,8 @@ mod treeindex_test {
         tree.clear();
 
         while INST_CNT.load(Relaxed) > 0 {
-            let barrier = ebr::Barrier::new();
-            drop(barrier);
+            let guard = Guard::new();
+            drop(guard);
         }
     }
 
@@ -1640,8 +1677,8 @@ mod treeindex_test {
             assert!(tree.read(&key, |key, val| assert_eq!(key, val)).is_some());
         }
 
-        let barrier = ebr::Barrier::new();
-        let scanner = tree.iter(&barrier);
+        let guard = Guard::new();
+        let scanner = tree.iter(&guard);
         let mut prev = 0;
         for entry in scanner {
             assert!(prev == 0 || prev < *entry.0);
@@ -1703,8 +1740,8 @@ mod treeindex_test {
                             .is_some());
                     }
                     {
-                        let ebr_barrier = ebr::Barrier::new();
-                        let mut range_scanner = tree_copied.range(first_key.., &ebr_barrier);
+                        let guard = Guard::new();
+                        let mut range_scanner = tree_copied.range(first_key.., &guard);
                         let mut entry = range_scanner.next().unwrap();
                         assert_eq!(entry, (&first_key, &first_key));
                         entry = range_scanner.next().unwrap();
@@ -1718,9 +1755,8 @@ mod treeindex_test {
                     let key_at_halfway = first_key + range / 2;
                     for key in (first_key + 1)..(first_key + range) {
                         if key == key_at_halfway {
-                            let ebr_barrier = ebr::Barrier::new();
-                            let mut range_scanner =
-                                tree_copied.range((first_key + 1).., &ebr_barrier);
+                            let guard = Guard::new();
+                            let mut range_scanner = tree_copied.range((first_key + 1).., &guard);
                             let entry = range_scanner.next().unwrap();
                             assert_eq!(entry, (&key_at_halfway, &key_at_halfway));
                             let entry = range_scanner.next().unwrap();
@@ -1745,8 +1781,8 @@ mod treeindex_test {
             let mut found_markers = 0;
             let mut prev_marker = 0;
             let mut prev = 0;
-            let ebr_barrier = ebr::Barrier::new();
-            for iter in tree.iter(&ebr_barrier) {
+            let guard = Guard::new();
+            for iter in tree.iter(&guard) {
                 let current = *iter.0;
                 if current % range == 0 {
                     found_markers += 1;
@@ -1872,8 +1908,8 @@ mod treeindex_test {
                         let max = inserted_copied.load(Acquire);
                         let mut prev = 0;
                         let mut iterated = 0;
-                        let ebr_barrier = ebr::Barrier::new();
-                        for iter in tree_copied.iter(&ebr_barrier) {
+                        let guard = Guard::new();
+                        for iter in tree_copied.iter(&guard) {
                             assert!(
                                 prev == 0
                                     || (*iter.0 <= max && prev + 1 == *iter.0)
@@ -1889,8 +1925,8 @@ mod treeindex_test {
                         barrier_copied.wait();
                         let mut prev = 0;
                         let max = removed_copied.load(Acquire);
-                        let ebr_barrier = ebr::Barrier::new();
-                        for iter in tree_copied.iter(&ebr_barrier) {
+                        let guard = Guard::new();
+                        for iter in tree_copied.iter(&guard) {
                             let current = *iter.0;
                             assert!(current < max);
                             assert!(prev + 1 == current || prev == 0);
@@ -1925,6 +1961,7 @@ mod treeindex_test {
 
 #[cfg(test)]
 mod bag_test {
+    use crate::bag::IterMut;
     use crate::Bag;
     use std::panic::UnwindSafe;
     use std::sync::atomic::AtomicUsize;
@@ -1933,7 +1970,9 @@ mod bag_test {
     use tokio::sync::Barrier as AsyncBarrier;
 
     static_assertions::assert_impl_all!(Bag<String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_impl_all!(IterMut<'static, String>: Send, Sync, UnwindSafe);
     static_assertions::assert_not_impl_all!(Bag<*const String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_all!(IterMut<'static, *const String>: Send, Sync, UnwindSafe);
 
     struct R(&'static AtomicUsize);
     impl R {
@@ -2283,21 +2322,21 @@ mod stack_test {
 
 #[cfg(test)]
 mod ebr_test {
-    use crate::ebr::{suspend, Arc, AtomicArc, AtomicOwned, Barrier, Owned, Ptr, Tag};
+    use crate::ebr::{suspend, AtomicOwned, AtomicShared, Guard, Owned, Ptr, Shared, Tag};
     use std::ops::Deref;
     use std::panic::UnwindSafe;
     use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
     use std::sync::atomic::{AtomicBool, AtomicUsize};
 
-    static_assertions::assert_impl_all!(Arc<String>: Send, Sync, UnwindSafe);
-    static_assertions::assert_impl_all!(AtomicArc<String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_impl_all!(Shared<String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_impl_all!(AtomicShared<String>: Send, Sync, UnwindSafe);
     static_assertions::assert_impl_all!(Ptr<String>: UnwindSafe);
-    static_assertions::assert_not_impl_all!(Arc<*const u8>: Send, Sync, UnwindSafe);
-    static_assertions::assert_not_impl_all!(AtomicArc<*const u8>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_all!(Shared<*const u8>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_all!(AtomicShared<*const u8>: Send, Sync, UnwindSafe);
     static_assertions::assert_not_impl_all!(Ptr<String>: Send, Sync);
     static_assertions::assert_not_impl_all!(Ptr<*const u8>: Send, Sync, UnwindSafe);
-    static_assertions::assert_impl_all!(Barrier: UnwindSafe);
-    static_assertions::assert_not_impl_all!(Barrier: Send, Sync);
+    static_assertions::assert_impl_all!(Guard: UnwindSafe);
+    static_assertions::assert_not_impl_all!(Guard: Send, Sync);
 
     struct A(AtomicUsize, usize, &'static AtomicBool);
     impl Drop for A {
@@ -2311,12 +2350,12 @@ mod ebr_test {
     fn deferred() {
         static EXECUTED: AtomicBool = AtomicBool::new(false);
 
-        let barrier = Barrier::new();
-        barrier.defer_execute(|| EXECUTED.store(true, Relaxed));
-        drop(barrier);
+        let guard = Guard::new();
+        guard.defer_execute(|| EXECUTED.store(true, Relaxed));
+        drop(guard);
 
         while !EXECUTED.load(Relaxed) {
-            drop(Barrier::new());
+            drop(Guard::new());
         }
     }
 
@@ -2325,7 +2364,7 @@ mod ebr_test {
     fn arc() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
 
-        let mut arc = Arc::new(A(AtomicUsize::new(10), 10, &DESTROYED));
+        let mut arc = Shared::new(A(AtomicUsize::new(10), 10, &DESTROYED));
         if let Some(mut_ref) = unsafe { arc.get_mut() } {
             mut_ref.1 += 1;
         }
@@ -2354,7 +2393,7 @@ mod ebr_test {
 
         drop(arc_clone_again);
         while !DESTROYED.load(Relaxed) {
-            drop(Barrier::new());
+            drop(Guard::new());
         }
     }
 
@@ -2371,17 +2410,17 @@ mod ebr_test {
         assert_eq!(owned.deref().0.load(Relaxed), 12);
         assert_eq!(owned.deref().1, 12);
 
-        let barrier = Barrier::new();
-        let ptr = owned.ptr(&barrier);
-        assert!(ptr.get_arc().is_none());
+        let guard = Guard::new();
+        let ptr = owned.ptr(&guard);
+        assert!(ptr.get_shared().is_none());
 
         drop(owned);
         assert!(!DESTROYED.load(Relaxed));
 
-        drop(barrier);
+        drop(guard);
 
         while !DESTROYED.load(Relaxed) {
-            drop(Barrier::new());
+            drop(Guard::new());
         }
     }
 
@@ -2390,7 +2429,7 @@ mod ebr_test {
     fn sendable() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
 
-        let arc = Arc::new(A(AtomicUsize::new(14), 14, &DESTROYED));
+        let arc = Shared::new(A(AtomicUsize::new(14), 14, &DESTROYED));
         let owned = Owned::new(A(AtomicUsize::new(15), 15, &DESTROYED));
         let arc_clone = arc.clone();
         let thread = std::thread::spawn(move || {
@@ -2406,7 +2445,7 @@ mod ebr_test {
     fn arc_arc_send() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
 
-        let arc = Arc::new(A(AtomicUsize::new(14), 14, &DESTROYED));
+        let arc = Shared::new(A(AtomicUsize::new(14), 14, &DESTROYED));
         let arc_clone = arc.clone();
         let thread = std::thread::spawn(move || {
             assert_eq!(arc_clone.0.load(Relaxed), 14);
@@ -2429,42 +2468,46 @@ mod ebr_test {
     fn arc_nested() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
 
-        struct Nest(Arc<A>);
+        struct Nest(Shared<A>);
 
-        let nested_arc = Arc::new(Nest(Arc::new(A(AtomicUsize::new(10), 10, &DESTROYED))));
+        let nested_arc = Shared::new(Nest(Shared::new(A(AtomicUsize::new(10), 10, &DESTROYED))));
         assert!(!DESTROYED.load(Relaxed));
         drop(nested_arc);
 
         while !DESTROYED.load(Relaxed) {
-            drop(Barrier::new());
+            drop(Guard::new());
         }
     }
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn atomic_arc() {
+    fn atomic_shared() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
 
-        let atomic_arc = AtomicArc::new(A(AtomicUsize::new(10), 10, &DESTROYED));
+        let atomic_shared = AtomicShared::new(A(AtomicUsize::new(10), 10, &DESTROYED));
         assert!(!DESTROYED.load(Relaxed));
 
-        let barrier = Barrier::new();
-        let atomic_arc_clone = atomic_arc.clone(Relaxed, &barrier);
+        let guard = Guard::new();
+        let atomic_shared_clone = atomic_shared.clone(Relaxed, &guard);
         assert_eq!(
-            atomic_arc_clone.load(Relaxed, &barrier).as_ref().unwrap().1,
+            atomic_shared_clone
+                .load(Relaxed, &guard)
+                .as_ref()
+                .unwrap()
+                .1,
             10
         );
 
-        drop(atomic_arc);
+        drop(atomic_shared);
         assert!(!DESTROYED.load(Relaxed));
 
-        atomic_arc_clone.update_tag_if(Tag::Second, |_| true, Relaxed, Relaxed);
+        atomic_shared_clone.update_tag_if(Tag::Second, |_| true, Relaxed, Relaxed);
 
-        drop(atomic_arc_clone);
-        drop(barrier);
+        drop(atomic_shared_clone);
+        drop(guard);
 
         while !DESTROYED.load(Relaxed) {
-            drop(Barrier::new());
+            drop(Guard::new());
         }
     }
 
@@ -2476,8 +2519,8 @@ mod ebr_test {
         let atomic_owned = AtomicOwned::new(A(AtomicUsize::new(10), 10, &DESTROYED));
         assert!(!DESTROYED.load(Relaxed));
 
-        let barrier = Barrier::new();
-        let ptr = atomic_owned.load(Relaxed, &barrier);
+        let guard = Guard::new();
+        let ptr = atomic_owned.load(Relaxed, &guard);
         assert_eq!(ptr.as_ref().map(|a| a.1), Some(10));
 
         atomic_owned.update_tag_if(Tag::Second, |_| true, Relaxed, Relaxed);
@@ -2485,112 +2528,112 @@ mod ebr_test {
         drop(atomic_owned);
         assert_eq!(ptr.as_ref().map(|a| a.1), Some(10));
 
-        drop(barrier);
+        drop(guard);
 
         while !DESTROYED.load(Relaxed) {
-            drop(Barrier::new());
+            drop(Guard::new());
         }
     }
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn atomic_arc_send() {
+    fn atomic_shared_send() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
 
-        let atomic_arc = AtomicArc::new(A(AtomicUsize::new(17), 17, &DESTROYED));
+        let atomic_shared = AtomicShared::new(A(AtomicUsize::new(17), 17, &DESTROYED));
         assert!(!DESTROYED.load(Relaxed));
 
         let thread = std::thread::spawn(move || {
-            let barrier = Barrier::new();
-            let ptr = atomic_arc.load(Relaxed, &barrier);
+            let guard = Guard::new();
+            let ptr = atomic_shared.load(Relaxed, &guard);
             assert_eq!(ptr.as_ref().unwrap().0.load(Relaxed), 17);
         });
         assert!(thread.join().is_ok());
 
         while !DESTROYED.load(Relaxed) {
-            drop(Barrier::new());
+            drop(Guard::new());
         }
     }
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn atomic_arc_creation() {
+    fn atomic_shared_creation() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
 
-        let atomic_arc = AtomicArc::new(A(AtomicUsize::new(11), 11, &DESTROYED));
+        let atomic_shared = AtomicShared::new(A(AtomicUsize::new(11), 11, &DESTROYED));
         assert!(!DESTROYED.load(Relaxed));
 
-        let barrier = Barrier::new();
+        let guard = Guard::new();
 
-        let arc = atomic_arc.get_arc(Relaxed, &barrier);
+        let arc = atomic_shared.get_shared(Relaxed, &guard);
 
-        drop(atomic_arc);
+        drop(atomic_shared);
         assert!(!DESTROYED.load(Relaxed));
 
         if let Some(arc) = arc {
             assert_eq!(arc.1, 11);
             assert!(!DESTROYED.load(Relaxed));
         }
-        drop(barrier);
+        drop(guard);
 
         while !DESTROYED.load(Relaxed) {
-            drop(Barrier::new());
+            drop(Guard::new());
         }
     }
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn atomic_arc_conversion() {
+    fn atomic_shared_conversion() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
 
-        let atomic_arc = AtomicArc::new(A(AtomicUsize::new(11), 11, &DESTROYED));
+        let atomic_shared = AtomicShared::new(A(AtomicUsize::new(11), 11, &DESTROYED));
         assert!(!DESTROYED.load(Relaxed));
 
-        let barrier = Barrier::new();
+        let guard = Guard::new();
 
-        let arc = atomic_arc.try_into_arc(Relaxed);
+        let arc = atomic_shared.try_into_shared(Relaxed);
         assert!(!DESTROYED.load(Relaxed));
 
         if let Some(arc) = arc {
             assert_eq!(arc.1, 11);
             assert!(!DESTROYED.load(Relaxed));
         }
-        drop(barrier);
+        drop(guard);
 
         while !DESTROYED.load(Relaxed) {
-            drop(Barrier::new());
+            drop(Guard::new());
         }
     }
 
     #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
-    async fn atomic_arc_parallel() {
-        let atomic_arc: Arc<AtomicArc<String>> =
-            Arc::new(AtomicArc::new(String::from("How are you?")));
+    async fn atomic_shared_parallel() {
+        let atomic_shared: Shared<AtomicShared<String>> =
+            Shared::new(AtomicShared::new(String::from("How are you?")));
         let mut task_handles = Vec::new();
         for _ in 0..16 {
-            let atomic_arc = atomic_arc.clone();
+            let atomic_shared = atomic_shared.clone();
             task_handles.push(tokio::task::spawn(async move {
                 for _ in 0..64 {
-                    let barrier = Barrier::new();
-                    let mut ptr = atomic_arc.load(Acquire, &barrier);
+                    let guard = Guard::new();
+                    let mut ptr = atomic_shared.load(Acquire, &guard);
                     assert!(ptr.tag() == Tag::None || ptr.tag() == Tag::Second);
                     if let Some(str_ref) = ptr.as_ref() {
                         assert!(str_ref == "How are you?" || str_ref == "How can I help you?");
                     }
-                    let converted: Result<Arc<String>, _> = Arc::try_from(ptr);
+                    let converted: Result<Shared<String>, _> = Shared::try_from(ptr);
                     if let Ok(arc) = converted {
                         assert!(*arc == "How are you?" || *arc == "How can I help you?");
                     }
-                    while let Err((passed, current)) = atomic_arc.compare_exchange(
+                    while let Err((passed, current)) = atomic_shared.compare_exchange(
                         ptr,
                         (
-                            Some(Arc::new(String::from("How can I help you?"))),
+                            Some(Shared::new(String::from("How can I help you?"))),
                             Tag::Second,
                         ),
                         Release,
                         Relaxed,
-                        &barrier,
+                        &guard,
                     ) {
                         if let Some(arc) = passed {
                             assert!(*arc == "How can I help you?");
@@ -2602,22 +2645,22 @@ mod ebr_test {
                         assert!(ptr.tag() == Tag::None || ptr.tag() == Tag::Second);
                     }
                     assert!(!suspend());
-                    drop(barrier);
+                    drop(guard);
 
                     assert!(suspend());
 
-                    atomic_arc.update_tag_if(Tag::None, |_| true, Relaxed, Relaxed);
+                    atomic_shared.update_tag_if(Tag::None, |_| true, Relaxed, Relaxed);
 
-                    let barrier = Barrier::new();
-                    ptr = atomic_arc.load(Acquire, &barrier);
+                    let guard = Guard::new();
+                    ptr = atomic_shared.load(Acquire, &guard);
                     assert!(ptr.tag() == Tag::None || ptr.tag() == Tag::Second);
                     if let Some(str_ref) = ptr.as_ref() {
                         assert!(str_ref == "How are you?" || str_ref == "How can I help you?");
                     }
-                    drop(barrier);
+                    drop(guard);
 
-                    let (old, _) = atomic_arc.swap(
-                        (Some(Arc::new(String::from("How are you?"))), Tag::Second),
+                    let (old, _) = atomic_shared.swap(
+                        (Some(Shared::new(String::from("How are you?"))), Tag::Second),
                         Release,
                     );
                     if let Some(arc) = old {
@@ -2633,12 +2676,12 @@ mod ebr_test {
 
     #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
-    async fn atomic_arc_clone() {
-        let atomic_arc: Arc<AtomicArc<String>> =
-            Arc::new(AtomicArc::new(String::from("How are you?")));
+    async fn atomic_shared_clone() {
+        let atomic_shared: Shared<AtomicShared<String>> =
+            Shared::new(AtomicShared::new(String::from("How are you?")));
         let mut task_handles = Vec::new();
         for t in 0..4 {
-            let atomic_arc = atomic_arc.clone();
+            let atomic_shared = atomic_shared.clone();
             task_handles.push(tokio::task::spawn(async move {
                 for i in 0..256 {
                     if t == 0 {
@@ -2649,21 +2692,23 @@ mod ebr_test {
                         } else {
                             Tag::None
                         };
-                        let (old, _) = atomic_arc
-                            .swap((Some(Arc::new(String::from("How are you?"))), tag), Release);
+                        let (old, _) = atomic_shared.swap(
+                            (Some(Shared::new(String::from("How are you?"))), tag),
+                            Release,
+                        );
                         assert!(old.is_some());
                         if let Some(arc) = old {
                             assert!(*arc == "How are you?");
                         }
                     } else {
-                        let (arc_clone, _) = (*atomic_arc)
-                            .clone(Acquire, &Barrier::new())
+                        let (arc_clone, _) = (*atomic_shared)
+                            .clone(Acquire, &Guard::new())
                             .swap((None, Tag::First), Release);
                         assert!(arc_clone.is_some());
                         if let Some(arc) = arc_clone {
                             assert!(*arc == "How are you?");
                         }
-                        let arc_clone = atomic_arc.get_arc(Acquire, &Barrier::new());
+                        let arc_clone = atomic_shared.get_shared(Acquire, &Guard::new());
                         assert!(arc_clone.is_some());
                         if let Some(arc) = arc_clone {
                             assert!(*arc == "How are you?");
@@ -2680,8 +2725,7 @@ mod ebr_test {
 
 #[cfg(test)]
 mod random_failure_test {
-    use crate::ebr;
-    use crate::ebr::Arc;
+    use crate::ebr::{Guard, Shared};
     use crate::hash_map::Entry;
     use crate::{HashCache, HashIndex, HashMap, TreeIndex};
     use std::any::Any;
@@ -2727,14 +2771,14 @@ mod random_failure_test {
         // EBR.
         for _ in 0..workload_size {
             let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
-                let r = Arc::new(R::new(&INST_CNT, &NEVER_PANIC));
+                let r = Shared::new(R::new(&INST_CNT, &NEVER_PANIC));
                 assert_ne!(INST_CNT.load(Relaxed), 0);
                 drop(r);
             });
         }
         while INST_CNT.load(Relaxed) != 0 {
             let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
-                drop(ebr::Barrier::new());
+                drop(Guard::new());
             });
             std::thread::yield_now();
         }
@@ -2783,7 +2827,7 @@ mod random_failure_test {
 
         while INST_CNT.load(Relaxed) != 0 {
             let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
-                drop(ebr::Barrier::new());
+                drop(Guard::new());
             });
             std::thread::yield_now();
         }
@@ -2807,7 +2851,7 @@ mod random_failure_test {
 
         while INST_CNT.load(Relaxed) != 0 {
             let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
-                drop(ebr::Barrier::new());
+                drop(Guard::new());
             });
             std::thread::yield_now();
         }
@@ -2829,7 +2873,7 @@ mod random_failure_test {
 
         while INST_CNT.load(Relaxed) != 0 {
             let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
-                drop(ebr::Barrier::new());
+                drop(Guard::new());
             });
             std::thread::yield_now();
         }
@@ -2849,7 +2893,7 @@ mod random_failure_test {
 
         while INST_CNT.load(Relaxed) != 0 {
             let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
-                drop(ebr::Barrier::new());
+                drop(Guard::new());
             });
             std::thread::yield_now();
         }

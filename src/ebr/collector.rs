@@ -1,4 +1,4 @@
-use super::{Barrier, Collectible, Tag};
+use super::{Collectible, Guard, Tag};
 use crate::exit_guard::ExitGuard;
 use std::panic;
 use std::ptr::{self, NonNull};
@@ -26,13 +26,13 @@ impl Collector {
     const CADENCE: u8 = u8::MAX;
 
     /// A bit field representing a thread state where the thread does not have a
-    /// [`Barrier`].
+    /// [`Guard`].
     const INACTIVE: u8 = 1_u8 << 2;
 
     /// A bit field representing a thread state where the thread has been terminated.
     const INVALID: u8 = 1_u8 << 3;
 
-    /// Acknowledges a new [`Barrier`] being instantiated.
+    /// Acknowledges a new [`Guard`] being instantiated.
     ///
     /// Returns `true` if a new epoch was announced.
     ///
@@ -40,7 +40,7 @@ impl Collector {
     ///
     /// The method may panic if the number of readers has reached `u32::MAX`.
     #[inline]
-    pub(super) fn new_barrier(&mut self) -> bool {
+    pub(super) fn new_guard(&mut self) -> bool {
         if self.num_readers == 0 {
             debug_assert_eq!(self.state.load(Relaxed) & Self::INACTIVE, Self::INACTIVE);
             self.num_readers = 1;
@@ -50,7 +50,7 @@ impl Collector {
                 // [`crossbeam_epoch`](https://docs.rs/crossbeam-epoch/).
                 //
                 // The rationale behind the code is, it compiles to `lock xchg` that
-                // practically acts as a full memory barrier on `X86`, and is much faster than
+                // practically acts as a full memory guard on `X86`, and is much faster than
                 // `mfence`.
                 self.state.swap(new_epoch, SeqCst);
             } else {
@@ -65,7 +65,7 @@ impl Collector {
                 true
             }
         } else if self.num_readers == u32::MAX {
-            panic!("Too many EBR barriers");
+            panic!("Too many EBR guards");
         } else {
             debug_assert_eq!(self.state.load(Relaxed) & Self::INACTIVE, 0);
             self.num_readers += 1;
@@ -73,9 +73,9 @@ impl Collector {
         }
     }
 
-    /// Acknowledges an existing [`Barrier`] being dropped.
+    /// Acknowledges an existing [`Guard`] being dropped.
     #[inline]
-    pub(super) fn end_barrier(&mut self) {
+    pub(super) fn end_guard(&mut self) {
         debug_assert_eq!(self.state.load(Relaxed) & Self::INACTIVE, 0);
         debug_assert_eq!(self.state.load(Relaxed), self.announcement);
 
@@ -373,11 +373,11 @@ fn try_drop_local_collector() {
                     .is_ok()
             {
                 // If it is the head, and the only `Collector` in the global list, drop it here.
-                let barrier = Barrier::new_for_drop();
+                let guard = Guard::new_for_drop();
                 while collector.has_garbage {
                     collector.epoch_updated();
                 }
-                drop(barrier);
+                drop(guard);
                 collector.drop_and_dealloc();
                 return;
             }

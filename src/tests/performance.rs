@@ -3,7 +3,7 @@
 
 #[cfg(test)]
 mod benchmark {
-    use crate::ebr;
+    use crate::ebr::Guard;
     use crate::{HashIndex, HashMap, TreeIndex};
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hash};
@@ -98,8 +98,8 @@ mod benchmark {
         }
         #[inline(always)]
         fn scan_test(&self) -> usize {
-            let barrier = ebr::Barrier::new();
-            self.iter(&barrier)
+            let guard = Guard::new();
+            self.iter(&guard)
                 .filter(|(_, v)| addr_of!(v) as usize != 0)
                 .count()
         }
@@ -122,8 +122,8 @@ mod benchmark {
         }
         #[inline(always)]
         fn scan_test(&self) -> usize {
-            let barrier = ebr::Barrier::new();
-            self.iter(&barrier)
+            let guard = Guard::new();
+            self.iter(&guard)
                 .filter(|(_, v)| addr_of!(v) as usize != 0)
                 .count()
         }
@@ -162,7 +162,7 @@ mod benchmark {
         workload: Workload,
     ) -> (Duration, usize) {
         for _ in 0..1024 {
-            drop(ebr::Barrier::new());
+            drop(Guard::new());
         }
         let barrier = Arc::new(Barrier::new(num_threads + 1));
         let total_num_operations = Arc::new(AtomicUsize::new(0));
@@ -681,6 +681,7 @@ mod benchmark {
 
 #[cfg(test)]
 mod benchmark_async {
+    use crate::ebr::Guard;
     use crate::{HashIndex, HashMap, TreeIndex};
     use std::collections::hash_map::RandomState;
     use std::sync::atomic::AtomicUsize;
@@ -738,7 +739,10 @@ mod benchmark_async {
                 barrier_clone.wait().await;
                 for _ in 0..workload_clone.scan {
                     hashmap_clone
-                        .for_each_async(|_, _| num_operations += 1)
+                        .retain_async(|_, _| {
+                            num_operations += 1;
+                            true
+                        })
                         .await;
                 }
                 for i in 0..per_task_workload_size {
@@ -966,9 +970,9 @@ mod benchmark_async {
                 let per_task_workload_size = workload_clone.size * per_op_workload_size;
                 barrier_clone.wait().await;
                 for _ in 0..workload_clone.scan {
-                    hashindex_clone
-                        .iter(&crate::ebr::Barrier::new())
-                        .for_each(|(_, _)| num_operations += 1);
+                    hashindex_clone.iter(&Guard::new()).for_each(|(_, _)| {
+                        num_operations += 1;
+                    });
                 }
                 for i in 0..per_task_workload_size {
                     let remote_task_id = if num_tasks < 2 {
@@ -1196,9 +1200,9 @@ mod benchmark_async {
                 let per_task_workload_size = workload_clone.size * per_op_workload_size;
                 barrier_clone.wait().await;
                 for _ in 0..workload_clone.scan {
-                    treeindex_clone
-                        .iter(&crate::ebr::Barrier::new())
-                        .for_each(|(_, _)| num_operations += 1);
+                    treeindex_clone.iter(&Guard::new()).for_each(|(_, _)| {
+                        num_operations += 1;
+                    });
                 }
                 for i in 0..per_task_workload_size {
                     let remote_task_id = if num_tasks < 2 {

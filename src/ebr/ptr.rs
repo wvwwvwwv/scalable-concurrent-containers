@@ -1,5 +1,5 @@
 use super::ref_counted::RefCounted;
-use super::{Arc, Tag};
+use super::{Shared, Tag};
 use std::marker::PhantomData;
 use std::panic::UnwindSafe;
 use std::ptr::addr_of;
@@ -8,12 +8,12 @@ use std::{ops::Deref, ptr, ptr::NonNull};
 
 /// [`Ptr`] points to an instance.
 #[derive(Debug)]
-pub struct Ptr<'b, T> {
+pub struct Ptr<'g, T> {
     instance_ptr: *const RefCounted<T>,
-    _phantom: PhantomData<&'b T>,
+    _phantom: PhantomData<&'g T>,
 }
 
-impl<'b, T> Ptr<'b, T> {
+impl<'g, T> Ptr<'g, T> {
     /// Creates a null [`Ptr`].
     ///
     /// # Examples
@@ -53,17 +53,17 @@ impl<'b, T> Ptr<'b, T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{AtomicArc, Barrier};
+    /// use scc::ebr::{AtomicShared, Guard};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
-    /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(21);
-    /// let barrier = Barrier::new();
-    /// let ptr = atomic_arc.load(Relaxed, &barrier);
+    /// let atomic_shared: AtomicShared<usize> = AtomicShared::new(21);
+    /// let guard = Guard::new();
+    /// let ptr = atomic_shared.load(Relaxed, &guard);
     /// assert_eq!(*ptr.as_ref().unwrap(), 21);
     /// ```
     #[inline]
     #[must_use]
-    pub fn as_ref(&self) -> Option<&'b T> {
+    pub fn as_ref(&self) -> Option<&'g T> {
         unsafe { Tag::unset_tag(self.instance_ptr).as_ref().map(Deref::deref) }
     }
 
@@ -72,12 +72,12 @@ impl<'b, T> Ptr<'b, T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Arc, Barrier};
+    /// use scc::ebr::{Guard, Shared};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
-    /// let arc: Arc<usize> = Arc::new(29);
-    /// let barrier = Barrier::new();
-    /// let ptr = arc.ptr(&barrier);
+    /// let shared: Shared<usize> = Shared::new(29);
+    /// let guard = Guard::new();
+    /// let ptr = shared.ptr(&guard);
     /// assert_eq!(unsafe { *ptr.as_raw() }, 29);
     /// ```
     #[inline]
@@ -184,31 +184,31 @@ impl<'b, T> Ptr<'b, T> {
         Self::from(Tag::unset_tag(self.instance_ptr))
     }
 
-    /// Tries to convert itself into an [`Arc`].
+    /// Tries to convert itself into a [`Shared`].
     ///
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Arc, Barrier};
+    /// use scc::ebr::{Guard, Shared};
     ///
-    /// let arc: Arc<usize> = Arc::new(83);
-    /// let barrier = Barrier::new();
-    /// let ptr = arc.ptr(&barrier);
-    /// let converted_arc = ptr.get_arc().unwrap();
-    /// assert_eq!(*converted_arc, 83);
+    /// let shared: Shared<usize> = Shared::new(83);
+    /// let guard = Guard::new();
+    /// let ptr = shared.ptr(&guard);
+    /// let converted_shared = ptr.get_shared().unwrap();
+    /// assert_eq!(*converted_shared, 83);
     ///
-    /// drop(arc);
-    /// drop(converted_arc);
+    /// drop(shared);
+    /// drop(converted_shared);
     ///
-    /// assert!(ptr.get_arc().is_none());
+    /// assert!(ptr.get_shared().is_none());
     /// ```
     #[inline]
     #[must_use]
-    pub fn get_arc(self) -> Option<Arc<T>> {
+    pub fn get_shared(self) -> Option<Shared<T>> {
         unsafe {
             if let Some(ptr) = NonNull::new(Tag::unset_tag(self.instance_ptr).cast_mut()) {
                 if ptr.as_ref().try_add_ref(Relaxed) {
-                    return Some(Arc::from(ptr));
+                    return Some(Shared::from(ptr));
                 }
             }
         }
@@ -231,29 +231,29 @@ impl<'b, T> Ptr<'b, T> {
     }
 }
 
-impl<'b, T> Clone for Ptr<'b, T> {
+impl<'g, T> Clone for Ptr<'g, T> {
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<'b, T> Copy for Ptr<'b, T> {}
+impl<'g, T> Copy for Ptr<'g, T> {}
 
-impl<'b, T> Default for Ptr<'b, T> {
+impl<'g, T> Default for Ptr<'g, T> {
     #[inline]
     fn default() -> Self {
         Self::null()
     }
 }
 
-impl<'b, T> Eq for Ptr<'b, T> {}
+impl<'g, T> Eq for Ptr<'g, T> {}
 
-impl<'b, T> PartialEq for Ptr<'b, T> {
+impl<'g, T> PartialEq for Ptr<'g, T> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.instance_ptr == other.instance_ptr
     }
 }
 
-impl<'b, T: UnwindSafe> UnwindSafe for Ptr<'b, T> {}
+impl<'g, T: UnwindSafe> UnwindSafe for Ptr<'g, T> {}

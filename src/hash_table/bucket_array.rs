@@ -1,5 +1,5 @@
 use super::bucket::{Bucket, DataBlock, BUCKET_LEN, OPTIMISTIC};
-use crate::ebr::{AtomicArc, Barrier, Ptr, Tag};
+use crate::ebr::{AtomicShared, Guard, Ptr, Tag};
 use std::alloc::{alloc, alloc_zeroed, dealloc, Layout};
 use std::mem::{align_of, needs_drop, size_of};
 use std::sync::atomic::AtomicUsize;
@@ -13,7 +13,7 @@ pub struct BucketArray<K: Eq, V, const TYPE: char> {
     hash_offset: u32,
     sample_size: u16,
     bucket_ptr_offset: u16,
-    old_array: AtomicArc<BucketArray<K, V, TYPE>>,
+    old_array: AtomicShared<BucketArray<K, V, TYPE>>,
     num_cleared_buckets: AtomicUsize,
 }
 
@@ -34,7 +34,7 @@ impl<K: Eq, V, const TYPE: char> BucketArray<K, V, TYPE> {
     /// Creates a new [`BucketArray`] of the given capacity.
     ///
     /// `capacity` is the desired number entries, not the number of [`Bucket`] instances.
-    pub(crate) fn new(capacity: usize, old_array: AtomicArc<BucketArray<K, V, TYPE>>) -> Self {
+    pub(crate) fn new(capacity: usize, old_array: AtomicShared<BucketArray<K, V, TYPE>>) -> Self {
         let log2_array_len = Self::calculate_log2_array_size(capacity);
         assert_ne!(log2_array_len, 0);
 
@@ -161,20 +161,20 @@ impl<K: Eq, V, const TYPE: char> BucketArray<K, V, TYPE> {
 
     /// Returns a [`Ptr`] to the old array.
     #[inline]
-    pub(crate) fn old_array<'b>(&self, barrier: &'b Barrier) -> Ptr<'b, BucketArray<K, V, TYPE>> {
-        self.old_array.load(Relaxed, barrier)
+    pub(crate) fn old_array<'g>(&self, guard: &'g Guard) -> Ptr<'g, BucketArray<K, V, TYPE>> {
+        self.old_array.load(Relaxed, guard)
     }
 
     /// Drops the old array.
     #[inline]
-    pub(crate) fn drop_old_array(&self, barrier: &Barrier) {
+    pub(crate) fn drop_old_array(&self, guard: &Guard) {
         self.old_array.swap((None, Tag::None), Relaxed).0.map(|a| {
             // It is OK to pass the old array instance to the garbage collector, deferring destruction.
             debug_assert_eq!(
                 a.num_cleared_buckets.load(Relaxed),
                 a.array_len.max(BUCKET_LEN)
             );
-            a.release(barrier)
+            a.release(guard)
         });
     }
 
@@ -235,11 +235,11 @@ impl<K: Eq, V, const TYPE: char> Drop for BucketArray<K, V, TYPE> {
         };
 
         if num_cleared_buckets < self.array_len {
-            let barrier = Barrier::new();
+            let guard = Guard::new();
             for index in num_cleared_buckets..self.array_len {
                 unsafe {
                     self.bucket_mut(index)
-                        .drop_entries(self.data_block_mut(index), &barrier);
+                        .drop_entries(self.data_block_mut(index), &guard);
                 }
             }
         }
@@ -277,7 +277,7 @@ mod test {
     fn alloc() {
         let start = Instant::now();
         let array: BucketArray<usize, usize, OPTIMISTIC> =
-            BucketArray::new(1024 * 1024 * 32, AtomicArc::default());
+            BucketArray::new(1024 * 1024 * 32, AtomicShared::default());
         assert_eq!(array.num_buckets(), 1024 * 1024);
         let after_alloc = Instant::now();
         println!("allocation took {:?}", after_alloc - start);
@@ -291,7 +291,7 @@ mod test {
     fn array() {
         for s in 0..BUCKET_LEN * 4 {
             let array: BucketArray<usize, usize, OPTIMISTIC> =
-                BucketArray::new(s, AtomicArc::default());
+                BucketArray::new(s, AtomicShared::default());
             assert!(
                 array.num_buckets() >= (s.max(1) + BUCKET_LEN - 1) / BUCKET_LEN,
                 "{s} {}",

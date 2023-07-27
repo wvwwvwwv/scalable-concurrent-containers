@@ -81,7 +81,7 @@ assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 3);
 let future_upsert = hashmap.upsert_async(2, || 1, |_, v| *v = 3);
 ```
 
-[HashMap](#HashMap) does not provide an [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) since it is impossible to confine the lifetime of [Iterator::Item](https://doc.rust-lang.org/std/iter/trait.Iterator.html#associatedtype.Item) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html). The limitation can be circumvented by relying on interior mutability, e.g., let the returned reference hold a lock, however it will easily lead to a deadlock if not correctly used, and frequent acquisition of locks may impact performance. Therefore, [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, [HashMap](#HashMap) provides a number of methods to iterate over entries synchronously or asynchronously: `any`, `any_async`, `for_each`, `for_each_async`, `OccupiedEntry::next`, `OccupiedEntry::next_async`, `prune`, `prune_async`, `retain`, `retain_async`, `scan`,  and `scan_async`.
+[HashMap](#HashMap) does not provide an [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) since it is impossible to confine the lifetime of [Iterator::Item](https://doc.rust-lang.org/std/iter/trait.Iterator.html#associatedtype.Item) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html). The limitation can be circumvented by relying on interior mutability, e.g., let the returned reference hold a lock, however it will easily lead to a deadlock if not correctly used, and frequent acquisition of locks may impact performance. Therefore, [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, [HashMap](#HashMap) provides a number of methods to iterate over entries synchronously or asynchronously: `any`, `any_async`, `OccupiedEntry::next`, `OccupiedEntry::next_async`, `prune`, `prune_async`, `retain`, `retain_async`, `scan`,  and `scan_async`.
 
 ```rust
 use scc::HashMap;
@@ -91,9 +91,9 @@ let hashmap: HashMap<u64, u32> = HashMap::default();
 assert!(hashmap.insert(1, 0).is_ok());
 assert!(hashmap.insert(2, 1).is_ok());
 
-// `for_each` allows entry modification.
+// Entries can be modified or removed via `retain`.
 let mut acc = 0;
-hashmap.for_each(|k, v_mut| { acc += *k; *v_mut = 2; });
+hashmap.retain(|k, v_mut| { acc += *k; *v_mut = 2; true });
 assert_eq!(acc, 3);
 assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
 assert_eq!(hashmap.read(&2, |_, v| *v).unwrap(), 2);
@@ -102,18 +102,17 @@ assert_eq!(hashmap.read(&2, |_, v| *v).unwrap(), 2);
 assert!(hashmap.insert(3, 2).is_ok());
 assert!(hashmap.any(|k, _| *k == 3));
 
-// `retain` enables entry removal.
-assert_eq!(hashmap.retain(|k, v| *k == 1 && *v == 2), (1, 2));
+// Multiple entries can be removed through `retain`.
+hashmap.retain(|k, v| *k == 1 && *v == 2);
 
 // `hash_map::OccupiedEntry` also can return the next closest occupied entry.
-let first_entry = hashmap.first_occupied_entry();
+let first_entry = hashmap.first_entry();
 assert!(first_entry.is_some());
 let second_entry = first_entry.and_then(|e| e.next());
 assert!(second_entry.is_none());
 
-// Asynchronous iteration over entries using `scan_async` and `for_each_async`.
+// Asynchronous iteration over entries using `scan_async`.
 let future_scan = hashmap.scan_async(|k, v| println!("{k} {v}"));
-let future_for_each = hashmap.for_each_async(|_, v_mut| { *v_mut = 0; });
 ```
 
 ## HashSet
@@ -157,28 +156,25 @@ let future_insert = hashindex.insert_async(2, 1);
 let future_remove = hashindex.remove_if_async(&1, |_| true);
 ```
 
-An [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is implemented for [HashIndex](#HashIndex), because any derived references can survive as long as the associated `ebr::Barrier` lives.
+An [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is implemented for [HashIndex](#HashIndex), because any derived references can survive as long as the associated `ebr::Guard` lives.
 
 ```rust
-use scc::ebr::Barrier;
-use scc::hash_index::ModifyAction;
+use scc::ebr::Guard;
 use scc::HashIndex;
 
 let hashindex: HashIndex<u64, u32> = HashIndex::default();
 
 assert!(hashindex.insert(1, 0).is_ok());
 
-// Existing values can be replaced with new ones.
-assert!(hashindex.modify(
-    &1,
-    |_, v| if *v == 0 { ModifyAction::Update(1) } else { ModifyAction::Remove }));
+// Existing values can be replaced with a new one.
+hashindex.get(&1).unwrap().update(1);
 
-let barrier = Barrier::new();
+let guard = Guard::new();
 
-// An `ebr::Barrier` has to be supplied to `iter`.
-let mut iter = hashindex.iter(&barrier);
+// An `ebr::Guard` has to be supplied to `iter`.
+let mut iter = hashindex.iter(&guard);
 
-// The derived reference can live as long as `barrier`.
+// The derived reference can live as long as `guard`.
 let entry_ref = iter.next().unwrap();
 assert_eq!(iter.next(), None);
 
@@ -245,7 +241,7 @@ let future_remove = treeindex.remove_if_async(&1, |v| *v == 2);
 Entries can be scanned without acquiring any locks.
 
 ```rust
-use scc::ebr::Barrier;
+use scc::ebr::Guard;
 use scc::TreeIndex;
 
 let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
@@ -254,10 +250,10 @@ assert!(treeindex.insert(1, 10).is_ok());
 assert!(treeindex.insert(2, 11).is_ok());
 assert!(treeindex.insert(3, 13).is_ok());
 
-let barrier = Barrier::new();
+let guard = Guard::new();
 
 // `visitor` iterates over entries without acquiring a lock.
-let mut visitor = treeindex.iter(&barrier);
+let mut visitor = treeindex.iter(&guard);
 assert_eq!(visitor.next().unwrap(), (&1, &10));
 assert_eq!(visitor.next().unwrap(), (&2, &11));
 assert_eq!(visitor.next().unwrap(), (&3, &13));
@@ -267,7 +263,7 @@ assert!(visitor.next().is_none());
 A specific range of keys can be scanned.
 
 ```rust
-use scc::ebr::Barrier;
+use scc::ebr::Guard;
 use scc::TreeIndex;
 
 let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
@@ -276,11 +272,11 @@ for i in 0..10 {
     assert!(treeindex.insert(i, 10).is_ok());
 }
 
-let barrier = Barrier::new();
+let guard = Guard::new();
 
-assert_eq!(treeindex.range(1..1, &barrier).count(), 0);
-assert_eq!(treeindex.range(4..8, &barrier).count(), 4);
-assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
+assert_eq!(treeindex.range(1..1, &guard).count(), 0);
+assert_eq!(treeindex.range(4..8, &guard).count(), 4);
+assert_eq!(treeindex.range(4..=8, &guard).count(), 5);
 ```
 
 ## Bag
@@ -339,7 +335,7 @@ assert!(stack.pop().is_none());
 
 ## EBR
 
-The `ebr` module implements epoch-based reclamation and various types of auxiliary data structures to make use of it safely. Its epoch-based reclamation algorithm is similar to that implemented in [crossbeam_epoch](https://docs.rs/crossbeam-epoch/), however users may find it easier to use as the lifetime of an instance is safely managed. For instance, `ebr::AtomicArc` and `ebr::Arc` hold a strong reference to the underlying instance, and the instance is automatically passed to the garbage collector when the reference count drops to zero.
+The `ebr` module implements epoch-based reclamation and various types of auxiliary data structures to make use of it safely. Its epoch-based reclamation algorithm is similar to that implemented in [crossbeam_epoch](https://docs.rs/crossbeam-epoch/), however users may find it easier to use as the lifetime of an instance is safely managed. For instance, `ebr::AtomicShared` and `ebr::Shared` hold a strong reference to the underlying instance, and the instance is automatically passed to the garbage collector when the reference count drops to zero.
 
 ### Memory Overhead
 
@@ -350,63 +346,63 @@ Retired instances are stored in intrusive queues in thread-local storage, and th
 The `ebr` module can be used without an `unsafe` block.
 
 ```rust
-use scc::ebr::{suspend, Arc, AtomicArc, AtomicOwned, Barrier, Ptr, Tag};
+use scc::ebr::{suspend, AtomicShared, AtomicOwned, Guard, Ptr, Shared, Tag};
 
 use std::sync::atomic::Ordering::Relaxed;
 
-// `atomic_arc` holds a strong reference to `17`.
-let atomic_arc: AtomicArc<usize> = AtomicArc::new(17);
+// `atomic_shared` holds a strong reference to `17`.
+let atomic_shared: AtomicShared<usize> = AtomicShared::new(17);
 
 // `atomic_owned` owns `19`.
 let atomic_owned: AtomicOwned<usize> = AtomicOwned::new(19);
 
-// `barrier` prevents the garbage collector from dropping reachable instances.
-let barrier: Barrier = Barrier::new();
+// `guard` prevents the garbage collector from dropping reachable instances.
+let guard = Guard::new();
 
-// `ptr` cannot outlive `barrier`.
-let mut ptr: Ptr<usize> = atomic_arc.load(Relaxed, &barrier);
+// `ptr` cannot outlive `guard`.
+let mut ptr: Ptr<usize> = atomic_shared.load(Relaxed, &guard);
 assert_eq!(*ptr.as_ref().unwrap(), 17);
 
-// `atomic_arc` can be tagged.
-atomic_arc.update_tag_if(Tag::First, |p| p.tag() == Tag::None, Relaxed, Relaxed);
+// `atomic_shared` can be tagged.
+atomic_shared.update_tag_if(Tag::First, |p| p.tag() == Tag::None, Relaxed, Relaxed);
 
 // `ptr` is not tagged, so CAS fails.
-assert!(atomic_arc.compare_exchange(
+assert!(atomic_shared.compare_exchange(
     ptr,
-    (Some(Arc::new(18)), Tag::First),
+    (Some(Shared::new(18)), Tag::First),
     Relaxed,
     Relaxed,
-    &barrier).is_err());
+    &guard).is_err());
 
 // `ptr` can be tagged.
 ptr.set_tag(Tag::First);
 
-// The return value of CAS is a handle to the instance that `atomic_arc` previously owned.
-let prev: Arc<usize> = atomic_arc.compare_exchange(
+// The return value of CAS is a handle to the instance that `atomic_shared` previously owned.
+let prev: Shared<usize> = atomic_shared.compare_exchange(
     ptr,
-    (Some(Arc::new(18)), Tag::Second),
+    (Some(Shared::new(18)), Tag::Second),
     Relaxed,
     Relaxed,
-    &barrier).unwrap().0.unwrap();
+    &guard).unwrap().0.unwrap();
 assert_eq!(*prev, 17);
 
 // `17` will be garbage-collected later.
 drop(prev);
 
-// `ebr::AtomicArc` can be converted into `ebr::Arc`.
-let arc: Arc<usize> = atomic_arc.try_into_arc(Relaxed).unwrap();
-assert_eq!(*arc, 18);
+// `ebr::AtomicShared` can be converted into `ebr::Shared`.
+let shared: Shared<usize> = atomic_shared.try_into_shared(Relaxed).unwrap();
+assert_eq!(*shared, 18);
 
 // `18` and `19` will be garbage-collected later.
-drop(arc);
+drop(shared);
 drop(atomic_owned);
 
-// `17` is still valid as `barrier` keeps the garbage collector from dropping it.
+// `17` is still valid as `guard` keeps the garbage collector from dropping it.
 assert_eq!(*ptr.as_ref().unwrap(), 17);
 
 // Execution of a closure can be deferred until all the current readers are gone.
-barrier.defer_execute(|| println!("deferred"));
-drop(barrier);
+guard.defer_execute(|| println!("deferred"));
+drop(guard);
 
 // If the thread is expected to lie dormant for a while, call `suspend()` to allow other threads
 // to reclaim its own retired instances.
@@ -420,26 +416,26 @@ suspend();
 ### Examples
 
 ```rust
-use scc::ebr::{Arc, AtomicArc, Barrier};
+use scc::ebr::{AtomicShared, Shared, Guard};
 use scc::LinkedList;
 
 use std::sync::atomic::Ordering::Relaxed;
 
 #[derive(Default)]
-struct L(AtomicArc<L>, usize);
+struct L(AtomicShared<L>, usize);
 impl LinkedList for L {
-    fn link_ref(&self) -> &AtomicArc<L> {
+    fn link_ref(&self) -> &AtomicShared<L> {
         &self.0
     }
 }
 
-let barrier = Barrier::new();
+let guard = Guard::new();
 
 let head: L = L::default();
-let tail: Arc<L> = Arc::new(L(AtomicArc::null(), 1));
+let tail: Shared<L> = Shared::new(L(AtomicShared::null(), 1));
 
 // A new entry is pushed.
-assert!(head.push_back(tail.clone(), false, Relaxed, &barrier).is_ok());
+assert!(head.push_back(tail.clone(), false, Relaxed, &guard).is_ok());
 assert!(!head.is_marked(Relaxed));
 
 // Users can mark a flag on an entry.
@@ -447,12 +443,12 @@ head.mark(Relaxed);
 assert!(head.is_marked(Relaxed));
 
 // `next_ptr` traverses the linked list.
-let next_ptr = head.next_ptr(Relaxed, &barrier);
+let next_ptr = head.next_ptr(Relaxed, &guard);
 assert_eq!(next_ptr.as_ref().unwrap().1, 1);
 
 // Once `tail` is deleted, it becomes invisible.
 tail.delete_self(Relaxed);
-assert!(head.next_ptr(Relaxed, &barrier).is_null());
+assert!(head.next_ptr(Relaxed, &guard).is_null());
 ```
 
 ## Performance

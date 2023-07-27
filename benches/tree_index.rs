@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use scc::ebr::Barrier;
+use scc::ebr::Guard;
 use scc::TreeIndex;
 use std::time::Instant;
 
@@ -37,8 +37,8 @@ fn iter_with(c: &mut Criterion) {
                 assert!(treeindex.insert(i, i).is_ok());
             }
             let start = Instant::now();
-            let barrier = Barrier::new();
-            let iter = treeindex.iter(&barrier);
+            let guard = Guard::new();
+            let iter = treeindex.iter(&guard);
             for e in iter {
                 assert_eq!(e.0, e.1);
             }
@@ -55,12 +55,9 @@ fn read_with(c: &mut Criterion) {
                 assert!(treeindex.insert(i, i).is_ok());
             }
             let start = Instant::now();
-            let barrier = Barrier::new();
+            let guard = Guard::new();
             for i in 0..iters {
-                assert_eq!(
-                    treeindex.read_with(&i, |_, v| *v == i, &barrier),
-                    Some(true)
-                );
+                assert_eq!(treeindex.read_with(&i, |_, v| *v == i, &guard), Some(true));
             }
             start.elapsed()
         })

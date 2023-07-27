@@ -16,7 +16,7 @@ mod ebr_model {
     }
 
     impl ModelCollector {
-        fn new_barrier(&self, epoch: &AtomicU8, ptr: &ModelPointer) {
+        fn new_guard(&self, epoch: &AtomicU8, ptr: &ModelPointer) {
             let global_epoch = epoch.load(Relaxed);
             let known_epoch = self.state.load(Relaxed) & (!INACTIVE);
             self.state.store(global_epoch, Relaxed);
@@ -39,7 +39,7 @@ mod ebr_model {
             self.num_collected.fetch_add(1, Relaxed);
         }
 
-        fn end_barrier(&self, epoch: &AtomicU8, ptr: &ModelPointer, other: &ModelCollector) {
+        fn end_guard(&self, epoch: &AtomicU8, ptr: &ModelPointer, other: &ModelCollector) {
             let mut known_epoch = self.state.load(Relaxed);
             let other_epoch = other.state.load(Relaxed);
             if (other_epoch & INACTIVE) == INACTIVE || other_epoch == known_epoch {
@@ -95,14 +95,14 @@ mod ebr_model {
                     let collector_ref = &collectors.0;
                     let ptr_ref = ptr.as_ref();
 
-                    collector_ref.new_barrier(epoch_ref, ptr_ref);
+                    collector_ref.new_guard(epoch_ref, ptr_ref);
                     assert!(!ptr_ref.unreachable.swap(true, Relaxed));
                     collector_ref.collect();
-                    collector_ref.end_barrier(epoch_ref, ptr_ref, &collectors.1);
+                    collector_ref.end_guard(epoch_ref, ptr_ref, &collectors.1);
 
                     (0..3).for_each(|_| {
-                        collector_ref.new_barrier(epoch_ref, ptr_ref);
-                        collector_ref.end_barrier(epoch_ref, ptr_ref, &collectors.1);
+                        collector_ref.new_guard(epoch_ref, ptr_ref);
+                        collector_ref.end_guard(epoch_ref, ptr_ref, &collectors.1);
                     });
                 })
             };
@@ -111,9 +111,9 @@ mod ebr_model {
             let collector_ref = &collectors.1;
             let ptr_ref = ptr.as_ref();
 
-            collector_ref.new_barrier(epoch_ref, ptr_ref);
+            collector_ref.new_guard(epoch_ref, ptr_ref);
             assert!(ptr_ref.unreachable.load(Relaxed) || !ptr_ref.reclaimed.load(Relaxed));
-            collector_ref.end_barrier(epoch_ref, ptr_ref, &collectors.0);
+            collector_ref.end_guard(epoch_ref, ptr_ref, &collectors.0);
 
             if ptr_ref.reclaimed.load(Relaxed) {
                 reclaimed_clone.fetch_add(1, Relaxed);

@@ -1,6 +1,6 @@
 //! [`HashIndex`] is a read-optimized concurrent and asynchronous hash map.
 
-use super::ebr::{Arc, AtomicArc, Barrier};
+use super::ebr::{AtomicShared, Guard, Shared};
 use super::hash_table::bucket::{Bucket, EntryPtr, Locker, OPTIMISTIC};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::{HashTable, LockedEntry};
@@ -47,7 +47,7 @@ where
     V: 'static + Clone,
     H: BuildHasher,
 {
-    array: AtomicArc<BucketArray<K, V, OPTIMISTIC>>,
+    array: AtomicShared<BucketArray<K, V, OPTIMISTIC>>,
     minimum_capacity: AtomicUsize,
     build_hasher: H,
 }
@@ -103,41 +103,21 @@ where
     additional: usize,
 }
 
-/// [`Visitor`] iterates over all the key-value pairs in the [`HashIndex`].
+/// An iterator over the entries of a [`HashIndex`].
 ///
-/// It is guaranteed to visit all the key-value pairs that outlive the [`Visitor`]. However, the
-/// same key-value pair can be visited more than once.
-pub struct Visitor<'h, 'b, K, V, H = RandomState>
+/// An [`Iter`] iterates over all the entries that survive the [`Iter`].
+pub struct Iter<'h, 'g, K, V, H = RandomState>
 where
     K: 'static + Clone + Eq + Hash,
     V: 'static + Clone,
     H: BuildHasher,
 {
     hashindex: &'h HashIndex<K, V, H>,
-    current_array: Option<&'b BucketArray<K, V, OPTIMISTIC>>,
+    current_array: Option<&'g BucketArray<K, V, OPTIMISTIC>>,
     current_index: usize,
-    current_bucket: Option<&'b Bucket<K, V, OPTIMISTIC>>,
-    current_entry_ptr: EntryPtr<'b, K, V, OPTIMISTIC>,
-    barrier: &'b Barrier,
-}
-
-/// Specifies possible actions of [`HashIndex::modify`] and [`HashIndex::modify_async`] on an
-/// entry.
-pub enum ModifyAction<V> {
-    /// Do nothing.
-    ///
-    /// [`Option::None`] is coerced to [`ModifyAction::Keep`].
-    Keep,
-
-    /// Do remove the entry.
-    ///
-    /// `Some(None)` is coerced to [`ModifyAction::Remove`].
-    Remove,
-
-    /// Do update the entry.
-    ///
-    /// `Some(Some(V))` is coerced to [`ModifyAction::Update`].
-    Update(V),
+    current_bucket: Option<&'g Bucket<K, V, OPTIMISTIC>>,
+    current_entry_ptr: EntryPtr<'g, K, V, OPTIMISTIC>,
+    guard: &'g Guard,
 }
 
 impl<K, V, H> HashIndex<K, V, H>
@@ -160,7 +140,7 @@ where
     #[inline]
     pub fn with_hasher(build_hasher: H) -> Self {
         Self {
-            array: AtomicArc::null(),
+            array: AtomicShared::null(),
             minimum_capacity: AtomicUsize::new(0),
             build_hasher,
         }
@@ -185,16 +165,19 @@ where
     #[inline]
     pub fn with_capacity_and_hasher(capacity: usize, build_hasher: H) -> Self {
         let (array, minimum_capacity) = if capacity == 0 {
-            (AtomicArc::null(), AtomicUsize::new(0))
+            (AtomicShared::null(), AtomicUsize::new(0))
         } else {
             let array = unsafe {
-                Arc::new_unchecked(BucketArray::<K, V, OPTIMISTIC>::new(
+                Shared::new_unchecked(BucketArray::<K, V, OPTIMISTIC>::new(
                     capacity,
-                    AtomicArc::null(),
+                    AtomicShared::null(),
                 ))
             };
             let minimum_capacity = array.num_entries();
-            (AtomicArc::from(array), AtomicUsize::new(minimum_capacity))
+            (
+                AtomicShared::from(array),
+                AtomicUsize::new(minimum_capacity),
+            )
         };
         Self {
             array,
@@ -272,10 +255,10 @@ where
     /// ```
     #[inline]
     pub fn entry(&self, key: K) -> Entry<K, V, H> {
-        let barrier = Barrier::new();
+        let guard = Guard::new();
         let hash = self.hash(&key);
         let locked_entry = unsafe {
-            self.reserve_entry(&key, hash, &mut (), self.prolonged_barrier_ref(&barrier))
+            self.reserve_entry(&key, hash, &mut (), self.prolonged_guard_ref(&guard))
                 .ok()
                 .unwrap_unchecked()
         };
@@ -314,12 +297,12 @@ where
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             {
-                let barrier = Barrier::new();
+                let guard = Guard::new();
                 if let Ok(locked_entry) = self.reserve_entry(
                     &key,
                     hash,
                     &mut async_wait_pinned,
-                    self.prolonged_barrier_ref(&barrier),
+                    self.prolonged_guard_ref(&guard),
                 ) {
                     if locked_entry.entry_ptr.is_valid() {
                         return Entry::Occupied(OccupiedEntry {
@@ -353,7 +336,7 @@ where
     ///
     /// assert!(hashindex.insert(1, 0).is_ok());
     ///
-    /// let mut first_entry = hashindex.first_occupied_entry().unwrap();
+    /// let mut first_entry = hashindex.first_entry().unwrap();
     /// unsafe {
     ///     *first_entry.get_mut() = 2;
     /// }
@@ -362,10 +345,10 @@ where
     /// assert_eq!(hashindex.read(&1, |_, v| *v), Some(2));
     /// ```
     #[inline]
-    pub fn first_occupied_entry(&self) -> Option<OccupiedEntry<K, V, H>> {
-        let barrier = Barrier::new();
-        let prolonged_barrier = self.prolonged_barrier_ref(&barrier);
-        if let Some(locked_entry) = self.lock_first_occupied_entry(prolonged_barrier) {
+    pub fn first_entry(&self) -> Option<OccupiedEntry<K, V, H>> {
+        let guard = Guard::new();
+        let prolonged_guard = self.prolonged_guard_ref(&guard);
+        if let Some(locked_entry) = self.lock_first_entry(prolonged_guard) {
             return Some(OccupiedEntry {
                 hashindex: self,
                 locked_entry,
@@ -388,11 +371,11 @@ where
     ///
     /// let hashindex: HashIndex<char, u32> = HashIndex::default();
     ///
-    /// let future_entry = hashindex.first_occupied_entry_async();
+    /// let future_entry = hashindex.first_entry_async();
     /// ```
     #[inline]
-    pub async fn first_occupied_entry_async(&self) -> Option<OccupiedEntry<K, V, H>> {
-        if let Some(locked_entry) = LockedEntry::first_occupied_entry_async(self).await {
+    pub async fn first_entry_async(&self) -> Option<OccupiedEntry<K, V, H>> {
+        if let Some(locked_entry) = LockedEntry::first_entry_async(self).await {
             return Some(OccupiedEntry {
                 hashindex: self,
                 locked_entry,
@@ -419,9 +402,9 @@ where
     /// ```
     #[inline]
     pub fn insert(&self, key: K, val: V) -> Result<(), (K, V)> {
-        let barrier = Barrier::new();
+        let guard = Guard::new();
         let hash = self.hash(&key);
-        if let Ok(Some((k, v))) = self.insert_entry(key, val, hash, &mut (), &barrier) {
+        if let Ok(Some((k, v))) = self.insert_entry(key, val, hash, &mut (), &guard) {
             Err((k, v))
         } else {
             Ok(())
@@ -450,267 +433,13 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            match self.insert_entry(key, val, hash, &mut async_wait_pinned, &Barrier::new()) {
+            match self.insert_entry(key, val, hash, &mut async_wait_pinned, &Guard::new()) {
                 Ok(Some(returned)) => return Err(returned),
                 Ok(None) => return Ok(()),
                 Err(returned) => {
                     key = returned.0;
                     val = returned.1;
                 }
-            }
-            async_wait_pinned.await;
-        }
-    }
-
-    /// Modifies the existing entry associated with the specified key.
-    ///
-    /// The return value of the supplied closure denotes the type of an action this method should
-    /// take. The closure may return [`ModifyAction`] or `Option<new_version>` where the type of
-    /// `new_version` is `Option<V>`.
-    ///
-    /// To be specific, this method takes either one of the following actions if the key exists.
-    /// * Do nothing if [`ModifyAction::Keep`] or `None` is returned from the supplied closure.
-    /// * Remove the entry if [`ModifyAction::Remove`] or `Some(None)` is returned from the
-    /// supplied closure.
-    /// * A new version of the entry is created with the current version removed if the supplied
-    /// closure returns [`ModifyAction::Update`] or `Some(Some(new_value))`.
-    ///
-    /// Returns `true` if the entry was either removed or updated; in other words, `false` is
-    /// returned if the key does not exist or the entry was not removed and updated.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::hash_index::ModifyAction;
-    /// use scc::HashIndex;
-    ///
-    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
-    ///
-    /// assert!(unsafe { hashindex.update(&1, |_, _| true).is_none() });
-    /// assert!(hashindex.insert(1, 0).is_ok());
-    ///
-    /// assert!(!hashindex.modify(&0, |_, v| Some(Some(1))));
-    /// assert!(hashindex.modify(&1, |_, v| ModifyAction::Update(1)));
-    /// assert_eq!(hashindex.read(&1, |_, v| *v).unwrap(), 1);
-    ///
-    /// assert!(hashindex.modify(&1, |_, v| ModifyAction::Remove));
-    /// assert!(hashindex.read(&1, |_, v| *v).is_none());
-    /// ```
-    #[inline]
-    pub fn modify<Q, F, R>(&self, key: &Q, updater: F) -> bool
-    where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
-        F: FnOnce(&K, &V) -> R,
-        R: Into<ModifyAction<V>>,
-    {
-        let barrier = Barrier::new();
-        let hash = self.hash(key);
-        if let Ok(Some(LockedEntry {
-            mut locker,
-            data_block_mut,
-            entry_ptr,
-            index: _,
-        })) = self.get_entry(key, hash, &mut (), &barrier)
-        {
-            let (k, v) = entry_ptr.get(data_block_mut);
-            let modify_action: ModifyAction<V> = updater(k, v).into();
-            let result = match modify_action {
-                ModifyAction::Keep => false,
-                ModifyAction::Remove => true,
-                ModifyAction::Update(new_v) => {
-                    // A new version of the entry will be created.
-                    let new_k = k.clone();
-                    locker.insert_with(
-                        data_block_mut,
-                        BucketArray::<K, V, OPTIMISTIC>::partial_hash(hash),
-                        || (new_k, new_v),
-                        &barrier,
-                    );
-                    true
-                }
-            };
-            if result {
-                // The entry was modified, and therefore the old version should be logically
-                // removed from the `HashIndex`.
-                locker.erase(data_block_mut, &entry_ptr);
-            }
-            return result;
-        }
-        false
-    }
-
-    /// Modifies the existing entry associated with the specified key.
-    ///
-    /// The return value of the supplied closure denotes the type of an action this method should
-    /// take. The closure may return [`ModifyAction`] or `Option<new_version>` where the type of
-    /// `new_version` is `Option<V>`.
-    ///
-    /// To be specific, this method takes either one of the following actions if the key exists.
-    /// * Do nothing if [`ModifyAction::Keep`] or `None` is returned from the supplied closure.
-    /// * Remove the entry if [`ModifyAction::Remove`] or `Some(None)` is returned from the
-    /// supplied closure.
-    /// * A new version of the entry is created with the current version removed if the supplied
-    /// closure returns [`ModifyAction::Update`] or `Some(Some(new_value))`.
-    ///
-    /// Returns `true` if the entry was either removed or updated; in other words, `false` is
-    /// returned if the key does not exist or the entry was not removed and updated. It is an
-    /// asynchronous method returning an `impl Future` for the caller to await.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::hash_index::ModifyAction;
-    /// use scc::HashIndex;
-    ///
-    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
-    ///
-    /// assert!(hashindex.insert(1, 0).is_ok());
-    /// let future_update = hashindex.modify_async(&1, |_, v| Some(Some(2)));
-    /// let future_remove = hashindex.modify_async(&1, |_, v| ModifyAction::Remove);
-    /// ```
-    #[inline]
-    pub async fn modify_async<Q, F, R>(&self, key: &Q, updater: F) -> bool
-    where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
-        F: FnOnce(&K, &V) -> R,
-        R: Into<ModifyAction<V>>,
-    {
-        let hash = self.hash(key);
-        loop {
-            let mut async_wait = AsyncWait::default();
-            let mut async_wait_pinned = Pin::new(&mut async_wait);
-            {
-                let barrier = Barrier::new();
-                if let Ok(result) = self.get_entry(key, hash, &mut async_wait_pinned, &barrier) {
-                    if let Some(LockedEntry {
-                        mut locker,
-                        data_block_mut,
-                        entry_ptr,
-                        index: _,
-                    }) = result
-                    {
-                        let (k, v) = entry_ptr.get(data_block_mut);
-                        let modify_action: ModifyAction<V> = updater(k, v).into();
-                        let result = match modify_action {
-                            ModifyAction::Keep => false,
-                            ModifyAction::Remove => true,
-                            ModifyAction::Update(new_v) => {
-                                // A new version of the entry will be created.
-                                let new_k = k.clone();
-                                locker.insert_with(
-                                    data_block_mut,
-                                    BucketArray::<K, V, OPTIMISTIC>::partial_hash(hash),
-                                    || (new_k, new_v),
-                                    &barrier,
-                                );
-                                true
-                            }
-                        };
-                        if result {
-                            // The entry was modified, and therefore the old version should be
-                            // logically removed from the `HashIndex`.
-                            locker.erase(data_block_mut, &entry_ptr);
-                        }
-                        return result;
-                    }
-                    return false;
-                };
-            }
-            async_wait_pinned.await;
-        }
-    }
-
-    /// Updates the existing value corresponding to the key.
-    ///
-    /// Returns `None` if the key does not exist.
-    ///
-    /// # Safety
-    ///
-    /// The caller has to make sure that there are no readers of the entry, e.g., a reader keeping
-    /// a reference to the entry via [`HashIndex::iter`], [`HashIndex::read`], or
-    /// [`HashIndex::read_with`], unless an instance of `V` can be safely read when there is a
-    /// single writer, e.g., `V = [u8; 32]`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashIndex;
-    ///
-    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
-    ///
-    /// assert!(unsafe { hashindex.update(&1, |_, _| true).is_none() });
-    /// assert!(hashindex.insert(1, 0).is_ok());
-    /// assert_eq!(unsafe { hashindex.update(&1, |_, v| { *v = 2; *v }).unwrap() }, 2);
-    /// assert_eq!(hashindex.read(&1, |_, v| *v).unwrap(), 2);
-    /// ```
-    #[inline]
-    pub unsafe fn update<Q, F, R>(&self, key: &Q, updater: F) -> Option<R>
-    where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
-        F: FnOnce(&K, &mut V) -> R,
-    {
-        let barrier = Barrier::new();
-        let LockedEntry {
-            mut locker,
-            data_block_mut,
-            mut entry_ptr,
-            index: _,
-        } = self
-            .get_entry(key, self.hash(key), &mut (), &barrier)
-            .ok()
-            .flatten()?;
-        let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
-        Some(updater(k, v))
-    }
-
-    /// Updates the existing value corresponding to the key.
-    ///
-    /// Returns `None` if the key does not exist. It is an asynchronous method returning an
-    /// `impl Future` for the caller to await.
-    ///
-    /// # Safety
-    ///
-    /// The caller has to make sure that there are no readers of the entry, e.g., a reader keeping
-    /// a reference to the entry via [`HashIndex::iter`], [`HashIndex::read`], or
-    /// [`HashIndex::read_with`], unless an instance of `V` can be safely read when there is a
-    /// single writer, e.g., `V = [u8; 32]`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashIndex;
-    ///
-    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
-    ///
-    /// assert!(hashindex.insert(1, 0).is_ok());
-    /// let future_update = unsafe { hashindex.update_async(&1, |_, v| { *v = 2; *v }) };
-    /// ```
-    #[inline]
-    pub async unsafe fn update_async<Q, F, R>(&self, key: &Q, updater: F) -> Option<R>
-    where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
-        F: FnOnce(&K, &mut V) -> R,
-    {
-        let hash = self.hash(key);
-        loop {
-            let mut async_wait = AsyncWait::default();
-            let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if let Ok(result) = self.get_entry(key, hash, &mut async_wait_pinned, &Barrier::new()) {
-                if let Some(LockedEntry {
-                    mut locker,
-                    data_block_mut,
-                    mut entry_ptr,
-                    index: _,
-                }) = result
-                {
-                    let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
-                    return Some(updater(k, v));
-                }
-                return None;
             }
             async_wait_pinned.await;
         }
@@ -801,7 +530,7 @@ where
             |v: &mut V| condition(v),
             |r| r.is_some(),
             &mut (),
-            &Barrier::new(),
+            &Guard::new(),
         )
         .ok()
         .map_or(false, |r| r)
@@ -841,7 +570,7 @@ where
                 condition,
                 |r| r.is_some(),
                 &mut async_wait_pinned,
-                &Barrier::new(),
+                &Guard::new(),
             ) {
                 Ok(r) => return r,
                 Err(c) => condition = c,
@@ -871,13 +600,13 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let barrier = Barrier::new();
+        let guard = Guard::new();
         let locked_entry = self
             .get_entry(
                 key,
                 self.hash(key.borrow()),
                 &mut (),
-                self.prolonged_barrier_ref(&barrier),
+                self.prolonged_guard_ref(&guard),
             )
             .ok()
             .flatten()?;
@@ -915,7 +644,7 @@ where
                 key,
                 hash,
                 &mut async_wait_pinned,
-                self.prolonged_barrier_ref(&Barrier::new()),
+                self.prolonged_guard_ref(&Guard::new()),
             ) {
                 if let Some(locked_entry) = result {
                     return Some(OccupiedEntry {
@@ -952,14 +681,14 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let barrier = Barrier::new();
-        self.read_entry(key, self.hash(key), &mut (), &barrier)
+        let guard = Guard::new();
+        self.read_entry(key, self.hash(key), &mut (), &guard)
             .ok()
             .flatten()
             .map(|(k, v)| reader(k, v))
     }
 
-    /// Reads a key-value pair using the supplied [`Barrier`].
+    /// Reads a key-value pair using the supplied [`Guard`].
     ///
     /// Returns `None` if the key does not exist. It enables the caller to use the value reference
     /// outside the method. This method is not linearizable; the key-value pair being read by this
@@ -968,29 +697,29 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::Barrier;
+    /// use scc::ebr::Guard;
     /// use scc::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
     /// assert!(hashindex.insert(1, 10).is_ok());
     ///
-    /// let barrier = Barrier::new();
-    /// let value_ref = hashindex.read_with(&1, |k, v| v, &barrier).unwrap();
+    /// let guard = Guard::new();
+    /// let value_ref = hashindex.read_with(&1, |k, v| v, &guard).unwrap();
     /// assert_eq!(*value_ref, 10);
     /// ```
     #[inline]
-    pub fn read_with<'b, Q, R, F: FnOnce(&'b K, &'b V) -> R>(
+    pub fn read_with<'g, Q, R, F: FnOnce(&'g K, &'g V) -> R>(
         &self,
         key: &Q,
         reader: F,
-        barrier: &'b Barrier,
+        guard: &'g Guard,
     ) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.read_entry(key, self.hash(key), &mut (), barrier)
+        self.read_entry(key, self.hash(key), &mut (), guard)
             .ok()
             .flatten()
             .map(|(k, v)| reader(k, v))
@@ -1024,10 +753,6 @@ where
     /// if they are not removed, however the same entry can be visited more than once if the
     /// [`HashIndex`] gets resized by another thread.
     ///
-    /// Returns `(number of remaining entries, number of removed entries)` where the number of
-    /// remaining entries can be larger than the actual number since the same entry can be visited
-    /// more than once.
-    ///
     /// # Examples
     ///
     /// ```
@@ -1039,11 +764,15 @@ where
     /// assert!(hashindex.insert(2, 1).is_ok());
     /// assert!(hashindex.insert(3, 2).is_ok());
     ///
-    /// assert_eq!(hashindex.retain(|k, v| *k == 1 && *v == 0), (1, 2));
+    /// hashindex.retain(|k, v| *k == 1 && *v == 0);
+    ///
+    /// assert!(hashindex.contains(&1));
+    /// assert!(!hashindex.contains(&2));
+    /// assert!(!hashindex.contains(&3));
     /// ```
     #[inline]
-    pub fn retain<F: FnMut(&K, &V) -> bool>(&self, mut pred: F) -> (usize, usize) {
-        self.retain_entries(|k, v| pred(k, v))
+    pub fn retain<F: FnMut(&K, &V) -> bool>(&self, mut pred: F) {
+        self.retain_entries(|k, v| pred(k, v));
     }
 
     /// Retains the entries specified by the predicate.
@@ -1052,10 +781,7 @@ where
     /// if they are not removed, however the same entry can be visited more than once if the
     /// [`HashIndex`] gets resized by another thread.
     ///
-    /// Returns `(number of remaining entries, number of removed entries)` where the number of
-    /// remaining entries can be larger than the actual number since the same entry can be visited
-    /// more than once. It is an asynchronous method returning an `impl Future` for the caller to
-    /// await.
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -1068,10 +794,9 @@ where
     /// let future_retain = hashindex.retain_async(|k, v| *k == 1);
     /// ```
     #[inline]
-    pub async fn retain_async<F: FnMut(&K, &V) -> bool>(&self, mut pred: F) -> (usize, usize) {
-        let mut num_retained: usize = 0;
-        let mut num_removed: usize = 0;
-        let mut current_array_holder = self.array.get_arc(Acquire, &Barrier::new());
+    pub async fn retain_async<F: FnMut(&K, &V) -> bool>(&self, mut pred: F) {
+        let mut removed = false;
+        let mut current_array_holder = self.array.get_shared(Acquire, &Guard::new());
         while let Some(current_array) = current_array_holder.take() {
             self.cleanse_old_array_async(&current_array).await;
             for index in 0..current_array.num_buckets() {
@@ -1079,21 +804,19 @@ where
                     let mut async_wait = AsyncWait::default();
                     let mut async_wait_pinned = Pin::new(&mut async_wait);
                     {
-                        let barrier = Barrier::new();
+                        let guard = Guard::new();
                         let bucket = current_array.bucket_mut(index);
                         if let Ok(locker) =
-                            Locker::try_lock_or_wait(bucket, &mut async_wait_pinned, &barrier)
+                            Locker::try_lock_or_wait(bucket, &mut async_wait_pinned, &guard)
                         {
                             if let Some(mut locker) = locker {
                                 let data_block_mut = current_array.data_block_mut(index);
-                                let mut entry_ptr = EntryPtr::new(&barrier);
-                                while entry_ptr.next(&locker, &barrier) {
+                                let mut entry_ptr = EntryPtr::new(&guard);
+                                while entry_ptr.next(&locker, &guard) {
                                     let (k, v) = entry_ptr.get(data_block_mut);
-                                    if pred(k, v) {
-                                        num_retained = num_retained.saturating_add(1);
-                                    } else {
+                                    if !pred(k, v) {
                                         locker.erase(data_block_mut, &entry_ptr);
-                                        num_removed = num_removed.saturating_add(1);
+                                        removed = true;
                                     }
                                 }
                             }
@@ -1104,22 +827,19 @@ where
                 }
             }
 
-            if let Some(new_current_array) = self.array.get_arc(Acquire, &Barrier::new()) {
+            if let Some(new_current_array) = self.array.get_shared(Acquire, &Guard::new()) {
                 if new_current_array.as_ptr() == current_array.as_ptr() {
                     break;
                 }
-                num_retained = 0;
                 current_array_holder.replace(new_current_array);
                 continue;
             }
             break;
         }
 
-        if num_removed >= num_retained {
-            self.try_resize(0, &Barrier::new());
+        if removed {
+            self.try_resize(0, &Guard::new());
         }
-
-        (num_retained, num_removed)
     }
 
     /// Clears all the key-value pairs.
@@ -1132,10 +852,12 @@ where
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
     /// assert!(hashindex.insert(1, 0).is_ok());
-    /// assert_eq!(hashindex.clear(), 1);
+    /// hashindex.clear();
+    ///
+    /// assert!(!hashindex.contains(&1));
     /// ```
-    pub fn clear(&self) -> usize {
-        self.retain(|_, _| false).1
+    pub fn clear(&self) {
+        self.retain(|_, _| false);
     }
 
     /// Clears all the key-value pairs.
@@ -1152,8 +874,8 @@ where
     /// let future_insert = hashindex.insert_async(1, 0);
     /// let future_retain = hashindex.clear_async();
     /// ```
-    pub async fn clear_async(&self) -> usize {
-        self.retain_async(|_, _| false).await.1
+    pub async fn clear_async(&self) {
+        self.retain_async(|_, _| false).await;
     }
 
     /// Returns the number of entries in the [`HashIndex`].
@@ -1174,7 +896,7 @@ where
     /// ```
     #[inline]
     pub fn len(&self) -> usize {
-        self.num_entries(&Barrier::new())
+        self.num_entries(&Guard::new())
     }
 
     /// Returns `true` if the [`HashIndex`] is empty.
@@ -1192,7 +914,7 @@ where
     /// ```
     #[inline]
     pub fn is_empty(&self) -> bool {
-        !self.has_entry(&Barrier::new())
+        !self.has_entry(&Guard::new())
     }
 
     /// Returns the capacity of the [`HashIndex`].
@@ -1213,7 +935,7 @@ where
     /// ```
     #[inline]
     pub fn capacity(&self) -> usize {
-        self.num_slots(&Barrier::new())
+        self.num_slots(&Guard::new())
     }
 
     /// Returns the current capacity range of the [`HashIndex`].
@@ -1235,31 +957,31 @@ where
         self.minimum_capacity.load(Relaxed)..=self.maximum_capacity()
     }
 
-    /// Returns a [`Visitor`] that iterates over all the entries in the [`HashIndex`].
+    /// Returns an [`Iter`].
     ///
     /// It is guaranteed to go through all the key-value pairs pertaining in the [`HashIndex`]
     /// at the moment, however the same key-value pair can be visited more than once if the
     /// [`HashIndex`] is being resized.
     ///
-    /// It requires the user to supply a reference to a [`Barrier`].
+    /// It requires the user to supply a reference to a [`Guard`].
     ///
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::Barrier;
+    /// use scc::ebr::Guard;
     /// use scc::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
     /// assert!(hashindex.insert(1, 0).is_ok());
     ///
-    /// let barrier = Barrier::new();
+    /// let guard = Guard::new();
     ///
-    /// let mut iter = hashindex.iter(&barrier);
+    /// let mut iter = hashindex.iter(&guard);
     /// let entry_ref = iter.next().unwrap();
     /// assert_eq!(iter.next(), None);
     ///
-    /// for iter in hashindex.iter(&barrier) {
+    /// for iter in hashindex.iter(&guard) {
     ///     assert_eq!(iter, (&1, &0));
     /// }
     ///
@@ -1268,26 +990,26 @@ where
     /// assert_eq!(entry_ref, (&1, &0));
     /// ```
     #[inline]
-    pub fn iter<'h, 'b>(&'h self, barrier: &'b Barrier) -> Visitor<'h, 'b, K, V, H> {
-        Visitor {
+    pub fn iter<'h, 'g>(&'h self, guard: &'g Guard) -> Iter<'h, 'g, K, V, H> {
+        Iter {
             hashindex: self,
             current_array: None,
             current_index: 0,
             current_bucket: None,
-            current_entry_ptr: EntryPtr::new(barrier),
-            barrier,
+            current_entry_ptr: EntryPtr::new(guard),
+            guard,
         }
     }
 
     /// Clears the old array asynchronously.
     async fn cleanse_old_array_async(&self, current_array: &BucketArray<K, V, OPTIMISTIC>) {
-        while !current_array.old_array(&Barrier::new()).is_null() {
+        while !current_array.old_array(&Guard::new()).is_null() {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             if self.incremental_rehash::<_, _, false>(
                 current_array,
                 &mut async_wait_pinned,
-                &Barrier::new(),
+                &Guard::new(),
             ) == Ok(true)
             {
                 break;
@@ -1306,7 +1028,7 @@ where
     #[inline]
     fn clone(&self) -> Self {
         let self_clone = Self::with_capacity_and_hasher(self.capacity(), self.hasher().clone());
-        for (k, v) in self.iter(&Barrier::new()) {
+        for (k, v) in self.iter(&Guard::new()) {
             let _reuslt = self_clone.insert(k.clone(), v.clone());
         }
         self_clone
@@ -1321,8 +1043,8 @@ where
 {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let barrier = Barrier::new();
-        f.debug_map().entries(self.iter(&barrier)).finish()
+        let guard = Guard::new();
+        f.debug_map().entries(self.iter(&guard)).finish()
     }
 }
 
@@ -1413,7 +1135,7 @@ where
     #[inline]
     fn try_reset(_: &mut V) {}
     #[inline]
-    fn bucket_array(&self) -> &AtomicArc<BucketArray<K, V, OPTIMISTIC>> {
+    fn bucket_array(&self) -> &AtomicShared<BucketArray<K, V, OPTIMISTIC>> {
         &self.array
     }
     #[inline]
@@ -1434,13 +1156,13 @@ where
 {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        let barrier = Barrier::new();
+        let guard = Guard::new();
         if !self
-            .iter(&barrier)
+            .iter(&guard)
             .any(|(k, v)| other.read(k, |_, ov| v == ov) != Some(true))
         {
             return !other
-                .iter(&barrier)
+                .iter(&guard)
                 .any(|(k, v)| self.read(k, |_, sv| v == sv) != Some(true));
         }
         false
@@ -1668,14 +1390,14 @@ where
             &self.locked_entry.entry_ptr,
         );
         if self.locked_entry.locker.num_entries() <= 1 || self.locked_entry.locker.need_rebuild() {
-            let barrier = Barrier::new();
+            let guard = Guard::new();
             let hashindex = self.hashindex;
-            if let Some(current_array) = hashindex.bucket_array().load(Acquire, &barrier).as_ref() {
-                if current_array.old_array(&barrier).is_null() {
+            if let Some(current_array) = hashindex.bucket_array().load(Acquire, &guard).as_ref() {
+                if current_array.old_array(&guard).is_null() {
                     let index = self.locked_entry.index;
                     if current_array.within_sampling_range(index) {
                         drop(self);
-                        hashindex.try_shrink_or_rebuild(current_array, index, &barrier);
+                        hashindex.try_shrink_or_rebuild(current_array, index, &guard);
                     }
                 }
             }
@@ -1747,12 +1469,50 @@ where
             .1
     }
 
+    /// Updates the entry by inserting a new entry and marking the existing entry removed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    /// use scc::hash_index::Entry;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// hashindex.entry(37).or_insert(11);
+    ///
+    /// if let Entry::Occupied(mut o) = hashindex.entry(37) {
+    ///     o.update(29);
+    /// }
+    ///
+    /// assert_eq!(hashindex.read(&37, |_, v| *v), Some(29));
+    /// ```
+
+    #[inline]
+    pub fn update(mut self, val: V) {
+        let key = self.key().clone();
+        let partial_hash = self
+            .locked_entry
+            .entry_ptr
+            .partial_hash(&self.locked_entry.locker);
+        self.locked_entry.locker.insert_with(
+            self.locked_entry.data_block_mut,
+            partial_hash,
+            || (key, val),
+            self.hashindex.prolonged_guard_ref(&Guard::new()),
+        );
+        self.locked_entry.locker.erase(
+            self.locked_entry.data_block_mut,
+            &self.locked_entry.entry_ptr,
+        );
+    }
+
     /// Gets the next closest occupied entry.
     ///
-    /// [`HashIndex::first_occupied_entry`], [`HashIndex::first_occupied_entry_async`], and this
-    /// method together enables the [`OccupiedEntry`] to effectively act as a mutable iterator over
-    /// entries. The method never acquires more than one lock even when it searches other buckets
-    /// for the next closest occupied entry.
+    /// [`HashIndex::first_entry`], [`HashIndex::first_entry_async`], and this method together
+    /// enables the [`OccupiedEntry`] to effectively act as a mutable iterator over entries. The
+    /// method never acquires more than one lock even when it searches other buckets for the next
+    /// closest occupied entry.
     ///
     /// # Examples
     ///
@@ -1765,7 +1525,7 @@ where
     /// assert!(hashindex.insert(1, 0).is_ok());
     /// assert!(hashindex.insert(2, 0).is_ok());
     ///
-    /// let first_entry = hashindex.first_occupied_entry().unwrap();
+    /// let first_entry = hashindex.first_entry().unwrap();
     /// let first_key = *first_entry.key();
     /// let second_entry = first_entry.next().unwrap();
     /// let second_key = *second_entry.key();
@@ -1788,10 +1548,10 @@ where
 
     /// Gets the next closest occupied entry.
     ///
-    /// [`HashIndex::first_occupied_entry`], [`HashIndex::first_occupied_entry_async`], and this
-    /// method together enables the [`OccupiedEntry`] to effectively act as a mutable iterator over
-    /// entries. The method never acquires more than one lock even when it searches other buckets
-    /// for the next closest occupied entry.
+    /// [`HashIndex::first_entry`], [`HashIndex::first_entry_async`], and this method together
+    /// enables the [`OccupiedEntry`] to effectively act as a mutable iterator over entries. The
+    /// method never acquires more than one lock even when it searches other buckets for the next
+    /// closest occupied entry.
     ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
@@ -1806,7 +1566,7 @@ where
     /// assert!(hashindex.insert(1, 0).is_ok());
     /// assert!(hashindex.insert(2, 0).is_ok());
     ///
-    /// let second_entry_future = hashindex.first_occupied_entry().unwrap().next_async();
+    /// let second_entry_future = hashindex.first_entry().unwrap().next_async();
     /// ```
     #[inline]
     pub async fn next_async(self) -> Option<OccupiedEntry<'h, K, V, H>> {
@@ -1894,12 +1654,12 @@ where
     /// ```
     #[inline]
     pub fn insert_entry(mut self, val: V) -> OccupiedEntry<'h, K, V, H> {
-        let barrier = Barrier::new();
+        let guard = Guard::new();
         let entry_ptr = self.locked_entry.locker.insert_with(
             self.locked_entry.data_block_mut,
             BucketArray::<K, V, OPTIMISTIC>::partial_hash(self.hash),
             || (self.key, val),
-            self.hashindex.prolonged_barrier_ref(&barrier),
+            self.hashindex.prolonged_guard_ref(&guard),
         );
         OccupiedEntry {
             hashindex: self.hashindex,
@@ -1989,12 +1749,12 @@ where
             .hashindex
             .minimum_capacity
             .fetch_sub(self.additional, Relaxed);
-        self.hashindex.try_resize(0, &Barrier::new());
+        self.hashindex.try_resize(0, &Guard::new());
         debug_assert!(result >= self.additional);
     }
 }
 
-impl<'h, 'b, K, V, H> Debug for Visitor<'h, 'b, K, V, H>
+impl<'h, 'g, K, V, H> Debug for Iter<'h, 'g, K, V, H>
 where
     K: 'static + Clone + Eq + Hash,
     V: 'static + Clone,
@@ -2002,20 +1762,20 @@ where
 {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Visitor")
+        f.debug_struct("Iter")
             .field("current_index", &self.current_index)
             .field("current_entry_ptr", &self.current_entry_ptr)
             .finish()
     }
 }
 
-impl<'h, 'b, K, V, H> Iterator for Visitor<'h, 'b, K, V, H>
+impl<'h, 'g, K, V, H> Iterator for Iter<'h, 'g, K, V, H>
 where
     K: 'static + Clone + Eq + Hash,
     V: 'static + Clone,
     H: BuildHasher,
 {
-    type Item = (&'b K, &'b V);
+    type Item = (&'g K, &'g V);
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -2026,9 +1786,9 @@ where
             let current_array = self
                 .hashindex
                 .bucket_array()
-                .load(Acquire, self.barrier)
+                .load(Acquire, self.guard)
                 .as_ref()?;
-            let old_array_ptr = current_array.old_array(self.barrier);
+            let old_array_ptr = current_array.old_array(self.guard);
             let array = if let Some(old_array) = old_array_ptr.as_ref() {
                 old_array
             } else {
@@ -2036,7 +1796,7 @@ where
             };
             self.current_array.replace(array);
             self.current_bucket.replace(array.bucket(0));
-            self.current_entry_ptr = EntryPtr::new(self.barrier);
+            self.current_entry_ptr = EntryPtr::new(self.guard);
             array
         };
 
@@ -2044,7 +1804,7 @@ where
         loop {
             if let Some(bucket) = self.current_bucket.take() {
                 // Go to the next entry in the bucket.
-                if self.current_entry_ptr.next(bucket, self.barrier) {
+                if self.current_entry_ptr.next(bucket, self.guard) {
                     let (k, v) = self
                         .current_entry_ptr
                         .get(array.data_block(self.current_index));
@@ -2057,7 +1817,7 @@ where
                 let current_array = self
                     .hashindex
                     .bucket_array()
-                    .load(Acquire, self.barrier)
+                    .load(Acquire, self.guard)
                     .as_ref()?;
                 if self
                     .current_array
@@ -2068,7 +1828,7 @@ where
                     // Finished scanning the entire array.
                     break;
                 }
-                let old_array_ptr = current_array.old_array(self.barrier);
+                let old_array_ptr = current_array.old_array(self.guard);
                 if self
                     .current_array
                     .as_ref()
@@ -2080,7 +1840,7 @@ where
                     self.current_array.replace(array);
                     self.current_index = 0;
                     self.current_bucket.replace(array.bucket(0));
-                    self.current_entry_ptr = EntryPtr::new(self.barrier);
+                    self.current_entry_ptr = EntryPtr::new(self.guard);
                     continue;
                 }
 
@@ -2093,18 +1853,18 @@ where
                 self.current_array.replace(array);
                 self.current_index = 0;
                 self.current_bucket.replace(array.bucket(0));
-                self.current_entry_ptr = EntryPtr::new(self.barrier);
+                self.current_entry_ptr = EntryPtr::new(self.guard);
                 continue;
             }
             self.current_bucket
                 .replace(array.bucket(self.current_index));
-            self.current_entry_ptr = EntryPtr::new(self.barrier);
+            self.current_entry_ptr = EntryPtr::new(self.guard);
         }
         None
     }
 }
 
-impl<'h, 'b, K, V, H> FusedIterator for Visitor<'h, 'b, K, V, H>
+impl<'h, 'g, K, V, H> FusedIterator for Iter<'h, 'g, K, V, H>
 where
     K: 'static + Clone + Eq + Hash,
     V: 'static + Clone,
@@ -2112,32 +1872,10 @@ where
 {
 }
 
-impl<'h, 'b, K, V, H> UnwindSafe for Visitor<'h, 'b, K, V, H>
+impl<'h, 'g, K, V, H> UnwindSafe for Iter<'h, 'g, K, V, H>
 where
     K: 'static + Clone + Eq + Hash + UnwindSafe,
     V: 'static + Clone + UnwindSafe,
     H: BuildHasher + UnwindSafe,
 {
-}
-
-impl<V> Debug for ModifyAction<V> {
-    #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Keep => write!(f, "Nothing"),
-            Self::Remove => write!(f, "Remove"),
-            Self::Update(_) => f.debug_tuple("Update").finish(),
-        }
-    }
-}
-
-impl<V> From<Option<Option<V>>> for ModifyAction<V> {
-    #[inline]
-    fn from(value: Option<Option<V>>) -> Self {
-        match value {
-            Some(Some(value)) => Self::Update(value),
-            Some(None) => Self::Remove,
-            None => Self::Keep,
-        }
-    }
 }

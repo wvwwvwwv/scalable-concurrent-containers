@@ -5,12 +5,12 @@ use std::ptr::NonNull;
 /// The [`ebr`](super) module provides managed handles which implement [`Collectible`] in tandem
 /// with atomic reference counting, however it is also possible to manually implement the
 /// [`Collectible`] trait for a type to pass an instance of the type to the EBR garbage collector
-/// via [`Barrier::defer`](super::Barrier::defer).
+/// via [`Guard::defer`](super::Guard::defer).
 ///
 /// # Examples
 ///
 /// ```
-/// use scc::ebr::{Barrier, Collectible};
+/// use scc::ebr::{Guard, Collectible};
 /// use std::ptr::NonNull;
 ///
 /// struct LazyString(String, Option<NonNull<dyn Collectible>>);
@@ -24,14 +24,14 @@ use std::ptr::NonNull;
 /// let boxed: Box<LazyString> = Box::new(LazyString(String::from("Lazy"), None));
 ///
 /// let static_ref: &'static LazyString = unsafe { std::mem::transmute(&*boxed) };
-/// let barrier_for_ref = Barrier::new();
+/// let guard_for_ref = Guard::new();
 ///
-/// let barrier_to_drop = Barrier::new();
-/// barrier_to_drop.defer(boxed);
-/// drop(barrier_to_drop);
+/// let guard_to_drop = Guard::new();
+/// guard_to_drop.defer(boxed);
+/// drop(guard_to_drop);
 ///
-/// // The reference is valid as long as a `Barrier` that had been created before `boxed` was
-/// // passed to a `Barrier` survives.
+/// // The reference is valid as long as a `Guard` that had been created before `boxed` was
+/// // passed to a `Guard` survives.
 /// assert_eq!(static_ref.0, "Lazy");
 /// ```
 pub trait Collectible {

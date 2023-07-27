@@ -1,6 +1,6 @@
 use super::leaf::{InsertResult, RemoveResult, Scanner, DIMENSION};
 use super::Leaf;
-use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
+use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::exit_guard::ExitGuard;
 use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
 use crate::LinkedList;
@@ -25,13 +25,13 @@ where
     V: 'static + Clone,
 {
     /// Children of the [`LeafNode`].
-    children: Leaf<K, AtomicArc<Leaf<K, V>>>,
+    children: Leaf<K, AtomicShared<Leaf<K, V>>>,
 
     /// A child [`Leaf`] that has no upper key bound.
     ///
     /// It stores the maximum key in the node, and key-value pairs are firstly pushed to this
     /// [`Leaf`] until split.
-    unbounded_child: AtomicArc<Leaf<K, V>>,
+    unbounded_child: AtomicShared<Leaf<K, V>>,
 
     /// On-going split operation.
     split_op: StructuralChange<K, V>,
@@ -53,7 +53,7 @@ where
     pub(super) fn new() -> LeafNode<K, V> {
         LeafNode {
             children: Leaf::new(),
-            unbounded_child: AtomicArc::null(),
+            unbounded_child: AtomicShared::null(),
             split_op: StructuralChange::default(),
             latch: AtomicU8::new(Tag::None.into()),
             wait_queue: WaitQueue::default(),
@@ -68,15 +68,15 @@ where
 
     /// Searches for an entry associated with the given key.
     #[inline]
-    pub(super) fn search<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> Option<&'b V>
+    pub(super) fn search<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<&'g V>
     where
-        K: 'b + Borrow<Q>,
+        K: 'g + Borrow<Q>,
         Q: Ord + ?Sized,
     {
         loop {
             let (child, metadata) = self.children.min_greater_equal(key);
             if let Some((_, child)) = child {
-                if let Some(child) = child.load(Acquire, barrier).as_ref() {
+                if let Some(child) = child.load(Acquire, guard).as_ref() {
                     if self.children.validate(metadata) {
                         // Data race with split.
                         //  - Writer: start to insert an intermediate low key leaf.
@@ -96,7 +96,7 @@ where
                 // The `LeafNode` metadata is updated before a leaf is removed. This implies that
                 // the new `metadata` will be different from the current `metadata`.
             } else {
-                let unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
+                let unbounded_ptr = self.unbounded_child.load(Acquire, guard);
                 if let Some(unbounded) = unbounded_ptr.as_ref() {
                     if self.children.validate(metadata) {
                         return unbounded.search(key);
@@ -110,12 +110,12 @@ where
 
     /// Returns the minimum key entry.
     #[inline]
-    pub(super) fn min<'b>(&self, barrier: &'b Barrier) -> Option<Scanner<'b, K, V>> {
+    pub(super) fn min<'g>(&self, guard: &'g Guard) -> Option<Scanner<'g, K, V>> {
         loop {
             let mut scanner = Scanner::new(&self.children);
             let metadata = scanner.metadata();
             if let Some((_, child)) = scanner.next() {
-                let child_ptr = child.load(Acquire, barrier);
+                let child_ptr = child.load(Acquire, guard);
                 if let Some(child) = child_ptr.as_ref() {
                     if self.children.validate(metadata) {
                         // Data race resolution - see `LeafNode::search`.
@@ -125,7 +125,7 @@ where
                 // It is not a hot loop - see `LeafNode::search`.
                 continue;
             }
-            let unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
+            let unbounded_ptr = self.unbounded_child.load(Acquire, guard);
             if let Some(unbounded) = unbounded_ptr.as_ref() {
                 if self.children.validate(metadata) {
                     return Some(Scanner::new(unbounded));
@@ -142,19 +142,15 @@ where
     /// Returns `None` if all the keys in the [`LeafNode`] is equal to or greater than the given
     /// key.
     #[inline]
-    pub(super) fn max_le_appr<'b, Q>(
-        &self,
-        key: &Q,
-        barrier: &'b Barrier,
-    ) -> Option<Scanner<'b, K, V>>
+    pub(super) fn max_le_appr<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<Scanner<'g, K, V>>
     where
-        K: 'b + Borrow<Q>,
+        K: 'g + Borrow<Q>,
         Q: Ord + ?Sized,
     {
         loop {
             if let Some(scanner) = Scanner::max_less(&self.children, key) {
                 if let Some((_, child)) = scanner.get() {
-                    if let Some(child) = child.load(Acquire, barrier).as_ref() {
+                    if let Some(child) = child.load(Acquire, guard).as_ref() {
                         if self.children.validate(scanner.metadata()) {
                             // Data race resolution - see `LeafNode::search`.
                             if let Some(scanner) = Scanner::max_less(child, key) {
@@ -173,7 +169,7 @@ where
         }
 
         // Starts scanning from the minimum key.
-        let mut min_scanner = self.min(barrier)?;
+        let mut min_scanner = self.min(guard)?;
         min_scanner.next();
         loop {
             if let Some((k, _)) = min_scanner.get() {
@@ -182,7 +178,7 @@ where
                 }
                 break;
             }
-            min_scanner = min_scanner.jump(None, barrier)?;
+            min_scanner = min_scanner.jump(None, guard)?;
         }
 
         None
@@ -199,12 +195,12 @@ where
         mut key: K,
         mut val: V,
         async_wait: &mut D,
-        barrier: &Barrier,
+        guard: &Guard,
     ) -> Result<InsertResult<K, V>, (K, V)> {
         loop {
             let (child, metadata) = self.children.min_greater_equal(&key);
             if let Some((child_key, child)) = child {
-                let child_ptr = child.load(Acquire, barrier);
+                let child_ptr = child.load(Acquire, guard);
                 if let Some(child_ref) = child_ptr.as_ref() {
                     if self.children.validate(metadata) {
                         // Data race resolution - see `LeafNode::search`.
@@ -221,7 +217,7 @@ where
                                     child_ptr,
                                     child,
                                     async_wait,
-                                    barrier,
+                                    guard,
                                 )?;
                                 if let InsertResult::Retry(k, v) = split_result {
                                     key = k;
@@ -242,14 +238,14 @@ where
                 continue;
             }
 
-            let mut unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
+            let mut unbounded_ptr = self.unbounded_child.load(Acquire, guard);
             if unbounded_ptr.is_null() {
                 match self.unbounded_child.compare_exchange(
                     Ptr::null(),
-                    (Some(Arc::new(Leaf::new())), Tag::None),
+                    (Some(Shared::new(Leaf::new())), Tag::None),
                     AcqRel,
                     Acquire,
-                    barrier,
+                    guard,
                 ) {
                     Ok((_, ptr)) => {
                         unbounded_ptr = ptr;
@@ -277,7 +273,7 @@ where
                             unbounded_ptr,
                             &self.unbounded_child,
                             async_wait,
-                            barrier,
+                            guard,
                         )?;
                         if let InsertResult::Retry(k, v) = split_result {
                             key = k;
@@ -307,7 +303,7 @@ where
         key: &Q,
         condition: &mut F,
         async_wait: &mut D,
-        barrier: &Barrier,
+        guard: &Guard,
     ) -> Result<RemoveResult, bool>
     where
         K: Borrow<Q>,
@@ -316,7 +312,7 @@ where
         loop {
             let (child, metadata) = self.children.min_greater_equal(key);
             if let Some((_, child)) = child {
-                let child_ptr = child.load(Acquire, barrier);
+                let child_ptr = child.load(Acquire, guard);
                 if let Some(child) = child_ptr.as_ref() {
                     if self.children.validate(metadata) {
                         // Data race resolution - see `LeafNode::search`.
@@ -327,7 +323,7 @@ where
                             self.wait(async_wait);
                             return Err(false);
                         } else if result == RemoveResult::Retired {
-                            return Ok(self.coalesce(barrier));
+                            return Ok(self.coalesce(guard));
                         }
                         return Ok(result);
                     }
@@ -335,7 +331,7 @@ where
                 // It is not a hot loop - see `LeafNode::search`.
                 continue;
             }
-            let unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
+            let unbounded_ptr = self.unbounded_child.load(Acquire, guard);
             if let Some(unbounded) = unbounded_ptr.as_ref() {
                 debug_assert!(unbounded_ptr.tag() == Tag::None);
                 if !self.children.validate(metadata) {
@@ -347,7 +343,7 @@ where
                     self.wait(async_wait);
                     return Err(false);
                 } else if result == RemoveResult::Retired {
-                    return Ok(self.coalesce(barrier));
+                    return Ok(self.coalesce(guard));
                 }
                 return Ok(result);
             }
@@ -357,19 +353,19 @@ where
 
     /// Splits itself into the given leaf nodes, and returns the middle key value.
     #[allow(clippy::too_many_lines)]
-    pub(super) fn split_leaf_node<'b>(
-        &'b self,
+    pub(super) fn split_leaf_node<'g>(
+        &'g self,
         low_key_leaf_node: &LeafNode<K, V>,
         high_key_leaf_node: &LeafNode<K, V>,
-        barrier: &'b Barrier,
-    ) -> &'b K {
+        guard: &'g Guard,
+    ) -> &'g K {
         let mut middle_key = None;
 
         low_key_leaf_node.latch.store(LOCKED.into(), Relaxed);
         high_key_leaf_node.latch.store(LOCKED.into(), Relaxed);
 
         // It is safe to keep the pointers to the new leaf nodes in this full leaf node since the
-        // whole split operation is protected under a single `ebr::Barrier`, and the pointers are
+        // whole split operation is protected under a single `ebr::Guard`, and the pointers are
         // only dereferenced during the operation.
         self.split_op.low_key_leaf_node.swap(
             (low_key_leaf_node as *const LeafNode<K, V>).cast_mut(),
@@ -382,13 +378,13 @@ where
 
         // Builds a list of valid leaves
         #[allow(clippy::type_complexity)]
-        let mut entry_array: [Option<(Option<&K>, AtomicArc<Leaf<K, V>>)>;
+        let mut entry_array: [Option<(Option<&K>, AtomicShared<Leaf<K, V>>)>;
             DIMENSION.num_entries + 2] = Default::default();
         let mut num_entries = 0;
         let low_key_leaf_ref = self
             .split_op
             .low_key_leaf
-            .load(Relaxed, barrier)
+            .load(Relaxed, guard)
             .as_ref()
             .unwrap();
         let middle_key_ref = low_key_leaf_ref.max_key().unwrap();
@@ -404,18 +400,18 @@ where
             } {
                 entry_array[num_entries].replace((
                     Some(middle_key_ref),
-                    self.split_op.low_key_leaf.clone(Relaxed, barrier),
+                    self.split_op.low_key_leaf.clone(Relaxed, guard),
                 ));
                 num_entries += 1;
-                if !self.split_op.high_key_leaf.load(Relaxed, barrier).is_null() {
+                if !self.split_op.high_key_leaf.load(Relaxed, guard).is_null() {
                     entry_array[num_entries].replace((
                         Some(entry.0),
-                        self.split_op.high_key_leaf.clone(Relaxed, barrier),
+                        self.split_op.high_key_leaf.clone(Relaxed, guard),
                     ));
                     num_entries += 1;
                 }
             } else {
-                entry_array[num_entries].replace((Some(entry.0), entry.1.clone(Relaxed, barrier)));
+                entry_array[num_entries].replace((Some(entry.0), entry.1.clone(Relaxed, guard)));
                 num_entries += 1;
             }
         }
@@ -425,18 +421,18 @@ where
             // unbounded.
             entry_array[num_entries].replace((
                 Some(middle_key_ref),
-                self.split_op.low_key_leaf.clone(Relaxed, barrier),
+                self.split_op.low_key_leaf.clone(Relaxed, guard),
             ));
             num_entries += 1;
-            if !self.split_op.high_key_leaf.load(Relaxed, barrier).is_null() {
+            if !self.split_op.high_key_leaf.load(Relaxed, guard).is_null() {
                 entry_array[num_entries]
-                    .replace((None, self.split_op.high_key_leaf.clone(Relaxed, barrier)));
+                    .replace((None, self.split_op.high_key_leaf.clone(Relaxed, guard)));
                 num_entries += 1;
             }
         } else {
             // If the origin is a bounded node, assign the unbounded leaf as the high key node's
             // unbounded.
-            entry_array[num_entries].replace((None, self.unbounded_child.clone(Relaxed, barrier)));
+            entry_array[num_entries].replace((None, self.unbounded_child.clone(Relaxed, guard)));
             num_entries += 1;
         }
         debug_assert!(num_entries >= 2);
@@ -448,7 +444,7 @@ where
                     Less => {
                         low_key_leaf_node.children.insert_unchecked(
                             k.unwrap().clone(),
-                            v.clone(Relaxed, barrier),
+                            v.clone(Relaxed, guard),
                             i,
                         );
                     }
@@ -456,19 +452,19 @@ where
                         middle_key.replace(k.unwrap());
                         low_key_leaf_node
                             .unbounded_child
-                            .swap((v.get_arc(Relaxed, barrier), Tag::None), Relaxed);
+                            .swap((v.get_shared(Relaxed, guard), Tag::None), Relaxed);
                     }
                     Greater => {
                         if let Some(k) = k.cloned() {
                             high_key_leaf_node.children.insert_unchecked(
                                 k,
-                                v.clone(Relaxed, barrier),
+                                v.clone(Relaxed, guard),
                                 i - low_key_leaf_array_size,
                             );
                         } else {
                             high_key_leaf_node
                                 .unbounded_child
-                                .swap((v.get_arc(Relaxed, barrier), Tag::None), Relaxed);
+                                .swap((v.get_shared(Relaxed, guard), Tag::None), Relaxed);
                         }
                     }
                 }
@@ -482,23 +478,23 @@ where
 
     /// Commits an on-going structural change.
     #[inline]
-    pub(super) fn commit(&self, barrier: &Barrier) {
+    pub(super) fn commit(&self, guard: &Guard) {
         // Unfreeze both leaves.
         if let Some(origin_leaf) = self.split_op.origin_leaf.swap((None, Tag::None), Relaxed).0 {
             // Make the origin leaf unreachable before making the new leaves updatable.
             origin_leaf.delete_self(Relaxed);
-            let _: bool = origin_leaf.release(barrier);
+            let _: bool = origin_leaf.release(guard);
         }
         let low_key_leaf = self
             .split_op
             .low_key_leaf
-            .load(Relaxed, barrier)
+            .load(Relaxed, guard)
             .as_ref()
             .unwrap();
         let high_key_leaf = self
             .split_op
             .high_key_leaf
-            .load(Relaxed, barrier)
+            .load(Relaxed, guard)
             .as_ref()
             .unwrap();
         let unfrozen = low_key_leaf.thaw();
@@ -507,13 +503,13 @@ where
         debug_assert!(unfrozen);
 
         // It is safe to dereference those pointers since the whole split operation is under a
-        // single `ebr::Barrier`.
+        // single `ebr::Guard`.
         if let Some(low_key_leaf_node) =
             unsafe { self.split_op.low_key_leaf_node.load(Relaxed).as_ref() }
         {
             let origin = low_key_leaf_node.split_op.reset();
             low_key_leaf_node.unlock();
-            origin.map(|o| o.release(barrier));
+            origin.map(|o| o.release(guard));
         }
 
         if let Some(high_key_leaf_node) =
@@ -521,27 +517,27 @@ where
         {
             let origin = high_key_leaf_node.split_op.reset();
             high_key_leaf_node.unlock();
-            origin.map(|o| o.release(barrier));
+            origin.map(|o| o.release(guard));
         }
 
         let origin = self.split_op.reset();
         self.retire();
-        origin.map(|o| o.release(barrier));
+        origin.map(|o| o.release(guard));
     }
 
     /// Rolls back the ongoing split operation.
     #[inline]
-    pub(super) fn rollback(&self, barrier: &Barrier) {
+    pub(super) fn rollback(&self, guard: &Guard) {
         let low_key_leaf = self
             .split_op
             .low_key_leaf
-            .load(Relaxed, barrier)
+            .load(Relaxed, guard)
             .as_ref()
             .unwrap();
         let high_key_leaf = self
             .split_op
             .high_key_leaf
-            .load(Relaxed, barrier)
+            .load(Relaxed, guard)
             .as_ref()
             .unwrap();
 
@@ -565,32 +561,27 @@ where
 
         let origin = self.split_op.reset();
         self.unlock();
-        origin.map(|o| o.release(barrier));
+        origin.map(|o| o.release(guard));
     }
 
     /// Cleans up logically deleted [`LeafNode`] instances in the linked list.
     ///
     /// If the target leaf node does not exist in the sub-tree, returns `false`.
     #[inline]
-    pub(super) fn cleanup_link<'b, Q>(
-        &self,
-        key: &Q,
-        tranverse_max: bool,
-        barrier: &'b Barrier,
-    ) -> bool
+    pub(super) fn cleanup_link<'g, Q>(&self, key: &Q, tranverse_max: bool, guard: &'g Guard) -> bool
     where
-        K: 'b + Borrow<Q>,
+        K: 'g + Borrow<Q>,
         Q: Ord + ?Sized,
     {
         let scanner = if tranverse_max {
-            if let Some(unbounded) = self.unbounded_child.load(Acquire, barrier).as_ref() {
+            if let Some(unbounded) = self.unbounded_child.load(Acquire, guard).as_ref() {
                 Scanner::new(unbounded)
             } else {
                 return false;
             }
         } else if let Some(leaf_scanner) = Scanner::max_less(&self.children, key) {
             if let Some((_, child)) = leaf_scanner.get() {
-                if let Some(child) = child.load(Acquire, barrier).as_ref() {
+                if let Some(child) = child.load(Acquire, guard).as_ref() {
                     Scanner::new(child)
                 } else {
                     return false;
@@ -604,7 +595,7 @@ where
 
         // It *would* be the maximum leaf node among those that containing keys smaller than the
         // target key. Hopefully, two jumps will be sufficient.
-        scanner.jump(None, barrier).map(|s| s.jump(None, barrier));
+        scanner.jump(None, guard).map(|s| s.jump(None, guard));
         true
     }
 
@@ -638,9 +629,9 @@ where
         val: V,
         full_leaf_key: Option<&K>,
         full_leaf_ptr: Ptr<Leaf<K, V>>,
-        full_leaf: &AtomicArc<Leaf<K, V>>,
+        full_leaf: &AtomicShared<Leaf<K, V>>,
         async_wait: &mut D,
-        barrier: &Barrier,
+        guard: &Guard,
     ) -> Result<InsertResult<K, V>, (K, V)> {
         if !self.try_lock() {
             self.wait(async_wait);
@@ -650,7 +641,7 @@ where
             self.unlock();
             return Ok(InsertResult::Retired(key, val));
         }
-        if full_leaf_ptr != full_leaf.load(Relaxed, barrier) {
+        if full_leaf_ptr != full_leaf.load(Relaxed, guard) {
             self.unlock();
             return Err((key, val));
         }
@@ -658,7 +649,7 @@ where
         let prev = self
             .split_op
             .origin_leaf
-            .swap((full_leaf.get_arc(Relaxed, barrier), Tag::None), Relaxed)
+            .swap((full_leaf.get_shared(Relaxed, guard), Tag::None), Relaxed)
             .0;
         debug_assert!(prev.is_none());
 
@@ -673,7 +664,7 @@ where
         let mut high_key_leaf_arc = None;
 
         // Distribute entries to two leaves after make the target retired.
-        let mut guard = ExitGuard::new(true, |rollback| {
+        let mut exit_guard = ExitGuard::new(true, |rollback| {
             if rollback {
                 target.thaw();
                 self.split_op.reset();
@@ -695,21 +686,25 @@ where
             // No valid keys in the full leaf.
             self.split_op
                 .low_key_leaf
-                .swap((Some(Arc::new(Leaf::new())), Tag::None), Relaxed);
+                .swap((Some(Shared::new(Leaf::new())), Tag::None), Relaxed);
         }
 
         // When a new leaf is added to the linked list, the leaf is marked to let `Scanners`
         // acknowledge that the newly added leaf may contain keys that are smaller than those
         // having been `scanned`.
-        let low_key_leaf_ptr = self.split_op.low_key_leaf.load(Relaxed, barrier);
-        let high_key_leaf_ptr = self.split_op.high_key_leaf.load(Relaxed, barrier);
+        let low_key_leaf_ptr = self.split_op.low_key_leaf.load(Relaxed, guard);
+        let high_key_leaf_ptr = self.split_op.high_key_leaf.load(Relaxed, guard);
         let unused_leaf = if let Some(high_key_leaf) = high_key_leaf_ptr.as_ref() {
             // From here, `Scanners` can reach the new leaves.
-            let result =
-                target.push_back(high_key_leaf_ptr.get_arc().unwrap(), true, Release, barrier);
+            let result = target.push_back(
+                high_key_leaf_ptr.get_shared().unwrap(),
+                true,
+                Release,
+                guard,
+            );
             debug_assert!(result.is_ok());
             let result =
-                target.push_back(low_key_leaf_ptr.get_arc().unwrap(), true, Release, barrier);
+                target.push_back(low_key_leaf_ptr.get_shared().unwrap(), true, Release, guard);
             debug_assert!(result.is_ok());
 
             // Take the max key value stored in the low key leaf as the leaf key.
@@ -722,7 +717,7 @@ where
 
             match self.children.insert(
                 max_key.clone(),
-                self.split_op.low_key_leaf.clone(Relaxed, barrier),
+                self.split_op.low_key_leaf.clone(Relaxed, guard),
             ) {
                 InsertResult::Success => (),
                 InsertResult::Duplicate(..)
@@ -732,7 +727,7 @@ where
                     // Need to freeze the other leaf.
                     let frozen = high_key_leaf.freeze();
                     debug_assert!(frozen);
-                    *guard = false;
+                    *exit_guard = false;
                     return Ok(InsertResult::Full(key, val));
                 }
             };
@@ -762,7 +757,7 @@ where
             // The full leaf is marked so that readers know that the next leaves may contain
             // smaller keys.
             let result =
-                target.push_back(low_key_leaf_ptr.get_arc().unwrap(), true, Release, barrier);
+                target.push_back(low_key_leaf_ptr.get_shared().unwrap(), true, Release, guard);
             debug_assert!(result.is_ok());
 
             // Mark the full leaf deleted before making the new one reachable and updatable.
@@ -776,19 +771,19 @@ where
                 )
                 .0
         };
-        *guard = false;
+        *exit_guard = false;
 
         let origin = self.split_op.reset();
         self.unlock();
-        origin.map(|o| o.release(barrier));
-        unused_leaf.map(|u| u.release(barrier));
+        origin.map(|o| o.release(guard));
+        unused_leaf.map(|u| u.release(guard));
 
         // Since a new leaf has been inserted, the caller can retry.
         Ok(InsertResult::Retry(key, val))
     }
 
     /// Tries to coalesce empty or obsolete leaves after a successful removal of an entry.
-    fn coalesce<Q>(&self, barrier: &Barrier) -> RemoveResult
+    fn coalesce<Q>(&self, guard: &Guard) -> RemoveResult
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
@@ -798,7 +793,7 @@ where
         while let Some(lock) = Locker::try_lock(self) {
             prev_valid_leaf.take();
             for entry in Scanner::new(&self.children) {
-                let leaf_ptr = entry.1.load(Relaxed, barrier);
+                let leaf_ptr = entry.1.load(Relaxed, guard);
                 let leaf = leaf_ptr.as_ref().unwrap();
                 if leaf.is_retired() {
                     let deleted = leaf.delete_self(Relaxed);
@@ -809,10 +804,10 @@ where
                     // The pointer is nullified after the metadata of `self.children` is updated so
                     // that readers are able to retry when they find it being `null`.
                     if let Some(leaf) = entry.1.swap((None, Tag::None), Release).0 {
-                        let _: bool = leaf.release(barrier);
+                        let _: bool = leaf.release(guard);
                         if let Some(prev_leaf) = prev_valid_leaf.as_ref() {
                             // One jump is sufficient.
-                            Scanner::new(*prev_leaf).jump(None, barrier);
+                            Scanner::new(*prev_leaf).jump(None, guard);
                         } else {
                             uncleaned_leaf = true;
                         }
@@ -826,7 +821,7 @@ where
             let fully_empty = if prev_valid_leaf.is_some() {
                 false
             } else {
-                let unbounded_ptr = self.unbounded_child.load(Relaxed, barrier);
+                let unbounded_ptr = self.unbounded_child.load(Relaxed, guard);
                 if let Some(unbounded) = unbounded_ptr.as_ref() {
                     if unbounded.is_retired() {
                         let deleted = unbounded.delete_self(Relaxed);
@@ -837,7 +832,7 @@ where
                         if let Some(obsolete_leaf) =
                             self.unbounded_child.swap((None, RETIRED), Release).0
                         {
-                            let _: bool = obsolete_leaf.release(barrier);
+                            let _: bool = obsolete_leaf.release(guard);
                             uncleaned_leaf = true;
                         }
                         true
@@ -855,7 +850,7 @@ where
             }
 
             drop(lock);
-            if !self.has_retired_leaf(barrier) {
+            if !self.has_retired_leaf(guard) {
                 break;
             }
         }
@@ -868,10 +863,10 @@ where
     }
 
     /// Checks if the [`LeafNode`] has a retired [`Leaf`].
-    fn has_retired_leaf(&self, barrier: &Barrier) -> bool {
+    fn has_retired_leaf(&self, guard: &Guard) -> bool {
         let mut has_valid_leaf = false;
         for entry in Scanner::new(&self.children) {
-            let leaf_ptr = entry.1.load(Relaxed, barrier);
+            let leaf_ptr = entry.1.load(Relaxed, guard);
             if let Some(leaf) = leaf_ptr.as_ref() {
                 if leaf.is_retired() {
                     return true;
@@ -880,7 +875,7 @@ where
             }
         }
         if !has_valid_leaf {
-            let unbounded_ptr = self.unbounded_child.load(Relaxed, barrier);
+            let unbounded_ptr = self.unbounded_child.load(Relaxed, guard);
             if let Some(unbounded) = unbounded_ptr.as_ref() {
                 if unbounded.is_retired() {
                     return true;
@@ -950,7 +945,7 @@ where
 
 /// [`StructuralChange`] stores intermediate results during a split operation.
 ///
-/// `AtomicPtr` members may point to values under the protection of the [`Barrier`] used for the
+/// `AtomicPtr` members may point to values under the protection of the [`Guard`] used for the
 /// split operation.
 pub struct StructuralChange<K, V>
 where
@@ -958,9 +953,9 @@ where
     V: 'static + Clone,
 {
     origin_leaf_key: AtomicPtr<K>,
-    origin_leaf: AtomicArc<Leaf<K, V>>,
-    low_key_leaf: AtomicArc<Leaf<K, V>>,
-    high_key_leaf: AtomicArc<Leaf<K, V>>,
+    origin_leaf: AtomicShared<Leaf<K, V>>,
+    low_key_leaf: AtomicShared<Leaf<K, V>>,
+    high_key_leaf: AtomicShared<Leaf<K, V>>,
     low_key_leaf_node: AtomicPtr<LeafNode<K, V>>,
     high_key_leaf_node: AtomicPtr<LeafNode<K, V>>,
 }
@@ -970,7 +965,7 @@ where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
 {
-    fn reset(&self) -> Option<Arc<Leaf<K, V>>> {
+    fn reset(&self) -> Option<Shared<Leaf<K, V>>> {
         self.origin_leaf_key.store(ptr::null_mut(), Relaxed);
         self.low_key_leaf.swap((None, Tag::None), Relaxed);
         self.high_key_leaf.swap((None, Tag::None), Relaxed);
@@ -989,9 +984,9 @@ where
     fn default() -> Self {
         Self {
             origin_leaf_key: AtomicPtr::default(),
-            origin_leaf: AtomicArc::null(),
-            low_key_leaf: AtomicArc::null(),
-            high_key_leaf: AtomicArc::null(),
+            origin_leaf: AtomicShared::null(),
+            low_key_leaf: AtomicShared::null(),
+            high_key_leaf: AtomicShared::null(),
             low_key_leaf_node: AtomicPtr::default(),
             high_key_leaf_node: AtomicPtr::default(),
         }
@@ -1001,23 +996,21 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering::Relaxed;
-
-    use tokio::sync;
+    use tokio::sync::Barrier;
 
     #[cfg_attr(miri, ignore)]
     #[test]
     fn basic() {
-        let barrier = Barrier::new();
+        let guard = Guard::new();
         let leaf_node: LeafNode<String, String> = LeafNode::new();
         assert!(matches!(
             leaf_node.insert(
                 "MY GOODNESS!".to_owned(),
                 "OH MY GOD!!".to_owned(),
                 &mut (),
-                &barrier
+                &guard
             ),
             Ok(InsertResult::Success)
         ));
@@ -1026,20 +1019,17 @@ mod test {
                 "GOOD DAY".to_owned(),
                 "OH MY GOD!!".to_owned(),
                 &mut (),
-                &barrier
+                &guard
             ),
             Ok(InsertResult::Success)
         ));
         assert_eq!(
-            leaf_node.search("MY GOODNESS!", &barrier).unwrap(),
+            leaf_node.search("MY GOODNESS!", &guard).unwrap(),
             "OH MY GOD!!"
         );
-        assert_eq!(
-            leaf_node.search("GOOD DAY", &barrier).unwrap(),
-            "OH MY GOD!!"
-        );
+        assert_eq!(leaf_node.search("GOOD DAY", &guard).unwrap(), "OH MY GOD!!");
         assert!(matches!(
-            leaf_node.remove_if::<_, _, _>("GOOD DAY", &mut |v| v == "OH MY", &mut (), &barrier),
+            leaf_node.remove_if::<_, _, _>("GOOD DAY", &mut |v| v == "OH MY", &mut (), &guard),
             Ok(RemoveResult::Fail)
         ));
         assert!(matches!(
@@ -1047,20 +1037,20 @@ mod test {
                 "GOOD DAY",
                 &mut |v| v == "OH MY GOD!!",
                 &mut (),
-                &barrier
+                &guard
             ),
             Ok(RemoveResult::Success)
         ));
         assert!(matches!(
-            leaf_node.remove_if::<_, _, _>("GOOD", &mut |v| v == "OH MY", &mut (), &barrier),
+            leaf_node.remove_if::<_, _, _>("GOOD", &mut |v| v == "OH MY", &mut (), &guard),
             Ok(RemoveResult::Fail)
         ));
         assert!(matches!(
-            leaf_node.remove_if::<_, _, _>("MY GOODNESS!", &mut |_| true, &mut (), &barrier),
+            leaf_node.remove_if::<_, _, _>("MY GOODNESS!", &mut |_| true, &mut (), &guard),
             Ok(RemoveResult::Retired)
         ));
         assert!(matches!(
-            leaf_node.insert("HI".to_owned(), "HO".to_owned(), &mut (), &barrier),
+            leaf_node.insert("HI".to_owned(), "HO".to_owned(), &mut (), &guard),
             Ok(InsertResult::Retired(..))
         ));
     }
@@ -1068,40 +1058,40 @@ mod test {
     #[cfg_attr(miri, ignore)]
     #[test]
     fn bulk() {
-        let barrier = Barrier::new();
+        let guard = Guard::new();
         let leaf_node: LeafNode<usize, usize> = LeafNode::new();
         for k in 0..1024 {
-            let mut result = leaf_node.insert(k, k, &mut (), &barrier);
+            let mut result = leaf_node.insert(k, k, &mut (), &guard);
             if result.is_err() {
-                result = leaf_node.insert(k, k, &mut (), &barrier);
+                result = leaf_node.insert(k, k, &mut (), &guard);
             }
             match result.unwrap() {
                 InsertResult::Success => {
-                    assert_eq!(leaf_node.search(&k, &barrier), Some(&k));
+                    assert_eq!(leaf_node.search(&k, &guard), Some(&k));
                     continue;
                 }
                 InsertResult::Duplicate(..)
                 | InsertResult::Frozen(..)
                 | InsertResult::Retired(..) => unreachable!(),
                 InsertResult::Full(_, _) => {
-                    leaf_node.rollback(&barrier);
+                    leaf_node.rollback(&guard);
                     for r in 0..(k - 1) {
-                        assert_eq!(leaf_node.search(&r, &barrier), Some(&r));
+                        assert_eq!(leaf_node.search(&r, &guard), Some(&r));
                         assert!(leaf_node
-                            .remove_if::<_, _, _>(&r, &mut |_| true, &mut (), &barrier)
+                            .remove_if::<_, _, _>(&r, &mut |_| true, &mut (), &guard)
                             .is_ok());
-                        assert_eq!(leaf_node.search(&r, &barrier), None);
+                        assert_eq!(leaf_node.search(&r, &guard), None);
                     }
-                    assert_eq!(leaf_node.search(&(k - 1), &barrier), Some(&(k - 1)));
+                    assert_eq!(leaf_node.search(&(k - 1), &guard), Some(&(k - 1)));
                     assert_eq!(
-                        leaf_node.remove_if::<_, _, _>(&(k - 1), &mut |_| true, &mut (), &barrier),
+                        leaf_node.remove_if::<_, _, _>(&(k - 1), &mut |_| true, &mut (), &guard),
                         Ok(RemoveResult::Retired)
                     );
-                    assert_eq!(leaf_node.search(&(k - 1), &barrier), None);
+                    assert_eq!(leaf_node.search(&(k - 1), &guard), None);
                     break;
                 }
                 InsertResult::Retry(..) => {
-                    assert!(leaf_node.insert(k, k, &mut (), &barrier).is_ok());
+                    assert!(leaf_node.insert(k, k, &mut (), &guard).is_ok());
                 }
             }
         }
@@ -1112,11 +1102,11 @@ mod test {
     async fn parallel() {
         let num_tasks = 8;
         let workload_size = 64;
-        let barrier = Arc::new(sync::Barrier::new(num_tasks));
+        let barrier = Shared::new(Barrier::new(num_tasks));
         for _ in 0..16 {
-            let leaf_node = Arc::new(LeafNode::new());
+            let leaf_node = Shared::new(LeafNode::new());
             assert!(leaf_node
-                .insert(usize::MAX, usize::MAX, &mut (), &Barrier::new())
+                .insert(usize::MAX, usize::MAX, &mut (), &Guard::new())
                 .is_ok());
             let mut task_handles = Vec::with_capacity(num_tasks);
             for task_id in 0..num_tasks {
@@ -1124,22 +1114,22 @@ mod test {
                 let leaf_node_clone = leaf_node.clone();
                 task_handles.push(tokio::task::spawn(async move {
                     barrier_clone.wait().await;
-                    let barrier = Barrier::new();
+                    let guard = Guard::new();
                     let mut max_key = None;
                     let range = (task_id * workload_size)..((task_id + 1) * workload_size);
                     for id in range.clone() {
                         loop {
-                            if let Ok(r) = leaf_node_clone.insert(id, id, &mut (), &barrier) {
+                            if let Ok(r) = leaf_node_clone.insert(id, id, &mut (), &guard) {
                                 match r {
                                     InsertResult::Success => {
-                                        match leaf_node_clone.insert(id, id, &mut (), &barrier) {
+                                        match leaf_node_clone.insert(id, id, &mut (), &guard) {
                                             Ok(InsertResult::Duplicate(..)) | Err(_) => (),
                                             _ => unreachable!(),
                                         }
                                         break;
                                     }
                                     InsertResult::Full(..) => {
-                                        leaf_node_clone.rollback(&barrier);
+                                        leaf_node_clone.rollback(&guard);
                                         max_key.replace(id);
                                         break;
                                     }
@@ -1158,7 +1148,7 @@ mod test {
                         if max_key.map_or(false, |m| m == id) {
                             break;
                         }
-                        assert_eq!(leaf_node_clone.search(&id, &barrier), Some(&id));
+                        assert_eq!(leaf_node_clone.search(&id, &guard), Some(&id));
                     }
                     for id in range {
                         if max_key.map_or(false, |m| m == id) {
@@ -1170,7 +1160,7 @@ mod test {
                                 &id,
                                 &mut |_| true,
                                 &mut (),
-                                &barrier,
+                                &guard,
                             ) {
                                 Ok(r) => match r {
                                     RemoveResult::Success | RemoveResult::Cleanup => break,
@@ -1183,12 +1173,12 @@ mod test {
                                 Err(r) => removed |= r,
                             }
                         }
-                        assert!(leaf_node_clone.search(&id, &barrier).is_none(), "{}", id);
+                        assert!(leaf_node_clone.search(&id, &guard).is_none(), "{}", id);
                         if let Ok(RemoveResult::Success) = leaf_node_clone.remove_if::<_, _, _>(
                             &id,
                             &mut |_| true,
                             &mut (),
-                            &barrier,
+                            &guard,
                         ) {
                             unreachable!()
                         }
@@ -1200,7 +1190,7 @@ mod test {
                 assert!(r.is_ok());
             }
             assert!(leaf_node
-                .remove_if::<_, _, _>(&usize::MAX, &mut |_| true, &mut (), &Barrier::new())
+                .remove_if::<_, _, _>(&usize::MAX, &mut |_| true, &mut (), &Guard::new())
                 .is_ok());
         }
     }
@@ -1212,9 +1202,9 @@ mod test {
         let workload_size = 64_usize;
         for _ in 0..16 {
             for k in 0..=workload_size {
-                let barrier = Arc::new(sync::Barrier::new(num_tasks));
-                let leaf_node: Arc<LeafNode<usize, usize>> = Arc::new(LeafNode::new());
-                let inserted: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+                let barrier = Shared::new(Barrier::new(num_tasks));
+                let leaf_node: Shared<LeafNode<usize, usize>> = Shared::new(LeafNode::new());
+                let inserted: Shared<AtomicBool> = Shared::new(AtomicBool::new(false));
                 let mut task_handles = Vec::with_capacity(num_tasks);
                 for _ in 0..num_tasks {
                     let barrier_clone = barrier.clone();
@@ -1223,42 +1213,41 @@ mod test {
                     task_handles.push(tokio::spawn(async move {
                         {
                             barrier_clone.wait().await;
-                            let barrier = Barrier::new();
-                            match leaf_node_clone.insert(k, k, &mut (), &barrier) {
+                            let guard = Guard::new();
+                            match leaf_node_clone.insert(k, k, &mut (), &guard) {
                                 Ok(InsertResult::Success) => {
                                     assert!(!inserted_clone.swap(true, Relaxed));
                                 }
                                 Ok(InsertResult::Full(_, _) | InsertResult::Retired(_, _)) => {
-                                    leaf_node_clone.rollback(&barrier);
+                                    leaf_node_clone.rollback(&guard);
                                 }
                                 _ => (),
                             };
                         }
                         {
                             barrier_clone.wait().await;
-                            let barrier = Barrier::new();
+                            let guard = Guard::new();
                             for i in 0..workload_size {
                                 if i != k {
                                     if let Ok(
                                         InsertResult::Full(_, _) | InsertResult::Retired(_, _),
-                                    ) = leaf_node_clone.insert(i, i, &mut (), &barrier)
+                                    ) = leaf_node_clone.insert(i, i, &mut (), &guard)
                                     {
-                                        leaf_node_clone.rollback(&barrier);
+                                        leaf_node_clone.rollback(&guard);
                                     }
                                 }
-                                assert_eq!(leaf_node_clone.search(&k, &barrier).unwrap(), &k);
+                                assert_eq!(leaf_node_clone.search(&k, &guard).unwrap(), &k);
                             }
                             for i in 0..workload_size {
-                                let max_scanner =
-                                    leaf_node_clone.max_le_appr(&k, &barrier).unwrap();
+                                let max_scanner = leaf_node_clone.max_le_appr(&k, &guard).unwrap();
                                 assert!(*max_scanner.get().unwrap().0 <= k);
-                                let mut min_scanner = leaf_node_clone.min(&barrier).unwrap();
+                                let mut min_scanner = leaf_node_clone.min(&guard).unwrap();
                                 if let Some((k_ref, v_ref)) = min_scanner.next() {
                                     assert_eq!(*k_ref, *v_ref);
                                     assert!(*k_ref <= k);
                                 } else {
                                     let (k_ref, v_ref) =
-                                        min_scanner.jump(None, &barrier).unwrap().get().unwrap();
+                                        min_scanner.jump(None, &guard).unwrap().get().unwrap();
                                     assert_eq!(*k_ref, *v_ref);
                                     assert!(*k_ref <= k);
                                 }
@@ -1266,9 +1255,9 @@ mod test {
                                     &i,
                                     &mut |v| *v != k,
                                     &mut (),
-                                    &barrier,
+                                    &guard,
                                 );
-                                assert_eq!(leaf_node_clone.search(&k, &barrier).unwrap(), &k);
+                                assert_eq!(leaf_node_clone.search(&k, &guard).unwrap(), &k);
                             }
                         }
                     }));

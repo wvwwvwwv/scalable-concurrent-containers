@@ -5,7 +5,7 @@ mod leaf;
 mod leaf_node;
 mod node;
 
-use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
+use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::wait_queue::AsyncWait;
 use leaf::{InsertResult, Leaf, RemoveResult, Scanner};
 use node::Node;
@@ -28,7 +28,7 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 ///
 /// ## Notes
 ///
-/// [`TreeIndex`] methods are linearizable, however its iterator methods are not; [`Visitor`] and
+/// [`TreeIndex`] methods are linearizable, however its iterator methods are not; [`Iter`] and
 /// [`Range`] are only guaranteed to observe events happened before the first call to
 /// [`Iterator::next`].
 ///
@@ -60,39 +60,36 @@ where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
 {
-    root: AtomicArc<Node<K, V>>,
+    root: AtomicShared<Node<K, V>>,
 }
 
-/// [`Range`] represents a range of keys in the [`TreeIndex`].
+/// An iterator over the entries of a [`TreeIndex`].
 ///
-/// It is identical to [`Visitor`] except that it does not traverse keys outside of the given
-/// range.
-pub struct Range<'t, 'b, K, V, R>
+/// An [`Iter`] iterates over all the entries that survive the [`Iter`] in monotonically increasing
+/// order.
+pub struct Iter<'t, 'g, K, V>
+where
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
+{
+    root: &'t AtomicShared<Node<K, V>>,
+    leaf_scanner: Option<Scanner<'g, K, V>>,
+    guard: &'g Guard,
+}
+
+/// An iterator over a sub-range of entries in a  [`TreeIndex`].
+pub struct Range<'t, 'g, K, V, R>
 where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
     R: RangeBounds<K>,
 {
-    root: &'t AtomicArc<Node<K, V>>,
-    leaf_scanner: Option<Scanner<'b, K, V>>,
+    root: &'t AtomicShared<Node<K, V>>,
+    leaf_scanner: Option<Scanner<'g, K, V>>,
     range: R,
     check_lower_bound: bool,
     check_upper_bound: bool,
-    barrier: &'b Barrier,
-}
-
-/// [`Visitor`] scans all the key-value pairs in the [`TreeIndex`].
-///
-/// It is guaranteed to visit all the key-value pairs that outlive the [`Visitor`], and it
-/// scans keys in monotonically increasing order.
-pub struct Visitor<'t, 'b, K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
-    root: &'t AtomicArc<Node<K, V>>,
-    leaf_scanner: Option<Scanner<'b, K, V>>,
-    barrier: &'b Barrier,
+    guard: &'g Guard,
 }
 
 impl<K, V> TreeIndex<K, V>
@@ -113,7 +110,7 @@ where
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            root: AtomicArc::null(),
+            root: AtomicShared::null(),
         }
     }
 
@@ -138,19 +135,19 @@ where
     pub fn insert(&self, mut key: K, mut val: V) -> Result<(), (K, V)> {
         let mut new_root = None;
         loop {
-            let barrier = Barrier::new();
-            if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
-                match root_ref.insert(key, val, &mut (), &barrier) {
+            let guard = Guard::new();
+            if let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
+                match root_ref.insert(key, val, &mut (), &guard) {
                     Ok(r) => match r {
                         InsertResult::Success => return Ok(()),
                         InsertResult::Frozen(k, v) | InsertResult::Retry(k, v) => {
                             key = k;
                             val = v;
-                            root_ref.cleanup_link(&key, false, &barrier);
+                            root_ref.cleanup_link(&key, false, &guard);
                         }
                         InsertResult::Duplicate(k, v) => return Err((k, v)),
                         InsertResult::Full(k, v) => {
-                            let (k, v) = Node::split_root(k, v, &self.root, &barrier);
+                            let (k, v) = Node::split_root(k, v, &self.root, &guard);
                             key = k;
                             val = v;
                             continue;
@@ -158,7 +155,7 @@ where
                         InsertResult::Retired(k, v) => {
                             key = k;
                             val = v;
-                            let _result = Node::remove_root(&self.root, &mut (), &barrier);
+                            let _result = Node::remove_root(&self.root, &mut (), &guard);
                         }
                     },
                     Err((k, v)) => {
@@ -171,14 +168,14 @@ where
             let node = if let Some(new_root) = new_root.take() {
                 new_root
             } else {
-                Arc::new(Node::new_leaf_node())
+                Shared::new(Node::new_leaf_node())
             };
             if let Err((node, _)) = self.root.compare_exchange(
                 Ptr::null(),
                 (Some(node), Tag::None),
                 AcqRel,
                 Acquire,
-                &barrier,
+                &guard,
             ) {
                 new_root = node;
             }
@@ -209,20 +206,20 @@ where
             let mut async_wait_pinned = Pin::new(&mut async_wait);
 
             let need_await = {
-                let barrier = Barrier::new();
-                if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
-                    match root_ref.insert(key, val, &mut async_wait_pinned, &barrier) {
+                let guard = Guard::new();
+                if let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
+                    match root_ref.insert(key, val, &mut async_wait_pinned, &guard) {
                         Ok(r) => match r {
                             InsertResult::Success => return Ok(()),
                             InsertResult::Frozen(k, v) | InsertResult::Retry(k, v) => {
                                 key = k;
                                 val = v;
-                                root_ref.cleanup_link(&key, false, &barrier);
+                                root_ref.cleanup_link(&key, false, &guard);
                                 true
                             }
                             InsertResult::Duplicate(k, v) => return Err((k, v)),
                             InsertResult::Full(k, v) => {
-                                let (k, v) = Node::split_root(k, v, &self.root, &barrier);
+                                let (k, v) = Node::split_root(k, v, &self.root, &guard);
                                 key = k;
                                 val = v;
                                 continue;
@@ -231,7 +228,7 @@ where
                                 key = k;
                                 val = v;
                                 !matches!(
-                                    Node::remove_root(&self.root, &mut async_wait_pinned, &barrier),
+                                    Node::remove_root(&self.root, &mut async_wait_pinned, &guard),
                                     Ok(true)
                                 )
                             }
@@ -254,14 +251,14 @@ where
             let node = if let Some(new_root) = new_root.take() {
                 new_root
             } else {
-                Arc::new(Node::new_leaf_node())
+                Shared::new(Node::new_leaf_node())
             };
             if let Err((node, _)) = self.root.compare_exchange(
                 Ptr::null(),
                 (Some(node), Tag::None),
                 AcqRel,
                 Acquire,
-                &Barrier::new(),
+                &Guard::new(),
             ) {
                 new_root = node;
             }
@@ -346,18 +343,17 @@ where
     {
         let mut has_been_removed = false;
         loop {
-            let barrier = Barrier::new();
-            if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
-                match root_ref.remove_if::<_, _, _>(key, &mut condition, &mut (), &barrier) {
+            let guard = Guard::new();
+            if let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
+                match root_ref.remove_if::<_, _, _>(key, &mut condition, &mut (), &guard) {
                     Ok(r) => match r {
                         RemoveResult::Success => return true,
                         RemoveResult::Cleanup => {
-                            root_ref.cleanup_link(key, false, &barrier);
+                            root_ref.cleanup_link(key, false, &guard);
                             return true;
                         }
                         RemoveResult::Retired => {
-                            if matches!(Node::remove_root(&self.root, &mut (), &barrier), Ok(true))
-                            {
+                            if matches!(Node::remove_root(&self.root, &mut (), &guard), Ok(true)) {
                                 return true;
                             }
                             has_been_removed = true;
@@ -404,23 +400,23 @@ where
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             {
-                let barrier = Barrier::new();
-                if let Some(root_ref) = self.root.load(Acquire, &barrier).as_ref() {
+                let guard = Guard::new();
+                if let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
                     match root_ref.remove_if::<_, _, _>(
                         key,
                         &mut condition,
                         &mut async_wait_pinned,
-                        &barrier,
+                        &guard,
                     ) {
                         Ok(r) => match r {
                             RemoveResult::Success => return true,
                             RemoveResult::Cleanup => {
-                                root_ref.cleanup_link(key, false, &barrier);
+                                root_ref.cleanup_link(key, false, &guard);
                                 return true;
                             }
                             RemoveResult::Retired => {
                                 if matches!(
-                                    Node::remove_root(&self.root, &mut async_wait_pinned, &barrier),
+                                    Node::remove_root(&self.root, &mut async_wait_pinned, &guard),
                                     Ok(true)
                                 ) {
                                     return true;
@@ -462,11 +458,11 @@ where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        let barrier = Barrier::new();
-        self.read_with(key, reader, &barrier)
+        let guard = Guard::new();
+        self.read_with(key, reader, &guard)
     }
 
-    /// Reads a key-value pair using the supplied [`Barrier`].
+    /// Reads a key-value pair using the supplied [`Guard`].
     ///
     /// Returns `None` if the key does not exist. It enables the caller to use the value reference
     /// outside the method.
@@ -475,26 +471,26 @@ where
     ///
     /// ```
     /// use scc::TreeIndex;
-    /// use scc::ebr::Barrier;
+    /// use scc::ebr::Guard;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
-    /// let barrier = Barrier::new();
-    /// assert!(treeindex.read_with(&1, |k, v| v, &barrier).is_none());
+    /// let guard = Guard::new();
+    /// assert!(treeindex.read_with(&1, |k, v| v, &guard).is_none());
     /// ```
     #[inline]
-    pub fn read_with<'b, Q, R, F: FnOnce(&Q, &'b V) -> R>(
+    pub fn read_with<'g, Q, R, F: FnOnce(&Q, &'g V) -> R>(
         &self,
         key: &Q,
         reader: F,
-        barrier: &'b Barrier,
+        guard: &'g Guard,
     ) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        if let Some(root_ref) = self.root.load(Acquire, barrier).as_ref() {
-            if let Some(val) = root_ref.search(key, barrier) {
+        if let Some(root_ref) = self.root.load(Acquire, guard).as_ref() {
+            if let Some(val) = root_ref.search(key, guard) {
                 return Some(reader(key, val));
             }
         }
@@ -532,8 +528,8 @@ where
     /// ```
     #[inline]
     pub fn len(&self) -> usize {
-        let barrier = Barrier::new();
-        self.iter(&barrier).count()
+        let guard = Guard::new();
+        self.iter(&guard).count()
     }
 
     /// Returns `true` if the [`TreeIndex`] is empty.
@@ -549,8 +545,8 @@ where
     /// ```
     #[inline]
     pub fn is_empty(&self) -> bool {
-        let barrier = Barrier::new();
-        !self.iter(&barrier).any(|_| true)
+        let guard = Guard::new();
+        !self.iter(&guard).any(|_| true)
     }
 
     /// Returns the depth of the [`TreeIndex`].
@@ -565,16 +561,16 @@ where
     /// ```
     #[inline]
     pub fn depth(&self) -> usize {
-        let barrier = Barrier::new();
+        let guard = Guard::new();
         self.root
-            .load(Acquire, &barrier)
+            .load(Acquire, &guard)
             .as_ref()
-            .map_or(0, |root_ref| root_ref.depth(1, &barrier))
+            .map_or(0, |root_ref| root_ref.depth(1, &guard))
     }
 
-    /// Returns a [`Visitor`].
+    /// Returns an [`Iter`].
     ///
-    /// The returned [`Visitor`] starts scanning from the minimum key-value pair. Key-value pairs
+    /// The returned [`Iter`] starts scanning from the minimum key-value pair. Key-value pairs
     /// are scanned in ascending order, and key-value pairs that have existed since the invocation
     /// of the method are guaranteed to be visited if they are not removed. However, it is possible
     /// to visit removed key-value pairs momentarily.
@@ -583,17 +579,17 @@ where
     ///
     /// ```
     /// use scc::TreeIndex;
-    /// use scc::ebr::Barrier;
+    /// use scc::ebr::Guard;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
-    /// let barrier = Barrier::new();
-    /// let mut visitor = treeindex.iter(&barrier);
-    /// assert!(visitor.next().is_none());
+    /// let guard = Guard::new();
+    /// let mut iter = treeindex.iter(&guard);
+    /// assert!(iter.next().is_none());
     /// ```
     #[inline]
-    pub fn iter<'t, 'b>(&'t self, barrier: &'b Barrier) -> Visitor<'t, 'b, K, V> {
-        Visitor::new(&self.root, barrier)
+    pub fn iter<'t, 'g>(&'t self, guard: &'g Guard) -> Iter<'t, 'g, K, V> {
+        Iter::new(&self.root, guard)
     }
 
     /// Returns a [`Range`] that scans keys in the given range.
@@ -606,20 +602,20 @@ where
     ///
     /// ```
     /// use scc::TreeIndex;
-    /// use scc::ebr::Barrier;
+    /// use scc::ebr::Guard;
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
-    /// let barrier = Barrier::new();
-    /// assert_eq!(treeindex.range(4..=8, &barrier).count(), 0);
+    /// let guard = Guard::new();
+    /// assert_eq!(treeindex.range(4..=8, &guard).count(), 0);
     /// ```
     #[inline]
-    pub fn range<'t, 'b, R: RangeBounds<K>>(
+    pub fn range<'t, 'g, R: RangeBounds<K>>(
         &'t self,
         range: R,
-        barrier: &'b Barrier,
-    ) -> Range<'t, 'b, K, V, R> {
-        Range::new(&self.root, range, barrier)
+        guard: &'g Guard,
+    ) -> Range<'t, 'g, K, V, R> {
+        Range::new(&self.root, range, guard)
     }
 }
 
@@ -631,7 +627,7 @@ where
     #[inline]
     fn clone(&self) -> Self {
         let self_clone = Self::default();
-        for (k, v) in self.iter(&Barrier::new()) {
+        for (k, v) in self.iter(&Guard::new()) {
             let _reuslt = self_clone.insert(k.clone(), v.clone());
         }
         self_clone
@@ -645,8 +641,8 @@ where
 {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let barrier = Barrier::new();
-        f.debug_map().entries(self.iter(&barrier)).finish()
+        let guard = Guard::new();
+        f.debug_map().entries(self.iter(&guard)).finish()
     }
 }
 
@@ -678,53 +674,53 @@ where
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         // The key order is preserved, therefore comparing iterators suffices.
-        let barrier = Barrier::new();
-        Iterator::eq(self.iter(&barrier), other.iter(&barrier))
+        let guard = Guard::new();
+        Iterator::eq(self.iter(&guard), other.iter(&guard))
     }
 }
 
-impl<'t, 'b, K, V> Visitor<'t, 'b, K, V>
+impl<'t, 'g, K, V> Iter<'t, 'g, K, V>
 where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
 {
     #[inline]
-    fn new(root: &'t AtomicArc<Node<K, V>>, barrier: &'b Barrier) -> Visitor<'t, 'b, K, V> {
-        Visitor::<'t, 'b, K, V> {
+    fn new(root: &'t AtomicShared<Node<K, V>>, guard: &'g Guard) -> Iter<'t, 'g, K, V> {
+        Iter::<'t, 'g, K, V> {
             root,
             leaf_scanner: None,
-            barrier,
+            guard,
         }
     }
 }
 
-impl<'t, 'b, K, V> Debug for Visitor<'t, 'b, K, V>
+impl<'t, 'g, K, V> Debug for Iter<'t, 'g, K, V>
 where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Visitor")
+        f.debug_struct("Iter")
             .field("root", &self.root)
             .field("leaf_scanner", &self.leaf_scanner)
             .finish()
     }
 }
 
-impl<'t, 'b, K, V> Iterator for Visitor<'t, 'b, K, V>
+impl<'t, 'g, K, V> Iterator for Iter<'t, 'g, K, V>
 where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
 {
-    type Item = (&'b K, &'b V);
+    type Item = (&'g K, &'g V);
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         // Starts scanning.
         if self.leaf_scanner.is_none() {
-            let root_ptr = self.root.load(Acquire, self.barrier);
+            let root_ptr = self.root.load(Acquire, self.guard);
             if let Some(root_ref) = root_ptr.as_ref() {
-                if let Some(scanner) = root_ref.min(self.barrier) {
+                if let Some(scanner) = root_ref.min(self.guard) {
                     self.leaf_scanner.replace(scanner);
                 }
             } else {
@@ -740,7 +736,7 @@ where
                 return Some(result);
             }
             // Proceeds to the next leaf node.
-            if let Some(new_scanner) = scanner.jump(min_allowed_key, self.barrier) {
+            if let Some(new_scanner) = scanner.jump(min_allowed_key, self.guard) {
                 if let Some(entry) = new_scanner.get() {
                     self.leaf_scanner.replace(new_scanner);
                     return Some(entry);
@@ -751,21 +747,21 @@ where
     }
 }
 
-impl<'t, 'b, K, V> FusedIterator for Visitor<'t, 'b, K, V>
+impl<'t, 'g, K, V> FusedIterator for Iter<'t, 'g, K, V>
 where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
 {
 }
 
-impl<'t, 'b, K, V> UnwindSafe for Visitor<'t, 'b, K, V>
+impl<'t, 'g, K, V> UnwindSafe for Iter<'t, 'g, K, V>
 where
     K: 'static + Clone + Ord + UnwindSafe,
     V: 'static + Clone + UnwindSafe,
 {
 }
 
-impl<'t, 'b, K, V, R> Range<'t, 'b, K, V, R>
+impl<'t, 'g, K, V, R> Range<'t, 'g, K, V, R>
 where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
@@ -773,25 +769,25 @@ where
 {
     #[inline]
     fn new(
-        root: &'t AtomicArc<Node<K, V>>,
+        root: &'t AtomicShared<Node<K, V>>,
         range: R,
-        barrier: &'b Barrier,
-    ) -> Range<'t, 'b, K, V, R> {
-        Range::<'t, 'b, K, V, R> {
+        guard: &'g Guard,
+    ) -> Range<'t, 'g, K, V, R> {
+        Range::<'t, 'g, K, V, R> {
             root,
             leaf_scanner: None,
             range,
             check_lower_bound: true,
             check_upper_bound: false,
-            barrier,
+            guard,
         }
     }
 
     #[inline]
-    fn next_unbounded(&mut self) -> Option<(&'b K, &'b V)> {
+    fn next_unbounded(&mut self) -> Option<(&'g K, &'g V)> {
         // Start scanning.
         if self.leaf_scanner.is_none() {
-            let root_ptr = self.root.load(Acquire, self.barrier);
+            let root_ptr = self.root.load(Acquire, self.guard);
             if let Some(root_ref) = root_ptr.as_ref() {
                 let min_allowed_key = match self.range.start_bound() {
                     Excluded(key) | Included(key) => Some(key),
@@ -803,7 +799,7 @@ where
                 if let Some(leaf_scanner) = min_allowed_key.map_or_else(
                     || {
                         // Take the min entry.
-                        if let Some(mut min_scanner) = root_ref.min(self.barrier) {
+                        if let Some(mut min_scanner) = root_ref.min(self.guard) {
                             min_scanner.next();
                             Some(min_scanner)
                         } else {
@@ -812,7 +808,7 @@ where
                     },
                     |min_allowed_key| {
                         // Take an entry that is close enough to the lower bound.
-                        root_ref.max_le_appr(min_allowed_key, self.barrier)
+                        root_ref.max_le_appr(min_allowed_key, self.guard)
                     },
                 ) {
                     // Need to check the upper bound.
@@ -844,7 +840,7 @@ where
                 return Some(result);
             }
             // Go to the next leaf node.
-            if let Some(new_scanner) = scanner.jump(min_allowed_key, self.barrier).take() {
+            if let Some(new_scanner) = scanner.jump(min_allowed_key, self.guard).take() {
                 if let Some(entry) = new_scanner.get() {
                     self.check_upper_bound = match self.range.end_bound() {
                         Excluded(key) => new_scanner
@@ -864,7 +860,7 @@ where
     }
 }
 
-impl<'t, 'b, K, V, R> Debug for Range<'t, 'b, K, V, R>
+impl<'t, 'g, K, V, R> Debug for Range<'t, 'g, K, V, R>
 where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
@@ -881,13 +877,13 @@ where
     }
 }
 
-impl<'t, 'b, K, V, R> Iterator for Range<'t, 'b, K, V, R>
+impl<'t, 'g, K, V, R> Iterator for Range<'t, 'g, K, V, R>
 where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
     R: RangeBounds<K>,
 {
-    type Item = (&'b K, &'b V);
+    type Item = (&'g K, &'g V);
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -932,7 +928,7 @@ where
     }
 }
 
-impl<'t, 'b, K, V, R> FusedIterator for Range<'t, 'b, K, V, R>
+impl<'t, 'g, K, V, R> FusedIterator for Range<'t, 'g, K, V, R>
 where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
@@ -940,7 +936,7 @@ where
 {
 }
 
-impl<'t, 'b, K, V, R> UnwindSafe for Range<'t, 'b, K, V, R>
+impl<'t, 'g, K, V, R> UnwindSafe for Range<'t, 'g, K, V, R>
 where
     K: 'static + Clone + Ord + UnwindSafe,
     V: 'static + Clone + UnwindSafe,

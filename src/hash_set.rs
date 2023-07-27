@@ -445,7 +445,7 @@ where
         self.map.any_async(|k, _| pred(k)).await
     }
 
-    /// Iterates over all the keys in the [`HashSet`].
+    /// Retains keys that satisfy the given predicate.
     ///
     /// Keys that have existed since the invocation of the method are guaranteed to be visited if
     /// they are not removed, however the same key can be visited more than once if the [`HashSet`]
@@ -460,20 +460,20 @@ where
     ///
     /// assert!(hashset.insert(1).is_ok());
     /// assert!(hashset.insert(2).is_ok());
+    /// assert!(hashset.insert(3).is_ok());
     ///
-    /// let mut acc = 0;
-    /// hashset.for_each(|k| { acc += *k; });
-    /// assert_eq!(acc, 3);
+    /// hashset.retain(|k| *k == 1);
+    ///
+    /// assert!(hashset.contains(&1));
+    /// assert!(!hashset.contains(&2));
+    /// assert!(!hashset.contains(&3));
     /// ```
     #[inline]
-    pub fn for_each<F: FnMut(&K)>(&self, mut f: F) {
-        self.map.retain(|k, _| {
-            f(k);
-            true
-        });
+    pub fn retain<F: FnMut(&K) -> bool>(&self, mut filter: F) {
+        self.map.retain(|k, _| filter(k));
     }
 
-    /// Iterates over all the keys in the [`HashSet`].
+    /// Retains keys that satisfy the given predicate.
     ///
     /// Keys that have existed since the invocation of the method are guaranteed to be visited if
     /// they are not removed, however the same key can be visited more than once if the [`HashSet`]
@@ -489,65 +489,11 @@ where
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
     /// let future_insert = hashset.insert_async(1);
-    /// let future_for_each = hashset.for_each_async(|k| println!("{}", k));
-    /// ```
-    #[inline]
-    pub async fn for_each_async<F: FnMut(&K)>(&self, mut f: F) {
-        self.map.for_each_async(|k, _| f(k)).await;
-    }
-
-    /// Retains keys that satisfy the given predicate.
-    ///
-    /// Keys that have existed since the invocation of the method are guaranteed to be visited if
-    /// they are not removed, however the same key can be visited more than once if the [`HashSet`]
-    /// gets resized by another thread.
-    ///
-    /// Returns `(number of remaining entries, number of removed entries)` where the number of
-    /// remaining entries can be larger than the actual number since the same entry can be visited
-    /// more than once.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashSet;
-    ///
-    /// let hashset: HashSet<u64> = HashSet::default();
-    ///
-    /// assert!(hashset.insert(1).is_ok());
-    /// assert!(hashset.insert(2).is_ok());
-    /// assert!(hashset.insert(3).is_ok());
-    ///
-    /// assert_eq!(hashset.retain(|k| *k == 1), (1, 2));
-    /// ```
-    #[inline]
-    pub fn retain<F: FnMut(&K) -> bool>(&self, mut filter: F) -> (usize, usize) {
-        self.map.retain(|k, _| filter(k))
-    }
-
-    /// Retains keys that satisfy the given predicate.
-    ///
-    /// Keys that have existed since the invocation of the method are guaranteed to be visited if
-    /// they are not removed, however the same key can be visited more than once if the [`HashSet`]
-    /// gets resized by another task.
-    ///
-    /// Returns `(number of remaining entries, number of removed entries)` where the number of
-    /// remaining entries can be larger than the actual number since the same entry can be visited
-    /// more than once. It is an asynchronous method returning an `impl Future` for the caller to
-    /// await.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashSet;
-    ///
-    /// let hashset: HashSet<u64> = HashSet::default();
-    ///
-    /// let future_insert = hashset.insert_async(1);
     /// let future_retain = hashset.retain_async(|k| *k == 1);
     /// ```
     #[inline]
-    pub async fn retain_async<F: FnMut(&K) -> bool>(&self, mut filter: F) -> (usize, usize) {
-        self.map.retain_async(|k, _| filter(k)).await
+    pub async fn retain_async<F: FnMut(&K) -> bool>(&self, mut filter: F) {
+        self.map.retain_async(|k, _| filter(k)).await;
     }
 
     /// Clears all the keys.
@@ -560,11 +506,13 @@ where
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
     /// assert!(hashset.insert(1).is_ok());
-    /// assert_eq!(hashset.clear(), 1);
+    /// hashset.clear();
+    ///
+    /// assert!(!hashset.contains(&1));
     /// ```
     #[inline]
-    pub fn clear(&self) -> usize {
-        self.map.clear()
+    pub fn clear(&self) {
+        self.map.clear();
     }
 
     /// Clears all the keys.
@@ -582,8 +530,8 @@ where
     /// let future_clear = hashset.clear_async();
     /// ```
     #[inline]
-    pub async fn clear_async(&self) -> usize {
-        self.map.clear_async().await
+    pub async fn clear_async(&self) {
+        self.map.clear_async().await;
     }
 
     /// Returns the number of entries in the [`HashSet`].

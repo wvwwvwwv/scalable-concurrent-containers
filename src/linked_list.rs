@@ -1,4 +1,4 @@
-use super::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
+use super::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use std::fmt::{self, Debug, Display};
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::Ordering::{self, Relaxed, Release};
@@ -9,7 +9,7 @@ pub trait LinkedList: Sized {
     ///
     /// The pointer value may be tagged if [`Self::mark`] or [`Self::delete_self`] has been
     /// invoked.
-    fn link_ref(&self) -> &AtomicArc<Self>;
+    fn link_ref(&self) -> &AtomicShared<Self>;
 
     /// Returns `true` if `self` is reachable and not marked.
     ///
@@ -17,13 +17,13 @@ pub trait LinkedList: Sized {
     ///
     /// ```
     /// use scc::LinkedList;
-    /// use scc::ebr::{AtomicArc, Tag};
+    /// use scc::ebr::{AtomicShared, Tag};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
-    /// struct L(AtomicArc<L>, usize);
+    /// struct L(AtomicShared<L>, usize);
     /// impl LinkedList for L {
-    ///     fn link_ref(&self) -> &AtomicArc<L> {
+    ///     fn link_ref(&self) -> &AtomicShared<L> {
     ///         &self.0
     ///     }
     /// }
@@ -48,13 +48,13 @@ pub trait LinkedList: Sized {
     ///
     /// ```
     /// use scc::LinkedList;
-    /// use scc::ebr::AtomicArc;
+    /// use scc::ebr::AtomicShared;
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
-    /// struct L(AtomicArc<L>, usize);
+    /// struct L(AtomicShared<L>, usize);
     /// impl LinkedList for L {
-    ///     fn link_ref(&self) -> &AtomicArc<L> {
+    ///     fn link_ref(&self) -> &AtomicShared<L> {
     ///         &self.0
     ///     }
     /// }
@@ -76,13 +76,13 @@ pub trait LinkedList: Sized {
     ///
     /// ```
     /// use scc::LinkedList;
-    /// use scc::ebr::AtomicArc;
+    /// use scc::ebr::AtomicShared;
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
-    /// struct L(AtomicArc<L>, usize);
+    /// struct L(AtomicShared<L>, usize);
     /// impl LinkedList for L {
-    ///     fn link_ref(&self) -> &AtomicArc<L> {
+    ///     fn link_ref(&self) -> &AtomicShared<L> {
     ///         &self.0
     ///     }
     /// }
@@ -105,13 +105,13 @@ pub trait LinkedList: Sized {
     ///
     /// ```
     /// use scc::LinkedList;
-    /// use scc::ebr::AtomicArc;
+    /// use scc::ebr::AtomicShared;
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
-    /// struct L(AtomicArc<L>, usize);
+    /// struct L(AtomicShared<L>, usize);
     /// impl LinkedList for L {
-    ///     fn link_ref(&self) -> &AtomicArc<L> {
+    ///     fn link_ref(&self) -> &AtomicShared<L> {
     ///         &self.0
     ///     }
     /// }
@@ -134,25 +134,25 @@ pub trait LinkedList: Sized {
     ///
     /// ```
     /// use scc::LinkedList;
-    /// use scc::ebr::{Arc, AtomicArc, Barrier};
+    /// use scc::ebr::{AtomicShared, Guard, Shared};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
-    /// struct L(AtomicArc<L>, usize);
+    /// struct L(AtomicShared<L>, usize);
     /// impl LinkedList for L {
-    ///     fn link_ref(&self) -> &AtomicArc<L> {
+    ///     fn link_ref(&self) -> &AtomicShared<L> {
     ///         &self.0
     ///     }
     /// }
     ///
-    /// let barrier = Barrier::new();
+    /// let guard = Guard::new();
     ///
     /// let head: L = L::default();
-    /// let tail: Arc<L> = Arc::new(L::default());
-    /// assert!(head.push_back(tail.clone(), false, Relaxed, &barrier).is_ok());
+    /// let tail: Shared<L> = Shared::new(L::default());
+    /// assert!(head.push_back(tail.clone(), false, Relaxed, &guard).is_ok());
     ///
     /// tail.delete_self(Relaxed);
-    /// assert!(head.next_ptr(Relaxed, &barrier).as_ref().is_none());
+    /// assert!(head.next_ptr(Relaxed, &guard).as_ref().is_none());
     /// ```
     #[inline]
     fn delete_self(&self, order: Ordering) -> bool {
@@ -166,13 +166,13 @@ pub trait LinkedList: Sized {
     ///
     /// ```
     /// use scc::LinkedList;
-    /// use scc::ebr::AtomicArc;
+    /// use scc::ebr::AtomicShared;
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
-    /// struct L(AtomicArc<L>, usize);
+    /// struct L(AtomicShared<L>, usize);
     /// impl LinkedList for L {
-    ///     fn link_ref(&self) -> &AtomicArc<L> {
+    ///     fn link_ref(&self) -> &AtomicShared<L> {
     ///         &self.0
     ///     }
     /// }
@@ -194,55 +194,55 @@ pub trait LinkedList: Sized {
     ///
     /// # Errors
     ///
-    /// Returns the supplied [`Arc`] when it finds `self` deleted.
+    /// Returns the supplied [`Shared`] when it finds `self` deleted.
     ///
     /// # Examples
     ///
     /// ```
     /// use scc::LinkedList;
-    /// use scc::ebr::{Arc, AtomicArc, Barrier};
+    /// use scc::ebr::{AtomicShared, Guard, Shared};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
-    /// struct L(AtomicArc<L>, usize);
+    /// struct L(AtomicShared<L>, usize);
     /// impl LinkedList for L {
-    ///     fn link_ref(&self) -> &AtomicArc<L> {
+    ///     fn link_ref(&self) -> &AtomicShared<L> {
     ///         &self.0
     ///     }
     /// }
     ///
-    /// let barrier = Barrier::new();
+    /// let guard = Guard::new();
     ///
     /// let head: L = L::default();
-    /// assert!(head.push_back(Arc::new(L::default()), true, Relaxed, &barrier).is_ok());
+    /// assert!(head.push_back(Shared::new(L::default()), true, Relaxed, &guard).is_ok());
     /// assert!(head.is_marked(Relaxed));
-    /// assert!(head.push_back(Arc::new(L::default()), false, Relaxed, &barrier).is_ok());
+    /// assert!(head.push_back(Shared::new(L::default()), false, Relaxed, &guard).is_ok());
     /// assert!(!head.is_marked(Relaxed));
     ///
     /// head.delete_self(Relaxed);
     /// assert!(!head.is_marked(Relaxed));
-    /// assert!(head.push_back(Arc::new(L::default()), false, Relaxed, &barrier).is_err());
+    /// assert!(head.push_back(Shared::new(L::default()), false, Relaxed, &guard).is_err());
     /// ```
     #[inline]
-    fn push_back<'b>(
+    fn push_back<'g>(
         &self,
-        mut entry: Arc<Self>,
+        mut entry: Shared<Self>,
         mark: bool,
         order: Ordering,
-        barrier: &'b Barrier,
-    ) -> Result<Ptr<'b, Self>, Arc<Self>> {
+        guard: &'g Guard,
+    ) -> Result<Ptr<'g, Self>, Shared<Self>> {
         let new_tag = if mark { Tag::First } else { Tag::None };
-        let mut next_ptr = self.link_ref().load(Relaxed, barrier);
+        let mut next_ptr = self.link_ref().load(Relaxed, guard);
         while next_ptr.tag() != Tag::Second {
             entry
                 .link_ref()
-                .swap((next_ptr.get_arc(), Tag::None), Relaxed);
+                .swap((next_ptr.get_shared(), Tag::None), Relaxed);
             match self.link_ref().compare_exchange_weak(
                 next_ptr,
                 (Some(entry), new_tag),
                 order,
                 Relaxed,
-                barrier,
+                guard,
             ) {
                 Ok((_, updated)) => {
                     return Ok(updated);
@@ -266,36 +266,37 @@ pub trait LinkedList: Sized {
     ///
     /// ```
     /// use scc::LinkedList;
-    /// use scc::ebr::{Arc, AtomicArc, Barrier};
+    /// use scc::ebr::{AtomicShared, Guard, Shared};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
-    /// struct L(AtomicArc<L>, usize);
+    /// struct L(AtomicShared<L>, usize);
     /// impl LinkedList for L {
-    ///     fn link_ref(&self) -> &AtomicArc<L> {
+    ///     fn link_ref(&self) -> &AtomicShared<L> {
     ///         &self.0
     ///     }
     /// }
     ///
-    /// let barrier = Barrier::new();
+    /// let guard = Guard::new();
     ///
     /// let head: L = L::default();
-    /// assert!(head.push_back(Arc::new(L(AtomicArc::null(), 1)), false, Relaxed, &barrier).is_ok());
+    /// assert!(
+    ///     head.push_back(Shared::new(L(AtomicShared::null(), 1)), false, Relaxed, &guard).is_ok());
     /// head.mark(Relaxed);
     ///
-    /// let next_ptr = head.next_ptr(Relaxed, &barrier);
+    /// let next_ptr = head.next_ptr(Relaxed, &guard);
     /// assert_eq!(next_ptr.as_ref().unwrap().1, 1);
     /// assert!(head.is_marked(Relaxed));
     /// ```
     #[inline]
-    fn next_ptr<'b>(&self, order: Ordering, barrier: &'b Barrier) -> Ptr<'b, Self> {
-        let self_next_ptr = self.link_ref().load(order, barrier);
+    fn next_ptr<'g>(&self, order: Ordering, guard: &'g Guard) -> Ptr<'g, Self> {
+        let self_next_ptr = self.link_ref().load(order, guard);
         let self_tag = self_next_ptr.tag();
         let mut next_ptr = self_next_ptr;
         let mut update_self = false;
         let next_valid_ptr = loop {
             if let Some(next_ref) = next_ptr.as_ref() {
-                let next_next_ptr = next_ref.link_ref().load(order, barrier);
+                let next_next_ptr = next_ref.link_ref().load(order, guard);
                 if next_next_ptr.tag() != Tag::Second {
                     break next_ptr;
                 }
@@ -311,13 +312,13 @@ pub trait LinkedList: Sized {
             self.link_ref()
                 .compare_exchange(
                     self_next_ptr,
-                    (next_valid_ptr.get_arc(), self_tag),
+                    (next_valid_ptr.get_shared(), self_tag),
                     Release,
                     Relaxed,
-                    barrier,
+                    guard,
                 )
                 .ok()
-                .map(|(p, _)| p.map(|p| p.release(barrier)));
+                .map(|(p, _)| p.map(|p| p.release(guard)));
         }
 
         next_valid_ptr
@@ -330,7 +331,7 @@ pub struct Entry<T> {
     instance: Option<T>,
 
     /// `next` points to the next entry in a linked list.
-    next: AtomicArc<Self>,
+    next: AtomicShared<Self>,
 }
 
 impl<T> Entry<T> {
@@ -339,7 +340,7 @@ impl<T> Entry<T> {
     pub(super) fn new(val: T) -> Self {
         Self {
             instance: Some(val),
-            next: AtomicArc::default(),
+            next: AtomicShared::default(),
         }
     }
 
@@ -351,7 +352,7 @@ impl<T> Entry<T> {
 
     /// Returns a reference to `next`.
     #[inline]
-    pub(super) fn next(&self) -> &AtomicArc<Self> {
+    pub(super) fn next(&self) -> &AtomicShared<Self> {
         &self.next
     }
 }
@@ -375,7 +376,7 @@ impl<T: Clone> Clone for Entry<T> {
     fn clone(&self) -> Self {
         Self {
             instance: self.instance.clone(),
-            next: AtomicArc::default(),
+            next: AtomicShared::default(),
         }
     }
 }
@@ -422,7 +423,7 @@ impl<T: Eq> Eq for Entry<T> {}
 
 impl<T> LinkedList for Entry<T> {
     #[inline]
-    fn link_ref(&self) -> &AtomicArc<Self> {
+    fn link_ref(&self) -> &AtomicShared<Self> {
         &self.next
     }
 }

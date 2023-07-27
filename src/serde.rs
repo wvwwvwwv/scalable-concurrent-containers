@@ -1,6 +1,6 @@
 //! This module implements helper types and traits for `serde`.
 
-use super::ebr::Barrier;
+use super::ebr::Guard;
 use super::{HashCache, HashIndex, HashMap, HashSet, TreeIndex};
 use serde::de::{Deserialize, MapAccess, SeqAccess, Visitor};
 use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
@@ -78,12 +78,13 @@ where
     {
         let mut map = serializer.serialize_map(Some(self.len()))?;
         let mut error = None;
-        self.for_each(|k, v| {
+        self.retain(|k, v| {
             if error.is_none() {
                 if let Err(e) = map.serialize_entry(k, v) {
                     error.replace(e);
                 }
             }
+            true
         });
         if let Some(e) = error {
             return Err(e);
@@ -241,7 +242,7 @@ where
     {
         let mut map = serializer.serialize_map(Some(self.len()))?;
         let mut error = None;
-        self.iter(&Barrier::new()).any(|(k, v)| {
+        self.iter(&Guard::new()).any(|(k, v)| {
             if let Err(e) = map.serialize_entry(k, v) {
                 error.replace(e);
                 true
@@ -405,7 +406,7 @@ where
     {
         let mut map = serializer.serialize_map(Some(self.len()))?;
         let mut error = None;
-        self.iter(&Barrier::new()).any(|(k, v)| {
+        self.iter(&Guard::new()).any(|(k, v)| {
             if let Err(e) = map.serialize_entry(k, v) {
                 error.replace(e);
                 true
