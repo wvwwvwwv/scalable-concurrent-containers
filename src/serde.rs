@@ -78,12 +78,13 @@ where
     {
         let mut map = serializer.serialize_map(Some(self.len()))?;
         let mut error = None;
-        self.for_each(|k, v| {
+        self.retain(|k, v| {
             if error.is_none() {
                 if let Err(e) = map.serialize_entry(k, v) {
                     error.replace(e);
                 }
             }
+            true
         });
         if let Some(e) = error {
             return Err(e);

@@ -1066,63 +1066,6 @@ where
         false
     }
 
-    /// Iterates over all the entries in the [`HashMap`] allowing modifying each value.
-    ///
-    /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
-    /// visited if they are not removed, however the same key-value pair can be visited more than
-    /// once if the [`HashMap`] gets resized by another thread.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashMap;
-    ///
-    /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.insert(2, 1).is_ok());
-    ///
-    /// let mut acc = 0;
-    /// hashmap.for_each(|k, v| { acc += *k; *v = 2; });
-    /// assert_eq!(acc, 3);
-    /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
-    /// assert_eq!(hashmap.read(&2, |_, v| *v).unwrap(), 2);
-    /// ```
-    #[inline]
-    pub fn for_each<F: FnMut(&K, &mut V)>(&self, mut f: F) {
-        self.retain(|k, v| {
-            f(k, v);
-            true
-        });
-    }
-
-    /// Iterates over all the entries in the [`HashMap`] allowing modifying each value.
-    ///
-    /// Key-value pairs that have existed since the invocation of the method are guaranteed to be
-    /// visited if they are not removed, however the same key-value pair can be visited more than
-    /// once if the [`HashMap`] gets resized by another task.
-    ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashMap;
-    ///
-    /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    ///
-    /// let future_insert = hashmap.insert_async(1, 0);
-    /// let future_for_each = hashmap.for_each_async(|k, v| println!("{} {}", k, v));
-    /// ```
-    #[inline]
-    pub async fn for_each_async<F: FnMut(&K, &mut V)>(&self, mut f: F) {
-        self.retain_async(|k, v| {
-            f(k, v);
-            true
-        })
-        .await;
-    }
-
     /// Retains the entries specified by the predicate.
     ///
     /// This method allows the predicate closure to modify the value field.
@@ -1130,10 +1073,6 @@ where
     /// Entries that have existed since the invocation of the method are guaranteed to be visited
     /// if they are not removed, however the same entry can be visited more than once if the
     /// [`HashMap`] gets resized by another thread.
-    ///
-    /// Returns `(number of remaining entries, number of removed entries)` where the number of
-    /// remaining entries can be larger than the actual number since the same entry can be visited
-    /// more than once.
     ///
     /// # Examples
     ///
@@ -1146,11 +1085,15 @@ where
     /// assert!(hashmap.insert(2, 1).is_ok());
     /// assert!(hashmap.insert(3, 2).is_ok());
     ///
-    /// assert_eq!(hashmap.retain(|k, v| *k == 1 && *v == 0), (1, 2));
+    /// hashmap.retain(|k, v| *k == 1 && *v == 0);
+    ///
+    /// assert!(hashmap.contains(&1));
+    /// assert!(!hashmap.contains(&2));
+    /// assert!(!hashmap.contains(&3));
     /// ```
     #[inline]
-    pub fn retain<F: FnMut(&K, &mut V) -> bool>(&self, pred: F) -> (usize, usize) {
-        self.retain_entries(pred)
+    pub fn retain<F: FnMut(&K, &mut V) -> bool>(&self, pred: F) {
+        self.retain_entries(pred);
     }
 
     /// Retains the entries specified by the predicate.
@@ -1161,10 +1104,7 @@ where
     /// if they are not removed, however the same entry can be visited more than once if the
     /// [`HashMap`] gets resized by another thread.
     ///
-    /// Returns `(number of remaining entries, number of removed entries)` where the number of
-    /// remaining entries can be larger than the actual number since the same entry can be visited
-    /// more than once. It is an asynchronous method returning an `impl Future` for the caller to
-    /// await.
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -1177,9 +1117,8 @@ where
     /// let future_retain = hashmap.retain_async(|k, v| *k == 1);
     /// ```
     #[inline]
-    pub async fn retain_async<F: FnMut(&K, &mut V) -> bool>(&self, mut pred: F) -> (usize, usize) {
-        let mut num_retained: usize = 0;
-        let mut num_removed: usize = 0;
+    pub async fn retain_async<F: FnMut(&K, &mut V) -> bool>(&self, mut pred: F) {
+        let mut removed = false;
         let mut current_array_holder = self.array.get_arc(Acquire, &Barrier::new());
         while let Some(current_array) = current_array_holder.take() {
             self.cleanse_old_array_async(&current_array).await;
@@ -1198,11 +1137,9 @@ where
                                 let mut entry_ptr = EntryPtr::new(&barrier);
                                 while entry_ptr.next(&locker, &barrier) {
                                     let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
-                                    if pred(k, v) {
-                                        num_retained = num_retained.saturating_add(1);
-                                    } else {
+                                    if !pred(k, v) {
                                         locker.erase(data_block_mut, &entry_ptr);
-                                        num_removed = num_removed.saturating_add(1);
+                                        removed = true;
                                     }
                                 }
                             }
@@ -1217,21 +1154,18 @@ where
                 if new_current_array.as_ptr() == current_array.as_ptr() {
                     break;
                 }
-                num_retained = 0;
                 current_array_holder.replace(new_current_array);
                 continue;
             }
             break;
         }
 
-        if num_removed != 0 {
+        if removed {
             self.try_resize(0, &Barrier::new());
         }
-
-        (num_retained, num_removed)
     }
 
-    /// Prunes the entries specified by the predicate, and returns the number of removed entries.
+    /// Prunes the entries specified by the predicate.
     ///
     /// If the value is consumed by the predicate, in other words, if the predicate returns `None`,
     /// the entry is removed, otherwise the entry is retained.
@@ -1251,15 +1185,15 @@ where
     /// assert!(hashmap.insert(2, 1).is_ok());
     /// assert!(hashmap.insert(3, 2).is_ok());
     ///
-    /// assert_eq!(hashmap.prune(|k, v| if *k == 1 { Some(v) } else { None }), 2);
+    /// hashmap.prune(|k, v| if *k == 1 { Some(v) } else { None });
     /// assert_eq!(hashmap.len(), 1);
     /// ```
     #[inline]
-    pub fn prune<F: FnMut(&K, V) -> Option<V>>(&self, pred: F) -> usize {
-        self.prune_entries(pred)
+    pub fn prune<F: FnMut(&K, V) -> Option<V>>(&self, pred: F) {
+        self.prune_entries(pred);
     }
 
-    /// Prunes the entries specified by the predicate, and returns the number of removed entries.
+    /// Prunes the entries specified by the predicate.
     ///
     /// If the value is consumed by the predicate, in other words, if the predicate returns `None`,
     /// the entry is removed, otherwise the entry is retained.
@@ -1281,8 +1215,8 @@ where
     /// let future_prune = hashmap.prune_async(|k, v| if *k == 1 { Some(v) } else { None });
     /// ```
     #[inline]
-    pub async fn prune_async<F: FnMut(&K, V) -> Option<V>>(&self, mut pred: F) -> usize {
-        let mut num_consumed: usize = 0;
+    pub async fn prune_async<F: FnMut(&K, V) -> Option<V>>(&self, mut pred: F) {
+        let mut removed = false;
         let mut current_array_holder = self.array.get_arc(Acquire, &Barrier::new());
         while let Some(current_array) = current_array_holder.take() {
             self.cleanse_old_array_async(&current_array).await;
@@ -1302,7 +1236,7 @@ where
                                 while entry_ptr.next(&locker, &barrier) {
                                     if locker.keep_or_consume(data_block_mut, &entry_ptr, &mut pred)
                                     {
-                                        num_consumed += 1;
+                                        removed = true;
                                     }
                                 }
                             }
@@ -1323,11 +1257,9 @@ where
             break;
         }
 
-        if num_consumed != 0 {
+        if removed {
             self.try_resize(0, &Barrier::new());
         }
-
-        num_consumed
     }
 
     /// Clears all the key-value pairs.
@@ -1340,11 +1272,13 @@ where
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert_eq!(hashmap.clear(), 1);
+    /// hashmap.clear();
+    ///
+    /// assert!(!hashmap.contains(&1));
     /// ```
     #[inline]
-    pub fn clear(&self) -> usize {
-        self.retain(|_, _| false).1
+    pub fn clear(&self) {
+        self.retain(|_, _| false);
     }
 
     /// Clears all the key-value pairs.
@@ -1362,8 +1296,8 @@ where
     /// let future_clear = hashmap.clear_async();
     /// ```
     #[inline]
-    pub async fn clear_async(&self) -> usize {
-        self.retain_async(|_, _| false).await.1
+    pub async fn clear_async(&self) {
+        self.retain_async(|_, _| false).await;
     }
 
     /// Returns the number of entries in the [`HashMap`].

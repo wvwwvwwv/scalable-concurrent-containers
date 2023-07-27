@@ -109,7 +109,7 @@ mod hashmap_test {
             }
             assert_eq!(INST_CNT.load(Relaxed), workload_size);
             assert_eq!(hashmap.len(), workload_size);
-            assert_eq!(hashmap.clear_async().await, workload_size);
+            hashmap.clear_async().await;
             assert_eq!(INST_CNT.load(Relaxed), 0);
         }
     }
@@ -179,13 +179,19 @@ mod hashmap_test {
         for k in 0..workload_size {
             assert!(hashmap.insert(k, L::new(&cnt)).is_ok());
         }
-        hashmap.for_each(|k, _| assert!(*k < workload_size));
+        hashmap.retain(|k, _| {
+            assert!(*k < workload_size);
+            true
+        });
         assert_eq!(cnt.load(Relaxed), workload_size);
 
         for k in 0..workload_size / 2 {
             assert!(hashmap.remove(&k).is_some());
         }
-        hashmap.for_each(|k, _| assert!(*k >= workload_size / 2));
+        hashmap.retain(|k, _| {
+            assert!(*k >= workload_size / 2);
+            true
+        });
         assert_eq!(cnt.load(Relaxed), workload_size / 2);
 
         drop(hashmap);
@@ -378,7 +384,17 @@ mod hashmap_test {
                     }
                     assert!(in_range >= workload_size, "{in_range} {workload_size}");
 
-                    let (_, removed) = hashmap_clone.retain_async(|k, _| !range.contains(k)).await;
+                    let mut removed = 0;
+                    hashmap_clone
+                        .retain_async(|k, _| {
+                            if range.contains(k) {
+                                removed += 1;
+                                false
+                            } else {
+                                true
+                            }
+                        })
+                        .await;
                     assert_eq!(removed, workload_size);
 
                     let mut entry = if task_id % 2 == 0 {
@@ -426,26 +442,29 @@ mod hashmap_test {
                         assert!(result.is_ok());
                     }
                     assert!(hashmap_clone.any(|k, _| range.contains(k)));
-                    let removed = if task_id % 3 == 0 {
+                    let mut removed = 0;
+                    if task_id % 3 == 0 {
                         hashmap_clone.prune(|k, v| {
                             if range.contains(k) {
                                 assert_eq!(*k, v);
+                                removed += 1;
                                 None
                             } else {
                                 Some(v)
                             }
-                        })
+                        });
                     } else {
                         hashmap_clone
                             .prune_async(|k, v| {
                                 if range.contains(k) {
                                     assert_eq!(*k, v);
+                                    removed += 1;
                                     None
                                 } else {
                                     Some(v)
                                 }
                             })
-                            .await
+                            .await;
                     };
                     assert_eq!(removed, workload_size);
                     assert!(!hashmap_clone.any_async(|k, _| range.contains(k)).await);
@@ -462,7 +481,7 @@ mod hashmap_test {
 
     #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-    async fn retain_for_each_any() {
+    async fn retain_any() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
         for _ in 0..256 {
             let num_tasks = 8;
@@ -485,23 +504,38 @@ mod hashmap_test {
                     }
                     let mut iterated = 0;
                     hashmap_clone
-                        .for_each_async(|k, _| {
+                        .retain_async(|k, _| {
                             if range.contains(k) {
                                 iterated += 1;
                             }
+                            true
                         })
                         .await;
                     assert!(iterated >= workload_size);
                     assert!(hashmap_clone.any(|k, _| range.contains(k)));
                     assert!(hashmap_clone.any_async(|k, _| range.contains(k)).await);
 
-                    let removed = if task_id % 3 == 0 {
-                        hashmap_clone.retain(|k, _| !range.contains(k)).1
+                    let mut removed = 0;
+                    if task_id % 3 == 0 {
+                        hashmap_clone.retain(|k, _| {
+                            if range.contains(k) {
+                                removed += 1;
+                                false
+                            } else {
+                                true
+                            }
+                        });
                     } else {
                         hashmap_clone
-                            .retain_async(|k, _| !range.contains(k))
-                            .await
-                            .1
+                            .retain_async(|k, _| {
+                                if range.contains(k) {
+                                    removed += 1;
+                                    false
+                                } else {
+                                    true
+                                }
+                            })
+                            .await;
                     };
                     assert_eq!(removed, workload_size);
 
@@ -578,9 +612,10 @@ mod hashmap_test {
                     let mut scanned = 0;
                     let mut checker = BTreeSet::new();
                     let max = inserted_copied.load(Acquire);
-                    hashmap_copied.for_each(|k, _| {
+                    hashmap_copied.retain(|k, _| {
                         scanned += 1;
                         checker.insert(*k);
+                        true
                     });
                     for key in 0..max {
                         assert!(checker.contains(&key));
@@ -591,9 +626,10 @@ mod hashmap_test {
                     barrier_copied.wait();
                     let mut scanned = 0;
                     let max = removed_copied.load(Acquire);
-                    hashmap_copied.for_each(|k, _| {
+                    hashmap_copied.retain(|k, _| {
                         scanned += 1;
                         assert!(*k < max);
+                        true
                     });
                 }
             });
@@ -674,15 +710,17 @@ mod hashmap_test {
                 hashmap.upsert(Data::new(d, checker.clone()), || Data::new(d, checker.clone()), |_, v| *v = Data::new(d + 1, checker.clone()));
             }
 
-            let result = hashmap.retain(|k, _| k.data < key + range);
-            assert_eq!(result, (range, range));
+            let mut removed = 0;
+            hashmap.retain(|k, _| if k.data  >= key + range { removed += 1; false } else { true });
+            assert_eq!(removed, range);
 
             assert_eq!(hashmap.len(), range);
             let mut found_keys = 0;
-            hashmap.for_each(|k, v| {
+            hashmap.retain(|k, v| {
                 assert!(k.data < key + range);
                 assert!(v.data >= key);
                 found_keys += 1;
+                true
             });
             assert_eq!(found_keys, range);
             assert_eq!(checker.load(Relaxed), range * 2);
@@ -698,8 +736,7 @@ mod hashmap_test {
                 assert!(hashmap.insert(Data::new(d, checker.clone()), Data::new(d, checker.clone())).is_ok());
                 hashmap.upsert(Data::new(d, checker.clone()), || Data::new(d, checker.clone()), |_, v| *v = Data::new(d + 2, checker.clone()));
             }
-            let result = hashmap.clear();
-            assert_eq!(result, range);
+            hashmap.clear();
             assert_eq!(checker.load(Relaxed), 0);
 
             for d in key..(key + range) {
@@ -716,7 +753,7 @@ mod hashmap_test {
 #[cfg(test)]
 mod hashindex_test {
     use crate::ebr;
-    use crate::hash_index::{Iter, ModifyAction};
+    use crate::hash_index::Iter;
     use crate::HashIndex;
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
@@ -789,7 +826,7 @@ mod hashindex_test {
             }
             assert!(INST_CNT.load(Relaxed) >= workload_size);
             assert_eq!(hashindex.len(), workload_size);
-            assert_eq!(hashindex.clear_async().await, workload_size);
+            hashindex.clear_async().await;
         }
         drop(hashindex);
 
@@ -974,8 +1011,16 @@ mod hashindex_test {
                     }
                     assert!(in_range >= workload_size, "{in_range} {workload_size}");
 
-                    let (_, removed) = hashindex_clone
-                        .retain_async(|k, _| !range.contains(k))
+                    let mut removed = 0;
+                    hashindex_clone
+                        .retain_async(|k, _| {
+                            if range.contains(k) {
+                                removed += 1;
+                                false
+                            } else {
+                                true
+                            }
+                        })
                         .await;
                     assert_eq!(removed, workload_size);
 
@@ -1064,7 +1109,7 @@ mod hashindex_test {
 
     #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-    async fn modify() {
+    async fn update() {
         let hashindex: Arc<HashIndex<usize, usize>> = Arc::new(HashIndex::default());
         for _ in 0..256 {
             let num_tasks = 8;
@@ -1080,55 +1125,34 @@ mod hashindex_test {
                     for id in range.clone() {
                         let result = hashindex_clone.insert_async(id, id).await;
                         assert!(result.is_ok());
-                        if id % 4 == 0 {
-                            assert!(!hashindex_clone.modify(&id, |_, v| if *v == id {
-                                ModifyAction::Keep
-                            } else {
-                                ModifyAction::Update(0)
-                            }));
+                        let entry = if id % 4 == 0 {
+                            hashindex_clone.get(&id).unwrap()
                         } else {
-                            assert!(
-                                !hashindex_clone
-                                    .modify_async(&id, |_, v| if *v == id {
-                                        ModifyAction::Keep
-                                    } else {
-                                        ModifyAction::Update(0)
-                                    })
-                                    .await
-                            );
+                            hashindex_clone.get_async(&id).await.unwrap()
+                        };
+                        if *entry.get() != id {
+                            entry.update(0);
                         }
                     }
                     for id in range.clone() {
                         hashindex_clone.read(&id, |k, v| assert_eq!(k, v));
-                        if id % 4 == 0 {
-                            assert!(hashindex_clone.modify(&id, |_, v| if *v == id {
-                                Some(Some(usize::MAX))
-                            } else {
-                                None
-                            }));
+                        let entry = if id % 4 == 0 {
+                            hashindex_clone.get(&id).unwrap()
                         } else {
-                            assert!(
-                                hashindex_clone
-                                    .modify_async(&id, |_, v| if *v == id {
-                                        Some(Some(usize::MAX))
-                                    } else {
-                                        None
-                                    })
-                                    .await
-                            );
+                            hashindex_clone.get_async(&id).await.unwrap()
+                        };
+                        if *entry.get() == id {
+                            entry.update(usize::MAX);
                         }
                     }
                     for id in range.clone() {
                         hashindex_clone.read(&id, |_, v| assert_eq!(*v, usize::MAX));
-                        if id % 4 == 0 {
-                            assert!(hashindex_clone.modify(&id, |_, _| Some(None)));
+                        let entry = if id % 4 == 0 {
+                            hashindex_clone.get(&id).unwrap()
                         } else {
-                            assert!(
-                                hashindex_clone
-                                    .modify_async(&id, |_, _| ModifyAction::Remove)
-                                    .await
-                            );
-                        }
+                            hashindex_clone.get_async(&id).await.unwrap()
+                        };
+                        entry.remove_entry();
                     }
                 }));
             }
@@ -1177,11 +1201,26 @@ mod hashindex_test {
                         .iter(&ebr::Barrier::new())
                         .any(|(k, _)| range.contains(k)));
 
-                    let (_, removed) = if task_id % 4 == 0 {
-                        hashindex_clone.retain(|k, _| !range.contains(k))
+                    let mut removed = 0;
+                    if task_id % 4 == 0 {
+                        hashindex_clone.retain(|k, _| {
+                            if range.contains(k) {
+                                removed += 1;
+                                false
+                            } else {
+                                true
+                            }
+                        })
                     } else {
                         hashindex_clone
-                            .retain_async(|k, _| !range.contains(k))
+                            .retain_async(|k, _| {
+                                if range.contains(k) {
+                                    removed += 1;
+                                    false
+                                } else {
+                                    true
+                                }
+                            })
                             .await
                     };
                     assert_eq!(removed, workload_size);

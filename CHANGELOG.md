@@ -10,8 +10,9 @@
 - `ebr::Arc` -> `ebr::Shared`.
 - `ebr::AtomicArc` -> `ebr::AtomicShared`.
 - `*::first_occupied_entry*` -> `*::first_entry*`.
-- Remove `HashIndex::update*` and `HashIndex::modify*`: superseded by `HashIndex::entry*` and `HashIndex::get*`.
-- `HashMap::retain*` returns the number of removed entries.
+- Remove `HashIndex::update*` and `HashIndex::modify*`: superseded by `HashIndex::entry*`, `HashIndex::get*`, and `hash_index::OccupiedEntry::update`.
+- Remove `Hash*::for_each*`: superseded by `HashMap::retain*`.
+- `Hash*::clear*`, `Hash*::prune*`, and `Hash*::retain*` return `()`.
 
 2.0.0
 

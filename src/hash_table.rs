@@ -507,10 +507,9 @@ where
 
     /// Retains entries that satisfy the specified predicate.
     #[inline]
-    fn retain_entries<F: FnMut(&K, &mut V) -> bool>(&self, mut pred: F) -> (usize, usize) {
+    fn retain_entries<F: FnMut(&K, &mut V) -> bool>(&self, mut pred: F) {
         let barrier = Barrier::new();
-        let mut num_retained: usize = 0;
-        let mut num_removed: usize = 0;
+        let mut removed = false;
         let mut current_array_ptr = self.bucket_array().load(Acquire, &barrier);
         while let Some(current_array) = current_array_ptr.as_ref() {
             self.clear_old_array(current_array, &barrier);
@@ -521,11 +520,9 @@ where
                     let mut entry_ptr = EntryPtr::new(&barrier);
                     while entry_ptr.next(&locker, &barrier) {
                         let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
-                        if pred(k, v) {
-                            num_retained = num_retained.saturating_add(1);
-                        } else {
+                        if !pred(k, v) {
                             locker.erase(data_block_mut, &entry_ptr);
-                            num_removed = num_removed.saturating_add(1);
+                            removed = true;
                         }
                     }
                 }
@@ -535,24 +532,19 @@ where
             if current_array_ptr.without_tag() == new_current_array_ptr.without_tag() {
                 break;
             }
-            num_retained = 0;
             current_array_ptr = new_current_array_ptr;
         }
 
-        if num_removed != 0 {
+        if removed {
             self.try_resize(0, &barrier);
         }
-
-        (num_retained, num_removed)
     }
 
     /// Prunes entries satisfying the predicate.
-    ///
-    /// Returns the number of pruned entries.
     #[inline]
-    fn prune_entries<F: FnMut(&K, V) -> Option<V>>(&self, mut pred: F) -> usize {
+    fn prune_entries<F: FnMut(&K, V) -> Option<V>>(&self, mut pred: F) {
         let barrier = Barrier::new();
-        let mut num_pruned: usize = 0;
+        let mut removed = false;
         let mut current_array_ptr = self.bucket_array().load(Acquire, &barrier);
         while let Some(current_array) = current_array_ptr.as_ref() {
             self.clear_old_array(current_array, &barrier);
@@ -563,7 +555,7 @@ where
                     let mut entry_ptr = EntryPtr::new(&barrier);
                     while entry_ptr.next(&locker, &barrier) {
                         if locker.keep_or_consume(data_block_mut, &entry_ptr, &mut pred) {
-                            num_pruned += 1;
+                            removed = true;
                         }
                     }
                 }
@@ -576,10 +568,9 @@ where
             current_array_ptr = new_current_array_ptr;
         }
 
-        if num_pruned != 0 {
+        if removed {
             self.try_resize(0, &barrier);
         }
-        num_pruned
     }
 
     /// Reserves an entry and returns a [`Locker`] and [`EntryPtr`] corresponding to the key.

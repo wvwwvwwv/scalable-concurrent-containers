@@ -81,7 +81,7 @@ assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 3);
 let future_upsert = hashmap.upsert_async(2, || 1, |_, v| *v = 3);
 ```
 
-[HashMap](#HashMap) does not provide an [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) since it is impossible to confine the lifetime of [Iterator::Item](https://doc.rust-lang.org/std/iter/trait.Iterator.html#associatedtype.Item) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html). The limitation can be circumvented by relying on interior mutability, e.g., let the returned reference hold a lock, however it will easily lead to a deadlock if not correctly used, and frequent acquisition of locks may impact performance. Therefore, [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, [HashMap](#HashMap) provides a number of methods to iterate over entries synchronously or asynchronously: `any`, `any_async`, `for_each`, `for_each_async`, `OccupiedEntry::next`, `OccupiedEntry::next_async`, `prune`, `prune_async`, `retain`, `retain_async`, `scan`,  and `scan_async`.
+[HashMap](#HashMap) does not provide an [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) since it is impossible to confine the lifetime of [Iterator::Item](https://doc.rust-lang.org/std/iter/trait.Iterator.html#associatedtype.Item) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html). The limitation can be circumvented by relying on interior mutability, e.g., let the returned reference hold a lock, however it will easily lead to a deadlock if not correctly used, and frequent acquisition of locks may impact performance. Therefore, [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, [HashMap](#HashMap) provides a number of methods to iterate over entries synchronously or asynchronously: `any`, `any_async`, `OccupiedEntry::next`, `OccupiedEntry::next_async`, `prune`, `prune_async`, `retain`, `retain_async`, `scan`,  and `scan_async`.
 
 ```rust
 use scc::HashMap;
@@ -91,9 +91,9 @@ let hashmap: HashMap<u64, u32> = HashMap::default();
 assert!(hashmap.insert(1, 0).is_ok());
 assert!(hashmap.insert(2, 1).is_ok());
 
-// `for_each` allows entry modification.
+// Entries can be modified or removed via `retain`.
 let mut acc = 0;
-hashmap.for_each(|k, v_mut| { acc += *k; *v_mut = 2; });
+hashmap.retain(|k, v_mut| { acc += *k; *v_mut = 2; true });
 assert_eq!(acc, 3);
 assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
 assert_eq!(hashmap.read(&2, |_, v| *v).unwrap(), 2);
@@ -102,8 +102,8 @@ assert_eq!(hashmap.read(&2, |_, v| *v).unwrap(), 2);
 assert!(hashmap.insert(3, 2).is_ok());
 assert!(hashmap.any(|k, _| *k == 3));
 
-// `retain` enables entry removal.
-assert_eq!(hashmap.retain(|k, v| *k == 1 && *v == 2), (1, 2));
+// Multiple entries can be removed through `retain`.
+hashmap.retain(|k, v| *k == 1 && *v == 2);
 
 // `hash_map::OccupiedEntry` also can return the next closest occupied entry.
 let first_entry = hashmap.first_occupied_entry();
@@ -111,9 +111,8 @@ assert!(first_entry.is_some());
 let second_entry = first_entry.and_then(|e| e.next());
 assert!(second_entry.is_none());
 
-// Asynchronous iteration over entries using `scan_async` and `for_each_async`.
+// Asynchronous iteration over entries using `scan_async`.
 let future_scan = hashmap.scan_async(|k, v| println!("{k} {v}"));
-let future_for_each = hashmap.for_each_async(|_, v_mut| { *v_mut = 0; });
 ```
 
 ## HashSet
@@ -161,17 +160,14 @@ An [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is impleme
 
 ```rust
 use scc::ebr::Barrier;
-use scc::hash_index::ModifyAction;
 use scc::HashIndex;
 
 let hashindex: HashIndex<u64, u32> = HashIndex::default();
 
 assert!(hashindex.insert(1, 0).is_ok());
 
-// Existing values can be replaced with new ones.
-assert!(hashindex.modify(
-    &1,
-    |_, v| if *v == 0 { ModifyAction::Update(1) } else { ModifyAction::Remove }));
+// Existing values can be replaced with a new one.
+hashindex.get(&1).unwrap().update(1);
 
 let barrier = Barrier::new();
 
