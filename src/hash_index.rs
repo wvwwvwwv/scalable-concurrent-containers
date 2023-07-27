@@ -103,11 +103,10 @@ where
     additional: usize,
 }
 
-/// [`Visitor`] iterates over all the key-value pairs in the [`HashIndex`].
+/// An iterator over the entries of a [`HashIndex`].
 ///
-/// It is guaranteed to visit all the key-value pairs that outlive the [`Visitor`]. However, the
-/// same key-value pair can be visited more than once.
-pub struct Visitor<'h, 'b, K, V, H = RandomState>
+/// An [`Iter`] iterates over all the entries that survive the [`Iter`].
+pub struct Iter<'h, 'b, K, V, H = RandomState>
 where
     K: 'static + Clone + Eq + Hash,
     V: 'static + Clone,
@@ -1235,7 +1234,7 @@ where
         self.minimum_capacity.load(Relaxed)..=self.maximum_capacity()
     }
 
-    /// Returns a [`Visitor`] that iterates over all the entries in the [`HashIndex`].
+    /// Returns an [`Iter`].
     ///
     /// It is guaranteed to go through all the key-value pairs pertaining in the [`HashIndex`]
     /// at the moment, however the same key-value pair can be visited more than once if the
@@ -1268,8 +1267,8 @@ where
     /// assert_eq!(entry_ref, (&1, &0));
     /// ```
     #[inline]
-    pub fn iter<'h, 'b>(&'h self, barrier: &'b Barrier) -> Visitor<'h, 'b, K, V, H> {
-        Visitor {
+    pub fn iter<'h, 'b>(&'h self, barrier: &'b Barrier) -> Iter<'h, 'b, K, V, H> {
+        Iter {
             hashindex: self,
             current_array: None,
             current_index: 0,
@@ -1994,7 +1993,7 @@ where
     }
 }
 
-impl<'h, 'b, K, V, H> Debug for Visitor<'h, 'b, K, V, H>
+impl<'h, 'b, K, V, H> Debug for Iter<'h, 'b, K, V, H>
 where
     K: 'static + Clone + Eq + Hash,
     V: 'static + Clone,
@@ -2002,14 +2001,14 @@ where
 {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Visitor")
+        f.debug_struct("Iter")
             .field("current_index", &self.current_index)
             .field("current_entry_ptr", &self.current_entry_ptr)
             .finish()
     }
 }
 
-impl<'h, 'b, K, V, H> Iterator for Visitor<'h, 'b, K, V, H>
+impl<'h, 'b, K, V, H> Iterator for Iter<'h, 'b, K, V, H>
 where
     K: 'static + Clone + Eq + Hash,
     V: 'static + Clone,
@@ -2104,7 +2103,7 @@ where
     }
 }
 
-impl<'h, 'b, K, V, H> FusedIterator for Visitor<'h, 'b, K, V, H>
+impl<'h, 'b, K, V, H> FusedIterator for Iter<'h, 'b, K, V, H>
 where
     K: 'static + Clone + Eq + Hash,
     V: 'static + Clone,
@@ -2112,7 +2111,7 @@ where
 {
 }
 
-impl<'h, 'b, K, V, H> UnwindSafe for Visitor<'h, 'b, K, V, H>
+impl<'h, 'b, K, V, H> UnwindSafe for Iter<'h, 'b, K, V, H>
 where
     K: 'static + Clone + Eq + Hash + UnwindSafe,
     V: 'static + Clone + UnwindSafe,

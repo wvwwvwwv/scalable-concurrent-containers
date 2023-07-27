@@ -17,8 +17,6 @@
 
 * New API.
 
-* API update
-
 ## Version 1
 
 1.9.1

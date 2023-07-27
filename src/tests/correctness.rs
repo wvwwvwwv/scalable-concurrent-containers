@@ -560,7 +560,7 @@ mod hashmap_test {
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn accessor() {
+    fn iter() {
         let data_size = 4096;
         for _ in 0..16 {
             let hashmap: Arc<HashMap<u64, u64>> = Arc::new(HashMap::default());
@@ -716,7 +716,7 @@ mod hashmap_test {
 #[cfg(test)]
 mod hashindex_test {
     use crate::ebr;
-    use crate::hash_index::{ModifyAction, Visitor};
+    use crate::hash_index::{Iter, ModifyAction};
     use crate::HashIndex;
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
@@ -729,9 +729,9 @@ mod hashindex_test {
     use tokio::sync::Barrier as AsyncBarrier;
 
     static_assertions::assert_impl_all!(HashIndex<String, String>: Send, Sync, UnwindSafe);
-    static_assertions::assert_impl_all!(Visitor<'static, 'static, String, String>: UnwindSafe);
+    static_assertions::assert_impl_all!(Iter<'static, 'static, String, String>: UnwindSafe);
     static_assertions::assert_not_impl_all!(HashIndex<String, *const String>: Send, Sync, UnwindSafe);
-    static_assertions::assert_not_impl_all!(Visitor<'static, 'static, String, *const String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_all!(Iter<'static, 'static, String, *const String>: Send, Sync, UnwindSafe);
 
     struct R(&'static AtomicUsize);
     impl R {
@@ -1006,7 +1006,7 @@ mod hashindex_test {
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn visitor() {
+    fn iter() {
         let data_size = 4096;
         for _ in 0..64 {
             let hashindex: Arc<HashIndex<u64, u64>> = Arc::new(HashIndex::default());
@@ -1378,7 +1378,7 @@ mod hashcache_test {
 #[cfg(test)]
 mod treeindex_test {
     use crate::ebr;
-    use crate::tree_index::{Range, Visitor};
+    use crate::tree_index::{Iter, Range};
     use crate::TreeIndex;
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
@@ -1392,10 +1392,10 @@ mod treeindex_test {
     use tokio::sync::Barrier as AsyncBarrier;
 
     static_assertions::assert_impl_all!(TreeIndex<String, String>: Send, Sync, UnwindSafe);
-    static_assertions::assert_impl_all!(Visitor<'static, 'static, String, String>: UnwindSafe);
+    static_assertions::assert_impl_all!(Iter<'static, 'static, String, String>: UnwindSafe);
     static_assertions::assert_impl_all!(Range<'static, 'static, String, String, RangeInclusive<String>>: UnwindSafe);
     static_assertions::assert_not_impl_all!(TreeIndex<String, *const String>: Send, Sync, UnwindSafe);
-    static_assertions::assert_not_impl_all!(Visitor<'static, 'static, String, *const String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_all!(Iter<'static, 'static, String, *const String>: Send, Sync, UnwindSafe);
     static_assertions::assert_not_impl_all!(Range<'static, 'static, String, *const String, RangeInclusive<String>>: Send, Sync, UnwindSafe);
 
     struct R(&'static AtomicUsize);
@@ -1925,6 +1925,7 @@ mod treeindex_test {
 
 #[cfg(test)]
 mod bag_test {
+    use crate::bag::IterMut;
     use crate::Bag;
     use std::panic::UnwindSafe;
     use std::sync::atomic::AtomicUsize;
@@ -1933,7 +1934,9 @@ mod bag_test {
     use tokio::sync::Barrier as AsyncBarrier;
 
     static_assertions::assert_impl_all!(Bag<String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_impl_all!(IterMut<'static, String>: Send, Sync, UnwindSafe);
     static_assertions::assert_not_impl_all!(Bag<*const String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_all!(IterMut<'static, *const String>: Send, Sync, UnwindSafe);
 
     struct R(&'static AtomicUsize);
     impl R {

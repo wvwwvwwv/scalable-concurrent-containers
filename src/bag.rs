@@ -4,6 +4,7 @@ use super::ebr::Barrier;
 use super::{LinkedEntry, LinkedList, Stack};
 use std::iter::FusedIterator;
 use std::mem::{needs_drop, MaybeUninit};
+use std::panic::UnwindSafe;
 use std::ptr::drop_in_place;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -25,9 +26,9 @@ pub struct Bag<T, const ARRAY_LEN: usize = DEFAULT_ARRAY_LEN> {
     stack: Stack<Storage<T, ARRAY_LEN>>,
 }
 
-/// [`Accessor`] iterates over all the entries in the [`Bag`] for mutable access to them.
+/// A mutable iterator over the entries of a [`Bag`].
 #[derive(Debug)]
-pub struct Accessor<'b, T, const ARRAY_LEN: usize = DEFAULT_ARRAY_LEN> {
+pub struct IterMut<'b, T, const ARRAY_LEN: usize = DEFAULT_ARRAY_LEN> {
     bag: &'b mut Bag<T, ARRAY_LEN>,
     current_index: u32,
     current_stack_entry: Option<&'b mut LinkedEntry<Storage<T, ARRAY_LEN>>>,
@@ -217,8 +218,8 @@ impl<T, const ARRAY_LEN: usize> Bag<T, ARRAY_LEN> {
     /// assert!(bag.pop().is_none());
     /// ```
     #[inline]
-    pub fn iter_mut(&mut self) -> Accessor<T, ARRAY_LEN> {
-        Accessor {
+    pub fn iter_mut(&mut self) -> IterMut<T, ARRAY_LEN> {
+        IterMut {
             bag: self,
             current_index: 0,
             current_stack_entry: None,
@@ -248,9 +249,9 @@ impl<T, const ARRAY_LEN: usize> Drop for Bag<T, ARRAY_LEN> {
     }
 }
 
-impl<'b, T, const ARRAY_LEN: usize> FusedIterator for Accessor<'b, T, ARRAY_LEN> {}
+impl<'b, T, const ARRAY_LEN: usize> FusedIterator for IterMut<'b, T, ARRAY_LEN> {}
 
-impl<'b, T, const ARRAY_LEN: usize> Iterator for Accessor<'b, T, ARRAY_LEN> {
+impl<'b, T, const ARRAY_LEN: usize> Iterator for IterMut<'b, T, ARRAY_LEN> {
     type Item = &'b mut T;
 
     #[inline]
@@ -295,6 +296,8 @@ impl<'b, T, const ARRAY_LEN: usize> Iterator for Accessor<'b, T, ARRAY_LEN> {
         None
     }
 }
+
+impl<'b, T, const ARRAY_LEN: usize> UnwindSafe for IterMut<'b, T, ARRAY_LEN> where T: UnwindSafe {}
 
 impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
     /// Creates a new [`Storage`].

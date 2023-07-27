@@ -28,7 +28,7 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 ///
 /// ## Notes
 ///
-/// [`TreeIndex`] methods are linearizable, however its iterator methods are not; [`Visitor`] and
+/// [`TreeIndex`] methods are linearizable, however its iterator methods are not; [`Iter`] and
 /// [`Range`] are only guaranteed to observe events happened before the first call to
 /// [`Iterator::next`].
 ///
@@ -63,10 +63,21 @@ where
     root: AtomicArc<Node<K, V>>,
 }
 
-/// [`Range`] represents a range of keys in the [`TreeIndex`].
+/// An iterator over the entries of a [`TreeIndex`].
 ///
-/// It is identical to [`Visitor`] except that it does not traverse keys outside of the given
-/// range.
+/// An [`Iter`] iterates over all the entries that survive the [`Iter`] in monotonically increasing
+/// order.
+pub struct Iter<'t, 'b, K, V>
+where
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
+{
+    root: &'t AtomicArc<Node<K, V>>,
+    leaf_scanner: Option<Scanner<'b, K, V>>,
+    barrier: &'b Barrier,
+}
+
+/// An iterator over a sub-range of entries in a  [`TreeIndex`].
 pub struct Range<'t, 'b, K, V, R>
 where
     K: 'static + Clone + Ord,
@@ -78,20 +89,6 @@ where
     range: R,
     check_lower_bound: bool,
     check_upper_bound: bool,
-    barrier: &'b Barrier,
-}
-
-/// [`Visitor`] scans all the key-value pairs in the [`TreeIndex`].
-///
-/// It is guaranteed to visit all the key-value pairs that outlive the [`Visitor`], and it
-/// scans keys in monotonically increasing order.
-pub struct Visitor<'t, 'b, K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
-    root: &'t AtomicArc<Node<K, V>>,
-    leaf_scanner: Option<Scanner<'b, K, V>>,
     barrier: &'b Barrier,
 }
 
@@ -572,9 +569,9 @@ where
             .map_or(0, |root_ref| root_ref.depth(1, &barrier))
     }
 
-    /// Returns a [`Visitor`].
+    /// Returns an [`Iter`].
     ///
-    /// The returned [`Visitor`] starts scanning from the minimum key-value pair. Key-value pairs
+    /// The returned [`Iter`] starts scanning from the minimum key-value pair. Key-value pairs
     /// are scanned in ascending order, and key-value pairs that have existed since the invocation
     /// of the method are guaranteed to be visited if they are not removed. However, it is possible
     /// to visit removed key-value pairs momentarily.
@@ -588,12 +585,12 @@ where
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
     /// let barrier = Barrier::new();
-    /// let mut visitor = treeindex.iter(&barrier);
-    /// assert!(visitor.next().is_none());
+    /// let mut iter = treeindex.iter(&barrier);
+    /// assert!(iter.next().is_none());
     /// ```
     #[inline]
-    pub fn iter<'t, 'b>(&'t self, barrier: &'b Barrier) -> Visitor<'t, 'b, K, V> {
-        Visitor::new(&self.root, barrier)
+    pub fn iter<'t, 'b>(&'t self, barrier: &'b Barrier) -> Iter<'t, 'b, K, V> {
+        Iter::new(&self.root, barrier)
     }
 
     /// Returns a [`Range`] that scans keys in the given range.
@@ -683,14 +680,14 @@ where
     }
 }
 
-impl<'t, 'b, K, V> Visitor<'t, 'b, K, V>
+impl<'t, 'b, K, V> Iter<'t, 'b, K, V>
 where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
 {
     #[inline]
-    fn new(root: &'t AtomicArc<Node<K, V>>, barrier: &'b Barrier) -> Visitor<'t, 'b, K, V> {
-        Visitor::<'t, 'b, K, V> {
+    fn new(root: &'t AtomicArc<Node<K, V>>, barrier: &'b Barrier) -> Iter<'t, 'b, K, V> {
+        Iter::<'t, 'b, K, V> {
             root,
             leaf_scanner: None,
             barrier,
@@ -698,20 +695,20 @@ where
     }
 }
 
-impl<'t, 'b, K, V> Debug for Visitor<'t, 'b, K, V>
+impl<'t, 'b, K, V> Debug for Iter<'t, 'b, K, V>
 where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Visitor")
+        f.debug_struct("Iter")
             .field("root", &self.root)
             .field("leaf_scanner", &self.leaf_scanner)
             .finish()
     }
 }
 
-impl<'t, 'b, K, V> Iterator for Visitor<'t, 'b, K, V>
+impl<'t, 'b, K, V> Iterator for Iter<'t, 'b, K, V>
 where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
@@ -751,14 +748,14 @@ where
     }
 }
 
-impl<'t, 'b, K, V> FusedIterator for Visitor<'t, 'b, K, V>
+impl<'t, 'b, K, V> FusedIterator for Iter<'t, 'b, K, V>
 where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
 {
 }
 
-impl<'t, 'b, K, V> UnwindSafe for Visitor<'t, 'b, K, V>
+impl<'t, 'b, K, V> UnwindSafe for Iter<'t, 'b, K, V>
 where
     K: 'static + Clone + Ord + UnwindSafe,
     V: 'static + Clone + UnwindSafe,
