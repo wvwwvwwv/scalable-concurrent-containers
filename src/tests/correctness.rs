@@ -367,9 +367,9 @@ mod hashmap_test {
                     let mut call_async = false;
                     let mut in_range = 0;
                     let mut entry = if task_id % 2 == 0 {
-                        hashmap_clone.first_occupied_entry()
+                        hashmap_clone.first_entry()
                     } else {
-                        hashmap_clone.first_occupied_entry_async().await
+                        hashmap_clone.first_entry_async().await
                     };
                     while let Some(current_entry) = entry.take() {
                         if range.contains(current_entry.key()) {
@@ -398,9 +398,9 @@ mod hashmap_test {
                     assert_eq!(removed, workload_size);
 
                     let mut entry = if task_id % 2 == 0 {
-                        hashmap_clone.first_occupied_entry()
+                        hashmap_clone.first_entry()
                     } else {
-                        hashmap_clone.first_occupied_entry_async().await
+                        hashmap_clone.first_entry_async().await
                     };
                     while let Some(current_entry) = entry.take() {
                         assert!(!range.contains(current_entry.key()));
@@ -994,9 +994,9 @@ mod hashindex_test {
                     let mut call_async = false;
                     let mut in_range = 0;
                     let mut entry = if task_id % 2 == 0 {
-                        hashindex_clone.first_occupied_entry()
+                        hashindex_clone.first_entry()
                     } else {
-                        hashindex_clone.first_occupied_entry_async().await
+                        hashindex_clone.first_entry_async().await
                     };
                     while let Some(current_entry) = entry.take() {
                         if range.contains(current_entry.key()) {
@@ -1025,9 +1025,9 @@ mod hashindex_test {
                     assert_eq!(removed, workload_size);
 
                     let mut entry = if task_id % 2 == 0 {
-                        hashindex_clone.first_occupied_entry()
+                        hashindex_clone.first_entry()
                     } else {
-                        hashindex_clone.first_occupied_entry_async().await
+                        hashindex_clone.first_entry_async().await
                     };
                     while let Some(current_entry) = entry.take() {
                         assert!(!range.contains(current_entry.key()));

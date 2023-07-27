@@ -240,10 +240,7 @@ where
 
     /// Returns a [`LockedEntry`] pointing to the first occupied entry.
     #[inline]
-    fn lock_first_occupied_entry<'b>(
-        &self,
-        barrier: &'b Barrier,
-    ) -> Option<LockedEntry<'b, K, V, TYPE>> {
+    fn lock_first_entry<'b>(&self, barrier: &'b Barrier) -> Option<LockedEntry<'b, K, V, TYPE>> {
         let mut current_array_ptr = self.bucket_array().load(Acquire, barrier);
         while let Some(current_array) = current_array_ptr.as_ref() {
             self.clear_old_array(current_array, barrier);
@@ -1130,7 +1127,7 @@ pub(super) struct LockedEntry<'h, K: Eq + Hash, V, const TYPE: char> {
 
 impl<'h, K: Eq + Hash, V, const TYPE: char> LockedEntry<'h, K, V, TYPE> {
     /// Gets the first occupied entry.
-    pub(super) async fn first_occupied_entry_async<H: BuildHasher, T: HashTable<K, V, H, TYPE>>(
+    pub(super) async fn first_entry_async<H: BuildHasher, T: HashTable<K, V, H, TYPE>>(
         hash_table: &'h T,
     ) -> Option<LockedEntry<'h, K, V, TYPE>> {
         let mut current_array_holder = hash_table.bucket_array().get_arc(Acquire, &Barrier::new());
@@ -1215,7 +1212,7 @@ impl<'h, K: Eq + Hash, V, const TYPE: char> LockedEntry<'h, K, V, TYPE> {
         if let Some(current_array) = current_array_ptr.as_ref() {
             if !current_array.old_array(prolonged_barrier).is_null() {
                 drop(self);
-                return hash_table.lock_first_occupied_entry(prolonged_barrier);
+                return hash_table.lock_first_entry(prolonged_barrier);
             }
 
             let prev_index = self.index;
@@ -1239,7 +1236,7 @@ impl<'h, K: Eq + Hash, V, const TYPE: char> LockedEntry<'h, K, V, TYPE> {
 
             let new_current_array_ptr = hash_table.bucket_array().load(Relaxed, prolonged_barrier);
             if current_array_ptr.without_tag() != new_current_array_ptr.without_tag() {
-                return hash_table.lock_first_occupied_entry(prolonged_barrier);
+                return hash_table.lock_first_entry(prolonged_barrier);
             }
         }
 
@@ -1262,7 +1259,7 @@ impl<'h, K: Eq + Hash, V, const TYPE: char> LockedEntry<'h, K, V, TYPE> {
         if let Some(current_array) = current_array_holder {
             if !current_array.old_array(&Barrier::new()).is_null() {
                 drop(self);
-                return Self::first_occupied_entry_async(hash_table).await;
+                return Self::first_entry_async(hash_table).await;
             }
 
             let prev_index = self.index;
@@ -1304,7 +1301,7 @@ impl<'h, K: Eq + Hash, V, const TYPE: char> LockedEntry<'h, K, V, TYPE> {
             current_array_holder = hash_table.bucket_array().get_arc(Relaxed, &Barrier::new());
             if let Some(new_current_array) = current_array_holder {
                 if new_current_array.as_ptr() != current_array.as_ptr() {
-                    return Self::first_occupied_entry_async(hash_table).await;
+                    return Self::first_entry_async(hash_table).await;
                 }
             }
         }

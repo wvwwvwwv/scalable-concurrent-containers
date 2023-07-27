@@ -329,17 +329,17 @@ where
     ///
     /// assert!(hashmap.insert(1, 0).is_ok());
     ///
-    /// let mut first_entry = hashmap.first_occupied_entry().unwrap();
+    /// let mut first_entry = hashmap.first_entry().unwrap();
     /// *first_entry.get_mut() = 2;
     ///
     /// assert!(first_entry.next().is_none());
     /// assert_eq!(hashmap.read(&1, |_, v| *v), Some(2));
     /// ```
     #[inline]
-    pub fn first_occupied_entry(&self) -> Option<OccupiedEntry<K, V, H>> {
+    pub fn first_entry(&self) -> Option<OccupiedEntry<K, V, H>> {
         let barrier = Barrier::new();
         let prolonged_barrier = self.prolonged_barrier_ref(&barrier);
-        if let Some(locked_entry) = self.lock_first_occupied_entry(prolonged_barrier) {
+        if let Some(locked_entry) = self.lock_first_entry(prolonged_barrier) {
             return Some(OccupiedEntry {
                 hashmap: self,
                 locked_entry,
@@ -362,11 +362,11 @@ where
     ///
     /// let hashmap: HashMap<char, u32> = HashMap::default();
     ///
-    /// let future_entry = hashmap.first_occupied_entry_async();
+    /// let future_entry = hashmap.first_entry_async();
     /// ```
     #[inline]
-    pub async fn first_occupied_entry_async(&self) -> Option<OccupiedEntry<K, V, H>> {
-        if let Some(locked_entry) = LockedEntry::first_occupied_entry_async(self).await {
+    pub async fn first_entry_async(&self) -> Option<OccupiedEntry<K, V, H>> {
+        if let Some(locked_entry) = LockedEntry::first_entry_async(self).await {
             return Some(OccupiedEntry {
                 hashmap: self,
                 locked_entry,
@@ -1923,10 +1923,10 @@ where
 
     /// Gets the next closest occupied entry.
     ///
-    /// [`HashMap::first_occupied_entry`], [`HashMap::first_occupied_entry_async`], and this method
-    /// together enables the [`OccupiedEntry`] to effectively act as a mutable iterator over
-    /// entries. The method never acquires more than one lock even when it searches other buckets
-    /// for the next closest occupied entry.
+    /// [`HashMap::first_entry`], [`HashMap::first_entry_async`], and this method together enables
+    /// the [`OccupiedEntry`] to effectively act as a mutable iterator over entries. The method
+    /// never acquires more than one lock even when it searches other buckets for the next closest
+    /// occupied entry.
     ///
     /// # Examples
     ///
@@ -1939,7 +1939,7 @@ where
     /// assert!(hashmap.insert(1, 0).is_ok());
     /// assert!(hashmap.insert(2, 0).is_ok());
     ///
-    /// let first_entry = hashmap.first_occupied_entry().unwrap();
+    /// let first_entry = hashmap.first_entry().unwrap();
     /// let first_key = *first_entry.key();
     /// let second_entry = first_entry.next().unwrap();
     /// let second_key = *second_entry.key();
@@ -1962,10 +1962,10 @@ where
 
     /// Gets the next closest occupied entry.
     ///
-    /// [`HashMap::first_occupied_entry`], [`HashMap::first_occupied_entry_async`], and this method
-    /// together enables the [`OccupiedEntry`] to effectively act as a mutable iterator over
-    /// entries. The method never acquires more than one lock even when it searches other buckets
-    /// for the next closest occupied entry.
+    /// [`HashMap::first_entry`], [`HashMap::first_entry_async`], and this method together enables
+    /// the [`OccupiedEntry`] to effectively act as a mutable iterator over entries. The method
+    /// never acquires more than one lock even when it searches other buckets for the next closest
+    /// occupied entry.
     ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
@@ -1980,7 +1980,7 @@ where
     /// assert!(hashmap.insert(1, 0).is_ok());
     /// assert!(hashmap.insert(2, 0).is_ok());
     ///
-    /// let second_entry_future = hashmap.first_occupied_entry().unwrap().next_async();
+    /// let second_entry_future = hashmap.first_entry().unwrap().next_async();
     /// ```
     #[inline]
     pub async fn next_async(self) -> Option<OccupiedEntry<'h, K, V, H>> {

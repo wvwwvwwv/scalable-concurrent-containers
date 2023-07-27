@@ -106,7 +106,7 @@ assert!(hashmap.any(|k, _| *k == 3));
 hashmap.retain(|k, v| *k == 1 && *v == 2);
 
 // `hash_map::OccupiedEntry` also can return the next closest occupied entry.
-let first_entry = hashmap.first_occupied_entry();
+let first_entry = hashmap.first_entry();
 assert!(first_entry.is_some());
 let second_entry = first_entry.and_then(|e| e.next());
 assert!(second_entry.is_none());
