@@ -1,5 +1,26 @@
 # Changelog
 
+## Version 2
+
+### API update
+
+- `*::Visitor` -> `*::Iter`.
+- `*::Accessor` -> `*::IterMut`.
+- `ebr::Barrier` -> `ebr::Guard`.
+- `ebr::Arc` -> `ebr::Shared`.
+- `ebr::AtomicArc` -> `ebr::AtomicShared`.
+- `*::first_occupied_entry*` -> `*::first_entry*`.
+- Remove `HashIndex::update*` and `HashIndex::modify*`: superseded by `HashIndex::entry*` and `HashIndex::get*`.
+- `HashMap::retain*` returns the number of removed entries.
+
+2.0.0
+
+* New API.
+
+* API update
+
+## Version 1
+
 1.9.1
 
 * API update: add `hash_index::Entry` API.
@@ -182,6 +203,8 @@
 1.0.0
 
 * Implement `Bag`.
+
+## Version 0
 
 0.12.4
 
