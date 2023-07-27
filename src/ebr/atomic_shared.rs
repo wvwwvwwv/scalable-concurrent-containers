@@ -54,9 +54,9 @@ impl<T> AtomicShared<T> {
     /// ```
     #[inline]
     #[must_use]
-    pub const fn from(arc: Shared<T>) -> Self {
-        let ptr = arc.get_underlying_ptr();
-        forget(arc);
+    pub const fn from(shared: Shared<T>) -> Self {
+        let ptr = shared.get_underlying_ptr();
+        forget(shared);
         Self {
             instance_ptr: AtomicPtr::new(ptr),
         }
@@ -260,9 +260,9 @@ impl<T> AtomicShared<T> {
             failure,
         ) {
             Ok(prev) => {
-                let prev_arc = NonNull::new(Tag::unset_tag(prev).cast_mut()).map(Shared::from);
+                let prev_shared = NonNull::new(Tag::unset_tag(prev).cast_mut()).map(Shared::from);
                 forget(new);
-                Ok((prev_arc, Ptr::from(desired)))
+                Ok((prev_shared, Ptr::from(desired)))
             }
             Err(actual) => Err((new.0, Ptr::from(actual))),
         }
@@ -325,9 +325,9 @@ impl<T> AtomicShared<T> {
             failure,
         ) {
             Ok(prev) => {
-                let prev_arc = NonNull::new(Tag::unset_tag(prev).cast_mut()).map(Shared::from);
+                let prev_shared = NonNull::new(Tag::unset_tag(prev).cast_mut()).map(Shared::from);
                 forget(new);
-                Ok((prev_arc, Ptr::from(desired)))
+                Ok((prev_shared, Ptr::from(desired)))
             }
             Err(actual) => Err((new.0, Ptr::from(actual))),
         }

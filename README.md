@@ -346,7 +346,7 @@ Retired instances are stored in intrusive queues in thread-local storage, and th
 The `ebr` module can be used without an `unsafe` block.
 
 ```rust
-use scc::ebr::{suspend, AtomicShared, AtomicOwned, Guard, Ptr, Shared, Tag};
+use scc::ebr::{suspend, AtomicOwned, AtomicShared, Guard, Ptr, Shared, Tag};
 
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -416,7 +416,7 @@ suspend();
 ### Examples
 
 ```rust
-use scc::ebr::{AtomicShared, Shared, Guard};
+use scc::ebr::{AtomicShared, Guard, Shared};
 use scc::LinkedList;
 
 use std::sync::atomic::Ordering::Relaxed;

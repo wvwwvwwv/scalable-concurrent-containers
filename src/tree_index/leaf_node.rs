@@ -660,8 +660,8 @@ where
         }
 
         let target = full_leaf_ptr.as_ref().unwrap();
-        let mut low_key_leaf_arc = None;
-        let mut high_key_leaf_arc = None;
+        let mut low_key_leaf_shared = None;
+        let mut high_key_leaf_shared = None;
 
         // Distribute entries to two leaves after make the target retired.
         let mut exit_guard = ExitGuard::new(true, |rollback| {
@@ -671,13 +671,13 @@ where
                 self.unlock();
             }
         });
-        target.freeze_and_distribute(&mut low_key_leaf_arc, &mut high_key_leaf_arc);
+        target.freeze_and_distribute(&mut low_key_leaf_shared, &mut high_key_leaf_shared);
 
-        if let Some(low_key_leaf) = low_key_leaf_arc.take() {
+        if let Some(low_key_leaf) = low_key_leaf_shared.take() {
             self.split_op
                 .low_key_leaf
                 .swap((Some(low_key_leaf), Tag::None), Relaxed);
-            if let Some(high_key_leaf) = high_key_leaf_arc.take() {
+            if let Some(high_key_leaf) = high_key_leaf_shared.take() {
                 self.split_op
                     .high_key_leaf
                     .swap((Some(high_key_leaf), Tag::None), Relaxed);

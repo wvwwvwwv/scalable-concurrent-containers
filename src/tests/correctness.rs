@@ -2361,37 +2361,37 @@ mod ebr_test {
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn arc() {
+    fn shared() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
 
-        let mut arc = Shared::new(A(AtomicUsize::new(10), 10, &DESTROYED));
-        if let Some(mut_ref) = unsafe { arc.get_mut() } {
+        let mut shared = Shared::new(A(AtomicUsize::new(10), 10, &DESTROYED));
+        if let Some(mut_ref) = unsafe { shared.get_mut() } {
             mut_ref.1 += 1;
         }
-        arc.0.fetch_add(1, Relaxed);
-        assert_eq!(arc.deref().0.load(Relaxed), 11);
-        assert_eq!(arc.deref().1, 11);
+        shared.0.fetch_add(1, Relaxed);
+        assert_eq!(shared.deref().0.load(Relaxed), 11);
+        assert_eq!(shared.deref().1, 11);
 
-        let mut arc_clone = arc.clone();
-        assert!(unsafe { arc_clone.get_mut().is_none() });
-        arc_clone.0.fetch_add(1, Relaxed);
-        assert_eq!(arc_clone.deref().0.load(Relaxed), 12);
-        assert_eq!(arc_clone.deref().1, 11);
+        let mut shared_clone = shared.clone();
+        assert!(unsafe { shared_clone.get_mut().is_none() });
+        shared_clone.0.fetch_add(1, Relaxed);
+        assert_eq!(shared_clone.deref().0.load(Relaxed), 12);
+        assert_eq!(shared_clone.deref().1, 11);
 
-        let mut arc_clone_again = arc_clone.clone();
-        assert!(unsafe { arc_clone_again.get_mut().is_none() });
-        assert_eq!(arc_clone_again.deref().0.load(Relaxed), 12);
-        assert_eq!(arc_clone_again.deref().1, 11);
+        let mut shared_clone_again = shared_clone.clone();
+        assert!(unsafe { shared_clone_again.get_mut().is_none() });
+        assert_eq!(shared_clone_again.deref().0.load(Relaxed), 12);
+        assert_eq!(shared_clone_again.deref().1, 11);
 
-        drop(arc);
+        drop(shared);
         assert!(!DESTROYED.load(Relaxed));
-        assert!(unsafe { arc_clone_again.get_mut().is_none() });
+        assert!(unsafe { shared_clone_again.get_mut().is_none() });
 
-        drop(arc_clone);
+        drop(shared_clone);
         assert!(!DESTROYED.load(Relaxed));
-        assert!(unsafe { arc_clone_again.get_mut().is_some() });
+        assert!(unsafe { shared_clone_again.get_mut().is_some() });
 
-        drop(arc_clone_again);
+        drop(shared_clone_again);
         while !DESTROYED.load(Relaxed) {
             drop(Guard::new());
         }
@@ -2429,35 +2429,35 @@ mod ebr_test {
     fn sendable() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
 
-        let arc = Shared::new(A(AtomicUsize::new(14), 14, &DESTROYED));
+        let shared = Shared::new(A(AtomicUsize::new(14), 14, &DESTROYED));
         let owned = Owned::new(A(AtomicUsize::new(15), 15, &DESTROYED));
-        let arc_clone = arc.clone();
+        let shared_clone = shared.clone();
         let thread = std::thread::spawn(move || {
-            assert_eq!(arc_clone.0.load(Relaxed), arc_clone.1);
+            assert_eq!(shared_clone.0.load(Relaxed), shared_clone.1);
             assert_eq!(owned.1, 15);
         });
         assert!(thread.join().is_ok());
-        assert_eq!(arc.0.load(Relaxed), arc.1);
+        assert_eq!(shared.0.load(Relaxed), shared.1);
     }
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn arc_arc_send() {
+    fn shared_send() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
 
-        let arc = Shared::new(A(AtomicUsize::new(14), 14, &DESTROYED));
-        let arc_clone = arc.clone();
+        let shared = Shared::new(A(AtomicUsize::new(14), 14, &DESTROYED));
+        let shared_clone = shared.clone();
         let thread = std::thread::spawn(move || {
-            assert_eq!(arc_clone.0.load(Relaxed), 14);
+            assert_eq!(shared_clone.0.load(Relaxed), 14);
             unsafe {
-                assert!(!arc_clone.release_drop_in_place());
+                assert!(!shared_clone.release_drop_in_place());
             }
         });
         assert!(thread.join().is_ok());
-        assert_eq!(arc.0.load(Relaxed), 14);
+        assert_eq!(shared.0.load(Relaxed), 14);
 
         unsafe {
-            assert!(arc.release_drop_in_place());
+            assert!(shared.release_drop_in_place());
         }
 
         assert!(DESTROYED.load(Relaxed));
@@ -2465,14 +2465,14 @@ mod ebr_test {
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn arc_nested() {
+    fn shared_nested() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
 
         struct Nest(Shared<A>);
 
-        let nested_arc = Shared::new(Nest(Shared::new(A(AtomicUsize::new(10), 10, &DESTROYED))));
+        let nested_shared = Shared::new(Nest(Shared::new(A(AtomicUsize::new(10), 10, &DESTROYED))));
         assert!(!DESTROYED.load(Relaxed));
-        drop(nested_arc);
+        drop(nested_shared);
 
         while !DESTROYED.load(Relaxed) {
             drop(Guard::new());
@@ -2565,13 +2565,13 @@ mod ebr_test {
 
         let guard = Guard::new();
 
-        let arc = atomic_shared.get_shared(Relaxed, &guard);
+        let shared = atomic_shared.get_shared(Relaxed, &guard);
 
         drop(atomic_shared);
         assert!(!DESTROYED.load(Relaxed));
 
-        if let Some(arc) = arc {
-            assert_eq!(arc.1, 11);
+        if let Some(shared) = shared {
+            assert_eq!(shared.1, 11);
             assert!(!DESTROYED.load(Relaxed));
         }
         drop(guard);
@@ -2591,11 +2591,11 @@ mod ebr_test {
 
         let guard = Guard::new();
 
-        let arc = atomic_shared.try_into_shared(Relaxed);
+        let shared = atomic_shared.try_into_shared(Relaxed);
         assert!(!DESTROYED.load(Relaxed));
 
-        if let Some(arc) = arc {
-            assert_eq!(arc.1, 11);
+        if let Some(shared) = shared {
+            assert_eq!(shared.1, 11);
             assert!(!DESTROYED.load(Relaxed));
         }
         drop(guard);
@@ -2622,8 +2622,8 @@ mod ebr_test {
                         assert!(str_ref == "How are you?" || str_ref == "How can I help you?");
                     }
                     let converted: Result<Shared<String>, _> = Shared::try_from(ptr);
-                    if let Ok(arc) = converted {
-                        assert!(*arc == "How are you?" || *arc == "How can I help you?");
+                    if let Ok(shared) = converted {
+                        assert!(*shared == "How are you?" || *shared == "How can I help you?");
                     }
                     while let Err((passed, current)) = atomic_shared.compare_exchange(
                         ptr,
@@ -2635,8 +2635,8 @@ mod ebr_test {
                         Relaxed,
                         &guard,
                     ) {
-                        if let Some(arc) = passed {
-                            assert!(*arc == "How can I help you?");
+                        if let Some(shared) = passed {
+                            assert!(*shared == "How can I help you?");
                         }
                         ptr = current;
                         if let Some(str_ref) = ptr.as_ref() {
@@ -2663,8 +2663,8 @@ mod ebr_test {
                         (Some(Shared::new(String::from("How are you?"))), Tag::Second),
                         Release,
                     );
-                    if let Some(arc) = old {
-                        assert!(*arc == "How are you?" || *arc == "How can I help you?");
+                    if let Some(shared) = old {
+                        assert!(*shared == "How are you?" || *shared == "How can I help you?");
                     }
                 }
             }));
@@ -2697,21 +2697,21 @@ mod ebr_test {
                             Release,
                         );
                         assert!(old.is_some());
-                        if let Some(arc) = old {
-                            assert!(*arc == "How are you?");
+                        if let Some(shared) = old {
+                            assert!(*shared == "How are you?");
                         }
                     } else {
-                        let (arc_clone, _) = (*atomic_shared)
+                        let (shared_clone, _) = (*atomic_shared)
                             .clone(Acquire, &Guard::new())
                             .swap((None, Tag::First), Release);
-                        assert!(arc_clone.is_some());
-                        if let Some(arc) = arc_clone {
-                            assert!(*arc == "How are you?");
+                        assert!(shared_clone.is_some());
+                        if let Some(shared) = shared_clone {
+                            assert!(*shared == "How are you?");
                         }
-                        let arc_clone = atomic_shared.get_shared(Acquire, &Guard::new());
-                        assert!(arc_clone.is_some());
-                        if let Some(arc) = arc_clone {
-                            assert!(*arc == "How are you?");
+                        let shared_clone = atomic_shared.get_shared(Acquire, &Guard::new());
+                        assert!(shared_clone.is_some());
+                        if let Some(shared) = shared_clone {
+                            assert!(*shared == "How are you?");
                         }
                     }
                 }
