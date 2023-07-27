@@ -33,7 +33,7 @@ A collection of high performance containers and utilities for concurrent and asy
 
 ## HashMap
 
-[HashMap](#HashMap) is a concurrent hash map, optimized for highly parallel write-heavy workloads. [HashMap](#HashMap) is structured as a lock-free stack of fixed-size entry bucket arrays. Each bucket is protected by a special read-write lock which provides both blocking and asynchronous methods. The entry bucket array is managed by [EBR](#EBR), thus enabling lock-free access to it and non-blocking container resizing.
+[HashMap](#HashMap) is a concurrent hash map, optimized for highly parallel write-heavy workloads. [HashMap](#HashMap) is structured as a lock-free stack of entry bucket arrays. The entry bucket array is managed by [EBR](#EBR), thus enabling lock-free access to it and non-blocking container resizing. Each bucket is a fixed-size array of entries, and it is protected by a special read-write lock which provides both blocking and asynchronous methods.
 
 ### Locking behavior
 
@@ -76,8 +76,10 @@ let hashmap: HashMap<u64, u32> = HashMap::default();
 hashmap.entry(3).or_insert(7);
 assert_eq!(hashmap.read(&3, |_, v| *v), Some(7));
 
+hashmap.entry(4).and_modify(|v| { *v += 1 }).or_insert(5);
+assert_eq!(hashmap.read(&4, |_, v| *v), Some(5));
+
 let future_entry = hashmap.entry_async(3);
-let future_occupied = hashmap.entry_async(4).and_modify(|v| { *v += 1 }).or_insert(5);
 ```
 
 [HashMap](#HashMap) does not provide an [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) since it is impossible to confine the lifetime of [Iterator::Item](https://doc.rust-lang.org/std/iter/trait.Iterator.html#associatedtype.Item) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html). The limitation can be circumvented by relying on interior mutability, e.g., let the returned reference hold a lock, however it will easily lead to a deadlock if not correctly used, and frequent acquisition of locks may impact performance. Therefore, [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, [HashMap](#HashMap) provides a number of methods to iterate over entries synchronously or asynchronously: `any`, `any_async`, `prune`, `prune_async`, `retain`, `retain_async`, `scan`, `scan_async`, `OccupiedEntry::next`, and `OccupiedEntry::next_async`.
@@ -334,11 +336,11 @@ assert!(stack.pop().is_none());
 
 ## EBR
 
-The `ebr` module implements epoch-based reclamation and various types of auxiliary data structures to make use of it safely. Its epoch-based reclamation algorithm is similar to that implemented in [crossbeam_epoch](https://docs.rs/crossbeam-epoch/), however users may find it easier to use as the lifetime of an instance is safely managed. For instance, `ebr::AtomicShared` and `ebr::Shared` hold a strong reference to the underlying instance, and the instance is automatically passed to the garbage collector when the reference count drops to zero.
+The `ebr` module implements epoch-based reclamation and various types of auxiliary data structures to make use of it safely. Its epoch-based reclamation algorithm is similar to that implemented in [crossbeam_epoch](https://docs.rs/crossbeam-epoch/), however users may find it easier to use as the lifetime of an instance is safely managed. For instance, `ebr::AtomicOwned` and `ebr::Owned` automatically retire the contained instance and `ebr::AtomicShared` and `ebr::Shared` hold a reference-counted instance which is retired when the last strong reference is dropped.
 
 ### Memory Overhead
 
-Retired instances are stored in intrusive queues in thread-local storage, and therefore each instance must provide 16-byte space for the intrusive queue data structure to access `Option<NonNull<dyn Collectible>>`.
+Retired instances are stored in intrusive queues in thread-local storage, and therefore additional 16-byte space for `Option<NonNull<dyn Collectible>>` is allocated per instance.
 
 ### Examples
 
