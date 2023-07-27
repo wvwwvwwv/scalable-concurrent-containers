@@ -8,12 +8,12 @@ use std::{ops::Deref, ptr, ptr::NonNull};
 
 /// [`Ptr`] points to an instance.
 #[derive(Debug)]
-pub struct Ptr<'b, T> {
+pub struct Ptr<'g, T> {
     instance_ptr: *const RefCounted<T>,
-    _phantom: PhantomData<&'b T>,
+    _phantom: PhantomData<&'g T>,
 }
 
-impl<'b, T> Ptr<'b, T> {
+impl<'g, T> Ptr<'g, T> {
     /// Creates a null [`Ptr`].
     ///
     /// # Examples
@@ -53,17 +53,17 @@ impl<'b, T> Ptr<'b, T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{AtomicArc, Barrier};
+    /// use scc::ebr::{AtomicArc, Guard};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(21);
-    /// let barrier = Barrier::new();
-    /// let ptr = atomic_arc.load(Relaxed, &barrier);
+    /// let guard = Guard::new();
+    /// let ptr = atomic_arc.load(Relaxed, &guard);
     /// assert_eq!(*ptr.as_ref().unwrap(), 21);
     /// ```
     #[inline]
     #[must_use]
-    pub fn as_ref(&self) -> Option<&'b T> {
+    pub fn as_ref(&self) -> Option<&'g T> {
         unsafe { Tag::unset_tag(self.instance_ptr).as_ref().map(Deref::deref) }
     }
 
@@ -72,12 +72,12 @@ impl<'b, T> Ptr<'b, T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Arc, Barrier};
+    /// use scc::ebr::{Arc, Guard};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let arc: Arc<usize> = Arc::new(29);
-    /// let barrier = Barrier::new();
-    /// let ptr = arc.ptr(&barrier);
+    /// let guard = Guard::new();
+    /// let ptr = arc.ptr(&guard);
     /// assert_eq!(unsafe { *ptr.as_raw() }, 29);
     /// ```
     #[inline]
@@ -189,11 +189,11 @@ impl<'b, T> Ptr<'b, T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Arc, Barrier};
+    /// use scc::ebr::{Arc, Guard};
     ///
     /// let arc: Arc<usize> = Arc::new(83);
-    /// let barrier = Barrier::new();
-    /// let ptr = arc.ptr(&barrier);
+    /// let guard = Guard::new();
+    /// let ptr = arc.ptr(&guard);
     /// let converted_arc = ptr.get_arc().unwrap();
     /// assert_eq!(*converted_arc, 83);
     ///
@@ -231,29 +231,29 @@ impl<'b, T> Ptr<'b, T> {
     }
 }
 
-impl<'b, T> Clone for Ptr<'b, T> {
+impl<'g, T> Clone for Ptr<'g, T> {
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<'b, T> Copy for Ptr<'b, T> {}
+impl<'g, T> Copy for Ptr<'g, T> {}
 
-impl<'b, T> Default for Ptr<'b, T> {
+impl<'g, T> Default for Ptr<'g, T> {
     #[inline]
     fn default() -> Self {
         Self::null()
     }
 }
 
-impl<'b, T> Eq for Ptr<'b, T> {}
+impl<'g, T> Eq for Ptr<'g, T> {}
 
-impl<'b, T> PartialEq for Ptr<'b, T> {
+impl<'g, T> PartialEq for Ptr<'g, T> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.instance_ptr == other.instance_ptr
     }
 }
 
-impl<'b, T: UnwindSafe> UnwindSafe for Ptr<'b, T> {}
+impl<'g, T: UnwindSafe> UnwindSafe for Ptr<'g, T> {}

@@ -1,22 +1,22 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use scc::ebr::Barrier;
+use scc::ebr::Guard;
 
-fn barrier_single(c: &mut Criterion) {
-    c.bench_function("EBR: barrier", |b| {
+fn guard_single(c: &mut Criterion) {
+    c.bench_function("EBR: guard", |b| {
         b.iter(|| {
-            let _barrier = Barrier::new();
+            let _guard = Guard::new();
         })
     });
 }
 
-fn barrier_superposed(c: &mut Criterion) {
-    let _barrier = Barrier::new();
-    c.bench_function("EBR: superposed barrier", |b| {
+fn guard_superposed(c: &mut Criterion) {
+    let _guard = Guard::new();
+    c.bench_function("EBR: superposed guard", |b| {
         b.iter(|| {
-            let _barrier = Barrier::new();
+            let _guard = Guard::new();
         })
     });
 }
 
-criterion_group!(ebr, barrier_single, barrier_superposed);
+criterion_group!(ebr, guard_single, guard_superposed);
 criterion_main!(ebr);

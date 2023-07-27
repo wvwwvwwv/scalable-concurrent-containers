@@ -1,5 +1,5 @@
 use super::ref_counted::RefCounted;
-use super::{Barrier, Collectible, Ptr};
+use super::{Collectible, Guard, Ptr};
 use std::ops::Deref;
 use std::panic::UnwindSafe;
 use std::ptr::{addr_of, NonNull};
@@ -66,34 +66,34 @@ impl<T> Owned<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Barrier, Owned};
+    /// use scc::ebr::{Guard, Owned};
     ///
     /// let owned: Owned<usize> = Owned::new(37);
-    /// let barrier = Barrier::new();
-    /// let ptr = owned.ptr(&barrier);
+    /// let guard = Guard::new();
+    /// let ptr = owned.ptr(&guard);
     /// assert_eq!(*ptr.as_ref().unwrap(), 37);
     /// ```
     #[inline]
     #[must_use]
-    pub fn ptr<'b>(&self, _barrier: &'b Barrier) -> Ptr<'b, T> {
+    pub fn ptr<'g>(&self, _guard: &'g Guard) -> Ptr<'g, T> {
         Ptr::from(self.instance_ptr.as_ptr())
     }
 
-    /// Returns a reference to the underlying instance with the supplied [`Barrier`].
+    /// Returns a reference to the underlying instance with the supplied [`Guard`].
     ///
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Barrier, Owned};
+    /// use scc::ebr::{Guard, Owned};
     ///
     /// let owned: Owned<usize> = Owned::new(37);
-    /// let barrier = Barrier::new();
-    /// let ref_b = owned.get_ref_with(&barrier);
+    /// let guard = Guard::new();
+    /// let ref_b = owned.get_ref_with(&guard);
     /// assert_eq!(*ref_b, 37);
     /// ```
     #[inline]
     #[must_use]
-    pub fn get_ref_with<'b>(&self, _barrier: &'b Barrier) -> &'b T {
+    pub fn get_ref_with<'g>(&self, _guard: &'g Guard) -> &'g T {
         unsafe { std::mem::transmute(&**self.underlying()) }
     }
 
@@ -167,10 +167,10 @@ impl<T> Owned<T> {
     }
 
     #[inline]
-    fn pass_underlying_to_collector(&mut self, barrier: &Barrier) {
+    fn pass_underlying_to_collector(&mut self, guard: &Guard) {
         let dyn_ref = self.underlying().as_collectible();
         let dyn_mut_ptr: *mut dyn Collectible = unsafe { std::mem::transmute(dyn_ref) };
-        barrier.collect(dyn_mut_ptr);
+        guard.collect(dyn_mut_ptr);
     }
 }
 
@@ -193,11 +193,13 @@ impl<T> Deref for Owned<T> {
 impl<T> Drop for Owned<T> {
     #[inline]
     fn drop(&mut self) {
-        let barrier = Barrier::new_for_drop();
-        self.pass_underlying_to_collector(&barrier);
+        let guard = Guard::new_for_drop();
+        self.pass_underlying_to_collector(&guard);
     }
 }
 
 unsafe impl<T: Send> Send for Owned<T> {}
+
 unsafe impl<T: Sync> Sync for Owned<T> {}
+
 impl<T: UnwindSafe> UnwindSafe for Owned<T> {}

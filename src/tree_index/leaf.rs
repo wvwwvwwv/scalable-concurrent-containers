@@ -1,4 +1,4 @@
-use crate::ebr::{Arc, AtomicArc, Barrier};
+use crate::ebr::{Arc, AtomicArc, Guard};
 use crate::LinkedList;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
@@ -859,16 +859,16 @@ where
 
     /// Traverses the linked list.
     #[inline]
-    pub(super) fn jump<'b, Q>(
+    pub(super) fn jump<'g, Q>(
         &self,
         min_allowed_key: Option<&Q>,
-        barrier: &'b Barrier,
-    ) -> Option<Scanner<'b, K, V>>
+        guard: &'g Guard,
+    ) -> Option<Scanner<'g, K, V>>
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        let mut next_leaf_ptr = self.leaf.next_ptr(Acquire, barrier);
+        let mut next_leaf_ptr = self.leaf.next_ptr(Acquire, guard);
         while let Some(next_leaf_ref) = next_leaf_ptr.as_ref() {
             let mut leaf_scanner = Scanner::new(next_leaf_ref);
             if let Some(key) = min_allowed_key {
@@ -882,14 +882,14 @@ where
                             return Some(leaf_scanner);
                         }
                     }
-                    next_leaf_ptr = next_leaf_ref.next_ptr(Acquire, barrier);
+                    next_leaf_ptr = next_leaf_ref.next_ptr(Acquire, guard);
                     continue;
                 }
             }
             if leaf_scanner.next().is_some() {
                 return Some(leaf_scanner);
             }
-            next_leaf_ptr = next_leaf_ref.next_ptr(Acquire, barrier);
+            next_leaf_ptr = next_leaf_ref.next_ptr(Acquire, guard);
         }
         None
     }
@@ -939,12 +939,10 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-
+    use proptest::prelude::*;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering::Relaxed;
-
-    use proptest::prelude::*;
-    use tokio::sync;
+    use tokio::sync::Barrier;
 
     #[cfg_attr(miri, ignore)]
     #[test]
@@ -1141,7 +1139,7 @@ mod test {
         let num_excess = 3;
         let num_tasks = DIMENSION.num_entries + num_excess;
         for _ in 0..256 {
-            let barrier = Arc::new(sync::Barrier::new(num_tasks));
+            let barrier = Arc::new(Barrier::new(num_tasks));
             let leaf: Arc<Leaf<usize, usize>> = Arc::new(Leaf::new());
             let full: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
             let retire: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
@@ -1216,7 +1214,7 @@ mod test {
         let workload_size = 8_usize;
         for _ in 0..16 {
             for k in 0..=workload_size {
-                let barrier = Arc::new(sync::Barrier::new(num_tasks));
+                let barrier = Arc::new(Barrier::new(num_tasks));
                 let leaf: Arc<Leaf<usize, usize>> = Arc::new(Leaf::new());
                 let inserted: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
                 let mut task_handles = Vec::with_capacity(num_tasks);

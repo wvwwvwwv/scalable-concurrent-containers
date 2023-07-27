@@ -1,4 +1,4 @@
-use super::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
+use super::ebr::{Arc, AtomicArc, Guard, Ptr, Tag};
 use std::fmt::{self, Debug, Display};
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::Ordering::{self, Relaxed, Release};
@@ -134,7 +134,7 @@ pub trait LinkedList: Sized {
     ///
     /// ```
     /// use scc::LinkedList;
-    /// use scc::ebr::{Arc, AtomicArc, Barrier};
+    /// use scc::ebr::{Arc, AtomicArc, Guard};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
@@ -145,14 +145,14 @@ pub trait LinkedList: Sized {
     ///     }
     /// }
     ///
-    /// let barrier = Barrier::new();
+    /// let guard = Guard::new();
     ///
     /// let head: L = L::default();
     /// let tail: Arc<L> = Arc::new(L::default());
-    /// assert!(head.push_back(tail.clone(), false, Relaxed, &barrier).is_ok());
+    /// assert!(head.push_back(tail.clone(), false, Relaxed, &guard).is_ok());
     ///
     /// tail.delete_self(Relaxed);
-    /// assert!(head.next_ptr(Relaxed, &barrier).as_ref().is_none());
+    /// assert!(head.next_ptr(Relaxed, &guard).as_ref().is_none());
     /// ```
     #[inline]
     fn delete_self(&self, order: Ordering) -> bool {
@@ -200,7 +200,7 @@ pub trait LinkedList: Sized {
     ///
     /// ```
     /// use scc::LinkedList;
-    /// use scc::ebr::{Arc, AtomicArc, Barrier};
+    /// use scc::ebr::{Arc, AtomicArc, Guard};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
@@ -211,28 +211,28 @@ pub trait LinkedList: Sized {
     ///     }
     /// }
     ///
-    /// let barrier = Barrier::new();
+    /// let guard = Guard::new();
     ///
     /// let head: L = L::default();
-    /// assert!(head.push_back(Arc::new(L::default()), true, Relaxed, &barrier).is_ok());
+    /// assert!(head.push_back(Arc::new(L::default()), true, Relaxed, &guard).is_ok());
     /// assert!(head.is_marked(Relaxed));
-    /// assert!(head.push_back(Arc::new(L::default()), false, Relaxed, &barrier).is_ok());
+    /// assert!(head.push_back(Arc::new(L::default()), false, Relaxed, &guard).is_ok());
     /// assert!(!head.is_marked(Relaxed));
     ///
     /// head.delete_self(Relaxed);
     /// assert!(!head.is_marked(Relaxed));
-    /// assert!(head.push_back(Arc::new(L::default()), false, Relaxed, &barrier).is_err());
+    /// assert!(head.push_back(Arc::new(L::default()), false, Relaxed, &guard).is_err());
     /// ```
     #[inline]
-    fn push_back<'b>(
+    fn push_back<'g>(
         &self,
         mut entry: Arc<Self>,
         mark: bool,
         order: Ordering,
-        barrier: &'b Barrier,
-    ) -> Result<Ptr<'b, Self>, Arc<Self>> {
+        guard: &'g Guard,
+    ) -> Result<Ptr<'g, Self>, Arc<Self>> {
         let new_tag = if mark { Tag::First } else { Tag::None };
-        let mut next_ptr = self.link_ref().load(Relaxed, barrier);
+        let mut next_ptr = self.link_ref().load(Relaxed, guard);
         while next_ptr.tag() != Tag::Second {
             entry
                 .link_ref()
@@ -242,7 +242,7 @@ pub trait LinkedList: Sized {
                 (Some(entry), new_tag),
                 order,
                 Relaxed,
-                barrier,
+                guard,
             ) {
                 Ok((_, updated)) => {
                     return Ok(updated);
@@ -266,7 +266,7 @@ pub trait LinkedList: Sized {
     ///
     /// ```
     /// use scc::LinkedList;
-    /// use scc::ebr::{Arc, AtomicArc, Barrier};
+    /// use scc::ebr::{Arc, AtomicArc, Guard};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
@@ -277,25 +277,25 @@ pub trait LinkedList: Sized {
     ///     }
     /// }
     ///
-    /// let barrier = Barrier::new();
+    /// let guard = Guard::new();
     ///
     /// let head: L = L::default();
-    /// assert!(head.push_back(Arc::new(L(AtomicArc::null(), 1)), false, Relaxed, &barrier).is_ok());
+    /// assert!(head.push_back(Arc::new(L(AtomicArc::null(), 1)), false, Relaxed, &guard).is_ok());
     /// head.mark(Relaxed);
     ///
-    /// let next_ptr = head.next_ptr(Relaxed, &barrier);
+    /// let next_ptr = head.next_ptr(Relaxed, &guard);
     /// assert_eq!(next_ptr.as_ref().unwrap().1, 1);
     /// assert!(head.is_marked(Relaxed));
     /// ```
     #[inline]
-    fn next_ptr<'b>(&self, order: Ordering, barrier: &'b Barrier) -> Ptr<'b, Self> {
-        let self_next_ptr = self.link_ref().load(order, barrier);
+    fn next_ptr<'g>(&self, order: Ordering, guard: &'g Guard) -> Ptr<'g, Self> {
+        let self_next_ptr = self.link_ref().load(order, guard);
         let self_tag = self_next_ptr.tag();
         let mut next_ptr = self_next_ptr;
         let mut update_self = false;
         let next_valid_ptr = loop {
             if let Some(next_ref) = next_ptr.as_ref() {
-                let next_next_ptr = next_ref.link_ref().load(order, barrier);
+                let next_next_ptr = next_ref.link_ref().load(order, guard);
                 if next_next_ptr.tag() != Tag::Second {
                     break next_ptr;
                 }
@@ -314,10 +314,10 @@ pub trait LinkedList: Sized {
                     (next_valid_ptr.get_arc(), self_tag),
                     Release,
                     Relaxed,
-                    barrier,
+                    guard,
                 )
                 .ok()
-                .map(|(p, _)| p.map(|p| p.release(barrier)));
+                .map(|(p, _)| p.map(|p| p.release(guard)));
         }
 
         next_valid_ptr

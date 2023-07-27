@@ -752,7 +752,7 @@ mod hashmap_test {
 
 #[cfg(test)]
 mod hashindex_test {
-    use crate::ebr;
+    use crate::ebr::Guard;
     use crate::hash_index::Iter;
     use crate::HashIndex;
     use proptest::strategy::{Strategy, ValueTree};
@@ -831,7 +831,7 @@ mod hashindex_test {
         drop(hashindex);
 
         while INST_CNT.load(Relaxed) != 0 {
-            drop(ebr::Barrier::new());
+            drop(Guard::new());
             tokio::task::yield_now().await;
         }
     }
@@ -855,7 +855,7 @@ mod hashindex_test {
         drop(hashindex_clone);
 
         while INST_CNT.load(Relaxed) != 0 {
-            drop(ebr::Barrier::new());
+            drop(Guard::new());
             tokio::task::yield_now().await;
         }
     }
@@ -1068,7 +1068,7 @@ mod hashindex_test {
                     barrier_copied.wait();
                     let mut checker = BTreeSet::new();
                     let max = inserted_copied.load(Acquire);
-                    for iter in hashindex_copied.iter(&ebr::Barrier::new()) {
+                    for iter in hashindex_copied.iter(&Guard::new()) {
                         checker.insert(*iter.0);
                     }
                     for key in 0..max {
@@ -1079,7 +1079,7 @@ mod hashindex_test {
                 for _ in 0..2 {
                     barrier_copied.wait();
                     let max = removed_copied.load(Acquire);
-                    for iter in hashindex_copied.iter(&ebr::Barrier::new()) {
+                    for iter in hashindex_copied.iter(&Guard::new()) {
                         assert!(*iter.0 < max);
                     }
                 }
@@ -1189,16 +1189,14 @@ mod hashindex_test {
                         assert_eq!(result, Err((id, id)));
                     }
                     let mut iterated = 0;
-                    hashindex_clone
-                        .iter(&ebr::Barrier::new())
-                        .for_each(|(k, _)| {
-                            if range.contains(k) {
-                                iterated += 1;
-                            }
-                        });
+                    hashindex_clone.iter(&Guard::new()).for_each(|(k, _)| {
+                        if range.contains(k) {
+                            iterated += 1;
+                        }
+                    });
                     assert!(iterated >= workload_size);
                     assert!(hashindex_clone
-                        .iter(&ebr::Barrier::new())
+                        .iter(&Guard::new())
                         .any(|(k, _)| range.contains(k)));
 
                     let mut removed = 0;
@@ -1210,7 +1208,7 @@ mod hashindex_test {
                             } else {
                                 true
                             }
-                        })
+                        });
                     } else {
                         hashindex_clone
                             .retain_async(|k, _| {
@@ -1221,11 +1219,11 @@ mod hashindex_test {
                                     true
                                 }
                             })
-                            .await
+                            .await;
                     };
                     assert_eq!(removed, workload_size);
                     assert!(!hashindex_clone
-                        .iter(&ebr::Barrier::new())
+                        .iter(&Guard::new())
                         .any(|(k, _)| range.contains(k)));
                 }));
             }
@@ -1416,7 +1414,7 @@ mod hashcache_test {
 
 #[cfg(test)]
 mod treeindex_test {
-    use crate::ebr;
+    use crate::ebr::Guard;
     use crate::tree_index::{Iter, Range};
     use crate::TreeIndex;
     use proptest::strategy::{Strategy, ValueTree};
@@ -1471,7 +1469,7 @@ mod treeindex_test {
         drop(tree);
 
         while INST_CNT.load(Relaxed) != 0 {
-            drop(ebr::Barrier::new());
+            drop(Guard::new());
             tokio::task::yield_now().await;
         }
     }
@@ -1494,7 +1492,7 @@ mod treeindex_test {
         assert_eq!(tree.len(), 0);
 
         while INST_CNT.load(Relaxed) != 0 {
-            drop(ebr::Barrier::new());
+            drop(Guard::new());
             tokio::task::yield_now().await;
         }
     }
@@ -1514,7 +1512,7 @@ mod treeindex_test {
         tree.clear();
 
         while INST_CNT.load(Relaxed) != 0 {
-            drop(ebr::Barrier::new());
+            drop(Guard::new());
             tokio::task::yield_now().await;
         }
     }
@@ -1537,7 +1535,7 @@ mod treeindex_test {
         tree_clone.clear();
 
         while INST_CNT.load(Relaxed) != 0 {
-            drop(ebr::Barrier::new());
+            drop(Guard::new());
             tokio::task::yield_now().await;
         }
     }
@@ -1614,8 +1612,8 @@ mod treeindex_test {
 
         let mut cnt = 0;
         while INST_CNT.load(Relaxed) > 0 {
-            let barrier = ebr::Barrier::new();
-            drop(barrier);
+            let guard = Guard::new();
+            drop(guard);
             cnt += 1;
         }
         println!("{cnt}");
@@ -1628,8 +1626,8 @@ mod treeindex_test {
         tree.clear();
 
         while INST_CNT.load(Relaxed) > 0 {
-            let barrier = ebr::Barrier::new();
-            drop(barrier);
+            let guard = Guard::new();
+            drop(guard);
         }
     }
 
@@ -1679,8 +1677,8 @@ mod treeindex_test {
             assert!(tree.read(&key, |key, val| assert_eq!(key, val)).is_some());
         }
 
-        let barrier = ebr::Barrier::new();
-        let scanner = tree.iter(&barrier);
+        let guard = Guard::new();
+        let scanner = tree.iter(&guard);
         let mut prev = 0;
         for entry in scanner {
             assert!(prev == 0 || prev < *entry.0);
@@ -1742,8 +1740,8 @@ mod treeindex_test {
                             .is_some());
                     }
                     {
-                        let ebr_barrier = ebr::Barrier::new();
-                        let mut range_scanner = tree_copied.range(first_key.., &ebr_barrier);
+                        let guard = Guard::new();
+                        let mut range_scanner = tree_copied.range(first_key.., &guard);
                         let mut entry = range_scanner.next().unwrap();
                         assert_eq!(entry, (&first_key, &first_key));
                         entry = range_scanner.next().unwrap();
@@ -1757,9 +1755,8 @@ mod treeindex_test {
                     let key_at_halfway = first_key + range / 2;
                     for key in (first_key + 1)..(first_key + range) {
                         if key == key_at_halfway {
-                            let ebr_barrier = ebr::Barrier::new();
-                            let mut range_scanner =
-                                tree_copied.range((first_key + 1).., &ebr_barrier);
+                            let guard = Guard::new();
+                            let mut range_scanner = tree_copied.range((first_key + 1).., &guard);
                             let entry = range_scanner.next().unwrap();
                             assert_eq!(entry, (&key_at_halfway, &key_at_halfway));
                             let entry = range_scanner.next().unwrap();
@@ -1784,8 +1781,8 @@ mod treeindex_test {
             let mut found_markers = 0;
             let mut prev_marker = 0;
             let mut prev = 0;
-            let ebr_barrier = ebr::Barrier::new();
-            for iter in tree.iter(&ebr_barrier) {
+            let guard = Guard::new();
+            for iter in tree.iter(&guard) {
                 let current = *iter.0;
                 if current % range == 0 {
                     found_markers += 1;
@@ -1911,8 +1908,8 @@ mod treeindex_test {
                         let max = inserted_copied.load(Acquire);
                         let mut prev = 0;
                         let mut iterated = 0;
-                        let ebr_barrier = ebr::Barrier::new();
-                        for iter in tree_copied.iter(&ebr_barrier) {
+                        let guard = Guard::new();
+                        for iter in tree_copied.iter(&guard) {
                             assert!(
                                 prev == 0
                                     || (*iter.0 <= max && prev + 1 == *iter.0)
@@ -1928,8 +1925,8 @@ mod treeindex_test {
                         barrier_copied.wait();
                         let mut prev = 0;
                         let max = removed_copied.load(Acquire);
-                        let ebr_barrier = ebr::Barrier::new();
-                        for iter in tree_copied.iter(&ebr_barrier) {
+                        let guard = Guard::new();
+                        for iter in tree_copied.iter(&guard) {
                             let current = *iter.0;
                             assert!(current < max);
                             assert!(prev + 1 == current || prev == 0);
@@ -2325,7 +2322,7 @@ mod stack_test {
 
 #[cfg(test)]
 mod ebr_test {
-    use crate::ebr::{suspend, Arc, AtomicArc, AtomicOwned, Barrier, Owned, Ptr, Tag};
+    use crate::ebr::{suspend, Arc, AtomicArc, AtomicOwned, Guard, Owned, Ptr, Tag};
     use std::ops::Deref;
     use std::panic::UnwindSafe;
     use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -2338,8 +2335,8 @@ mod ebr_test {
     static_assertions::assert_not_impl_all!(AtomicArc<*const u8>: Send, Sync, UnwindSafe);
     static_assertions::assert_not_impl_all!(Ptr<String>: Send, Sync);
     static_assertions::assert_not_impl_all!(Ptr<*const u8>: Send, Sync, UnwindSafe);
-    static_assertions::assert_impl_all!(Barrier: UnwindSafe);
-    static_assertions::assert_not_impl_all!(Barrier: Send, Sync);
+    static_assertions::assert_impl_all!(Guard: UnwindSafe);
+    static_assertions::assert_not_impl_all!(Guard: Send, Sync);
 
     struct A(AtomicUsize, usize, &'static AtomicBool);
     impl Drop for A {
@@ -2353,12 +2350,12 @@ mod ebr_test {
     fn deferred() {
         static EXECUTED: AtomicBool = AtomicBool::new(false);
 
-        let barrier = Barrier::new();
-        barrier.defer_execute(|| EXECUTED.store(true, Relaxed));
-        drop(barrier);
+        let guard = Guard::new();
+        guard.defer_execute(|| EXECUTED.store(true, Relaxed));
+        drop(guard);
 
         while !EXECUTED.load(Relaxed) {
-            drop(Barrier::new());
+            drop(Guard::new());
         }
     }
 
@@ -2396,7 +2393,7 @@ mod ebr_test {
 
         drop(arc_clone_again);
         while !DESTROYED.load(Relaxed) {
-            drop(Barrier::new());
+            drop(Guard::new());
         }
     }
 
@@ -2413,17 +2410,17 @@ mod ebr_test {
         assert_eq!(owned.deref().0.load(Relaxed), 12);
         assert_eq!(owned.deref().1, 12);
 
-        let barrier = Barrier::new();
-        let ptr = owned.ptr(&barrier);
+        let guard = Guard::new();
+        let ptr = owned.ptr(&guard);
         assert!(ptr.get_arc().is_none());
 
         drop(owned);
         assert!(!DESTROYED.load(Relaxed));
 
-        drop(barrier);
+        drop(guard);
 
         while !DESTROYED.load(Relaxed) {
-            drop(Barrier::new());
+            drop(Guard::new());
         }
     }
 
@@ -2478,7 +2475,7 @@ mod ebr_test {
         drop(nested_arc);
 
         while !DESTROYED.load(Relaxed) {
-            drop(Barrier::new());
+            drop(Guard::new());
         }
     }
 
@@ -2490,10 +2487,10 @@ mod ebr_test {
         let atomic_arc = AtomicArc::new(A(AtomicUsize::new(10), 10, &DESTROYED));
         assert!(!DESTROYED.load(Relaxed));
 
-        let barrier = Barrier::new();
-        let atomic_arc_clone = atomic_arc.clone(Relaxed, &barrier);
+        let guard = Guard::new();
+        let atomic_arc_clone = atomic_arc.clone(Relaxed, &guard);
         assert_eq!(
-            atomic_arc_clone.load(Relaxed, &barrier).as_ref().unwrap().1,
+            atomic_arc_clone.load(Relaxed, &guard).as_ref().unwrap().1,
             10
         );
 
@@ -2503,10 +2500,10 @@ mod ebr_test {
         atomic_arc_clone.update_tag_if(Tag::Second, |_| true, Relaxed, Relaxed);
 
         drop(atomic_arc_clone);
-        drop(barrier);
+        drop(guard);
 
         while !DESTROYED.load(Relaxed) {
-            drop(Barrier::new());
+            drop(Guard::new());
         }
     }
 
@@ -2518,8 +2515,8 @@ mod ebr_test {
         let atomic_owned = AtomicOwned::new(A(AtomicUsize::new(10), 10, &DESTROYED));
         assert!(!DESTROYED.load(Relaxed));
 
-        let barrier = Barrier::new();
-        let ptr = atomic_owned.load(Relaxed, &barrier);
+        let guard = Guard::new();
+        let ptr = atomic_owned.load(Relaxed, &guard);
         assert_eq!(ptr.as_ref().map(|a| a.1), Some(10));
 
         atomic_owned.update_tag_if(Tag::Second, |_| true, Relaxed, Relaxed);
@@ -2527,10 +2524,10 @@ mod ebr_test {
         drop(atomic_owned);
         assert_eq!(ptr.as_ref().map(|a| a.1), Some(10));
 
-        drop(barrier);
+        drop(guard);
 
         while !DESTROYED.load(Relaxed) {
-            drop(Barrier::new());
+            drop(Guard::new());
         }
     }
 
@@ -2543,14 +2540,14 @@ mod ebr_test {
         assert!(!DESTROYED.load(Relaxed));
 
         let thread = std::thread::spawn(move || {
-            let barrier = Barrier::new();
-            let ptr = atomic_arc.load(Relaxed, &barrier);
+            let guard = Guard::new();
+            let ptr = atomic_arc.load(Relaxed, &guard);
             assert_eq!(ptr.as_ref().unwrap().0.load(Relaxed), 17);
         });
         assert!(thread.join().is_ok());
 
         while !DESTROYED.load(Relaxed) {
-            drop(Barrier::new());
+            drop(Guard::new());
         }
     }
 
@@ -2562,9 +2559,9 @@ mod ebr_test {
         let atomic_arc = AtomicArc::new(A(AtomicUsize::new(11), 11, &DESTROYED));
         assert!(!DESTROYED.load(Relaxed));
 
-        let barrier = Barrier::new();
+        let guard = Guard::new();
 
-        let arc = atomic_arc.get_arc(Relaxed, &barrier);
+        let arc = atomic_arc.get_arc(Relaxed, &guard);
 
         drop(atomic_arc);
         assert!(!DESTROYED.load(Relaxed));
@@ -2573,10 +2570,10 @@ mod ebr_test {
             assert_eq!(arc.1, 11);
             assert!(!DESTROYED.load(Relaxed));
         }
-        drop(barrier);
+        drop(guard);
 
         while !DESTROYED.load(Relaxed) {
-            drop(Barrier::new());
+            drop(Guard::new());
         }
     }
 
@@ -2588,7 +2585,7 @@ mod ebr_test {
         let atomic_arc = AtomicArc::new(A(AtomicUsize::new(11), 11, &DESTROYED));
         assert!(!DESTROYED.load(Relaxed));
 
-        let barrier = Barrier::new();
+        let guard = Guard::new();
 
         let arc = atomic_arc.try_into_arc(Relaxed);
         assert!(!DESTROYED.load(Relaxed));
@@ -2597,10 +2594,10 @@ mod ebr_test {
             assert_eq!(arc.1, 11);
             assert!(!DESTROYED.load(Relaxed));
         }
-        drop(barrier);
+        drop(guard);
 
         while !DESTROYED.load(Relaxed) {
-            drop(Barrier::new());
+            drop(Guard::new());
         }
     }
 
@@ -2614,8 +2611,8 @@ mod ebr_test {
             let atomic_arc = atomic_arc.clone();
             task_handles.push(tokio::task::spawn(async move {
                 for _ in 0..64 {
-                    let barrier = Barrier::new();
-                    let mut ptr = atomic_arc.load(Acquire, &barrier);
+                    let guard = Guard::new();
+                    let mut ptr = atomic_arc.load(Acquire, &guard);
                     assert!(ptr.tag() == Tag::None || ptr.tag() == Tag::Second);
                     if let Some(str_ref) = ptr.as_ref() {
                         assert!(str_ref == "How are you?" || str_ref == "How can I help you?");
@@ -2632,7 +2629,7 @@ mod ebr_test {
                         ),
                         Release,
                         Relaxed,
-                        &barrier,
+                        &guard,
                     ) {
                         if let Some(arc) = passed {
                             assert!(*arc == "How can I help you?");
@@ -2644,19 +2641,19 @@ mod ebr_test {
                         assert!(ptr.tag() == Tag::None || ptr.tag() == Tag::Second);
                     }
                     assert!(!suspend());
-                    drop(barrier);
+                    drop(guard);
 
                     assert!(suspend());
 
                     atomic_arc.update_tag_if(Tag::None, |_| true, Relaxed, Relaxed);
 
-                    let barrier = Barrier::new();
-                    ptr = atomic_arc.load(Acquire, &barrier);
+                    let guard = Guard::new();
+                    ptr = atomic_arc.load(Acquire, &guard);
                     assert!(ptr.tag() == Tag::None || ptr.tag() == Tag::Second);
                     if let Some(str_ref) = ptr.as_ref() {
                         assert!(str_ref == "How are you?" || str_ref == "How can I help you?");
                     }
-                    drop(barrier);
+                    drop(guard);
 
                     let (old, _) = atomic_arc.swap(
                         (Some(Arc::new(String::from("How are you?"))), Tag::Second),
@@ -2699,13 +2696,13 @@ mod ebr_test {
                         }
                     } else {
                         let (arc_clone, _) = (*atomic_arc)
-                            .clone(Acquire, &Barrier::new())
+                            .clone(Acquire, &Guard::new())
                             .swap((None, Tag::First), Release);
                         assert!(arc_clone.is_some());
                         if let Some(arc) = arc_clone {
                             assert!(*arc == "How are you?");
                         }
-                        let arc_clone = atomic_arc.get_arc(Acquire, &Barrier::new());
+                        let arc_clone = atomic_arc.get_arc(Acquire, &Guard::new());
                         assert!(arc_clone.is_some());
                         if let Some(arc) = arc_clone {
                             assert!(*arc == "How are you?");
@@ -2722,8 +2719,7 @@ mod ebr_test {
 
 #[cfg(test)]
 mod random_failure_test {
-    use crate::ebr;
-    use crate::ebr::Arc;
+    use crate::ebr::{Arc, Guard};
     use crate::hash_map::Entry;
     use crate::{HashCache, HashIndex, HashMap, TreeIndex};
     use std::any::Any;
@@ -2776,7 +2772,7 @@ mod random_failure_test {
         }
         while INST_CNT.load(Relaxed) != 0 {
             let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
-                drop(ebr::Barrier::new());
+                drop(Guard::new());
             });
             std::thread::yield_now();
         }
@@ -2825,7 +2821,7 @@ mod random_failure_test {
 
         while INST_CNT.load(Relaxed) != 0 {
             let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
-                drop(ebr::Barrier::new());
+                drop(Guard::new());
             });
             std::thread::yield_now();
         }
@@ -2849,7 +2845,7 @@ mod random_failure_test {
 
         while INST_CNT.load(Relaxed) != 0 {
             let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
-                drop(ebr::Barrier::new());
+                drop(Guard::new());
             });
             std::thread::yield_now();
         }
@@ -2871,7 +2867,7 @@ mod random_failure_test {
 
         while INST_CNT.load(Relaxed) != 0 {
             let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
-                drop(ebr::Barrier::new());
+                drop(Guard::new());
             });
             std::thread::yield_now();
         }
@@ -2891,7 +2887,7 @@ mod random_failure_test {
 
         while INST_CNT.load(Relaxed) != 0 {
             let _: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
-                drop(ebr::Barrier::new());
+                drop(Guard::new());
             });
             std::thread::yield_now();
         }

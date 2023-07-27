@@ -1,5 +1,5 @@
 use super::ref_counted::RefCounted;
-use super::{Barrier, Collectible, Ptr};
+use super::{Collectible, Guard, Ptr};
 use std::mem::forget;
 use std::ops::Deref;
 use std::panic::UnwindSafe;
@@ -73,34 +73,34 @@ impl<T> Arc<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Arc, Barrier};
+    /// use scc::ebr::{Arc, Guard};
     ///
     /// let arc: Arc<usize> = Arc::new(37);
-    /// let barrier = Barrier::new();
-    /// let ptr = arc.ptr(&barrier);
+    /// let guard = Guard::new();
+    /// let ptr = arc.ptr(&guard);
     /// assert_eq!(*ptr.as_ref().unwrap(), 37);
     /// ```
     #[inline]
     #[must_use]
-    pub fn ptr<'b>(&self, _barrier: &'b Barrier) -> Ptr<'b, T> {
+    pub fn ptr<'g>(&self, _guard: &'g Guard) -> Ptr<'g, T> {
         Ptr::from(self.instance_ptr.as_ptr())
     }
 
-    /// Returns a reference to the underlying instance with the supplied [`Barrier`].
+    /// Returns a reference to the underlying instance with the supplied [`Guard`].
     ///
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Arc, Barrier};
+    /// use scc::ebr::{Arc, Guard};
     ///
     /// let arc: Arc<usize> = Arc::new(37);
-    /// let barrier = Barrier::new();
-    /// let ref_b = arc.get_ref_with(&barrier);
+    /// let guard = Guard::new();
+    /// let ref_b = arc.get_ref_with(&guard);
     /// assert_eq!(*ref_b, 37);
     /// ```
     #[inline]
     #[must_use]
-    pub fn get_ref_with<'b>(&self, _barrier: &'b Barrier) -> &'b T {
+    pub fn get_ref_with<'g>(&self, _guard: &'g Guard) -> &'g T {
         unsafe { std::mem::transmute(&**self.underlying()) }
     }
 
@@ -150,26 +150,26 @@ impl<T> Arc<T> {
         addr_of!(**self.underlying())
     }
 
-    /// Releases the strong reference by passing `self` to the given [`Barrier`].
+    /// Releases the strong reference by passing `self` to the given [`Guard`].
     ///
     /// Returns `true` if the last reference was released.
     ///
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Arc, Barrier};
+    /// use scc::ebr::{Arc, Guard};
     ///
     /// let arc: Arc<usize> = Arc::new(47);
     /// let arc_clone = arc.clone();
-    /// let barrier = Barrier::new();
-    /// assert!(!arc.release(&barrier));
-    /// assert!(arc_clone.release(&barrier));
+    /// let guard = Guard::new();
+    /// assert!(!arc.release(&guard));
+    /// assert!(arc_clone.release(&guard));
     /// ```
     #[inline]
     #[must_use]
-    pub fn release(mut self, barrier: &Barrier) -> bool {
+    pub fn release(mut self, guard: &Guard) -> bool {
         let released = if self.underlying().drop_ref() {
-            self.pass_underlying_to_collector(barrier);
+            self.pass_underlying_to_collector(guard);
             true
         } else {
             false
@@ -255,10 +255,10 @@ impl<T> Arc<T> {
     }
 
     #[inline]
-    fn pass_underlying_to_collector(&mut self, barrier: &Barrier) {
+    fn pass_underlying_to_collector(&mut self, guard: &Guard) {
         let dyn_ref = self.underlying().as_collectible();
         let dyn_mut_ptr: *mut dyn Collectible = unsafe { std::mem::transmute(dyn_ref) };
-        barrier.collect(dyn_mut_ptr);
+        guard.collect(dyn_mut_ptr);
     }
 }
 
@@ -293,17 +293,17 @@ impl<T> Drop for Arc<T> {
     #[inline]
     fn drop(&mut self) {
         if self.underlying().drop_ref() {
-            let barrier = Barrier::new_for_drop();
-            self.pass_underlying_to_collector(&barrier);
+            let guard = Guard::new_for_drop();
+            self.pass_underlying_to_collector(&guard);
         }
     }
 }
 
-impl<'b, T> TryFrom<Ptr<'b, T>> for Arc<T> {
-    type Error = Ptr<'b, T>;
+impl<'g, T> TryFrom<Ptr<'g, T>> for Arc<T> {
+    type Error = Ptr<'g, T>;
 
     #[inline]
-    fn try_from(ptr: Ptr<'b, T>) -> Result<Self, Self::Error> {
+    fn try_from(ptr: Ptr<'g, T>) -> Result<Self, Self::Error> {
         if let Some(arc) = ptr.get_arc() {
             Ok(arc)
         } else {
@@ -313,5 +313,7 @@ impl<'b, T> TryFrom<Ptr<'b, T>> for Arc<T> {
 }
 
 unsafe impl<T: Send> Send for Arc<T> {}
+
 unsafe impl<T: Sync> Sync for Arc<T> {}
+
 impl<T: UnwindSafe> UnwindSafe for Arc<T> {}

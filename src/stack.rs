@@ -1,6 +1,6 @@
 //! [`Stack`] is a lock-free concurrent last-in-first-out container.
 
-use super::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
+use super::ebr::{Arc, AtomicArc, Guard, Ptr, Tag};
 use super::linked_list::{Entry, LinkedList};
 use std::fmt::{self, Debug};
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
@@ -27,7 +27,7 @@ impl<T: 'static> Stack<T> {
     /// ```
     #[inline]
     pub fn push(&self, val: T) -> Arc<Entry<T>> {
-        match self.push_if_internal(val, |_| true, &Barrier::new()) {
+        match self.push_if_internal(val, |_| true, &Guard::new()) {
             Ok(entry) => entry,
             Err(_) => {
                 unreachable!();
@@ -59,34 +59,34 @@ impl<T: 'static> Stack<T> {
         val: T,
         cond: F,
     ) -> Result<Arc<Entry<T>>, T> {
-        self.push_if_internal(val, cond, &Barrier::new())
+        self.push_if_internal(val, cond, &Guard::new())
     }
 
-    /// Peeks the newest entry with the supplied [`Barrier`].
+    /// Peeks the newest entry with the supplied [`Guard`].
     ///
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::Barrier;
+    /// use scc::ebr::Guard;
     /// use scc::Stack;
     ///
     /// let stack: Stack<usize> = Stack::default();
     ///
-    /// assert!(stack.peek_with(|v| v.is_none(), &Barrier::new()));
+    /// assert!(stack.peek_with(|v| v.is_none(), &Guard::new()));
     ///
     /// stack.push(37);
     /// stack.push(3);
     ///
-    /// assert_eq!(stack.peek_with(|v| **v.unwrap(), &Barrier::new()), 3);
+    /// assert_eq!(stack.peek_with(|v| **v.unwrap(), &Guard::new()), 3);
     /// ```
     #[inline]
-    pub fn peek_with<'b, R, F: FnOnce(Option<&'b Entry<T>>) -> R>(
+    pub fn peek_with<'g, R, F: FnOnce(Option<&'g Entry<T>>) -> R>(
         &self,
         reader: F,
-        barrier: &'b Barrier,
+        guard: &'g Guard,
     ) -> R {
         reader(
-            self.cleanup_newest(self.newest.load(Acquire, barrier), barrier)
+            self.cleanup_newest(self.newest.load(Acquire, guard), guard)
                 .as_ref(),
         )
     }
@@ -114,7 +114,7 @@ impl<T> Stack<T> {
     /// ```
     #[inline]
     pub unsafe fn push_unchecked(&self, val: T) -> Arc<Entry<T>> {
-        match self.push_if_internal(val, |_| true, &Barrier::new()) {
+        match self.push_if_internal(val, |_| true, &Guard::new()) {
             Ok(entry) => entry,
             Err(_) => {
                 unreachable!();
@@ -150,7 +150,7 @@ impl<T> Stack<T> {
         val: T,
         cond: F,
     ) -> Result<Arc<Entry<T>>, T> {
-        self.push_if_internal(val, cond, &Barrier::new())
+        self.push_if_internal(val, cond, &Guard::new())
     }
 
     /// Pops the newest entry.
@@ -245,19 +245,19 @@ impl<T> Stack<T> {
         &self,
         mut cond: F,
     ) -> Result<Option<Arc<Entry<T>>>, Arc<Entry<T>>> {
-        let barrier = Barrier::new();
-        let mut newest_ptr = self.cleanup_newest(self.newest.load(Acquire, &barrier), &barrier);
+        let guard = Guard::new();
+        let mut newest_ptr = self.cleanup_newest(self.newest.load(Acquire, &guard), &guard);
         while !newest_ptr.is_null() {
             if let Some(newest_entry) = newest_ptr.get_arc() {
                 if !newest_entry.is_deleted(Relaxed) && !cond(&*newest_entry) {
                     return Err(newest_entry);
                 }
                 if newest_entry.delete_self(Relaxed) {
-                    self.cleanup_newest(newest_ptr, &barrier);
+                    self.cleanup_newest(newest_ptr, &guard);
                     return Ok(Some(newest_entry));
                 }
             }
-            newest_ptr = self.cleanup_newest(newest_ptr, &barrier);
+            newest_ptr = self.cleanup_newest(newest_ptr, &guard);
         }
         Ok(None)
     }
@@ -280,9 +280,9 @@ impl<T> Stack<T> {
     /// ```
     #[inline]
     pub fn peek<R, F: FnOnce(Option<&Entry<T>>) -> R>(&self, reader: F) -> R {
-        let barrier = Barrier::new();
+        let guard = Guard::new();
         reader(
-            self.cleanup_newest(self.newest.load(Acquire, &barrier), &barrier)
+            self.cleanup_newest(self.newest.load(Acquire, &guard), &guard)
                 .as_ref(),
         )
     }
@@ -302,8 +302,8 @@ impl<T> Stack<T> {
     /// ```
     #[inline]
     pub fn is_empty(&self) -> bool {
-        let barrier = Barrier::new();
-        self.cleanup_newest(self.newest.load(Acquire, &barrier), &barrier)
+        let guard = Guard::new();
+        self.cleanup_newest(self.newest.load(Acquire, &guard), &guard)
             .is_null()
     }
 
@@ -312,9 +312,9 @@ impl<T> Stack<T> {
         &self,
         val: T,
         mut cond: F,
-        barrier: &Barrier,
+        guard: &Guard,
     ) -> Result<Arc<Entry<T>>, T> {
-        let mut newest_ptr = self.cleanup_newest(self.newest.load(Acquire, barrier), barrier);
+        let mut newest_ptr = self.cleanup_newest(self.newest.load(Acquire, guard), guard);
         if !cond(newest_ptr.as_ref()) {
             // The condition is not met.
             return Err(val);
@@ -330,12 +330,12 @@ impl<T> Stack<T> {
                 (Some(new_entry.clone()), Tag::None),
                 AcqRel,
                 Acquire,
-                barrier,
+                guard,
             );
             match result {
                 Ok(_) => return Ok(new_entry),
                 Err((_, actual_ptr)) => {
-                    newest_ptr = self.cleanup_newest(actual_ptr, barrier);
+                    newest_ptr = self.cleanup_newest(actual_ptr, guard);
                     if !cond(newest_ptr.as_ref()) {
                         // The condition is not met.
                         break;
@@ -349,19 +349,19 @@ impl<T> Stack<T> {
     }
 
     /// Cleans up logically removed entries that are attached to `newest`.
-    fn cleanup_newest<'b>(
+    fn cleanup_newest<'g>(
         &self,
-        mut newest_ptr: Ptr<'b, Entry<T>>,
-        barrier: &'b Barrier,
-    ) -> Ptr<'b, Entry<T>> {
+        mut newest_ptr: Ptr<'g, Entry<T>>,
+        guard: &'g Guard,
+    ) -> Ptr<'g, Entry<T>> {
         while let Some(newest_entry) = newest_ptr.as_ref() {
             if newest_entry.is_deleted(Relaxed) {
                 match self.newest.compare_exchange(
                     newest_ptr,
-                    (newest_entry.next_ptr(Acquire, barrier).get_arc(), Tag::None),
+                    (newest_entry.next_ptr(Acquire, guard).get_arc(), Tag::None),
                     AcqRel,
                     Acquire,
-                    barrier,
+                    guard,
                 ) {
                     Ok((_, ptr)) | Err((_, ptr)) => newest_ptr = ptr,
                 }
@@ -377,8 +377,8 @@ impl<T: Clone> Clone for Stack<T> {
     #[inline]
     fn clone(&self) -> Self {
         let self_clone = Self::default();
-        let barrier = Barrier::new();
-        let mut current = self.newest.load(Acquire, &barrier);
+        let guard = Guard::new();
+        let mut current = self.newest.load(Acquire, &guard);
         let mut oldest: Option<Arc<Entry<T>>> = None;
         while let Some(entry) = current.as_ref() {
             let new_entry = unsafe { Arc::new_unchecked(Entry::new((**entry).clone())) };
@@ -392,7 +392,7 @@ impl<T: Clone> Clone for Stack<T> {
                     .swap((Some(new_entry.clone()), Tag::None), Relaxed);
             }
             oldest.replace(new_entry);
-            current = entry.next_ptr(Acquire, &barrier);
+            current = entry.next_ptr(Acquire, &guard);
         }
         self_clone
     }
@@ -402,10 +402,10 @@ impl<T: Debug> Debug for Stack<T> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut d = f.debug_set();
-        let barrier = Barrier::new();
-        let mut current = self.newest.load(Acquire, &barrier);
+        let guard = Guard::new();
+        let mut current = self.newest.load(Acquire, &guard);
         while let Some(entry) = current.as_ref() {
-            let next = entry.next_ptr(Acquire, &barrier);
+            let next = entry.next_ptr(Acquire, &guard);
             d.entry(entry);
             current = next;
         }

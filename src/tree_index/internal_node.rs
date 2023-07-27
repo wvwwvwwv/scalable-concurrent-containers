@@ -1,7 +1,7 @@
 use super::leaf::{InsertResult, Leaf, RemoveResult, Scanner, DIMENSION};
 use super::leaf_node::{LOCKED, RETIRED};
 use super::node::Node;
-use crate::ebr::{Arc, AtomicArc, Barrier, Ptr, Tag};
+use crate::ebr::{Arc, AtomicArc, Guard, Ptr, Tag};
 use crate::exit_guard::ExitGuard;
 use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
 use std::borrow::Borrow;
@@ -56,10 +56,10 @@ where
 
     /// Returns the depth of the node.
     #[inline]
-    pub(super) fn depth(&self, depth: usize, barrier: &Barrier) -> usize {
-        let unbounded_ptr = self.unbounded_child.load(Relaxed, barrier);
+    pub(super) fn depth(&self, depth: usize, guard: &Guard) -> usize {
+        let unbounded_ptr = self.unbounded_child.load(Relaxed, guard);
         if let Some(unbounded_ref) = unbounded_ptr.as_ref() {
-            return unbounded_ref.depth(depth + 1, barrier);
+            return unbounded_ref.depth(depth + 1, guard);
         }
         depth
     }
@@ -72,25 +72,25 @@ where
 
     /// Searches for an entry associated with the given key.
     #[inline]
-    pub(super) fn search<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> Option<&'b V>
+    pub(super) fn search<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<&'g V>
     where
-        K: 'b + Borrow<Q>,
+        K: 'g + Borrow<Q>,
         Q: Ord + ?Sized,
     {
         loop {
             let (child, metadata) = self.children.min_greater_equal(key);
             if let Some((_, child)) = child {
-                if let Some(child) = child.load(Acquire, barrier).as_ref() {
+                if let Some(child) = child.load(Acquire, guard).as_ref() {
                     if self.children.validate(metadata) {
                         // Data race resolution - see `LeafNode::search`.
-                        return child.search(key, barrier);
+                        return child.search(key, guard);
                     }
                 }
             } else {
-                let unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
+                let unbounded_ptr = self.unbounded_child.load(Acquire, guard);
                 if let Some(unbounded) = unbounded_ptr.as_ref() {
                     if self.children.validate(metadata) {
-                        return unbounded.search(key, barrier);
+                        return unbounded.search(key, guard);
                     }
                 } else {
                     return None;
@@ -101,17 +101,17 @@ where
 
     /// Returns the minimum key entry.
     #[inline]
-    pub(super) fn min<'b>(&self, barrier: &'b Barrier) -> Option<Scanner<'b, K, V>> {
+    pub(super) fn min<'g>(&self, guard: &'g Guard) -> Option<Scanner<'g, K, V>> {
         loop {
             let mut retry = false;
             let scanner = Scanner::new(&self.children);
             let metadata = scanner.metadata();
             for (_, child) in scanner {
-                let child_ptr = child.load(Acquire, barrier);
+                let child_ptr = child.load(Acquire, guard);
                 if let Some(child) = child_ptr.as_ref() {
                     if self.children.validate(metadata) {
                         // Data race resolution - see `LeafNode::search`.
-                        if let Some(scanner) = child.min(barrier) {
+                        if let Some(scanner) = child.min(guard) {
                             return Some(scanner);
                         }
                         continue;
@@ -124,10 +124,10 @@ where
             if retry {
                 continue;
             }
-            let unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
+            let unbounded_ptr = self.unbounded_child.load(Acquire, guard);
             if let Some(unbounded) = unbounded_ptr.as_ref() {
                 if self.children.validate(metadata) {
-                    return unbounded.min(barrier);
+                    return unbounded.min(guard);
                 }
                 continue;
             }
@@ -141,22 +141,18 @@ where
     /// Returns `None` if all the keys in the [`InternalNode`] is equal to or greater than the
     /// given key.
     #[inline]
-    pub(super) fn max_le_appr<'b, Q>(
-        &self,
-        key: &Q,
-        barrier: &'b Barrier,
-    ) -> Option<Scanner<'b, K, V>>
+    pub(super) fn max_le_appr<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<Scanner<'g, K, V>>
     where
-        K: 'b + Borrow<Q>,
+        K: 'g + Borrow<Q>,
         Q: Ord + ?Sized,
     {
         loop {
             if let Some(scanner) = Scanner::max_less(&self.children, key) {
                 if let Some((_, child)) = scanner.get() {
-                    if let Some(child) = child.load(Acquire, barrier).as_ref() {
+                    if let Some(child) = child.load(Acquire, guard).as_ref() {
                         if self.children.validate(scanner.metadata()) {
                             // Data race resolution - see `LeafNode::search`.
-                            if let Some(scanner) = child.max_le_appr(key, barrier) {
+                            if let Some(scanner) = child.max_le_appr(key, guard) {
                                 return Some(scanner);
                             }
                             // Fallback.
@@ -172,7 +168,7 @@ where
         }
 
         // Starts scanning from the minimum key.
-        let mut min_scanner = self.min(barrier)?;
+        let mut min_scanner = self.min(guard)?;
         min_scanner.next();
         loop {
             if let Some((k, _)) = min_scanner.get() {
@@ -181,7 +177,7 @@ where
                 }
                 break;
             }
-            min_scanner = min_scanner.jump(None, barrier)?;
+            min_scanner = min_scanner.jump(None, guard)?;
         }
 
         None
@@ -194,16 +190,16 @@ where
         mut key: K,
         mut val: V,
         async_wait: &mut D,
-        barrier: &Barrier,
+        guard: &Guard,
     ) -> Result<InsertResult<K, V>, (K, V)> {
         loop {
             let (child, metadata) = self.children.min_greater_equal(&key);
             if let Some((child_key, child)) = child {
-                let child_ptr = child.load(Acquire, barrier);
+                let child_ptr = child.load(Acquire, guard);
                 if let Some(child_ref) = child_ptr.as_ref() {
                     if self.children.validate(metadata) {
                         // Data race resolution - see `LeafNode::search`.
-                        let insert_result = child_ref.insert(key, val, async_wait, barrier)?;
+                        let insert_result = child_ref.insert(key, val, async_wait, guard)?;
                         match insert_result {
                             InsertResult::Success
                             | InsertResult::Duplicate(..)
@@ -217,7 +213,7 @@ where
                                     child,
                                     false,
                                     async_wait,
-                                    barrier,
+                                    guard,
                                 )?;
                                 if let InsertResult::Retry(k, v) = split_result {
                                     key = k;
@@ -228,7 +224,7 @@ where
                             }
                             InsertResult::Retired(k, v) => {
                                 debug_assert!(child_ref.retired(Relaxed));
-                                if self.coalesce(barrier) == RemoveResult::Retired {
+                                if self.coalesce(guard) == RemoveResult::Retired {
                                     debug_assert!(self.retired(Relaxed));
                                     return Ok(InsertResult::Retired(k, v));
                                 }
@@ -236,7 +232,7 @@ where
                             }
                             InsertResult::Retry(k, v) => {
                                 // `child` has been split, therefore it can be retried.
-                                if self.cleanup_link(&k, false, barrier) {
+                                if self.cleanup_link(&k, false, guard) {
                                     key = k;
                                     val = v;
                                     continue;
@@ -250,13 +246,13 @@ where
                 continue;
             }
 
-            let unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
+            let unbounded_ptr = self.unbounded_child.load(Acquire, guard);
             if let Some(unbounded) = unbounded_ptr.as_ref() {
                 debug_assert!(unbounded_ptr.tag() == Tag::None);
                 if !self.children.validate(metadata) {
                     continue;
                 }
-                let insert_result = unbounded.insert(key, val, async_wait, barrier)?;
+                let insert_result = unbounded.insert(key, val, async_wait, guard)?;
                 match insert_result {
                     InsertResult::Success
                     | InsertResult::Duplicate(..)
@@ -270,7 +266,7 @@ where
                             &self.unbounded_child,
                             false,
                             async_wait,
-                            barrier,
+                            guard,
                         )?;
                         if let InsertResult::Retry(k, v) = split_result {
                             key = k;
@@ -281,14 +277,14 @@ where
                     }
                     InsertResult::Retired(k, v) => {
                         debug_assert!(unbounded.retired(Relaxed));
-                        if self.coalesce(barrier) == RemoveResult::Retired {
+                        if self.coalesce(guard) == RemoveResult::Retired {
                             debug_assert!(self.retired(Relaxed));
                             return Ok(InsertResult::Retired(k, v));
                         }
                         return Err((k, v));
                     }
                     InsertResult::Retry(k, v) => {
-                        if self.cleanup_link(&k, false, barrier) {
+                        if self.cleanup_link(&k, false, guard) {
                             key = k;
                             val = v;
                             continue;
@@ -313,7 +309,7 @@ where
         key: &Q,
         condition: &mut F,
         async_wait: &mut D,
-        barrier: &Barrier,
+        guard: &Guard,
     ) -> Result<RemoveResult, bool>
     where
         K: Borrow<Q>,
@@ -323,20 +319,20 @@ where
         loop {
             let (child, metadata) = self.children.min_greater_equal(key);
             if let Some((_, child)) = child {
-                let child_ptr = child.load(Acquire, barrier);
+                let child_ptr = child.load(Acquire, guard);
                 if let Some(child) = child_ptr.as_ref() {
                     if self.children.validate(metadata) {
                         // Data race resolution - see `LeafNode::search`.
                         let result =
-                            child.remove_if::<_, _, _>(key, condition, async_wait, barrier)?;
+                            child.remove_if::<_, _, _>(key, condition, async_wait, guard)?;
                         if result == RemoveResult::Cleanup {
-                            if self.cleanup_link(key, false, barrier) {
+                            if self.cleanup_link(key, false, guard) {
                                 return Ok(RemoveResult::Success);
                             }
                             return Ok(RemoveResult::Cleanup);
                         }
                         if result == RemoveResult::Retired {
-                            return Ok(self.coalesce(barrier));
+                            return Ok(self.coalesce(guard));
                         }
                         return Ok(result);
                     }
@@ -344,22 +340,22 @@ where
                 // It is not a hot loop - see `LeafNode::search`.
                 continue;
             }
-            let unbounded_ptr = self.unbounded_child.load(Acquire, barrier);
+            let unbounded_ptr = self.unbounded_child.load(Acquire, guard);
             if let Some(unbounded) = unbounded_ptr.as_ref() {
                 debug_assert!(unbounded_ptr.tag() == Tag::None);
                 if !self.children.validate(metadata) {
                     // Data race resolution - see `LeafNode::search`.
                     continue;
                 }
-                let result = unbounded.remove_if::<_, _, _>(key, condition, async_wait, barrier)?;
+                let result = unbounded.remove_if::<_, _, _>(key, condition, async_wait, guard)?;
                 if result == RemoveResult::Cleanup {
-                    if self.cleanup_link(key, false, barrier) {
+                    if self.cleanup_link(key, false, guard) {
                         return Ok(RemoveResult::Success);
                     }
                     return Ok(RemoveResult::Cleanup);
                 }
                 if result == RemoveResult::Retired {
-                    return Ok(self.coalesce(barrier));
+                    return Ok(self.coalesce(guard));
                 }
                 return Ok(result);
             }
@@ -382,26 +378,26 @@ where
         full_node: &AtomicArc<Node<K, V>>,
         root_split: bool,
         async_wait: &mut D,
-        barrier: &Barrier,
+        guard: &Guard,
     ) -> Result<InsertResult<K, V>, (K, V)> {
         let target = full_node_ptr.as_ref().unwrap();
         if !self.try_lock() {
-            target.rollback(barrier);
+            target.rollback(guard);
             self.wait(async_wait);
             return Err((key, val));
         }
         debug_assert!(!self.retired(Relaxed));
 
-        if full_node_ptr != full_node.load(Relaxed, barrier) {
+        if full_node_ptr != full_node.load(Relaxed, guard) {
             self.unlock();
-            target.rollback(barrier);
+            target.rollback(guard);
             return Err((key, val));
         }
 
         let prev = self
             .split_op
             .origin_node
-            .swap((full_node.get_arc(Relaxed, barrier), Tag::None), Relaxed)
+            .swap((full_node.get_arc(Relaxed, guard), Tag::None), Relaxed)
             .0;
         debug_assert!(prev.is_none());
 
@@ -411,9 +407,9 @@ where
                 .store((full_node_key as *const K).cast_mut(), Relaxed);
         }
 
-        let mut guard = ExitGuard::new(true, |rollback| {
+        let mut exit_guard = ExitGuard::new(true, |rollback| {
             if rollback {
-                self.rollback(barrier);
+                self.rollback(guard);
             }
         });
         match target {
@@ -449,7 +445,7 @@ where
                         let low_key_node_ptr = full_internal_node
                             .split_op
                             .low_key_node
-                            .load(Relaxed, barrier);
+                            .load(Relaxed, guard);
                         if !low_key_node_ptr.is_null() {
                             entry_array[num_entries].replace((
                                 Some(unsafe {
@@ -463,27 +459,27 @@ where
                                 full_internal_node
                                     .split_op
                                     .low_key_node
-                                    .clone(Relaxed, barrier),
+                                    .clone(Relaxed, guard),
                             ));
                             num_entries += 1;
                         }
                         let high_key_node_ptr = full_internal_node
                             .split_op
                             .high_key_node
-                            .load(Relaxed, barrier);
+                            .load(Relaxed, guard);
                         if !high_key_node_ptr.is_null() {
                             entry_array[num_entries].replace((
                                 Some(entry.0),
                                 full_internal_node
                                     .split_op
                                     .high_key_node
-                                    .clone(Relaxed, barrier),
+                                    .clone(Relaxed, guard),
                             ));
                             num_entries += 1;
                         }
                     } else {
                         entry_array[num_entries]
-                            .replace((Some(entry.0), entry.1.clone(Relaxed, barrier)));
+                            .replace((Some(entry.0), entry.1.clone(Relaxed, guard)));
                         num_entries += 1;
                     }
                 }
@@ -498,7 +494,7 @@ where
                     let low_key_node_ptr = full_internal_node
                         .split_op
                         .low_key_node
-                        .load(Relaxed, barrier);
+                        .load(Relaxed, guard);
                     if !low_key_node_ptr.is_null() {
                         entry_array[num_entries].replace((
                             Some(unsafe {
@@ -512,21 +508,21 @@ where
                             full_internal_node
                                 .split_op
                                 .low_key_node
-                                .clone(Relaxed, barrier),
+                                .clone(Relaxed, guard),
                         ));
                         num_entries += 1;
                     }
                     let high_key_node_ptr = full_internal_node
                         .split_op
                         .high_key_node
-                        .load(Relaxed, barrier);
+                        .load(Relaxed, guard);
                     if !high_key_node_ptr.is_null() {
                         entry_array[num_entries].replace((
                             None,
                             full_internal_node
                                 .split_op
                                 .high_key_node
-                                .clone(Relaxed, barrier),
+                                .clone(Relaxed, guard),
                         ));
                         num_entries += 1;
                     }
@@ -535,7 +531,7 @@ where
                     // node's unbounded.
                     entry_array[num_entries].replace((
                         None,
-                        full_internal_node.unbounded_child.clone(Relaxed, barrier),
+                        full_internal_node.unbounded_child.clone(Relaxed, guard),
                     ));
                     num_entries += 1;
                 }
@@ -548,7 +544,7 @@ where
                             Less => {
                                 low_key_nodes.children.insert_unchecked(
                                     k.unwrap().clone(),
-                                    v.clone(Relaxed, barrier),
+                                    v.clone(Relaxed, guard),
                                     i,
                                 );
                             }
@@ -560,19 +556,19 @@ where
                                 }
                                 low_key_nodes
                                     .unbounded_child
-                                    .swap((v.get_arc(Relaxed, barrier), Tag::None), Relaxed);
+                                    .swap((v.get_arc(Relaxed, guard), Tag::None), Relaxed);
                             }
                             Greater => {
                                 if let Some(k) = k.cloned() {
                                     high_key_nodes.children.insert_unchecked(
                                         k,
-                                        v.clone(Relaxed, barrier),
+                                        v.clone(Relaxed, guard),
                                         i - low_key_node_array_size,
                                     );
                                 } else {
                                     high_key_nodes
                                         .unbounded_child
-                                        .swap((v.get_arc(Relaxed, barrier), Tag::None), Relaxed);
+                                        .swap((v.get_arc(Relaxed, guard), Tag::None), Relaxed);
                                 }
                             }
                         };
@@ -612,7 +608,7 @@ where
                     (full_leaf_node.split_leaf_node(
                         low_key_leaf_node.unwrap(),
                         high_key_leaf_node.unwrap(),
-                        barrier,
+                        guard,
                     ) as *const K)
                         .cast_mut(),
                     Relaxed,
@@ -638,7 +634,7 @@ where
                     .unwrap()
                     .clone()
             },
-            self.split_op.low_key_node.clone(Relaxed, barrier),
+            self.split_op.low_key_node.clone(Relaxed, guard),
         ) {
             InsertResult::Success => (),
             InsertResult::Duplicate(..) | InsertResult::Frozen(..) | InsertResult::Retry(..) => {
@@ -646,17 +642,17 @@ where
             }
             InsertResult::Full(..) | InsertResult::Retired(..) => {
                 // Insertion failed: expects that the parent splits this node.
-                *guard = false;
+                *exit_guard = false;
                 return Ok(InsertResult::Full(key, val));
             }
         };
-        *guard = false;
+        *exit_guard = false;
 
         // Replace the full node with the high-key node.
         let unused_node = full_node
             .swap(
                 (
-                    self.split_op.high_key_node.get_arc(Relaxed, barrier),
+                    self.split_op.high_key_node.get_arc(Relaxed, guard),
                     Tag::None,
                 ),
                 Release,
@@ -669,13 +665,13 @@ where
         }
 
         // Unlock the node.
-        self.finish_split(barrier);
+        self.finish_split(guard);
 
         // Drop the deprecated nodes.
         if let Some(unused_node) = unused_node {
             // Clean up the split operation by committing it.
-            unused_node.commit(barrier);
-            let _: bool = unused_node.release(barrier);
+            unused_node.commit(guard);
+            let _: bool = unused_node.release(guard);
         }
 
         // Since a new node has been inserted, the caller can retry.
@@ -684,34 +680,34 @@ where
 
     /// Finishes splitting the [`InternalNode`].
     #[inline]
-    pub(super) fn finish_split(&self, barrier: &Barrier) {
+    pub(super) fn finish_split(&self, guard: &Guard) {
         let origin = self.split_op.reset();
         self.unlock();
         self.wait_queue.signal();
-        origin.map(|o| o.release(barrier));
+        origin.map(|o| o.release(guard));
     }
 
     /// Commits an on-going structural change recursively.
     #[inline]
-    pub(super) fn commit(&self, barrier: &Barrier) {
+    pub(super) fn commit(&self, guard: &Guard) {
         let origin = self.split_op.reset();
 
         // Mark the internal node retired to prevent further locking attempts.
         self.retire();
         if let Some(origin) = origin {
-            origin.commit(barrier);
-            let _: bool = origin.release(barrier);
+            origin.commit(guard);
+            let _: bool = origin.release(guard);
         }
     }
 
     /// Rolls back the ongoing split operation recursively.
     #[inline]
-    pub(super) fn rollback(&self, barrier: &Barrier) {
+    pub(super) fn rollback(&self, guard: &Guard) {
         let origin = self.split_op.reset();
         self.unlock();
         if let Some(origin) = origin {
-            origin.rollback(barrier);
-            let _: bool = origin.release(barrier);
+            origin.rollback(guard);
+            let _: bool = origin.release(guard);
         }
     }
 
@@ -719,25 +715,20 @@ where
     ///
     /// If the target leaf node does not exist in the sub-tree, returns `false`.
     #[inline]
-    pub(super) fn cleanup_link<'b, Q>(
-        &self,
-        key: &Q,
-        traverse_max: bool,
-        barrier: &'b Barrier,
-    ) -> bool
+    pub(super) fn cleanup_link<'g, Q>(&self, key: &Q, traverse_max: bool, guard: &'g Guard) -> bool
     where
-        K: 'b + Borrow<Q>,
+        K: 'g + Borrow<Q>,
         Q: Ord + ?Sized,
     {
         if traverse_max {
             // It just has to search for the maximum leaf node in the tree.
-            if let Some(unbounded) = self.unbounded_child.load(Acquire, barrier).as_ref() {
-                return unbounded.cleanup_link(key, true, barrier);
+            if let Some(unbounded) = self.unbounded_child.load(Acquire, guard).as_ref() {
+                return unbounded.cleanup_link(key, true, guard);
             }
         } else if let Some(child_scanner) = Scanner::max_less(&self.children, key) {
             if let Some((_, child)) = child_scanner.get() {
-                if let Some(child) = child.load(Acquire, barrier).as_ref() {
-                    return child.cleanup_link(key, true, barrier);
+                if let Some(child) = child.load(Acquire, guard).as_ref() {
+                    return child.cleanup_link(key, true, guard);
                 }
             }
         }
@@ -763,7 +754,7 @@ where
     }
 
     /// Tries to coalesce nodes.
-    fn coalesce<Q>(&self, barrier: &Barrier) -> RemoveResult
+    fn coalesce<Q>(&self, guard: &Guard) -> RemoveResult
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
@@ -772,7 +763,7 @@ where
         while let Some(lock) = Locker::try_lock(self) {
             let mut max_key_entry = None;
             for (key, node) in Scanner::new(&self.children) {
-                let node_ptr = node.load(Relaxed, barrier);
+                let node_ptr = node.load(Relaxed, guard);
                 let node_ref = node_ptr.as_ref().unwrap();
                 if node_ref.retired(Relaxed) {
                     let result = self.children.remove_if(key.borrow(), &mut |_| true);
@@ -781,7 +772,7 @@ where
                     // Once the key is removed, it is safe to deallocate the node as the validation
                     // loop ensures the absence of readers.
                     if let Some(node) = node.swap((None, Tag::None), Release).0 {
-                        let _: bool = node.release(barrier);
+                        let _: bool = node.release(guard);
                         node_deleted = true;
                     }
                 } else {
@@ -790,26 +781,23 @@ where
             }
 
             // The unbounded node is replaced with the maximum key node if retired.
-            let unbounded_ptr = self.unbounded_child.load(Relaxed, barrier);
+            let unbounded_ptr = self.unbounded_child.load(Relaxed, guard);
             let fully_empty = if let Some(unbounded) = unbounded_ptr.as_ref() {
                 if unbounded.retired(Relaxed) {
                     if let Some((key, max_key_child)) = max_key_entry {
                         if let Some(obsolete_node) = self
                             .unbounded_child
-                            .swap(
-                                (max_key_child.get_arc(Relaxed, barrier), Tag::None),
-                                Release,
-                            )
+                            .swap((max_key_child.get_arc(Relaxed, guard), Tag::None), Release)
                             .0
                         {
                             debug_assert!(obsolete_node.retired(Relaxed));
-                            let _: bool = obsolete_node.release(barrier);
+                            let _: bool = obsolete_node.release(guard);
                             node_deleted = true;
                         }
                         let result = self.children.remove_if(key.borrow(), &mut |_| true);
                         debug_assert_ne!(result, RemoveResult::Fail);
                         if let Some(node) = max_key_child.swap((None, Tag::None), Release).0 {
-                            let _: bool = node.release(barrier);
+                            let _: bool = node.release(guard);
                             node_deleted = true;
                         }
                         false
@@ -818,7 +806,7 @@ where
                             self.unbounded_child.swap((None, RETIRED), Release).0
                         {
                             debug_assert!(obsolete_node.retired(Relaxed));
-                            let _: bool = obsolete_node.release(barrier);
+                            let _: bool = obsolete_node.release(guard);
                             node_deleted = true;
                         }
                         true
@@ -836,7 +824,7 @@ where
             }
 
             drop(lock);
-            if !self.has_retired_node(barrier) {
+            if !self.has_retired_node(guard) {
                 break;
             }
         }
@@ -849,10 +837,10 @@ where
     }
 
     /// Checks if the [`InternalNode`] has a retired [`Node`].
-    fn has_retired_node(&self, barrier: &Barrier) -> bool {
+    fn has_retired_node(&self, guard: &Guard) -> bool {
         let mut has_valid_node = false;
         for entry in Scanner::new(&self.children) {
-            let leaf_ptr = entry.1.load(Relaxed, barrier);
+            let leaf_ptr = entry.1.load(Relaxed, guard);
             if let Some(leaf) = leaf_ptr.as_ref() {
                 if leaf.retired(Relaxed) {
                     return true;
@@ -861,7 +849,7 @@ where
             }
         }
         if !has_valid_node {
-            let unbounded_ptr = self.unbounded_child.load(Relaxed, barrier);
+            let unbounded_ptr = self.unbounded_child.load(Relaxed, guard);
             if let Some(unbounded) = unbounded_ptr.as_ref() {
                 if unbounded.retired(Relaxed) {
                     return true;
@@ -931,7 +919,7 @@ where
 
 /// [`StructuralChange`] stores intermediate results during a split operation.
 ///
-/// `AtomicPtr` members may point to values under the protection of the [`Barrier`] used for the
+/// `AtomicPtr` members may point to values under the protection of the [`Guard`] used for the
 /// split operation.
 struct StructuralChange<K, V>
 where
@@ -979,11 +967,9 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering::Relaxed;
-
-    use tokio::sync;
+    use tokio::sync::Barrier;
 
     fn new_level_3_node() -> InternalNode<usize, usize> {
         InternalNode {
@@ -1005,51 +991,51 @@ mod test {
     #[test]
     fn bulk() {
         let internal_node = new_level_3_node();
-        let barrier = Barrier::new();
-        assert_eq!(internal_node.depth(1, &barrier), 3);
+        let guard = Guard::new();
+        assert_eq!(internal_node.depth(1, &guard), 3);
 
         for k in 0..8192 {
-            match internal_node.insert(k, k, &mut (), &barrier) {
+            match internal_node.insert(k, k, &mut (), &guard) {
                 Ok(result) => match result {
                     InsertResult::Success => {
-                        assert_eq!(internal_node.search(&k, &barrier), Some(&k));
+                        assert_eq!(internal_node.search(&k, &guard), Some(&k));
                     }
                     InsertResult::Duplicate(..)
                     | InsertResult::Frozen(..)
                     | InsertResult::Retired(..) => unreachable!(),
                     InsertResult::Full(_, _) => {
-                        internal_node.rollback(&barrier);
+                        internal_node.rollback(&guard);
                         for j in 0..k {
-                            assert_eq!(internal_node.search(&j, &barrier), Some(&j));
+                            assert_eq!(internal_node.search(&j, &guard), Some(&j));
                             if j == k - 1 {
                                 assert!(matches!(
                                     internal_node.remove_if::<_, _, _>(
                                         &j,
                                         &mut |_| true,
                                         &mut (),
-                                        &barrier
+                                        &guard
                                     ),
                                     Ok(RemoveResult::Retired)
                                 ));
                             } else {
                                 assert!(internal_node
-                                    .remove_if::<_, _, _>(&j, &mut |_| true, &mut (), &barrier)
+                                    .remove_if::<_, _, _>(&j, &mut |_| true, &mut (), &guard)
                                     .is_ok(),);
                             }
-                            assert_eq!(internal_node.search(&j, &barrier), None);
+                            assert_eq!(internal_node.search(&j, &guard), None);
                         }
                         break;
                     }
                     InsertResult::Retry(k, v) => {
-                        let result = internal_node.insert(k, v, &mut (), &barrier);
+                        let result = internal_node.insert(k, v, &mut (), &guard);
                         assert!(result.is_ok());
-                        assert_eq!(internal_node.search(&k, &barrier), Some(&k));
+                        assert_eq!(internal_node.search(&k, &guard), Some(&k));
                     }
                 },
                 Err((k, v)) => {
-                    let result = internal_node.insert(k, v, &mut (), &barrier);
+                    let result = internal_node.insert(k, v, &mut (), &guard);
                     assert!(result.is_ok());
-                    assert_eq!(internal_node.search(&k, &barrier), Some(&k));
+                    assert_eq!(internal_node.search(&k, &guard), Some(&k));
                 }
             }
         }
@@ -1060,11 +1046,11 @@ mod test {
     async fn parallel() {
         let num_tasks = 8;
         let workload_size = 64;
-        let barrier = Arc::new(sync::Barrier::new(num_tasks));
+        let barrier = Arc::new(Barrier::new(num_tasks));
         for _ in 0..64 {
             let internal_node = Arc::new(new_level_3_node());
             assert!(internal_node
-                .insert(usize::MAX, usize::MAX, &mut (), &Barrier::new())
+                .insert(usize::MAX, usize::MAX, &mut (), &Guard::new())
                 .is_ok());
             let mut task_handles = Vec::with_capacity(num_tasks);
             for task_id in 0..num_tasks {
@@ -1072,23 +1058,22 @@ mod test {
                 let internal_node_clone = internal_node.clone();
                 task_handles.push(tokio::task::spawn(async move {
                     barrier_clone.wait().await;
-                    let barrier = Barrier::new();
+                    let guard = Guard::new();
                     let mut max_key = None;
                     let range = (task_id * workload_size)..((task_id + 1) * workload_size);
                     for id in range.clone() {
                         loop {
-                            if let Ok(r) = internal_node_clone.insert(id, id, &mut (), &barrier) {
+                            if let Ok(r) = internal_node_clone.insert(id, id, &mut (), &guard) {
                                 match r {
                                     InsertResult::Success => {
-                                        match internal_node_clone.insert(id, id, &mut (), &barrier)
-                                        {
+                                        match internal_node_clone.insert(id, id, &mut (), &guard) {
                                             Ok(InsertResult::Duplicate(..)) | Err(_) => (),
                                             _ => unreachable!(),
                                         }
                                         break;
                                     }
                                     InsertResult::Full(..) => {
-                                        internal_node_clone.rollback(&barrier);
+                                        internal_node_clone.rollback(&guard);
                                         max_key.replace(id);
                                         break;
                                     }
@@ -1107,7 +1092,7 @@ mod test {
                         if max_key.map_or(false, |m| m == id) {
                             break;
                         }
-                        assert_eq!(internal_node_clone.search(&id, &barrier), Some(&id));
+                        assert_eq!(internal_node_clone.search(&id, &guard), Some(&id));
                     }
                     for id in range {
                         if max_key.map_or(false, |m| m == id) {
@@ -1119,7 +1104,7 @@ mod test {
                                 &id,
                                 &mut |_| true,
                                 &mut (),
-                                &barrier,
+                                &guard,
                             ) {
                                 Ok(r) => match r {
                                     RemoveResult::Success | RemoveResult::Cleanup => break,
@@ -1132,12 +1117,12 @@ mod test {
                                 Err(r) => removed |= r,
                             }
                         }
-                        assert!(internal_node_clone.search(&id, &barrier).is_none());
+                        assert!(internal_node_clone.search(&id, &guard).is_none());
                         if let Ok(RemoveResult::Success) = internal_node_clone.remove_if::<_, _, _>(
                             &id,
                             &mut |_| true,
                             &mut (),
-                            &barrier,
+                            &guard,
                         ) {
                             unreachable!()
                         }
@@ -1149,7 +1134,7 @@ mod test {
                 assert!(r.is_ok());
             }
             assert!(internal_node
-                .remove_if::<_, _, _>(&usize::MAX, &mut |_| true, &mut (), &Barrier::new())
+                .remove_if::<_, _, _>(&usize::MAX, &mut |_| true, &mut (), &Guard::new())
                 .is_ok());
         }
     }
@@ -1163,7 +1148,7 @@ mod test {
         for k in 0..64 {
             let fixed_point = k * 16;
             for _ in 0..=num_iterations {
-                let barrier = Arc::new(sync::Barrier::new(num_tasks));
+                let barrier = Arc::new(Barrier::new(num_tasks));
                 let internal_node = Arc::new(new_level_3_node());
                 let inserted: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
                 let mut task_handles = Vec::with_capacity(num_tasks);
@@ -1174,55 +1159,55 @@ mod test {
                     task_handles.push(tokio::spawn(async move {
                         {
                             barrier_clone.wait().await;
-                            let barrier = Barrier::new();
+                            let guard = Guard::new();
                             match internal_node_clone.insert(
                                 fixed_point,
                                 fixed_point,
                                 &mut (),
-                                &barrier,
+                                &guard,
                             ) {
                                 Ok(InsertResult::Success) => {
                                     assert!(!inserted_clone.swap(true, Relaxed));
                                 }
                                 Ok(InsertResult::Full(_, _) | InsertResult::Retired(_, _)) => {
-                                    internal_node_clone.rollback(&barrier);
+                                    internal_node_clone.rollback(&guard);
                                 }
                                 _ => (),
                             };
                             assert_eq!(
-                                internal_node_clone.search(&fixed_point, &barrier).unwrap(),
+                                internal_node_clone.search(&fixed_point, &guard).unwrap(),
                                 &fixed_point
                             );
                         }
                         {
-                            barrier_clone.wait().await;
-                            let barrier = Barrier::new();
+                            guard_clone.wait().await;
+                            let guard = Guard::new();
                             for i in 0..workload_size {
                                 if i != fixed_point {
                                     if let Ok(
                                         InsertResult::Full(_, _) | InsertResult::Retired(_, _),
-                                    ) = internal_node_clone.insert(i, i, &mut (), &barrier)
+                                    ) = internal_node_clone.insert(i, i, &mut (), &guard)
                                     {
-                                        internal_node_clone.rollback(&barrier);
+                                        internal_node_clone.rollback(&guard);
                                     }
                                 }
                                 assert_eq!(
-                                    internal_node_clone.search(&fixed_point, &barrier).unwrap(),
+                                    internal_node_clone.search(&fixed_point, &guard).unwrap(),
                                     &fixed_point
                                 );
                             }
                             for i in 0..workload_size {
                                 let max_scanner = internal_node_clone
-                                    .max_le_appr(&fixed_point, &barrier)
+                                    .max_le_appr(&fixed_point, &guard)
                                     .unwrap();
                                 assert!(*max_scanner.get().unwrap().0 <= fixed_point);
-                                let mut min_scanner = internal_node_clone.min(&barrier).unwrap();
+                                let mut min_scanner = internal_node_clone.min(&guard).unwrap();
                                 if let Some((f, v)) = min_scanner.next() {
                                     assert_eq!(*f, *v);
                                     assert!(*f <= fixed_point);
                                 } else {
                                     let (f, v) =
-                                        min_scanner.jump(None, &barrier).unwrap().get().unwrap();
+                                        min_scanner.jump(None, &guard).unwrap().get().unwrap();
                                     assert_eq!(*f, *v);
                                     assert!(*f <= fixed_point);
                                 }
@@ -1230,10 +1215,10 @@ mod test {
                                     &i,
                                     &mut |v| *v != fixed_point,
                                     &mut (),
-                                    &barrier,
+                                    &guard,
                                 );
                                 assert_eq!(
-                                    internal_node_clone.search(&fixed_point, &barrier).unwrap(),
+                                    internal_node_clone.search(&fixed_point, &guard).unwrap(),
                                     &fixed_point
                                 );
                             }

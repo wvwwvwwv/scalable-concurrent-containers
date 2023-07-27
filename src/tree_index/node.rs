@@ -1,7 +1,7 @@
 use super::internal_node::{self, InternalNode};
 use super::leaf::{InsertResult, RemoveResult, Scanner};
 use super::leaf_node::{self, LeafNode};
-use crate::ebr::{Arc, AtomicArc, Barrier, Tag};
+use crate::ebr::{Arc, AtomicArc, Guard, Tag};
 use crate::wait_queue::DeriveAsyncWait;
 use std::borrow::Borrow;
 use std::fmt::{self, Debug};
@@ -39,9 +39,9 @@ where
 
     /// Returns the depth of the node.
     #[inline]
-    pub(super) fn depth(&self, depth: usize, barrier: &Barrier) -> usize {
+    pub(super) fn depth(&self, depth: usize, guard: &Guard) -> usize {
         match &self {
-            Self::Internal(internal_node) => internal_node.depth(depth, barrier),
+            Self::Internal(internal_node) => internal_node.depth(depth, guard),
             Self::Leaf(_) => depth,
         }
     }
@@ -57,14 +57,14 @@ where
 
     /// Searches for an entry associated with the given key.
     #[inline]
-    pub(super) fn search<'b, Q>(&self, key: &Q, barrier: &'b Barrier) -> Option<&'b V>
+    pub(super) fn search<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<&'g V>
     where
-        K: 'b + Borrow<Q>,
+        K: 'g + Borrow<Q>,
         Q: Ord + ?Sized,
     {
         match &self {
-            Self::Internal(internal_node) => internal_node.search(key, barrier),
-            Self::Leaf(leaf_node) => leaf_node.search(key, barrier),
+            Self::Internal(internal_node) => internal_node.search(key, guard),
+            Self::Leaf(leaf_node) => leaf_node.search(key, guard),
         }
     }
 
@@ -72,10 +72,10 @@ where
     ///
     /// This method is not linearizable.
     #[inline]
-    pub(super) fn min<'b>(&self, barrier: &'b Barrier) -> Option<Scanner<'b, K, V>> {
+    pub(super) fn min<'g>(&self, guard: &'g Guard) -> Option<Scanner<'g, K, V>> {
         match &self {
-            Self::Internal(internal_node) => internal_node.min(barrier),
-            Self::Leaf(leaf_node) => leaf_node.min(barrier),
+            Self::Internal(internal_node) => internal_node.min(guard),
+            Self::Leaf(leaf_node) => leaf_node.min(guard),
         }
     }
 
@@ -84,18 +84,14 @@ where
     ///
     /// This method is not linearizable.
     #[inline]
-    pub(super) fn max_le_appr<'b, Q>(
-        &self,
-        key: &Q,
-        barrier: &'b Barrier,
-    ) -> Option<Scanner<'b, K, V>>
+    pub(super) fn max_le_appr<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<Scanner<'g, K, V>>
     where
-        K: 'b + Borrow<Q>,
+        K: 'g + Borrow<Q>,
         Q: Ord + ?Sized,
     {
         match &self {
-            Self::Internal(internal_node) => internal_node.max_le_appr(key, barrier),
-            Self::Leaf(leaf_node) => leaf_node.max_le_appr(key, barrier),
+            Self::Internal(internal_node) => internal_node.max_le_appr(key, guard),
+            Self::Leaf(leaf_node) => leaf_node.max_le_appr(key, guard),
         }
     }
 
@@ -106,11 +102,11 @@ where
         key: K,
         val: V,
         async_wait: &mut D,
-        barrier: &Barrier,
+        guard: &Guard,
     ) -> Result<InsertResult<K, V>, (K, V)> {
         match &self {
-            Self::Internal(internal_node) => internal_node.insert(key, val, async_wait, barrier),
-            Self::Leaf(leaf_node) => leaf_node.insert(key, val, async_wait, barrier),
+            Self::Internal(internal_node) => internal_node.insert(key, val, async_wait, guard),
+            Self::Leaf(leaf_node) => leaf_node.insert(key, val, async_wait, guard),
         }
     }
 
@@ -121,7 +117,7 @@ where
         key: &Q,
         condition: &mut F,
         async_wait: &mut D,
-        barrier: &Barrier,
+        guard: &Guard,
     ) -> Result<RemoveResult, bool>
     where
         K: Borrow<Q>,
@@ -130,10 +126,10 @@ where
     {
         match &self {
             Self::Internal(internal_node) => {
-                internal_node.remove_if::<_, _, _>(key, condition, async_wait, barrier)
+                internal_node.remove_if::<_, _, _>(key, condition, async_wait, guard)
             }
             Self::Leaf(leaf_node) => {
-                leaf_node.remove_if::<_, _, _>(key, condition, async_wait, barrier)
+                leaf_node.remove_if::<_, _, _>(key, condition, async_wait, guard)
             }
         }
     }
@@ -144,35 +140,35 @@ where
         key: K,
         val: V,
         root: &AtomicArc<Node<K, V>>,
-        barrier: &Barrier,
+        guard: &Guard,
     ) -> (K, V) {
         // The fact that the `TreeIndex` calls this function means that the root is full and
         // locked.
         let mut new_root = Arc::new(Node::new_internal_node());
         if let Some(Self::Internal(internal_node)) = unsafe { new_root.get_mut() } {
-            internal_node.unbounded_child = root.clone(Relaxed, barrier);
+            internal_node.unbounded_child = root.clone(Relaxed, guard);
             let result = internal_node.split_node(
                 key,
                 val,
                 None,
-                root.load(Relaxed, barrier),
+                root.load(Relaxed, guard),
                 &internal_node.unbounded_child,
                 true,
                 &mut (),
-                barrier,
+                guard,
             );
             let Ok(InsertResult::Retry(key, val)) = result else {
                 unreachable!()
             };
 
             // Updates the pointer before unlocking the root.
-            let new_root_ref = new_root.ptr(barrier).as_ref();
+            let new_root_ref = new_root.ptr(guard).as_ref();
             if let Some(old_root) = root.swap((Some(new_root), Tag::None), Release).0 {
                 if let Some(Self::Internal(internal_node)) = new_root_ref.as_ref() {
-                    internal_node.finish_split(barrier);
-                    old_root.commit(barrier);
+                    internal_node.finish_split(guard);
+                    old_root.commit(guard);
                 }
-                let _: bool = old_root.release(barrier);
+                let _: bool = old_root.release(guard);
             };
 
             (key, val)
@@ -190,9 +186,9 @@ where
     pub(super) fn remove_root<D: DeriveAsyncWait>(
         root: &AtomicArc<Node<K, V>>,
         async_wait: &mut D,
-        barrier: &Barrier,
+        guard: &Guard,
     ) -> Result<bool, ()> {
-        let root_ptr = root.load(Acquire, barrier);
+        let root_ptr = root.load(Acquire, guard);
         if let Some(root_ref) = root_ptr.as_ref() {
             let mut internal_node_locker = None;
             let mut leaf_node_locker = None;
@@ -221,9 +217,9 @@ where
                 return Ok(false);
             }
 
-            match root.compare_exchange(root_ptr, (None, Tag::None), Acquire, Acquire, barrier) {
+            match root.compare_exchange(root_ptr, (None, Tag::None), Acquire, Acquire, guard) {
                 Ok((old_root, _)) => {
-                    old_root.map(|r| r.release(barrier));
+                    old_root.map(|r| r.release(guard));
                     return Ok(true);
                 }
                 Err(_) => {
@@ -237,19 +233,19 @@ where
 
     /// Commits an on-going structural change.
     #[inline]
-    pub(super) fn commit(&self, barrier: &Barrier) {
+    pub(super) fn commit(&self, guard: &Guard) {
         match &self {
-            Self::Internal(internal_node) => internal_node.commit(barrier),
-            Self::Leaf(leaf_node) => leaf_node.commit(barrier),
+            Self::Internal(internal_node) => internal_node.commit(guard),
+            Self::Leaf(leaf_node) => leaf_node.commit(guard),
         }
     }
 
     /// Rolls back an on-going structural change.
     #[inline]
-    pub(super) fn rollback(&self, barrier: &Barrier) {
+    pub(super) fn rollback(&self, guard: &Guard) {
         match &self {
-            Self::Internal(internal_node) => internal_node.rollback(barrier),
-            Self::Leaf(leaf_node) => leaf_node.rollback(barrier),
+            Self::Internal(internal_node) => internal_node.rollback(guard),
+            Self::Leaf(leaf_node) => leaf_node.rollback(guard),
         }
     }
 
@@ -257,19 +253,14 @@ where
     ///
     /// If the target leaf node does not exist in the sub-tree, returns `false`.
     #[inline]
-    pub(super) fn cleanup_link<'b, Q>(
-        &self,
-        key: &Q,
-        traverse_max: bool,
-        barrier: &'b Barrier,
-    ) -> bool
+    pub(super) fn cleanup_link<'g, Q>(&self, key: &Q, traverse_max: bool, guard: &'g Guard) -> bool
     where
-        K: 'b + Borrow<Q>,
+        K: 'g + Borrow<Q>,
         Q: Ord + ?Sized,
     {
         match &self {
-            Self::Internal(internal_node) => internal_node.cleanup_link(key, traverse_max, barrier),
-            Self::Leaf(leaf_node) => leaf_node.cleanup_link(key, traverse_max, barrier),
+            Self::Internal(internal_node) => internal_node.cleanup_link(key, traverse_max, guard),
+            Self::Leaf(leaf_node) => leaf_node.cleanup_link(key, traverse_max, guard),
         }
     }
 }

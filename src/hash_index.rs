@@ -1,6 +1,6 @@
 //! [`HashIndex`] is a read-optimized concurrent and asynchronous hash map.
 
-use super::ebr::{Arc, AtomicArc, Barrier};
+use super::ebr::{Arc, AtomicArc, Guard};
 use super::hash_table::bucket::{Bucket, EntryPtr, Locker, OPTIMISTIC};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::{HashTable, LockedEntry};
@@ -106,18 +106,18 @@ where
 /// An iterator over the entries of a [`HashIndex`].
 ///
 /// An [`Iter`] iterates over all the entries that survive the [`Iter`].
-pub struct Iter<'h, 'b, K, V, H = RandomState>
+pub struct Iter<'h, 'g, K, V, H = RandomState>
 where
     K: 'static + Clone + Eq + Hash,
     V: 'static + Clone,
     H: BuildHasher,
 {
     hashindex: &'h HashIndex<K, V, H>,
-    current_array: Option<&'b BucketArray<K, V, OPTIMISTIC>>,
+    current_array: Option<&'g BucketArray<K, V, OPTIMISTIC>>,
     current_index: usize,
-    current_bucket: Option<&'b Bucket<K, V, OPTIMISTIC>>,
-    current_entry_ptr: EntryPtr<'b, K, V, OPTIMISTIC>,
-    barrier: &'b Barrier,
+    current_bucket: Option<&'g Bucket<K, V, OPTIMISTIC>>,
+    current_entry_ptr: EntryPtr<'g, K, V, OPTIMISTIC>,
+    guard: &'g Guard,
 }
 
 impl<K, V, H> HashIndex<K, V, H>
@@ -252,10 +252,10 @@ where
     /// ```
     #[inline]
     pub fn entry(&self, key: K) -> Entry<K, V, H> {
-        let barrier = Barrier::new();
+        let guard = Guard::new();
         let hash = self.hash(&key);
         let locked_entry = unsafe {
-            self.reserve_entry(&key, hash, &mut (), self.prolonged_barrier_ref(&barrier))
+            self.reserve_entry(&key, hash, &mut (), self.prolonged_guard_ref(&guard))
                 .ok()
                 .unwrap_unchecked()
         };
@@ -294,12 +294,12 @@ where
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             {
-                let barrier = Barrier::new();
+                let guard = Guard::new();
                 if let Ok(locked_entry) = self.reserve_entry(
                     &key,
                     hash,
                     &mut async_wait_pinned,
-                    self.prolonged_barrier_ref(&barrier),
+                    self.prolonged_guard_ref(&guard),
                 ) {
                     if locked_entry.entry_ptr.is_valid() {
                         return Entry::Occupied(OccupiedEntry {
@@ -343,9 +343,9 @@ where
     /// ```
     #[inline]
     pub fn first_entry(&self) -> Option<OccupiedEntry<K, V, H>> {
-        let barrier = Barrier::new();
-        let prolonged_barrier = self.prolonged_barrier_ref(&barrier);
-        if let Some(locked_entry) = self.lock_first_entry(prolonged_barrier) {
+        let guard = Guard::new();
+        let prolonged_guard = self.prolonged_guard_ref(&guard);
+        if let Some(locked_entry) = self.lock_first_entry(prolonged_guard) {
             return Some(OccupiedEntry {
                 hashindex: self,
                 locked_entry,
@@ -399,9 +399,9 @@ where
     /// ```
     #[inline]
     pub fn insert(&self, key: K, val: V) -> Result<(), (K, V)> {
-        let barrier = Barrier::new();
+        let guard = Guard::new();
         let hash = self.hash(&key);
-        if let Ok(Some((k, v))) = self.insert_entry(key, val, hash, &mut (), &barrier) {
+        if let Ok(Some((k, v))) = self.insert_entry(key, val, hash, &mut (), &guard) {
             Err((k, v))
         } else {
             Ok(())
@@ -430,7 +430,7 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            match self.insert_entry(key, val, hash, &mut async_wait_pinned, &Barrier::new()) {
+            match self.insert_entry(key, val, hash, &mut async_wait_pinned, &Guard::new()) {
                 Ok(Some(returned)) => return Err(returned),
                 Ok(None) => return Ok(()),
                 Err(returned) => {
@@ -527,7 +527,7 @@ where
             |v: &mut V| condition(v),
             |r| r.is_some(),
             &mut (),
-            &Barrier::new(),
+            &Guard::new(),
         )
         .ok()
         .map_or(false, |r| r)
@@ -567,7 +567,7 @@ where
                 condition,
                 |r| r.is_some(),
                 &mut async_wait_pinned,
-                &Barrier::new(),
+                &Guard::new(),
             ) {
                 Ok(r) => return r,
                 Err(c) => condition = c,
@@ -597,13 +597,13 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let barrier = Barrier::new();
+        let guard = Guard::new();
         let locked_entry = self
             .get_entry(
                 key,
                 self.hash(key.borrow()),
                 &mut (),
-                self.prolonged_barrier_ref(&barrier),
+                self.prolonged_guard_ref(&guard),
             )
             .ok()
             .flatten()?;
@@ -641,7 +641,7 @@ where
                 key,
                 hash,
                 &mut async_wait_pinned,
-                self.prolonged_barrier_ref(&Barrier::new()),
+                self.prolonged_guard_ref(&Guard::new()),
             ) {
                 if let Some(locked_entry) = result {
                     return Some(OccupiedEntry {
@@ -678,14 +678,14 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let barrier = Barrier::new();
-        self.read_entry(key, self.hash(key), &mut (), &barrier)
+        let guard = Guard::new();
+        self.read_entry(key, self.hash(key), &mut (), &guard)
             .ok()
             .flatten()
             .map(|(k, v)| reader(k, v))
     }
 
-    /// Reads a key-value pair using the supplied [`Barrier`].
+    /// Reads a key-value pair using the supplied [`Guard`].
     ///
     /// Returns `None` if the key does not exist. It enables the caller to use the value reference
     /// outside the method. This method is not linearizable; the key-value pair being read by this
@@ -694,29 +694,29 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::Barrier;
+    /// use scc::ebr::Guard;
     /// use scc::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
     /// assert!(hashindex.insert(1, 10).is_ok());
     ///
-    /// let barrier = Barrier::new();
-    /// let value_ref = hashindex.read_with(&1, |k, v| v, &barrier).unwrap();
+    /// let guard = Guard::new();
+    /// let value_ref = hashindex.read_with(&1, |k, v| v, &guard).unwrap();
     /// assert_eq!(*value_ref, 10);
     /// ```
     #[inline]
-    pub fn read_with<'b, Q, R, F: FnOnce(&'b K, &'b V) -> R>(
+    pub fn read_with<'g, Q, R, F: FnOnce(&'g K, &'g V) -> R>(
         &self,
         key: &Q,
         reader: F,
-        barrier: &'b Barrier,
+        guard: &'g Guard,
     ) -> Option<R>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.read_entry(key, self.hash(key), &mut (), barrier)
+        self.read_entry(key, self.hash(key), &mut (), guard)
             .ok()
             .flatten()
             .map(|(k, v)| reader(k, v))
@@ -793,7 +793,7 @@ where
     #[inline]
     pub async fn retain_async<F: FnMut(&K, &V) -> bool>(&self, mut pred: F) {
         let mut removed = false;
-        let mut current_array_holder = self.array.get_arc(Acquire, &Barrier::new());
+        let mut current_array_holder = self.array.get_arc(Acquire, &Guard::new());
         while let Some(current_array) = current_array_holder.take() {
             self.cleanse_old_array_async(&current_array).await;
             for index in 0..current_array.num_buckets() {
@@ -801,15 +801,15 @@ where
                     let mut async_wait = AsyncWait::default();
                     let mut async_wait_pinned = Pin::new(&mut async_wait);
                     {
-                        let barrier = Barrier::new();
+                        let guard = Guard::new();
                         let bucket = current_array.bucket_mut(index);
                         if let Ok(locker) =
-                            Locker::try_lock_or_wait(bucket, &mut async_wait_pinned, &barrier)
+                            Locker::try_lock_or_wait(bucket, &mut async_wait_pinned, &guard)
                         {
                             if let Some(mut locker) = locker {
                                 let data_block_mut = current_array.data_block_mut(index);
-                                let mut entry_ptr = EntryPtr::new(&barrier);
-                                while entry_ptr.next(&locker, &barrier) {
+                                let mut entry_ptr = EntryPtr::new(&guard);
+                                while entry_ptr.next(&locker, &guard) {
                                     let (k, v) = entry_ptr.get(data_block_mut);
                                     if !pred(k, v) {
                                         locker.erase(data_block_mut, &entry_ptr);
@@ -824,7 +824,7 @@ where
                 }
             }
 
-            if let Some(new_current_array) = self.array.get_arc(Acquire, &Barrier::new()) {
+            if let Some(new_current_array) = self.array.get_arc(Acquire, &Guard::new()) {
                 if new_current_array.as_ptr() == current_array.as_ptr() {
                     break;
                 }
@@ -835,7 +835,7 @@ where
         }
 
         if removed {
-            self.try_resize(0, &Barrier::new());
+            self.try_resize(0, &Guard::new());
         }
     }
 
@@ -893,7 +893,7 @@ where
     /// ```
     #[inline]
     pub fn len(&self) -> usize {
-        self.num_entries(&Barrier::new())
+        self.num_entries(&Guard::new())
     }
 
     /// Returns `true` if the [`HashIndex`] is empty.
@@ -911,7 +911,7 @@ where
     /// ```
     #[inline]
     pub fn is_empty(&self) -> bool {
-        !self.has_entry(&Barrier::new())
+        !self.has_entry(&Guard::new())
     }
 
     /// Returns the capacity of the [`HashIndex`].
@@ -932,7 +932,7 @@ where
     /// ```
     #[inline]
     pub fn capacity(&self) -> usize {
-        self.num_slots(&Barrier::new())
+        self.num_slots(&Guard::new())
     }
 
     /// Returns the current capacity range of the [`HashIndex`].
@@ -960,25 +960,25 @@ where
     /// at the moment, however the same key-value pair can be visited more than once if the
     /// [`HashIndex`] is being resized.
     ///
-    /// It requires the user to supply a reference to a [`Barrier`].
+    /// It requires the user to supply a reference to a [`Guard`].
     ///
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::Barrier;
+    /// use scc::ebr::Guard;
     /// use scc::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
     /// assert!(hashindex.insert(1, 0).is_ok());
     ///
-    /// let barrier = Barrier::new();
+    /// let guard = Guard::new();
     ///
-    /// let mut iter = hashindex.iter(&barrier);
+    /// let mut iter = hashindex.iter(&guard);
     /// let entry_ref = iter.next().unwrap();
     /// assert_eq!(iter.next(), None);
     ///
-    /// for iter in hashindex.iter(&barrier) {
+    /// for iter in hashindex.iter(&guard) {
     ///     assert_eq!(iter, (&1, &0));
     /// }
     ///
@@ -987,26 +987,26 @@ where
     /// assert_eq!(entry_ref, (&1, &0));
     /// ```
     #[inline]
-    pub fn iter<'h, 'b>(&'h self, barrier: &'b Barrier) -> Iter<'h, 'b, K, V, H> {
+    pub fn iter<'h, 'g>(&'h self, guard: &'g Guard) -> Iter<'h, 'g, K, V, H> {
         Iter {
             hashindex: self,
             current_array: None,
             current_index: 0,
             current_bucket: None,
-            current_entry_ptr: EntryPtr::new(barrier),
-            barrier,
+            current_entry_ptr: EntryPtr::new(guard),
+            guard,
         }
     }
 
     /// Clears the old array asynchronously.
     async fn cleanse_old_array_async(&self, current_array: &BucketArray<K, V, OPTIMISTIC>) {
-        while !current_array.old_array(&Barrier::new()).is_null() {
+        while !current_array.old_array(&Guard::new()).is_null() {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             if self.incremental_rehash::<_, _, false>(
                 current_array,
                 &mut async_wait_pinned,
-                &Barrier::new(),
+                &Guard::new(),
             ) == Ok(true)
             {
                 break;
@@ -1025,7 +1025,7 @@ where
     #[inline]
     fn clone(&self) -> Self {
         let self_clone = Self::with_capacity_and_hasher(self.capacity(), self.hasher().clone());
-        for (k, v) in self.iter(&Barrier::new()) {
+        for (k, v) in self.iter(&Guard::new()) {
             let _reuslt = self_clone.insert(k.clone(), v.clone());
         }
         self_clone
@@ -1040,8 +1040,8 @@ where
 {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let barrier = Barrier::new();
-        f.debug_map().entries(self.iter(&barrier)).finish()
+        let guard = Guard::new();
+        f.debug_map().entries(self.iter(&guard)).finish()
     }
 }
 
@@ -1153,13 +1153,13 @@ where
 {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        let barrier = Barrier::new();
+        let guard = Guard::new();
         if !self
-            .iter(&barrier)
+            .iter(&guard)
             .any(|(k, v)| other.read(k, |_, ov| v == ov) != Some(true))
         {
             return !other
-                .iter(&barrier)
+                .iter(&guard)
                 .any(|(k, v)| self.read(k, |_, sv| v == sv) != Some(true));
         }
         false
@@ -1387,14 +1387,14 @@ where
             &self.locked_entry.entry_ptr,
         );
         if self.locked_entry.locker.num_entries() <= 1 || self.locked_entry.locker.need_rebuild() {
-            let barrier = Barrier::new();
+            let guard = Guard::new();
             let hashindex = self.hashindex;
-            if let Some(current_array) = hashindex.bucket_array().load(Acquire, &barrier).as_ref() {
-                if current_array.old_array(&barrier).is_null() {
+            if let Some(current_array) = hashindex.bucket_array().load(Acquire, &guard).as_ref() {
+                if current_array.old_array(&guard).is_null() {
                     let index = self.locked_entry.index;
                     if current_array.within_sampling_range(index) {
                         drop(self);
-                        hashindex.try_shrink_or_rebuild(current_array, index, &barrier);
+                        hashindex.try_shrink_or_rebuild(current_array, index, &guard);
                     }
                 }
             }
@@ -1496,7 +1496,7 @@ where
             self.locked_entry.data_block_mut,
             partial_hash,
             || (key, val),
-            self.hashindex.prolonged_barrier_ref(&Barrier::new()),
+            self.hashindex.prolonged_guard_ref(&Guard::new()),
         );
         self.locked_entry.locker.erase(
             self.locked_entry.data_block_mut,
@@ -1651,12 +1651,12 @@ where
     /// ```
     #[inline]
     pub fn insert_entry(mut self, val: V) -> OccupiedEntry<'h, K, V, H> {
-        let barrier = Barrier::new();
+        let guard = Guard::new();
         let entry_ptr = self.locked_entry.locker.insert_with(
             self.locked_entry.data_block_mut,
             BucketArray::<K, V, OPTIMISTIC>::partial_hash(self.hash),
             || (self.key, val),
-            self.hashindex.prolonged_barrier_ref(&barrier),
+            self.hashindex.prolonged_guard_ref(&guard),
         );
         OccupiedEntry {
             hashindex: self.hashindex,
@@ -1746,12 +1746,12 @@ where
             .hashindex
             .minimum_capacity
             .fetch_sub(self.additional, Relaxed);
-        self.hashindex.try_resize(0, &Barrier::new());
+        self.hashindex.try_resize(0, &Guard::new());
         debug_assert!(result >= self.additional);
     }
 }
 
-impl<'h, 'b, K, V, H> Debug for Iter<'h, 'b, K, V, H>
+impl<'h, 'g, K, V, H> Debug for Iter<'h, 'g, K, V, H>
 where
     K: 'static + Clone + Eq + Hash,
     V: 'static + Clone,
@@ -1766,13 +1766,13 @@ where
     }
 }
 
-impl<'h, 'b, K, V, H> Iterator for Iter<'h, 'b, K, V, H>
+impl<'h, 'g, K, V, H> Iterator for Iter<'h, 'g, K, V, H>
 where
     K: 'static + Clone + Eq + Hash,
     V: 'static + Clone,
     H: BuildHasher,
 {
-    type Item = (&'b K, &'b V);
+    type Item = (&'g K, &'g V);
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -1783,9 +1783,9 @@ where
             let current_array = self
                 .hashindex
                 .bucket_array()
-                .load(Acquire, self.barrier)
+                .load(Acquire, self.guard)
                 .as_ref()?;
-            let old_array_ptr = current_array.old_array(self.barrier);
+            let old_array_ptr = current_array.old_array(self.guard);
             let array = if let Some(old_array) = old_array_ptr.as_ref() {
                 old_array
             } else {
@@ -1793,7 +1793,7 @@ where
             };
             self.current_array.replace(array);
             self.current_bucket.replace(array.bucket(0));
-            self.current_entry_ptr = EntryPtr::new(self.barrier);
+            self.current_entry_ptr = EntryPtr::new(self.guard);
             array
         };
 
@@ -1801,7 +1801,7 @@ where
         loop {
             if let Some(bucket) = self.current_bucket.take() {
                 // Go to the next entry in the bucket.
-                if self.current_entry_ptr.next(bucket, self.barrier) {
+                if self.current_entry_ptr.next(bucket, self.guard) {
                     let (k, v) = self
                         .current_entry_ptr
                         .get(array.data_block(self.current_index));
@@ -1814,7 +1814,7 @@ where
                 let current_array = self
                     .hashindex
                     .bucket_array()
-                    .load(Acquire, self.barrier)
+                    .load(Acquire, self.guard)
                     .as_ref()?;
                 if self
                     .current_array
@@ -1825,7 +1825,7 @@ where
                     // Finished scanning the entire array.
                     break;
                 }
-                let old_array_ptr = current_array.old_array(self.barrier);
+                let old_array_ptr = current_array.old_array(self.guard);
                 if self
                     .current_array
                     .as_ref()
@@ -1837,7 +1837,7 @@ where
                     self.current_array.replace(array);
                     self.current_index = 0;
                     self.current_bucket.replace(array.bucket(0));
-                    self.current_entry_ptr = EntryPtr::new(self.barrier);
+                    self.current_entry_ptr = EntryPtr::new(self.guard);
                     continue;
                 }
 
@@ -1850,18 +1850,18 @@ where
                 self.current_array.replace(array);
                 self.current_index = 0;
                 self.current_bucket.replace(array.bucket(0));
-                self.current_entry_ptr = EntryPtr::new(self.barrier);
+                self.current_entry_ptr = EntryPtr::new(self.guard);
                 continue;
             }
             self.current_bucket
                 .replace(array.bucket(self.current_index));
-            self.current_entry_ptr = EntryPtr::new(self.barrier);
+            self.current_entry_ptr = EntryPtr::new(self.guard);
         }
         None
     }
 }
 
-impl<'h, 'b, K, V, H> FusedIterator for Iter<'h, 'b, K, V, H>
+impl<'h, 'g, K, V, H> FusedIterator for Iter<'h, 'g, K, V, H>
 where
     K: 'static + Clone + Eq + Hash,
     V: 'static + Clone,
@@ -1869,7 +1869,7 @@ where
 {
 }
 
-impl<'h, 'b, K, V, H> UnwindSafe for Iter<'h, 'b, K, V, H>
+impl<'h, 'g, K, V, H> UnwindSafe for Iter<'h, 'g, K, V, H>
 where
     K: 'static + Clone + Eq + Hash + UnwindSafe,
     V: 'static + Clone + UnwindSafe,

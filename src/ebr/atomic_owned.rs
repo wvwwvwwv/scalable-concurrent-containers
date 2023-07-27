@@ -1,5 +1,5 @@
 use super::ref_counted::RefCounted;
-use super::{Barrier, Owned, Ptr, Tag};
+use super::{Guard, Owned, Ptr, Tag};
 use std::mem::forget;
 use std::panic::UnwindSafe;
 use std::ptr::{null_mut, NonNull};
@@ -14,7 +14,7 @@ pub struct AtomicOwned<T> {
 }
 
 /// A pair of [`Owned`] and [`Ptr`] of the same type.
-pub type OwnedPtrPair<'b, T> = (Option<Owned<T>>, Ptr<'b, T>);
+pub type OwnedPtrPair<'g, T> = (Option<Owned<T>>, Ptr<'g, T>);
 
 impl<T: 'static> AtomicOwned<T> {
     /// Creates a new [`AtomicOwned`] from an instance of `T`.
@@ -101,16 +101,16 @@ impl<T> AtomicOwned<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{AtomicOwned, Barrier};
+    /// use scc::ebr::{AtomicOwned, Guard};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_owned: AtomicOwned<usize> = AtomicOwned::new(11);
-    /// let barrier = Barrier::new();
-    /// let ptr = atomic_owned.load(Relaxed, &barrier);
+    /// let guard = Guard::new();
+    /// let ptr = atomic_owned.load(Relaxed, &guard);
     /// assert_eq!(*ptr.as_ref().unwrap(), 11);
     /// ```
     #[inline]
-    pub fn load<'b>(&self, order: Ordering, _barrier: &'b Barrier) -> Ptr<'b, T> {
+    pub fn load<'g>(&self, order: Ordering, _guard: &'g Guard) -> Ptr<'g, T> {
         Ptr::from(self.instance_ptr.load(order))
     }
 
@@ -119,11 +119,11 @@ impl<T> AtomicOwned<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{AtomicOwned, Barrier, Owned, Tag};
+    /// use scc::ebr::{AtomicOwned, Guard, Owned, Tag};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_owned: AtomicOwned<usize> = AtomicOwned::new(14);
-    /// let barrier = Barrier::new();
+    /// let guard = Guard::new();
     /// let (old, tag) = atomic_owned.swap((Some(Owned::new(15)), Tag::Second), Relaxed);
     /// assert_eq!(tag, Tag::None);
     /// assert_eq!(*old.unwrap(), 14);
@@ -210,38 +210,38 @@ impl<T> AtomicOwned<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{AtomicOwned, Barrier, Owned, Tag};
+    /// use scc::ebr::{AtomicOwned, Guard, Owned, Tag};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_owned: AtomicOwned<usize> = AtomicOwned::new(17);
-    /// let barrier = Barrier::new();
+    /// let guard = Guard::new();
     ///
-    /// let mut ptr = atomic_owned.load(Relaxed, &barrier);
+    /// let mut ptr = atomic_owned.load(Relaxed, &guard);
     /// assert_eq!(*ptr.as_ref().unwrap(), 17);
     ///
     /// atomic_owned.update_tag_if(Tag::Both, |_| true, Relaxed, Relaxed);
     /// assert!(atomic_owned.compare_exchange(
-    ///     ptr, (Some(Owned::new(18)), Tag::First), Relaxed, Relaxed, &barrier).is_err());
+    ///     ptr, (Some(Owned::new(18)), Tag::First), Relaxed, Relaxed, &guard).is_err());
     ///
     /// ptr.set_tag(Tag::Both);
     /// let old: Owned<usize> = atomic_owned.compare_exchange(
-    ///     ptr, (Some(Owned::new(18)), Tag::First), Relaxed, Relaxed, &barrier).unwrap().0.unwrap();
+    ///     ptr, (Some(Owned::new(18)), Tag::First), Relaxed, Relaxed, &guard).unwrap().0.unwrap();
     /// assert_eq!(*old, 17);
     /// drop(old);
     ///
     /// assert!(atomic_owned.compare_exchange(
-    ///     ptr, (Some(Owned::new(19)), Tag::None), Relaxed, Relaxed, &barrier).is_err());
+    ///     ptr, (Some(Owned::new(19)), Tag::None), Relaxed, Relaxed, &guard).is_err());
     /// assert_eq!(*ptr.as_ref().unwrap(), 17);
     /// ```
     #[inline]
-    pub fn compare_exchange<'b>(
+    pub fn compare_exchange<'g>(
         &self,
-        current: Ptr<'b, T>,
+        current: Ptr<'g, T>,
         new: (Option<Owned<T>>, Tag),
         success: Ordering,
         failure: Ordering,
-        _barrier: &'b Barrier,
-    ) -> Result<OwnedPtrPair<'b, T>, OwnedPtrPair<'b, T>> {
+        _guard: &'g Guard,
+    ) -> Result<OwnedPtrPair<'g, T>, OwnedPtrPair<'g, T>> {
         let desired = Tag::update_tag(
             new.0
                 .as_ref()
@@ -277,13 +277,13 @@ impl<T> AtomicOwned<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{AtomicOwned, Owned, Barrier, Tag};
+    /// use scc::ebr::{AtomicOwned, Owned, Guard, Tag};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_owned: AtomicOwned<usize> = AtomicOwned::new(17);
-    /// let barrier = Barrier::new();
+    /// let guard = Guard::new();
     ///
-    /// let mut ptr = atomic_owned.load(Relaxed, &barrier);
+    /// let mut ptr = atomic_owned.load(Relaxed, &guard);
     /// assert_eq!(*ptr.as_ref().unwrap(), 17);
     ///
     /// while let Err((_, actual)) = atomic_owned.compare_exchange_weak(
@@ -291,22 +291,22 @@ impl<T> AtomicOwned<T> {
     ///     (Some(Owned::new(18)), Tag::First),
     ///     Relaxed,
     ///     Relaxed,
-    ///     &barrier) {
+    ///     &guard) {
     ///     ptr = actual;
     /// }
     ///
-    /// let mut ptr = atomic_owned.load(Relaxed, &barrier);
+    /// let mut ptr = atomic_owned.load(Relaxed, &guard);
     /// assert_eq!(*ptr.as_ref().unwrap(), 18);
     /// ```
     #[inline]
-    pub fn compare_exchange_weak<'b>(
+    pub fn compare_exchange_weak<'g>(
         &self,
-        current: Ptr<'b, T>,
+        current: Ptr<'g, T>,
         new: (Option<Owned<T>>, Tag),
         success: Ordering,
         failure: Ordering,
-        _barrier: &'b Barrier,
-    ) -> Result<OwnedPtrPair<'b, T>, OwnedPtrPair<'b, T>> {
+        _guard: &'g Guard,
+    ) -> Result<OwnedPtrPair<'g, T>, OwnedPtrPair<'g, T>> {
         let desired = Tag::update_tag(
             new.0
                 .as_ref()
@@ -369,5 +369,7 @@ impl<T> Drop for AtomicOwned<T> {
 }
 
 unsafe impl<T: Send> Send for AtomicOwned<T> {}
+
 unsafe impl<T: Sync> Sync for AtomicOwned<T> {}
+
 impl<T: UnwindSafe> UnwindSafe for AtomicOwned<T> {}

@@ -1,5 +1,5 @@
 use super::ref_counted::RefCounted;
-use super::{Arc, Barrier, Ptr, Tag};
+use super::{Arc, Guard, Ptr, Tag};
 use std::mem::forget;
 use std::panic::UnwindSafe;
 use std::ptr::{null_mut, NonNull};
@@ -14,7 +14,7 @@ pub struct AtomicArc<T> {
 }
 
 /// A pair of [`Arc`] and [`Ptr`] of the same type.
-pub type ArcPtrPair<'b, T> = (Option<Arc<T>>, Ptr<'b, T>);
+pub type ArcPtrPair<'g, T> = (Option<Arc<T>>, Ptr<'g, T>);
 
 impl<T: 'static> AtomicArc<T> {
     /// Creates a new [`AtomicArc`] from an instance of `T`.
@@ -101,16 +101,16 @@ impl<T> AtomicArc<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{AtomicArc, Barrier};
+    /// use scc::ebr::{AtomicArc, Guard};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(11);
-    /// let barrier = Barrier::new();
-    /// let ptr = atomic_arc.load(Relaxed, &barrier);
+    /// let guard = Guard::new();
+    /// let ptr = atomic_arc.load(Relaxed, &guard);
     /// assert_eq!(*ptr.as_ref().unwrap(), 11);
     /// ```
     #[inline]
-    pub fn load<'b>(&self, order: Ordering, _barrier: &'b Barrier) -> Ptr<'b, T> {
+    pub fn load<'g>(&self, order: Ordering, _guard: &'g Guard) -> Ptr<'g, T> {
         Ptr::from(self.instance_ptr.load(order))
     }
 
@@ -119,11 +119,11 @@ impl<T> AtomicArc<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Arc, AtomicArc, Barrier, Tag};
+    /// use scc::ebr::{Arc, AtomicArc, Guard, Tag};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(14);
-    /// let barrier = Barrier::new();
+    /// let guard = Guard::new();
     /// let (old, tag) = atomic_arc.swap((Some(Arc::new(15)), Tag::Second), Relaxed);
     /// assert_eq!(tag, Tag::None);
     /// assert_eq!(*old.unwrap(), 14);
@@ -210,38 +210,38 @@ impl<T> AtomicArc<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Arc, AtomicArc, Barrier, Tag};
+    /// use scc::ebr::{Arc, AtomicArc, Guard, Tag};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(17);
-    /// let barrier = Barrier::new();
+    /// let guard = Guard::new();
     ///
-    /// let mut ptr = atomic_arc.load(Relaxed, &barrier);
+    /// let mut ptr = atomic_arc.load(Relaxed, &guard);
     /// assert_eq!(*ptr.as_ref().unwrap(), 17);
     ///
     /// atomic_arc.update_tag_if(Tag::Both, |_| true, Relaxed, Relaxed);
     /// assert!(atomic_arc.compare_exchange(
-    ///     ptr, (Some(Arc::new(18)), Tag::First), Relaxed, Relaxed, &barrier).is_err());
+    ///     ptr, (Some(Arc::new(18)), Tag::First), Relaxed, Relaxed, &guard).is_err());
     ///
     /// ptr.set_tag(Tag::Both);
     /// let old: Arc<usize> = atomic_arc.compare_exchange(
-    ///     ptr, (Some(Arc::new(18)), Tag::First), Relaxed, Relaxed, &barrier).unwrap().0.unwrap();
+    ///     ptr, (Some(Arc::new(18)), Tag::First), Relaxed, Relaxed, &guard).unwrap().0.unwrap();
     /// assert_eq!(*old, 17);
     /// drop(old);
     ///
     /// assert!(atomic_arc.compare_exchange(
-    ///     ptr, (Some(Arc::new(19)), Tag::None), Relaxed, Relaxed, &barrier).is_err());
+    ///     ptr, (Some(Arc::new(19)), Tag::None), Relaxed, Relaxed, &guard).is_err());
     /// assert_eq!(*ptr.as_ref().unwrap(), 17);
     /// ```
     #[inline]
-    pub fn compare_exchange<'b>(
+    pub fn compare_exchange<'g>(
         &self,
-        current: Ptr<'b, T>,
+        current: Ptr<'g, T>,
         new: (Option<Arc<T>>, Tag),
         success: Ordering,
         failure: Ordering,
-        _barrier: &'b Barrier,
-    ) -> Result<ArcPtrPair<'b, T>, ArcPtrPair<'b, T>> {
+        _guard: &'g Guard,
+    ) -> Result<ArcPtrPair<'g, T>, ArcPtrPair<'g, T>> {
         let desired = Tag::update_tag(
             new.0
                 .as_ref()
@@ -277,13 +277,13 @@ impl<T> AtomicArc<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Arc, AtomicArc, Barrier, Tag};
+    /// use scc::ebr::{Arc, AtomicArc, Guard, Tag};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(17);
-    /// let barrier = Barrier::new();
+    /// let guard = Guard::new();
     ///
-    /// let mut ptr = atomic_arc.load(Relaxed, &barrier);
+    /// let mut ptr = atomic_arc.load(Relaxed, &guard);
     /// assert_eq!(*ptr.as_ref().unwrap(), 17);
     ///
     /// while let Err((_, actual)) = atomic_arc.compare_exchange_weak(
@@ -291,22 +291,22 @@ impl<T> AtomicArc<T> {
     ///     (Some(Arc::new(18)), Tag::First),
     ///     Relaxed,
     ///     Relaxed,
-    ///     &barrier) {
+    ///     &guard) {
     ///     ptr = actual;
     /// }
     ///
-    /// let mut ptr = atomic_arc.load(Relaxed, &barrier);
+    /// let mut ptr = atomic_arc.load(Relaxed, &guard);
     /// assert_eq!(*ptr.as_ref().unwrap(), 18);
     /// ```
     #[inline]
-    pub fn compare_exchange_weak<'b>(
+    pub fn compare_exchange_weak<'g>(
         &self,
-        current: Ptr<'b, T>,
+        current: Ptr<'g, T>,
         new: (Option<Arc<T>>, Tag),
         success: Ordering,
         failure: Ordering,
-        _barrier: &'b Barrier,
-    ) -> Result<ArcPtrPair<'b, T>, ArcPtrPair<'b, T>> {
+        _guard: &'g Guard,
+    ) -> Result<ArcPtrPair<'g, T>, ArcPtrPair<'g, T>> {
         let desired = Tag::update_tag(
             new.0
                 .as_ref()
@@ -337,18 +337,18 @@ impl<T> AtomicArc<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Arc, AtomicArc, Barrier};
+    /// use scc::ebr::{Arc, AtomicArc, Guard};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(59);
-    /// let barrier = Barrier::new();
-    /// let atomic_arc_clone = atomic_arc.clone(Relaxed, &barrier);
-    /// let ptr = atomic_arc_clone.load(Relaxed, &barrier);
+    /// let guard = Guard::new();
+    /// let atomic_arc_clone = atomic_arc.clone(Relaxed, &guard);
+    /// let ptr = atomic_arc_clone.load(Relaxed, &guard);
     /// assert_eq!(*ptr.as_ref().unwrap(), 59);
     /// ```
     #[inline]
     #[must_use]
-    pub fn clone(&self, order: Ordering, _barrier: &Barrier) -> AtomicArc<T> {
+    pub fn clone(&self, order: Ordering, _guard: &Guard) -> AtomicArc<T> {
         unsafe {
             let mut ptr = self.instance_ptr.load(order);
             while let Some(underlying) = (Tag::unset_tag(ptr)).as_ref() {
@@ -374,16 +374,16 @@ impl<T> AtomicArc<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{Arc, AtomicArc, Barrier};
+    /// use scc::ebr::{Arc, AtomicArc, Guard};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(47);
-    /// let barrier = Barrier::new();
-    /// let arc: Arc<usize> = atomic_arc.get_arc(Relaxed, &barrier).unwrap();
+    /// let guard = Guard::new();
+    /// let arc: Arc<usize> = atomic_arc.get_arc(Relaxed, &guard).unwrap();
     /// assert_eq!(*arc, 47);
     /// ```
     #[inline]
-    pub fn get_arc(&self, order: Ordering, _barrier: &Barrier) -> Option<Arc<T>> {
+    pub fn get_arc(&self, order: Ordering, _guard: &Guard) -> Option<Arc<T>> {
         let mut ptr = Tag::unset_tag(self.instance_ptr.load(order));
         while let Some(underlying_ptr) = NonNull::new(ptr.cast_mut()) {
             if unsafe { underlying_ptr.as_ref() }.try_add_ref(Acquire) {
@@ -423,7 +423,7 @@ impl<T> AtomicArc<T> {
 impl<T> Clone for AtomicArc<T> {
     #[inline]
     fn clone(&self) -> AtomicArc<T> {
-        self.clone(Relaxed, &Barrier::new())
+        self.clone(Relaxed, &Guard::new())
     }
 }
 
@@ -445,5 +445,7 @@ impl<T> Drop for AtomicArc<T> {
 }
 
 unsafe impl<T: Send> Send for AtomicArc<T> {}
+
 unsafe impl<T: Sync> Sync for AtomicArc<T> {}
+
 impl<T: UnwindSafe> UnwindSafe for AtomicArc<T> {}

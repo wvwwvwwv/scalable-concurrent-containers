@@ -1,5 +1,5 @@
 use super::bucket::{Bucket, DataBlock, BUCKET_LEN, OPTIMISTIC};
-use crate::ebr::{AtomicArc, Barrier, Ptr, Tag};
+use crate::ebr::{AtomicArc, Guard, Ptr, Tag};
 use std::alloc::{alloc, alloc_zeroed, dealloc, Layout};
 use std::mem::{align_of, needs_drop, size_of};
 use std::sync::atomic::AtomicUsize;
@@ -161,20 +161,20 @@ impl<K: Eq, V, const TYPE: char> BucketArray<K, V, TYPE> {
 
     /// Returns a [`Ptr`] to the old array.
     #[inline]
-    pub(crate) fn old_array<'b>(&self, barrier: &'b Barrier) -> Ptr<'b, BucketArray<K, V, TYPE>> {
-        self.old_array.load(Relaxed, barrier)
+    pub(crate) fn old_array<'g>(&self, guard: &'g Guard) -> Ptr<'g, BucketArray<K, V, TYPE>> {
+        self.old_array.load(Relaxed, guard)
     }
 
     /// Drops the old array.
     #[inline]
-    pub(crate) fn drop_old_array(&self, barrier: &Barrier) {
+    pub(crate) fn drop_old_array(&self, guard: &Guard) {
         self.old_array.swap((None, Tag::None), Relaxed).0.map(|a| {
             // It is OK to pass the old array instance to the garbage collector, deferring destruction.
             debug_assert_eq!(
                 a.num_cleared_buckets.load(Relaxed),
                 a.array_len.max(BUCKET_LEN)
             );
-            a.release(barrier)
+            a.release(guard)
         });
     }
 
@@ -235,11 +235,11 @@ impl<K: Eq, V, const TYPE: char> Drop for BucketArray<K, V, TYPE> {
         };
 
         if num_cleared_buckets < self.array_len {
-            let barrier = Barrier::new();
+            let guard = Guard::new();
             for index in num_cleared_buckets..self.array_len {
                 unsafe {
                     self.bucket_mut(index)
-                        .drop_entries(self.data_block_mut(index), &barrier);
+                        .drop_entries(self.data_block_mut(index), &guard);
                 }
             }
         }

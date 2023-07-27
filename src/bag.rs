@@ -1,6 +1,6 @@
 //! [`Bag`] is a lock-free concurrent unordered instance container.
 
-use super::ebr::Barrier;
+use super::ebr::Guard;
 use super::{LinkedEntry, LinkedList, Stack};
 use std::iter::FusedIterator;
 use std::mem::{needs_drop, MaybeUninit};
@@ -126,7 +126,7 @@ impl<T, const ARRAY_LEN: usize> Bag<T, ARRAY_LEN> {
     /// ```
     #[inline]
     pub fn pop(&self) -> Option<T> {
-        let barrier = Barrier::new();
+        let guard = Guard::new();
         self.stack.peek(|e| {
             let mut current = e;
             while let Some(storage) = current {
@@ -137,7 +137,7 @@ impl<T, const ARRAY_LEN: usize> Bag<T, ARRAY_LEN> {
                 if let Some(val) = val_opt {
                     return Some(val);
                 }
-                current = storage.next_ptr(Acquire, &barrier).as_ref();
+                current = storage.next_ptr(Acquire, &guard).as_ref();
             }
             self.primary_storage.pop().0
         })
@@ -277,8 +277,8 @@ impl<'b, T, const ARRAY_LEN: usize> Iterator for IterMut<'b, T, ARRAY_LEN> {
             self.current_index = u32::MAX;
 
             if let Some(linked) = self.current_stack_entry.as_mut() {
-                let barrier = Barrier::new();
-                if let Some(next) = linked.next_ptr(Acquire, &barrier).as_ref() {
+                let guard = Guard::new();
+                if let Some(next) = linked.next_ptr(Acquire, &guard).as_ref() {
                     let entry_mut = (next as *const LinkedEntry<Storage<T, ARRAY_LEN>>).cast_mut();
                     self.current_stack_entry = unsafe { entry_mut.as_mut() };
                     self.current_index = 0;

@@ -156,10 +156,10 @@ let future_insert = hashindex.insert_async(2, 1);
 let future_remove = hashindex.remove_if_async(&1, |_| true);
 ```
 
-An [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is implemented for [HashIndex](#HashIndex), because any derived references can survive as long as the associated `ebr::Barrier` lives.
+An [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is implemented for [HashIndex](#HashIndex), because any derived references can survive as long as the associated `ebr::Guard` lives.
 
 ```rust
-use scc::ebr::Barrier;
+use scc::ebr::Guard;
 use scc::HashIndex;
 
 let hashindex: HashIndex<u64, u32> = HashIndex::default();
@@ -169,12 +169,12 @@ assert!(hashindex.insert(1, 0).is_ok());
 // Existing values can be replaced with a new one.
 hashindex.get(&1).unwrap().update(1);
 
-let barrier = Barrier::new();
+let guard = Guard::new();
 
-// An `ebr::Barrier` has to be supplied to `iter`.
-let mut iter = hashindex.iter(&barrier);
+// An `ebr::Guard` has to be supplied to `iter`.
+let mut iter = hashindex.iter(&guard);
 
-// The derived reference can live as long as `barrier`.
+// The derived reference can live as long as `guard`.
 let entry_ref = iter.next().unwrap();
 assert_eq!(iter.next(), None);
 
@@ -241,7 +241,7 @@ let future_remove = treeindex.remove_if_async(&1, |v| *v == 2);
 Entries can be scanned without acquiring any locks.
 
 ```rust
-use scc::ebr::Barrier;
+use scc::ebr::Guard;
 use scc::TreeIndex;
 
 let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
@@ -250,10 +250,10 @@ assert!(treeindex.insert(1, 10).is_ok());
 assert!(treeindex.insert(2, 11).is_ok());
 assert!(treeindex.insert(3, 13).is_ok());
 
-let barrier = Barrier::new();
+let guard = Guard::new();
 
 // `visitor` iterates over entries without acquiring a lock.
-let mut visitor = treeindex.iter(&barrier);
+let mut visitor = treeindex.iter(&guard);
 assert_eq!(visitor.next().unwrap(), (&1, &10));
 assert_eq!(visitor.next().unwrap(), (&2, &11));
 assert_eq!(visitor.next().unwrap(), (&3, &13));
@@ -263,7 +263,7 @@ assert!(visitor.next().is_none());
 A specific range of keys can be scanned.
 
 ```rust
-use scc::ebr::Barrier;
+use scc::ebr::Guard;
 use scc::TreeIndex;
 
 let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
@@ -272,11 +272,11 @@ for i in 0..10 {
     assert!(treeindex.insert(i, 10).is_ok());
 }
 
-let barrier = Barrier::new();
+let guard = Guard::new();
 
-assert_eq!(treeindex.range(1..1, &barrier).count(), 0);
-assert_eq!(treeindex.range(4..8, &barrier).count(), 4);
-assert_eq!(treeindex.range(4..=8, &barrier).count(), 5);
+assert_eq!(treeindex.range(1..1, &guard).count(), 0);
+assert_eq!(treeindex.range(4..8, &guard).count(), 4);
+assert_eq!(treeindex.range(4..=8, &guard).count(), 5);
 ```
 
 ## Bag
@@ -346,7 +346,7 @@ Retired instances are stored in intrusive queues in thread-local storage, and th
 The `ebr` module can be used without an `unsafe` block.
 
 ```rust
-use scc::ebr::{suspend, Arc, AtomicArc, AtomicOwned, Barrier, Ptr, Tag};
+use scc::ebr::{suspend, Arc, AtomicArc, AtomicOwned, Guard, Ptr, Tag};
 
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -356,11 +356,11 @@ let atomic_arc: AtomicArc<usize> = AtomicArc::new(17);
 // `atomic_owned` owns `19`.
 let atomic_owned: AtomicOwned<usize> = AtomicOwned::new(19);
 
-// `barrier` prevents the garbage collector from dropping reachable instances.
-let barrier: Barrier = Barrier::new();
+// `guard` prevents the garbage collector from dropping reachable instances.
+let guard = Guard::new();
 
-// `ptr` cannot outlive `barrier`.
-let mut ptr: Ptr<usize> = atomic_arc.load(Relaxed, &barrier);
+// `ptr` cannot outlive `guard`.
+let mut ptr: Ptr<usize> = atomic_arc.load(Relaxed, &guard);
 assert_eq!(*ptr.as_ref().unwrap(), 17);
 
 // `atomic_arc` can be tagged.
@@ -372,7 +372,7 @@ assert!(atomic_arc.compare_exchange(
     (Some(Arc::new(18)), Tag::First),
     Relaxed,
     Relaxed,
-    &barrier).is_err());
+    &guard).is_err());
 
 // `ptr` can be tagged.
 ptr.set_tag(Tag::First);
@@ -383,7 +383,7 @@ let prev: Arc<usize> = atomic_arc.compare_exchange(
     (Some(Arc::new(18)), Tag::Second),
     Relaxed,
     Relaxed,
-    &barrier).unwrap().0.unwrap();
+    &guard).unwrap().0.unwrap();
 assert_eq!(*prev, 17);
 
 // `17` will be garbage-collected later.
@@ -397,12 +397,12 @@ assert_eq!(*arc, 18);
 drop(arc);
 drop(atomic_owned);
 
-// `17` is still valid as `barrier` keeps the garbage collector from dropping it.
+// `17` is still valid as `guard` keeps the garbage collector from dropping it.
 assert_eq!(*ptr.as_ref().unwrap(), 17);
 
 // Execution of a closure can be deferred until all the current readers are gone.
-barrier.defer_execute(|| println!("deferred"));
-drop(barrier);
+guard.defer_execute(|| println!("deferred"));
+drop(guard);
 
 // If the thread is expected to lie dormant for a while, call `suspend()` to allow other threads
 // to reclaim its own retired instances.
@@ -416,7 +416,7 @@ suspend();
 ### Examples
 
 ```rust
-use scc::ebr::{Arc, AtomicArc, Barrier};
+use scc::ebr::{Arc, AtomicArc, Guard};
 use scc::LinkedList;
 
 use std::sync::atomic::Ordering::Relaxed;
@@ -429,13 +429,13 @@ impl LinkedList for L {
     }
 }
 
-let barrier = Barrier::new();
+let guard = Guard::new();
 
 let head: L = L::default();
 let tail: Arc<L> = Arc::new(L(AtomicArc::null(), 1));
 
 // A new entry is pushed.
-assert!(head.push_back(tail.clone(), false, Relaxed, &barrier).is_ok());
+assert!(head.push_back(tail.clone(), false, Relaxed, &guard).is_ok());
 assert!(!head.is_marked(Relaxed));
 
 // Users can mark a flag on an entry.
@@ -443,12 +443,12 @@ head.mark(Relaxed);
 assert!(head.is_marked(Relaxed));
 
 // `next_ptr` traverses the linked list.
-let next_ptr = head.next_ptr(Relaxed, &barrier);
+let next_ptr = head.next_ptr(Relaxed, &guard);
 assert_eq!(next_ptr.as_ref().unwrap().1, 1);
 
 // Once `tail` is deleted, it becomes invisible.
 tail.delete_self(Relaxed);
-assert!(head.next_ptr(Relaxed, &barrier).is_null());
+assert!(head.next_ptr(Relaxed, &guard).is_null());
 ```
 
 ## Performance
