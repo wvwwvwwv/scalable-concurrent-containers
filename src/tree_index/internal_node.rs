@@ -1,7 +1,7 @@
 use super::leaf::{InsertResult, Leaf, RemoveResult, Scanner, DIMENSION};
 use super::leaf_node::{LOCKED, RETIRED};
 use super::node::Node;
-use crate::ebr::{AtomicArc, Guard, Ptr, Shared, Tag};
+use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::exit_guard::ExitGuard;
 use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
 use std::borrow::Borrow;
@@ -19,13 +19,13 @@ where
     V: 'static + Clone,
 {
     /// Children of the [`InternalNode`].
-    children: Leaf<K, AtomicArc<Node<K, V>>>,
+    children: Leaf<K, AtomicShared<Node<K, V>>>,
 
     /// A child [`Node`] that has no upper key bound.
     ///
     /// It stores the maximum key in the node, and key-value pairs are firstly pushed to this
     /// [`Node`] until split.
-    pub(super) unbounded_child: AtomicArc<Node<K, V>>,
+    pub(super) unbounded_child: AtomicShared<Node<K, V>>,
 
     /// On-going split operation.
     split_op: StructuralChange<K, V>,
@@ -47,7 +47,7 @@ where
     pub(super) fn new() -> InternalNode<K, V> {
         InternalNode {
             children: Leaf::new(),
-            unbounded_child: AtomicArc::null(),
+            unbounded_child: AtomicShared::null(),
             split_op: StructuralChange::default(),
             latch: AtomicU8::new(Tag::None.into()),
             wait_queue: WaitQueue::default(),
@@ -375,7 +375,7 @@ where
         val: V,
         full_node_key: Option<&K>,
         full_node_ptr: Ptr<Node<K, V>>,
-        full_node: &AtomicArc<Node<K, V>>,
+        full_node: &AtomicShared<Node<K, V>>,
         root_split: bool,
         async_wait: &mut D,
         guard: &Guard,
@@ -428,7 +428,10 @@ where
 
                 // Builds a list of valid nodes.
                 #[allow(clippy::type_complexity)]
-                let mut entry_array: [Option<(Option<&K>, AtomicArc<Node<K, V>>)>;
+                let mut entry_array: [Option<(
+                    Option<&K>,
+                    AtomicShared<Node<K, V>>,
+                )>;
                     DIMENSION.num_entries + 2] = Default::default();
                 let mut num_entries = 0;
                 let scanner = Scanner::new(&full_internal_node.children);
@@ -930,10 +933,10 @@ where
     V: 'static + Clone,
 {
     origin_node_key: AtomicPtr<K>,
-    origin_node: AtomicArc<Node<K, V>>,
-    low_key_node: AtomicArc<Node<K, V>>,
+    origin_node: AtomicShared<Node<K, V>>,
+    low_key_node: AtomicShared<Node<K, V>>,
     middle_key: AtomicPtr<K>,
-    high_key_node: AtomicArc<Node<K, V>>,
+    high_key_node: AtomicShared<Node<K, V>>,
 }
 
 impl<K, V> StructuralChange<K, V>
@@ -959,10 +962,10 @@ where
     fn default() -> Self {
         Self {
             origin_node_key: AtomicPtr::default(),
-            origin_node: AtomicArc::null(),
-            low_key_node: AtomicArc::null(),
+            origin_node: AtomicShared::null(),
+            low_key_node: AtomicShared::null(),
             middle_key: AtomicPtr::default(),
-            high_key_node: AtomicArc::null(),
+            high_key_node: AtomicShared::null(),
         }
     }
 }
@@ -977,9 +980,9 @@ mod test {
     fn new_level_3_node() -> InternalNode<usize, usize> {
         InternalNode {
             children: Leaf::new(),
-            unbounded_child: AtomicArc::new(Node::Internal(InternalNode {
+            unbounded_child: AtomicShared::new(Node::Internal(InternalNode {
                 children: Leaf::new(),
-                unbounded_child: AtomicArc::new(Node::new_leaf_node()),
+                unbounded_child: AtomicShared::new(Node::new_leaf_node()),
                 split_op: StructuralChange::default(),
                 latch: AtomicU8::new(Tag::None.into()),
                 wait_queue: WaitQueue::default(),

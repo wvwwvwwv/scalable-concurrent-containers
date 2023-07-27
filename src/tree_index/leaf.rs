@@ -1,4 +1,4 @@
-use crate::ebr::{AtomicArc, Guard, Shared};
+use crate::ebr::{AtomicShared, Guard, Shared};
 use crate::LinkedList;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
@@ -31,7 +31,7 @@ where
     entry_array: EntryArray<K, V>,
 
     /// A pointer that points to the next adjacent [`Leaf`].
-    link: AtomicArc<Leaf<K, V>>,
+    link: AtomicShared<Leaf<K, V>>,
 }
 
 /// The number of entries and number of state bits per entry.
@@ -97,7 +97,7 @@ where
         Leaf {
             metadata: AtomicUsize::new(0),
             entry_array: unsafe { MaybeUninit::uninit().assume_init() },
-            link: AtomicArc::null(),
+            link: AtomicShared::null(),
         }
     }
 
@@ -690,7 +690,7 @@ where
     V: 'static + Clone,
 {
     #[inline]
-    fn link_ref(&self) -> &AtomicArc<Leaf<K, V>> {
+    fn link_ref(&self) -> &AtomicShared<Leaf<K, V>> {
         &self.link
     }
 }

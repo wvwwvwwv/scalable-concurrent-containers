@@ -1,4 +1,4 @@
-use super::ebr::{AtomicArc, Guard, Ptr, Shared, Tag};
+use super::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use std::fmt::{self, Debug, Display};
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::Ordering::{self, Relaxed, Release};
@@ -9,7 +9,7 @@ pub trait LinkedList: Sized {
     ///
     /// The pointer value may be tagged if [`Self::mark`] or [`Self::delete_self`] has been
     /// invoked.
-    fn link_ref(&self) -> &AtomicArc<Self>;
+    fn link_ref(&self) -> &AtomicShared<Self>;
 
     /// Returns `true` if `self` is reachable and not marked.
     ///
@@ -17,13 +17,13 @@ pub trait LinkedList: Sized {
     ///
     /// ```
     /// use scc::LinkedList;
-    /// use scc::ebr::{AtomicArc, Tag};
+    /// use scc::ebr::{AtomicShared, Tag};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
-    /// struct L(AtomicArc<L>, usize);
+    /// struct L(AtomicShared<L>, usize);
     /// impl LinkedList for L {
-    ///     fn link_ref(&self) -> &AtomicArc<L> {
+    ///     fn link_ref(&self) -> &AtomicShared<L> {
     ///         &self.0
     ///     }
     /// }
@@ -48,13 +48,13 @@ pub trait LinkedList: Sized {
     ///
     /// ```
     /// use scc::LinkedList;
-    /// use scc::ebr::AtomicArc;
+    /// use scc::ebr::AtomicShared;
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
-    /// struct L(AtomicArc<L>, usize);
+    /// struct L(AtomicShared<L>, usize);
     /// impl LinkedList for L {
-    ///     fn link_ref(&self) -> &AtomicArc<L> {
+    ///     fn link_ref(&self) -> &AtomicShared<L> {
     ///         &self.0
     ///     }
     /// }
@@ -76,13 +76,13 @@ pub trait LinkedList: Sized {
     ///
     /// ```
     /// use scc::LinkedList;
-    /// use scc::ebr::AtomicArc;
+    /// use scc::ebr::AtomicShared;
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
-    /// struct L(AtomicArc<L>, usize);
+    /// struct L(AtomicShared<L>, usize);
     /// impl LinkedList for L {
-    ///     fn link_ref(&self) -> &AtomicArc<L> {
+    ///     fn link_ref(&self) -> &AtomicShared<L> {
     ///         &self.0
     ///     }
     /// }
@@ -105,13 +105,13 @@ pub trait LinkedList: Sized {
     ///
     /// ```
     /// use scc::LinkedList;
-    /// use scc::ebr::AtomicArc;
+    /// use scc::ebr::AtomicShared;
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
-    /// struct L(AtomicArc<L>, usize);
+    /// struct L(AtomicShared<L>, usize);
     /// impl LinkedList for L {
-    ///     fn link_ref(&self) -> &AtomicArc<L> {
+    ///     fn link_ref(&self) -> &AtomicShared<L> {
     ///         &self.0
     ///     }
     /// }
@@ -134,13 +134,13 @@ pub trait LinkedList: Sized {
     ///
     /// ```
     /// use scc::LinkedList;
-    /// use scc::ebr::{AtomicArc, Guard, Shared};
+    /// use scc::ebr::{AtomicShared, Guard, Shared};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
-    /// struct L(AtomicArc<L>, usize);
+    /// struct L(AtomicShared<L>, usize);
     /// impl LinkedList for L {
-    ///     fn link_ref(&self) -> &AtomicArc<L> {
+    ///     fn link_ref(&self) -> &AtomicShared<L> {
     ///         &self.0
     ///     }
     /// }
@@ -166,13 +166,13 @@ pub trait LinkedList: Sized {
     ///
     /// ```
     /// use scc::LinkedList;
-    /// use scc::ebr::AtomicArc;
+    /// use scc::ebr::AtomicShared;
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
-    /// struct L(AtomicArc<L>, usize);
+    /// struct L(AtomicShared<L>, usize);
     /// impl LinkedList for L {
-    ///     fn link_ref(&self) -> &AtomicArc<L> {
+    ///     fn link_ref(&self) -> &AtomicShared<L> {
     ///         &self.0
     ///     }
     /// }
@@ -200,13 +200,13 @@ pub trait LinkedList: Sized {
     ///
     /// ```
     /// use scc::LinkedList;
-    /// use scc::ebr::{AtomicArc, Guard, Shared};
+    /// use scc::ebr::{AtomicShared, Guard, Shared};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
-    /// struct L(AtomicArc<L>, usize);
+    /// struct L(AtomicShared<L>, usize);
     /// impl LinkedList for L {
-    ///     fn link_ref(&self) -> &AtomicArc<L> {
+    ///     fn link_ref(&self) -> &AtomicShared<L> {
     ///         &self.0
     ///     }
     /// }
@@ -266,13 +266,13 @@ pub trait LinkedList: Sized {
     ///
     /// ```
     /// use scc::LinkedList;
-    /// use scc::ebr::{AtomicArc, Guard, Shared};
+    /// use scc::ebr::{AtomicShared, Guard, Shared};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// #[derive(Default)]
-    /// struct L(AtomicArc<L>, usize);
+    /// struct L(AtomicShared<L>, usize);
     /// impl LinkedList for L {
-    ///     fn link_ref(&self) -> &AtomicArc<L> {
+    ///     fn link_ref(&self) -> &AtomicShared<L> {
     ///         &self.0
     ///     }
     /// }
@@ -281,7 +281,7 @@ pub trait LinkedList: Sized {
     ///
     /// let head: L = L::default();
     /// assert!(
-    ///     head.push_back(Shared::new(L(AtomicArc::null(), 1)), false, Relaxed, &guard).is_ok());
+    ///     head.push_back(Shared::new(L(AtomicShared::null(), 1)), false, Relaxed, &guard).is_ok());
     /// head.mark(Relaxed);
     ///
     /// let next_ptr = head.next_ptr(Relaxed, &guard);
@@ -331,7 +331,7 @@ pub struct Entry<T> {
     instance: Option<T>,
 
     /// `next` points to the next entry in a linked list.
-    next: AtomicArc<Self>,
+    next: AtomicShared<Self>,
 }
 
 impl<T> Entry<T> {
@@ -340,7 +340,7 @@ impl<T> Entry<T> {
     pub(super) fn new(val: T) -> Self {
         Self {
             instance: Some(val),
-            next: AtomicArc::default(),
+            next: AtomicShared::default(),
         }
     }
 
@@ -352,7 +352,7 @@ impl<T> Entry<T> {
 
     /// Returns a reference to `next`.
     #[inline]
-    pub(super) fn next(&self) -> &AtomicArc<Self> {
+    pub(super) fn next(&self) -> &AtomicShared<Self> {
         &self.next
     }
 }
@@ -376,7 +376,7 @@ impl<T: Clone> Clone for Entry<T> {
     fn clone(&self) -> Self {
         Self {
             instance: self.instance.clone(),
-            next: AtomicArc::default(),
+            next: AtomicShared::default(),
         }
     }
 }
@@ -423,7 +423,7 @@ impl<T: Eq> Eq for Entry<T> {}
 
 impl<T> LinkedList for Entry<T> {
     #[inline]
-    fn link_ref(&self) -> &AtomicArc<Self> {
+    fn link_ref(&self) -> &AtomicShared<Self> {
         &self.next
     }
 }

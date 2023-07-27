@@ -1,5 +1,5 @@
 use super::bucket::{Bucket, DataBlock, BUCKET_LEN, OPTIMISTIC};
-use crate::ebr::{AtomicArc, Guard, Ptr, Tag};
+use crate::ebr::{AtomicShared, Guard, Ptr, Tag};
 use std::alloc::{alloc, alloc_zeroed, dealloc, Layout};
 use std::mem::{align_of, needs_drop, size_of};
 use std::sync::atomic::AtomicUsize;
@@ -13,7 +13,7 @@ pub struct BucketArray<K: Eq, V, const TYPE: char> {
     hash_offset: u32,
     sample_size: u16,
     bucket_ptr_offset: u16,
-    old_array: AtomicArc<BucketArray<K, V, TYPE>>,
+    old_array: AtomicShared<BucketArray<K, V, TYPE>>,
     num_cleared_buckets: AtomicUsize,
 }
 
@@ -34,7 +34,7 @@ impl<K: Eq, V, const TYPE: char> BucketArray<K, V, TYPE> {
     /// Creates a new [`BucketArray`] of the given capacity.
     ///
     /// `capacity` is the desired number entries, not the number of [`Bucket`] instances.
-    pub(crate) fn new(capacity: usize, old_array: AtomicArc<BucketArray<K, V, TYPE>>) -> Self {
+    pub(crate) fn new(capacity: usize, old_array: AtomicShared<BucketArray<K, V, TYPE>>) -> Self {
         let log2_array_len = Self::calculate_log2_array_size(capacity);
         assert_ne!(log2_array_len, 0);
 
@@ -277,7 +277,7 @@ mod test {
     fn alloc() {
         let start = Instant::now();
         let array: BucketArray<usize, usize, OPTIMISTIC> =
-            BucketArray::new(1024 * 1024 * 32, AtomicArc::default());
+            BucketArray::new(1024 * 1024 * 32, AtomicShared::default());
         assert_eq!(array.num_buckets(), 1024 * 1024);
         let after_alloc = Instant::now();
         println!("allocation took {:?}", after_alloc - start);
@@ -291,7 +291,7 @@ mod test {
     fn array() {
         for s in 0..BUCKET_LEN * 4 {
             let array: BucketArray<usize, usize, OPTIMISTIC> =
-                BucketArray::new(s, AtomicArc::default());
+                BucketArray::new(s, AtomicShared::default());
             assert!(
                 array.num_buckets() >= (s.max(1) + BUCKET_LEN - 1) / BUCKET_LEN,
                 "{s} {}",

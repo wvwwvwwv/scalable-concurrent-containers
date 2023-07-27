@@ -2,7 +2,7 @@ use super::collectible::{Collectible, DeferredClosure};
 use super::collector::Collector;
 use std::panic::UnwindSafe;
 
-/// [`Guard`] allows the user to read [`AtomicArc`](super::AtomicArc) and keeps the
+/// [`Guard`] allows the user to read [`AtomicShared`](super::AtomicShared) and keeps the
 /// underlying instance pinned to the thread.
 ///
 /// [`Guard`] internally prevents the global epoch value from passing through the value

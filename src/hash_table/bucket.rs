@@ -1,4 +1,4 @@
-use crate::ebr::{AtomicArc, Guard, Ptr, Shared, Tag};
+use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::wait_queue::{AsyncWait, WaitQueue};
 use std::borrow::Borrow;
 use std::fmt::{self, Debug};
@@ -75,7 +75,7 @@ pub struct Evictable<V> {
 /// [`Metadata`] is a collection of metadata fields of [`Bucket`] and [`LinkedBucket`].
 pub(crate) struct Metadata<K: Eq, V, const LEN: usize> {
     /// Linked list of entries.
-    link: AtomicArc<LinkedBucket<K, V, LINKED_BUCKET_LEN>>,
+    link: AtomicShared<LinkedBucket<K, V, LINKED_BUCKET_LEN>>,
 
     /// Bitmap for occupied slots.
     occupied_bitmap: u32,
@@ -1113,7 +1113,7 @@ impl<K: Eq, V, const LEN: usize> Default for Metadata<K, V, LEN> {
     #[inline]
     fn default() -> Self {
         Self {
-            link: AtomicArc::default(),
+            link: AtomicShared::default(),
             occupied_bitmap: 0,
             removed_bitmap_or_lru_tail: 0,
             partial_hash_array: [0; LEN],
@@ -1134,7 +1134,7 @@ impl<K: Eq, V, const LEN: usize> LinkedBucket<K, V, LEN> {
         #[allow(clippy::uninit_assumed_init)]
         Self {
             metadata: Metadata {
-                link: next.map_or_else(AtomicArc::null, AtomicArc::from),
+                link: next.map_or_else(AtomicShared::null, AtomicShared::from),
                 occupied_bitmap: 0,
                 removed_bitmap_or_lru_tail: 0,
                 partial_hash_array: [0; LEN],

@@ -53,12 +53,12 @@ impl<'g, T> Ptr<'g, T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::{AtomicArc, Guard};
+    /// use scc::ebr::{AtomicShared, Guard};
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
-    /// let atomic_arc: AtomicArc<usize> = AtomicArc::new(21);
+    /// let atomic_shared: AtomicShared<usize> = AtomicShared::new(21);
     /// let guard = Guard::new();
-    /// let ptr = atomic_arc.load(Relaxed, &guard);
+    /// let ptr = atomic_shared.load(Relaxed, &guard);
     /// assert_eq!(*ptr.as_ref().unwrap(), 21);
     /// ```
     #[inline]

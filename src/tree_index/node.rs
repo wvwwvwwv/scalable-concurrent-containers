@@ -1,7 +1,7 @@
 use super::internal_node::{self, InternalNode};
 use super::leaf::{InsertResult, RemoveResult, Scanner};
 use super::leaf_node::{self, LeafNode};
-use crate::ebr::{AtomicArc, Guard, Shared, Tag};
+use crate::ebr::{AtomicShared, Guard, Shared, Tag};
 use crate::wait_queue::DeriveAsyncWait;
 use std::borrow::Borrow;
 use std::fmt::{self, Debug};
@@ -139,7 +139,7 @@ where
     pub(super) fn split_root(
         key: K,
         val: V,
-        root: &AtomicArc<Node<K, V>>,
+        root: &AtomicShared<Node<K, V>>,
         guard: &Guard,
     ) -> (K, V) {
         // The fact that the `TreeIndex` calls this function means that the root is full and
@@ -184,7 +184,7 @@ where
     /// Returns an error if a conflict is detected.
     #[inline]
     pub(super) fn remove_root<D: DeriveAsyncWait>(
-        root: &AtomicArc<Node<K, V>>,
+        root: &AtomicShared<Node<K, V>>,
         async_wait: &mut D,
         guard: &Guard,
     ) -> Result<bool, ()> {

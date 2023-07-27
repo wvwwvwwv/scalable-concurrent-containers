@@ -6,7 +6,7 @@ use std::panic::UnwindSafe;
 use std::ptr::{addr_of, NonNull};
 use std::sync::atomic::Ordering::Relaxed;
 
-/// [`Arc`] is a reference-counted handle to an instance.
+/// [`Shared`] is a reference-counted handle to an instance.
 ///
 /// The instance is passed to the EBR garbage collector when the last strong reference is dropped.
 #[derive(Debug)]
@@ -15,7 +15,7 @@ pub struct Shared<T> {
 }
 
 impl<T: 'static> Shared<T> {
-    /// Creates a new instance of [`Arc`].
+    /// Creates a new [`Shared`].
     ///
     /// The type of the instance must be determined at compile-time, must not contain non-static
     /// references, and must not be a non-static reference since the instance can, theoretically,
@@ -40,7 +40,7 @@ impl<T: 'static> Shared<T> {
 }
 
 impl<T> Shared<T> {
-    /// Creates a new [`Arc`] without checking the lifetime of `T`.
+    /// Creates a new [`Shared`] without checking the lifetime of `T`.
     ///
     /// # Safety
     ///
@@ -68,7 +68,7 @@ impl<T> Shared<T> {
         }
     }
 
-    /// Generates a [`Ptr`] out of the [`Arc`].
+    /// Generates a [`Ptr`] out of the [`Shared`].
     ///
     /// # Examples
     ///
@@ -234,7 +234,7 @@ impl<T> Shared<T> {
         self.instance_ptr.as_ptr()
     }
 
-    /// Creates a new [`Arc`] from the given pointer.
+    /// Creates a new [`Shared`] from the given pointer.
     #[inline]
     pub(super) fn from(ptr: NonNull<RefCounted<T>>) -> Self {
         debug_assert_ne!(

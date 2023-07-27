@@ -5,7 +5,7 @@ mod leaf;
 mod leaf_node;
 mod node;
 
-use crate::ebr::{AtomicArc, Guard, Ptr, Shared, Tag};
+use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::wait_queue::AsyncWait;
 use leaf::{InsertResult, Leaf, RemoveResult, Scanner};
 use node::Node;
@@ -60,7 +60,7 @@ where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
 {
-    root: AtomicArc<Node<K, V>>,
+    root: AtomicShared<Node<K, V>>,
 }
 
 /// An iterator over the entries of a [`TreeIndex`].
@@ -72,7 +72,7 @@ where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
 {
-    root: &'t AtomicArc<Node<K, V>>,
+    root: &'t AtomicShared<Node<K, V>>,
     leaf_scanner: Option<Scanner<'g, K, V>>,
     guard: &'g Guard,
 }
@@ -84,7 +84,7 @@ where
     V: 'static + Clone,
     R: RangeBounds<K>,
 {
-    root: &'t AtomicArc<Node<K, V>>,
+    root: &'t AtomicShared<Node<K, V>>,
     leaf_scanner: Option<Scanner<'g, K, V>>,
     range: R,
     check_lower_bound: bool,
@@ -110,7 +110,7 @@ where
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            root: AtomicArc::null(),
+            root: AtomicShared::null(),
         }
     }
 
@@ -685,7 +685,7 @@ where
     V: 'static + Clone,
 {
     #[inline]
-    fn new(root: &'t AtomicArc<Node<K, V>>, guard: &'g Guard) -> Iter<'t, 'g, K, V> {
+    fn new(root: &'t AtomicShared<Node<K, V>>, guard: &'g Guard) -> Iter<'t, 'g, K, V> {
         Iter::<'t, 'g, K, V> {
             root,
             leaf_scanner: None,
@@ -768,7 +768,11 @@ where
     R: RangeBounds<K>,
 {
     #[inline]
-    fn new(root: &'t AtomicArc<Node<K, V>>, range: R, guard: &'g Guard) -> Range<'t, 'g, K, V, R> {
+    fn new(
+        root: &'t AtomicShared<Node<K, V>>,
+        range: R,
+        guard: &'g Guard,
+    ) -> Range<'t, 'g, K, V, R> {
         Range::<'t, 'g, K, V, R> {
             root,
             leaf_scanner: None,

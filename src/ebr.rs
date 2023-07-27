@@ -4,11 +4,11 @@
 //! that of [`crossbeam_epoch`](https://docs.rs/crossbeam-epoch/), however the API set is vastly
 //! different, for instance, `unsafe` blocks are not required to read an instance subject to EBR.
 
-mod atomic_arc;
-pub use atomic_arc::AtomicArc;
-
 mod atomic_owned;
 pub use atomic_owned::AtomicOwned;
+
+mod atomic_shared;
+pub use atomic_shared::AtomicShared;
 
 mod guard;
 pub use guard::Guard;

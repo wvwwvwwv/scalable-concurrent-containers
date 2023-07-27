@@ -1,6 +1,6 @@
 //! [`Stack`] is a lock-free concurrent last-in-first-out container.
 
-use super::ebr::{AtomicArc, Guard, Ptr, Shared, Tag};
+use super::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use super::linked_list::{Entry, LinkedList};
 use std::fmt::{self, Debug};
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
@@ -8,7 +8,7 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 /// [`Stack`] is a lock-free concurrent last-in-first-out container.
 pub struct Stack<T> {
     /// `newest` points to the newest entry in the [`Stack`].
-    newest: AtomicArc<Entry<T>>,
+    newest: AtomicShared<Entry<T>>,
 }
 
 impl<T: 'static> Stack<T> {
@@ -212,7 +212,7 @@ impl<T> Stack<T> {
     pub fn pop_all(&self) -> Self {
         let head = self.newest.swap((None, Tag::None), AcqRel).0;
         Self {
-            newest: head.map_or_else(AtomicArc::default, AtomicArc::from),
+            newest: head.map_or_else(AtomicShared::default, AtomicShared::from),
         }
     }
 
@@ -420,7 +420,7 @@ impl<T> Default for Stack<T> {
     #[inline]
     fn default() -> Self {
         Self {
-            newest: AtomicArc::default(),
+            newest: AtomicShared::default(),
         }
     }
 }

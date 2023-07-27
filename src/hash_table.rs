@@ -1,7 +1,7 @@
 pub mod bucket;
 pub mod bucket_array;
 
-use crate::ebr::{AtomicArc, Guard, Ptr, Shared, Tag};
+use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::exit_guard::ExitGuard;
 use crate::wait_queue::{AsyncWait, DeriveAsyncWait};
 use bucket::{DataBlock, EntryPtr, Locker, Reader, BUCKET_LEN, CACHE, OPTIMISTIC};
@@ -44,7 +44,7 @@ where
     fn try_reset(value: &mut V);
 
     /// Returns a reference to the [`BucketArray`] pointer.
-    fn bucket_array(&self) -> &AtomicArc<BucketArray<K, V, TYPE>>;
+    fn bucket_array(&self) -> &AtomicShared<BucketArray<K, V, TYPE>>;
 
     /// Returns the minimum allowed capacity.
     fn minimum_capacity(&self) -> &AtomicUsize;
@@ -99,7 +99,7 @@ where
                 (
                     Some(Shared::new_unchecked(BucketArray::<K, V, TYPE>::new(
                         self.minimum_capacity().load(Relaxed),
-                        AtomicArc::null(),
+                        AtomicShared::null(),
                     ))),
                     Tag::None,
                 ),

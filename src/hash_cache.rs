@@ -3,7 +3,7 @@
 
 use crate::hash_table::LockedEntry;
 
-use super::ebr::{AtomicArc, Guard, Shared, Tag};
+use super::ebr::{AtomicShared, Guard, Shared, Tag};
 use super::hash_table::bucket::{EntryPtr, Evictable, Locker, Reader, CACHE};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::HashTable;
@@ -39,7 +39,7 @@ where
     K: Eq + Hash,
     H: BuildHasher,
 {
-    array: AtomicArc<BucketArray<K, Evictable<V>, CACHE>>,
+    array: AtomicShared<BucketArray<K, Evictable<V>, CACHE>>,
     minimum_capacity: AtomicUsize,
     maximum_capacity: usize,
     build_hasher: H,
@@ -106,7 +106,7 @@ where
     #[inline]
     pub fn with_hasher(build_hasher: H) -> Self {
         HashCache {
-            array: AtomicArc::null(),
+            array: AtomicShared::null(),
             minimum_capacity: AtomicUsize::new(0),
             maximum_capacity: DEFAULT_MAXIMUM_CAPACITY,
             build_hasher,
@@ -136,16 +136,19 @@ where
         build_hasher: H,
     ) -> Self {
         let (array, minimum_capacity) = if minimum_capacity == 0 {
-            (AtomicArc::null(), AtomicUsize::new(0))
+            (AtomicShared::null(), AtomicUsize::new(0))
         } else {
             let array = unsafe {
                 Shared::new_unchecked(BucketArray::<K, Evictable<V>, CACHE>::new(
                     minimum_capacity,
-                    AtomicArc::null(),
+                    AtomicShared::null(),
                 ))
             };
             let minimum_capacity = array.num_entries();
-            (AtomicArc::from(array), AtomicUsize::new(minimum_capacity))
+            (
+                AtomicShared::from(array),
+                AtomicUsize::new(minimum_capacity),
+            )
         };
         let maximum_capacity = maximum_capacity
             .max(minimum_capacity.load(Relaxed))
@@ -1207,7 +1210,7 @@ where
         value.reset_link();
     }
     #[inline]
-    fn bucket_array(&self) -> &AtomicArc<BucketArray<K, Evictable<V>, CACHE>> {
+    fn bucket_array(&self) -> &AtomicShared<BucketArray<K, Evictable<V>, CACHE>> {
         &self.array
     }
     #[inline]

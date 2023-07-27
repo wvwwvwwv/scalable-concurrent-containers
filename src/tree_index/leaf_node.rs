@@ -1,6 +1,6 @@
 use super::leaf::{InsertResult, RemoveResult, Scanner, DIMENSION};
 use super::Leaf;
-use crate::ebr::{AtomicArc, Guard, Ptr, Shared, Tag};
+use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::exit_guard::ExitGuard;
 use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
 use crate::LinkedList;
@@ -25,13 +25,13 @@ where
     V: 'static + Clone,
 {
     /// Children of the [`LeafNode`].
-    children: Leaf<K, AtomicArc<Leaf<K, V>>>,
+    children: Leaf<K, AtomicShared<Leaf<K, V>>>,
 
     /// A child [`Leaf`] that has no upper key bound.
     ///
     /// It stores the maximum key in the node, and key-value pairs are firstly pushed to this
     /// [`Leaf`] until split.
-    unbounded_child: AtomicArc<Leaf<K, V>>,
+    unbounded_child: AtomicShared<Leaf<K, V>>,
 
     /// On-going split operation.
     split_op: StructuralChange<K, V>,
@@ -53,7 +53,7 @@ where
     pub(super) fn new() -> LeafNode<K, V> {
         LeafNode {
             children: Leaf::new(),
-            unbounded_child: AtomicArc::null(),
+            unbounded_child: AtomicShared::null(),
             split_op: StructuralChange::default(),
             latch: AtomicU8::new(Tag::None.into()),
             wait_queue: WaitQueue::default(),
@@ -378,7 +378,7 @@ where
 
         // Builds a list of valid leaves
         #[allow(clippy::type_complexity)]
-        let mut entry_array: [Option<(Option<&K>, AtomicArc<Leaf<K, V>>)>;
+        let mut entry_array: [Option<(Option<&K>, AtomicShared<Leaf<K, V>>)>;
             DIMENSION.num_entries + 2] = Default::default();
         let mut num_entries = 0;
         let low_key_leaf_ref = self
@@ -629,7 +629,7 @@ where
         val: V,
         full_leaf_key: Option<&K>,
         full_leaf_ptr: Ptr<Leaf<K, V>>,
-        full_leaf: &AtomicArc<Leaf<K, V>>,
+        full_leaf: &AtomicShared<Leaf<K, V>>,
         async_wait: &mut D,
         guard: &Guard,
     ) -> Result<InsertResult<K, V>, (K, V)> {
@@ -953,9 +953,9 @@ where
     V: 'static + Clone,
 {
     origin_leaf_key: AtomicPtr<K>,
-    origin_leaf: AtomicArc<Leaf<K, V>>,
-    low_key_leaf: AtomicArc<Leaf<K, V>>,
-    high_key_leaf: AtomicArc<Leaf<K, V>>,
+    origin_leaf: AtomicShared<Leaf<K, V>>,
+    low_key_leaf: AtomicShared<Leaf<K, V>>,
+    high_key_leaf: AtomicShared<Leaf<K, V>>,
     low_key_leaf_node: AtomicPtr<LeafNode<K, V>>,
     high_key_leaf_node: AtomicPtr<LeafNode<K, V>>,
 }
@@ -984,9 +984,9 @@ where
     fn default() -> Self {
         Self {
             origin_leaf_key: AtomicPtr::default(),
-            origin_leaf: AtomicArc::null(),
-            low_key_leaf: AtomicArc::null(),
-            high_key_leaf: AtomicArc::null(),
+            origin_leaf: AtomicShared::null(),
+            low_key_leaf: AtomicShared::null(),
+            high_key_leaf: AtomicShared::null(),
             low_key_leaf_node: AtomicPtr::default(),
             high_key_leaf_node: AtomicPtr::default(),
         }

@@ -1,6 +1,6 @@
 //! [`HashMap`] is a concurrent and asynchronous hash map.
 
-use super::ebr::{AtomicArc, Guard, Shared, Tag};
+use super::ebr::{AtomicShared, Guard, Shared, Tag};
 use super::hash_table::bucket::{EntryPtr, Locker, Reader, SEQUENTIAL};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::{HashTable, LockedEntry};
@@ -68,7 +68,7 @@ where
     K: Eq + Hash,
     H: BuildHasher,
 {
-    array: AtomicArc<BucketArray<K, V, SEQUENTIAL>>,
+    array: AtomicShared<BucketArray<K, V, SEQUENTIAL>>,
     minimum_capacity: AtomicUsize,
     build_hasher: H,
 }
@@ -138,7 +138,7 @@ where
     #[inline]
     pub fn with_hasher(build_hasher: H) -> Self {
         Self {
-            array: AtomicArc::null(),
+            array: AtomicShared::null(),
             minimum_capacity: AtomicUsize::new(0),
             build_hasher,
         }
@@ -163,16 +163,19 @@ where
     #[inline]
     pub fn with_capacity_and_hasher(capacity: usize, build_hasher: H) -> Self {
         let (array, minimum_capacity) = if capacity == 0 {
-            (AtomicArc::null(), AtomicUsize::new(0))
+            (AtomicShared::null(), AtomicUsize::new(0))
         } else {
             let array = unsafe {
                 Shared::new_unchecked(BucketArray::<K, V, SEQUENTIAL>::new(
                     capacity,
-                    AtomicArc::null(),
+                    AtomicShared::null(),
                 ))
             };
             let minimum_capacity = array.num_entries();
-            (AtomicArc::from(array), AtomicUsize::new(minimum_capacity))
+            (
+                AtomicShared::from(array),
+                AtomicUsize::new(minimum_capacity),
+            )
         };
         Self {
             array,
@@ -1534,7 +1537,7 @@ where
     #[inline]
     fn try_reset(_: &mut V) {}
     #[inline]
-    fn bucket_array(&self) -> &AtomicArc<BucketArray<K, V, SEQUENTIAL>> {
+    fn bucket_array(&self) -> &AtomicShared<BucketArray<K, V, SEQUENTIAL>> {
         &self.array
     }
     #[inline]
