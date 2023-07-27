@@ -13,6 +13,7 @@
 - `ebr::AtomicArc::try_into_arc` -> `ebr::AtomicShared::try_into_shared`.
 - `ebr::Ptr::get_arc` -> `ebr::Ptr::get_shared`.
 - `*::first_occupied_entry*` -> `*::first_entry*`.
+- Remove `HashMap::upsert*`: superseded by `hash_map::Entry::or_insert_with`.
 - Remove `HashIndex::update*` and `HashIndex::modify*`: superseded by `HashIndex::entry*`, `HashIndex::get*`, and `hash_index::OccupiedEntry::update`.
 - Remove `Hash*::for_each*`: superseded by `HashMap::retain*`.
 - `Hash*::clear*`, `Hash*::prune*`, and `Hash*::retain*` return `()`.

@@ -219,9 +219,9 @@ mod hashmap_test {
                 }
                 for id in range.clone() {
                     if id % 10 == 0 {
-                        hashmap_clone.upsert_async(id, || id, |_, v| *v = id).await;
+                        hashmap_clone.entry_async(id).await.or_insert(id);
                     } else if id % 5 == 0 {
-                        hashmap_clone.upsert(id, || id, |_, v| *v = id);
+                        hashmap_clone.entry(id).or_insert(id);
                     } else if id % 2 == 0 {
                         let result = hashmap_clone.insert_async(id, id).await;
                         assert!(result.is_ok());
@@ -245,11 +245,7 @@ mod hashmap_test {
                     }
                 }
                 for id in range.clone() {
-                    if id % 7 == 0 {
-                        hashmap_clone
-                            .upsert_async(id, || id, |_, v| *v = id + 1)
-                            .await;
-                    } else if id % 7 == 5 {
+                    if id % 7 == 4 {
                         let entry = hashmap_clone.entry(id);
                         match entry {
                             Entry::Occupied(mut o) => {
@@ -702,12 +698,12 @@ mod hashmap_test {
             let hashmap: HashMap<Data, Data> = HashMap::default();
             for d in key..(key + range) {
                 assert!(hashmap.insert(Data::new(d, checker.clone()), Data::new(d, checker.clone())).is_ok());
-                hashmap.upsert(Data::new(d, checker.clone()), || Data::new(d + 1, checker.clone()), |_, v| *v = Data::new(d + 2, checker.clone()));
+                *hashmap.entry(Data::new(d, checker.clone())).or_insert(Data::new(d + 1, checker.clone())).get_mut() = Data::new(d + 2, checker.clone());
             }
 
             for d in (key + range)..(key + range + range) {
                 assert!(hashmap.insert(Data::new(d, checker.clone()), Data::new(d, checker.clone())).is_ok());
-                hashmap.upsert(Data::new(d, checker.clone()), || Data::new(d, checker.clone()), |_, v| *v = Data::new(d + 1, checker.clone()));
+                *hashmap.entry(Data::new(d, checker.clone())).or_insert(Data::new(d + 1, checker.clone())).get_mut() = Data::new(d + 2, checker.clone());
             }
 
             let mut removed = 0;
@@ -734,14 +730,14 @@ mod hashmap_test {
 
             for d in key..(key + range) {
                 assert!(hashmap.insert(Data::new(d, checker.clone()), Data::new(d, checker.clone())).is_ok());
-                hashmap.upsert(Data::new(d, checker.clone()), || Data::new(d, checker.clone()), |_, v| *v = Data::new(d + 2, checker.clone()));
+                *hashmap.entry(Data::new(d, checker.clone())).or_insert(Data::new(d + 1, checker.clone())).get_mut() = Data::new(d + 2, checker.clone());
             }
             hashmap.clear();
             assert_eq!(checker.load(Relaxed), 0);
 
             for d in key..(key + range) {
                 assert!(hashmap.insert(Data::new(d, checker.clone()), Data::new(d, checker.clone())).is_ok());
-                hashmap.upsert(Data::new(d, checker.clone()), || Data::new(d, checker.clone()), |_, v| *v = Data::new(d + 2, checker.clone()));
+                *hashmap.entry(Data::new(d, checker.clone())).or_insert(Data::new(d + 1, checker.clone())).get_mut() = Data::new(d + 2, checker.clone());
             }
             assert_eq!(checker.load(Relaxed), range * 2);
             drop(hashmap);
@@ -2787,15 +2783,11 @@ mod random_failure_test {
         let hashmap: HashMap<usize, R> = HashMap::default();
         for k in 0..workload_size {
             let result: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
-                hashmap.upsert(
-                    k as usize,
-                    || {
-                        let mut r = R::new(&INST_CNT, &NEVER_PANIC);
-                        r.2 = true;
-                        r
-                    },
-                    |_, _| (),
-                );
+                hashmap.entry(k as usize).or_insert_with(|| {
+                    let mut r = R::new(&INST_CNT, &NEVER_PANIC);
+                    r.2 = true;
+                    r
+                });
             });
             NEVER_PANIC.store(true, Relaxed);
             assert_eq!(

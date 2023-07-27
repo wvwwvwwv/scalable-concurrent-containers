@@ -33,7 +33,7 @@ A collection of high performance containers and utilities for concurrent and asy
 
 ## HashMap
 
-[HashMap](#HashMap) is a concurrent hash map that is targeted at highly concurrent write-heavy workloads. [HashMap](#HashMap) is basically an array of entry buckets where each bucket is protected by a special read-write lock providing both blocking and asynchronous methods. The bucket array is fully managed by [EBR](#EBR) enabling lock-free access to it and non-blocking array resizing.
+[HashMap](#HashMap) is a concurrent hash map, optimized for highly parallel write-heavy workloads. [HashMap](#HashMap) is structured as a lock-free stack of fixed-size entry bucket arrays. Each bucket is protected by a special read-write lock which provides both blocking and asynchronous methods. The entry bucket array is managed by [EBR](#EBR), thus enabling lock-free access to it and non-blocking container resizing.
 
 ### Locking behavior
 
@@ -43,7 +43,7 @@ Read/write access to an entry is serialized by the read-write lock in the bucket
 
 #### Resize: lock-free
 
-Resizing of the container is totally non-blocking and lock-free; resizing does not block any other read/write access to the container or resizing attempts. _Resizing is analogous to pushing a new bucket array into a lock-free stack_. Each individual entry in the old bucket array will be incrementally relocated to the new bucket array on future access to the container, and the old bucket array gets dropped eventually when it becomes empty.
+Resizing of a [HashMap](#HashMap) is completely non-blocking and lock-free; resizing does not block any other read/write access to the container or resizing attempts. _Resizing is analogous to pushing a new bucket array into a lock-free stack_. Each entry in the old bucket array will be incrementally relocated to the new bucket array on future access to the container, and the old bucket array gets dropped eventually after it becomes empty.
 
 ### Examples
 
@@ -66,22 +66,21 @@ let future_insert = hashmap.insert_async(2, 1);
 let future_remove = hashmap.remove_async(&1);
 ```
 
-`upsert` will insert a new entry if the key does not exist, otherwise update the value field.
+The `Entry` API of [HashMap](#HashMap) is useful if the workflow is complicated.
 
 ```rust
 use scc::HashMap;
 
 let hashmap: HashMap<u64, u32> = HashMap::default();
 
-hashmap.upsert(1, || 2, |_, v| *v = 2);
-assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
-hashmap.upsert(1, || 2, |_, v| *v = 3);
-assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 3);
+hashmap.entry(3).or_insert(7);
+assert_eq!(hashmap.read(&3, |_, v| *v), Some(7));
 
-let future_upsert = hashmap.upsert_async(2, || 1, |_, v| *v = 3);
+let future_entry = hashmap.entry_async(3);
+let future_occupied = hashmap.entry_async(4).and_modify(|v| { *v += 1 }).or_insert(5);
 ```
 
-[HashMap](#HashMap) does not provide an [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) since it is impossible to confine the lifetime of [Iterator::Item](https://doc.rust-lang.org/std/iter/trait.Iterator.html#associatedtype.Item) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html). The limitation can be circumvented by relying on interior mutability, e.g., let the returned reference hold a lock, however it will easily lead to a deadlock if not correctly used, and frequent acquisition of locks may impact performance. Therefore, [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, [HashMap](#HashMap) provides a number of methods to iterate over entries synchronously or asynchronously: `any`, `any_async`, `OccupiedEntry::next`, `OccupiedEntry::next_async`, `prune`, `prune_async`, `retain`, `retain_async`, `scan`,  and `scan_async`.
+[HashMap](#HashMap) does not provide an [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) since it is impossible to confine the lifetime of [Iterator::Item](https://doc.rust-lang.org/std/iter/trait.Iterator.html#associatedtype.Item) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html). The limitation can be circumvented by relying on interior mutability, e.g., let the returned reference hold a lock, however it will easily lead to a deadlock if not correctly used, and frequent acquisition of locks may impact performance. Therefore, [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, [HashMap](#HashMap) provides a number of methods to iterate over entries synchronously or asynchronously: `any`, `any_async`, `prune`, `prune_async`, `retain`, `retain_async`, `scan`, `scan_async`, `OccupiedEntry::next`, and `OccupiedEntry::next_async`.
 
 ```rust
 use scc::HashMap;
