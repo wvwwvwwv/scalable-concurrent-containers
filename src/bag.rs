@@ -94,7 +94,7 @@ impl<T, const ARRAY_LEN: usize> Bag<T, ARRAY_LEN> {
     #[inline]
     pub fn push(&self, val: T) {
         if let Some(val) = self.primary_storage.push(val, true) {
-            self.stack.peek(|e| {
+            self.stack.peek_with(|e| {
                 if let Some(storage) = e {
                     if let Some(val) = storage.push(val, false) {
                         unsafe {
@@ -127,7 +127,7 @@ impl<T, const ARRAY_LEN: usize> Bag<T, ARRAY_LEN> {
     #[inline]
     pub fn pop(&self) -> Option<T> {
         let guard = Guard::new();
-        self.stack.peek(|e| {
+        self.stack.peek_with(|e| {
             let mut current = e;
             while let Some(storage) = current {
                 let (val_opt, empty) = storage.pop();
@@ -284,7 +284,7 @@ impl<'b, T, const ARRAY_LEN: usize> Iterator for IterMut<'b, T, ARRAY_LEN> {
                     self.current_index = 0;
                 }
             } else {
-                self.bag.stack.peek(|e| {
+                self.bag.stack.peek_with(|e| {
                     if let Some(e) = e {
                         let entry_mut = (e as *const LinkedEntry<Storage<T, ARRAY_LEN>>).cast_mut();
                         self.current_stack_entry = unsafe { entry_mut.as_mut() };

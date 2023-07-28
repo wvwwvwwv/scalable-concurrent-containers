@@ -62,7 +62,10 @@ impl<T: 'static> Stack<T> {
         self.push_if_internal(val, cond, &Guard::new())
     }
 
-    /// Peeks the newest entry with the supplied [`Guard`].
+    /// Returns a guarded reference to the newest entry.
+    ///
+    /// Returns `None` if the [`Stack`] is empty. The returned reference can survive as long as the
+    /// associated [`Guard`] is alive.
     ///
     /// # Examples
     ///
@@ -72,23 +75,17 @@ impl<T: 'static> Stack<T> {
     ///
     /// let stack: Stack<usize> = Stack::default();
     ///
-    /// assert!(stack.peek_with(|v| v.is_none(), &Guard::new()));
+    /// assert!(stack.peek(&Guard::new()).is_none());
     ///
     /// stack.push(37);
     /// stack.push(3);
     ///
-    /// assert_eq!(stack.peek_with(|v| **v.unwrap(), &Guard::new()), 3);
+    /// assert_eq!(**stack.peek(&Guard::new()).unwrap(), 3);
     /// ```
     #[inline]
-    pub fn peek_with<'g, R, F: FnOnce(Option<&'g Entry<T>>) -> R>(
-        &self,
-        reader: F,
-        guard: &'g Guard,
-    ) -> R {
-        reader(
-            self.cleanup_newest(self.newest.load(Acquire, guard), guard)
-                .as_ref(),
-        )
+    pub fn peek<'g>(&self, guard: &'g Guard) -> Option<&'g Entry<T>> {
+        self.cleanup_newest(self.newest.load(Acquire, guard), guard)
+            .as_ref()
     }
 }
 
@@ -271,15 +268,15 @@ impl<T> Stack<T> {
     ///
     /// let stack: Stack<usize> = Stack::default();
     ///
-    /// assert!(stack.peek(|v| v.is_none()));
+    /// assert!(stack.peek_with(|v| v.is_none()));
     ///
     /// stack.push(37);
     /// stack.push(3);
     ///
-    /// assert_eq!(stack.peek(|v| **v.unwrap()), 3);
+    /// assert_eq!(stack.peek_with(|v| **v.unwrap()), 3);
     /// ```
     #[inline]
-    pub fn peek<R, F: FnOnce(Option<&Entry<T>>) -> R>(&self, reader: F) -> R {
+    pub fn peek_with<R, F: FnOnce(Option<&Entry<T>>) -> R>(&self, reader: F) -> R {
         let guard = Guard::new();
         reader(
             self.cleanup_newest(self.newest.load(Acquire, &guard), &guard)

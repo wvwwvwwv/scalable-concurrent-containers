@@ -17,10 +17,10 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
 /// Scalable concurrent hash map.
 ///
-/// [`HashMap`] is a concurrent and asynchronous hash map data structure that is targeted at a
-/// highly concurrent workload. [`HashMap`] has a dynamically sized array of buckets where a bucket
-/// is a fixed size hash table with linear probing that can be expanded by allocating a linked list
-/// of smaller buckets when it is full.
+/// [`HashMap`] is a concurrent and asynchronous hash map data structure that is optimized for
+/// highly concurrent workloads. [`HashMap`] has a dynamically sized array of buckets where a
+/// bucket is a fixed size hash table with linear probing that can be expanded by allocating a
+/// linked list of smaller buckets when it is full.
 ///
 /// ## The key features of [`HashMap`]
 ///
@@ -439,7 +439,7 @@ where
         }
     }
 
-    /// Updates an existing key-value pair.
+    /// Updates an existing key-value pair in-place.
     ///
     /// Returns `None` if the key does not exist.
     ///
@@ -476,7 +476,7 @@ where
         Some(updater(k, v))
     }
 
-    /// Updates an existing key-value pair.
+    /// Updates an existing key-value pair in-place.
     ///
     /// Returns `None` if the key does not exist. It is an asynchronous method returning an
     /// `impl Future` for the caller to await.
@@ -644,7 +644,7 @@ where
         }
     }
 
-    /// Gets an occupied entry corresponding to the key.
+    /// Gets the [`OccupiedEntry`] corresponding to the key.
     ///
     /// Returns `None` if the key does not exist.
     ///
@@ -681,7 +681,7 @@ where
         })
     }
 
-    /// Gets an occupied entry corresponding to the key.
+    /// Gets the [`OccupiedEntry`] corresponding to the key.
     ///
     /// Returns `None` if the key does not exist. It is an asynchronous method returning an
     /// `impl Future` for the caller to await.
@@ -781,7 +781,7 @@ where
         }
     }
 
-    /// Checks if the key exists.
+    /// Returns `true` if the [`HashMap`] contains a value for the specified key.
     ///
     /// # Examples
     ///
@@ -803,7 +803,7 @@ where
         self.read(key, |_, _| ()).is_some()
     }
 
-    /// Checks if the key exists.
+    /// Returns `true` if the [`HashMap`] contains a value for the specified key.
     ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
@@ -1167,7 +1167,7 @@ where
         }
     }
 
-    /// Clears all the key-value pairs.
+    /// Clears the [`HashMap`] by removing all key-value pairs.
     ///
     /// # Examples
     ///
@@ -1186,7 +1186,7 @@ where
         self.retain(|_, _| false);
     }
 
-    /// Clears all the key-value pairs.
+    /// Clears the [`HashMap`] by removing all key-value pairs.
     ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///

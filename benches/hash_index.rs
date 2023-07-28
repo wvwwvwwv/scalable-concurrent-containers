@@ -21,24 +21,8 @@ fn iter_with(c: &mut Criterion) {
     });
 }
 
-fn read(c: &mut Criterion) {
-    c.bench_function("HashIndex: read", |b| {
-        b.iter_custom(|iters| {
-            let hashindex: HashIndex<u64, u64> = HashIndex::with_capacity(iters as usize * 2);
-            for i in 0..iters {
-                assert!(hashindex.insert(i, i).is_ok());
-            }
-            let start = Instant::now();
-            for i in 0..iters {
-                assert_eq!(hashindex.read(&i, |_, v| *v == i), Some(true));
-            }
-            start.elapsed()
-        })
-    });
-}
-
-fn read_with(c: &mut Criterion) {
-    c.bench_function("HashIndex: read_with", |b| {
+fn peek(c: &mut Criterion) {
+    c.bench_function("HashIndex: peek", |b| {
         b.iter_custom(|iters| {
             let hashindex: HashIndex<u64, u64> = HashIndex::with_capacity(iters as usize * 2);
             for i in 0..iters {
@@ -47,12 +31,28 @@ fn read_with(c: &mut Criterion) {
             let start = Instant::now();
             let guard = Guard::new();
             for i in 0..iters {
-                assert_eq!(hashindex.read_with(&i, |_, v| *v == i, &guard), Some(true));
+                assert_eq!(hashindex.peek(&i, &guard), Some(&i));
             }
             start.elapsed()
         })
     });
 }
 
-criterion_group!(hash_index, iter_with, read, read_with);
+fn peek_with(c: &mut Criterion) {
+    c.bench_function("HashIndex: peek_with", |b| {
+        b.iter_custom(|iters| {
+            let hashindex: HashIndex<u64, u64> = HashIndex::with_capacity(iters as usize * 2);
+            for i in 0..iters {
+                assert!(hashindex.insert(i, i).is_ok());
+            }
+            let start = Instant::now();
+            for i in 0..iters {
+                assert_eq!(hashindex.peek_with(&i, |_, v| *v == i), Some(true));
+            }
+            start.elapsed()
+        })
+    });
+}
+
+criterion_group!(hash_index, iter_with, peek, peek_with);
 criterion_main!(hash_index);

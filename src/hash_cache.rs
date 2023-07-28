@@ -499,7 +499,7 @@ where
         }
     }
 
-    /// Checks if the key exists.
+    /// Returns `true` if the [`HashCache`] contains a value for the specified key.
     ///
     /// # Examples
     ///
@@ -521,7 +521,7 @@ where
         self.read(key, |_, _| ()).is_some()
     }
 
-    /// Checks if the key exists.
+    /// Returns `true` if the [`HashCache`] contains a value for the specified key.
     ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
@@ -952,7 +952,7 @@ where
         }
     }
 
-    /// Clears all the key-value pairs.
+    /// Clears the [`HashCache`] by removing all key-value pairs.
     ///
     /// # Examples
     ///
@@ -971,7 +971,7 @@ where
         self.retain(|_, _| false);
     }
 
-    /// Clears all the key-value pairs.
+    /// Clears the [`HashCache`] by removing all key-value pairs.
     ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///

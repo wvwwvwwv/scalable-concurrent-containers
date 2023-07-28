@@ -143,7 +143,7 @@ let future_remove = hashset.remove_async(&1);
 
 ### Examples
 
-The `read` method is completely lock-free.
+The `peek` and `peek_with` methods are completely lock-free.
 
 ```rust
 use scc::HashIndex;
@@ -151,7 +151,9 @@ use scc::HashIndex;
 let hashindex: HashIndex<u64, u32> = HashIndex::default();
 
 assert!(hashindex.insert(1, 0).is_ok());
-assert_eq!(hashindex.read(&1, |_, v| *v).unwrap(), 0);
+
+// `peek` and `peek_with` are lock-free.
+assert_eq!(hashindex.peek_with(&1, |_, v| *v).unwrap(), 0);
 
 let future_insert = hashindex.insert_async(2, 1);
 let future_remove = hashindex.remove_if_async(&1, |_| true);
@@ -250,8 +252,8 @@ let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
 
 assert!(treeindex.insert(1, 2).is_ok());
 
-// `read` is lock-free.
-assert_eq!(treeindex.read(&1, |_, v| *v).unwrap(), 2);
+// `peek` and `peek_with` are lock-free.
+assert_eq!(treeindex.peek_with(&1, |_, v| *v).unwrap(), 2);
 assert!(treeindex.remove(&1));
 
 let future_insert = treeindex.insert_async(2, 3);

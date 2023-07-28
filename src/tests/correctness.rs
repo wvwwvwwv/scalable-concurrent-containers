@@ -846,7 +846,7 @@ mod hashindex_test {
         let hashindex_clone = hashindex.clone();
         drop(hashindex);
         for k in 0..workload_size {
-            assert!(hashindex_clone.read(&k, |_, _| ()).is_some());
+            assert!(hashindex_clone.peek_with(&k, |_, _| ()).is_some());
         }
         drop(hashindex_clone);
 
@@ -872,7 +872,7 @@ mod hashindex_test {
                 checker1.insert((str_val.clone(), i));
             }
             let str_borrowed = str_val.as_str();
-            assert!(hashindex1.read(str_borrowed, |_, _| ()).is_some());
+            assert!(hashindex1.peek_with(str_borrowed, |_, _| ()).is_some());
 
             if hashindex2.insert(i, str_val.clone()).is_ok() {
                 checker2.insert((i, str_val.clone()));
@@ -917,7 +917,7 @@ mod hashindex_test {
                     }
                 } else {
                     for k in 0..num_tasks {
-                        assert!(hashindex_clone.read(&k, |_, _| ()).is_some());
+                        assert!(hashindex_clone.peek_with(&k, |_, _| ()).is_some());
                     }
                 }
             }));
@@ -984,7 +984,7 @@ mod hashindex_test {
                         assert!(result.is_ok());
                     }
                     for id in range.clone() {
-                        assert!(hashindex_clone.read(&id, |_, _| ()).is_some());
+                        assert!(hashindex_clone.peek_with(&id, |_, _| ()).is_some());
                     }
 
                     let mut call_async = false;
@@ -1096,7 +1096,7 @@ mod hashindex_test {
                     barrier.wait();
                 }
                 assert!(hashindex.remove(&i));
-                assert!(hashindex.read(&i, |_, _| ()).is_none());
+                assert!(hashindex.peek_with(&i, |_, _| ()).is_none());
                 removed.store(i, Release);
             }
             thread_handle.join().unwrap();
@@ -1131,7 +1131,7 @@ mod hashindex_test {
                         }
                     }
                     for id in range.clone() {
-                        hashindex_clone.read(&id, |k, v| assert_eq!(k, v));
+                        hashindex_clone.peek_with(&id, |k, v| assert_eq!(k, v));
                         let entry = if id % 4 == 0 {
                             hashindex_clone.get(&id).unwrap()
                         } else {
@@ -1142,7 +1142,7 @@ mod hashindex_test {
                         }
                     }
                     for id in range.clone() {
-                        hashindex_clone.read(&id, |_, v| assert_eq!(*v, usize::MAX));
+                        hashindex_clone.peek_with(&id, |_, v| assert_eq!(*v, usize::MAX));
                         let entry = if id % 4 == 0 {
                             hashindex_clone.get(&id).unwrap()
                         } else {
@@ -1526,7 +1526,7 @@ mod treeindex_test {
         let tree_clone = tree.clone();
         tree.clear();
         for k in 0..workload_size {
-            assert!(tree_clone.read(&k, |_, _| ()).is_some());
+            assert!(tree_clone.peek_with(&k, |_, _| ()).is_some());
         }
         tree_clone.clear();
 
@@ -1556,7 +1556,7 @@ mod treeindex_test {
                         assert!(tree_clone.insert_async(id, id).await.is_err());
                     }
                     for id in range.clone() {
-                        let result = tree_clone.read(&id, |_, v| *v);
+                        let result = tree_clone.peek_with(&id, |_, v| *v);
                         assert_eq!(result, Some(id));
                     }
                     for id in range.clone() {
@@ -1646,7 +1646,7 @@ mod treeindex_test {
                 }
                 for key in first_key..(first_key + range / 2) {
                     assert!(tree_copied
-                        .read(&key, |key, val| assert_eq!(key, val))
+                        .peek_with(&key, |key, val| assert_eq!(key, val))
                         .is_some());
                 }
                 for key in (first_key + range / 2)..(first_key + range) {
@@ -1654,7 +1654,7 @@ mod treeindex_test {
                 }
                 for key in (first_key + range / 2)..(first_key + range) {
                     assert!(tree_copied
-                        .read(&key, |key, val| assert_eq!(key, val))
+                        .peek_with(&key, |key, val| assert_eq!(key, val))
                         .is_some());
                 }
             }));
@@ -1664,13 +1664,18 @@ mod treeindex_test {
         }
         let mut found = 0;
         for key in 0..num_threads * range {
-            if tree.read(&key, |key, val| assert_eq!(key, val)).is_some() {
+            if tree
+                .peek_with(&key, |key, val| assert_eq!(key, val))
+                .is_some()
+            {
                 found += 1;
             }
         }
         assert_eq!(found, num_threads * range);
         for key in 0..num_threads * range {
-            assert!(tree.read(&key, |key, val| assert_eq!(key, val)).is_some());
+            assert!(tree
+                .peek_with(&key, |key, val| assert_eq!(key, val))
+                .is_some());
         }
 
         let guard = Guard::new();
@@ -1732,7 +1737,7 @@ mod treeindex_test {
                     }
                     for key in (first_key + 1)..(first_key + range) {
                         assert!(tree_copied
-                            .read(&key, |key, val| assert_eq!(key, val))
+                            .peek_with(&key, |key, val| assert_eq!(key, val))
                             .is_some());
                     }
                     {
@@ -1760,12 +1765,12 @@ mod treeindex_test {
                         }
                         assert!(tree_copied.remove(&key));
                         assert!(!tree_copied.remove(&key));
-                        assert!(tree_copied.read(&(first_key + 1), |_, _| ()).is_none());
-                        assert!(tree_copied.read(&key, |_, _| ()).is_none());
+                        assert!(tree_copied.peek_with(&(first_key + 1), |_, _| ()).is_none());
+                        assert!(tree_copied.peek_with(&key, |_, _| ()).is_none());
                     }
                     for key in (first_key + 1)..(first_key + range) {
                         assert!(tree_copied
-                            .read(&key, |key, val| assert_eq!(key, val))
+                            .peek_with(&key, |key, val| assert_eq!(key, val))
                             .is_none());
                     }
                 }
@@ -1825,7 +1830,7 @@ mod treeindex_test {
                         .clone()
                         .filter(|i| {
                             tree_copied
-                                .read(i, |_, v| *v == thread_id)
+                                .peek_with(i, |_, v| *v == thread_id)
                                 .map_or(false, |t| t)
                         })
                         .count();
@@ -1866,18 +1871,18 @@ mod treeindex_test {
                 checker1.insert((str_val.clone(), i));
             }
             let str_borrowed = str_val.as_str();
-            assert!(tree1.read(str_borrowed, |_, _| ()).is_some());
+            assert!(tree1.peek_with(str_borrowed, |_, _| ()).is_some());
 
             if tree2.insert(i, str_val.clone()).is_ok() {
                 checker2.insert((i, str_val.clone()));
             }
         }
         for iter in &checker1 {
-            let v = tree1.read(iter.0.as_str(), |_, v| *v);
+            let v = tree1.peek_with(iter.0.as_str(), |_, v| *v);
             assert_eq!(v.unwrap(), iter.1);
         }
         for iter in &checker2 {
-            let v = tree2.read(&iter.0, |_, v| v.clone());
+            let v = tree2.peek_with(&iter.0, |_, v| v.clone());
             assert_eq!(v.unwrap(), iter.1);
         }
     }
@@ -2834,7 +2839,7 @@ mod random_failure_test {
             });
             NEVER_PANIC.store(true, Relaxed);
             assert_eq!(
-                hashindex.read(&(k as usize), |_, _| ()).is_some(),
+                hashindex.peek_with(&(k as usize), |_, _| ()).is_some(),
                 result.is_ok()
             );
             NEVER_PANIC.store(false, Relaxed);
@@ -2877,9 +2882,9 @@ mod random_failure_test {
                 assert!(treeindex
                     .insert(k, R::new_panic_free_drop(&INST_CNT, &NEVER_PANIC))
                     .is_ok());
-                assert!(treeindex.read(&k, |_, _| ()).is_some());
+                assert!(treeindex.peek_with(&k, |_, _| ()).is_some());
             });
-            assert_eq!(treeindex.read(&k, |_, _| ()).is_some(), result.is_ok());
+            assert_eq!(treeindex.peek_with(&k, |_, _| ()).is_some(), result.is_ok());
         }
         drop(treeindex);
 

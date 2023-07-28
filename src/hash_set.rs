@@ -303,7 +303,7 @@ where
         self.map.read_async(key, |k, _| reader(k)).await
     }
 
-    /// Checks if the key exists.
+    /// Returns `true` if the [`HashSet`] contains the specified key.
     ///
     /// # Examples
     ///
@@ -325,7 +325,7 @@ where
         self.read(key, |_| ()).is_some()
     }
 
-    /// Checks if the key exists.
+    /// Returns `true` if the [`HashSet`] contains the specified key.
     ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
@@ -496,7 +496,7 @@ where
         self.map.retain_async(|k, _| filter(k)).await;
     }
 
-    /// Clears all the keys.
+    /// Clears the [`HashSet`] by removing all keys.
     ///
     /// # Examples
     ///
@@ -515,7 +515,7 @@ where
         self.map.clear();
     }
 
-    /// Clears all the keys.
+    /// Clears the [`HashSet`] by removing all keys.
     ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///

@@ -20,7 +20,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 /// Scalable concurrent hash index.
 ///
 /// [`HashIndex`] is a concurrent and asynchronous hash map data structure that is optimized for
-/// read operations. The key characteristics of [`HashIndex`] are similar to that of
+/// parallel read operations. The key characteristics of [`HashIndex`] are similar to that of
 /// [`HashMap`](super::HashMap) except that its read operations are lock-free.
 ///
 /// ## The key differences between [`HashIndex`] and [`HashMap`](crate::HashMap).
@@ -249,9 +249,9 @@ where
     ///     }
     /// }
     ///
-    /// assert_eq!(hashindex.read(&'s', |_, v| *v), Some(2));
-    /// assert_eq!(hashindex.read(&'t', |_, v| *v), Some(3));
-    /// assert!(hashindex.read(&'y', |_, v| *v).is_none());
+    /// assert_eq!(hashindex.peek_with(&'s', |_, v| *v), Some(2));
+    /// assert_eq!(hashindex.peek_with(&'t', |_, v| *v), Some(3));
+    /// assert!(hashindex.peek_with(&'y', |_, v| *v).is_none());
     /// ```
     #[inline]
     pub fn entry(&self, key: K) -> Entry<K, V, H> {
@@ -342,7 +342,7 @@ where
     /// }
     ///
     /// assert!(first_entry.next().is_none());
-    /// assert_eq!(hashindex.read(&1, |_, v| *v), Some(2));
+    /// assert_eq!(hashindex.peek_with(&1, |_, v| *v), Some(2));
     /// ```
     #[inline]
     pub fn first_entry(&self) -> Option<OccupiedEntry<K, V, H>> {
@@ -658,41 +658,12 @@ where
         }
     }
 
-    /// Reads a key-value pair.
+    /// Returns a guarded reference to the value for the specified key without acquiring locks.
     ///
-    /// Returns `None` if the key does not exist. This method is not linearizable; the key-value
-    /// pair being read by this method can be removed from the container or copied to a different
-    /// memory location.
+    /// Returns `None` if the key does not exist. The returned reference can survive as long as the
+    /// associated [`Guard`] is alive.
     ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashIndex;
-    ///
-    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
-    ///
-    /// assert!(hashindex.read(&1, |_, v| *v).is_none());
-    /// assert!(hashindex.insert(1, 10).is_ok());
-    /// assert_eq!(hashindex.read(&1, |_, v| *v).unwrap(), 10);
-    /// ```
-    #[inline]
-    pub fn read<Q, R, F: FnOnce(&K, &V) -> R>(&self, key: &Q, reader: F) -> Option<R>
-    where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
-    {
-        let guard = Guard::new();
-        self.read_entry(key, self.hash(key), &mut (), &guard)
-            .ok()
-            .flatten()
-            .map(|(k, v)| reader(k, v))
-    }
-
-    /// Reads a key-value pair using the supplied [`Guard`].
-    ///
-    /// Returns `None` if the key does not exist. It enables the caller to use the value reference
-    /// outside the method. This method is not linearizable; the key-value pair being read by this
-    /// method can be removed from the container or copied to a different memory location.
+    /// This method is not linearizable since the entry can be removed while being read.
     ///
     /// # Examples
     ///
@@ -705,16 +676,11 @@ where
     /// assert!(hashindex.insert(1, 10).is_ok());
     ///
     /// let guard = Guard::new();
-    /// let value_ref = hashindex.read_with(&1, |k, v| v, &guard).unwrap();
+    /// let value_ref = hashindex.peek(&1, &guard).unwrap();
     /// assert_eq!(*value_ref, 10);
     /// ```
     #[inline]
-    pub fn read_with<'g, Q, R, F: FnOnce(&'g K, &'g V) -> R>(
-        &self,
-        key: &Q,
-        reader: F,
-        guard: &'g Guard,
-    ) -> Option<R>
+    pub fn peek<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<&'g V>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
@@ -722,10 +688,40 @@ where
         self.read_entry(key, self.hash(key), &mut (), guard)
             .ok()
             .flatten()
+            .map(|(_, v)| v)
+    }
+
+    /// Peeks a key-value pair without acquiring locks.
+    ///
+    /// Returns `None` if the key does not exist.
+    ///
+    /// This method is not linearizable since the entry can be removed while being read.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// assert!(hashindex.peek_with(&1, |_, v| *v).is_none());
+    /// assert!(hashindex.insert(1, 10).is_ok());
+    /// assert_eq!(hashindex.peek_with(&1, |_, v| *v).unwrap(), 10);
+    /// ```
+    #[inline]
+    pub fn peek_with<Q, R, F: FnOnce(&K, &V) -> R>(&self, key: &Q, reader: F) -> Option<R>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        let guard = Guard::new();
+        self.read_entry(key, self.hash(key), &mut (), &guard)
+            .ok()
+            .flatten()
             .map(|(k, v)| reader(k, v))
     }
 
-    /// Checks if the key exists.
+    /// Returns `true` if the [`HashIndex`] contains a value for the specified key.
     ///
     /// # Examples
     ///
@@ -744,7 +740,7 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.read(key, |_, _| ()).is_some()
+        self.peek_with(key, |_, _| ()).is_some()
     }
 
     /// Retains the entries specified by the predicate.
@@ -842,7 +838,7 @@ where
         }
     }
 
-    /// Clears all the key-value pairs.
+    /// Clears the [`HashIndex`] by removing all key-value pairs.
     ///
     /// # Examples
     ///
@@ -860,7 +856,7 @@ where
         self.retain(|_, _| false);
     }
 
-    /// Clears all the key-value pairs.
+    /// Clears the [`HashIndex`] by removing all key-value pairs.
     ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
@@ -1159,11 +1155,11 @@ where
         let guard = Guard::new();
         if !self
             .iter(&guard)
-            .any(|(k, v)| other.read(k, |_, ov| v == ov) != Some(true))
+            .any(|(k, v)| other.peek_with(k, |_, ov| v == ov) != Some(true))
         {
             return !other
                 .iter(&guard)
-                .any(|(k, v)| self.read(k, |_, sv| v == sv) != Some(true));
+                .any(|(k, v)| self.peek_with(k, |_, sv| v == sv) != Some(true));
         }
         false
     }
@@ -1185,7 +1181,7 @@ where
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
     /// hashindex.entry(3).or_insert(7);
-    /// assert_eq!(hashindex.read(&3, |_, v| *v), Some(7));
+    /// assert_eq!(hashindex.peek_with(&3, |_, v| *v), Some(7));
     /// ```
     #[inline]
     pub fn or_insert(self, val: V) -> OccupiedEntry<'h, K, V, H> {
@@ -1202,7 +1198,7 @@ where
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
     /// hashindex.entry(19).or_insert_with(|| 5);
-    /// assert_eq!(hashindex.read(&19, |_, v| *v), Some(5));
+    /// assert_eq!(hashindex.peek_with(&19, |_, v| *v), Some(5));
     /// ```
     #[inline]
     pub fn or_insert_with<F: FnOnce() -> V>(self, constructor: F) -> OccupiedEntry<'h, K, V, H> {
@@ -1222,7 +1218,7 @@ where
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
     /// hashindex.entry(11).or_insert_with_key(|k| if *k == 11 { 7 } else { 3 });
-    /// assert_eq!(hashindex.read(&11, |_, v| *v), Some(7));
+    /// assert_eq!(hashindex.peek_with(&11, |_, v| *v), Some(7));
     /// ```
     #[inline]
     pub fn or_insert_with_key<F: FnOnce(&K) -> V>(
@@ -1261,8 +1257,8 @@ where
     /// # Safety
     ///
     /// The caller has to make sure that there are no readers of the entry, e.g., a reader keeping
-    /// a reference to the entry via [`HashIndex::iter`], [`HashIndex::read`], or
-    /// [`HashIndex::read_with`], unless an instance of `V` can be safely read when there is a
+    /// a reference to the entry via [`HashIndex::iter`], [`HashIndex::peek`], or
+    /// [`HashIndex::peek_with`], unless an instance of `V` can be safely read when there is a
     /// single writer, e.g., `V = [u8; 32]`.
     ///
     /// # Examples
@@ -1275,12 +1271,12 @@ where
     /// unsafe {
     ///     hashindex.entry(37).and_modify(|v| { *v += 1 }).or_insert(47);
     /// }
-    /// assert_eq!(hashindex.read(&37, |_, v| *v), Some(47));
+    /// assert_eq!(hashindex.peek_with(&37, |_, v| *v), Some(47));
     ///
     /// unsafe {
     ///     hashindex.entry(37).and_modify(|v| { *v += 1 }).or_insert(3);
     /// }
-    /// assert_eq!(hashindex.read(&37, |_, v| *v), Some(48));
+    /// assert_eq!(hashindex.peek_with(&37, |_, v| *v), Some(48));
     /// ```
     #[inline]
     #[must_use]
@@ -1313,7 +1309,7 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     /// hashindex.entry(11).or_default();
-    /// assert_eq!(hashindex.read(&11, |_, v| *v), Some(0));
+    /// assert_eq!(hashindex.peek_with(&11, |_, v| *v), Some(0));
     /// ```
     #[inline]
     pub fn or_default(self) -> OccupiedEntry<'h, K, V, H> {
@@ -1381,7 +1377,7 @@ where
     /// if let Entry::Occupied(o) = hashindex.entry(11) {
     ///     o.remove_entry();
     /// };
-    /// assert_eq!(hashindex.read(&11, |_, v| *v), None);
+    /// assert_eq!(hashindex.peek_with(&11, |_, v| *v), None);
     /// ```
     #[inline]
     pub fn remove_entry(mut self) {
@@ -1435,8 +1431,8 @@ where
     /// # Safety
     ///
     /// The caller has to make sure that there are no readers of the entry, e.g., a reader keeping
-    /// a reference to the entry via [`HashIndex::iter`], [`HashIndex::read`], or
-    /// [`HashIndex::read_with`], unless an instance of `V` can be safely read when there is a
+    /// a reference to the entry via [`HashIndex::iter`], [`HashIndex::peek`], or
+    /// [`HashIndex::peek_with`], unless an instance of `V` can be safely read when there is a
     /// single writer, e.g., `V = [u8; 32]`.
     ///
     /// # Examples
@@ -1455,7 +1451,7 @@ where
     ///     assert_eq!(*o.get(), 29);
     /// }
     ///
-    /// assert_eq!(hashindex.read(&37, |_, v| *v), Some(29));
+    /// assert_eq!(hashindex.peek_with(&37, |_, v| *v), Some(29));
     /// ```
     #[inline]
     pub unsafe fn get_mut(&mut self) -> &mut V {
@@ -1485,7 +1481,7 @@ where
     ///     o.update(29);
     /// }
     ///
-    /// assert_eq!(hashindex.read(&37, |_, v| *v), Some(29));
+    /// assert_eq!(hashindex.peek_with(&37, |_, v| *v), Some(29));
     /// ```
 
     #[inline]
@@ -1650,7 +1646,7 @@ where
     ///     o.insert_entry(29);
     /// }
     ///
-    /// assert_eq!(hashindex.read(&19, |_, v| *v), Some(29));
+    /// assert_eq!(hashindex.peek_with(&19, |_, v| *v), Some(29));
     /// ```
     #[inline]
     pub fn insert_entry(mut self, val: V) -> OccupiedEntry<'h, K, V, H> {

@@ -94,7 +94,7 @@ mod benchmark {
         }
         #[inline(always)]
         fn read_test(&self, k: &K) -> bool {
-            self.read(k, |_, _| ()).is_some()
+            self.peek_with(k, |_, _| ()).is_some()
         }
         #[inline(always)]
         fn scan_test(&self) -> usize {
@@ -118,7 +118,7 @@ mod benchmark {
         }
         #[inline(always)]
         fn read_test(&self, k: &K) -> bool {
-            self.read(k, |_, _| ()).is_some()
+            self.peek_with(k, |_, _| ()).is_some()
         }
         #[inline(always)]
         fn scan_test(&self) -> usize {
@@ -1003,7 +1003,7 @@ mod benchmark_async {
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let result = hashindex_clone.read(&local_index, |_, _| ());
+                        let result = hashindex_clone.peek_with(&local_index, |_, _| ());
                         assert!(result.is_some() || workload_clone.has_remote_op());
                         num_operations += 1;
                     }
@@ -1012,7 +1012,7 @@ mod benchmark_async {
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let _result = hashindex_clone.read(&remote_index, |_, _| ());
+                        let _result = hashindex_clone.peek_with(&remote_index, |_, _| ());
                         num_operations += 1;
                     }
                     for j in 0..workload_clone.remove_local {
@@ -1233,7 +1233,7 @@ mod benchmark_async {
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let result = treeindex_clone.read(&local_index, |_, _| ());
+                        let result = treeindex_clone.peek_with(&local_index, |_, _| ());
                         assert!(result.is_some() || workload_clone.has_remote_op());
                         num_operations += 1;
                     }
@@ -1242,7 +1242,7 @@ mod benchmark_async {
                             + i * per_op_workload_size
                             + j
                             + start_index;
-                        let _result = treeindex_clone.read(&remote_index, |_, _| ());
+                        let _result = treeindex_clone.peek_with(&remote_index, |_, _| ());
                         num_operations += 1;
                     }
                     for j in 0..workload_clone.remove_local {

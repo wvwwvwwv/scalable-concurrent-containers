@@ -20,6 +20,14 @@
 - `ebr::Ptr::as_raw` -> `ebr::Ptr::as_ptr`.
 - `ebr::Ptr::get_arc` -> `ebr::Ptr::get_shared`.
 - `*::first_occupied_entry*` -> `*::first_entry*`.
+- `HashIndex::read` -> `HashIndex::peek_with`.
+- `HashIndex::read_with` -> `HashIndex::peek`.
+- `Queue::peek` -> `Queue::peek_with`.
+- `Queue::peek_with` -> `Queue::peek`.
+- `Stack::peek` -> `Stack::peek_with`.
+- `Stack::peek_with` -> `Stack::peek`.
+- `TreeIndex::read` -> `TreeIndex::peek_with`.
+- `TreeIndex::read_with` -> `TreeIndex::peek`.
 - Remove `HashMap::upsert*`: superseded by `hash_map::Entry::and_modify` and `hash_map::Entry::or_insert`.
 
 ```rust

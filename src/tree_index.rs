@@ -22,9 +22,9 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 /// Scalable concurrent B-plus tree.
 ///
 /// [`TreeIndex`] is a concurrent and asynchronous B-plus tree variant that is optimized for read
-/// operations. Read operations, such as read, scan, are neither blocked nor interrupted by other
-/// threads or tasks. Write operations, such as insert, remove, do not block if structural changes
-/// are not required.
+/// operations. Read operations, such as read, iteration over entries, are neither blocked nor
+/// interrupted by other threads or tasks. Write operations, such as insert, remove, do not block
+/// if structural changes are not required.
 ///
 /// ## Notes
 ///
@@ -77,7 +77,7 @@ where
     guard: &'g Guard,
 }
 
-/// An iterator over a sub-range of entries in a  [`TreeIndex`].
+/// An iterator over a sub-range of entries in a [`TreeIndex`].
 pub struct Range<'t, 'g, K, V, R>
 where
     K: 'static + Clone + Ord,
@@ -129,7 +129,7 @@ where
     ///
     /// assert!(treeindex.insert(1, 10).is_ok());
     /// assert_eq!(treeindex.insert(1, 11).err().unwrap(), (1, 11));
-    /// assert_eq!(treeindex.read(&1, |k, v| *v).unwrap(), 10);
+    /// assert_eq!(treeindex.peek_with(&1, |k, v| *v).unwrap(), 10);
     /// ```
     #[inline]
     pub fn insert(&self, mut key: K, mut val: V) -> Result<(), (K, V)> {
@@ -440,32 +440,10 @@ where
         }
     }
 
-    /// Reads a key-value pair.
+    /// Returns a guarded reference to the value for the specified key without acquiring locks.
     ///
-    /// Returns `None` if the key does not exist.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::TreeIndex;
-    ///
-    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
-    /// assert!(treeindex.read(&1, |k, v| *v).is_none());
-    /// ```
-    #[inline]
-    pub fn read<Q, R, F: FnOnce(&Q, &V) -> R>(&self, key: &Q, reader: F) -> Option<R>
-    where
-        K: Borrow<Q>,
-        Q: Ord + ?Sized,
-    {
-        let guard = Guard::new();
-        self.read_with(key, reader, &guard)
-    }
-
-    /// Reads a key-value pair using the supplied [`Guard`].
-    ///
-    /// Returns `None` if the key does not exist. It enables the caller to use the value reference
-    /// outside the method.
+    /// Returns `None` if the key does not exist. The returned reference can survive as long as the
+    /// associated [`Guard`] is alive.
     ///
     /// # Examples
     ///
@@ -476,25 +454,40 @@ where
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
     /// let guard = Guard::new();
-    /// assert!(treeindex.read_with(&1, |k, v| v, &guard).is_none());
+    /// assert!(treeindex.peek(&1, &guard).is_none());
     /// ```
     #[inline]
-    pub fn read_with<'g, Q, R, F: FnOnce(&Q, &'g V) -> R>(
-        &self,
-        key: &Q,
-        reader: F,
-        guard: &'g Guard,
-    ) -> Option<R>
+    pub fn peek<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<&'g V>
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
         if let Some(root_ref) = self.root.load(Acquire, guard).as_ref() {
-            if let Some(val) = root_ref.search(key, guard) {
-                return Some(reader(key, val));
-            }
+            return root_ref.search(key, guard);
         }
         None
+    }
+
+    /// Peeks a key-value pair without acquiring locks.
+    ///
+    /// Returns `None` if the key does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::TreeIndex;
+    ///
+    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    /// assert!(treeindex.peek_with(&1, |k, v| *v).is_none());
+    /// ```
+    #[inline]
+    pub fn peek_with<Q, R, F: FnOnce(&Q, &V) -> R>(&self, key: &Q, reader: F) -> Option<R>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        let guard = Guard::new();
+        self.peek(key, &guard).map(|v| reader(key, v))
     }
 
     /// Clears the [`TreeIndex`].

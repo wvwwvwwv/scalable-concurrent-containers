@@ -47,8 +47,8 @@ fn iter_with(c: &mut Criterion) {
     });
 }
 
-fn read_with(c: &mut Criterion) {
-    c.bench_function("TreeIndex: read_with", |b| {
+fn peek(c: &mut Criterion) {
+    c.bench_function("TreeIndex: peek", |b| {
         b.iter_custom(|iters| {
             let treeindex: TreeIndex<u64, u64> = TreeIndex::default();
             for i in 0..iters {
@@ -57,12 +57,12 @@ fn read_with(c: &mut Criterion) {
             let start = Instant::now();
             let guard = Guard::new();
             for i in 0..iters {
-                assert_eq!(treeindex.read_with(&i, |_, v| *v == i, &guard), Some(true));
+                assert_eq!(treeindex.peek(&i, &guard), Some(&i));
             }
             start.elapsed()
         })
     });
 }
 
-criterion_group!(tree_index, insert, insert_rev, iter_with, read_with);
+criterion_group!(tree_index, insert, insert_rev, iter_with, peek);
 criterion_main!(tree_index);

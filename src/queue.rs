@@ -65,7 +65,10 @@ impl<T: 'static> Queue<T> {
         self.push_if_internal(val, cond, &Guard::new())
     }
 
-    /// Peeks the oldest entry with the supplied [`Guard`].
+    /// Returns a guarded reference to the oldest entry.
+    ///
+    /// Returns `None` if the [`Queue`] is empty. The returned reference can survive as long as the
+    /// associated [`Guard`] is alive.
     ///
     /// # Examples
     ///
@@ -75,28 +78,24 @@ impl<T: 'static> Queue<T> {
     ///
     /// let queue: Queue<usize> = Queue::default();
     ///
-    /// assert!(queue.peek_with(|v| v.is_none(), &Guard::new()));
+    /// assert!(queue.peek(&Guard::new()).is_none());
     ///
     /// queue.push(37);
     /// queue.push(3);
     ///
-    /// assert_eq!(queue.peek_with(|v| **v.unwrap(), &Guard::new()), 37);
+    /// assert_eq!(**queue.peek(&Guard::new()).unwrap(), 37);
     /// ```
     #[inline]
-    pub fn peek_with<'g, R, F: FnOnce(Option<&'g Entry<T>>) -> R>(
-        &self,
-        reader: F,
-        guard: &'g Guard,
-    ) -> R {
+    pub fn peek<'g>(&self, guard: &'g Guard) -> Option<&'g Entry<T>> {
         let mut current = self.oldest.load(Acquire, guard);
         while let Some(oldest_entry) = current.as_ref() {
             if oldest_entry.is_deleted(Relaxed) {
                 current = self.cleanup_oldest(guard);
                 continue;
             }
-            return reader(Some(oldest_entry));
+            return Some(oldest_entry);
         }
-        reader(None)
+        None
     }
 }
 
@@ -242,15 +241,15 @@ impl<T> Queue<T> {
     ///
     /// let queue: Queue<usize> = Queue::default();
     ///
-    /// assert!(queue.peek(|v| v.is_none()));
+    /// assert!(queue.peek_with(|v| v.is_none()));
     ///
     /// queue.push(37);
     /// queue.push(3);
     ///
-    /// assert_eq!(queue.peek(|v| **v.unwrap()), 37);
+    /// assert_eq!(queue.peek_with(|v| **v.unwrap()), 37);
     /// ```
     #[inline]
-    pub fn peek<R, F: FnOnce(Option<&Entry<T>>) -> R>(&self, reader: F) -> R {
+    pub fn peek_with<R, F: FnOnce(Option<&Entry<T>>) -> R>(&self, reader: F) -> R {
         let guard = Guard::new();
         let mut current = self.oldest.load(Acquire, &guard);
         while let Some(oldest_entry) = current.as_ref() {
