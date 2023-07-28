@@ -162,7 +162,7 @@ where
             };
 
             // Updates the pointer before unlocking the root.
-            let new_root_ref = new_root.load(guard).as_ref();
+            let new_root_ref = new_root.get_guarded_ptr(guard).as_ref();
             if let Some(old_root) = root.swap((Some(new_root), Tag::None), Release).0 {
                 if let Some(Self::Internal(internal_node)) = new_root_ref.as_ref() {
                     internal_node.finish_split(guard);

@@ -169,7 +169,7 @@ impl<K: Eq, V, const TYPE: char> Bucket<K, V, TYPE> {
         }
         self.state.fetch_or(KILLED, Release);
         self.num_entries = 0;
-        if !self.metadata.link.load(Relaxed, guard).is_null() {
+        if !self.metadata.link.is_null(Relaxed) {
             self.clear_links(guard);
         }
     }
@@ -183,7 +183,7 @@ impl<K: Eq, V, const TYPE: char> Bucket<K, V, TYPE> {
         data_block: &mut DataBlock<K, V, BUCKET_LEN>,
         guard: &Guard,
     ) {
-        if !self.metadata.link.load(Relaxed, guard).is_null() {
+        if !self.metadata.link.is_null(Relaxed) {
             self.clear_links(guard);
         }
         if needs_drop::<(K, V)>() && self.metadata.occupied_bitmap != 0 {
@@ -288,7 +288,7 @@ impl<K: Eq, V, const TYPE: char> Bucket<K, V, TYPE> {
                     next.release(guard)
                 } else {
                     // The `LinkedBucket` should be dropped immediately.
-                    unsafe { next.release_drop_in_place() }
+                    unsafe { next.drop_in_place() }
                 };
                 debug_assert!(released);
                 if let (Some(next_next), _) = next_next {
@@ -438,7 +438,9 @@ impl<'g, K: Eq, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
             next_link.prev_link.store(prev_link_ptr, Relaxed);
         }
 
-        self.current_link_ptr = next_link.as_ref().map_or_else(Ptr::null, |n| n.load(guard));
+        self.current_link_ptr = next_link
+            .as_ref()
+            .map_or_else(Ptr::null, |n| n.get_guarded_ptr(guard));
         let old_link = if let Some(prev_link) = unsafe { prev_link_ptr.as_ref() } {
             prev_link
                 .metadata
@@ -458,7 +460,7 @@ impl<'g, K: Eq, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
                 l.release(guard)
             } else {
                 // The `LinkedBucket` should be dropped immediately.
-                unsafe { l.release_drop_in_place() }
+                unsafe { l.drop_in_place() }
             }
         });
         debug_assert!(released);
@@ -627,7 +629,7 @@ impl<'g, K: Eq, V, const TYPE: char> Locker<'g, K, V, TYPE> {
             // Insert a new `LinkedBucket` at the linked list head.
             let head = self.bucket.metadata.link.get_shared(Relaxed, guard);
             let link = unsafe { Shared::new_unchecked(LinkedBucket::new(head)) };
-            let link_ptr = link.load(guard);
+            let link_ptr = link.get_guarded_ptr(guard);
             unsafe {
                 let link_mut = &mut *link_ptr.as_ptr().cast_mut();
                 link_mut.data_block[0].as_mut_ptr().write(constructor());

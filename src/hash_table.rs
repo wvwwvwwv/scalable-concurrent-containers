@@ -806,7 +806,7 @@ where
 
     /// Clears the old array.
     fn clear_old_array(&self, current_array: &BucketArray<K, V, TYPE>, guard: &Guard) {
-        while !current_array.old_array(guard).is_null() {
+        while current_array.has_old_array() {
             if self.incremental_rehash::<_, _, false>(current_array, &mut (), guard) == Ok(true) {
                 break;
             }
@@ -839,7 +839,7 @@ where
                     || (current & (BUCKET_LEN - 1)) == BUCKET_LEN - 1
                 {
                     // Only `BUCKET_LEN - 1` threads are allowed to rehash a `Bucket` at a moment.
-                    return Ok(current_array.old_array(guard).is_null());
+                    return Ok(!current_array.has_old_array());
                 }
                 match rehashing_metadata.compare_exchange_weak(
                     current,
@@ -908,7 +908,7 @@ where
             // Successfully rehashed all the assigned buckets.
             rehashing_guard.1 = true;
         }
-        Ok(current_array.old_array(guard).is_null())
+        Ok(!current_array.has_old_array())
     }
 
     /// Tries to enlarge the array if the estimated load factor is greater than `7/8`.
@@ -943,7 +943,7 @@ where
         index: usize,
         guard: &Guard,
     ) {
-        debug_assert!(current_array.old_array(guard).is_null());
+        debug_assert!(!current_array.has_old_array());
 
         if current_array.num_entries() > self.minimum_capacity().load(Relaxed).next_power_of_two()
             || TYPE == OPTIMISTIC
@@ -986,7 +986,7 @@ where
         }
 
         if let Some(current_array) = current_array_ptr.as_ref() {
-            if !current_array.old_array(guard).is_null() {
+            if current_array.has_old_array() {
                 // The hash table cannot be resized with an old array attached to it.
                 return;
             }
@@ -1131,7 +1131,7 @@ impl<'h, K: Eq + Hash, V, const TYPE: char> LockedEntry<'h, K, V, TYPE> {
     ) -> Option<LockedEntry<'h, K, V, TYPE>> {
         let mut current_array_holder = hash_table.bucket_array().get_shared(Acquire, &Guard::new());
         while let Some(current_array) = current_array_holder.take() {
-            while !current_array.old_array(&Guard::new()).is_null() {
+            while current_array.has_old_array() {
                 let mut async_wait = AsyncWait::default();
                 let mut async_wait_pinned = Pin::new(&mut async_wait);
                 if hash_table.incremental_rehash::<_, _, false>(
@@ -1210,7 +1210,7 @@ impl<'h, K: Eq + Hash, V, const TYPE: char> LockedEntry<'h, K, V, TYPE> {
 
         let current_array_ptr = hash_table.bucket_array().load(Acquire, prolonged_guard);
         if let Some(current_array) = current_array_ptr.as_ref() {
-            if !current_array.old_array(prolonged_guard).is_null() {
+            if current_array.has_old_array() {
                 drop(self);
                 return hash_table.lock_first_entry(prolonged_guard);
             }
@@ -1257,7 +1257,7 @@ impl<'h, K: Eq + Hash, V, const TYPE: char> LockedEntry<'h, K, V, TYPE> {
 
         let mut current_array_holder = hash_table.bucket_array().get_shared(Acquire, &Guard::new());
         if let Some(current_array) = current_array_holder {
-            if !current_array.old_array(&Guard::new()).is_null() {
+            if current_array.has_old_array() {
                 drop(self);
                 return Self::first_entry_async(hash_table).await;
             }

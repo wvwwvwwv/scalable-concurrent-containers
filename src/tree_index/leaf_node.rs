@@ -403,7 +403,7 @@ where
                     self.split_op.low_key_leaf.clone(Relaxed, guard),
                 ));
                 num_entries += 1;
-                if !self.split_op.high_key_leaf.load(Relaxed, guard).is_null() {
+                if !self.split_op.high_key_leaf.is_null(Relaxed) {
                     entry_array[num_entries].replace((
                         Some(entry.0),
                         self.split_op.high_key_leaf.clone(Relaxed, guard),
@@ -424,7 +424,7 @@ where
                 self.split_op.low_key_leaf.clone(Relaxed, guard),
             ));
             num_entries += 1;
-            if !self.split_op.high_key_leaf.load(Relaxed, guard).is_null() {
+            if !self.split_op.high_key_leaf.is_null(Relaxed) {
                 entry_array[num_entries]
                     .replace((None, self.split_op.high_key_leaf.clone(Relaxed, guard)));
                 num_entries += 1;

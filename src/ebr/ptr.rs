@@ -77,7 +77,7 @@ impl<'g, T> Ptr<'g, T> {
     ///
     /// let shared: Shared<usize> = Shared::new(29);
     /// let guard = Guard::new();
-    /// let ptr = shared.load(&guard);
+    /// let ptr = shared.get_guarded_ptr(&guard);
     /// drop(shared);
     ///
     /// assert_eq!(unsafe { *ptr.as_ptr() }, 29);
@@ -195,12 +195,12 @@ impl<'g, T> Ptr<'g, T> {
     ///
     /// let shared: Shared<usize> = Shared::new(83);
     /// let guard = Guard::new();
-    /// let ptr = shared.load(&guard);
-    /// let converted_shared = ptr.get_shared().unwrap();
-    /// assert_eq!(*converted_shared, 83);
+    /// let ptr = shared.get_guarded_ptr(&guard);
+    /// let shared_restored = ptr.get_shared().unwrap();
+    /// assert_eq!(*shared_restored, 83);
     ///
     /// drop(shared);
-    /// drop(converted_shared);
+    /// drop(shared_restored);
     ///
     /// assert!(ptr.get_shared().is_none());
     /// ```

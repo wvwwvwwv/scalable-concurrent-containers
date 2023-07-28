@@ -1286,7 +1286,7 @@ where
 
     /// Clears the old array asynchronously.
     async fn cleanse_old_array_async(&self, current_array: &BucketArray<K, V, SEQUENTIAL>) {
-        while !current_array.old_array(&Guard::new()).is_null() {
+        while current_array.has_old_array() {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             if self.incremental_rehash::<_, _, false>(
@@ -1419,7 +1419,7 @@ where
             .map(|a| unsafe {
                 // The entire array does not need to wait for an epoch change as no references will
                 // remain outside the lifetime of the `HashMap`.
-                a.release_drop_in_place()
+                a.drop_in_place()
             });
     }
 }
@@ -1712,7 +1712,7 @@ where
             let guard = Guard::new();
             let hashmap = self.hashmap;
             if let Some(current_array) = hashmap.bucket_array().load(Acquire, &guard).as_ref() {
-                if current_array.old_array(&guard).is_null() {
+                if !current_array.has_old_array() {
                     let index = self.locked_entry.index;
                     if current_array.within_sampling_range(index) {
                         drop(self);

@@ -1,5 +1,6 @@
 use super::ref_counted::RefCounted;
 use super::{Collectible, Guard, Ptr};
+use std::mem::forget;
 use std::ops::Deref;
 use std::panic::UnwindSafe;
 use std::ptr::{addr_of, NonNull};
@@ -61,7 +62,7 @@ impl<T> Owned<T> {
         }
     }
 
-    /// Loads a pointer value from the [`Owned`].
+    /// Returns a [`Ptr`] to the instance that may live as long as the supplied [`Guard`].
     ///
     /// # Examples
     ///
@@ -70,14 +71,14 @@ impl<T> Owned<T> {
     ///
     /// let owned: Owned<usize> = Owned::new(37);
     /// let guard = Guard::new();
-    /// let ptr = owned.load(&guard);
+    /// let ptr = owned.get_guarded_ptr(&guard);
     /// drop(owned);
     ///
     /// assert_eq!(*ptr.as_ref().unwrap(), 37);
     /// ```
     #[inline]
     #[must_use]
-    pub fn load<'g>(&self, _guard: &'g Guard) -> Ptr<'g, T> {
+    pub fn get_guarded_ptr<'g>(&self, _guard: &'g Guard) -> Ptr<'g, T> {
         Ptr::from(self.instance_ptr.as_ptr())
     }
 
@@ -140,6 +141,59 @@ impl<T> Owned<T> {
     #[must_use]
     pub fn as_ptr(&self) -> *const T {
         addr_of!(**self.underlying())
+    }
+
+    /// Releases the ownership by passing `self` to the given [`Guard`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::{Guard, Owned};
+    ///
+    /// let owned: Owned<usize> = Owned::new(47);
+    /// let guard = Guard::new();
+    /// owned.release(&guard);
+    /// ```
+    #[inline]
+    pub fn release(mut self, guard: &Guard) {
+        self.pass_underlying_to_collector(guard);
+        forget(self);
+    }
+
+    /// Drops the instance immediately.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that there is no [`Ptr`] pointing to the instance.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::Owned;
+    /// use std::sync::atomic::AtomicBool;
+    /// use std::sync::atomic::Ordering::Relaxed;
+    ///
+    /// static DROPPED: AtomicBool = AtomicBool::new(false);
+    /// struct T(&'static AtomicBool);
+    /// impl Drop for T {
+    ///     fn drop(&mut self) {
+    ///         self.0.store(true, Relaxed);
+    ///     }
+    /// }
+    ///
+    /// let owned: Owned<T> = Owned::new(T(&DROPPED));
+    /// assert!(!DROPPED.load(Relaxed));
+    ///
+    /// unsafe {
+    ///     owned.drop_in_place();
+    /// }
+    ///
+    /// assert!(DROPPED.load(Relaxed));
+    /// ```
+    #[inline]
+    pub unsafe fn drop_in_place(mut self) {
+        self.instance_ptr.as_mut().drop_and_dealloc();
+        forget(self);
     }
 
     /// Provides a raw pointer to its [`RefCounted`].

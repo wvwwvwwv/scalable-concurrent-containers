@@ -46,9 +46,8 @@ impl<T> Shared<T> {
     ///
     /// `T::drop` can be run after the last strong reference is dropped, therefore it is safe only
     /// if `T::drop` does not access short-lived data or [`std::mem::needs_drop`] is `false` for
-    /// `T`. Otherwise, the instance must be manually dropped by invoking
-    /// [`release_drop_in_place()`](Self::release_drop_in_place) before the lifetime of `T` is
-    /// reached.
+    /// `T`. Otherwise, the instance must be manually dropped by invoking [`Self::drop_in_place`]
+    /// before the lifetime of `T` is reached.
     ///
     /// # Examples
     ///
@@ -58,7 +57,7 @@ impl<T> Shared<T> {
     /// let hello = String::from("hello");
     /// let shared: Shared<&str> = unsafe { Shared::new_unchecked(hello.as_str()) };
     ///
-    /// assert!(unsafe { shared.release_drop_in_place() });
+    /// assert!(unsafe { shared.drop_in_place() });
     /// ```
     #[inline]
     pub unsafe fn new_unchecked(t: T) -> Self {
@@ -68,7 +67,7 @@ impl<T> Shared<T> {
         }
     }
 
-    /// Loads a pointer value from the [`Shared`].
+    /// Returns a [`Ptr`] to the instance that may live as long as the supplied [`Guard`].
     ///
     /// # Examples
     ///
@@ -77,14 +76,14 @@ impl<T> Shared<T> {
     ///
     /// let shared: Shared<usize> = Shared::new(37);
     /// let guard = Guard::new();
-    /// let ptr = shared.load(&guard);
+    /// let ptr = shared.get_guarded_ptr(&guard);
     /// drop(shared);
     ///
     /// assert_eq!(*ptr.as_ref().unwrap(), 37);
     /// ```
     #[inline]
     #[must_use]
-    pub fn load<'g>(&self, _guard: &'g Guard) -> Ptr<'g, T> {
+    pub fn get_guarded_ptr<'g>(&self, _guard: &'g Guard) -> Ptr<'g, T> {
         Ptr::from(self.instance_ptr.as_ptr())
     }
 
@@ -181,13 +180,9 @@ impl<T> Shared<T> {
         released
     }
 
-    /// Releases the strong reference and drops the instance immediately if it was the last
-    /// reference to the instance.
+    /// Drops the instance immediately if it has held the last reference to the instance.
     ///
-    /// The instance is not passed to the garbage collector when the last reference is dropped,
-    /// instead the method drops the instance immediately.
-    ///
-    /// Returns `true` if the last reference was released and the instance was dropped.
+    /// Returns `true` if the instance was dropped.
     ///
     /// # Safety
     ///
@@ -212,15 +207,15 @@ impl<T> Shared<T> {
     /// let shared_clone = shared.clone();
     ///
     /// unsafe {
-    ///     assert!(!shared.release_drop_in_place());
+    ///     assert!(!shared.drop_in_place());
     ///     assert!(!DROPPED.load(Relaxed));
-    ///     assert!(shared_clone.release_drop_in_place());
+    ///     assert!(shared_clone.drop_in_place());
     ///     assert!(DROPPED.load(Relaxed));
     /// }
     /// ```
     #[inline]
     #[must_use]
-    pub unsafe fn release_drop_in_place(mut self) -> bool {
+    pub unsafe fn drop_in_place(mut self) -> bool {
         let dropped = if self.underlying().drop_ref() {
             self.instance_ptr.as_mut().drop_and_dealloc();
             true

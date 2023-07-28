@@ -161,6 +161,12 @@ impl<K: Eq, V, const TYPE: char> BucketArray<K, V, TYPE> {
 
     /// Returns a [`Ptr`] to the old array.
     #[inline]
+    pub(crate) fn has_old_array(&self) -> bool {
+        !self.old_array.is_null(Relaxed)
+    }
+
+    /// Returns a [`Ptr`] to the old array.
+    #[inline]
     pub(crate) fn old_array<'g>(&self, guard: &'g Guard) -> Ptr<'g, BucketArray<K, V, TYPE>> {
         self.old_array.load(Relaxed, guard)
     }
@@ -222,7 +228,7 @@ impl<K: Eq, V, const TYPE: char> Drop for BucketArray<K, V, TYPE> {
                 self.old_array
                     .swap((None, Tag::None), Relaxed)
                     .0
-                    .map(|a| a.release_drop_in_place());
+                    .map(|a| a.drop_in_place());
             }
         }
 

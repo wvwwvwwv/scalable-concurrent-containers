@@ -2407,7 +2407,7 @@ mod ebr_test {
         assert_eq!(owned.deref().1, 12);
 
         let guard = Guard::new();
-        let ptr = owned.load(&guard);
+        let ptr = owned.get_guarded_ptr(&guard);
         assert!(ptr.get_shared().is_none());
 
         drop(owned);
@@ -2446,14 +2446,14 @@ mod ebr_test {
         let thread = std::thread::spawn(move || {
             assert_eq!(shared_clone.0.load(Relaxed), 14);
             unsafe {
-                assert!(!shared_clone.release_drop_in_place());
+                assert!(!shared_clone.drop_in_place());
             }
         });
         assert!(thread.join().is_ok());
         assert_eq!(shared.0.load(Relaxed), 14);
 
         unsafe {
-            assert!(shared.release_drop_in_place());
+            assert!(shared.drop_in_place());
         }
 
         assert!(DESTROYED.load(Relaxed));
