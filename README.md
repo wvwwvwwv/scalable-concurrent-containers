@@ -157,6 +157,25 @@ let future_insert = hashindex.insert_async(2, 1);
 let future_remove = hashindex.remove_if_async(&1, |_| true);
 ```
 
+The `Entry` API of [HashIndex](#HashIndex) can be used to update an entry in-place.
+
+```rust
+use scc::HashIndex;
+
+let hashindex: HashIndex<u64, u32> = HashIndex::default();
+assert!(hashindex.insert(1, 1).is_ok());
+
+if let Some(mut o) = hashindex.get(&1) {
+    // Create a new version of the entry.
+    o.update(2);
+};
+
+if let Some(mut o) = hashindex.get(&1) {
+    // Update the entry in-place.
+    unsafe { *o.get_mut() = 3; }
+};
+```
+
 An [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is implemented for [HashIndex](#HashIndex), because any derived references can survive as long as the associated `ebr::Guard` lives.
 
 ```rust
@@ -391,7 +410,7 @@ assert_eq!(*prev, 17);
 drop(prev);
 
 // `ebr::AtomicShared` can be converted into `ebr::Shared`.
-let shared: Shared<usize> = atomic_shared.try_into_shared(Relaxed).unwrap();
+let shared: Shared<usize> = atomic_shared.into_shared(Relaxed).unwrap();
 assert_eq!(*shared, 18);
 
 // `18` and `19` will be garbage-collected later.

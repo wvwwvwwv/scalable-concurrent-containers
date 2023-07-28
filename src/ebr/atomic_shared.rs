@@ -402,7 +402,9 @@ impl<T> AtomicShared<T> {
         None
     }
 
-    /// Tries to convert `self` into a [`Shared`].
+    /// Converts `self` into a [`Shared`].
+    ///
+    /// Returns `None` if `self` did not hold a strong reference.
     ///
     /// # Examples
     ///
@@ -411,11 +413,11 @@ impl<T> AtomicShared<T> {
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_shared: AtomicShared<usize> = AtomicShared::new(55);
-    /// let shared: Shared<usize> = atomic_shared.try_into_shared(Relaxed).unwrap();
+    /// let shared: Shared<usize> = atomic_shared.into_shared(Relaxed).unwrap();
     /// assert_eq!(*shared, 55);
     /// ```
     #[inline]
-    pub fn try_into_shared(self, order: Ordering) -> Option<Shared<T>> {
+    pub fn into_shared(self, order: Ordering) -> Option<Shared<T>> {
         let ptr = self.instance_ptr.swap(null_mut(), order);
         if let Some(underlying_ptr) = NonNull::new(Tag::unset_tag(ptr).cast_mut()) {
             return Some(Shared::from(underlying_ptr));

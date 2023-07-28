@@ -1180,7 +1180,7 @@ mod test {
                     }
 
                     barrier_clone.wait().await;
-                    assert_eq!(full_clone.load(Relaxed), num_excess);
+                    assert_eq!((*full_clone).load(Relaxed), num_excess);
                     if inserted {
                         assert_eq!(*leaf_clone.search(&t).unwrap(), t);
                     }
@@ -1248,7 +1248,7 @@ mod test {
                 for r in futures::future::join_all(task_handles).await {
                     assert!(r.is_ok());
                 }
-                assert!(inserted.load(Relaxed));
+                assert!((*inserted).load(Relaxed));
             }
         }
     }

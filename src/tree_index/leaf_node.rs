@@ -1265,7 +1265,7 @@ mod test {
                 for r in futures::future::join_all(task_handles).await {
                     assert!(r.is_ok());
                 }
-                assert!(inserted.load(Relaxed));
+                assert!((*inserted).load(Relaxed));
             }
         }
     }

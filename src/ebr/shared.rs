@@ -68,7 +68,7 @@ impl<T> Shared<T> {
         }
     }
 
-    /// Generates a [`Ptr`] out of the [`Shared`].
+    /// Loads a pointer value from the [`Shared`].
     ///
     /// # Examples
     ///
@@ -77,16 +77,18 @@ impl<T> Shared<T> {
     ///
     /// let shared: Shared<usize> = Shared::new(37);
     /// let guard = Guard::new();
-    /// let ptr = shared.ptr(&guard);
+    /// let ptr = shared.load(&guard);
+    /// drop(shared);
+    ///
     /// assert_eq!(*ptr.as_ref().unwrap(), 37);
     /// ```
     #[inline]
     #[must_use]
-    pub fn ptr<'g>(&self, _guard: &'g Guard) -> Ptr<'g, T> {
+    pub fn load<'g>(&self, _guard: &'g Guard) -> Ptr<'g, T> {
         Ptr::from(self.instance_ptr.as_ptr())
     }
 
-    /// Returns a reference to the underlying instance with the supplied [`Guard`].
+    /// Returns a reference to the instance that may live as long as the supplied [`Guard`].
     ///
     /// # Examples
     ///
@@ -95,23 +97,24 @@ impl<T> Shared<T> {
     ///
     /// let shared: Shared<usize> = Shared::new(37);
     /// let guard = Guard::new();
-    /// let ref_b = shared.get_ref_with(&guard);
+    /// let ref_b = shared.get_guarded_ref(&guard);
+    /// drop(shared);
+    ///
     /// assert_eq!(*ref_b, 37);
     /// ```
     #[inline]
     #[must_use]
-    pub fn get_ref_with<'g>(&self, _guard: &'g Guard) -> &'g T {
+    pub fn get_guarded_ref<'g>(&self, _guard: &'g Guard) -> &'g T {
         unsafe { std::mem::transmute(&**self.underlying()) }
     }
 
-    /// Returns a mutable reference to the underlying instance if the instance is exclusively
-    /// owned.
+    /// Returns a mutable reference to the instance if the [`Shared`] is holding the only strong
+    /// reference.
     ///
     /// # Safety
     ///
-    /// The method is `unsafe` since there can be a [`Ptr`] to the instance; in other words, it is
-    /// safe as long as there is no [`Ptr`] to the instance and `self` has the only strong
-    /// reference count.
+    /// The method is `unsafe` since there can be a [`Ptr`] to the instance without holding a
+    /// strong reference.
     ///
     /// # Examples
     ///
@@ -129,7 +132,7 @@ impl<T> Shared<T> {
         self.instance_ptr.as_mut().get_mut_shared()
     }
 
-    /// Provides a raw pointer to the underlying instance.
+    /// Provides a raw pointer to the instance.
     ///
     /// # Examples
     ///
@@ -248,7 +251,7 @@ impl<T> Shared<T> {
         Self { instance_ptr: ptr }
     }
 
-    /// Returns a reference to the underlying instance.
+    /// Returns a reference to the instance.
     #[inline]
     fn underlying(&self) -> &RefCounted<T> {
         unsafe { self.instance_ptr.as_ref() }

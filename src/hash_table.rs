@@ -1151,7 +1151,8 @@ impl<'h, K: Eq + Hash, V, const TYPE: char> LockedEntry<'h, K, V, TYPE> {
                     {
                         let guard = Guard::new();
                         let prolonged_guard = hash_table.prolonged_guard_ref(&guard);
-                        let prolonged_current_array = current_array.get_ref_with(prolonged_guard);
+                        let prolonged_current_array =
+                            current_array.get_guarded_ref(prolonged_guard);
                         let bucket = prolonged_current_array.bucket_mut(index);
                         if let Ok(locker) = Locker::try_lock_or_wait(
                             bucket,
@@ -1271,7 +1272,8 @@ impl<'h, K: Eq + Hash, V, const TYPE: char> LockedEntry<'h, K, V, TYPE> {
                     {
                         let guard = Guard::new();
                         let prolonged_guard = hash_table.prolonged_guard_ref(&guard);
-                        let prolonged_current_array = current_array.get_ref_with(prolonged_guard);
+                        let prolonged_current_array =
+                            current_array.get_guarded_ref(prolonged_guard);
                         let bucket = prolonged_current_array.bucket_mut(index);
                         if let Ok(locker) = Locker::try_lock_or_wait(
                             bucket,

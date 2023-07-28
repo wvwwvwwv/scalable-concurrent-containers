@@ -329,7 +329,9 @@ impl<T> AtomicOwned<T> {
         }
     }
 
-    /// Tries to convert `self` into an [`Owned`].
+    /// Converts `self` into an [`Owned`].
+    ///
+    /// Returns `None` if `self` did not own an instance.
     ///
     /// # Examples
     ///
@@ -338,11 +340,11 @@ impl<T> AtomicOwned<T> {
     /// use std::sync::atomic::Ordering::Relaxed;
     ///
     /// let atomic_owned: AtomicOwned<usize> = AtomicOwned::new(55);
-    /// let owned: Owned<usize> = atomic_owned.try_into_owned(Relaxed).unwrap();
+    /// let owned: Owned<usize> = atomic_owned.into_owned(Relaxed).unwrap();
     /// assert_eq!(*owned, 55);
     /// ```
     #[inline]
-    pub fn try_into_owned(self, order: Ordering) -> Option<Owned<T>> {
+    pub fn into_owned(self, order: Ordering) -> Option<Owned<T>> {
         let ptr = self.instance_ptr.swap(null_mut(), order);
         if let Some(underlying_ptr) = NonNull::new(Tag::unset_tag(ptr).cast_mut()) {
             return Some(Owned::from(underlying_ptr));

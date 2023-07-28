@@ -67,7 +67,7 @@ impl<'g, T> Ptr<'g, T> {
         unsafe { Tag::unset_tag(self.instance_ptr).as_ref().map(Deref::deref) }
     }
 
-    /// Returns a raw pointer to the instance.
+    /// Provides a raw pointer to the instance.
     ///
     /// # Examples
     ///
@@ -77,12 +77,14 @@ impl<'g, T> Ptr<'g, T> {
     ///
     /// let shared: Shared<usize> = Shared::new(29);
     /// let guard = Guard::new();
-    /// let ptr = shared.ptr(&guard);
-    /// assert_eq!(unsafe { *ptr.as_raw() }, 29);
+    /// let ptr = shared.load(&guard);
+    /// drop(shared);
+    ///
+    /// assert_eq!(unsafe { *ptr.as_ptr() }, 29);
     /// ```
     #[inline]
     #[must_use]
-    pub fn as_raw(&self) -> *const T {
+    pub fn as_ptr(&self) -> *const T {
         unsafe {
             Tag::unset_tag(self.instance_ptr)
                 .as_ref()
@@ -193,7 +195,7 @@ impl<'g, T> Ptr<'g, T> {
     ///
     /// let shared: Shared<usize> = Shared::new(83);
     /// let guard = Guard::new();
-    /// let ptr = shared.ptr(&guard);
+    /// let ptr = shared.load(&guard);
     /// let converted_shared = ptr.get_shared().unwrap();
     /// assert_eq!(*converted_shared, 83);
     ///

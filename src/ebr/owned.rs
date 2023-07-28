@@ -4,9 +4,9 @@ use std::ops::Deref;
 use std::panic::UnwindSafe;
 use std::ptr::{addr_of, NonNull};
 
-/// [`Owned`] is uniquely owns an instance.
+/// [`Owned`] uniquely owns an instance.
 ///
-/// The underlying instance it passed to the `EBR` garbage collector when the [`Owned`] is dropped.
+/// The instance it passed to the `EBR` garbage collector when the [`Owned`] is dropped.
 #[derive(Debug)]
 pub struct Owned<T> {
     instance_ptr: NonNull<RefCounted<T>>,
@@ -61,7 +61,7 @@ impl<T> Owned<T> {
         }
     }
 
-    /// Generates a [`Ptr`] out of the [`Owned`].
+    /// Loads a pointer value from the [`Owned`].
     ///
     /// # Examples
     ///
@@ -70,16 +70,18 @@ impl<T> Owned<T> {
     ///
     /// let owned: Owned<usize> = Owned::new(37);
     /// let guard = Guard::new();
-    /// let ptr = owned.ptr(&guard);
+    /// let ptr = owned.load(&guard);
+    /// drop(owned);
+    ///
     /// assert_eq!(*ptr.as_ref().unwrap(), 37);
     /// ```
     #[inline]
     #[must_use]
-    pub fn ptr<'g>(&self, _guard: &'g Guard) -> Ptr<'g, T> {
+    pub fn load<'g>(&self, _guard: &'g Guard) -> Ptr<'g, T> {
         Ptr::from(self.instance_ptr.as_ptr())
     }
 
-    /// Returns a reference to the underlying instance with the supplied [`Guard`].
+    /// Returns a reference to the instance that may live as long as the supplied [`Guard`].
     ///
     /// # Examples
     ///
@@ -88,21 +90,22 @@ impl<T> Owned<T> {
     ///
     /// let owned: Owned<usize> = Owned::new(37);
     /// let guard = Guard::new();
-    /// let ref_b = owned.get_ref_with(&guard);
+    /// let ref_b = owned.get_guarded_ref(&guard);
+    /// drop(owned);
+    ///
     /// assert_eq!(*ref_b, 37);
     /// ```
     #[inline]
     #[must_use]
-    pub fn get_ref_with<'g>(&self, _guard: &'g Guard) -> &'g T {
+    pub fn get_guarded_ref<'g>(&self, _guard: &'g Guard) -> &'g T {
         unsafe { std::mem::transmute(&**self.underlying()) }
     }
 
-    /// Returns a mutable reference to the underlying instance.
+    /// Returns a mutable reference to the instance.
     ///
     /// # Safety
     ///
-    /// The method is `unsafe` since there can be a [`Ptr`] to the instance; in other words, it is
-    /// safe as long as there is no [`Ptr`] to the instance.
+    /// The method is `unsafe` since there can be a [`Ptr`] to the instance.
     ///
     /// # Examples
     ///
@@ -120,7 +123,7 @@ impl<T> Owned<T> {
         self.instance_ptr.as_mut().get_mut_unique()
     }
 
-    /// Provides a raw pointer to the underlying instance.
+    /// Provides a raw pointer to the instance.
     ///
     /// # Examples
     ///
@@ -140,7 +143,6 @@ impl<T> Owned<T> {
     }
 
     /// Provides a raw pointer to its [`RefCounted`].
-    #[allow(dead_code)]
     #[inline]
     pub(super) const fn get_underlying_ptr(&self) -> *mut RefCounted<T> {
         self.instance_ptr.as_ptr()

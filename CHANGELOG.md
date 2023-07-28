@@ -6,14 +6,20 @@
 
 - `*::Visitor` -> `*::Iter`.
 - `*::Accessor` -> `*::IterMut`.
-- `ebr::Barrier` -> `ebr::Guard`.
 - `ebr::Arc` -> `ebr::Shared`.
+- `ebr::Arc::get_ref_with` -> `ebr::Shared::get_guarded_ref`.
+- `ebr::Arc::ptr` -> `ebr::Shared::load`.
 - `ebr::AtomicArc` -> `ebr::AtomicShared`.
 - `ebr::AtomicArc::get_arc` -> `ebr::AtomicShared::get_shared`.
-- `ebr::AtomicArc::try_into_arc` -> `ebr::AtomicShared::try_into_shared`.
+- `ebr::AtomicArc::try_into_arc` -> `ebr::AtomicShared::into_shared`.
+- `ebr::AtomicOwned::try_into_owned` -> `ebr::AtomicOwned::into_owned`.
+- `ebr::Barrier` -> `ebr::Guard`.
+- `ebr::Owned::get_ref_with` -> `ebr::Owned::get_guarded_ref`.
+- `ebr::Owned::ptr` -> `ebr::Owned::load`.
+- `ebr::Ptr::as_raw` -> `ebr::Ptr::as_ptr`.
 - `ebr::Ptr::get_arc` -> `ebr::Ptr::get_shared`.
 - `*::first_occupied_entry*` -> `*::first_entry*`.
-- Remove `HashMap::upsert*`: superseded by `hash_map::Entry::or_insert_with`.
+- Remove `HashMap::upsert*`: superseded by `hash_map::Entry::and_modify` and `hash_map::Entry::or_insert`.
 
 ```rust
 use scc::HashMap;
@@ -35,12 +41,12 @@ assert!(hashindex.insert(1, 1).is_ok());
 // hashindex.modify(&1, |_, v| Some(Some(2)));
 if let Some(mut o) = hashindex.get(&1) {
     o.update(2);
-}
+};
 
 // unsafe { hashindex.update(&1, |_, v| { *v = 3; true } ); }
 if let Some(mut o) = hashindex.get(&1) {
     unsafe { *o.get_mut() = 3; }
-}
+};
 ```
 
 - Remove `Hash*::for_each*`: superseded by `HashMap::retain*`.
@@ -65,7 +71,7 @@ hashmap.retain(|_, v| { *v = 2; true });
 
 1.9.1
 
-* API update: add `hash_index::Entry` API.
+* API update: add the `hash_index::Entry` API.
 
 1.9.0
 

@@ -1833,7 +1833,7 @@ where
                     .current_array
                     .as_ref()
                     .copied()
-                    .map_or(false, |a| ptr::eq(a, old_array_ptr.as_raw()))
+                    .map_or(false, |a| ptr::eq(a, old_array_ptr.as_ptr()))
                 {
                     // Start scanning the current array.
                     array = current_array;

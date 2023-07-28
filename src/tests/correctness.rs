@@ -2407,7 +2407,7 @@ mod ebr_test {
         assert_eq!(owned.deref().1, 12);
 
         let guard = Guard::new();
-        let ptr = owned.ptr(&guard);
+        let ptr = owned.load(&guard);
         assert!(ptr.get_shared().is_none());
 
         drop(owned);
@@ -2587,7 +2587,7 @@ mod ebr_test {
 
         let guard = Guard::new();
 
-        let shared = atomic_shared.try_into_shared(Relaxed);
+        let shared = atomic_shared.into_shared(Relaxed);
         assert!(!DESTROYED.load(Relaxed));
 
         if let Some(shared) = shared {
@@ -2612,7 +2612,7 @@ mod ebr_test {
             task_handles.push(tokio::task::spawn(async move {
                 for _ in 0..64 {
                     let guard = Guard::new();
-                    let mut ptr = atomic_shared.load(Acquire, &guard);
+                    let mut ptr = (*atomic_shared).load(Acquire, &guard);
                     assert!(ptr.tag() == Tag::None || ptr.tag() == Tag::Second);
                     if let Some(str_ref) = ptr.as_ref() {
                         assert!(str_ref == "How are you?" || str_ref == "How can I help you?");
@@ -2648,7 +2648,7 @@ mod ebr_test {
                     atomic_shared.update_tag_if(Tag::None, |_| true, Relaxed, Relaxed);
 
                     let guard = Guard::new();
-                    ptr = atomic_shared.load(Acquire, &guard);
+                    ptr = (*atomic_shared).load(Acquire, &guard);
                     assert!(ptr.tag() == Tag::None || ptr.tag() == Tag::Second);
                     if let Some(str_ref) = ptr.as_ref() {
                         assert!(str_ref == "How are you?" || str_ref == "How can I help you?");
