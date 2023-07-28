@@ -14,8 +14,47 @@
 - `ebr::Ptr::get_arc` -> `ebr::Ptr::get_shared`.
 - `*::first_occupied_entry*` -> `*::first_entry*`.
 - Remove `HashMap::upsert*`: superseded by `hash_map::Entry::or_insert_with`.
-- Remove `HashIndex::update*` and `HashIndex::modify*`: superseded by `HashIndex::entry*`, `HashIndex::get*`, and `hash_index::OccupiedEntry::update`.
+
+```rust
+use scc::HashMap;
+
+let hashmap: HashMap<u64, u32> = HashMap::default();
+
+// hashmap.upsert(1, || 2, |_, v| *v = 3);
+hashmap.entry(1).and_modify(|v| { *v = 3 }).or_insert(2);
+```
+
+- Remove  `HashIndex::modify*` and `HashIndex::update*`: superseded by `HashIndex::entry*`, `HashIndex::get*`.
+
+```rust
+use scc::HashIndex;
+
+let hashindex: HashIndex<u64, u32> = HashIndex::default();
+assert!(hashindex.insert(1, 1).is_ok());
+
+// hashindex.modify(&1, |_, v| Some(Some(2)));
+if let Some(mut o) = hashindex.get(&1) {
+    o.update(2);
+}
+
+// unsafe { hashindex.update(&1, |_, v| { *v = 3; true } ); }
+if let Some(mut o) = hashindex.get(&1) {
+    unsafe { *o.get_mut() = 3; }
+}
+```
+
 - Remove `Hash*::for_each*`: superseded by `HashMap::retain*`.
+
+```rust
+use scc::HashMap;
+
+let hashmap: HashMap<u64, u32> = HashMap::default();
+assert!(hashmap.insert(1, 1).is_ok());
+
+// hashmap.for_each(|_, v| { *v = 2; });
+hashmap.retain(|_, v| { *v = 2; true });
+```
+
 - `Hash*::clear*`, `Hash*::prune*`, and `Hash*::retain*` return `()`.
 
 2.0.0
