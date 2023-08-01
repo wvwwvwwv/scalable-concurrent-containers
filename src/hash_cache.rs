@@ -381,7 +381,7 @@ where
         let mut locked_entry = self
             .get_entry(
                 key,
-                self.hash(key.borrow()),
+                self.hash(key),
                 &mut (),
                 self.prolonged_guard_ref(&guard),
             )

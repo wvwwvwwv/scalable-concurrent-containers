@@ -469,7 +469,7 @@ where
             mut entry_ptr,
             index: _,
         } = self
-            .get_entry(key, self.hash(key.borrow()), &mut (), &guard)
+            .get_entry(key, self.hash(key), &mut (), &guard)
             .ok()
             .flatten()?;
         let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
@@ -591,7 +591,7 @@ where
     {
         self.remove_entry(
             key,
-            self.hash(key.borrow()),
+            self.hash(key),
             condition,
             Option::flatten,
             &mut (),
@@ -669,7 +669,7 @@ where
         let locked_entry = self
             .get_entry(
                 key,
-                self.hash(key.borrow()),
+                self.hash(key),
                 &mut (),
                 self.prolonged_guard_ref(&guard),
             )
