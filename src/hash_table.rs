@@ -234,7 +234,7 @@ where
                 );
                 Ok(None)
             }
-            Err(_) => Err((key, val)),
+            Err(()) => Err((key, val)),
         }
     }
 
@@ -429,7 +429,7 @@ where
             let shrinkable = if let Some(old_array) = current_array.old_array(guard).as_ref() {
                 match self.move_entry(current_array, old_array, hash, async_wait, guard) {
                     Ok(r) => r,
-                    Err(_) => return Err(condition),
+                    Err(()) => return Err(condition),
                 }
             } else {
                 true
@@ -440,7 +440,7 @@ where
             let lock_result = if let Some(async_wait) = async_wait.derive() {
                 match Locker::try_lock_or_wait(bucket, async_wait, guard) {
                     Ok(l) => l,
-                    Err(_) => return Err(condition),
+                    Err(()) => return Err(condition),
                 }
             } else {
                 Locker::lock(bucket, guard)

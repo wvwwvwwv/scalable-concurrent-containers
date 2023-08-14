@@ -299,7 +299,7 @@ where
                 locker.update_lru_tail(data_block_mut, &entry_ptr);
                 Ok(evicted)
             }
-            Err(_) => Err((key, val)),
+            Err(()) => Err((key, val)),
         };
         result
     }

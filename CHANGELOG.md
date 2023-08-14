@@ -2,6 +2,14 @@
 
 ## Version 2
 
+2.0.1
+
+* Minor update.
+
+2.0.0
+
+* New API.
+
 ### API update
 
 - `*::Visitor` -> `*::Iter`.
@@ -71,10 +79,6 @@ hashmap.retain(|_, v| { *v = 2; true });
 ```
 
 - `Hash*::clear*`, `Hash*::prune*`, and `Hash*::retain*` return `()`.
-
-2.0.0
-
-* New API.
 
 ## Version 1
 

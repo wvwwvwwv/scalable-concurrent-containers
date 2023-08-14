@@ -126,7 +126,7 @@ where
     /// ```
     #[inline]
     pub fn insert(&self, key: K) -> Result<(), K> {
-        if let Err((k, _)) = self.map.insert(key, ()) {
+        if let Err((k, ())) = self.map.insert(key, ()) {
             return Err(k);
         }
         Ok(())
@@ -151,7 +151,7 @@ where
     /// ```
     #[inline]
     pub async fn insert_async(&self, key: K) -> Result<(), K> {
-        self.map.insert_async(key, ()).await.map_err(|(k, _)| k)
+        self.map.insert_async(key, ()).await.map_err(|(k, ())| k)
     }
 
     /// Removes a key if the key exists.
@@ -176,7 +176,7 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.map.remove(key).map(|(k, _)| k)
+        self.map.remove(key).map(|(k, ())| k)
     }
 
     /// Removes a key if the key exists.
@@ -202,7 +202,7 @@ where
         self.map
             .remove_if_async(key, |_| true)
             .await
-            .map(|(k, _)| k)
+            .map(|(k, ())| k)
     }
 
     /// Removes a key if the key exists and the given condition is met.
@@ -227,7 +227,7 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.map.remove_if(key, |_| condition()).map(|(k, _)| k)
+        self.map.remove_if(key, |_| condition()).map(|(k, ())| k)
     }
 
     /// Removes a key if the key exists and the given condition is met.
@@ -253,7 +253,7 @@ where
         self.map
             .remove_if_async(key, |_| condition())
             .await
-            .map(|(k, _)| k)
+            .map(|(k, ())| k)
     }
 
     /// Reads a key.
@@ -300,7 +300,7 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.map.read_async(key, |k, _| reader(k)).await
+        self.map.read_async(key, |k, ()| reader(k)).await
     }
 
     /// Returns `true` if the [`HashSet`] contains the specified key.
