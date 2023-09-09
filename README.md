@@ -16,7 +16,7 @@ A collection of high performance containers and utilities for concurrent and asy
 - Zero dependencies on other crates.
 - [Serde](https://serde.rs) support: `features = ["serde"]`.
 
-[^note]: advanced SIMD instructions are used only when respective target features are added, e.g., `-C target_feature=+avx2`.
+[^note]: Advanced SIMD instructions are used only when respective target features are added, e.g., `-C target_feature=+avx2`.
 
 #### Concurrent and Asynchronous Containers
 
@@ -483,7 +483,7 @@ assert!(head.next_ptr(Relaxed, &guard).is_null());
 Comparison with [DashMap](https://github.com/xacrimon/dashmap).
 
 - [Results on Apple M1 (8 cores)](https://github.com/wvwwvwwv/conc-map-bench).
-- [Results on Intel Xeon (VM, 40 cores, +avx2)](https://github.com/wvwwvwwv/conc-map-bench/tree/Intel).
+- [Results on Intel Xeon (40 cores, +avx2)](https://github.com/wvwwvwwv/conc-map-bench/tree/Intel).
 - *Interpret the results cautiously as benchmarks usually do not represent real world workloads.*
 
 ### [EBR](#EBR)
