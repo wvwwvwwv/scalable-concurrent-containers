@@ -256,6 +256,7 @@ mod test {
     use std::sync::Barrier;
     use std::thread::yield_now;
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn wait_queue() {
         let num_tasks = 8;
