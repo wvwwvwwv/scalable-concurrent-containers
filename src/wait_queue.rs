@@ -92,6 +92,29 @@ impl WaitQueue {
     #[inline]
     pub(crate) fn signal(&self) {
         let mut current = self.wait_queue.swap(0, AcqRel);
+
+        // Flip the queue to prioritize oldest entries.
+        let mut prev = 0;
+        while (current & (!ASYNC)) != 0 {
+            current = if (current & ASYNC) == 0 {
+                // Synchronous.
+                let entry_ref = unsafe { &mut *(current as *mut SyncWait) };
+                let next = entry_ref.next;
+                entry_ref.next = prev;
+                prev = current;
+                next
+            } else {
+                // Asynchronous.
+                let entry_ref = unsafe { &mut *((current & (!ASYNC)) as *mut AsyncWait) };
+                let next = entry_ref.next;
+                entry_ref.next = prev;
+                prev = current;
+                next
+            };
+        }
+
+        // Wake up all the tasks.
+        current = prev;
         while (current & (!ASYNC)) != 0 {
             current = if (current & ASYNC) == 0 {
                 // Synchronous.
@@ -223,5 +246,54 @@ impl SyncWait {
         let mut completed = unsafe { self.mutex.lock().unwrap_unchecked() };
         *completed = true;
         self.condvar.notify_one();
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::Barrier;
+    use std::thread::yield_now;
+
+    #[test]
+    fn wait_queue() {
+        let num_tasks = 8;
+        let barrier = Arc::new(Barrier::new(num_tasks + 1));
+        let wait_queue = Arc::new(WaitQueue::default());
+        let data = Arc::new(AtomicUsize::new(0));
+        let mut task_handles = Vec::with_capacity(num_tasks);
+        for task_id in 1..=num_tasks {
+            let barrier_clone = barrier.clone();
+            let wait_queue_clone = wait_queue.clone();
+            let data_clone = data.clone();
+            task_handles.push(std::thread::spawn(move || {
+                barrier_clone.wait();
+                while wait_queue_clone
+                    .wait_sync(|| {
+                        if data_clone
+                            .compare_exchange(task_id, task_id + 1, Relaxed, Relaxed)
+                            .is_ok()
+                        {
+                            Ok(())
+                        } else {
+                            Err(())
+                        }
+                    })
+                    .is_err()
+                {
+                    yield_now();
+                }
+                wait_queue_clone.signal();
+            }));
+        }
+
+        barrier.wait();
+        data.fetch_add(1, Relaxed);
+        wait_queue.signal();
+
+        task_handles
+            .into_iter()
+            .for_each(|t| assert!(t.join().is_ok()));
     }
 }

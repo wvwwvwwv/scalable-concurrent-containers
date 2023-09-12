@@ -2,9 +2,13 @@
 
 ## Version 2
 
+2.0.2
+
+* Enhance wait queue implementation.
+
 2.0.1
 
-* Minor update.
+* Minor code cleanup.
 
 2.0.0
 
