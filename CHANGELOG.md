@@ -4,7 +4,7 @@
 
 2.0.2
 
-* Enhance wait queue implementation.
+* Enhance the wait queue implementation.
 
 2.0.1
 

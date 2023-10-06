@@ -16,7 +16,7 @@ A collection of high performance containers and utilities for concurrent and asy
 - Zero dependencies on other crates.
 - [Serde](https://serde.rs) support: `features = ["serde"]`.
 
-[^note]: Advanced SIMD instructions are used only when respective target features are added, e.g., `-C target_feature=+avx2`.
+[^note]: Advanced SIMD instructions are used only when respective target features are enabled, e.g., `-C target_feature=+avx2`.
 
 #### Concurrent and Asynchronous Containers
 
