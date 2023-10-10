@@ -7,7 +7,7 @@ use crate::wait_queue::{AsyncWait, DeriveAsyncWait};
 use bucket::{DataBlock, EntryPtr, Locker, Reader, BUCKET_LEN, CACHE, OPTIMISTIC};
 use bucket_array::BucketArray;
 use std::borrow::Borrow;
-use std::hash::{BuildHasher, Hash, Hasher};
+use std::hash::{BuildHasher, Hash};
 use std::pin::Pin;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 use std::sync::atomic::{fence, AtomicUsize};
@@ -25,9 +25,7 @@ where
         K: Borrow<Q>,
         Q: Hash + ?Sized,
     {
-        let mut h = self.hasher().build_hasher();
-        key.hash(&mut h);
-        h.finish()
+        self.hasher().hash_one(key)
     }
 
     /// Returns a reference to its [`BuildHasher`].

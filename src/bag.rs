@@ -34,6 +34,12 @@ pub struct IterMut<'b, T, const ARRAY_LEN: usize = DEFAULT_ARRAY_LEN> {
     current_stack_entry: Option<&'b mut LinkedEntry<Storage<T, ARRAY_LEN>>>,
 }
 
+/// An iterator that moves out of a [`Bag`].
+#[derive(Debug)]
+pub struct IntoIter<T, const ARRAY_LEN: usize = DEFAULT_ARRAY_LEN> {
+    bag: Bag<T, ARRAY_LEN>,
+}
+
 /// The default length of the fixed-size array in a [`Bag`].
 const DEFAULT_ARRAY_LEN: usize = usize::BITS as usize / 2;
 
@@ -249,6 +255,26 @@ impl<T, const ARRAY_LEN: usize> Drop for Bag<T, ARRAY_LEN> {
     }
 }
 
+impl<T, const ARRAY_LEN: usize> IntoIterator for Bag<T, ARRAY_LEN> {
+    type Item = T;
+    type IntoIter = IntoIter<T, ARRAY_LEN>;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        IntoIter { bag: self }
+    }
+}
+
+impl<'b, T, const ARRAY_LEN: usize> IntoIterator for &'b mut Bag<T, ARRAY_LEN> {
+    type IntoIter = IterMut<'b, T, ARRAY_LEN>;
+    type Item = &'b mut T;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
+    }
+}
+
 impl<'b, T, const ARRAY_LEN: usize> FusedIterator for IterMut<'b, T, ARRAY_LEN> {}
 
 impl<'b, T, const ARRAY_LEN: usize> Iterator for IterMut<'b, T, ARRAY_LEN> {
@@ -298,6 +324,19 @@ impl<'b, T, const ARRAY_LEN: usize> Iterator for IterMut<'b, T, ARRAY_LEN> {
 }
 
 impl<'b, T, const ARRAY_LEN: usize> UnwindSafe for IterMut<'b, T, ARRAY_LEN> where T: UnwindSafe {}
+
+impl<T, const ARRAY_LEN: usize> FusedIterator for IntoIter<T, ARRAY_LEN> {}
+
+impl<T, const ARRAY_LEN: usize> Iterator for IntoIter<T, ARRAY_LEN> {
+    type Item = T;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.bag.pop()
+    }
+}
+
+impl<T, const ARRAY_LEN: usize> UnwindSafe for IntoIter<T, ARRAY_LEN> where T: UnwindSafe {}
 
 impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
     /// Creates a new [`Storage`].

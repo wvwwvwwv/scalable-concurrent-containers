@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.0.3
+
+* Add `IntoIter` to `Bag`.
+
 2.0.2
 
 * Enhance the wait queue implementation.

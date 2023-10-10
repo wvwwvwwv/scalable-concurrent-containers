@@ -2019,6 +2019,28 @@ mod bag_test {
     }
 
     #[cfg_attr(miri, ignore)]
+    #[test]
+    fn into_iter() {
+        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+        for workload_size in [2, 18, 32, 40, 120] {
+            let mut bag: Bag<R> = Bag::default();
+            for _ in 0..workload_size {
+                bag.push(R::new(&INST_CNT));
+            }
+            assert_eq!(INST_CNT.load(Relaxed), workload_size);
+            assert_eq!(bag.iter_mut().count(), workload_size);
+            bag.iter_mut().for_each(|e| {
+                *e = R::new(&INST_CNT);
+            });
+
+            for v in bag {
+                assert_eq!(v.0.load(Relaxed), INST_CNT.load(Relaxed));
+            }
+            assert_eq!(INST_CNT.load(Relaxed), 0);
+        }
+    }
+
+    #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn mpmc() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
