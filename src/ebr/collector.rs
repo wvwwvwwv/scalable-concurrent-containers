@@ -17,7 +17,7 @@ pub(super) struct Collector {
     previous_instance_link: Option<NonNull<dyn Collectible>>,
     current_instance_link: Option<NonNull<dyn Collectible>>,
     next_instance_link: Option<NonNull<dyn Collectible>>,
-    next_collector: *mut Collector,
+    next_link: *mut Collector,
     link: Option<NonNull<dyn Collectible>>,
 }
 
@@ -193,14 +193,14 @@ impl Collector {
             previous_instance_link: None,
             current_instance_link: None,
             next_instance_link: None,
-            next_collector: ptr::null_mut(),
+            next_link: ptr::null_mut(),
             link: None,
         });
         let ptr = Box::into_raw(boxed);
         let mut current = GLOBAL_ANCHOR.load(Relaxed);
         loop {
             unsafe {
-                (*ptr).next_collector = Tag::unset_tag(current).cast_mut();
+                (*ptr).next_link = Tag::unset_tag(current).cast_mut();
             }
 
             // It keeps the tag intact.
@@ -269,7 +269,7 @@ impl Collector {
                                         if ptr::eq(Tag::unset_tag(p), collector_ptr) {
                                             Some(
                                                 Tag::update_tag(
-                                                    other_collector.next_collector,
+                                                    other_collector.next_link,
                                                     tag,
                                                 )
                                                 .cast_mut(),
@@ -281,12 +281,12 @@ impl Collector {
                                     .is_ok()
                             },
                             |prev_collector| {
-                                prev_collector.next_collector = other_collector.next_collector;
+                                prev_collector.next_link = other_collector.next_link;
                                 true
                             },
                         );
                         if reclaimable {
-                            collector_ptr = other_collector.next_collector;
+                            collector_ptr = other_collector.next_link;
                             let ptr = (other_collector as *const Collector).cast_mut();
                             self.reclaim(ptr);
                             continue;
@@ -298,7 +298,7 @@ impl Collector {
                     }
                 }
                 prev_collector_ptr = collector_ptr;
-                collector_ptr = other_collector.next_collector;
+                collector_ptr = other_collector.next_link;
             }
             if update_global_epoch {
                 // It is a new era; a fence is required.
@@ -365,7 +365,7 @@ fn mark_scan_enforced() {
 fn try_drop_local_collector() {
     let collector_ptr = LOCAL_COLLECTOR.with(|local_collector| local_collector.load(Relaxed));
     if let Some(collector) = unsafe { collector_ptr.as_mut() } {
-        if collector.next_collector.is_null() {
+        if collector.next_link.is_null() {
             let anchor_ptr = GLOBAL_ANCHOR.load(Relaxed);
             if ptr::eq(collector_ptr, anchor_ptr)
                 && GLOBAL_ANCHOR
