@@ -268,11 +268,8 @@ impl Collector {
                                         debug_assert!(tag == Tag::First || tag == Tag::Both);
                                         if ptr::eq(Tag::unset_tag(p), collector_ptr) {
                                             Some(
-                                                Tag::update_tag(
-                                                    other_collector.next_link,
-                                                    tag,
-                                                )
-                                                .cast_mut(),
+                                                Tag::update_tag(other_collector.next_link, tag)
+                                                    .cast_mut(),
                                             )
                                         } else {
                                             None
