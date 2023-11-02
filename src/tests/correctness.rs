@@ -2029,9 +2029,11 @@ mod bag_test {
             }
             assert_eq!(INST_CNT.load(Relaxed), workload_size);
             assert_eq!(bag.iter_mut().count(), workload_size);
-            bag.iter_mut().for_each(|e| {
-                *e = R::new(&INST_CNT);
-            });
+
+            for v in &mut bag {
+                assert_eq!(v.0.load(Relaxed), INST_CNT.load(Relaxed));
+            }
+            assert_eq!(INST_CNT.load(Relaxed), workload_size);
 
             for v in bag {
                 assert_eq!(v.0.load(Relaxed), INST_CNT.load(Relaxed));
