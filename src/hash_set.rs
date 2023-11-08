@@ -200,7 +200,7 @@ where
         Q: Eq + Hash + ?Sized,
     {
         self.map
-            .remove_if_async(key, |_| true)
+            .remove_if_async(key, |()| true)
             .await
             .map(|(k, ())| k)
     }
@@ -227,7 +227,7 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.map.remove_if(key, |_| condition()).map(|(k, ())| k)
+        self.map.remove_if(key, |()| condition()).map(|(k, ())| k)
     }
 
     /// Removes a key if the key exists and the given condition is met.
@@ -251,7 +251,7 @@ where
         Q: Eq + Hash + ?Sized,
     {
         self.map
-            .remove_if_async(key, |_| condition())
+            .remove_if_async(key, |()| condition())
             .await
             .map(|(k, ())| k)
     }
@@ -277,7 +277,7 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.map.read(key, |k, _| reader(k))
+        self.map.read(key, |k, ()| reader(k))
     }
 
     /// Reads a key.
@@ -369,7 +369,7 @@ where
     /// ```
     #[inline]
     pub fn scan<F: FnMut(&K)>(&self, mut scanner: F) {
-        self.map.scan(|k, _| scanner(k));
+        self.map.scan(|k, ()| scanner(k));
     }
 
     /// Scans all the keys.
@@ -390,7 +390,7 @@ where
     /// ```
     #[inline]
     pub async fn scan_async<F: FnMut(&K)>(&self, mut scanner: F) {
-        self.map.scan_async(|k, _| scanner(k)).await;
+        self.map.scan_async(|k, ()| scanner(k)).await;
     }
 
     /// Searches for any key that satisfies the given predicate.
@@ -417,7 +417,7 @@ where
     /// ```
     #[inline]
     pub fn any<P: FnMut(&K) -> bool>(&self, mut pred: P) -> bool {
-        self.map.any(|k, _| pred(k))
+        self.map.any(|k, ()| pred(k))
     }
 
     /// Searches for any key that satisfies the given predicate.
@@ -442,7 +442,7 @@ where
     /// ```
     #[inline]
     pub async fn any_async<P: FnMut(&K) -> bool>(&self, mut pred: P) -> bool {
-        self.map.any_async(|k, _| pred(k)).await
+        self.map.any_async(|k, ()| pred(k)).await
     }
 
     /// Retains keys that satisfy the given predicate.
@@ -470,7 +470,7 @@ where
     /// ```
     #[inline]
     pub fn retain<F: FnMut(&K) -> bool>(&self, mut filter: F) {
-        self.map.retain(|k, _| filter(k));
+        self.map.retain(|k, ()| filter(k));
     }
 
     /// Retains keys that satisfy the given predicate.
@@ -493,7 +493,7 @@ where
     /// ```
     #[inline]
     pub async fn retain_async<F: FnMut(&K) -> bool>(&self, mut filter: F) {
-        self.map.retain_async(|k, _| filter(k)).await;
+        self.map.retain_async(|k, ()| filter(k)).await;
     }
 
     /// Clears the [`HashSet`] by removing all keys.
