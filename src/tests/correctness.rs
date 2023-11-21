@@ -1999,6 +1999,22 @@ mod treeindex_test {
                 .count(),
             4
         );
+        assert_eq!(tree.range(.."Banana".to_owned(), &Guard::new()).count(), 3);
+        assert_eq!(
+            tree.range("Ape".to_owned().."Banana".to_owned(), &Guard::new())
+                .count(),
+            3
+        );
+        assert_eq!(
+            tree.range("Apex".to_owned().."Banana".to_owned(), &Guard::new())
+                .count(),
+            2
+        );
+        assert_eq!(
+            tree.range("Ace".to_owned().."Banana".to_owned(), &Guard::new())
+                .count(),
+            3
+        );
     }
 }
 
