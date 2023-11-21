@@ -1967,13 +1967,37 @@ mod treeindex_test {
         assert!(tree.insert("Banana".to_owned(), 3).is_ok());
         assert!(tree.insert("Badezimmer".to_owned(), 2).is_ok());
         assert_eq!(tree.range(..="Ball".to_owned(), &Guard::new()).count(), 3);
-        assert_eq!(tree.range("Ape".to_owned()..="Ball".to_owned(), &Guard::new()).count(), 3);
-        assert_eq!(tree.range("Apex".to_owned()..="Ball".to_owned(), &Guard::new()).count(), 2);
-        assert_eq!(tree.range("Ace".to_owned()..="Ball".to_owned(), &Guard::new()).count(), 3);
+        assert_eq!(
+            tree.range("Ape".to_owned()..="Ball".to_owned(), &Guard::new())
+                .count(),
+            3
+        );
+        assert_eq!(
+            tree.range("Apex".to_owned()..="Ball".to_owned(), &Guard::new())
+                .count(),
+            2
+        );
+        assert_eq!(
+            tree.range("Ace".to_owned()..="Ball".to_owned(), &Guard::new())
+                .count(),
+            3
+        );
         assert_eq!(tree.range(..="Z".to_owned(), &Guard::new()).count(), 4);
-        assert_eq!(tree.range("Ape".to_owned()..="Z".to_owned(), &Guard::new()).count(), 4);
-        assert_eq!(tree.range("Apex".to_owned()..="Z".to_owned(), &Guard::new()).count(), 3);
-        assert_eq!(tree.range("Ace".to_owned()..="Z".to_owned(), &Guard::new()).count(), 4);
+        assert_eq!(
+            tree.range("Ape".to_owned()..="Z".to_owned(), &Guard::new())
+                .count(),
+            4
+        );
+        assert_eq!(
+            tree.range("Apex".to_owned()..="Z".to_owned(), &Guard::new())
+                .count(),
+            3
+        );
+        assert_eq!(
+            tree.range("Ace".to_owned()..="Z".to_owned(), &Guard::new())
+                .count(),
+            4
+        );
     }
 }
 

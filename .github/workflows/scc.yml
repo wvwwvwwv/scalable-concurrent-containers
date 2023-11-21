@@ -28,7 +28,6 @@ jobs:
         run:
           rustup toolchain add nightly;
           rustup component add rust-src --toolchain nightly;
-          rustup component add rustfmt --toolchain nightly;
           rustup component add clippy --toolchain nightly;
           rustup component add miri --toolchain nightly
       - uses: taiki-e/install-action@v2
@@ -40,10 +39,6 @@ jobs:
         run:
           cargo clippy --all;
           cargo +nightly clippy --all
-      - name: Format
-        run:
-          cargo fmt --all --check;
-          cargo +nightly fmt --all --check
       - name: Doc
         run:
           cargo doc --document-private-items;
