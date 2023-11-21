@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.0.4
+
+* Fix [#115](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/115).
+
 2.0.3
 
 * Add `IntoIter` to `Bag`.

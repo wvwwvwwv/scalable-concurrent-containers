@@ -778,8 +778,8 @@ where
 
     #[inline]
     fn next_unbounded(&mut self) -> Option<(&'g K, &'g V)> {
-        // Start scanning.
         if self.leaf_scanner.is_none() {
+            // Start scanning.
             let root_ptr = self.root.load(Acquire, self.guard);
             if let Some(root_ref) = root_ptr.as_ref() {
                 let min_allowed_key = match self.range.start_bound() {
@@ -789,21 +789,17 @@ where
                         None
                     }
                 };
-                if let Some(leaf_scanner) = min_allowed_key.map_or_else(
-                    || {
-                        // Take the min entry.
-                        if let Some(mut min_scanner) = root_ref.min(self.guard) {
-                            min_scanner.next();
-                            Some(min_scanner)
-                        } else {
-                            None
-                        }
-                    },
-                    |min_allowed_key| {
-                        // Take an entry that is close enough to the lower bound.
-                        root_ref.max_le_appr(min_allowed_key, self.guard)
-                    },
-                ) {
+                let mut leaf_scanner = min_allowed_key
+                    .and_then(|min_allowed_key| root_ref.max_le_appr(min_allowed_key, self.guard));
+                if leaf_scanner.is_none() {
+                    // No `min_allowed_key` is supplied, or no keys smaller than or equal to
+                    // `min_allowed_key` found.
+                    if let Some(mut min_scanner) = root_ref.min(self.guard) {
+                        min_scanner.next();
+                        leaf_scanner.replace(min_scanner);
+                    }
+                }
+                if let Some(leaf_scanner) = leaf_scanner {
                     // Need to check the upper bound.
                     self.check_upper_bound = match self.range.end_bound() {
                         Excluded(key) => leaf_scanner
@@ -819,9 +815,6 @@ where
                         return Some(result);
                     }
                 }
-            } else {
-                // Empty.
-                return None;
             }
         }
 
@@ -849,6 +842,7 @@ where
                 }
             }
         }
+
         None
     }
 }
