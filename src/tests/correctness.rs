@@ -1959,6 +1959,7 @@ mod treeindex_test {
         }
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn range() {
         let tree: TreeIndex<String, usize> = TreeIndex::default();
