@@ -12,6 +12,7 @@ use std::sync::atomic::{fence, AtomicU32};
 /// [`Bucket`] is a fixed-size hash table with linear probing.
 ///
 /// `TYPE` is either one of [`SEQUENTIAL`], [`OPTIMISTIC`], or [`CACHE`].
+#[repr(align(64))]
 pub struct Bucket<K: Eq, V, const TYPE: char> {
     /// The state of the [`Bucket`].
     state: AtomicU32,

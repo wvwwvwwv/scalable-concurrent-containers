@@ -11,6 +11,9 @@ license = "Apache-2.0"
 categories = ["asynchronous", "caching", "concurrency", "data-structures", "memory-management"]
 keywords = ["async", "cache", "concurrent", "hashmap", "tree"]
 
+[workspace]
+members = [ ".", "examples" ]
+
 [dependencies]
 serde = { version = "1.0", optional = true }
 
