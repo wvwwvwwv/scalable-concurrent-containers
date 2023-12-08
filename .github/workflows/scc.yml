@@ -27,9 +27,9 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - name: Prepare
-        run: rustup target add i686-unknown-linux-gnu
+        run: rustup target add i686-unknown-none
       - name: Examples
-        run: RUST_BACKTRACE=1 cargo test --target i686-unknown-linux-gnu --release -p examples -- --nocapture
+        run: RUST_BACKTRACE=1 cargo test --target i686-unknown-none --release -p examples -- --nocapture
   check-extended:
     runs-on: ubuntu-latest
     timeout-minutes: 20

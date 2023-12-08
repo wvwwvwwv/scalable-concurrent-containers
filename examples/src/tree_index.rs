@@ -4,7 +4,7 @@ mod examples {
 
     #[test]
     fn single_threaded() {
-        let workload_size = 128;
+        let workload_size = 256;
         let treeindex: TreeIndex<isize, isize> = TreeIndex::new();
         for i in 1..workload_size {
             if i % 2 == 0 {
