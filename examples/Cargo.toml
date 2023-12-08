@@ -1,0 +1,8 @@
+[package]
+name = "examples"
+version = "0.0.1"
+authors = ["wvwwvwwv <wvwwvwwv@me.com>"]
+edition = "2021"
+
+[dependencies]
+scc = { path = ".."}

@@ -19,16 +19,17 @@ jobs:
         run: RUST_BACKTRACE=1 cargo test --verbose -- --nocapture
       - name: Release
         run: RUST_BACKTRACE=1 cargo test --release --verbose -- --nocapture
+      - name: Examples
+        run: RUST_BACKTRACE=1 cargo test --release -p examples -- --nocapture
   check-32-bit:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v3
       - name: Prepare
-        run:
-          rustup target add i686-unknown-linux-gnu
-      - name: Release
-        run: RUST_BACKTRACE=1 cargo test --target i686-unknown-linux-gnu --release --verbose -- --nocapture
+        run: rustup target add i686-unknown-linux-gnu
+      - name: Examples
+        run: RUST_BACKTRACE=1 cargo test --target i686-unknown-linux-gnu --release -p examples -- --nocapture
   check-extended:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -45,10 +46,16 @@ jobs:
           tool: cargo-spellcheck
       - name: Spell-check
         run: cargo spellcheck
+      - name: Format
+        run:
+          cargo fmt --check;
+          cargo fmt -p examples --check
       - name: Lint
         run:
           cargo clippy --all;
-          cargo +nightly clippy --all
+          cargo +nightly clippy --all;
+          cargo clippy -p examples --all;
+          cargo +nightly clippy -p examples --all
       - name: Doc
         run:
           cargo doc --document-private-items;
