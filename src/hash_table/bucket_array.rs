@@ -215,6 +215,7 @@ impl<K: Eq, V, const TYPE: char> BucketArray<K, V, TYPE> {
         let aligned_size = size_of_t.next_power_of_two();
         let allocation_size = aligned_size + array_len * size_of_t;
         (size_of_t, allocation_size, unsafe {
+            // Intentionally mis-aligned in order to take full advantage of demand paging.
             Layout::from_size_align_unchecked(allocation_size, 1)
         })
     }

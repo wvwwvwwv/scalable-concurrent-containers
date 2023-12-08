@@ -2,6 +2,11 @@
 
 ## Version 2
 
+2.0.5
+
+* Add support for 32-bit binaries.
+* Fix [#116](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/116).
+
 2.0.4
 
 * Fix [#115](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/115).

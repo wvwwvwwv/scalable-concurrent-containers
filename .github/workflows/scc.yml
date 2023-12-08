@@ -19,19 +19,6 @@ jobs:
         run: RUST_BACKTRACE=1 cargo test --verbose -- --nocapture
       - name: Release
         run: RUST_BACKTRACE=1 cargo test --release --verbose -- --nocapture
-      - name: Examples
-        run: RUST_BACKTRACE=1 cargo test --release -p examples -- --nocapture
-  check-32-bit:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v3
-      - name: Prepare
-        run:
-          sudo apt-get install gcc-multilib;
-          rustup target add i686-unknown-linux-gnu
-      - name: Examples
-        run: RUST_BACKTRACE=1 cargo test --target i686-unknown-linux-gnu --release -p examples -- --nocapture
   check-extended:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -39,6 +26,8 @@ jobs:
       - uses: actions/checkout@v3
       - name: Prepare
         run:
+          sudo apt-get install gcc-multilib;
+          rustup target add i686-unknown-linux-gnu;
           rustup toolchain add nightly;
           rustup component add rust-src --toolchain nightly;
           rustup component add clippy --toolchain nightly;
@@ -58,6 +47,10 @@ jobs:
           cargo +nightly clippy --all;
           cargo clippy -p examples --all;
           cargo +nightly clippy -p examples --all
+      - name: Examples
+        run:
+          RUST_BACKTRACE=1 cargo test --release -p examples -- --nocapture;
+          RUST_BACKTRACE=1 cargo test --target i686-unknown-linux-gnu --release -p examples -- --nocapture
       - name: Doc
         run:
           cargo doc --document-private-items;

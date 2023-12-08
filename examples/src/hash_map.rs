@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod examples {
     use scc::HashMap;
+    use std::sync::Arc;
+    use std::thread;
 
     #[test]
     fn single_threaded() {
@@ -33,6 +35,41 @@ mod examples {
                 assert!(hashmap.remove(&i).is_none());
             }
         }
+        assert!(hashmap.is_empty());
+    }
+
+    #[test]
+    fn multi_threaded() {
+        let workload_size = 256;
+        let hashmap: Arc<HashMap<isize, isize>> = Arc::default();
+
+        thread::scope(|s| {
+            s.spawn(|| {
+                for i in 1..workload_size {
+                    assert!(hashmap.insert(i, i).is_ok());
+                }
+                assert!(hashmap.get(&0).is_none());
+                for i in 1..workload_size {
+                    assert!(hashmap.get(&i).is_some());
+                }
+                for i in 1..workload_size {
+                    assert!(hashmap.remove(&i).is_some());
+                }
+            });
+            s.spawn(|| {
+                for i in 1..workload_size {
+                    assert!(hashmap.insert(-i, i).is_ok());
+                }
+                assert!(hashmap.get(&0).is_none());
+                for i in 1..workload_size {
+                    assert!(hashmap.get(&-i).is_some());
+                }
+                for i in 1..workload_size {
+                    assert!(hashmap.remove(&-i).is_some());
+                }
+            });
+        });
+
         assert!(hashmap.is_empty());
     }
 }

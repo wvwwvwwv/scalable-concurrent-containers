@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod examples {
     use scc::HashIndex;
+    use std::sync::Arc;
+    use std::thread;
 
     #[test]
     fn single_threaded() {
@@ -33,6 +35,41 @@ mod examples {
                 assert!(!hashindex.remove(&i));
             }
         }
+        assert!(hashindex.is_empty());
+    }
+
+    #[test]
+    fn multi_threaded() {
+        let workload_size = 256;
+        let hashindex: Arc<HashIndex<isize, isize>> = Arc::default();
+
+        thread::scope(|s| {
+            s.spawn(|| {
+                for i in 1..workload_size {
+                    assert!(hashindex.insert(i, i).is_ok());
+                }
+                assert!(hashindex.peek_with(&0, |_, _| ()).is_none());
+                for i in 1..workload_size {
+                    assert!(hashindex.peek_with(&i, |_, _| ()).is_some());
+                }
+                for i in 1..workload_size {
+                    assert!(hashindex.remove(&i));
+                }
+            });
+            s.spawn(|| {
+                for i in 1..workload_size {
+                    assert!(hashindex.insert(-i, i).is_ok());
+                }
+                assert!(hashindex.peek_with(&0, |_, _| ()).is_none());
+                for i in 1..workload_size {
+                    assert!(hashindex.peek_with(&-i, |_, _| ()).is_some());
+                }
+                for i in 1..workload_size {
+                    assert!(hashindex.remove(&-i));
+                }
+            });
+        });
+
         assert!(hashindex.is_empty());
     }
 }
