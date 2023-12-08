@@ -19,6 +19,16 @@ jobs:
         run: RUST_BACKTRACE=1 cargo test --verbose -- --nocapture
       - name: Release
         run: RUST_BACKTRACE=1 cargo test --release --verbose -- --nocapture
+  check-32-bit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v3
+      - name: Prepare
+        run:
+          rustup target add i686-unknown-linux-gnu
+      - name: Release
+        run: RUST_BACKTRACE=1 cargo test --target i686-unknown-linux-gnu --release --verbose -- --nocapture
   check-extended:
     runs-on: ubuntu-latest
     timeout-minutes: 20
