@@ -12,7 +12,7 @@ A collection of high performance containers and utilities for concurrent and asy
 - Formally verified [EBR](#EBR) implementation.
 - Near-linear scalability.
 - No spin-locks and no busy loops.
-- SIMD lookups to scan multiple entries in parallel [^note].
+- SIMD lookup to scan multiple entries in parallel [^note].
 - Zero dependencies on other crates.
 - [Serde](https://serde.rs) support: `features = ["serde"]`.
 

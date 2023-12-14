@@ -36,7 +36,7 @@ jobs:
         with:
           tool: cargo-spellcheck
       - name: Spell-check
-        run: cargo spellcheck
+        run: cargo spellcheck check
       - name: Format
         run:
           cargo fmt --check;

@@ -219,15 +219,15 @@ impl AsyncWait {
 
         if let Some(wait_queue) = wait_queue {
             wait_queue.signal();
-        }
 
-        // Data race with another thread.
-        //  - Another thread pulls `self` from the `WaitQueue` to send a signal.
-        //  - This thread completes `wait_queue.signal()` which does not contain `self`
-        //  - This thread drops `self`.
-        //  - The other thread reads `self`.
-        while !self.try_wait() {
-            thread::yield_now();
+            // Data race with another thread.
+            //  - Another thread pulls `self` from the `WaitQueue` to send a signal.
+            //  - This thread completes `wait_queue.signal()` which does not contain `self`
+            //  - This thread drops `self`.
+            //  - The other thread reads `self`.
+            while !self.try_wait() {
+                thread::yield_now();
+            }
         }
     }
 }
@@ -235,11 +235,8 @@ impl AsyncWait {
 impl Drop for AsyncWait {
     #[inline]
     fn drop(&mut self) {
-        if let Some(mutex) = self.mutex.as_ref() {
-            if let Ok(locked) = mutex.lock() {
-                drop(locked);
-                self.pull();
-            }
+        if self.mutex.is_some() {
+            self.pull();
         };
     }
 }
@@ -383,7 +380,7 @@ mod test {
                 {
                     async_wait_pinned.as_mut().await;
                     if data_clone.load(Relaxed) > task_id {
-                        // The operation was successful, but was signalled by another thread.
+                        // The operation was successful, but was signaled by another thread.
                         break;
                     }
                     async_wait_pinned.mutex.take();

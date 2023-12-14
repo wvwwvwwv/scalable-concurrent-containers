@@ -1,4 +1,5 @@
 44
+avx2
 CAS
 Changelog
 crossbeam_epoch
@@ -29,9 +30,10 @@ Resizing
 resizing
 RMW
 runtime
+scalability
 Scalable
 Serde
-scalability
+SIMD
 TreeIndex
 Unlinking
 unlinking
