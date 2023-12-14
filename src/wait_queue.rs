@@ -4,6 +4,9 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{AcqRel, Relaxed};
 use std::sync::{Condvar, Mutex};
 use std::task::{Context, Poll, Waker};
+use std::thread;
+
+use crate::ebr::Guard;
 
 /// `ASYNC` is a flag indicating that the referenced instance corresponds to an asynchronous
 /// operation.
@@ -11,7 +14,8 @@ const ASYNC: usize = 1_usize;
 
 /// [`WaitQueue`] implements an unfair wait queue.
 ///
-/// The sole purpose of the data structure is to avoid busy-waiting.
+/// The sole purpose of the data structure is to avoid busy-waiting. [`WaitQueue`] should always
+/// protected by [`ebr`](crate::ebr).
 #[derive(Debug, Default)]
 pub(crate) struct WaitQueue {
     /// Stores the pointer value of the actual wait queue entry and a flag indicating that the
@@ -60,8 +64,12 @@ impl WaitQueue {
         debug_assert!(async_wait.mutex.is_none());
 
         let mut current = self.wait_queue.load(Relaxed);
+        let wait_queue_ref: &WaitQueue = self;
         async_wait.next = current;
-        async_wait.mutex.replace(Mutex::new((false, None)));
+        async_wait.mutex.replace(Mutex::new((
+            Some(unsafe { std::mem::transmute(wait_queue_ref) }),
+            None,
+        )));
 
         while let Err(actual) = self.wait_queue.compare_exchange_weak(
             current,
@@ -161,7 +169,7 @@ impl DeriveAsyncWait for () {
 #[derive(Debug, Default)]
 pub(crate) struct AsyncWait {
     next: usize,
-    mutex: Option<Mutex<(bool, Option<Waker>)>>,
+    mutex: Option<Mutex<(Option<&'static WaitQueue>, Option<Waker>)>>,
 }
 
 impl AsyncWait {
@@ -169,7 +177,8 @@ impl AsyncWait {
     fn signal(&self) {
         if let Some(mutex) = self.mutex.as_ref() {
             if let Ok(mut locked) = mutex.lock() {
-                locked.0 = true;
+                // Disassociate itself from the `WaitQueue`.
+                locked.0.take();
                 if let Some(waker) = locked.1.take() {
                     waker.wake();
                 }
@@ -183,12 +192,55 @@ impl AsyncWait {
     fn try_wait(&self) -> bool {
         if let Some(mutex) = self.mutex.as_ref() {
             if let Ok(locked) = mutex.lock() {
-                if locked.0 {
+                if locked.0.is_none() {
+                    // The wait queue entry is not associated with any `WaitQueue`.
                     return true;
                 }
             }
         }
         false
+    }
+
+    /// Pulls `self` out of the [`WaitQueue`].
+    ///
+    /// This method is only invoked when `self` is being dropped.
+    fn pull(&self) {
+        // The `WaitQueue` instance must be pinned in memory.
+        let _guard = Guard::new();
+        let wait_queue = if let Some(mutex) = self.mutex.as_ref() {
+            if let Ok(locked) = mutex.lock() {
+                locked.0
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if let Some(wait_queue) = wait_queue {
+            wait_queue.signal();
+        }
+
+        // Data race with another thread.
+        //  - Another thread pulls `self` from the `WaitQueue` to send a signal.
+        //  - This thread completes `wait_queue.signal()` which does not contain `self`
+        //  - This thread drops `self`.
+        //  - The other thread reads `self`.
+        while !self.try_wait() {
+            thread::yield_now();
+        }
+    }
+}
+
+impl Drop for AsyncWait {
+    #[inline]
+    fn drop(&mut self) {
+        if let Some(mutex) = self.mutex.as_ref() {
+            if let Ok(locked) = mutex.lock() {
+                drop(locked);
+                self.pull();
+            }
+        };
     }
 }
 
@@ -199,7 +251,8 @@ impl Future for AsyncWait {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if let Some(mutex) = self.mutex.as_ref() {
             if let Ok(mut locked) = mutex.lock() {
-                if locked.0 {
+                if locked.0.is_none() {
+                    // The wait queue entry is not associated with any `WaitQueue`.
                     return Poll::Ready(());
                 }
                 locked.1.replace(cx.waker().clone());
@@ -252,13 +305,14 @@ impl SyncWait {
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::sync::atomic::Ordering::Release;
     use std::sync::Arc;
     use std::sync::Barrier;
     use std::thread::yield_now;
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn wait_queue() {
+    fn wait_queue_sync() {
         let num_tasks = 8;
         let barrier = Arc::new(Barrier::new(num_tasks + 1));
         let wait_queue = Arc::new(WaitQueue::default());
@@ -290,11 +344,96 @@ mod test {
         }
 
         barrier.wait();
-        data.fetch_add(1, Relaxed);
+        data.fetch_add(1, Release);
         wait_queue.signal();
 
         task_handles
             .into_iter()
             .for_each(|t| assert!(t.join().is_ok()));
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    async fn wait_queue_async() {
+        let num_tasks = 8;
+        let barrier = Arc::new(tokio::sync::Barrier::new(num_tasks + 1));
+        let wait_queue = Arc::new(WaitQueue::default());
+        let data = Arc::new(AtomicUsize::new(0));
+        let mut task_handles = Vec::with_capacity(num_tasks);
+        for task_id in 1..=num_tasks {
+            let barrier_clone = barrier.clone();
+            let wait_queue_clone = wait_queue.clone();
+            let data_clone = data.clone();
+            task_handles.push(tokio::spawn(async move {
+                barrier_clone.wait().await;
+                loop {
+                    let mut async_wait = AsyncWait::default();
+                    let mut async_wait_pinned = Pin::new(&mut async_wait);
+                    if wait_queue_clone
+                        .push_async_entry(&mut async_wait_pinned, || {
+                            if data_clone
+                                .compare_exchange(task_id, task_id + 1, Relaxed, Relaxed)
+                                .is_ok()
+                            {
+                                Ok(())
+                            } else {
+                                Err(())
+                            }
+                        })
+                        .is_ok()
+                    {
+                        wait_queue_clone.signal();
+                        break;
+                    }
+                    wait_queue_clone.signal();
+                    async_wait_pinned.await;
+                    tokio::task::yield_now().await;
+                }
+            }));
+        }
+
+        barrier.wait().await;
+        data.fetch_add(1, Release);
+        wait_queue.signal();
+
+        for r in futures::future::join_all(task_handles).await {
+            assert!(r.is_ok());
+        }
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn wait_queue_async_drop() {
+        let num_tasks = 8;
+        let barrier = Arc::new(tokio::sync::Barrier::new(num_tasks));
+        let wait_queue = Arc::new(WaitQueue::default());
+        let mut task_handles = Vec::with_capacity(num_tasks);
+        for task_id in 0..num_tasks {
+            let barrier_clone = barrier.clone();
+            let wait_queue_clone = wait_queue.clone();
+            task_handles.push(tokio::spawn(async move {
+                barrier_clone.wait().await;
+                for _ in 0..num_tasks {
+                    let mut async_wait = AsyncWait::default();
+                    let mut async_wait_pinned = Pin::new(&mut async_wait);
+                    assert_eq!(
+                        wait_queue_clone
+                            .push_async_entry(&mut async_wait_pinned, || if task_id % 2 == 0 {
+                                Ok(())
+                            } else {
+                                Err(())
+                            })
+                            .is_ok(),
+                        task_id % 2 == 0
+                    );
+                }
+                wait_queue_clone.signal();
+            }));
+        }
+
+        for r in futures::future::join_all(task_handles).await {
+            assert!(r.is_ok());
+        }
+        drop(wait_queue);
     }
 }
