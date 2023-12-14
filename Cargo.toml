@@ -2,7 +2,7 @@
 name = "scc"
 description = "High performance containers and utilities for concurrent and asynchronous programming"
 documentation = "https://docs.rs/scc"
-version = "2.0.5"
+version = "2.0.6"
 authors = ["wvwwvwwv <wvwwvwwv@me.com>"]
 edition = "2021"
 readme = "README.md"
@@ -25,7 +25,7 @@ proptest = "1.4"
 rand = "0.8"
 serde_test = "1.0"
 static_assertions = "1.1"
-tokio = { version = "1.34", features = ["full"] }
+tokio = { version = "1.35", features = ["full"] }
 
 [[bench]]
 name = "bag"

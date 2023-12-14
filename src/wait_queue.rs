@@ -366,29 +366,29 @@ mod test {
             let data_clone = data.clone();
             task_handles.push(tokio::spawn(async move {
                 barrier_clone.wait().await;
-                loop {
-                    let mut async_wait = AsyncWait::default();
-                    let mut async_wait_pinned = Pin::new(&mut async_wait);
-                    if wait_queue_clone
-                        .push_async_entry(&mut async_wait_pinned, || {
-                            if data_clone
-                                .compare_exchange(task_id, task_id + 1, Relaxed, Relaxed)
-                                .is_ok()
-                            {
-                                Ok(())
-                            } else {
-                                Err(())
-                            }
-                        })
-                        .is_ok()
-                    {
-                        wait_queue_clone.signal();
+                let mut async_wait = AsyncWait::default();
+                let mut async_wait_pinned = Pin::new(&mut async_wait);
+                while wait_queue_clone
+                    .push_async_entry(&mut async_wait_pinned, || {
+                        if data_clone
+                            .compare_exchange(task_id, task_id + 1, Relaxed, Relaxed)
+                            .is_ok()
+                        {
+                            Ok(())
+                        } else {
+                            Err(())
+                        }
+                    })
+                    .is_err()
+                {
+                    async_wait_pinned.as_mut().await;
+                    if data_clone.load(Relaxed) > task_id {
+                        // The operation was successful, but was signalled by another thread.
                         break;
                     }
-                    wait_queue_clone.signal();
-                    async_wait_pinned.await;
-                    tokio::task::yield_now().await;
+                    async_wait_pinned.mutex.take();
                 }
+                wait_queue_clone.signal();
             }));
         }
 
@@ -416,16 +416,18 @@ mod test {
                 for _ in 0..num_tasks {
                     let mut async_wait = AsyncWait::default();
                     let mut async_wait_pinned = Pin::new(&mut async_wait);
-                    assert_eq!(
-                        wait_queue_clone
-                            .push_async_entry(&mut async_wait_pinned, || if task_id % 2 == 0 {
+                    if wait_queue_clone
+                        .push_async_entry(&mut async_wait_pinned, || {
+                            if task_id % 2 == 0 {
                                 Ok(())
                             } else {
                                 Err(())
-                            })
-                            .is_ok(),
-                        task_id % 2 == 0
-                    );
+                            }
+                        })
+                        .is_ok()
+                    {
+                        assert_eq!(task_id % 2, 0);
+                    }
                 }
                 wait_queue_clone.signal();
             }));
