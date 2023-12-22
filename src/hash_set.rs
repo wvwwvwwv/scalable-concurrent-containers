@@ -613,7 +613,7 @@ where
         self.map.capacity_range()
     }
 
-    /// Returns the bucket index of the key in the [`HashSet`].
+    /// Returns the index of the bucket that may contain the key.
     ///
     /// The method returns the index of the bucket associated with the key. The number of buckets
     /// can be calculated by dividing `32` into the capacity.

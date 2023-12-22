@@ -953,7 +953,7 @@ where
         self.minimum_capacity.load(Relaxed)..=self.maximum_capacity()
     }
 
-    /// Returns the bucket index of the key in the [`HashIndex`].
+    /// Returns the index of the bucket that may contain the key.
     ///
     /// The method returns the index of the bucket associated with the key. The number of buckets
     /// can be calculated by dividing `32` into the capacity.
