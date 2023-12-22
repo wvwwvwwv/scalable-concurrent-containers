@@ -955,8 +955,8 @@ where
 
     /// Returns the position of the key in the [`HashIndex`].
     ///
-    /// The method returns the index of the bucket associated with the key and the total number of
-    /// buckets in the [`HashIndex`], or `None` if the [`HashIndex`] is empty.
+    /// The method returns the index of the bucket associated with the key and the number of
+    /// buckets in the [`HashIndex`].
     ///
     /// # Examples
     ///
@@ -965,12 +965,12 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::with_capacity(1024);
     ///
-    /// let (bucket_index, num_buckets) = hashindex.position(&11).unwrap();
+    /// let (bucket_index, num_buckets) = hashindex.position(&11);
     /// assert_eq!(num_buckets, 32);
     /// assert!(bucket_index < num_buckets);
     /// ```
     #[inline]
-    pub fn position<Q>(&self, key: &Q) -> Option<(usize, usize)>
+    pub fn position<Q>(&self, key: &Q) -> (usize, usize)
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,

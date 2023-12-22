@@ -234,11 +234,10 @@ impl Collector {
             })
             .map(|p| Tag::unset_tag(p).cast_mut());
         if let Ok(mut collector_ptr) = lock_result {
-            #[allow(clippy::blocks_in_if_conditions)]
             let _guard = ExitGuard::new(&GLOBAL_ANCHOR, |a| {
                 // Unlock the anchor.
-                while a
-                    .fetch_update(Release, Relaxed, |p| {
+                loop {
+                    let result = a.fetch_update(Release, Relaxed, |p| {
                         let tag = Tag::into_tag(p);
                         debug_assert!(tag == Tag::First || tag == Tag::Both);
                         let new_tag = if tag == Tag::Both {
@@ -247,9 +246,11 @@ impl Collector {
                             Tag::None
                         };
                         Some(Tag::update_tag(p, new_tag).cast_mut())
-                    })
-                    .is_err()
-                {}
+                    });
+                    if result.is_ok() {
+                        break;
+                    }
+                }
             });
 
             let known_epoch = self.state.load(Relaxed);

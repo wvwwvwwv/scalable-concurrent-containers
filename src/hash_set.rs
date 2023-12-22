@@ -615,8 +615,8 @@ where
 
     /// Returns the position of the key in the [`HashSet`].
     ///
-    /// The method returns the index of the bucket associated with the key and the total number of
-    /// buckets in the [`HashSet`], or `None` if the [`HashSet`] is empty.
+    /// The method returns the index of the bucket associated with the key and the number of
+    /// buckets in the [`HashSet`].
     ///
     /// # Examples
     ///
@@ -625,12 +625,12 @@ where
     ///
     /// let hashset: HashSet<u64> = HashSet::with_capacity(1024);
     ///
-    /// let (bucket_index, num_buckets) = hashset.position(&11).unwrap();
+    /// let (bucket_index, num_buckets) = hashset.position(&11);
     /// assert_eq!(num_buckets, 32);
     /// assert!(bucket_index < num_buckets);
     /// ```
     #[inline]
-    pub fn position<Q>(&self, key: &Q) -> Option<(usize, usize)>
+    pub fn position<Q>(&self, key: &Q) -> (usize, usize)
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,

@@ -46,9 +46,9 @@ where
 
     /// Returns the expected bucket position of the key in the hash table.
     ///
-    /// `(bucket index, number of buckets)` is returned, or it returns `None` if it is empty.
+    /// `(bucket index, number of buckets)` is returned.
     #[inline]
-    fn bucket_position<Q>(&self, key: &Q) -> Option<(usize, usize)>
+    fn bucket_position<Q>(&self, key: &Q) -> (usize, usize)
     where
         K: Borrow<Q>,
         Q: Hash + ?Sized,
@@ -56,7 +56,9 @@ where
         self.bucket_array()
             .load(Acquire, &Guard::new())
             .as_ref()
-            .map(|a| (a.calculate_bucket_index(self.hash(key)), a.num_buckets()))
+            .map_or((0, 0), |a| {
+                (a.calculate_bucket_index(self.hash(key)), a.num_buckets())
+            })
     }
 
     /// Returns the minimum allowed capacity.

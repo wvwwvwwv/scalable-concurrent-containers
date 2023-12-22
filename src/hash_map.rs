@@ -1286,8 +1286,8 @@ where
 
     /// Returns the position of the key in the [`HashMap`].
     ///
-    /// The method returns the index of the bucket associated with the key and the total number of
-    /// buckets in the [`HashMap`], or `None` if the [`HashMap`] is empty.
+    /// The method returns the index of the bucket associated with the key and the number of
+    /// buckets in the [`HashMap`].
     ///
     /// # Examples
     ///
@@ -1296,12 +1296,12 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::with_capacity(1024);
     ///
-    /// let (bucket_index, num_buckets) = hashmap.position(&11).unwrap();
+    /// let (bucket_index, num_buckets) = hashmap.position(&11);
     /// assert_eq!(num_buckets, 32);
     /// assert!(bucket_index < num_buckets);
     /// ```
     #[inline]
-    pub fn position<Q>(&self, key: &Q) -> Option<(usize, usize)>
+    pub fn position<Q>(&self, key: &Q) -> (usize, usize)
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
