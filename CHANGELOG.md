@@ -4,7 +4,7 @@
 
 2.0.7
 
-* Add `position` to `HashIndex`, `HashMap`, and `HashSet`.
+* Add `bucket_index` to `HashIndex`, `HashMap`, and `HashSet`.
 
 2.0.6
 
