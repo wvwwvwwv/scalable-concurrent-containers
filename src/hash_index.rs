@@ -953,10 +953,10 @@ where
         self.minimum_capacity.load(Relaxed)..=self.maximum_capacity()
     }
 
-    /// Returns the position of the key in the [`HashIndex`].
+    /// Returns the bucket index of the key in the [`HashIndex`].
     ///
-    /// The method returns the index of the bucket associated with the key and the number of
-    /// buckets in the [`HashIndex`].
+    /// The method returns the index of the bucket associated with the key. The number of buckets
+    /// can be calculated by dividing `32` into the capacity.
     ///
     /// # Examples
     ///
@@ -965,17 +965,16 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::with_capacity(1024);
     ///
-    /// let (bucket_index, num_buckets) = hashindex.position(&11);
-    /// assert_eq!(num_buckets, 32);
-    /// assert!(bucket_index < num_buckets);
+    /// let bucket_index = hashindex.bucket_index(&11);
+    /// assert!(bucket_index < hashindex.capacity() / 32);
     /// ```
     #[inline]
-    pub fn position<Q>(&self, key: &Q) -> (usize, usize)
+    pub fn bucket_index<Q>(&self, key: &Q) -> usize
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.bucket_position(key)
+        self.calculate_bucket_index(key)
     }
 
     /// Returns an [`Iter`].

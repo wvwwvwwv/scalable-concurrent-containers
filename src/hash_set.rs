@@ -613,10 +613,10 @@ where
         self.map.capacity_range()
     }
 
-    /// Returns the position of the key in the [`HashSet`].
+    /// Returns the bucket index of the key in the [`HashSet`].
     ///
-    /// The method returns the index of the bucket associated with the key and the number of
-    /// buckets in the [`HashSet`].
+    /// The method returns the index of the bucket associated with the key. The number of buckets
+    /// can be calculated by dividing `32` into the capacity.
     ///
     /// # Examples
     ///
@@ -625,17 +625,16 @@ where
     ///
     /// let hashset: HashSet<u64> = HashSet::with_capacity(1024);
     ///
-    /// let (bucket_index, num_buckets) = hashset.position(&11);
-    /// assert_eq!(num_buckets, 32);
-    /// assert!(bucket_index < num_buckets);
+    /// let bucket_index = hashset.bucket_index(&11);
+    /// assert!(bucket_index < hashset.capacity() / 32);
     /// ```
     #[inline]
-    pub fn position<Q>(&self, key: &Q) -> (usize, usize)
+    pub fn bucket_index<Q>(&self, key: &Q) -> usize
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.map.position(key)
+        self.map.bucket_index(key)
     }
 }
 
