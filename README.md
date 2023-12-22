@@ -483,7 +483,7 @@ assert!(head.next_ptr(Relaxed, &guard).is_null());
 Comparison with [DashMap](https://github.com/xacrimon/dashmap).
 
 - [Results on Apple M1 (8 cores)](https://github.com/wvwwvwwv/conc-map-bench).
-- [Results on Intel Xeon (40 cores, +avx2)](https://github.com/wvwwvwwv/conc-map-bench/tree/Intel).
+- [Results on Intel Xeon (40 cores, avx2)](https://github.com/wvwwvwwv/conc-map-bench/tree/Intel).
 - *Interpret the results cautiously as benchmarks usually do not represent real world workloads.*
 
 ### [EBR](#EBR)
