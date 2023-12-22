@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.0.7
+
+* Add `position` to `HashIndex`, `HashMap`, and `HashSet`.
+
 2.0.6
 
 * Fix [#118](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/118).

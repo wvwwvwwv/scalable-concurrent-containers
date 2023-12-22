@@ -612,6 +612,31 @@ where
     pub fn capacity_range(&self) -> RangeInclusive<usize> {
         self.map.capacity_range()
     }
+
+    /// Returns the position of the key in the [`HashSet`].
+    ///
+    /// The method returns the index of the bucket associated with the key and the total number of
+    /// buckets in the [`HashSet`], or `None` if the [`HashSet`] is empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    ///
+    /// let hashset: HashSet<u64> = HashSet::with_capacity(1024);
+    ///
+    /// let (bucket_index, num_buckets) = hashset.position(&11).unwrap();
+    /// assert_eq!(num_buckets, 32);
+    /// assert!(bucket_index < num_buckets);
+    /// ```
+    #[inline]
+    pub fn position<Q>(&self, key: &Q) -> Option<(usize, usize)>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.map.position(key)
+    }
 }
 
 impl<K, H> Clone for HashSet<K, H>

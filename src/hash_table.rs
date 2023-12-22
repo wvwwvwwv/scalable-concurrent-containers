@@ -44,6 +44,21 @@ where
     /// Returns a reference to the [`BucketArray`] pointer.
     fn bucket_array(&self) -> &AtomicShared<BucketArray<K, V, TYPE>>;
 
+    /// Returns the expected bucket position of the key in the hash table.
+    ///
+    /// `(bucket index, number of buckets)` is returned, or it returns `None` if it is empty.
+    #[inline]
+    fn bucket_position<Q>(&self, key: &Q) -> Option<(usize, usize)>
+    where
+        K: Borrow<Q>,
+        Q: Hash + ?Sized,
+    {
+        self.bucket_array()
+            .load(Acquire, &Guard::new())
+            .as_ref()
+            .map(|a| (a.calculate_bucket_index(self.hash(key)), a.num_buckets()))
+    }
+
     /// Returns the minimum allowed capacity.
     fn minimum_capacity(&self) -> &AtomicUsize;
 

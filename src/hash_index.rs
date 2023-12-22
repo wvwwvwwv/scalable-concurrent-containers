@@ -953,6 +953,31 @@ where
         self.minimum_capacity.load(Relaxed)..=self.maximum_capacity()
     }
 
+    /// Returns the position of the key in the [`HashIndex`].
+    ///
+    /// The method returns the index of the bucket associated with the key and the total number of
+    /// buckets in the [`HashIndex`], or `None` if the [`HashIndex`] is empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::with_capacity(1024);
+    ///
+    /// let (bucket_index, num_buckets) = hashindex.position(&11).unwrap();
+    /// assert_eq!(num_buckets, 32);
+    /// assert!(bucket_index < num_buckets);
+    /// ```
+    #[inline]
+    pub fn position<Q>(&self, key: &Q) -> Option<(usize, usize)>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.bucket_position(key)
+    }
+
     /// Returns an [`Iter`].
     ///
     /// It is guaranteed to go through all the key-value pairs pertaining in the [`HashIndex`]
