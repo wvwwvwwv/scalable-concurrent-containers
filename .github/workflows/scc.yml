@@ -44,9 +44,7 @@ jobs:
       - name: Lint
         run:
           cargo clippy --all;
-          cargo +nightly clippy --all;
           cargo clippy -p examples --all;
-          cargo +nightly clippy -p examples --all
       - name: Examples
         run:
           RUST_BACKTRACE=1 cargo test --release -p examples -- --nocapture;
@@ -54,7 +52,6 @@ jobs:
       - name: Doc
         run:
           cargo doc --document-private-items;
-          cargo +nightly doc --document-private-items
       - name: Serde
         run:
           cargo test serde --verbose --features serde;
