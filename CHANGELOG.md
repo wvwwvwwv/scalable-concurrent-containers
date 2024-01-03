@@ -4,7 +4,7 @@
 
 2.0.8
 
-* Add support for Rust 1.70.0.
+* Add support for old Rust versions.
 
 2.0.7
 

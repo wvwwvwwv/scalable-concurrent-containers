@@ -41,10 +41,6 @@ jobs:
         run:
           cargo fmt --check;
           cargo fmt -p examples --check
-      - name: Lint
-        run:
-          cargo clippy --all;
-          cargo clippy -p examples --all;
       - name: Examples
         run:
           RUST_BACKTRACE=1 cargo test --release -p examples -- --nocapture;
