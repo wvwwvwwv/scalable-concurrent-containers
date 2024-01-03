@@ -7,7 +7,7 @@ use crate::wait_queue::{AsyncWait, DeriveAsyncWait};
 use bucket::{DataBlock, EntryPtr, Locker, Reader, BUCKET_LEN, CACHE, OPTIMISTIC};
 use bucket_array::BucketArray;
 use std::borrow::Borrow;
-use std::hash::{BuildHasher, Hash};
+use std::hash::{BuildHasher, Hash, Hasher};
 use std::pin::Pin;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 use std::sync::atomic::{fence, AtomicUsize};
@@ -19,13 +19,16 @@ where
     H: BuildHasher,
 {
     /// Returns the hash value of the key.
+    #[allow(clippy::manual_hash_one)] // Stabilized in Rust 1.71.0.
     #[inline]
     fn hash<Q>(&self, key: &Q) -> u64
     where
         K: Borrow<Q>,
         Q: Hash + ?Sized,
     {
-        self.hasher().hash_one(key)
+        let mut hasher = self.hasher().build_hasher();
+        key.hash(&mut hasher);
+        hasher.finish()
     }
 
     /// Returns a reference to its [`BuildHasher`].
@@ -1135,7 +1138,7 @@ pub(super) struct LockedEntry<'h, K: Eq + Hash, V, const TYPE: char> {
     pub(super) index: usize,
 }
 
-impl<'h, K: Eq + Hash, V, const TYPE: char> LockedEntry<'h, K, V, TYPE> {
+impl<'h, K: Eq + Hash + 'h, V: 'h, const TYPE: char> LockedEntry<'h, K, V, TYPE> {
     /// Gets the first occupied entry.
     pub(super) async fn first_entry_async<H: BuildHasher, T: HashTable<K, V, H, TYPE>>(
         hash_table: &'h T,

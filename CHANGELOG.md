@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.0.8
+
+* Add support for Rust 1.70.0.
+
 2.0.7
 
 * Add `bucket_index` to `HashIndex`, `HashMap`, and `HashSet`.
