@@ -34,7 +34,9 @@ jobs:
           rustup component add miri --toolchain nightly
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-spellcheck
+          tool: cargo-msrv, cargo-spellcheck
+      - name: MSRV
+        run: cargo msrv verify
       - name: Spell-check
         run: cargo spellcheck check
       - name: Format
