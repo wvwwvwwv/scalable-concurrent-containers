@@ -440,6 +440,36 @@ where
         }
     }
 
+    /// Removes keys in the specified range.
+    ///
+    /// Returns the count of removed entries.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::TreeIndex;
+    ///
+    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    ///
+    /// for k in 2..8 {
+    ///     assert!(treeindex.insert(k, 1).is_ok());
+    /// }
+    /// assert_eq!(treeindex.remove_range(3..8), 5);
+    /// ```
+    // TODO: #120 - implement an asynchronous version of this method.
+    #[inline]
+    pub fn remove_range<R: RangeBounds<K>>(&self, range: R) -> usize {
+        // TODO: #120 - implement O(1) bulk removal without using `Range`.
+        let mut count = 0;
+        let guard = Guard::new();
+        for (k, _) in self.range(range, &guard) {
+            if self.remove(k) {
+                count += 1;
+            }
+        }
+        count
+    }
+
     /// Returns a guarded reference to the value for the specified key without acquiring locks.
     ///
     /// Returns `None` if the key does not exist. The returned reference can survive as long as the
