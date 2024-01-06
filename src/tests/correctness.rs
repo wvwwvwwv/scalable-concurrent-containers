@@ -2551,9 +2551,7 @@ mod ebr_test {
     fn shared_nested() {
         static DESTROYED: AtomicBool = AtomicBool::new(false);
 
-        struct Nest(Shared<A>);
-
-        let nested_shared = Shared::new(Nest(Shared::new(A(AtomicUsize::new(10), 10, &DESTROYED))));
+        let nested_shared = Shared::new(Shared::new(A(AtomicUsize::new(10), 10, &DESTROYED)));
         assert!(!DESTROYED.load(Relaxed));
         drop(nested_shared);
 
