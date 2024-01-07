@@ -1423,6 +1423,7 @@ mod treeindex_test {
     use std::sync::{Arc, Barrier};
     use std::thread;
     use tokio::sync::Barrier as AsyncBarrier;
+    use tokio::task;
 
     static_assertions::assert_impl_all!(TreeIndex<String, String>: Send, Sync, UnwindSafe);
     static_assertions::assert_impl_all!(Iter<'static, 'static, String, String>: UnwindSafe);
@@ -1564,6 +1565,52 @@ mod treeindex_test {
                     }
                     for id in range {
                         assert!(!tree_clone.remove_if_async(&id, |v| *v == id).await);
+                    }
+                }));
+            }
+
+            for r in futures::future::join_all(task_handles).await {
+                assert!(r.is_ok());
+            }
+            assert_eq!(tree.len(), 0);
+        }
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remove_range() {
+        let num_tasks = 2;
+        let workload_size = 4096;
+        for _ in 0..16 {
+            let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::default());
+            let mut task_handles = Vec::with_capacity(num_tasks);
+            let barrier = Arc::new(AsyncBarrier::new(num_tasks));
+            let data = Arc::new(AtomicUsize::default());
+            for task_id in 0..num_tasks {
+                let barrier_clone = barrier.clone();
+                let data_clone = data.clone();
+                let tree_clone = tree.clone();
+                task_handles.push(tokio::task::spawn(async move {
+                    barrier_clone.wait().await;
+                    if task_id == 0 {
+                        for k in 1..=workload_size {
+                            assert!(tree_clone.insert(k, k).is_ok());
+                            assert!(tree_clone.peek(&k, &Guard::new()).is_some());
+                            data_clone.store(k, Release);
+                        }
+                    } else {
+                        loop {
+                            let end_bound = data_clone.load(Acquire);
+                            if end_bound == workload_size {
+                                break;
+                            } else if end_bound == 0 {
+                                task::yield_now().await;
+                                continue;
+                            }
+                            tree_clone.remove_range(..end_bound);
+                            assert!(tree_clone.peek(&(end_bound - 1), &Guard::new()).is_none());
+                            assert!(tree_clone.peek(&end_bound, &Guard::new()).is_some());
+                        }
                     }
                 }));
             }
