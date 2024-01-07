@@ -442,7 +442,7 @@ where
 
     /// Removes keys in the specified range.
     ///
-    /// Returns the count of removed entries.
+    /// Experimental: [`issue 120`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/120).
     ///
     /// # Examples
     ///
@@ -454,20 +454,22 @@ where
     /// for k in 2..8 {
     ///     assert!(treeindex.insert(k, 1).is_ok());
     /// }
-    /// assert_eq!(treeindex.remove_range(3..8), 5);
+    ///
+    /// treeindex.remove_range(3..8);
+    ///
+    /// assert!(treeindex.contains(&2));
+    /// assert!(!treeindex.contains(&3));
     /// ```
     // TODO: #120 - implement an asynchronous version of this method.
     #[inline]
-    pub fn remove_range<R: RangeBounds<K>>(&self, range: R) -> usize {
-        // TODO: #120 - implement O(1) bulk removal without using `Range`.
-        let mut count = 0;
+    pub fn remove_range<R: RangeBounds<K>>(&self, range: R) {
         let guard = Guard::new();
-        for (k, _) in self.range(range, &guard) {
-            if self.remove(k) {
-                count += 1;
-            }
+        if let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
+            root_ref.remove_range(&range, &mut (), &guard); // TODO: #120 - implement O(1) bulk removal without using `Range`.
         }
-        count
+        for (k, _) in self.range(range, &guard) {
+            self.remove(k);
+        }
     }
 
     /// Returns a guarded reference to the value for the specified key without acquiring locks.
@@ -518,6 +520,28 @@ where
     {
         let guard = Guard::new();
         self.peek(key, &guard).map(|v| reader(key, v))
+    }
+
+    /// Returns `true` if the [`TreeIndex`] contains the key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::TreeIndex;
+    ///
+    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::default();
+    ///
+    /// assert!(!treeindex.contains(&1));
+    /// assert!(treeindex.insert(1, 0).is_ok());
+    /// assert!(treeindex.contains(&1));
+    /// ```
+    #[inline]
+    pub fn contains<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        self.peek(key, &Guard::new()).is_some()
     }
 
     /// Clears the [`TreeIndex`].

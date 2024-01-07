@@ -5,6 +5,7 @@ use crate::ebr::{AtomicShared, Guard, Shared, Tag};
 use crate::wait_queue::DeriveAsyncWait;
 use std::borrow::Borrow;
 use std::fmt::{self, Debug};
+use std::ops::RangeBounds;
 use std::sync::atomic::Ordering::{self, Acquire, Relaxed, Release};
 
 /// [`Node`] is either [`Self::Internal`] or [`Self::Leaf`].
@@ -131,6 +132,20 @@ where
             Self::Leaf(leaf_node) => {
                 leaf_node.remove_if::<_, _, _>(key, condition, async_wait, guard)
             }
+        }
+    }
+
+    /// Removes a range of entries.
+    #[inline]
+    pub(super) fn remove_range<R: RangeBounds<K>, D: DeriveAsyncWait>(
+        &self,
+        range: &R,
+        async_wait: &mut D,
+        guard: &Guard,
+    ) -> bool {
+        match &self {
+            Self::Internal(internal_node) => internal_node.remove_range(range, async_wait, guard),
+            Self::Leaf(leaf_node) => leaf_node.remove_range(range, async_wait, guard),
         }
     }
 

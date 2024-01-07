@@ -6,6 +6,7 @@ use crate::exit_guard::ExitGuard;
 use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
 use std::borrow::Borrow;
 use std::cmp::Ordering::{Equal, Greater, Less};
+use std::ops::RangeBounds;
 use std::ptr;
 use std::sync::atomic::Ordering::{self, Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicPtr, AtomicU8};
@@ -361,6 +362,19 @@ where
             }
             return Ok(RemoveResult::Fail);
         }
+    }
+
+    /// Removes a range of entries.
+    #[allow(clippy::unused_self)]
+    #[inline]
+    pub(super) fn remove_range<R: RangeBounds<K>, D: DeriveAsyncWait>(
+        &self,
+        _range: &R,
+        _async_wait: &mut D,
+        _guard: &Guard,
+    ) -> bool {
+        // TODO: #120 - implement O(1) bulk removal without using `Range`.
+        true
     }
 
     /// Splits a full node.
