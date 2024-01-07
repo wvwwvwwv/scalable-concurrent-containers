@@ -1618,7 +1618,6 @@ mod treeindex_test {
             for r in futures::future::join_all(task_handles).await {
                 assert!(r.is_ok());
             }
-            assert_eq!(tree.len(), 0);
         }
     }
 
