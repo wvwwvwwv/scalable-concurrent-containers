@@ -460,15 +460,65 @@ where
     /// assert!(treeindex.contains(&2));
     /// assert!(!treeindex.contains(&3));
     /// ```
-    // TODO: #120 - implement an asynchronous version of this method.
     #[inline]
     pub fn remove_range<R: RangeBounds<K>>(&self, range: R) {
         let guard = Guard::new();
         if let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
-            root_ref.remove_range(&range, &mut (), &guard); // TODO: #120 - implement O(1) bulk removal without using `Range`.
+            if unsafe {
+                root_ref
+                    .remove_range(&range, &mut (), &guard)
+                    .unwrap_unchecked()
+            } {
+                let _result = Node::remove_root(&self.root, &mut (), &guard);
+            }
         }
         for (k, _) in self.range(range, &guard) {
             self.remove(k);
+        }
+    }
+
+    /// Removes keys in the specified range.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
+    ///
+    /// Experimental: [`issue 120`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/120).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::TreeIndex;
+    ///
+    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    ///
+    /// for k in 2..8 {
+    ///     assert!(treeindex.insert(k, 1).is_ok());
+    /// }
+    ///
+    /// let future_remove_range = treeindex.remove_range_async(3..8);
+    /// ```
+    #[allow(clippy::unused_async)]
+    #[inline]
+    pub async fn remove_range_async<R: RangeBounds<K>>(&self, range: R) {
+        loop {
+            let mut async_wait = AsyncWait::default();
+            let mut async_wait_pinned = Pin::new(&mut async_wait);
+            {
+                let guard = Guard::new();
+                if let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
+                    match root_ref.remove_range(&range, &mut async_wait_pinned, &guard) {
+                        Ok(true) => {
+                            if Node::remove_root(&self.root, &mut (), &guard).is_err() {
+                                continue;
+                            }
+                        }
+                        Ok(_) => (),
+                        Err(()) => {
+                            continue;
+                        }
+                    }
+                }
+                break;
+            }
         }
     }
 

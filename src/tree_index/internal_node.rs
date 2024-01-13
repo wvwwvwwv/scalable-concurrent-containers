@@ -369,12 +369,49 @@ where
     #[inline]
     pub(super) fn remove_range<R: RangeBounds<K>, D: DeriveAsyncWait>(
         &self,
-        _range: &R,
-        _async_wait: &mut D,
-        _guard: &Guard,
-    ) -> bool {
-        // TODO: #120 - implement O(1) bulk removal without using `Range`.
-        true
+        range: &R,
+        async_wait: &mut D,
+        guard: &Guard,
+    ) -> Result<bool, ()> {
+        if !self.try_lock() {
+            self.wait(async_wait);
+            return Err(());
+        }
+
+        let _guard = ExitGuard::new((), |()| self.unlock());
+
+        let mut last_contained = false;
+        let mut last_valid_child = Ptr::null();
+        let scanner = Scanner::new(&self.children);
+        for (k, child) in scanner {
+            let mut child_ptr = child.load(Acquire, guard);
+            let contains = range.contains(k);
+            if contains || last_contained {
+                if let Some(child) = child_ptr.as_ref() {
+                    if child.remove_range(range, async_wait, guard)? {
+                        // TODO #120.
+                        child_ptr = Ptr::null();
+                    }
+                }
+            }
+            if !contains && last_contained {
+                // No need to check other children.
+                return Ok(false);
+            }
+            if !child_ptr.is_null() {
+                last_valid_child = child_ptr;
+            }
+            last_contained = contains;
+        }
+
+        let unbounded_ptr = self.unbounded_child.load(Acquire, guard);
+        if let Some(unbounded) = unbounded_ptr.as_ref() {
+            if unbounded.remove_range(range, async_wait, guard)? {
+                // TODO #120.
+            }
+        }
+
+        Ok(last_valid_child.is_null())
     }
 
     /// Splits a full node.
