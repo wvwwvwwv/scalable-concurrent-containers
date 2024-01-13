@@ -20,7 +20,7 @@ where
     V: 'static + Clone,
 {
     /// Children of the [`InternalNode`].
-    children: Leaf<K, AtomicShared<Node<K, V>>>,
+    pub(super) children: Leaf<K, AtomicShared<Node<K, V>>>,
 
     /// A child [`Node`] that has no upper key bound.
     ///

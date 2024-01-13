@@ -26,7 +26,7 @@ where
     V: 'static + Clone,
 {
     /// Children of the [`LeafNode`].
-    children: Leaf<K, AtomicShared<Leaf<K, V>>>,
+    pub(super) children: Leaf<K, AtomicShared<Leaf<K, V>>>,
 
     /// A child [`Leaf`] that has no upper key bound.
     ///

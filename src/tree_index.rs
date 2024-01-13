@@ -155,7 +155,7 @@ where
                         InsertResult::Retired(k, v) => {
                             key = k;
                             val = v;
-                            let _result = Node::remove_root(&self.root, &mut (), &guard);
+                            let _result = Node::cleanup_root(&self.root, &mut (), &guard);
                         }
                     },
                     Err((k, v)) => {
@@ -227,10 +227,7 @@ where
                             InsertResult::Retired(k, v) => {
                                 key = k;
                                 val = v;
-                                !matches!(
-                                    Node::remove_root(&self.root, &mut async_wait_pinned, &guard),
-                                    Ok(true)
-                                )
+                                !Node::cleanup_root(&self.root, &mut async_wait_pinned, &guard)
                             }
                         },
                         Err((k, v)) => {
@@ -353,7 +350,7 @@ where
                             return true;
                         }
                         RemoveResult::Retired => {
-                            if matches!(Node::remove_root(&self.root, &mut (), &guard), Ok(true)) {
+                            if Node::cleanup_root(&self.root, &mut (), &guard) {
                                 return true;
                             }
                             has_been_removed = true;
@@ -415,10 +412,7 @@ where
                                 return true;
                             }
                             RemoveResult::Retired => {
-                                if matches!(
-                                    Node::remove_root(&self.root, &mut async_wait_pinned, &guard),
-                                    Ok(true)
-                                ) {
+                                if Node::cleanup_root(&self.root, &mut async_wait_pinned, &guard) {
                                     return true;
                                 }
                                 has_been_removed = true;
@@ -469,7 +463,7 @@ where
                     .remove_range(&range, &mut (), &guard)
                     .unwrap_unchecked()
             } {
-                let _result = Node::remove_root(&self.root, &mut (), &guard);
+                let _result = Node::cleanup_root(&self.root, &mut (), &guard);
             }
         }
         for (k, _) in self.range(range, &guard) {
@@ -507,7 +501,7 @@ where
                 if let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
                     match root_ref.remove_range(&range, &mut async_wait_pinned, &guard) {
                         Ok(true) => {
-                            if Node::remove_root(&self.root, &mut (), &guard).is_err() {
+                            if !Node::cleanup_root(&self.root, &mut (), &guard) {
                                 continue;
                             }
                         }

@@ -1,7 +1,7 @@
 use super::internal_node::{self, InternalNode};
 use super::leaf::{InsertResult, RemoveResult, Scanner};
-use super::leaf_node::{self, LeafNode};
-use crate::ebr::{AtomicShared, Guard, Shared, Tag};
+use super::leaf_node::{self, LeafNode, RETIRED};
+use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::wait_queue::DeriveAsyncWait;
 use std::borrow::Borrow;
 use std::fmt::{self, Debug};
@@ -136,7 +136,7 @@ where
     }
 
     /// Removes a range of entries.
-    /// 
+    ///
     /// Returns `true` if the node was retired.
     #[inline]
     pub(super) fn remove_range<R: RangeBounds<K>, D: DeriveAsyncWait>(
@@ -194,19 +194,20 @@ where
         }
     }
 
-    /// Removes the current root node.
+    /// Cleans up or removes the current root node.
     ///
-    /// # Errors
+    /// If the root is empty, the root is removed from the tree, or it the root has only a single
+    /// child, the root is replaced with the child.
     ///
-    /// Returns an error if a conflict is detected.
+    /// Returns `false` if a conflict is detected.
     #[inline]
-    pub(super) fn remove_root<D: DeriveAsyncWait>(
+    pub(super) fn cleanup_root<D: DeriveAsyncWait>(
         root: &AtomicShared<Node<K, V>>,
         async_wait: &mut D,
         guard: &Guard,
-    ) -> Result<bool, ()> {
-        let root_ptr = root.load(Acquire, guard);
-        if let Some(root_ref) = root_ptr.as_ref() {
+    ) -> bool {
+        let mut root_ptr = root.load(Acquire, guard);
+        while let Some(root_ref) = root_ptr.as_ref() {
             let mut internal_node_locker = None;
             let mut leaf_node_locker = None;
             match root_ref {
@@ -225,27 +226,50 @@ where
                     }
                 }
             };
+
             if internal_node_locker.is_none() && leaf_node_locker.is_none() {
                 // The root node is locked by another thread.
-                return Err(());
-            }
-            if !root_ref.retired(Relaxed) {
-                // The root node is still usable.
-                return Ok(false);
+                return false;
             }
 
-            match root.compare_exchange(root_ptr, (None, Tag::None), Acquire, Acquire, guard) {
-                Ok((old_root, _)) => {
-                    old_root.map(|r| r.release(guard));
-                    return Ok(true);
+            let new_root_ptr = root.load(Relaxed, guard);
+            if root_ptr != new_root_ptr {
+                // The root node has been changed.
+                root_ptr = new_root_ptr;
+                continue;
+            }
+
+            let new_root = if root_ref.retired(Relaxed) {
+                // The root can be completely removed.
+                None
+            } else if let Self::Internal(internal_node) = root_ref {
+                if internal_node.children.max_key().is_none() {
+                    // Replace the root with the unbounded child.
+                    internal_node
+                        .unbounded_child
+                        .swap((None, RETIRED), Relaxed)
+                        .0
+                } else {
+                    // The internal node is still usable.
+                    break;
                 }
-                Err(_) => {
-                    return Ok(false);
-                }
+            } else {
+                // Leaves cannot be promoted.
+                break;
+            };
+
+            if let Some(new_root_ptr) = new_root.as_ref().map(|n| n.get_guarded_ptr(guard)) {
+                root_ptr = new_root_ptr;
+            } else {
+                root_ptr = Ptr::null();
+            }
+
+            if let (Some(old_root), _) = root.swap((new_root, Tag::None), Release) {
+                let _: bool = old_root.release(guard);
             }
         }
 
-        Err(())
+        true
     }
 
     /// Commits an on-going structural change.
