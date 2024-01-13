@@ -196,7 +196,7 @@ where
 
     /// Cleans up or removes the current root node.
     ///
-    /// If the root is empty, the root is removed from the tree, or it the root has only a single
+    /// If the root is empty, the root is removed from the tree, or if the root has only a single
     /// child, the root is replaced with the child.
     ///
     /// Returns `false` if a conflict is detected.

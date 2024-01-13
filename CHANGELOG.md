@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.0.10
+
+* Optimize `TreeIndex::remove_range`([#120](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/120)).
+
 2.0.9
 
 * Add `TreeIndex::contains` and `TreeIndex::remove_range`; `TreeIndex::remove_range` is experimental and will be stabilized later ([#120](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/120)).
