@@ -388,14 +388,21 @@ where
             let contains = range.contains(k);
             if contains || last_contained {
                 if let Some(child) = child_ptr.as_ref() {
-                    if child.remove_range(range, async_wait, guard)? {
-                        // TODO #120.
+                    if (contains && last_contained)
+                        || child.remove_range(range, async_wait, guard)?
+                    {
+                        // Get rid of the child.
+                        //
+                        // There can be another thread inserting keys into the node, and this
+                        // operation renders the insertion futile.
+                        self.children.remove_if(k, &mut |_| true);
                         child_ptr = Ptr::null();
                     }
                 }
             }
             if !contains && last_contained {
                 // No need to check other children.
+                debug_assert!(!self.unbounded_child.is_null(Relaxed));
                 return Ok(false);
             }
             if !child_ptr.is_null() {
@@ -407,7 +414,12 @@ where
         let unbounded_ptr = self.unbounded_child.load(Acquire, guard);
         if let Some(unbounded) = unbounded_ptr.as_ref() {
             if unbounded.remove_range(range, async_wait, guard)? {
-                // TODO #120.
+                if !last_valid_child.is_null() {
+                    // TODO #120: promote the last valid child to unbounded.
+                }
+                // TODO #120: try to retire itself.
+            } else {
+                last_valid_child = unbounded_ptr;
             }
         }
 
