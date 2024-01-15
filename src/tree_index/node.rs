@@ -137,14 +137,14 @@ where
 
     /// Removes a range of entries.
     ///
-    /// Returns `true` if the node was retired.
+    /// Returns the fewest of remaining children.
     #[inline]
     pub(super) fn remove_range<R: RangeBounds<K>, D: DeriveAsyncWait>(
         &self,
         range: &R,
         async_wait: &mut D,
         guard: &Guard,
-    ) -> Result<bool, ()> {
+    ) -> Result<usize, ()> {
         match &self {
             Self::Internal(internal_node) => internal_node.remove_range(range, async_wait, guard),
             Self::Leaf(leaf_node) => leaf_node.remove_range(range, async_wait, guard),

@@ -353,6 +353,8 @@ where
     }
 
     /// Removes a range of entries.
+    ///
+    /// Returns the fewest of remaining children.
     #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
     #[inline]
     pub(super) fn remove_range<R: RangeBounds<K>, D: DeriveAsyncWait>(
@@ -360,9 +362,9 @@ where
         _range: &R,
         _async_wait: &mut D,
         _guard: &Guard,
-    ) -> Result<bool, ()> {
+    ) -> Result<usize, ()> {
         // TODO: #120 - implement O(1) bulk removal without using `Range`.
-        Ok(false)
+        Ok(2)
     }
 
     /// Splits itself into the given leaf nodes, and returns the middle key value.

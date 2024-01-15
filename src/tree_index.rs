@@ -457,18 +457,18 @@ where
     #[inline]
     pub fn remove_range<R: RangeBounds<K>>(&self, range: R) {
         let guard = Guard::new();
-        if let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
-            if unsafe {
-                root_ref
-                    .remove_range(&range, &mut (), &guard)
-                    .unwrap_unchecked()
-            } {
-                let _result = Node::cleanup_root(&self.root, &mut (), &guard);
+        while let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
+            if let Ok(num_children) = root_ref.remove_range(&range, &mut (), &guard) {
+                if num_children < 2 && !Node::cleanup_root(&self.root, &mut (), &guard) {
+                    continue;
+                }
+                break;
             }
         }
         for (k, _) in self.range(range, &guard) {
             self.remove(k);
         }
+        let _result = Node::cleanup_root(&self.root, &mut (), &guard);
     }
 
     /// Removes keys in the specified range.
@@ -500,12 +500,12 @@ where
                 let guard = Guard::new();
                 if let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
                     match root_ref.remove_range(&range, &mut async_wait_pinned, &guard) {
-                        Ok(true) => {
-                            if !Node::cleanup_root(&self.root, &mut (), &guard) {
+                        Ok(num_children) => {
+                            if num_children < 2 && !Node::cleanup_root(&self.root, &mut (), &guard)
+                            {
                                 continue;
                             }
                         }
-                        Ok(_) => (),
                         Err(()) => {
                             continue;
                         }

@@ -1623,8 +1623,7 @@ mod treeindex_test {
             assert!(tree.peek(&(workload_size - 1), &Guard::new()).is_none());
             assert!(tree.peek(&workload_size, &Guard::new()).is_some());
             assert_eq!(tree.len(), 1);
-            // TODO #120: implement it correctly.
-            // assert_eq!(tree.depth(), 1);
+            assert_eq!(tree.depth(), 1);
         }
     }
 

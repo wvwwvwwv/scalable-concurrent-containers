@@ -365,14 +365,15 @@ where
     }
 
     /// Removes a range of entries.
-    #[allow(clippy::unused_self)]
+    ///
+    /// Returns the fewest of remaining children.
     #[inline]
     pub(super) fn remove_range<R: RangeBounds<K>, D: DeriveAsyncWait>(
         &self,
         range: &R,
         async_wait: &mut D,
         guard: &Guard,
-    ) -> Result<bool, ()> {
+    ) -> Result<usize, ()> {
         if !self.try_lock() {
             self.wait(async_wait);
             return Err(());
@@ -380,50 +381,53 @@ where
 
         let _guard = ExitGuard::new((), |()| self.unlock());
 
+        let mut num_children = 0;
         let mut last_contained = false;
-        let mut last_valid_child = Ptr::null();
+        let mut last_valid_child = None;
         let scanner = Scanner::new(&self.children);
-        for (k, child) in scanner {
+        for (key, child) in scanner {
             let mut child_ptr = child.load(Acquire, guard);
-            let contains = range.contains(k);
+            let contains = range.contains(key);
             if contains || last_contained {
-                if let Some(child) = child_ptr.as_ref() {
+                if let Some(child_node) = child_ptr.as_ref() {
                     if (contains && last_contained)
-                        || child.remove_range(range, async_wait, guard)?
+                        || child_node.remove_range(range, async_wait, guard)? == 0
                     {
                         // Get rid of the child.
                         //
                         // There can be another thread inserting keys into the node, and this
                         // operation renders the insertion futile.
-                        self.children.remove_if(k, &mut |_| true);
+                        self.children.remove_if(key, &mut |_| true);
+                        child.swap((None, Tag::None), Relaxed);
                         child_ptr = Ptr::null();
                     }
                 }
             }
-            if !contains && last_contained {
-                // No need to check other children.
-                debug_assert!(!self.unbounded_child.is_null(Relaxed));
-                return Ok(false);
-            }
             if !child_ptr.is_null() {
-                last_valid_child = child_ptr;
+                num_children += 1;
+                last_valid_child.replace((key, child));
             }
             last_contained = contains;
         }
 
         let unbounded_ptr = self.unbounded_child.load(Acquire, guard);
         if let Some(unbounded) = unbounded_ptr.as_ref() {
-            if unbounded.remove_range(range, async_wait, guard)? {
-                if !last_valid_child.is_null() {
-                    // TODO #120: promote the last valid child to unbounded.
+            if unbounded.remove_range(range, async_wait, guard)? == 0 {
+                if let Some((key, child)) = last_valid_child {
+                    self.children.remove_if(key, &mut |_| true);
+                    child.swap((None, Tag::None), Relaxed);
+                    num_children -= 1;
+                } else {
+                    debug_assert_eq!(num_children, 0);
+                    self.unbounded_child.swap((None, RETIRED), Relaxed);
+                    debug_assert!(self.retired(Relaxed));
+                    return Ok(0);
                 }
-                // TODO #120: try to retire itself.
-            } else {
-                last_valid_child = unbounded_ptr;
             }
         }
 
-        Ok(last_valid_child.is_null())
+        // The unbounded child is always valid unless retired.
+        Ok(num_children + 1)
     }
 
     /// Splits a full node.
