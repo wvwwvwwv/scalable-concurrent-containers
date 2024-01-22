@@ -8,7 +8,7 @@ A collection of high performance containers and utilities for concurrent and asy
 
 #### Features
 
-- Asynchronous counterparts to blocking and synchronous methods.
+- Asynchronous counterparts of blocking and synchronous methods.
 - Formally verified [EBR](#EBR) implementation.
 - Near-linear scalability.
 - No spin-locks and no busy loops.
