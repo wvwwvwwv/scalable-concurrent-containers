@@ -880,7 +880,8 @@ where
     /// ```
     #[inline]
     pub fn retain<F: FnMut(&K, &mut V) -> bool>(&self, mut pred: F) {
-        self.retain_entries(|k, v| pred(k, v));
+        #[allow(clippy::redundant_closure_for_method_calls)]
+        self.retain_entries(|k, v| pred(k, v), |l, d, e| l.remove_from_lru_list(d, e));
     }
 
     /// Retains the entries specified by the predicate.
@@ -925,6 +926,7 @@ where
                                 while entry_ptr.next(&locker, &guard) {
                                     let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
                                     if !filter(k, v) {
+                                        locker.remove_from_lru_list(data_block_mut, &entry_ptr);
                                         locker.erase(data_block_mut, &entry_ptr);
                                         removed = true;
                                     }

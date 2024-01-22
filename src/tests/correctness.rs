@@ -1318,6 +1318,40 @@ mod hashcache_test {
     }
 
     #[cfg_attr(miri, ignore)]
+    #[tokio::test]
+    async fn put_full_clear_put() {
+        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+        let capacity = 256;
+        let hashcache: HashCache<usize, R> = HashCache::with_capacity(capacity, capacity);
+
+        let mut max_key = 0;
+        for k in 0..=capacity {
+            if hashcache.put_async(k, R::new(&INST_CNT)).await.is_err() {
+                max_key = k;
+                break;
+            }
+        }
+
+        for i in 0..4 {
+            if i % 2 == 0 {
+                hashcache.clear_async().await;
+            } else {
+                hashcache.clear();
+            }
+            for k in 0..=capacity {
+                if hashcache.put_async(k, R::new(&INST_CNT)).await.is_err() {
+                    assert_eq!(max_key, k);
+                    break;
+                }
+            }
+        }
+
+        assert!(INST_CNT.load(Relaxed) <= hashcache.capacity());
+        drop(hashcache);
+        assert_eq!(INST_CNT.load(Relaxed), 0);
+    }
+
+    #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn put_get_remove() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
@@ -1603,7 +1637,7 @@ mod treeindex_test {
                             let end_bound = data_clone.load(Acquire);
                             if end_bound == workload_size {
                                 break;
-                            } else if end_bound == 0 {
+                            } else if end_bound <= 1 {
                                 task::yield_now().await;
                                 continue;
                             }
