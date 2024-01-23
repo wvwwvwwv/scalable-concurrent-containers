@@ -1707,7 +1707,10 @@ mod treeindex_test {
                                 continue;
                             }
                             tree_clone.remove_range(..end_bound);
-                            assert!(tree_clone.peek(&(end_bound - 1), &Guard::new()).is_none());
+                            assert!(
+                                tree_clone.peek(&(end_bound - 1), &Guard::new()).is_none(),
+                                "{end_bound}"
+                            );
                             assert!(tree_clone.peek(&end_bound, &Guard::new()).is_some());
                         }
                     }

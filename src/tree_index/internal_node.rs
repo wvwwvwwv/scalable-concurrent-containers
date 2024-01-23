@@ -6,6 +6,7 @@ use crate::exit_guard::ExitGuard;
 use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
 use std::borrow::Borrow;
 use std::cmp::Ordering::{Equal, Greater, Less};
+use std::mem::forget;
 use std::ops::RangeBounds;
 use std::ptr;
 use std::sync::atomic::Ordering::{self, Acquire, Relaxed, Release};
@@ -374,14 +375,13 @@ where
         async_wait: &mut D,
         guard: &Guard,
     ) -> Result<usize, ()> {
-        if !self.try_lock() {
+        let Some(_lock) = Locker::try_lock(self) else {
             self.wait(async_wait);
             return Err(());
-        }
+        };
 
-        let _guard = ExitGuard::new((), |()| self.unlock());
-
-        let mut num_children = 0;
+        // The unbounded child is always valid unless retired.
+        let mut num_children = 1;
         let mut last_contained = false;
         let mut last_valid_child = None;
         let scanner = Scanner::new(&self.children);
@@ -415,10 +415,11 @@ where
             if unbounded.remove_range(range, async_wait, guard)? == 0 {
                 if let Some((key, child)) = last_valid_child {
                     self.children.remove_if(key, &mut |_| true);
-                    child.swap((None, Tag::None), Relaxed);
+                    self.unbounded_child
+                        .swap((child.get_shared(Relaxed, guard), Tag::None), Release);
                     num_children -= 1;
                 } else {
-                    debug_assert_eq!(num_children, 0);
+                    debug_assert_eq!(num_children, 1);
                     self.unbounded_child.swap((None, RETIRED), Relaxed);
                     debug_assert!(self.retired(Relaxed));
                     return Ok(0);
@@ -426,8 +427,7 @@ where
             }
         }
 
-        // The unbounded child is always valid unless retired.
-        Ok(num_children + 1)
+        Ok(num_children)
     }
 
     /// Splits a full node.
@@ -976,6 +976,12 @@ where
         } else {
             None
         }
+    }
+
+    /// Retires the node with the lock released.
+    pub(super) fn unlock_retire(self) {
+        self.internal_node.retire();
+        forget(self);
     }
 }
 

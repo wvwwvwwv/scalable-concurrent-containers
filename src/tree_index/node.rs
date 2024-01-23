@@ -1,6 +1,6 @@
 use super::internal_node::{self, InternalNode};
 use super::leaf::{InsertResult, RemoveResult, Scanner};
-use super::leaf_node::{self, LeafNode, RETIRED};
+use super::leaf_node::{self, LeafNode};
 use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::wait_queue::DeriveAsyncWait;
 use std::borrow::Borrow;
@@ -239,23 +239,28 @@ where
                 continue;
             }
 
-            let new_root = if root_ref.retired(Relaxed) {
-                // The root can be completely removed.
-                None
-            } else if let Self::Internal(internal_node) = root_ref {
-                if internal_node.children.max_key().is_none() {
-                    // Replace the root with the unbounded child.
-                    internal_node
-                        .unbounded_child
-                        .swap((None, RETIRED), Relaxed)
-                        .0
-                } else {
-                    // The internal node is still usable.
-                    break;
+            let new_root = match root_ref {
+                Node::Internal(internal_node) => {
+                    if internal_node.retired(Relaxed) {
+                        // The internal node is empty, therefore the entire tree can be emptied.
+                        None
+                    } else if internal_node.children.max_key().is_none() {
+                        // Replace the root with the unbounded child.
+                        internal_node.unbounded_child.get_shared(Acquire, guard)
+                    } else {
+                        // The internal node is not empty.
+                        break;
+                    }
                 }
-            } else {
-                // Leaves cannot be promoted.
-                break;
+                Node::Leaf(leaf_node) => {
+                    if leaf_node.retired(Relaxed) {
+                        // The leaf node is empty, therefore the entire tree can be emptied.
+                        None
+                    } else {
+                        // The leaf node is not empty.
+                        break;
+                    }
+                }
             };
 
             if let Some(new_root_ptr) = new_root.as_ref().map(|n| n.get_guarded_ptr(guard)) {
@@ -266,6 +271,10 @@ where
 
             if let (Some(old_root), _) = root.swap((new_root, Tag::None), Release) {
                 let _: bool = old_root.release(guard);
+            }
+
+            if let Some(internal_node_locker) = internal_node_locker {
+                internal_node_locker.unlock_retire();
             }
         }
 
