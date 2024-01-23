@@ -1393,6 +1393,7 @@ mod hashcache_test {
         assert_eq!(INST_CNT.load(Relaxed), 0);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn sparse_cache() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
