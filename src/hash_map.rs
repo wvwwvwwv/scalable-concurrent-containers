@@ -998,7 +998,7 @@ where
     /// ```
     #[inline]
     pub fn retain<F: FnMut(&K, &mut V) -> bool>(&self, pred: F) {
-        self.retain_entries(pred);
+        self.retain_entries(pred, |_, _, _| ());
     }
 
     /// Retains the entries specified by the predicate.

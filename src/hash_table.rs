@@ -518,7 +518,14 @@ where
 
     /// Retains entries that satisfy the specified predicate.
     #[inline]
-    fn retain_entries<F: FnMut(&K, &mut V) -> bool>(&self, mut pred: F) {
+    fn retain_entries<
+        F: FnMut(&K, &mut V) -> bool,
+        E: Fn(&mut Locker<K, V, TYPE>, &mut DataBlock<K, V, BUCKET_LEN>, &EntryPtr<K, V, TYPE>),
+    >(
+        &self,
+        mut pred: F,
+        erase_callback: E,
+    ) {
         let guard = Guard::new();
         let mut removed = false;
         let mut current_array_ptr = self.bucket_array().load(Acquire, &guard);
@@ -532,6 +539,7 @@ where
                     while entry_ptr.next(&locker, &guard) {
                         let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
                         if !pred(k, v) {
+                            erase_callback(&mut locker, data_block_mut, &entry_ptr);
                             locker.erase(data_block_mut, &entry_ptr);
                             removed = true;
                         }
