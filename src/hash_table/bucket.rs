@@ -110,7 +110,7 @@ impl<K: Eq, V, const TYPE: char> Bucket<K, V, TYPE> {
 
     /// Returns `true` if the [`Bucket`] needs to be rebuilt.
     ///
-    /// If `LOCK_FREE == true`, removed entries are not dropped, still occupying the slots,
+    /// If `TYPE == OPTIMISTIC`, removed entries are not dropped, still occupying the slots,
     /// therefore rebuilding the [`Bucket`] might be needed to keep the [`Bucket`] as small as
     /// possible.
     #[inline]
@@ -861,18 +861,20 @@ impl<'g, K: Eq, V> Locker<'g, K, Evictable<V>, CACHE> {
             let head_index = self.metadata.removed_bitmap_or_lru_tail as usize - 1;
             let (_, head) = unsafe { &mut *data_block[head_index].as_mut_ptr() };
             let lru_index = head.prev as usize - 1;
-            let (k, v) = unsafe { data_block[lru_index].as_mut_ptr().read() };
-            let (_, new_lru) = unsafe { &mut *data_block[v.prev as usize - 1].as_mut_ptr() };
-            new_lru.next = self.metadata.removed_bitmap_or_lru_tail as u8;
-            head.prev = v.prev;
-            self.metadata.occupied_bitmap &= !(1_u32 << lru_index);
 
-            if self.metadata.removed_bitmap_or_lru_tail as usize == head.prev as usize {
+            let (k, v) = unsafe { data_block[lru_index].as_mut_ptr().read() };
+            if head_index == lru_index {
                 self.metadata.removed_bitmap_or_lru_tail = 0;
+            } else {
+                let (_, new_lru) = unsafe { &mut *data_block[v.prev as usize - 1].as_mut_ptr() };
+                new_lru.next = self.metadata.removed_bitmap_or_lru_tail as u8;
+                head.prev = v.prev;
             }
+            self.metadata.occupied_bitmap &= !(1_u32 << lru_index);
 
             return Some((k, v));
         }
+
         None
     }
 
@@ -890,12 +892,19 @@ impl<'g, K: Eq, V> Locker<'g, K, Evictable<V>, CACHE> {
         }
 
         let entry_index = entry_ptr.current_index;
-
         let (_, current) = unsafe { &mut *data_block[entry_index].as_mut_ptr() };
 
         if current.prev == 0 {
             // Not part of the linked list.
             debug_assert_eq!(current.next, 0);
+            return;
+        } else if current.prev as usize - 1 == entry_index {
+            // It is the head and the only entry of the linked list.
+            debug_assert_eq!(
+                self.metadata.removed_bitmap_or_lru_tail as usize - 1,
+                entry_index
+            );
+            self.metadata.removed_bitmap_or_lru_tail = 0;
             return;
         }
 
@@ -910,13 +919,7 @@ impl<'g, K: Eq, V> Locker<'g, K, Evictable<V>, CACHE> {
         next.prev = current.prev;
 
         // Update `head`.
-        if self.metadata.removed_bitmap_or_lru_tail as usize - 1 == entry_index
-            && current.prev == current.next
-        {
-            self.metadata.removed_bitmap_or_lru_tail = 0;
-        } else {
-            self.metadata.removed_bitmap_or_lru_tail = u32::from(current.next);
-        }
+        self.metadata.removed_bitmap_or_lru_tail = u32::from(current.next);
     }
 
     /// Sets the entry having been just accessed.
