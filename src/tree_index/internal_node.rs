@@ -460,7 +460,7 @@ where
             } else {
                 // TODO: #120 need to recursively call this method for the unbounded child.
                 //
-                // If `contains` then `start_bound = true`.
+                // If `contains` then `start_unbounded = true`.
             }
         } else if end_unbounded && start_unbounded {
             // This amounts to clearing the entire sub-tree.
