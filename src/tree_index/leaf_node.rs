@@ -44,6 +44,26 @@ where
     wait_queue: WaitQueue,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum RemoveRangeState {
+    /// The max key of the node is less than the start bound of the range.
+    Below,
+
+    /// The max key of the node is contained in the range, but it is not clear that the
+    /// minimum key of the node is contained in the range.
+    MaybeBelow,
+
+    /// The max key and the minimum key of the node are contained in the range.
+    FullyContained,
+
+    /// The max key of the node is not contained in the range, but it is not clear that
+    /// the minimum key of the node is contained in the range.
+    MaybeAbove,
+
+    /// The max key and the minimum key of the node are not contained in the range.
+    Above,
+}
+
 impl<K, V> LeafNode<K, V>
 where
     K: 'static + Clone + Ord,
@@ -360,6 +380,8 @@ where
     pub(super) fn remove_range<R: RangeBounds<K>, D: DeriveAsyncWait>(
         &self,
         _range: &R,
+        _start_unbounded: bool,
+        _end_unbounded: bool,
         _async_wait: &mut D,
         _guard: &Guard,
     ) -> Result<usize, ()> {

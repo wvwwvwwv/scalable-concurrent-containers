@@ -456,9 +456,14 @@ where
     /// ```
     #[inline]
     pub fn remove_range<R: RangeBounds<K>>(&self, range: R) {
+        let start_unbounded = matches!(range.start_bound(), Unbounded);
+        let end_unbounded = matches!(range.end_bound(), Unbounded);
+
         let guard = Guard::new();
         while let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
-            if let Ok(num_children) = root_ref.remove_range(&range, &mut (), &guard) {
+            if let Ok(num_children) =
+                root_ref.remove_range(&range, start_unbounded, end_unbounded, &mut (), &guard)
+            {
                 if num_children < 2 && !Node::cleanup_root(&self.root, &mut (), &guard) {
                     continue;
                 }
@@ -469,51 +474,6 @@ where
             self.remove(k);
         }
         let _result = Node::cleanup_root(&self.root, &mut (), &guard);
-    }
-
-    /// Removes keys in the specified range.
-    ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
-    ///
-    /// Experimental: [`issue 120`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/120).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::TreeIndex;
-    ///
-    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
-    ///
-    /// for k in 2..8 {
-    ///     assert!(treeindex.insert(k, 1).is_ok());
-    /// }
-    ///
-    /// let future_remove_range = treeindex.remove_range_async(3..8);
-    /// ```
-    #[allow(clippy::unused_async)]
-    #[inline]
-    pub async fn remove_range_async<R: RangeBounds<K>>(&self, range: R) {
-        loop {
-            let mut async_wait = AsyncWait::default();
-            let mut async_wait_pinned = Pin::new(&mut async_wait);
-            {
-                let guard = Guard::new();
-                if let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
-                    match root_ref.remove_range(&range, &mut async_wait_pinned, &guard) {
-                        Ok(num_children) => {
-                            if num_children < 2 && !Node::cleanup_root(&self.root, &mut (), &guard)
-                            {
-                                continue;
-                            }
-                        }
-                        Err(()) => {
-                            continue;
-                        }
-                    }
-                }
-                break;
-            }
-        }
     }
 
     /// Returns a guarded reference to the value for the specified key without acquiring locks.

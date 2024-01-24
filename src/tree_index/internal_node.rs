@@ -1,4 +1,5 @@
 use super::leaf::{InsertResult, Leaf, RemoveResult, Scanner, DIMENSION};
+use super::leaf_node::RemoveRangeState;
 use super::leaf_node::{LOCKED, RETIRED};
 use super::node::Node;
 use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
@@ -372,59 +373,101 @@ where
     pub(super) fn remove_range<R: RangeBounds<K>, D: DeriveAsyncWait>(
         &self,
         range: &R,
+        start_unbounded: bool,
+        end_unbounded: bool,
         async_wait: &mut D,
         guard: &Guard,
     ) -> Result<usize, ()> {
         let Some(_lock) = Locker::try_lock(self) else {
+            // TODO: #120 resolve deadlock if this method starts calling itself.
             self.wait(async_wait);
             return Err(());
         };
 
-        // The unbounded child is always valid unless retired.
+        let mut current_state = RemoveRangeState::Below;
         let mut num_children = 1;
-        let mut last_contained = false;
         let mut last_valid_child = None;
         let scanner = Scanner::new(&self.children);
         for (key, child) in scanner {
-            let mut child_ptr = child.load(Acquire, guard);
             let contains = range.contains(key);
-            if contains || last_contained {
-                if let Some(child_node) = child_ptr.as_ref() {
-                    if (contains && last_contained)
-                        || child_node.remove_range(range, async_wait, guard)? == 0
-                    {
-                        // Get rid of the child.
-                        //
-                        // There can be another thread inserting keys into the node, and this
-                        // operation renders the insertion futile.
-                        self.children.remove_if(key, &mut |_| true);
-                        child.swap((None, Tag::None), Relaxed);
-                        child_ptr = Ptr::null();
+            current_state = if contains {
+                match current_state {
+                    RemoveRangeState::Below => {
+                        if start_unbounded {
+                            // If the start of the range is unbounded, then any child with the max
+                            // key contained in the range can be removed.
+                            RemoveRangeState::FullyContained
+                        } else {
+                            RemoveRangeState::MaybeBelow
+                        }
+                    }
+                    RemoveRangeState::MaybeBelow | RemoveRangeState::FullyContained => {
+                        RemoveRangeState::FullyContained
+                    }
+                    RemoveRangeState::MaybeAbove | RemoveRangeState::Above => {
+                        unreachable!()
                     }
                 }
+            } else {
+                match current_state {
+                    RemoveRangeState::Below => RemoveRangeState::Below,
+                    RemoveRangeState::MaybeBelow | RemoveRangeState::FullyContained => {
+                        RemoveRangeState::MaybeAbove
+                    }
+                    RemoveRangeState::MaybeAbove | RemoveRangeState::Above => {
+                        RemoveRangeState::Above
+                    }
+                }
+            };
+
+            match current_state {
+                RemoveRangeState::Below => {
+                    num_children += 1;
+                    last_valid_child.replace((false, key, child));
+                }
+                RemoveRangeState::MaybeBelow => {
+                    // TODO: #120 need to recursively call this method for the child.
+                    //
+                    // `end_unbounded = true` for recursive calls.
+                    num_children += 1;
+                    last_valid_child.replace((true, key, child));
+                }
+                RemoveRangeState::FullyContained => {
+                    // Get rid of the child.
+                    //
+                    // There can be another thread inserting keys into the node, and this may
+                    // render those operations completely ineffective.
+                    self.children.remove_if(key, &mut |_| true);
+                    child.swap((None, Tag::None), Relaxed);
+                }
+                RemoveRangeState::MaybeAbove => {
+                    // TODO: #120 need to recursively call this method for the child.
+                    //
+                    // `start_unbounded = true` for recursive calls.
+                    return Ok(num_children + 1);
+                }
+                RemoveRangeState::Above => return Ok(num_children + 1),
             }
-            if !child_ptr.is_null() {
-                num_children += 1;
-                last_valid_child.replace((key, child));
-            }
-            last_contained = contains;
         }
 
-        let unbounded_ptr = self.unbounded_child.load(Acquire, guard);
-        if let Some(unbounded) = unbounded_ptr.as_ref() {
-            if unbounded.remove_range(range, async_wait, guard)? == 0 {
-                if let Some((key, child)) = last_valid_child {
-                    self.children.remove_if(key, &mut |_| true);
-                    self.unbounded_child
-                        .swap((child.get_shared(Relaxed, guard), Tag::None), Release);
-                    num_children -= 1;
-                } else {
-                    debug_assert_eq!(num_children, 1);
-                    self.unbounded_child.swap((None, RETIRED), Relaxed);
-                    debug_assert!(self.retired(Relaxed));
-                    return Ok(0);
-                }
+        if let Some((contains, key, child)) = last_valid_child {
+            if end_unbounded && contains {
+                // The unbounded child can be completely replaced with the last valid child.
+                self.children.remove_if(key, &mut |_| true);
+                self.unbounded_child
+                    .swap((child.get_shared(Relaxed, guard), Tag::None), Release);
+                num_children -= 1;
+            } else {
+                // TODO: #120 need to recursively call this method for the unbounded child.
+                //
+                // If `contains` then `start_bound = true`.
             }
+        } else if end_unbounded && start_unbounded {
+            // This amounts to clearing the entire sub-tree.
+            debug_assert_eq!(num_children, 1);
+            self.unbounded_child.swap((None, RETIRED), Relaxed);
+            debug_assert!(self.retired(Relaxed));
+            return Ok(0);
         }
 
         Ok(num_children)

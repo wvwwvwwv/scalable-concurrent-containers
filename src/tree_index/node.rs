@@ -142,12 +142,18 @@ where
     pub(super) fn remove_range<R: RangeBounds<K>, D: DeriveAsyncWait>(
         &self,
         range: &R,
+        start_unbounded: bool,
+        end_unbounded: bool,
         async_wait: &mut D,
         guard: &Guard,
     ) -> Result<usize, ()> {
         match &self {
-            Self::Internal(internal_node) => internal_node.remove_range(range, async_wait, guard),
-            Self::Leaf(leaf_node) => leaf_node.remove_range(range, async_wait, guard),
+            Self::Internal(internal_node) => {
+                internal_node.remove_range(range, start_unbounded, end_unbounded, async_wait, guard)
+            }
+            Self::Leaf(leaf_node) => {
+                leaf_node.remove_range(range, start_unbounded, end_unbounded, async_wait, guard)
+            }
         }
     }
 
