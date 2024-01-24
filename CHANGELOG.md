@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.0.12
+
+* Fix an issue with `tree_index::Range` where it intermittently fails to find the minimum key in a `TreeIndex` if the `TreeIndex` is being updated by other threads.
+
 2.0.10 - 2.0.11
 
 * Fix [#121](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/121).
