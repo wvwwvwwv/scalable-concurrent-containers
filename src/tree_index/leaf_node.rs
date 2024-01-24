@@ -26,7 +26,7 @@ where
     V: 'static + Clone,
 {
     /// Children of the [`LeafNode`].
-    children: Leaf<K, AtomicShared<Leaf<K, V>>>,
+    pub(super) children: Leaf<K, AtomicShared<Leaf<K, V>>>,
 
     /// A child [`Leaf`] that has no upper key bound.
     ///
@@ -42,6 +42,26 @@ where
 
     /// `wait_queue` for `latch`.
     wait_queue: WaitQueue,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum RemoveRangeState {
+    /// The max key of the node is less than the start bound of the range.
+    Below,
+
+    /// The max key of the node is contained in the range, but it is not clear that the
+    /// minimum key of the node is contained in the range.
+    MaybeBelow,
+
+    /// The max key and the minimum key of the node are contained in the range.
+    FullyContained,
+
+    /// The max key of the node is not contained in the range, but it is not clear that
+    /// the minimum key of the node is contained in the range.
+    MaybeAbove,
+
+    /// The max key and the minimum key of the node are not contained in the range.
+    Above,
 }
 
 impl<K, V> LeafNode<K, V>
@@ -353,16 +373,20 @@ where
     }
 
     /// Removes a range of entries.
-    #[allow(clippy::unused_self)]
+    ///
+    /// Returns the fewest of remaining children.
+    #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
     #[inline]
     pub(super) fn remove_range<R: RangeBounds<K>, D: DeriveAsyncWait>(
         &self,
         _range: &R,
+        _start_unbounded: bool,
+        _end_unbounded: bool,
         _async_wait: &mut D,
         _guard: &Guard,
-    ) -> bool {
+    ) -> Result<usize, ()> {
         // TODO: #120 - implement O(1) bulk removal without using `Range`.
-        true
+        Ok(2)
     }
 
     /// Splits itself into the given leaf nodes, and returns the middle key value.

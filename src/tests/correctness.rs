@@ -1728,6 +1728,12 @@ mod treeindex_test {
             for r in futures::future::join_all(task_handles).await {
                 assert!(r.is_ok());
             }
+
+            tree.remove_range(..workload_size);
+            assert!(tree.peek(&(workload_size - 1), &Guard::new()).is_none());
+            assert!(tree.peek(&workload_size, &Guard::new()).is_some());
+            assert_eq!(tree.len(), 1);
+            assert_eq!(tree.depth(), 1);
         }
     }
 

@@ -155,7 +155,7 @@ where
                         InsertResult::Retired(k, v) => {
                             key = k;
                             val = v;
-                            let _result = Node::remove_root(&self.root, &mut (), &guard);
+                            let _result = Node::cleanup_root(&self.root, &mut (), &guard);
                         }
                     },
                     Err((k, v)) => {
@@ -227,10 +227,7 @@ where
                             InsertResult::Retired(k, v) => {
                                 key = k;
                                 val = v;
-                                !matches!(
-                                    Node::remove_root(&self.root, &mut async_wait_pinned, &guard),
-                                    Ok(true)
-                                )
+                                !Node::cleanup_root(&self.root, &mut async_wait_pinned, &guard)
                             }
                         },
                         Err((k, v)) => {
@@ -353,7 +350,7 @@ where
                             return true;
                         }
                         RemoveResult::Retired => {
-                            if matches!(Node::remove_root(&self.root, &mut (), &guard), Ok(true)) {
+                            if Node::cleanup_root(&self.root, &mut (), &guard) {
                                 return true;
                             }
                             has_been_removed = true;
@@ -415,10 +412,7 @@ where
                                 return true;
                             }
                             RemoveResult::Retired => {
-                                if matches!(
-                                    Node::remove_root(&self.root, &mut async_wait_pinned, &guard),
-                                    Ok(true)
-                                ) {
+                                if Node::cleanup_root(&self.root, &mut async_wait_pinned, &guard) {
                                     return true;
                                 }
                                 has_been_removed = true;
@@ -460,16 +454,26 @@ where
     /// assert!(treeindex.contains(&2));
     /// assert!(!treeindex.contains(&3));
     /// ```
-    // TODO: #120 - implement an asynchronous version of this method.
     #[inline]
     pub fn remove_range<R: RangeBounds<K>>(&self, range: R) {
+        let start_unbounded = matches!(range.start_bound(), Unbounded);
+        let end_unbounded = matches!(range.end_bound(), Unbounded);
+
         let guard = Guard::new();
-        if let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
-            root_ref.remove_range(&range, &mut (), &guard); // TODO: #120 - implement O(1) bulk removal without using `Range`.
+        while let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
+            if let Ok(num_children) =
+                root_ref.remove_range(&range, start_unbounded, end_unbounded, &mut (), &guard)
+            {
+                if num_children < 2 && !Node::cleanup_root(&self.root, &mut (), &guard) {
+                    continue;
+                }
+                break;
+            }
         }
         for (k, _) in self.range(range, &guard) {
             self.remove(k);
         }
+        let _result = Node::cleanup_root(&self.root, &mut (), &guard);
     }
 
     /// Returns a guarded reference to the value for the specified key without acquiring locks.
