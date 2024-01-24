@@ -753,8 +753,8 @@ where
             // If the order is reversed, there emerges a possibility that entries were removed from
             // the replaced leaf node whereas those entries still remain in `unused_leaf`; if that
             // happens, iterators may see the removed entries momentarily.
-            let delete = target.delete_self(Release);
-            debug_assert!(delete);
+            let deleted = target.delete_self(Release);
+            debug_assert!(deleted);
 
             // Unfreeze the leaf.
             let unfrozen = low_key_leaf.thaw();

@@ -1706,10 +1706,18 @@ mod treeindex_test {
                                 task::yield_now().await;
                                 continue;
                             }
-                            tree_clone.remove_range(..end_bound);
+                            if end_bound % 2 == 0 {
+                                for (k, _) in tree_clone.range(..end_bound, &Guard::new()) {
+                                    tree_clone.remove(k);
+                                }
+                            } else {
+                                tree_clone.remove_range(..end_bound);
+                            }
+
                             assert!(
                                 tree_clone.peek(&(end_bound - 1), &Guard::new()).is_none(),
-                                "{end_bound}"
+                                "{end_bound} {}",
+                                data_clone.load(Relaxed)
                             );
                             assert!(tree_clone.peek(&end_bound, &Guard::new()).is_some());
                         }

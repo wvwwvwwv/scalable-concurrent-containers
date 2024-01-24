@@ -819,14 +819,14 @@ where
             }
         }
 
-        // Proceeds to the next entry.
+        // Go to the next entry.
         if let Some(mut scanner) = self.leaf_scanner.take() {
             let min_allowed_key = scanner.get().map(|(key, _)| key);
             if let Some(result) = scanner.next() {
                 self.leaf_scanner.replace(scanner);
                 return Some(result);
             }
-            // Proceeds to the next leaf node.
+            // Go to the next leaf node.
             if let Some(new_scanner) = scanner.jump(min_allowed_key, self.guard) {
                 if let Some(entry) = new_scanner.get() {
                     self.leaf_scanner.replace(new_scanner);
@@ -892,23 +892,18 @@ where
                 if leaf_scanner.is_none() {
                     // No `min_allowed_key` is supplied, or no keys smaller than or equal to
                     // `min_allowed_key` found.
-                    if let Some(mut min_scanner) = root_ref.min(self.guard) {
-                        min_scanner.next();
-                        leaf_scanner.replace(min_scanner);
+                    if let Some(mut scanner) = root_ref.min(self.guard) {
+                        // It's possible that the leaf has just been emptied, so go to the next.
+                        scanner.next();
+                        while scanner.get().is_none() {
+                            scanner = scanner.jump(None, self.guard)?;
+                        }
+                        leaf_scanner.replace(scanner);
                     }
                 }
                 if let Some(leaf_scanner) = leaf_scanner {
-                    // Need to check the upper bound.
-                    self.check_upper_bound = match self.range.end_bound() {
-                        Excluded(key) => leaf_scanner
-                            .max_key()
-                            .map_or(false, |max_key| max_key.cmp(key) != Ordering::Less),
-                        Included(key) => leaf_scanner
-                            .max_key()
-                            .map_or(false, |max_key| max_key.cmp(key) == Ordering::Greater),
-                        Unbounded => false,
-                    };
                     if let Some(result) = leaf_scanner.get() {
+                        self.set_check_upper_bound(&leaf_scanner);
                         self.leaf_scanner.replace(leaf_scanner);
                         return Some(result);
                     }
@@ -917,24 +912,16 @@ where
         }
 
         // Go to the next entry.
-        if let Some(mut scanner) = self.leaf_scanner.take() {
-            let min_allowed_key = scanner.get().map(|(key, _)| key);
-            if let Some(result) = scanner.next() {
-                self.leaf_scanner.replace(scanner);
+        if let Some(mut leaf_scanner) = self.leaf_scanner.take() {
+            let min_allowed_key = leaf_scanner.get().map(|(key, _)| key);
+            if let Some(result) = leaf_scanner.next() {
+                self.leaf_scanner.replace(leaf_scanner);
                 return Some(result);
             }
             // Go to the next leaf node.
-            if let Some(new_scanner) = scanner.jump(min_allowed_key, self.guard).take() {
+            if let Some(new_scanner) = leaf_scanner.jump(min_allowed_key, self.guard) {
                 if let Some(entry) = new_scanner.get() {
-                    self.check_upper_bound = match self.range.end_bound() {
-                        Excluded(key) => new_scanner
-                            .max_key()
-                            .map_or(false, |max_key| max_key.cmp(key) != Ordering::Less),
-                        Included(key) => new_scanner
-                            .max_key()
-                            .map_or(false, |max_key| max_key.cmp(key) == Ordering::Greater),
-                        Unbounded => false,
-                    };
+                    self.set_check_upper_bound(&new_scanner);
                     self.leaf_scanner.replace(new_scanner);
                     return Some(entry);
                 }
@@ -942,6 +929,19 @@ where
         }
 
         None
+    }
+
+    #[inline]
+    fn set_check_upper_bound(&mut self, scanner: &Scanner<K, V>) {
+        self.check_upper_bound = match self.range.end_bound() {
+            Excluded(key) => scanner
+                .max_key()
+                .map_or(false, |max_key| max_key.cmp(key) != Ordering::Less),
+            Included(key) => scanner
+                .max_key()
+                .map_or(false, |max_key| max_key.cmp(key) == Ordering::Greater),
+            Unbounded => false,
+        };
     }
 }
 
