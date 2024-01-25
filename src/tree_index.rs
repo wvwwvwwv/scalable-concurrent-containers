@@ -461,9 +461,15 @@ where
 
         let guard = Guard::new();
         while let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
-            if let Ok(num_children) =
-                root_ref.remove_range(&range, start_unbounded, end_unbounded, &mut (), &guard)
-            {
+            if let Ok(num_children) = root_ref.remove_range(
+                &range,
+                start_unbounded,
+                end_unbounded,
+                None,
+                None,
+                &mut (),
+                &guard,
+            ) {
                 if num_children < 2 && !Node::cleanup_root(&self.root, &mut (), &guard) {
                     continue;
                 }

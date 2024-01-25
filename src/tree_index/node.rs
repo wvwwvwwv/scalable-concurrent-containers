@@ -1,5 +1,5 @@
 use super::internal_node::{self, InternalNode};
-use super::leaf::{InsertResult, RemoveResult, Scanner};
+use super::leaf::{InsertResult, Leaf, RemoveResult, Scanner};
 use super::leaf_node::{self, LeafNode};
 use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::wait_queue::DeriveAsyncWait;
@@ -137,23 +137,38 @@ where
 
     /// Removes a range of entries.
     ///
-    /// Returns the fewest of remaining children.
+    /// Returns the number of remaining children.
+    #[allow(clippy::too_many_arguments)]
     #[inline]
-    pub(super) fn remove_range<R: RangeBounds<K>, D: DeriveAsyncWait>(
+    pub(super) fn remove_range<'g, R: RangeBounds<K>, D: DeriveAsyncWait>(
         &self,
         range: &R,
         start_unbounded: bool,
         end_unbounded: bool,
+        last_left_valid_leaf: Option<&'g Leaf<K, V>>,
+        first_right_valid_node: Option<&'g Node<K, V>>,
         async_wait: &mut D,
-        guard: &Guard,
+        guard: &'g Guard,
     ) -> Result<usize, ()> {
         match &self {
-            Self::Internal(internal_node) => {
-                internal_node.remove_range(range, start_unbounded, end_unbounded, async_wait, guard)
-            }
-            Self::Leaf(leaf_node) => {
-                leaf_node.remove_range(range, start_unbounded, end_unbounded, async_wait, guard)
-            }
+            Self::Internal(internal_node) => internal_node.remove_range(
+                range,
+                start_unbounded,
+                end_unbounded,
+                last_left_valid_leaf,
+                first_right_valid_node,
+                async_wait,
+                guard,
+            ),
+            Self::Leaf(leaf_node) => leaf_node.remove_range(
+                range,
+                start_unbounded,
+                end_unbounded,
+                last_left_valid_leaf,
+                first_right_valid_node,
+                async_wait,
+                guard,
+            ),
         }
     }
 

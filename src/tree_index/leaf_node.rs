@@ -1,4 +1,5 @@
 use super::leaf::{InsertResult, RemoveResult, Scanner, DIMENSION};
+use super::node::Node;
 use super::Leaf;
 use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::exit_guard::ExitGuard;
@@ -44,6 +45,16 @@ where
     wait_queue: WaitQueue,
 }
 
+/// [`Locker`] holds exclusive ownership of a [`Leaf`].
+pub(super) struct Locker<'n, K, V>
+where
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
+{
+    leaf_node: &'n LeafNode<K, V>,
+}
+
+/// A state machine to keep track of the progress of a bulk removal operation.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) enum RemoveRangeState {
     /// The max key of the node is less than the start bound of the range.
@@ -62,6 +73,23 @@ pub(super) enum RemoveRangeState {
 
     /// The max key and the minimum key of the node are not contained in the range.
     Above,
+}
+
+/// [`StructuralChange`] stores intermediate results during a split operation.
+///
+/// `AtomicPtr` members may point to values under the protection of the [`Guard`] used for the
+/// split operation.
+pub(super) struct StructuralChange<K, V>
+where
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
+{
+    origin_leaf_key: AtomicPtr<K>,
+    origin_leaf: AtomicShared<Leaf<K, V>>,
+    low_key_leaf: AtomicShared<Leaf<K, V>>,
+    high_key_leaf: AtomicShared<Leaf<K, V>>,
+    low_key_leaf_node: AtomicPtr<LeafNode<K, V>>,
+    high_key_leaf_node: AtomicPtr<LeafNode<K, V>>,
 }
 
 impl<K, V> LeafNode<K, V>
@@ -374,16 +402,19 @@ where
 
     /// Removes a range of entries.
     ///
-    /// Returns the fewest of remaining children.
+    /// Returns the number of remaining children.
+    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
     #[inline]
-    pub(super) fn remove_range<R: RangeBounds<K>, D: DeriveAsyncWait>(
+    pub(super) fn remove_range<'g, R: RangeBounds<K>, D: DeriveAsyncWait>(
         &self,
         _range: &R,
         _start_unbounded: bool,
         _end_unbounded: bool,
+        _last_left_valid_leaf: Option<&'g Leaf<K, V>>,
+        _first_right_valid_node: Option<&'g Node<K, V>>,
         _async_wait: &mut D,
-        _guard: &Guard,
+        _guard: &'g Guard,
     ) -> Result<usize, ()> {
         // TODO: #120 - implement O(1) bulk removal without using `Range`.
         Ok(2)
@@ -945,15 +976,6 @@ where
     }
 }
 
-/// [`Locker`] holds exclusive access to a [`Leaf`].
-pub struct Locker<'n, K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
-    leaf_node: &'n LeafNode<K, V>,
-}
-
 impl<'n, K, V> Locker<'n, K, V>
 where
     K: Clone + Ord,
@@ -979,23 +1001,6 @@ where
     fn drop(&mut self) {
         self.leaf_node.unlock();
     }
-}
-
-/// [`StructuralChange`] stores intermediate results during a split operation.
-///
-/// `AtomicPtr` members may point to values under the protection of the [`Guard`] used for the
-/// split operation.
-pub struct StructuralChange<K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
-    origin_leaf_key: AtomicPtr<K>,
-    origin_leaf: AtomicShared<Leaf<K, V>>,
-    low_key_leaf: AtomicShared<Leaf<K, V>>,
-    high_key_leaf: AtomicShared<Leaf<K, V>>,
-    low_key_leaf_node: AtomicPtr<LeafNode<K, V>>,
-    high_key_leaf_node: AtomicPtr<LeafNode<K, V>>,
 }
 
 impl<K, V> StructuralChange<K, V>

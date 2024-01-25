@@ -40,6 +40,31 @@ where
     wait_queue: WaitQueue,
 }
 
+/// [`Locker`] holds exclusive ownership of a [`InternalNode`].
+pub(super) struct Locker<'n, K, V>
+where
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
+{
+    internal_node: &'n InternalNode<K, V>,
+}
+
+/// [`StructuralChange`] stores intermediate results during a split operation.
+///
+/// `AtomicPtr` members may point to values under the protection of the [`Guard`] used for the
+/// split operation.
+struct StructuralChange<K, V>
+where
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
+{
+    origin_node_key: AtomicPtr<K>,
+    origin_node: AtomicShared<Node<K, V>>,
+    low_key_node: AtomicShared<Node<K, V>>,
+    middle_key: AtomicPtr<K>,
+    high_key_node: AtomicShared<Node<K, V>>,
+}
+
 impl<K, V> InternalNode<K, V>
 where
     K: 'static + Clone + Ord,
@@ -368,18 +393,20 @@ where
 
     /// Removes a range of entries.
     ///
-    /// Returns the fewest of remaining children.
+    /// Returns the number of remaining children.
+    #[allow(clippy::too_many_arguments)]
     #[inline]
-    pub(super) fn remove_range<R: RangeBounds<K>, D: DeriveAsyncWait>(
+    pub(super) fn remove_range<'g, R: RangeBounds<K>, D: DeriveAsyncWait>(
         &self,
         range: &R,
         start_unbounded: bool,
         end_unbounded: bool,
+        _last_left_valid_leaf: Option<&'g Leaf<K, V>>,
+        _first_right_valid_node: Option<&'g Node<K, V>>,
         async_wait: &mut D,
-        guard: &Guard,
+        guard: &'g Guard,
     ) -> Result<usize, ()> {
         let Some(_lock) = Locker::try_lock(self) else {
-            // TODO: #120 resolve deadlock if this method starts calling itself.
             self.wait(async_wait);
             return Err(());
         };
@@ -997,15 +1024,6 @@ where
     }
 }
 
-/// [`Locker`] holds exclusive access to a [`InternalNode`].
-pub struct Locker<'n, K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
-    internal_node: &'n InternalNode<K, V>,
-}
-
 impl<'n, K, V> Locker<'n, K, V>
 where
     K: Clone + Ord,
@@ -1037,22 +1055,6 @@ where
     fn drop(&mut self) {
         self.internal_node.unlock();
     }
-}
-
-/// [`StructuralChange`] stores intermediate results during a split operation.
-///
-/// `AtomicPtr` members may point to values under the protection of the [`Guard`] used for the
-/// split operation.
-struct StructuralChange<K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
-    origin_node_key: AtomicPtr<K>,
-    origin_node: AtomicShared<Node<K, V>>,
-    low_key_node: AtomicShared<Node<K, V>>,
-    middle_key: AtomicPtr<K>,
-    high_key_node: AtomicShared<Node<K, V>>,
 }
 
 impl<K, V> StructuralChange<K, V>
