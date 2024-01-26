@@ -394,18 +394,23 @@ where
     /// Removes a range of entries.
     ///
     /// Returns the number of remaining children.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     #[inline]
     pub(super) fn remove_range<'g, R: RangeBounds<K>, D: DeriveAsyncWait>(
         &self,
         range: &R,
         start_unbounded: bool,
         end_unbounded: bool,
-        _last_left_valid_leaf: Option<&'g Leaf<K, V>>,
-        _first_right_valid_node: Option<&'g Node<K, V>>,
+        last_left_valid_leaf: Option<&'g Leaf<K, V>>,
+        first_right_valid_node: Option<&'g Node<K, V>>,
         async_wait: &mut D,
         guard: &'g Guard,
     ) -> Result<usize, ()> {
+        // If `last_left_valid_leaf` is supplied, this method is removing entries near the upper
+        // bound of the range.
+        debug_assert!(last_left_valid_leaf.is_none() || start_unbounded);
+        debug_assert!(last_left_valid_leaf.is_none() || first_right_valid_node.is_none());
+
         let Some(_lock) = Locker::try_lock(self) else {
             self.wait(async_wait);
             return Err(());
@@ -413,7 +418,8 @@ where
 
         let mut current_state = RemoveRangeState::Below;
         let mut num_children = 1;
-        let mut last_valid_child = None;
+        let mut last_left_valid_child = None;
+        let mut first_right_valid_child = None;
         let scanner = Scanner::new(&self.children);
         for (key, child) in scanner {
             let contains = range.contains(key);
@@ -448,16 +454,9 @@ where
             };
 
             match current_state {
-                RemoveRangeState::Below => {
+                RemoveRangeState::Below | RemoveRangeState::MaybeBelow => {
                     num_children += 1;
-                    last_valid_child.replace((false, key, child));
-                }
-                RemoveRangeState::MaybeBelow => {
-                    // TODO: #120 need to recursively call this method for the child.
-                    //
-                    // `end_unbounded = true` for recursive calls.
-                    num_children += 1;
-                    last_valid_child.replace((true, key, child));
+                    last_left_valid_child.replace((key, child));
                 }
                 RemoveRangeState::FullyContained => {
                     // Get rid of the child.
@@ -471,30 +470,105 @@ where
                     // TODO: #120 need to recursively call this method for the child.
                     //
                     // `start_unbounded = true` for recursive calls.
-                    return Ok(num_children + 1);
+                    debug_assert!(!end_unbounded);
+                    num_children += 1;
+                    first_right_valid_child.replace((Some(key), child));
+                    break;
                 }
                 RemoveRangeState::Above => return Ok(num_children + 1),
             }
         }
 
-        if let Some((contains, key, child)) = last_valid_child {
-            if end_unbounded && contains {
-                // The unbounded child can be completely replaced with the last valid child.
-                self.children.remove_if(key, &mut |_| true);
-                self.unbounded_child
-                    .swap((child.get_shared(Relaxed, guard), Tag::None), Release);
-                num_children -= 1;
-            } else {
-                // TODO: #120 need to recursively call this method for the unbounded child.
-                //
-                // If `contains` then `start_unbounded = true`.
+        if !end_unbounded && first_right_valid_child.is_none() {
+            // If the end of the range is bounded, and no valid right child is found, use
+            // the unbounded child as the first right valid child.
+            first_right_valid_child.replace((None, &self.unbounded_child));
+        }
+
+        let mut cleanup_right_node = None;
+        if let Some((key, child)) = last_left_valid_child {
+            debug_assert!(!start_unbounded && last_left_valid_leaf.is_none());
+            debug_assert!(first_right_valid_child.is_none() || first_right_valid_node.is_none());
+            if let Some(child_node) = child.load(Acquire, guard).as_ref() {
+                // Make a recursive call.
+                let right_child = if first_right_valid_node.is_some() {
+                    first_right_valid_node
+                } else {
+                    first_right_valid_child
+                        .as_ref()
+                        .and_then(|(_, c)| c.load(Acquire, guard).as_ref())
+                };
+                let empty = child_node.remove_range(
+                    range,
+                    false,
+                    true,
+                    None,
+                    right_child,
+                    async_wait,
+                    guard,
+                )? == 0;
+
+                if empty {
+                    // Now, the child node is empty.
+                    debug_assert!(child_node.retired(Relaxed));
+                    self.children.remove_if(key, &mut |_| true);
+                    child.swap((None, Tag::None), Relaxed);
+                    num_children -= 1;
+                }
+
+                if let Some((key, child)) = first_right_valid_child {
+                    if let Some(child_node) = child.load(Acquire, guard).as_ref() {
+                        if child_node.retired(Relaxed) {
+                            cleanup_right_node.replace((key, child));
+                        }
+                    }
+                }
             }
-        } else if end_unbounded && start_unbounded {
+        } else if let Some((key, child)) = first_right_valid_child {
+            debug_assert!(!end_unbounded);
+            if let Some(child_node) = child.load(Acquire, guard).as_ref() {
+                // Make a recursive call: note that this can be already a part of a recursive call.
+                let empty = child_node.remove_range(
+                    range,
+                    true,
+                    false,
+                    last_left_valid_leaf,
+                    None,
+                    async_wait,
+                    guard,
+                )? == 0;
+
+                if empty {
+                    debug_assert!(child_node.retired(Relaxed));
+                    cleanup_right_node.replace((key, child));
+                }
+            }
+        } else {
             // This amounts to clearing the entire sub-tree.
             debug_assert_eq!(num_children, 1);
             self.unbounded_child.swap((None, RETIRED), Relaxed);
             debug_assert!(self.retired(Relaxed));
             return Ok(0);
+        }
+
+        if let Some((key, child)) = cleanup_right_node {
+            if let Some(key) = key {
+                self.children.remove_if(key, &mut |_| true);
+                child.swap((None, Tag::None), Relaxed);
+                num_children -= 1;
+            } else if let Some((key, child)) = self.children.max_entry() {
+                // Need to promote a child to an unbounded.
+                self.unbounded_child
+                    .swap((child.get_shared(Acquire, guard), Tag::None), Release);
+                self.children.remove_if(key, &mut |_| true);
+                child.swap((None, Tag::None), Relaxed);
+                num_children -= 1;
+            } else {
+                // This node is now empty.
+                self.unbounded_child.swap((None, RETIRED), Relaxed);
+                debug_assert!(self.retired(Relaxed));
+                return Ok(0);
+            }
         }
 
         Ok(num_children)

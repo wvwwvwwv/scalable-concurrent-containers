@@ -124,6 +124,12 @@ where
     /// Returns a reference to the max key.
     #[inline]
     pub(super) fn max_key(&self) -> Option<&K> {
+        self.max_entry().map(|(k, _)| k)
+    }
+
+    /// Returns a reference to the max entry.
+    #[inline]
+    pub(super) fn max_entry(&self) -> Option<(&K, &V)> {
         let mut mutable_metadata = self.metadata.load(Acquire);
         let mut max_rank = 0;
         let mut max_index = DIMENSION.num_entries;
@@ -139,7 +145,7 @@ where
             mutable_metadata >>= DIMENSION.num_bits_per_entry;
         }
         if max_index != DIMENSION.num_entries {
-            return Some(self.key_at(max_index));
+            return Some((self.key_at(max_index), self.value_at(max_index)));
         }
         None
     }
