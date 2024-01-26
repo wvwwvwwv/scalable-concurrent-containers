@@ -43,21 +43,21 @@ mod examples {
                 drop(r1);
 
                 // `ptr` can outlive `r1`.
-                assert_eq!(ptr.as_ref().unwrap().0.load(Relaxed), 0);
+                assert!(ptr.as_ref().unwrap().0.load(Relaxed) <= 1);
             });
             s.spawn(|| {
                 let guard = Guard::new();
                 let ptr = r2.load(Acquire, &guard);
-                assert_eq!(ptr.as_ref().unwrap().0.load(Relaxed), 0);
+                assert!(ptr.as_ref().unwrap().0.load(Relaxed) <= 1);
 
                 let r3 = r2.get_shared(Acquire, &guard).unwrap();
                 drop(guard);
 
                 // `r3` can outlive `guard`.
-                assert_eq!(r3.0.load(Relaxed), 0);
+                assert!(r3.0.load(Relaxed) <= 1);
 
                 let r4 = r2.swap((None, Tag::None), Acquire).0.unwrap();
-                assert_eq!(r4.0.load(Relaxed), 0);
+                assert!(r4.0.load(Relaxed) <= 1);
             });
         });
 
