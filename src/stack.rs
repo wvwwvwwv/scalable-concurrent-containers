@@ -3,12 +3,21 @@
 use super::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use super::linked_list::{Entry, LinkedList};
 use std::fmt::{self, Debug};
+use std::iter::FusedIterator;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 
 /// [`Stack`] is a lock-free concurrent last-in-first-out container.
 pub struct Stack<T> {
     /// `newest` points to the newest entry in the [`Stack`].
     newest: AtomicShared<Entry<T>>,
+}
+
+/// An iterator over the entries of a [`Stack`].
+///
+/// [`Iter`] reads the newest entry first.
+pub struct Iter<'g, T> {
+    current: Ptr<'g, Entry<T>>,
+    guard: &'g Guard,
 }
 
 impl<T: 'static> Stack<T> {
@@ -284,6 +293,32 @@ impl<T> Stack<T> {
         )
     }
 
+    /// Returns the number of entries in the [`Stack`].
+    ///
+    /// This method iterates over all the entries in the [`Stack`] to count them, therefore its
+    /// time complexity is `O(N)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::Stack;
+    ///
+    /// let stack: Stack<usize> = Stack::default();
+    /// assert_eq!(stack.len(), 0);
+    ///
+    /// stack.push(7);
+    /// stack.push(11);
+    /// assert_eq!(stack.len(), 2);
+    ///
+    /// stack.pop();
+    /// stack.pop();
+    /// assert_eq!(stack.len(), 0);
+    /// ```
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.iter(&Guard::new()).count()
+    }
+
     /// Returns `true` if the [`Stack`] is empty.
     ///
     /// # Examples
@@ -302,6 +337,36 @@ impl<T> Stack<T> {
         let guard = Guard::new();
         self.cleanup_newest(self.newest.load(Acquire, &guard), &guard)
             .is_null()
+    }
+
+    /// Returns an [`Iter`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::Guard;
+    /// use scc::Stack;
+    ///
+    /// let stack: Stack<usize> = Stack::default();
+    /// assert_eq!(stack.iter(&Guard::new()).count(), 0);
+    ///
+    /// stack.push(7);
+    /// stack.push(11);
+    /// stack.push(17);
+    ///
+    /// let guard = Guard::new();
+    /// let mut iter = stack.iter(&guard);
+    /// assert_eq!(*iter.next().unwrap(), 17);
+    /// assert_eq!(*iter.next().unwrap(), 11);
+    /// assert_eq!(*iter.next().unwrap(), 7);
+    /// assert!(iter.next().is_none());
+    /// ```
+    #[inline]
+    pub fn iter<'g>(&self, guard: &'g Guard) -> Iter<'g, T> {
+        Iter {
+            current: self.cleanup_newest(self.newest.load(Acquire, guard), guard),
+            guard,
+        }
     }
 
     /// Pushes an entry into the [`Stack`].
@@ -418,6 +483,22 @@ impl<T> Default for Stack<T> {
     fn default() -> Self {
         Self {
             newest: AtomicShared::default(),
+        }
+    }
+}
+
+impl<'g, T> FusedIterator for Iter<'g, T> {}
+
+impl<'g, T> Iterator for Iter<'g, T> {
+    type Item = &'g T;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(current) = self.current.as_ref() {
+            self.current = current.next_ptr(Acquire, self.guard);
+            Some(current)
+        } else {
+            None
         }
     }
 }

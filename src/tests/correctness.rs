@@ -590,7 +590,7 @@ mod hashmap_test {
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn iter() {
+    fn iterator() {
         let data_size = 4096;
         for _ in 0..16 {
             let hashmap: Arc<HashMap<u64, u64>> = Arc::new(HashMap::default());
@@ -1047,7 +1047,7 @@ mod hashindex_test {
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn iter() {
+    fn iterator() {
         let data_size = 4096;
         for _ in 0..64 {
             let hashindex: Arc<HashIndex<u64, u64>> = Arc::new(HashIndex::default());
@@ -2248,6 +2248,7 @@ mod bag_test {
                 bag.push(R::new(&INST_CNT));
             }
             assert_eq!(INST_CNT.load(Relaxed), workload_size);
+            assert_eq!(bag.len(), workload_size);
             assert_eq!(bag.iter_mut().count(), workload_size);
 
             for v in &mut bag {
@@ -2357,6 +2358,7 @@ mod bag_test {
 
 #[cfg(test)]
 mod queue_test {
+    use crate::ebr::Guard;
     use crate::Queue;
     use std::panic::UnwindSafe;
     use std::sync::atomic::AtomicUsize;
@@ -2393,6 +2395,54 @@ mod queue_test {
         assert_eq!(queue_clone.pop().map(|e| **e), Some(3));
         assert_eq!(queue_clone.pop().map(|e| **e), Some(1));
         assert!(queue_clone.pop().is_none());
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn iterator() {
+        const NUM_TASKS: usize = 2;
+        let queue: Arc<Queue<R>> = Arc::new(Queue::default());
+        let workload_size = 256;
+        for _ in 0..16 {
+            let mut task_handles = Vec::with_capacity(NUM_TASKS);
+            let barrier = Arc::new(AsyncBarrier::new(NUM_TASKS));
+            for task_id in 0..NUM_TASKS {
+                let barrier_clone = barrier.clone();
+                let queue_clone = queue.clone();
+                task_handles.push(tokio::task::spawn(async move {
+                    if task_id == 0 {
+                        for seq in 0..workload_size {
+                            if seq == workload_size / 2 {
+                                barrier_clone.wait().await;
+                            }
+                            assert_eq!(queue_clone.push(R::new(task_id, seq)).1, seq);
+                        }
+                        let mut last = 0;
+                        while let Some(popped) = queue_clone.pop() {
+                            let current = popped.1;
+                            assert!(last == 0 || last + 1 == current);
+                            last = current;
+                        }
+                    } else {
+                        let mut last = 0;
+
+                        barrier_clone.wait().await;
+                        let guard = Guard::new();
+                        let mut iter = queue_clone.iter(&guard);
+                        while let Some(current) = iter.next() {
+                            let current = current.1;
+                            assert!(current == 0 || last + 1 == current);
+                            last = current;
+                        }
+                    }
+                }));
+            }
+
+            for r in futures::future::join_all(task_handles).await {
+                assert!(r.is_ok());
+            }
+        }
+        assert!(queue.is_empty());
     }
 
     #[cfg_attr(miri, ignore)]
@@ -2446,6 +2496,7 @@ mod queue_test {
 
 #[cfg(test)]
 mod stack_test {
+    use crate::ebr::Guard;
     use crate::Stack;
     use std::{panic::UnwindSafe, sync::Arc};
     use tokio::sync::Barrier as AsyncBarrier;
@@ -2480,6 +2531,54 @@ mod stack_test {
         assert_eq!(stack_clone.pop().map(|e| **e), Some(3));
         assert_eq!(stack_clone.pop().map(|e| **e), Some(37));
         assert!(stack_clone.pop().is_none());
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn iterator() {
+        const NUM_TASKS: usize = 2;
+        let stack: Arc<Stack<R>> = Arc::new(Stack::default());
+        let workload_size = 256;
+        for _ in 0..16 {
+            let mut task_handles = Vec::with_capacity(NUM_TASKS);
+            let barrier = Arc::new(AsyncBarrier::new(NUM_TASKS));
+            for task_id in 0..NUM_TASKS {
+                let barrier_clone = barrier.clone();
+                let stack_clone = stack.clone();
+                task_handles.push(tokio::task::spawn(async move {
+                    if task_id == 0 {
+                        for seq in 0..workload_size {
+                            if seq == workload_size / 2 {
+                                barrier_clone.wait().await;
+                            }
+                            assert_eq!(stack_clone.push(R::new(task_id, seq)).1, seq);
+                        }
+                        let mut last = workload_size;
+                        while let Some(popped) = stack_clone.pop() {
+                            let current = popped.1;
+                            assert_eq!(current + 1, last);
+                            last = current;
+                        }
+                    } else {
+                        let mut last = workload_size;
+
+                        barrier_clone.wait().await;
+                        let guard = Guard::new();
+                        let mut iter = stack_clone.iter(&guard);
+                        while let Some(current) = iter.next() {
+                            let current = current.1;
+                            assert!(last == workload_size || last - 1 == current);
+                            last = current;
+                        }
+                    }
+                }));
+            }
+
+            for r in futures::future::join_all(task_handles).await {
+                assert!(r.is_ok());
+            }
+        }
+        assert!(stack.is_empty());
     }
 
     #[cfg_attr(miri, ignore)]

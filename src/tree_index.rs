@@ -456,6 +456,8 @@ where
     /// ```
     #[inline]
     pub fn remove_range<R: RangeBounds<K>>(&self, range: R) {
+        /*
+        TODO: #120 activate this code block when the sub-routine is fully ready.
         let start_unbounded = matches!(range.start_bound(), Unbounded);
         let end_unbounded = matches!(range.end_bound(), Unbounded);
 
@@ -476,10 +478,11 @@ where
                 break;
             }
         }
-        for (k, _) in self.range(range, &guard) {
+        */
+        for (k, _) in self.range(range, &Guard::new()) {
             self.remove(k);
         }
-        let _result = Node::cleanup_root(&self.root, &mut (), &guard);
+        let _result = Node::cleanup_root(&self.root, &mut (), &Guard::new());
     }
 
     /// Returns a guarded reference to the value for the specified key without acquiring locks.

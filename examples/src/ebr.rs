@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod examples {
-    use scc::ebr::{Guard, Owned, Shared};
+    use scc::ebr::{AtomicShared, Guard, Owned, Shared, Tag};
     use std::sync::atomic::AtomicIsize;
-    use std::sync::atomic::Ordering::Relaxed;
+    use std::sync::atomic::Ordering::{Acquire, Relaxed};
     use std::thread;
 
     struct R(&'static AtomicIsize);
@@ -34,14 +34,30 @@ mod examples {
         static DROP_CNT: AtomicIsize = AtomicIsize::new(0);
 
         let r1 = Owned::new(R(&DROP_CNT));
+        let r2 = AtomicShared::new(R(&DROP_CNT));
 
         thread::scope(|s| {
             s.spawn(|| {
+                let guard = Guard::new();
+                let ptr = r1.get_guarded_ptr(&guard);
                 drop(r1);
+
+                // `ptr` can outlive `r1`.
+                assert_eq!(ptr.as_ref().unwrap().0.load(Relaxed), 0);
             });
             s.spawn(|| {
-                let r2 = Owned::new(R(&DROP_CNT));
-                drop(r2);
+                let guard = Guard::new();
+                let ptr = r2.load(Acquire, &guard);
+                assert_eq!(ptr.as_ref().unwrap().0.load(Relaxed), 0);
+
+                let r3 = r2.get_shared(Acquire, &guard).unwrap();
+                drop(guard);
+
+                // `r3` can outlive `guard`.
+                assert_eq!(r3.0.load(Relaxed), 0);
+
+                let r4 = r2.swap((None, Tag::None), Acquire).0.unwrap();
+                assert_eq!(r4.0.load(Relaxed), 0);
             });
         });
 

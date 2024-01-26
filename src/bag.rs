@@ -179,6 +179,37 @@ impl<T, const ARRAY_LEN: usize> Bag<T, ARRAY_LEN> {
         self.primary_storage.pop_all(acc, &mut fold, true)
     }
 
+    /// Returns the number of entries in the [`Bag`].
+    ///
+    /// This method iterates over all the entry arrays in the [`Bag`] to count the number of
+    /// entries, therefore its time complexity is `O(N)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::Bag;
+    ///
+    /// let bag: Bag<usize> = Bag::default();
+    /// assert_eq!(bag.len(), 0);
+    ///
+    /// bag.push(7);
+    /// assert_eq!(bag.len(), 1);
+    ///
+    /// for v in 0..64 {
+    ///    bag.push(v);
+    /// }
+    /// bag.pop();
+    /// assert_eq!(bag.len(), 64);
+    /// ```
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.stack
+            .iter(&Guard::new())
+            .fold(self.primary_storage.len(), |acc, storage| {
+                acc + storage.len()
+            })
+    }
+
     /// Returns `true` if the [`Bag`] is empty.
     ///
     /// # Examples
@@ -197,7 +228,7 @@ impl<T, const ARRAY_LEN: usize> Bag<T, ARRAY_LEN> {
     /// ```
     #[inline]
     pub fn is_empty(&self) -> bool {
-        if self.primary_storage.is_empty() {
+        if self.primary_storage.len() == 0 {
             self.stack.is_empty()
         } else {
             false
@@ -359,6 +390,15 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
             storage.storage[0].as_mut_ptr().write(val);
         }
         storage
+    }
+
+    /// Returns the number of entries.
+    fn len(&self) -> usize {
+        let metadata = self.metadata.load(Relaxed);
+        let instance_bitmap = Self::instance_bitmap(metadata);
+        let owned_bitmap = Self::owned_bitmap(metadata);
+        let valid_entries_bitmap = instance_bitmap & (!owned_bitmap);
+        valid_entries_bitmap.count_ones() as usize
     }
 
     /// Pushes a new value.
@@ -539,12 +579,6 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
                 Err(actual) => metadata = actual,
             }
         }
-    }
-
-    /// Returns `true` if empty.
-    fn is_empty(&self) -> bool {
-        let metadata = self.metadata.load(Acquire);
-        Self::instance_bitmap(metadata) == 0
     }
 
     #[allow(clippy::cast_possible_truncation)]

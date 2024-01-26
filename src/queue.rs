@@ -3,6 +3,7 @@
 use super::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use super::linked_list::{Entry, LinkedList};
 use std::fmt::{self, Debug};
+use std::iter::FusedIterator;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
 /// [`Queue`] is a lock-free concurrent first-in-first-out container.
@@ -12,6 +13,14 @@ pub struct Queue<T> {
 
     /// `newest` *eventually* points to the newest entry in the [`Queue`].
     newest: AtomicShared<Entry<T>>,
+}
+
+/// An iterator over the entries of a [`Queue`].
+///
+/// [`Iter`] reads the oldest entry first.
+pub struct Iter<'g, T> {
+    current: Ptr<'g, Entry<T>>,
+    guard: &'g Guard,
 }
 
 impl<T: 'static> Queue<T> {
@@ -262,6 +271,32 @@ impl<T> Queue<T> {
         reader(None)
     }
 
+    /// Returns the number of entries in the [`Queue`].
+    ///
+    /// This method iterates over all the entries in the [`Queue`] to count them, therefore its
+    /// time complexity is `O(N)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::Queue;
+    ///
+    /// let queue: Queue<usize> = Queue::default();
+    /// assert_eq!(queue.len(), 0);
+    ///
+    /// queue.push(7);
+    /// queue.push(11);
+    /// assert_eq!(queue.len(), 2);
+    ///
+    /// queue.pop();
+    /// queue.pop();
+    /// assert_eq!(queue.len(), 0);
+    /// ```
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.iter(&Guard::new()).count()
+    }
+
     /// Returns `true` if the [`Queue`] is empty.
     ///
     /// # Examples
@@ -278,6 +313,36 @@ impl<T> Queue<T> {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.newest.is_null(Acquire)
+    }
+
+    /// Returns an [`Iter`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::ebr::Guard;
+    /// use scc::Queue;
+    ///
+    /// let queue: Queue<usize> = Queue::default();
+    /// assert_eq!(queue.iter(&Guard::new()).count(), 0);
+    ///
+    /// queue.push(7);
+    /// queue.push(11);
+    /// queue.push(17);
+    ///
+    /// let guard = Guard::new();
+    /// let mut iter = queue.iter(&guard);
+    /// assert_eq!(*iter.next().unwrap(), 7);
+    /// assert_eq!(*iter.next().unwrap(), 11);
+    /// assert_eq!(*iter.next().unwrap(), 17);
+    /// assert!(iter.next().is_none());
+    /// ```
+    #[inline]
+    pub fn iter<'g>(&self, guard: &'g Guard) -> Iter<'g, T> {
+        Iter {
+            current: self.cleanup_oldest(guard),
+            guard,
+        }
     }
 
     /// Pushes an entry into the [`Queue`].
@@ -431,6 +496,22 @@ impl<T> Default for Queue<T> {
         Self {
             oldest: AtomicShared::default(),
             newest: AtomicShared::default(),
+        }
+    }
+}
+
+impl<'g, T> FusedIterator for Iter<'g, T> {}
+
+impl<'g, T> Iterator for Iter<'g, T> {
+    type Item = &'g T;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(current) = self.current.as_ref() {
+            self.current = current.next_ptr(Acquire, self.guard);
+            Some(current)
+        } else {
+            None
         }
     }
 }

@@ -4,7 +4,8 @@
 
 2.0.13
 
-* Fix [#120](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/120).
+* Add `iter` to `Queue` and `Stack`.
+* Add `len` to `Bag`, `Queue`, and `Stack`.
 
 2.0.12
 
