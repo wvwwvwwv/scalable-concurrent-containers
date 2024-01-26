@@ -17,13 +17,13 @@ mod linked_list;
 pub use linked_list::Entry as LinkedEntry;
 pub use linked_list::LinkedList;
 
-mod bag;
+pub mod bag;
 pub use bag::Bag;
 
-mod queue;
+pub mod queue;
 pub use queue::Queue;
 
-mod stack;
+pub mod stack;
 pub use stack::Stack;
 
 pub mod tree_index;
