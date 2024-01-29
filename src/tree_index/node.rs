@@ -119,7 +119,7 @@ where
         condition: &mut F,
         async_wait: &mut D,
         guard: &Guard,
-    ) -> Result<RemoveResult, bool>
+    ) -> Result<RemoveResult, ()>
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
@@ -233,14 +233,20 @@ where
             let mut leaf_node_locker = None;
             match root_ref {
                 Self::Internal(internal_node) => {
-                    if let Some(locker) = internal_node::Locker::try_lock(internal_node) {
+                    if !internal_node.retired(Relaxed) && !internal_node.children.is_empty() {
+                        // The internal node is still usable.
+                        break;
+                    } else if let Some(locker) = internal_node::Locker::try_lock(internal_node) {
                         internal_node_locker.replace(locker);
                     } else {
                         internal_node.wait(async_wait);
                     }
                 }
                 Self::Leaf(leaf_node) => {
-                    if let Some(locker) = leaf_node::Locker::try_lock(leaf_node) {
+                    if !leaf_node.retired(Relaxed) {
+                        // The leaf node is still usable.
+                        break;
+                    } else if let Some(locker) = leaf_node::Locker::try_lock(leaf_node) {
                         leaf_node_locker.replace(locker);
                     } else {
                         leaf_node.wait(async_wait);
@@ -265,7 +271,7 @@ where
                     if internal_node.retired(Relaxed) {
                         // The internal node is empty, therefore the entire tree can be emptied.
                         None
-                    } else if internal_node.children.max_key().is_none() {
+                    } else if internal_node.children.is_empty() {
                         // Replace the root with the unbounded child.
                         internal_node.unbounded_child.get_shared(Acquire, guard)
                     } else {

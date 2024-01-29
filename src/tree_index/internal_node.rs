@@ -338,7 +338,7 @@ where
         condition: &mut F,
         async_wait: &mut D,
         guard: &Guard,
-    ) -> Result<RemoveResult, bool>
+    ) -> Result<RemoveResult, ()>
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
@@ -1296,23 +1296,19 @@ mod test {
                         if max_key.map_or(false, |m| m == id) {
                             break;
                         }
-                        let mut removed = false;
                         loop {
-                            match internal_node_clone.remove_if::<_, _, _>(
+                            if let Ok(r) = internal_node_clone.remove_if::<_, _, _>(
                                 &id,
                                 &mut |_| true,
                                 &mut (),
                                 &guard,
                             ) {
-                                Ok(r) => match r {
-                                    RemoveResult::Success | RemoveResult::Cleanup => break,
-                                    RemoveResult::Fail => {
-                                        assert!(removed);
-                                        break;
-                                    }
+                                match r {
+                                    RemoveResult::Success
+                                    | RemoveResult::Cleanup
+                                    | RemoveResult::Fail => break,
                                     RemoveResult::Frozen | RemoveResult::Retired => unreachable!(),
-                                },
-                                Err(r) => removed |= r,
+                                }
                             }
                         }
                         assert!(internal_node_clone.search(&id, &guard).is_none());

@@ -338,34 +338,38 @@ where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        let mut has_been_removed = false;
+        let mut removed = false;
         loop {
             let guard = Guard::new();
             if let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
-                match root_ref.remove_if::<_, _, _>(key, &mut condition, &mut (), &guard) {
-                    Ok(r) => match r {
+                if let Ok(result) =
+                    root_ref.remove_if::<_, _, _>(key, &mut condition, &mut (), &guard)
+                {
+                    if matches!(result, RemoveResult::Cleanup) {
+                        root_ref.cleanup_link(key, false, &guard);
+                    }
+                    match result {
                         RemoveResult::Success => return true,
-                        RemoveResult::Cleanup => {
-                            root_ref.cleanup_link(key, false, &guard);
-                            return true;
-                        }
-                        RemoveResult::Retired => {
+                        RemoveResult::Cleanup | RemoveResult::Retired => {
                             if Node::cleanup_root(&self.root, &mut (), &guard) {
                                 return true;
                             }
-                            has_been_removed = true;
+                            removed = true;
                         }
-                        RemoveResult::Fail => return has_been_removed,
+                        RemoveResult::Fail => {
+                            if removed {
+                                if Node::cleanup_root(&self.root, &mut (), &guard) {
+                                    return true;
+                                }
+                            } else {
+                                return false;
+                            }
+                        }
                         RemoveResult::Frozen => (),
-                    },
-                    Err(removed) => {
-                        if removed {
-                            has_been_removed = true;
-                        }
                     }
                 }
             } else {
-                return has_been_removed;
+                return removed;
             }
         }
     }
@@ -392,42 +396,48 @@ where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        let mut has_been_removed = false;
+        let mut removed = false;
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             {
                 let guard = Guard::new();
                 if let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
-                    match root_ref.remove_if::<_, _, _>(
+                    if let Ok(result) = root_ref.remove_if::<_, _, _>(
                         key,
                         &mut condition,
                         &mut async_wait_pinned,
                         &guard,
                     ) {
-                        Ok(r) => match r {
+                        if matches!(result, RemoveResult::Cleanup) {
+                            root_ref.cleanup_link(key, false, &guard);
+                        }
+                        match result {
                             RemoveResult::Success => return true,
-                            RemoveResult::Cleanup => {
-                                root_ref.cleanup_link(key, false, &guard);
-                                return true;
-                            }
-                            RemoveResult::Retired => {
+                            RemoveResult::Cleanup | RemoveResult::Retired => {
                                 if Node::cleanup_root(&self.root, &mut async_wait_pinned, &guard) {
                                     return true;
                                 }
-                                has_been_removed = true;
+                                removed = true;
                             }
-                            RemoveResult::Fail => return has_been_removed,
+                            RemoveResult::Fail => {
+                                if removed {
+                                    if Node::cleanup_root(
+                                        &self.root,
+                                        &mut async_wait_pinned,
+                                        &guard,
+                                    ) {
+                                        return true;
+                                    }
+                                } else {
+                                    return false;
+                                }
+                            }
                             RemoveResult::Frozen => (),
-                        },
-                        Err(removed) => {
-                            if removed {
-                                has_been_removed = true;
-                            }
                         }
                     }
                 } else {
-                    return has_been_removed;
+                    return removed;
                 }
             }
             async_wait_pinned.await;
@@ -482,7 +492,6 @@ where
         for (k, _) in self.range(range, &Guard::new()) {
             self.remove(k);
         }
-        let _result = Node::cleanup_root(&self.root, &mut (), &Guard::new());
     }
 
     /// Returns a guarded reference to the value for the specified key without acquiring locks.

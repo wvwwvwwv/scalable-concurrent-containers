@@ -353,7 +353,7 @@ where
         condition: &mut F,
         async_wait: &mut D,
         guard: &Guard,
-    ) -> Result<RemoveResult, bool>
+    ) -> Result<RemoveResult, ()>
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
@@ -370,7 +370,7 @@ where
                             // When a `Leaf` is frozen, its entries may be being copied to new
                             // `Leaves`.
                             self.wait(async_wait);
-                            return Err(false);
+                            return Err(());
                         } else if result == RemoveResult::Retired {
                             return Ok(self.coalesce(guard));
                         }
@@ -390,7 +390,7 @@ where
                 let result = unbounded.remove_if(key, condition);
                 if result == RemoveResult::Frozen {
                     self.wait(async_wait);
-                    return Err(false);
+                    return Err(());
                 } else if result == RemoveResult::Retired {
                     return Ok(self.coalesce(guard));
                 }
@@ -635,7 +635,7 @@ where
 
     /// Cleans up logically deleted [`LeafNode`] instances in the linked list.
     ///
-    /// If the target leaf node does not exist in the sub-tree, returns `false`.
+    /// If the target leaf does not exist in the [`LeafNode`], returns `false`.
     #[inline]
     pub(super) fn cleanup_link<'g, Q>(&self, key: &Q, tranverse_max: bool, guard: &'g Guard) -> bool
     where
@@ -1197,23 +1197,19 @@ mod test {
                         if max_key.map_or(false, |m| m == id) {
                             break;
                         }
-                        let mut removed = false;
                         loop {
-                            match leaf_node_clone.remove_if::<_, _, _>(
+                            if let Ok(r) = leaf_node_clone.remove_if::<_, _, _>(
                                 &id,
                                 &mut |_| true,
                                 &mut (),
                                 &guard,
                             ) {
-                                Ok(r) => match r {
-                                    RemoveResult::Success | RemoveResult::Cleanup => break,
-                                    RemoveResult::Fail => {
-                                        assert!(removed);
-                                        break;
-                                    }
+                                match r {
+                                    RemoveResult::Success
+                                    | RemoveResult::Cleanup
+                                    | RemoveResult::Fail => break,
                                     RemoveResult::Frozen | RemoveResult::Retired => unreachable!(),
-                                },
-                                Err(r) => removed |= r,
+                                }
                             }
                         }
                         assert!(leaf_node_clone.search(&id, &guard).is_none(), "{}", id);

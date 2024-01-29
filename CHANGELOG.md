@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.0.14
+
+* More aggressive `TreeIndex` root node cleanup.
+
 2.0.13
 
 * Add `iter` to `Queue` and `Stack`.

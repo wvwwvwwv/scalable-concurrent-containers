@@ -121,6 +121,23 @@ where
         Dimension::retired(self.metadata.load(Relaxed))
     }
 
+    /// Returns `true` if the [`Leaf`] has no reachable entry.
+    #[inline]
+    pub(super) fn is_empty(&self) -> bool {
+        let mut mutable_metadata = self.metadata.load(Relaxed);
+        for _ in 0..DIMENSION.num_entries {
+            if mutable_metadata == 0 {
+                break;
+            }
+            let rank = mutable_metadata % (1_usize << DIMENSION.num_bits_per_entry);
+            if rank != Dimension::uninit_rank() && rank != DIMENSION.removed_rank() {
+                return false;
+            }
+            mutable_metadata >>= DIMENSION.num_bits_per_entry;
+        }
+        true
+    }
+
     /// Returns a reference to the max key.
     #[inline]
     pub(super) fn max_key(&self) -> Option<&K> {
@@ -1098,6 +1115,7 @@ mod test {
         #[test]
         fn prop(insert in 0_usize..DIMENSION.num_entries, remove in 0_usize..DIMENSION.num_entries) {
             let leaf: Leaf<usize, usize> = Leaf::new();
+            assert!(leaf.is_empty());
             for i in 0..insert {
                 assert!(matches!(leaf.insert(i, i), InsertResult::Success));
                 if i != 0 {
@@ -1108,11 +1126,14 @@ mod test {
             }
             if insert == 0 {
                 assert_eq!(leaf.max_key(), None);
+                assert!(leaf.is_empty());
             } else {
                 assert_eq!(leaf.max_key(), Some(&(insert - 1)));
+                assert!(!leaf.is_empty());
             }
             for i in 0..insert {
                 assert!(matches!(leaf.insert(i, i), InsertResult::Duplicate(..)));
+                assert!(!leaf.is_empty());
                 let result = leaf.min_greater_equal(&i);
                 assert_eq!(result.0, Some((&i, &i)));
             }
@@ -1134,6 +1155,7 @@ mod test {
                     }
                 } else {
                     assert!(matches!(leaf.remove_if(&i, &mut |_| true), RemoveResult::Fail));
+                    assert!(leaf.is_empty());
                 }
             }
         }
