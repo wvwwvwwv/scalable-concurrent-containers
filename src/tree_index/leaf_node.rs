@@ -403,21 +403,142 @@ where
     /// Removes a range of entries.
     ///
     /// Returns the number of remaining children.
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     #[inline]
     pub(super) fn remove_range<'g, R: RangeBounds<K>, D: DeriveAsyncWait>(
         &self,
-        _range: &R,
-        _start_unbounded: bool,
-        _end_unbounded: bool,
-        _last_left_valid_leaf: Option<&'g Leaf<K, V>>,
-        _first_right_valid_node: Option<&'g Node<K, V>>,
-        _async_wait: &mut D,
-        _guard: &'g Guard,
+        range: &R,
+        start_unbounded: bool,
+        end_unbounded: bool,
+        valid_lower_max_leaf: Option<&'g Leaf<K, V>>,
+        valid_upper_min_node: Option<&'g Node<K, V>>,
+        async_wait: &mut D,
+        guard: &'g Guard,
     ) -> Result<usize, ()> {
-        // TODO: #120 - implement O(1) bulk removal without using `Range`.
-        Ok(2)
+        // If `last_left_valid_leaf` is supplied, this method is removing entries near the upper
+        // bound of the range.
+        debug_assert!(valid_lower_max_leaf.is_none() || start_unbounded);
+        debug_assert!(valid_lower_max_leaf.is_none() || valid_upper_min_node.is_none());
+
+        let Some(_lock) = Locker::try_lock(self) else {
+            self.wait(async_wait);
+            return Err(());
+        };
+
+        let mut current_state = RemoveRangeState::Below;
+        let mut num_leaves = 1;
+        let mut lower_border = None;
+        let mut upper_border = None;
+
+        for (key, leaf) in Scanner::new(&self.children) {
+            let contains = range.contains(key);
+            current_state = if contains {
+                match current_state {
+                    RemoveRangeState::Below => {
+                        if start_unbounded {
+                            RemoveRangeState::FullyContained
+                        } else {
+                            RemoveRangeState::MaybeBelow
+                        }
+                    }
+                    RemoveRangeState::MaybeBelow | RemoveRangeState::FullyContained => {
+                        RemoveRangeState::FullyContained
+                    }
+                    RemoveRangeState::MaybeAbove | RemoveRangeState::Above => unreachable!(),
+                }
+            } else {
+                match current_state {
+                    RemoveRangeState::Below => RemoveRangeState::Below,
+                    RemoveRangeState::MaybeBelow | RemoveRangeState::FullyContained => {
+                        RemoveRangeState::MaybeAbove
+                    }
+                    RemoveRangeState::MaybeAbove | RemoveRangeState::Above => {
+                        RemoveRangeState::Above
+                    }
+                }
+            };
+
+            match current_state {
+                RemoveRangeState::Below => {
+                    debug_assert!(!start_unbounded);
+                    num_leaves += 1;
+                }
+                RemoveRangeState::MaybeBelow => {
+                    debug_assert!(!start_unbounded);
+                    num_leaves += 1;
+                    lower_border.replace(leaf);
+                }
+                RemoveRangeState::FullyContained => {
+                    // Get rid of the child.
+                    //
+                    // There can be another thread inserting keys into the leaf, and this may
+                    // render those operations completely ineffective.
+                    self.children.remove_if(key, &mut |_| true);
+                    leaf.swap((None, Tag::None), Relaxed);
+                }
+                RemoveRangeState::MaybeAbove | RemoveRangeState::Above => {
+                    debug_assert!(!end_unbounded);
+                    num_leaves += 1;
+                    upper_border.replace(leaf);
+                    break;
+                }
+            }
+        }
+
+        // Now, examine the unbounded child.
+        match current_state {
+            RemoveRangeState::Below => {
+                // No children possibly in the range, or the unbounded child is an only child.
+                debug_assert!(lower_border.is_none() && upper_border.is_none());
+                upper_border.replace(&self.unbounded_child);
+            }
+            RemoveRangeState::MaybeBelow => {
+                debug_assert!(!start_unbounded);
+                debug_assert!(lower_border.is_some() && upper_border.is_none());
+                upper_border.replace(&self.unbounded_child);
+            }
+            RemoveRangeState::FullyContained => {
+                debug_assert!(upper_border.is_none());
+                upper_border.replace(&self.unbounded_child);
+            }
+            RemoveRangeState::MaybeAbove | RemoveRangeState::Above => {
+                debug_assert!(!end_unbounded && upper_border.is_some());
+            }
+        }
+
+        if let Some(lower_leaf) = lower_border.and_then(|l| l.load(Acquire, guard).as_ref()) {
+            debug_assert!(!start_unbounded && valid_lower_max_leaf.is_none());
+            debug_assert!(upper_border.is_none() || valid_upper_min_node.is_none());
+            if let Some(valid_upper_min_node) = valid_upper_min_node {
+                debug_assert!(end_unbounded && upper_border.is_none());
+                valid_upper_min_node.remove_range(
+                    range,
+                    true,
+                    false,
+                    Some(lower_leaf),
+                    None,
+                    async_wait,
+                    guard,
+                )?;
+            } else if let Some(upper_leaf) = upper_border {
+                debug_assert!(!end_unbounded);
+                lower_leaf
+                    .link_ref()
+                    .swap((upper_leaf.get_shared(Acquire, guard), Tag::None), Release);
+            } else {
+                lower_leaf.link_ref().swap((None, Tag::None), Relaxed);
+            }
+        } else if let Some(upper_leaf) = upper_border {
+            debug_assert!(!end_unbounded && valid_upper_min_node.is_none());
+            if let Some(valid_lower_max_leaf) = valid_lower_max_leaf {
+                debug_assert!(start_unbounded && lower_border.is_none());
+                valid_lower_max_leaf
+                    .link_ref()
+                    .swap((upper_leaf.get_shared(Acquire, guard), Tag::None), Release);
+            }
+        }
+
+        Ok(num_leaves)
     }
 
     /// Splits itself into the given leaf nodes, and returns the middle key value.
