@@ -4,6 +4,7 @@
 
 2.0.14
 
+* Fix [#120](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/120).
 * More aggressive `TreeIndex` root node cleanup.
 
 2.0.13

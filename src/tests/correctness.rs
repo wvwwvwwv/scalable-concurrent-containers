@@ -1512,6 +1512,7 @@ mod treeindex_test {
     use crate::ebr::Guard;
     use crate::tree_index::{Iter, Range};
     use crate::TreeIndex;
+    use proptest::prelude::*;
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
     use std::collections::BTreeSet;
@@ -1713,13 +1714,19 @@ mod treeindex_test {
                             } else {
                                 tree_clone.remove_range(..end_bound);
                             }
-
-                            assert!(
-                                tree_clone.peek(&(end_bound - 1), &Guard::new()).is_none(),
-                                "{end_bound} {}",
-                                data_clone.load(Relaxed)
-                            );
-                            assert!(tree_clone.peek(&end_bound, &Guard::new()).is_some());
+                            if end_bound % 5 == 0 {
+                                for (k, v) in tree_clone.iter(&Guard::new()) {
+                                    assert_eq!(k, v);
+                                    assert!(!(..end_bound).contains(k), "{k}");
+                                }
+                            } else {
+                                assert!(
+                                    tree_clone.peek(&(end_bound - 1), &Guard::new()).is_none(),
+                                    "{end_bound} {}",
+                                    data_clone.load(Relaxed)
+                                );
+                                assert!(tree_clone.peek(&end_bound, &Guard::new()).is_some());
+                            }
                         }
                     }
                 }));
@@ -2177,6 +2184,32 @@ mod treeindex_test {
                 .count(),
             3
         );
+    }
+
+    proptest! {
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn prop_remove_range(lower in 0_usize..4096_usize, range in 0_usize..1024_usize) {
+            let remove_range = lower..lower + range;
+            let tree = TreeIndex::default();
+            for k in 256_usize..1024_usize {
+                assert!(tree.insert(k, k).is_ok());
+            }
+            assert_eq!(tree.depth(), 2);
+            tree.remove_range(remove_range.clone());
+            if remove_range.contains(&256) && remove_range.contains(&1023) {
+                assert!(tree.is_empty());
+            }
+            for (k, v) in tree.iter(&Guard::new()) {
+                assert_eq!(k, v);
+                assert!(!remove_range.contains(k), "{k}");
+            }
+            for k in 0_usize..4096_usize {
+                if tree.peek_with(&k, |_, _|()).is_some() {
+                    assert!(!remove_range.contains(&k), "{k}");
+                }
+            }
+        }
     }
 }
 

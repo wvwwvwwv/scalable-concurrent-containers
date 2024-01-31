@@ -446,7 +446,16 @@ where
 
     /// Removes keys in the specified range.
     ///
-    /// Experimental: [`issue 120`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/120).
+    /// This method removes internal nodes that are definitely contained in the specified range
+    /// first, and then removes remaining entries individually.
+    ///
+    /// # Notes
+    ///
+    /// Internally, multiple internal node locks need to be acquired, thus making this method
+    /// susceptible to lock starvation. Also, no asynchronous version of this method is provided
+    /// which will be added once
+    /// [`Issue 123`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/123) is
+    /// resolved.
     ///
     /// # Examples
     ///
@@ -466,30 +475,27 @@ where
     /// ```
     #[inline]
     pub fn remove_range<R: RangeBounds<K>>(&self, range: R) {
-        /*
-        TODO: #120 activate this code block when the sub-routine is fully ready.
         let start_unbounded = matches!(range.start_bound(), Unbounded);
-        let end_unbounded = matches!(range.end_bound(), Unbounded);
-
         let guard = Guard::new();
+
+        // Remove internal nodes.
+        //
+        // It takes O(N) to traverse sub-trees on the range border.
         while let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
-            if let Ok(num_children) = root_ref.remove_range(
-                &range,
-                start_unbounded,
-                end_unbounded,
-                None,
-                None,
-                &mut (),
-                &guard,
-            ) {
+            if let Ok(num_children) =
+                root_ref.remove_range(&range, start_unbounded, None, None, &mut (), &guard)
+            {
                 if num_children < 2 && !Node::cleanup_root(&self.root, &mut (), &guard) {
                     continue;
                 }
                 break;
             }
         }
-        */
-        for (k, _) in self.range(range, &Guard::new()) {
+
+        // Remove individual entries in leaves on the border.
+        //
+        // The expected number of calls to `remove` is `14`: the number of entry slots in a leaf.
+        for (k, _) in self.range(range, &guard) {
             self.remove(k);
         }
     }

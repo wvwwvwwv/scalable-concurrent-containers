@@ -7,7 +7,7 @@ use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
 use crate::LinkedList;
 use std::borrow::Borrow;
 use std::cmp::Ordering::{Equal, Greater, Less};
-use std::ops::RangeBounds;
+use std::ops::{Bound, RangeBounds};
 use std::ptr;
 use std::sync::atomic::Ordering::{self, AcqRel, Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicPtr, AtomicU8};
@@ -70,9 +70,6 @@ pub(super) enum RemoveRangeState {
     /// The max key of the node is not contained in the range, but it is not clear that
     /// the minimum key of the node is contained in the range.
     MaybeAbove,
-
-    /// The max key and the minimum key of the node are not contained in the range.
-    Above,
 }
 
 /// [`StructuralChange`] stores intermediate results during a split operation.
@@ -403,20 +400,16 @@ where
     /// Removes a range of entries.
     ///
     /// Returns the number of remaining children.
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     #[inline]
     pub(super) fn remove_range<'g, R: RangeBounds<K>, D: DeriveAsyncWait>(
         &self,
         range: &R,
         start_unbounded: bool,
-        end_unbounded: bool,
         valid_lower_max_leaf: Option<&'g Leaf<K, V>>,
         valid_upper_min_node: Option<&'g Node<K, V>>,
         async_wait: &mut D,
         guard: &'g Guard,
     ) -> Result<usize, ()> {
-        // If `last_left_valid_leaf` is supplied, this method is removing entries near the upper
-        // bound of the range.
         debug_assert!(valid_lower_max_leaf.is_none() || start_unbounded);
         debug_assert!(valid_lower_max_leaf.is_none() || valid_upper_min_node.is_none());
 
@@ -427,115 +420,57 @@ where
 
         let mut current_state = RemoveRangeState::Below;
         let mut num_leaves = 1;
-        let mut lower_border = None;
-        let mut upper_border = None;
+        let mut first_valid_leaf = None;
 
         for (key, leaf) in Scanner::new(&self.children) {
-            let contains = range.contains(key);
-            current_state = if contains {
-                match current_state {
-                    RemoveRangeState::Below => {
-                        if start_unbounded {
-                            RemoveRangeState::FullyContained
-                        } else {
-                            RemoveRangeState::MaybeBelow
-                        }
-                    }
-                    RemoveRangeState::MaybeBelow | RemoveRangeState::FullyContained => {
-                        RemoveRangeState::FullyContained
-                    }
-                    RemoveRangeState::MaybeAbove | RemoveRangeState::Above => unreachable!(),
-                }
-            } else {
-                match current_state {
-                    RemoveRangeState::Below => RemoveRangeState::Below,
-                    RemoveRangeState::MaybeBelow | RemoveRangeState::FullyContained => {
-                        RemoveRangeState::MaybeAbove
-                    }
-                    RemoveRangeState::MaybeAbove | RemoveRangeState::Above => {
-                        RemoveRangeState::Above
-                    }
-                }
-            };
-
+            current_state = current_state.next(key, range, start_unbounded);
             match current_state {
-                RemoveRangeState::Below => {
-                    debug_assert!(!start_unbounded);
+                RemoveRangeState::Below | RemoveRangeState::MaybeBelow => {
                     num_leaves += 1;
-                }
-                RemoveRangeState::MaybeBelow => {
-                    debug_assert!(!start_unbounded);
-                    num_leaves += 1;
-                    lower_border.replace(leaf);
+                    if first_valid_leaf.is_none() {
+                        first_valid_leaf.replace(leaf);
+                    }
                 }
                 RemoveRangeState::FullyContained => {
-                    // Get rid of the child.
-                    //
                     // There can be another thread inserting keys into the leaf, and this may
                     // render those operations completely ineffective.
                     self.children.remove_if(key, &mut |_| true);
-                    leaf.swap((None, Tag::None), Relaxed);
+                    if let Some(leaf) = leaf.swap((None, Tag::None), Relaxed).0 {
+                        leaf.delete_self(Release);
+                    }
                 }
-                RemoveRangeState::MaybeAbove | RemoveRangeState::Above => {
-                    debug_assert!(!end_unbounded);
+                RemoveRangeState::MaybeAbove => {
                     num_leaves += 1;
-                    upper_border.replace(leaf);
+                    if first_valid_leaf.is_none() {
+                        first_valid_leaf.replace(leaf);
+                    }
                     break;
                 }
             }
         }
 
-        // Now, examine the unbounded child.
-        match current_state {
-            RemoveRangeState::Below => {
-                // No children possibly in the range, or the unbounded child is an only child.
-                debug_assert!(lower_border.is_none() && upper_border.is_none());
-                upper_border.replace(&self.unbounded_child);
+        if let Some(valid_lower_max_leaf) = valid_lower_max_leaf {
+            // Connect the specified leaf with the first valid leaf.
+            if first_valid_leaf.is_none() {
+                first_valid_leaf.replace(&self.unbounded_child);
             }
-            RemoveRangeState::MaybeBelow => {
-                debug_assert!(!start_unbounded);
-                debug_assert!(lower_border.is_some() && upper_border.is_none());
-                upper_border.replace(&self.unbounded_child);
-            }
-            RemoveRangeState::FullyContained => {
-                debug_assert!(upper_border.is_none());
-                upper_border.replace(&self.unbounded_child);
-            }
-            RemoveRangeState::MaybeAbove | RemoveRangeState::Above => {
-                debug_assert!(!end_unbounded && upper_border.is_some());
-            }
-        }
-
-        if let Some(lower_leaf) = lower_border.and_then(|l| l.load(Acquire, guard).as_ref()) {
-            debug_assert!(!start_unbounded && valid_lower_max_leaf.is_none());
-            debug_assert!(upper_border.is_none() || valid_upper_min_node.is_none());
-            if let Some(valid_upper_min_node) = valid_upper_min_node {
-                debug_assert!(end_unbounded && upper_border.is_none());
-                valid_upper_min_node.remove_range(
-                    range,
-                    true,
-                    false,
-                    Some(lower_leaf),
-                    None,
-                    async_wait,
-                    guard,
-                )?;
-            } else if let Some(upper_leaf) = upper_border {
-                debug_assert!(!end_unbounded);
-                lower_leaf
-                    .link_ref()
-                    .swap((upper_leaf.get_shared(Acquire, guard), Tag::None), Release);
-            } else {
-                lower_leaf.link_ref().swap((None, Tag::None), Relaxed);
-            }
-        } else if let Some(upper_leaf) = upper_border {
-            debug_assert!(!end_unbounded && valid_upper_min_node.is_none());
-            if let Some(valid_lower_max_leaf) = valid_lower_max_leaf {
-                debug_assert!(start_unbounded && lower_border.is_none());
-                valid_lower_max_leaf
-                    .link_ref()
-                    .swap((upper_leaf.get_shared(Acquire, guard), Tag::None), Release);
-            }
+            valid_lower_max_leaf.link_ref().swap(
+                (
+                    first_valid_leaf.and_then(|l| l.get_shared(Acquire, guard)),
+                    Tag::None,
+                ),
+                Release,
+            );
+        } else if let Some(valid_upper_min_node) = valid_upper_min_node {
+            // Connect the unbounded child with the minimum valid leaf in the node.
+            valid_upper_min_node.remove_range(
+                range,
+                true,
+                self.unbounded_child.load(Acquire, guard).as_ref(),
+                None,
+                async_wait,
+                guard,
+            )?;
         }
 
         Ok(num_leaves)
@@ -1124,6 +1059,50 @@ where
     }
 }
 
+impl RemoveRangeState {
+    /// Returns the next state.
+    pub(super) fn next<K: Ord, R: RangeBounds<K>>(
+        self,
+        key: &K,
+        range: &R,
+        start_unbounded: bool,
+    ) -> Self {
+        if range.contains(key) {
+            match self {
+                RemoveRangeState::Below => {
+                    if start_unbounded {
+                        RemoveRangeState::FullyContained
+                    } else {
+                        RemoveRangeState::MaybeBelow
+                    }
+                }
+                RemoveRangeState::MaybeBelow | RemoveRangeState::FullyContained => {
+                    RemoveRangeState::FullyContained
+                }
+                RemoveRangeState::MaybeAbove => unreachable!(),
+            }
+        } else {
+            match self {
+                RemoveRangeState::Below => match range.start_bound() {
+                    Bound::Included(k) => match key.cmp(k) {
+                        Less => RemoveRangeState::Below,
+                        Equal => unreachable!(),
+                        Greater => RemoveRangeState::MaybeAbove,
+                    },
+                    Bound::Excluded(k) => match key.cmp(k) {
+                        Less | Equal => RemoveRangeState::Below,
+                        Greater => RemoveRangeState::MaybeAbove,
+                    },
+                    Bound::Unbounded => RemoveRangeState::MaybeAbove,
+                },
+                RemoveRangeState::MaybeBelow | RemoveRangeState::FullyContained => {
+                    RemoveRangeState::MaybeAbove
+                }
+                RemoveRangeState::MaybeAbove => unreachable!(),
+            }
+        }
+    }
+}
 impl<K, V> StructuralChange<K, V>
 where
     K: 'static + Clone + Ord,

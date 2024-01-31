@@ -144,7 +144,6 @@ where
         &self,
         range: &R,
         start_unbounded: bool,
-        end_unbounded: bool,
         valid_lower_max_leaf: Option<&'g Leaf<K, V>>,
         valid_upper_min_node: Option<&'g Node<K, V>>,
         async_wait: &mut D,
@@ -154,7 +153,6 @@ where
             Self::Internal(internal_node) => internal_node.remove_range(
                 range,
                 start_unbounded,
-                end_unbounded,
                 valid_lower_max_leaf,
                 valid_upper_min_node,
                 async_wait,
@@ -163,7 +161,6 @@ where
             Self::Leaf(leaf_node) => leaf_node.remove_range(
                 range,
                 start_unbounded,
-                end_unbounded,
                 valid_lower_max_leaf,
                 valid_upper_min_node,
                 async_wait,
