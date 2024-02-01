@@ -699,6 +699,10 @@ impl<'g, K: Eq, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
     ) -> Option<(K, V)> {
         debug_assert_ne!(entry_ptr.current_index, usize::MAX);
 
+        if TYPE == CACHE {
+            self.remove_from_lru_list(entry_ptr);
+        }
+
         self.bucket.num_entries -= 1;
         let link_ptr = entry_ptr.current_link_ptr.as_ptr().cast_mut();
         if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
@@ -856,21 +860,8 @@ impl<'g, K: Eq, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
         None
     }
 
-    /// Removes the entry from the LRU linked list.
-    pub(crate) fn remove_from_lru_list(&mut self, entry_ptr: &EntryPtr<K, V, CACHE>) {
-        debug_assert_eq!(TYPE, CACHE);
-        debug_assert!(self.metadata.link.is_null(Relaxed));
-
-        #[allow(clippy::cast_possible_truncation)]
-        let entry = entry_ptr.current_index as u8;
-        let tail = self.metadata.removed_bitmap_or_lru_tail;
-        if let Some(new_tail) = self.lru_list.remove(tail, entry) {
-            self.metadata.removed_bitmap_or_lru_tail = new_tail;
-        }
-    }
-
     /// Sets the entry having been just accessed.
-    pub(crate) fn update_lru_tail(&mut self, entry_ptr: &EntryPtr<K, V, CACHE>) {
+    pub(crate) fn update_lru_tail(&mut self, entry_ptr: &EntryPtr<K, V, TYPE>) {
         debug_assert_eq!(TYPE, CACHE);
         debug_assert!(self.metadata.link.is_null(Relaxed));
 
@@ -878,6 +869,19 @@ impl<'g, K: Eq, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
         let entry = entry_ptr.current_index as u8;
         let tail = self.metadata.removed_bitmap_or_lru_tail;
         if let Some(new_tail) = self.lru_list.promote(tail, entry) {
+            self.metadata.removed_bitmap_or_lru_tail = new_tail;
+        }
+    }
+
+    /// Removes the entry from the LRU linked list.
+    fn remove_from_lru_list(&mut self, entry_ptr: &EntryPtr<K, V, TYPE>) {
+        debug_assert_eq!(TYPE, CACHE);
+        debug_assert!(self.metadata.link.is_null(Relaxed));
+
+        #[allow(clippy::cast_possible_truncation)]
+        let entry = entry_ptr.current_index as u8;
+        let tail = self.metadata.removed_bitmap_or_lru_tail;
+        if let Some(new_tail) = self.lru_list.remove(tail, entry) {
             self.metadata.removed_bitmap_or_lru_tail = new_tail;
         }
     }
