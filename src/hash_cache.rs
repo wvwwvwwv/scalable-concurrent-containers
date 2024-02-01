@@ -1,12 +1,10 @@
 //! [`HashCache`] is a concurrent and asynchronous sampling-based LRU cache backed by
 //! [`HashMap`](super::HashMap).
 
-use crate::hash_table::LockedEntry;
-
 use super::ebr::{AtomicShared, Guard, Shared, Tag};
-use super::hash_table::bucket::{EntryPtr, Evictable, Locker, Reader, CACHE};
+use super::hash_table::bucket::{DoublyLinkedList, EntryPtr, Locker, Reader, CACHE};
 use super::hash_table::bucket_array::BucketArray;
-use super::hash_table::HashTable;
+use super::hash_table::{HashTable, LockedEntry};
 use super::wait_queue::AsyncWait;
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
@@ -27,8 +25,9 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 /// recently used entry within the bucket.
 ///
 /// [`HashCache`] and [`HashMap`](super::HashMap) share the same runtime characteristic, except
-/// that [`HashCache`] does not allow a bucket to allocate a linked list of entries when it is
-/// full, instead [`HashCache`] starts evicting the least recently used entries.
+/// that each entry additionally uses 2-byte space for a doubly linked list, and [`HashCache`]
+/// starts evicting least recently used entries if the bucket is full instead of allocating linked
+/// list of entries.
 ///
 /// ### Unwind safety
 ///
@@ -39,7 +38,7 @@ where
     K: Eq + Hash,
     H: BuildHasher,
 {
-    array: AtomicShared<BucketArray<K, Evictable<V>, CACHE>>,
+    array: AtomicShared<BucketArray<K, V, DoublyLinkedList, CACHE>>,
     minimum_capacity: AtomicUsize,
     maximum_capacity: usize,
     build_hasher: H,
@@ -71,7 +70,7 @@ where
     H: BuildHasher,
 {
     hashcache: &'h HashCache<K, V, H>,
-    locked_entry: LockedEntry<'h, K, Evictable<V>, CACHE>,
+    locked_entry: LockedEntry<'h, K, V, DoublyLinkedList, CACHE>,
 }
 
 /// [`VacantEntry`] is a view into a vacant cache entry in a [`HashCache`].
@@ -83,7 +82,7 @@ where
     hashcache: &'h HashCache<K, V, H>,
     key: K,
     hash: u64,
-    locked_entry: LockedEntry<'h, K, Evictable<V>, CACHE>,
+    locked_entry: LockedEntry<'h, K, V, DoublyLinkedList, CACHE>,
 }
 
 impl<K, V, H> HashCache<K, V, H>
@@ -139,7 +138,7 @@ where
             (AtomicShared::null(), AtomicUsize::new(0))
         } else {
             let array = unsafe {
-                Shared::new_unchecked(BucketArray::<K, Evictable<V>, CACHE>::new(
+                Shared::new_unchecked(BucketArray::<K, V, DoublyLinkedList, CACHE>::new(
                     minimum_capacity,
                     AtomicShared::null(),
                 ))
@@ -152,7 +151,7 @@ where
         };
         let maximum_capacity = maximum_capacity
             .max(minimum_capacity.load(Relaxed))
-            .max(BucketArray::<K, Evictable<V>, CACHE>::minimum_capacity())
+            .max(BucketArray::<K, V, DoublyLinkedList, CACHE>::minimum_capacity())
             .min(1_usize << (usize::BITS - 1))
             .next_power_of_two();
         HashCache {
@@ -190,9 +189,7 @@ where
                 .unwrap_unchecked()
         };
         if locked_entry.entry_ptr.is_valid() {
-            locked_entry
-                .locker
-                .update_lru_tail(locked_entry.data_block_mut, &locked_entry.entry_ptr);
+            locked_entry.locker.update_lru_tail(&locked_entry.entry_ptr);
             Entry::Occupied(OccupiedEntry {
                 hashcache: self,
                 locked_entry,
@@ -235,9 +232,7 @@ where
                     self.prolonged_guard_ref(&guard),
                 ) {
                     if locked_entry.entry_ptr.is_valid() {
-                        locked_entry
-                            .locker
-                            .update_lru_tail(locked_entry.data_block_mut, &locked_entry.entry_ptr);
+                        locked_entry.locker.update_lru_tail(&locked_entry.entry_ptr);
                         return Entry::Occupied(OccupiedEntry {
                             hashcache: self,
                             locked_entry,
@@ -287,16 +282,14 @@ where
                 if entry_ptr.is_valid() {
                     return Err((key, val));
                 }
-                let evicted = locker
-                    .evict_lru_head(data_block_mut)
-                    .map(|(k, v)| (k, v.take()));
+                let evicted = locker.evict_lru_head(data_block_mut);
                 let entry_ptr = locker.insert_with(
                     data_block_mut,
-                    BucketArray::<K, V, CACHE>::partial_hash(hash),
-                    || (key, Evictable::new(val)),
+                    BucketArray::<K, V, DoublyLinkedList, CACHE>::partial_hash(hash),
+                    || (key, val),
                     &guard,
                 );
-                locker.update_lru_tail(data_block_mut, &entry_ptr);
+                locker.update_lru_tail(&entry_ptr);
                 Ok(evicted)
             }
             Err(()) => Err((key, val)),
@@ -339,16 +332,14 @@ where
                     if entry_ptr.is_valid() {
                         return Err((key, val));
                     }
-                    let evicted = locker
-                        .evict_lru_head(data_block_mut)
-                        .map(|(k, v)| (k, v.take()));
+                    let evicted = locker.evict_lru_head(data_block_mut);
                     let entry_ptr = locker.insert_with(
                         data_block_mut,
-                        BucketArray::<K, V, CACHE>::partial_hash(hash),
-                        || (key, Evictable::new(val)),
+                        BucketArray::<K, V, DoublyLinkedList, CACHE>::partial_hash(hash),
+                        || (key, val),
                         &guard,
                     );
-                    locker.update_lru_tail(data_block_mut, &entry_ptr);
+                    locker.update_lru_tail(&entry_ptr);
                     return Ok(evicted);
                 };
             }
@@ -387,9 +378,7 @@ where
             )
             .ok()
             .flatten()?;
-        locked_entry
-            .locker
-            .update_lru_tail(locked_entry.data_block_mut, &locked_entry.entry_ptr);
+        locked_entry.locker.update_lru_tail(&locked_entry.entry_ptr);
         Some(OccupiedEntry {
             hashcache: self,
             locked_entry,
@@ -427,9 +416,7 @@ where
                 self.prolonged_guard_ref(&Guard::new()),
             ) {
                 if let Some(mut locked_entry) = result {
-                    locked_entry
-                        .locker
-                        .update_lru_tail(locked_entry.data_block_mut, &locked_entry.entry_ptr);
+                    locked_entry.locker.update_lru_tail(&locked_entry.entry_ptr);
                     return Some(OccupiedEntry {
                         hashcache: self,
                         locked_entry,
@@ -881,7 +868,7 @@ where
     #[inline]
     pub fn retain<F: FnMut(&K, &mut V) -> bool>(&self, mut pred: F) {
         #[allow(clippy::redundant_closure_for_method_calls)]
-        self.retain_entries(|k, v| pred(k, v), |l, d, e| l.remove_from_lru_list(d, e));
+        self.retain_entries(|k, v| pred(k, v), |l, e| l.remove_from_lru_list(e));
     }
 
     /// Retains the entries specified by the predicate.
@@ -926,7 +913,7 @@ where
                                 while entry_ptr.next(&locker, &guard) {
                                     let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
                                     if !filter(k, v) {
-                                        locker.remove_from_lru_list(data_block_mut, &entry_ptr);
+                                        locker.remove_from_lru_list(&entry_ptr);
                                         locker.erase(data_block_mut, &entry_ptr);
                                         removed = true;
                                     }
@@ -1066,7 +1053,10 @@ where
     }
 
     /// Clears the old array asynchronously.
-    async fn cleanse_old_array_async(&self, current_array: &BucketArray<K, Evictable<V>, CACHE>) {
+    async fn cleanse_old_array_async(
+        &self,
+        current_array: &BucketArray<K, V, DoublyLinkedList, CACHE>,
+    ) {
         while current_array.has_old_array() {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
@@ -1194,7 +1184,7 @@ where
     }
 }
 
-impl<K, V, H> HashTable<K, Evictable<V>, H, CACHE> for HashCache<K, V, H>
+impl<K, V, H> HashTable<K, V, H, DoublyLinkedList, CACHE> for HashCache<K, V, H>
 where
     K: Eq + Hash,
     H: BuildHasher,
@@ -1204,15 +1194,11 @@ where
         &self.build_hasher
     }
     #[inline]
-    fn try_clone(_entry: &(K, Evictable<V>)) -> Option<(K, Evictable<V>)> {
+    fn try_clone(_entry: &(K, V)) -> Option<(K, V)> {
         None
     }
     #[inline]
-    fn try_reset(value: &mut Evictable<V>) {
-        value.reset_link();
-    }
-    #[inline]
-    fn bucket_array(&self) -> &AtomicShared<BucketArray<K, Evictable<V>, CACHE>> {
+    fn bucket_array(&self) -> &AtomicShared<BucketArray<K, V, DoublyLinkedList, CACHE>> {
         &self.array
     }
     #[inline]
@@ -1475,10 +1461,9 @@ where
     #[must_use]
     pub fn remove_entry(mut self) -> (K, V) {
         let (k, v) = unsafe {
-            self.locked_entry.locker.remove_from_lru_list(
-                self.locked_entry.data_block_mut,
-                &self.locked_entry.entry_ptr,
-            );
+            self.locked_entry
+                .locker
+                .remove_from_lru_list(&self.locked_entry.entry_ptr);
             self.locked_entry
                 .locker
                 .erase(
@@ -1500,7 +1485,7 @@ where
                 }
             }
         }
-        (k, v.take())
+        (k, v)
     }
 
     /// Gets a reference to the value in the entry.
@@ -1683,19 +1668,14 @@ where
         let evicted = self
             .locked_entry
             .locker
-            .evict_lru_head(self.locked_entry.data_block_mut)
-            .map(|(k, v)| (k, v.take()));
-
+            .evict_lru_head(self.locked_entry.data_block_mut);
         let entry_ptr = self.locked_entry.locker.insert_with(
             self.locked_entry.data_block_mut,
-            BucketArray::<K, V, CACHE>::partial_hash(self.hash),
-            || (self.key, Evictable::new(val)),
+            BucketArray::<K, V, DoublyLinkedList, CACHE>::partial_hash(self.hash),
+            || (self.key, val),
             self.hashcache.prolonged_guard_ref(&Guard::new()),
         );
-        self.locked_entry
-            .locker
-            .update_lru_tail(self.locked_entry.data_block_mut, &entry_ptr);
-
+        self.locked_entry.locker.update_lru_tail(&entry_ptr);
         let occupied = OccupiedEntry {
             hashcache: self.hashcache,
             locked_entry: LockedEntry {

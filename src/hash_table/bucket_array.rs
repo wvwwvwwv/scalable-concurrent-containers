@@ -1,4 +1,4 @@
-use super::bucket::{Bucket, DataBlock, BUCKET_LEN, OPTIMISTIC};
+use super::bucket::{Bucket, DataBlock, LruList, BUCKET_LEN, OPTIMISTIC};
 use crate::ebr::{AtomicShared, Guard, Ptr, Tag};
 use std::alloc::{alloc, alloc_zeroed, dealloc, Layout};
 use std::mem::{align_of, needs_drop, size_of};
@@ -6,18 +6,18 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 
 /// [`BucketArray`] is a special purpose array to manage [`Bucket`] and [`DataBlock`].
-pub struct BucketArray<K: Eq, V, const TYPE: char> {
-    bucket_ptr: *const Bucket<K, V, TYPE>,
+pub struct BucketArray<K: Eq, V, L: LruList, const TYPE: char> {
+    bucket_ptr: *const Bucket<K, V, L, TYPE>,
     data_block_ptr: *const DataBlock<K, V, BUCKET_LEN>,
     array_len: usize,
     hash_offset: u32,
     sample_size: u16,
     bucket_ptr_offset: u16,
-    old_array: AtomicShared<BucketArray<K, V, TYPE>>,
+    old_array: AtomicShared<BucketArray<K, V, L, TYPE>>,
     num_cleared_buckets: AtomicUsize,
 }
 
-impl<K: Eq, V, const TYPE: char> BucketArray<K, V, TYPE> {
+impl<K: Eq, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     /// Returns the minimum capacity.
     #[inline]
     pub const fn minimum_capacity() -> usize {
@@ -34,14 +34,17 @@ impl<K: Eq, V, const TYPE: char> BucketArray<K, V, TYPE> {
     /// Creates a new [`BucketArray`] of the given capacity.
     ///
     /// `capacity` is the desired number entries, not the number of [`Bucket`] instances.
-    pub(crate) fn new(capacity: usize, old_array: AtomicShared<BucketArray<K, V, TYPE>>) -> Self {
+    pub(crate) fn new(
+        capacity: usize,
+        old_array: AtomicShared<BucketArray<K, V, L, TYPE>>,
+    ) -> Self {
         let log2_array_len = Self::calculate_log2_array_size(capacity);
         assert_ne!(log2_array_len, 0);
 
         let array_len = 1_usize << log2_array_len;
         unsafe {
             let (bucket_size, bucket_array_allocation_size, bucket_array_layout) =
-                Self::calculate_memory_layout::<Bucket<K, V, TYPE>>(array_len);
+                Self::calculate_memory_layout::<Bucket<K, V, L, TYPE>>(array_len);
             let bucket_array_ptr = alloc_zeroed(bucket_array_layout);
             assert!(
                 !bucket_array_ptr.is_null(),
@@ -58,9 +61,10 @@ impl<K: Eq, V, const TYPE: char> BucketArray<K, V, TYPE> {
             );
 
             #[allow(clippy::cast_ptr_alignment)]
-            let bucket_array_ptr = bucket_array_ptr
-                .add(bucket_array_ptr_offset)
-                .cast::<Bucket<K, V, TYPE>>();
+            let bucket_array_ptr =
+                bucket_array_ptr
+                    .add(bucket_array_ptr_offset)
+                    .cast::<Bucket<K, V, L, TYPE>>();
             #[allow(clippy::cast_possible_truncation)]
             let bucket_array_ptr_offset = bucket_array_ptr_offset as u16;
 
@@ -95,7 +99,7 @@ impl<K: Eq, V, const TYPE: char> BucketArray<K, V, TYPE> {
 
     /// Returns a reference to a [`Bucket`] at the given position.
     #[inline]
-    pub(crate) fn bucket(&self, index: usize) -> &Bucket<K, V, TYPE> {
+    pub(crate) fn bucket(&self, index: usize) -> &Bucket<K, V, L, TYPE> {
         debug_assert!(index < self.num_buckets());
         unsafe { &(*(self.bucket_ptr.add(index))) }
     }
@@ -103,7 +107,7 @@ impl<K: Eq, V, const TYPE: char> BucketArray<K, V, TYPE> {
     /// Returns a mutable reference to a [`Bucket`] at the given position.
     #[allow(clippy::mut_from_ref)]
     #[inline]
-    pub(crate) fn bucket_mut(&self, index: usize) -> &mut Bucket<K, V, TYPE> {
+    pub(crate) fn bucket_mut(&self, index: usize) -> &mut Bucket<K, V, L, TYPE> {
         debug_assert!(index < self.num_buckets());
         unsafe { &mut *self.bucket_ptr.add(index).cast_mut() }
     }
@@ -167,7 +171,7 @@ impl<K: Eq, V, const TYPE: char> BucketArray<K, V, TYPE> {
 
     /// Returns a [`Ptr`] to the old array.
     #[inline]
-    pub(crate) fn old_array<'g>(&self, guard: &'g Guard) -> Ptr<'g, BucketArray<K, V, TYPE>> {
+    pub(crate) fn old_array<'g>(&self, guard: &'g Guard) -> Ptr<'g, BucketArray<K, V, L, TYPE>> {
         self.old_array.load(Relaxed, guard)
     }
 
@@ -221,7 +225,7 @@ impl<K: Eq, V, const TYPE: char> BucketArray<K, V, TYPE> {
     }
 }
 
-impl<K: Eq, V, const TYPE: char> Drop for BucketArray<K, V, TYPE> {
+impl<K: Eq, V, L: LruList, const TYPE: char> Drop for BucketArray<K, V, L, TYPE> {
     fn drop(&mut self) {
         if TYPE != OPTIMISTIC && !self.old_array.is_null(Relaxed) {
             // The `BucketArray` should be dropped immediately.
@@ -257,7 +261,7 @@ impl<K: Eq, V, const TYPE: char> Drop for BucketArray<K, V, TYPE> {
                     .cast_mut()
                     .cast::<u8>()
                     .sub(self.bucket_ptr_offset as usize),
-                Self::calculate_memory_layout::<Bucket<K, V, TYPE>>(self.array_len).2,
+                Self::calculate_memory_layout::<Bucket<K, V, L, TYPE>>(self.array_len).2,
             );
             dealloc(
                 self.data_block_ptr.cast_mut().cast::<u8>(),
@@ -271,8 +275,14 @@ impl<K: Eq, V, const TYPE: char> Drop for BucketArray<K, V, TYPE> {
     }
 }
 
-unsafe impl<K: Eq + Send, V: Send, const TYPE: char> Send for BucketArray<K, V, TYPE> {}
-unsafe impl<K: Eq + Sync, V: Sync, const TYPE: char> Sync for BucketArray<K, V, TYPE> {}
+unsafe impl<K: Eq + Send, V: Send, L: LruList, const TYPE: char> Send
+    for BucketArray<K, V, L, TYPE>
+{
+}
+unsafe impl<K: Eq + Sync, V: Sync, L: LruList, const TYPE: char> Sync
+    for BucketArray<K, V, L, TYPE>
+{
+}
 
 #[cfg(test)]
 mod test {
@@ -283,7 +293,7 @@ mod test {
     #[test]
     fn alloc() {
         let start = Instant::now();
-        let array: BucketArray<usize, usize, OPTIMISTIC> =
+        let array: BucketArray<usize, usize, (), OPTIMISTIC> =
             BucketArray::new(1024 * 1024 * 32, AtomicShared::default());
         assert_eq!(array.num_buckets(), 1024 * 1024);
         let after_alloc = Instant::now();
@@ -297,7 +307,7 @@ mod test {
     #[test]
     fn array() {
         for s in 0..BUCKET_LEN * 4 {
-            let array: BucketArray<usize, usize, OPTIMISTIC> =
+            let array: BucketArray<usize, usize, (), OPTIMISTIC> =
                 BucketArray::new(s, AtomicShared::default());
             assert!(
                 array.num_buckets() >= (s.max(1) + BUCKET_LEN - 1) / BUCKET_LEN,

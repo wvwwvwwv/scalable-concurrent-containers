@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.0.15
+
+* Fix [#122](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/122).
+
 2.0.14
 
 * Fix [#120](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/120).

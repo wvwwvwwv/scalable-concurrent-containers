@@ -47,7 +47,7 @@ where
     V: 'static + Clone,
     H: BuildHasher,
 {
-    array: AtomicShared<BucketArray<K, V, OPTIMISTIC>>,
+    array: AtomicShared<BucketArray<K, V, (), OPTIMISTIC>>,
     minimum_capacity: AtomicUsize,
     build_hasher: H,
 }
@@ -74,7 +74,7 @@ where
     H: BuildHasher,
 {
     hashindex: &'h HashIndex<K, V, H>,
-    locked_entry: LockedEntry<'h, K, V, OPTIMISTIC>,
+    locked_entry: LockedEntry<'h, K, V, (), OPTIMISTIC>,
 }
 
 /// [`VacantEntry`] is a view into a vacant entry in a [`HashIndex`].
@@ -87,7 +87,7 @@ where
     hashindex: &'h HashIndex<K, V, H>,
     key: K,
     hash: u64,
-    locked_entry: LockedEntry<'h, K, V, OPTIMISTIC>,
+    locked_entry: LockedEntry<'h, K, V, (), OPTIMISTIC>,
 }
 
 /// [`Reserve`] keeps the capacity of the associated [`HashIndex`] higher than a certain level.
@@ -113,9 +113,9 @@ where
     H: BuildHasher,
 {
     hashindex: &'h HashIndex<K, V, H>,
-    current_array: Option<&'g BucketArray<K, V, OPTIMISTIC>>,
+    current_array: Option<&'g BucketArray<K, V, (), OPTIMISTIC>>,
     current_index: usize,
-    current_bucket: Option<&'g Bucket<K, V, OPTIMISTIC>>,
+    current_bucket: Option<&'g Bucket<K, V, (), OPTIMISTIC>>,
     current_entry_ptr: EntryPtr<'g, K, V, OPTIMISTIC>,
     guard: &'g Guard,
 }
@@ -168,7 +168,7 @@ where
             (AtomicShared::null(), AtomicUsize::new(0))
         } else {
             let array = unsafe {
-                Shared::new_unchecked(BucketArray::<K, V, OPTIMISTIC>::new(
+                Shared::new_unchecked(BucketArray::<K, V, (), OPTIMISTIC>::new(
                     capacity,
                     AtomicShared::null(),
                 ))
@@ -768,7 +768,7 @@ where
     /// ```
     #[inline]
     pub fn retain<F: FnMut(&K, &V) -> bool>(&self, mut pred: F) {
-        self.retain_entries(|k, v| pred(k, v), |_, _, _| ());
+        self.retain_entries(|k, v| pred(k, v), |_, _| ());
     }
 
     /// Retains the entries specified by the predicate.
@@ -1022,7 +1022,7 @@ where
     }
 
     /// Clears the old array asynchronously.
-    async fn cleanse_old_array_async(&self, current_array: &BucketArray<K, V, OPTIMISTIC>) {
+    async fn cleanse_old_array_async(&self, current_array: &BucketArray<K, V, (), OPTIMISTIC>) {
         while current_array.has_old_array() {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
@@ -1138,7 +1138,7 @@ where
     }
 }
 
-impl<K, V, H> HashTable<K, V, H, OPTIMISTIC> for HashIndex<K, V, H>
+impl<K, V, H> HashTable<K, V, H, (), OPTIMISTIC> for HashIndex<K, V, H>
 where
     K: 'static + Clone + Eq + Hash,
     V: 'static + Clone,
@@ -1153,9 +1153,7 @@ where
         Some((entry.0.clone(), entry.1.clone()))
     }
     #[inline]
-    fn try_reset(_: &mut V) {}
-    #[inline]
-    fn bucket_array(&self) -> &AtomicShared<BucketArray<K, V, OPTIMISTIC>> {
+    fn bucket_array(&self) -> &AtomicShared<BucketArray<K, V, (), OPTIMISTIC>> {
         &self.array
     }
     #[inline]
@@ -1677,7 +1675,7 @@ where
         let guard = Guard::new();
         let entry_ptr = self.locked_entry.locker.insert_with(
             self.locked_entry.data_block_mut,
-            BucketArray::<K, V, OPTIMISTIC>::partial_hash(self.hash),
+            BucketArray::<K, V, (), OPTIMISTIC>::partial_hash(self.hash),
             || (self.key, val),
             self.hashindex.prolonged_guard_ref(&guard),
         );

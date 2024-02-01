@@ -1484,6 +1484,67 @@ mod hashcache_test {
         assert_eq!(INST_CNT.load(Relaxed), 0);
     }
 
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn put_remove_maintain() {
+        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+        for _ in 0..64 {
+            let hashcache: Arc<HashCache<usize, R>> = Arc::new(HashCache::with_capacity(256, 1024));
+            let num_tasks = 8;
+            let workload_size = 2048;
+            let mut task_handles = Vec::with_capacity(num_tasks);
+            let barrier = Arc::new(AsyncBarrier::new(num_tasks));
+            let evicted = Arc::new(AtomicUsize::new(0));
+            let removed = Arc::new(AtomicUsize::new(0));
+            for task_id in 0..num_tasks {
+                let barrier_clone = barrier.clone();
+                let evicted_clone = evicted.clone();
+                let removed_clone = removed.clone();
+                let hashcache_clone = hashcache.clone();
+                task_handles.push(tokio::task::spawn(async move {
+                    barrier_clone.wait().await;
+                    let range = (task_id * workload_size)..((task_id + 1) * workload_size);
+                    let mut evicted = 0;
+                    for key in range.clone() {
+                        let result = if key % 2 == 0 {
+                            hashcache_clone.put(key, R::new(&INST_CNT))
+                        } else {
+                            hashcache_clone.put_async(key, R::new(&INST_CNT)).await
+                        };
+                        match result {
+                            Ok(Some(_)) => evicted += 1,
+                            Ok(_) => (),
+                            Err(_) => unreachable!(),
+                        }
+                    }
+                    evicted_clone.fetch_add(evicted, Relaxed);
+                    let mut removed = 0;
+                    for key in range.clone() {
+                        let result = if key % 2 == 0 {
+                            hashcache_clone.remove(&key)
+                        } else {
+                            hashcache_clone.remove_async(&key).await
+                        };
+                        if result.is_some() {
+                            removed += 1;
+                        }
+                    }
+                    removed_clone.fetch_add(removed, Relaxed);
+                }));
+            }
+
+            for r in futures::future::join_all(task_handles).await {
+                assert!(r.is_ok());
+            }
+            assert_eq!(
+                evicted.load(Relaxed) + removed.load(Relaxed),
+                workload_size * num_tasks
+            );
+            assert_eq!(hashcache.len(), 0);
+            assert_eq!(INST_CNT.load(Relaxed), 0);
+        }
+    }
+
     proptest! {
         #[cfg_attr(miri, ignore)]
         #[test]

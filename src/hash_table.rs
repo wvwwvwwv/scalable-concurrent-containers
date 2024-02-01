@@ -4,7 +4,7 @@ pub mod bucket_array;
 use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::exit_guard::ExitGuard;
 use crate::wait_queue::{AsyncWait, DeriveAsyncWait};
-use bucket::{DataBlock, EntryPtr, Locker, Reader, BUCKET_LEN, CACHE, OPTIMISTIC};
+use bucket::{DataBlock, EntryPtr, Locker, LruList, Reader, BUCKET_LEN, CACHE, OPTIMISTIC};
 use bucket_array::BucketArray;
 use std::borrow::Borrow;
 use std::hash::{BuildHasher, Hash, Hasher};
@@ -13,7 +13,7 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 use std::sync::atomic::{fence, AtomicUsize};
 
 /// `HashTable` defines common functions for hash table implementations.
-pub(super) trait HashTable<K, V, H, const TYPE: char>
+pub(super) trait HashTable<K, V, H, L: LruList, const TYPE: char>
 where
     K: Eq + Hash,
     H: BuildHasher,
@@ -39,13 +39,8 @@ where
     /// It does not clone unless `TYPE` is `OPTIMISTIC` thus `K` and `V` both being `Clone`.
     fn try_clone(entry: &(K, V)) -> Option<(K, V)>;
 
-    /// Tries to reset the instances pointed by `entry`.
-    ///
-    /// It does not clone unless `TYPE` is `OPTIMISTIC` thus `K` and `V` both being `Clone`.
-    fn try_reset(value: &mut V);
-
     /// Returns a reference to the [`BucketArray`] pointer.
-    fn bucket_array(&self) -> &AtomicShared<BucketArray<K, V, TYPE>>;
+    fn bucket_array(&self) -> &AtomicShared<BucketArray<K, V, L, TYPE>>;
 
     /// Calculates the bucket index from the supplied key.
     #[inline]
@@ -100,7 +95,7 @@ where
     ///
     /// If no array has been allocated, it allocates a new one and returns it.
     #[inline]
-    fn get_current_array<'g>(&self, guard: &'g Guard) -> &'g BucketArray<K, V, TYPE> {
+    fn get_current_array<'g>(&self, guard: &'g Guard) -> &'g BucketArray<K, V, L, TYPE> {
         // An acquire fence is required to correctly load the contents of the array.
         let current_array_ptr = self.bucket_array().load(Acquire, guard);
         if let Some(current_array) = current_array_ptr.as_ref() {
@@ -111,7 +106,7 @@ where
             let current_array_ptr = match self.bucket_array().compare_exchange(
                 Ptr::null(),
                 (
-                    Some(Shared::new_unchecked(BucketArray::<K, V, TYPE>::new(
+                    Some(Shared::new_unchecked(BucketArray::<K, V, L, TYPE>::new(
                         self.minimum_capacity().load(Relaxed),
                         AtomicShared::null(),
                     ))),
@@ -185,7 +180,7 @@ where
     /// Estimates the number of entries by sampling the specified number of buckets.
     #[inline]
     fn sample(
-        current_array: &BucketArray<K, V, TYPE>,
+        current_array: &BucketArray<K, V, L, TYPE>,
         sampling_index: usize,
         sample_size: usize,
     ) -> usize {
@@ -201,7 +196,7 @@ where
     /// Checks whether rebuilding the entire hash table is required.
     #[inline]
     fn check_rebuild(
-        current_array: &BucketArray<K, V, TYPE>,
+        current_array: &BucketArray<K, V, L, TYPE>,
         sampling_index: usize,
         sample_size: usize,
     ) -> bool {
@@ -242,7 +237,7 @@ where
                 }
                 locker.insert_with(
                     data_block_mut,
-                    BucketArray::<K, V, TYPE>::partial_hash(hash),
+                    BucketArray::<K, V, L, TYPE>::partial_hash(hash),
                     || (key, val),
                     guard,
                 );
@@ -254,7 +249,7 @@ where
 
     /// Returns a [`LockedEntry`] pointing to the first occupied entry.
     #[inline]
-    fn lock_first_entry<'g>(&self, guard: &'g Guard) -> Option<LockedEntry<'g, K, V, TYPE>> {
+    fn lock_first_entry<'g>(&self, guard: &'g Guard) -> Option<LockedEntry<'g, K, V, L, TYPE>> {
         let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
         while let Some(current_array) = current_array_ptr.as_ref() {
             self.clear_old_array(current_array, guard);
@@ -309,7 +304,7 @@ where
                         if let Some((k, v)) = old_array.bucket(index).search(
                             old_array.data_block(index),
                             key,
-                            BucketArray::<K, V, TYPE>::partial_hash(hash),
+                            BucketArray::<K, V, L, TYPE>::partial_hash(hash),
                             guard,
                         ) {
                             return Ok(Some((k, v)));
@@ -326,7 +321,7 @@ where
                 if let Some(entry) = bucket.search(
                     current_array.data_block(index),
                     key,
-                    BucketArray::<K, V, TYPE>::partial_hash(hash),
+                    BucketArray::<K, V, L, TYPE>::partial_hash(hash),
                     guard,
                 ) {
                     return Ok(Some((&entry.0, &entry.1)));
@@ -341,7 +336,7 @@ where
                     if let Some((key, val)) = reader.search(
                         current_array.data_block(index),
                         key,
-                        BucketArray::<K, V, TYPE>::partial_hash(hash),
+                        BucketArray::<K, V, L, TYPE>::partial_hash(hash),
                         guard,
                     ) {
                         return Ok(Some((key, val)));
@@ -371,7 +366,7 @@ where
         hash: u64,
         async_wait: &mut D,
         guard: &'g Guard,
-    ) -> Result<Option<LockedEntry<'g, K, V, TYPE>>, ()>
+    ) -> Result<Option<LockedEntry<'g, K, V, L, TYPE>>, ()>
     where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
@@ -395,7 +390,7 @@ where
                 let entry_ptr = locker.get(
                     data_block_mut,
                     key,
-                    BucketArray::<K, V, TYPE>::partial_hash(hash),
+                    BucketArray::<K, V, L, TYPE>::partial_hash(hash),
                     guard,
                 );
                 if entry_ptr.is_valid() {
@@ -464,7 +459,7 @@ where
                 let mut entry_ptr = locker.get(
                     data_block_mut,
                     key,
-                    BucketArray::<K, V, TYPE>::partial_hash(hash),
+                    BucketArray::<K, V, L, TYPE>::partial_hash(hash),
                     guard,
                 );
                 if entry_ptr.is_valid()
@@ -520,7 +515,7 @@ where
     #[inline]
     fn retain_entries<
         F: FnMut(&K, &mut V) -> bool,
-        E: Fn(&mut Locker<K, V, TYPE>, &mut DataBlock<K, V, BUCKET_LEN>, &EntryPtr<K, V, TYPE>),
+        E: Fn(&mut Locker<K, V, L, TYPE>, &EntryPtr<K, V, TYPE>),
     >(
         &self,
         mut pred: F,
@@ -539,7 +534,7 @@ where
                     while entry_ptr.next(&locker, &guard) {
                         let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
                         if !pred(k, v) {
-                            erase_callback(&mut locker, data_block_mut, &entry_ptr);
+                            erase_callback(&mut locker, &entry_ptr);
                             locker.erase(data_block_mut, &entry_ptr);
                             removed = true;
                         }
@@ -604,7 +599,7 @@ where
         hash: u64,
         async_wait: &mut D,
         guard: &'g Guard,
-    ) -> Result<LockedEntry<'g, K, V, TYPE>, ()>
+    ) -> Result<LockedEntry<'g, K, V, L, TYPE>, ()>
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
@@ -653,7 +648,7 @@ where
                 let entry_ptr = locker.get(
                     data_block_mut,
                     key,
-                    BucketArray::<K, V, TYPE>::partial_hash(hash),
+                    BucketArray::<K, V, L, TYPE>::partial_hash(hash),
                     guard,
                 );
                 return Ok(LockedEntry {
@@ -674,8 +669,8 @@ where
     #[inline]
     fn move_entry<Q, D>(
         &self,
-        current_array: &BucketArray<K, V, TYPE>,
-        old_array: &BucketArray<K, V, TYPE>,
+        current_array: &BucketArray<K, V, L, TYPE>,
+        old_array: &BucketArray<K, V, L, TYPE>,
         hash: u64,
         async_wait: &mut D,
         guard: &Guard,
@@ -714,10 +709,10 @@ where
     #[inline]
     fn relocate_bucket<Q, D, const TRY_LOCK: bool>(
         &self,
-        current_array: &BucketArray<K, V, TYPE>,
-        old_array: &BucketArray<K, V, TYPE>,
+        current_array: &BucketArray<K, V, L, TYPE>,
+        old_array: &BucketArray<K, V, L, TYPE>,
         old_index: usize,
-        old_locker: &mut Locker<K, V, TYPE>,
+        old_locker: &mut Locker<K, V, L, TYPE>,
         async_wait: &mut D,
         guard: &Guard,
     ) -> Result<(), ()>
@@ -737,7 +732,7 @@ where
                 old_index * ratio
             };
 
-            let mut target_buckets: [Option<Locker<K, V, TYPE>>; usize::BITS as usize / 2] =
+            let mut target_buckets: [Option<Locker<K, V, L, TYPE>>; usize::BITS as usize / 2] =
                 Default::default();
             let mut max_index = 0;
             let mut entry_ptr = EntryPtr::new(guard);
@@ -758,7 +753,7 @@ where
                             new_index - target_index
                                 < (current_array.num_buckets() / old_array.num_buckets())
                         );
-                        let partial_hash = BucketArray::<K, V, TYPE>::partial_hash(hash);
+                        let partial_hash = BucketArray::<K, V, L, TYPE>::partial_hash(hash);
                         (new_index, partial_hash)
                     };
 
@@ -801,14 +796,7 @@ where
                         // removed from the map, any map entry modification should take place after all
                         // the memory is reserved.
                         entry_clone.unwrap_or_else(|| {
-                            let (k, mut v) =
-                                old_locker.extract(old_data_block_mut, &mut entry_ptr, guard);
-
-                            // If there is linked list information left in the value instance, it has to be
-                            // reset.
-                            Self::try_reset(&mut v);
-
-                            (k, v)
+                            old_locker.extract(old_data_block_mut, &mut entry_ptr, guard)
                         })
                     },
                     guard,
@@ -827,7 +815,7 @@ where
     }
 
     /// Clears the old array.
-    fn clear_old_array(&self, current_array: &BucketArray<K, V, TYPE>, guard: &Guard) {
+    fn clear_old_array(&self, current_array: &BucketArray<K, V, L, TYPE>, guard: &Guard) {
         while current_array.has_old_array() {
             if self.incremental_rehash::<_, _, false>(current_array, &mut (), guard) == Ok(true) {
                 break;
@@ -840,7 +828,7 @@ where
     /// Returns `true` if `old_array` is null.
     fn incremental_rehash<Q, D, const TRY_LOCK: bool>(
         &self,
-        current_array: &BucketArray<K, V, TYPE>,
+        current_array: &BucketArray<K, V, L, TYPE>,
         async_wait: &mut D,
         guard: &Guard,
     ) -> Result<bool, ()>
@@ -937,7 +925,7 @@ where
     #[inline]
     fn try_enlarge(
         &self,
-        current_array: &BucketArray<K, V, TYPE>,
+        current_array: &BucketArray<K, V, L, TYPE>,
         index: usize,
         mut num_entries: usize,
         guard: &Guard,
@@ -961,7 +949,7 @@ where
     #[inline]
     fn try_shrink_or_rebuild(
         &self,
-        current_array: &BucketArray<K, V, TYPE>,
+        current_array: &BucketArray<K, V, L, TYPE>,
         index: usize,
         guard: &Guard,
     ) {
@@ -1042,7 +1030,7 @@ where
                 // Shrink to fit.
                 estimated_num_entries
                     .max(minimum_capacity)
-                    .max(BucketArray::<K, V, TYPE>::minimum_capacity())
+                    .max(BucketArray::<K, V, L, TYPE>::minimum_capacity())
                     .next_power_of_two()
             } else {
                 capacity
@@ -1100,7 +1088,7 @@ where
                     }
                 }
 
-                let allocated_array: Option<Shared<BucketArray<K, V, TYPE>>> = None;
+                let allocated_array: Option<Shared<BucketArray<K, V, L, TYPE>>> = None;
                 let mut mutex_guard = ExitGuard::new(allocated_array, |allocated_array| {
                     if let Some(allocated_array) = allocated_array {
                         // A new array was allocated.
@@ -1114,7 +1102,7 @@ where
                 });
                 if try_resize || try_rebuild {
                     mutex_guard.replace(unsafe {
-                        Shared::new_unchecked(BucketArray::<K, V, TYPE>::new(
+                        Shared::new_unchecked(BucketArray::<K, V, L, TYPE>::new(
                             new_capacity,
                             self.bucket_array().clone(Relaxed, guard),
                         ))
@@ -1132,9 +1120,9 @@ where
 }
 
 /// [`LockedEntry`] comprises pieces of data that are required for exclusive access to an entry.
-pub(super) struct LockedEntry<'h, K: Eq + Hash, V, const TYPE: char> {
+pub(super) struct LockedEntry<'h, K: Eq + Hash, V, L: LruList, const TYPE: char> {
     /// The [`Locker`] holding the exclusive lock on the bucket.
-    pub(super) locker: Locker<'h, K, V, TYPE>,
+    pub(super) locker: Locker<'h, K, V, L, TYPE>,
 
     /// The [`DataBlock`] that may contain desired entry data.
     pub(super) data_block_mut: &'h mut DataBlock<K, V, BUCKET_LEN>,
@@ -1146,11 +1134,11 @@ pub(super) struct LockedEntry<'h, K: Eq + Hash, V, const TYPE: char> {
     pub(super) index: usize,
 }
 
-impl<'h, K: Eq + Hash + 'h, V: 'h, const TYPE: char> LockedEntry<'h, K, V, TYPE> {
+impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h, K, V, L, TYPE> {
     /// Gets the first occupied entry.
-    pub(super) async fn first_entry_async<H: BuildHasher, T: HashTable<K, V, H, TYPE>>(
+    pub(super) async fn first_entry_async<H: BuildHasher, T: HashTable<K, V, H, L, TYPE>>(
         hash_table: &'h T,
-    ) -> Option<LockedEntry<'h, K, V, TYPE>> {
+    ) -> Option<LockedEntry<'h, K, V, L, TYPE>> {
         let mut current_array_holder = hash_table.bucket_array().get_shared(Acquire, &Guard::new());
         while let Some(current_array) = current_array_holder.take() {
             while current_array.has_old_array() {
@@ -1216,7 +1204,7 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, const TYPE: char> LockedEntry<'h, K, V, TYPE>
     }
 
     /// Returns a [`LockedEntry`] owning the next entry.
-    pub(super) fn next<H: BuildHasher, T: HashTable<K, V, H, TYPE>>(
+    pub(super) fn next<H: BuildHasher, T: HashTable<K, V, H, L, TYPE>>(
         mut self,
         hash_table: &'h T,
     ) -> Option<Self> {
@@ -1266,10 +1254,10 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, const TYPE: char> LockedEntry<'h, K, V, TYPE>
     }
 
     /// Returns a [`LockedEntry`] owning the next entry.
-    pub(super) async fn next_async<H: BuildHasher, T: HashTable<K, V, H, TYPE>>(
+    pub(super) async fn next_async<H: BuildHasher, T: HashTable<K, V, H, L, TYPE>>(
         mut self,
         hash_table: &'h T,
-    ) -> Option<LockedEntry<'h, K, V, TYPE>> {
+    ) -> Option<LockedEntry<'h, K, V, L, TYPE>> {
         if self
             .entry_ptr
             .next(&self.locker, hash_table.prolonged_guard_ref(&Guard::new()))
@@ -1333,7 +1321,7 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, const TYPE: char> LockedEntry<'h, K, V, TYPE>
 }
 
 /// [`LockedEntry`] is safe to be sent across threads and awaits as long as the entry is.
-unsafe impl<'h, K: Eq + Hash + Send, V: Send, const TYPE: char> Send
-    for LockedEntry<'h, K, V, TYPE>
+unsafe impl<'h, K: Eq + Hash + Send, V: Send, L: LruList, const TYPE: char> Send
+    for LockedEntry<'h, K, V, L, TYPE>
 {
 }

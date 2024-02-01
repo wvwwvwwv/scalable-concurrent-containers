@@ -68,7 +68,7 @@ where
     K: Eq + Hash,
     H: BuildHasher,
 {
-    array: AtomicShared<BucketArray<K, V, SEQUENTIAL>>,
+    array: AtomicShared<BucketArray<K, V, (), SEQUENTIAL>>,
     minimum_capacity: AtomicUsize,
     build_hasher: H,
 }
@@ -93,7 +93,7 @@ where
     H: BuildHasher,
 {
     hashmap: &'h HashMap<K, V, H>,
-    locked_entry: LockedEntry<'h, K, V, SEQUENTIAL>,
+    locked_entry: LockedEntry<'h, K, V, (), SEQUENTIAL>,
 }
 
 /// [`VacantEntry`] is a view into a vacant entry in a [`HashMap`].
@@ -105,7 +105,7 @@ where
     hashmap: &'h HashMap<K, V, H>,
     key: K,
     hash: u64,
-    locked_entry: LockedEntry<'h, K, V, SEQUENTIAL>,
+    locked_entry: LockedEntry<'h, K, V, (), SEQUENTIAL>,
 }
 
 /// [`Reserve`] keeps the capacity of the associated [`HashMap`] higher than a certain level.
@@ -166,7 +166,7 @@ where
             (AtomicShared::null(), AtomicUsize::new(0))
         } else {
             let array = unsafe {
-                Shared::new_unchecked(BucketArray::<K, V, SEQUENTIAL>::new(
+                Shared::new_unchecked(BucketArray::<K, V, (), SEQUENTIAL>::new(
                     capacity,
                     AtomicShared::null(),
                 ))
@@ -998,7 +998,7 @@ where
     /// ```
     #[inline]
     pub fn retain<F: FnMut(&K, &mut V) -> bool>(&self, pred: F) {
-        self.retain_entries(pred, |_, _, _| ());
+        self.retain_entries(pred, |_, _| ());
     }
 
     /// Retains the entries specified by the predicate.
@@ -1309,7 +1309,7 @@ where
     }
 
     /// Clears the old array asynchronously.
-    async fn cleanse_old_array_async(&self, current_array: &BucketArray<K, V, SEQUENTIAL>) {
+    async fn cleanse_old_array_async(&self, current_array: &BucketArray<K, V, (), SEQUENTIAL>) {
         while current_array.has_old_array() {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
@@ -1448,7 +1448,7 @@ where
     }
 }
 
-impl<K, V, H> HashTable<K, V, H, SEQUENTIAL> for HashMap<K, V, H>
+impl<K, V, H> HashTable<K, V, H, (), SEQUENTIAL> for HashMap<K, V, H>
 where
     K: Eq + Hash,
     H: BuildHasher,
@@ -1462,9 +1462,7 @@ where
         None
     }
     #[inline]
-    fn try_reset(_: &mut V) {}
-    #[inline]
-    fn bucket_array(&self) -> &AtomicShared<BucketArray<K, V, SEQUENTIAL>> {
+    fn bucket_array(&self) -> &AtomicShared<BucketArray<K, V, (), SEQUENTIAL>> {
         &self.array
     }
     #[inline]
@@ -1999,7 +1997,7 @@ where
         let guard = Guard::new();
         let entry_ptr = self.locked_entry.locker.insert_with(
             self.locked_entry.data_block_mut,
-            BucketArray::<K, V, SEQUENTIAL>::partial_hash(self.hash),
+            BucketArray::<K, V, (), SEQUENTIAL>::partial_hash(self.hash),
             || (self.key, val),
             self.hashmap.prolonged_guard_ref(&guard),
         );
