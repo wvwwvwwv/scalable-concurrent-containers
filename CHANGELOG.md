@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.0.16
+
+* Fix an issue with `HashCache` where a debug assertion may fail when it shrinks.
+
 2.0.15
 
 * Fix [#122](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/122).

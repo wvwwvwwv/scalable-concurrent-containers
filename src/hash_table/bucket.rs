@@ -629,8 +629,6 @@ impl<'g, K: Eq, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
         assert!(self.bucket.num_entries != u32::MAX, "array overflow");
 
         let free_index = self.bucket.metadata.occupied_bitmap.trailing_ones() as usize;
-        debug_assert!(free_index != BUCKET_LEN || TYPE != CACHE);
-
         if free_index == BUCKET_LEN {
             let mut link_ptr = self.bucket.metadata.link.load(Acquire, guard);
             while let Some(link_mut) = unsafe { link_ptr.as_ptr().cast_mut().as_mut() } {
@@ -698,10 +696,7 @@ impl<'g, K: Eq, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
         entry_ptr: &EntryPtr<K, V, TYPE>,
     ) -> Option<(K, V)> {
         debug_assert_ne!(entry_ptr.current_index, usize::MAX);
-
-        if TYPE == CACHE {
-            self.remove_from_lru_list(entry_ptr);
-        }
+        debug_assert_ne!(entry_ptr.current_index, BUCKET_LEN);
 
         self.bucket.num_entries -= 1;
         let link_ptr = entry_ptr.current_link_ptr.as_ptr().cast_mut();
@@ -737,6 +732,11 @@ impl<'g, K: Eq, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
                 self.bucket.metadata.occupied_bitmap & (1_u32 << entry_ptr.current_index),
                 0
             );
+
+            if TYPE == CACHE {
+                self.remove_from_lru_list(entry_ptr);
+            }
+
             self.bucket.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
             return Some(unsafe { data_block[entry_ptr.current_index].as_mut_ptr().read() });
         }
@@ -841,8 +841,8 @@ impl<'g, K: Eq, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
         data_block: &mut DataBlock<K, V, BUCKET_LEN>,
     ) -> Option<(K, V)> {
         debug_assert_eq!(TYPE, CACHE);
-        debug_assert!(self.metadata.link.is_null(Relaxed));
-        if self.num_entries() == BUCKET_LEN {
+
+        if self.metadata.occupied_bitmap == 0b1111_1111_1111_1111_1111_1111_1111_1111 {
             self.num_entries -= 1;
             let tail = self.metadata.removed_bitmap_or_lru_tail;
             let evicted = if let Some((evicted, new_tail)) = self.lru_list.evict(tail) {
@@ -856,33 +856,38 @@ impl<'g, K: Eq, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
             self.metadata.occupied_bitmap &= !(1_u32 << evicted);
             return Some(unsafe { data_block[evicted].as_mut_ptr().read() });
         }
-
         None
     }
 
     /// Sets the entry having been just accessed.
     pub(crate) fn update_lru_tail(&mut self, entry_ptr: &EntryPtr<K, V, TYPE>) {
         debug_assert_eq!(TYPE, CACHE);
-        debug_assert!(self.metadata.link.is_null(Relaxed));
+        debug_assert_ne!(entry_ptr.current_index, usize::MAX);
+        debug_assert_ne!(entry_ptr.current_index, BUCKET_LEN);
 
-        #[allow(clippy::cast_possible_truncation)]
-        let entry = entry_ptr.current_index as u8;
-        let tail = self.metadata.removed_bitmap_or_lru_tail;
-        if let Some(new_tail) = self.lru_list.promote(tail, entry) {
-            self.metadata.removed_bitmap_or_lru_tail = new_tail;
+        if entry_ptr.current_link_ptr.is_null() {
+            #[allow(clippy::cast_possible_truncation)]
+            let entry = entry_ptr.current_index as u8;
+            let tail = self.metadata.removed_bitmap_or_lru_tail;
+            if let Some(new_tail) = self.lru_list.promote(tail, entry) {
+                self.metadata.removed_bitmap_or_lru_tail = new_tail;
+            }
         }
     }
 
     /// Removes the entry from the LRU linked list.
     fn remove_from_lru_list(&mut self, entry_ptr: &EntryPtr<K, V, TYPE>) {
         debug_assert_eq!(TYPE, CACHE);
-        debug_assert!(self.metadata.link.is_null(Relaxed));
+        debug_assert_ne!(entry_ptr.current_index, usize::MAX);
+        debug_assert_ne!(entry_ptr.current_index, BUCKET_LEN);
 
-        #[allow(clippy::cast_possible_truncation)]
-        let entry = entry_ptr.current_index as u8;
-        let tail = self.metadata.removed_bitmap_or_lru_tail;
-        if let Some(new_tail) = self.lru_list.remove(tail, entry) {
-            self.metadata.removed_bitmap_or_lru_tail = new_tail;
+        if entry_ptr.current_link_ptr.is_null() {
+            #[allow(clippy::cast_possible_truncation)]
+            let entry = entry_ptr.current_index as u8;
+            let tail = self.metadata.removed_bitmap_or_lru_tail;
+            if let Some(new_tail) = self.lru_list.remove(tail, entry) {
+                self.metadata.removed_bitmap_or_lru_tail = new_tail;
+            }
         }
     }
 
@@ -1072,7 +1077,6 @@ impl<K: Eq, V, const LEN: usize> Default for Metadata<K, V, LEN> {
 impl LruList for () {}
 
 impl LruList for DoublyLinkedList {
-    #[allow(clippy::cast_possible_truncation)]
     #[inline]
     fn evict(&mut self, tail: u32) -> Option<(u8, u32)> {
         if tail == 0 {
@@ -1084,7 +1088,10 @@ impl LruList for DoublyLinkedList {
                 0
             } else {
                 let new_lru = self[lru as usize].0;
-                self[new_lru as usize].1 = tail as u8 - 1;
+                {
+                    #![allow(clippy::cast_possible_truncation)]
+                    self[new_lru as usize].1 = tail as u8 - 1;
+                }
                 self[tail as usize - 1].0 = new_lru;
                 tail
             };
@@ -1131,7 +1138,6 @@ impl LruList for DoublyLinkedList {
         new_tail
     }
 
-    #[allow(clippy::cast_possible_truncation)]
     #[inline]
     fn promote(&mut self, tail: u32, entry: u8) -> Option<u32> {
         if tail == u32::from(entry) + 1 {
@@ -1165,7 +1171,10 @@ impl LruList for DoublyLinkedList {
 
         // Adjust `head -> new head`
         self[tail as usize - 1].0 = entry;
-        self[entry as usize].1 = tail as u8 - 1;
+        {
+            #![allow(clippy::cast_possible_truncation)]
+            self[entry as usize].1 = tail as u8 - 1;
+        }
 
         // Update `head`.
         Some(u32::from(entry) + 1)
@@ -1248,6 +1257,41 @@ mod test {
                 let evicted = locker.evict_lru_head(&mut data_block);
                 assert_eq!(v >= BUCKET_LEN, evicted.is_some());
                 locker.insert_with(&mut data_block, 0, || (v, v), &guard);
+                assert_eq!(locker.metadata.removed_bitmap_or_lru_tail, 0);
+            }
+        }
+
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn evict_overflowed(xs in 1..BUCKET_LEN * 2) {
+            let mut data_block: DataBlock<usize, usize, BUCKET_LEN> =
+                unsafe { MaybeUninit::uninit().assume_init() };
+            let mut bucket: Bucket<usize, usize, DoublyLinkedList, CACHE> = default_bucket();
+            let guard = Guard::new();
+            let mut locker = Locker::lock(&mut bucket, &guard).unwrap();
+            for _ in 0..3 {
+                for v in 0..xs {
+                    let entry_ptr = locker.insert_with(&mut data_block, 0, || (v, v), &guard);
+                    locker.update_lru_tail(&entry_ptr);
+                }
+
+                let mut evicted_key = None;
+                if xs >= BUCKET_LEN {
+                    let evicted = locker.evict_lru_head(&mut data_block);
+                    assert!(evicted.is_some());
+                    evicted_key = evicted.map(|(k, _)| k);
+                }
+                assert_ne!(locker.metadata.removed_bitmap_or_lru_tail, 0);
+
+                for v in 0..xs {
+                    let entry_ptr = locker.get(&data_block, &v, 0, &guard);
+                    if entry_ptr.is_valid() {
+                        let erased = locker.erase(&mut data_block, &entry_ptr);
+                        assert!(erased.is_some());
+                    } else {
+                        assert_eq!(v, evicted_key.unwrap());
+                    }
+                }
                 assert_eq!(locker.metadata.removed_bitmap_or_lru_tail, 0);
             }
         }
