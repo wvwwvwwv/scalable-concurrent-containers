@@ -25,9 +25,9 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 /// recently used entry within the bucket.
 ///
 /// [`HashCache`] and [`HashMap`](super::HashMap) share the same runtime characteristic, except
-/// that each entry additionally uses 2-byte space for a doubly linked list, and [`HashCache`]
-/// starts evicting least recently used entries if the bucket is full instead of allocating linked
-/// list of entries.
+/// that each entry in a [`HashCache`] additionally uses 2-byte space for a doubly linked list, and
+/// a [`HashCache`] starts evicting least recently used entries if the bucket is full instead of
+/// allocating linked list of entries.
 ///
 /// ### Unwind safety
 ///

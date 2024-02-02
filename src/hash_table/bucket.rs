@@ -23,11 +23,11 @@ pub struct Bucket<K: Eq, V, L: LruList, const TYPE: char> {
     /// The metadata of the [`Bucket`].
     metadata: Metadata<K, V, BUCKET_LEN>,
 
-    /// The LRU list of the [`Bucket`].
-    lru_list: L,
-
     /// The wait queue of the [`Bucket`].
     wait_queue: WaitQueue,
+
+    /// The LRU list of the [`Bucket`].
+    lru_list: L,
 }
 
 /// Least-recently-used list interface.
@@ -1184,7 +1184,6 @@ impl LruList for DoublyLinkedList {
 impl<K: Eq, V, const LEN: usize> LinkedBucket<K, V, LEN> {
     /// Creates an empty [`LinkedBucket`].
     fn new(next: Option<Shared<LinkedBucket<K, V, LINKED_BUCKET_LEN>>>) -> Self {
-        #[allow(clippy::uninit_assumed_init)]
         Self {
             metadata: Metadata {
                 link: next.map_or_else(AtomicShared::null, AtomicShared::from),
@@ -1192,7 +1191,10 @@ impl<K: Eq, V, const LEN: usize> LinkedBucket<K, V, LEN> {
                 removed_bitmap_or_lru_tail: 0,
                 partial_hash_array: [0; LEN],
             },
-            data_block: unsafe { MaybeUninit::uninit().assume_init() },
+            data_block: unsafe {
+                #[allow(clippy::uninit_assumed_init)]
+                MaybeUninit::uninit().assume_init()
+            },
             prev_link: AtomicPtr::default(),
         }
     }
@@ -1239,8 +1241,8 @@ mod test {
             state: AtomicU32::new(0),
             num_entries: 0,
             metadata: Metadata::default(),
-            lru_list: L::default(),
             wait_queue: WaitQueue::default(),
+            lru_list: L::default(),
         }
     }
 
@@ -1273,6 +1275,10 @@ mod test {
                 for v in 0..xs {
                     let entry_ptr = locker.insert_with(&mut data_block, 0, || (v, v), &guard);
                     locker.update_lru_tail(&entry_ptr);
+                    if v < BUCKET_LEN {
+                        assert_eq!(locker.metadata.removed_bitmap_or_lru_tail as usize, v + 1);
+                    }
+                    assert_eq!(locker.lru_list[locker.metadata.removed_bitmap_or_lru_tail as usize - 1].0, 0);
                 }
 
                 let mut evicted_key = None;
