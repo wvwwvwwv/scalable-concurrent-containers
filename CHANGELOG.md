@@ -4,7 +4,7 @@
 
 2.0.16
 
-* Fix an issue with `HashCache` where a debug assertion may fail when it shrinks.
+* Fix an issue with `HashCache` where an evicted entry is dropped without notifying it when `HashCache` shrinks.
 
 2.0.15
 

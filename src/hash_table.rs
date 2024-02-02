@@ -770,14 +770,6 @@ where
                         .as_mut()
                         .unwrap_unchecked()
                 };
-                if TYPE == CACHE && target_bucket.num_entries() == BUCKET_LEN {
-                    // The bucket is full, dispose of the entry.
-                    //
-                    // No panic handling required as relocation of a bucket is infallible if
-                    // `TYPE = CACHE`
-                    drop(old_locker.extract(old_data_block_mut, &mut entry_ptr, guard));
-                    continue;
-                }
 
                 let entry_clone = Self::try_clone(old_entry);
                 target_bucket.insert_with(
