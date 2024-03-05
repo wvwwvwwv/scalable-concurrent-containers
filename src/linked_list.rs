@@ -408,6 +408,15 @@ impl<T> DerefMut for Entry<T> {
     }
 }
 
+impl<T> Drop for Entry<T> {
+    #[inline]
+    fn drop(&mut self) {
+        if !self.next.is_null(Relaxed) {
+            self.next_ptr(Relaxed, &Guard::new());
+        }
+    }
+}
+
 impl<T: Display> Display for Entry<T> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

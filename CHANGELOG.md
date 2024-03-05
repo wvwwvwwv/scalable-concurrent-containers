@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.0.17
+
+* Faster `Queue` and `Stack` entry garbage collection.
+
 2.0.16
 
 * Fix an issue with `HashCache` where an evicted entry is dropped without notifying it when `HashCache` shrinks.
