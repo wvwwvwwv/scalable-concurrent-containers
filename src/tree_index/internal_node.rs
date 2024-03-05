@@ -1095,7 +1095,6 @@ where
 mod test {
     use super::*;
     use std::sync::atomic::AtomicBool;
-    use std::sync::atomic::Ordering::Relaxed;
     use tokio::sync::Barrier;
 
     fn new_level_3_node() -> InternalNode<usize, usize> {

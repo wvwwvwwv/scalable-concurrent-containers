@@ -1140,7 +1140,6 @@ where
 mod test {
     use super::*;
     use std::sync::atomic::AtomicBool;
-    use std::sync::atomic::Ordering::Relaxed;
     use tokio::sync::Barrier;
 
     #[cfg_attr(miri, ignore)]

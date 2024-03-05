@@ -3,7 +3,7 @@ mod hashmap_test {
     use crate::hash_map::{self, Entry, Reserve};
     use crate::HashMap;
     use proptest::prelude::*;
-    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::strategy::ValueTree;
     use proptest::test_runner::TestRunner;
     use std::collections::BTreeSet;
     use std::hash::{Hash, Hasher};
@@ -1574,7 +1574,7 @@ mod treeindex_test {
     use crate::tree_index::{Iter, Range};
     use crate::TreeIndex;
     use proptest::prelude::*;
-    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::strategy::ValueTree;
     use proptest::test_runner::TestRunner;
     use std::collections::BTreeSet;
     use std::ops::RangeInclusive;

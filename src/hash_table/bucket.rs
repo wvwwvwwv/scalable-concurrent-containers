@@ -1228,9 +1228,7 @@ mod test {
     use super::*;
     use crate::wait_queue::DeriveAsyncWait;
     use proptest::prelude::*;
-    use std::convert::TryInto;
     use std::pin::Pin;
-    use std::sync::atomic::AtomicPtr;
     use tokio::sync::Barrier;
 
     static_assertions::assert_eq_size!(Bucket<String, String, (), OPTIMISTIC>, [u8; BUCKET_LEN * 2]);
