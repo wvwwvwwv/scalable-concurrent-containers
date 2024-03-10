@@ -2522,8 +2522,8 @@ mod queue_test {
 
                         barrier_clone.wait().await;
                         let guard = Guard::new();
-                        let mut iter = queue_clone.iter(&guard);
-                        while let Some(current) = iter.next() {
+                        let iter = queue_clone.iter(&guard);
+                        for current in iter {
                             let current = current.1;
                             assert!(current == 0 || last + 1 == current);
                             last = current;
@@ -2658,8 +2658,8 @@ mod stack_test {
 
                         barrier_clone.wait().await;
                         let guard = Guard::new();
-                        let mut iter = stack_clone.iter(&guard);
-                        while let Some(current) = iter.next() {
+                        let iter = stack_clone.iter(&guard);
+                        for current in iter {
                             let current = current.1;
                             assert!(last == workload_size || last - 1 == current);
                             last = current;

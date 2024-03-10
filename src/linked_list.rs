@@ -263,7 +263,7 @@ pub trait LinkedList: Sized {
     /// ```
     #[inline]
     fn next_ptr<'g>(&self, order: Ordering, guard: &'g Guard) -> Ptr<'g, Self> {
-        next_entry(self.link_ref(), &|l| l.link_ref(), 32, order, guard)
+        next(self.link_ref(), &|l| l.link_ref(), order, guard)
     }
 }
 
@@ -297,7 +297,7 @@ impl<T> Entry<T> {
 
     #[inline]
     pub(super) fn next_ptr<'g>(&self, guard: &'g Guard) -> Ptr<'g, Self> {
-        next_entry(&self.next, &|l| &l.next, 32, Acquire, guard)
+        next(&self.next, &|l| &l.next, Acquire, guard)
     }
 
     /// Extracts the inner instance of `T`.
@@ -415,12 +415,21 @@ fn is_marked_entry<T>(current: &AtomicShared<T>, order: Ordering) -> bool {
 
 /// Deletes `current` from the linked list.
 fn delete_entry<T>(current: &AtomicShared<T>, order: Ordering) -> bool {
-    current.update_tag_if(Tag::Second, |ptr| ptr.tag() != Tag::Second, order, Relaxed)
+    current.update_tag_if(
+        Tag::Second,
+        |ptr| {
+            let tag = ptr.tag();
+            tag == Tag::None || tag == Tag::First
+        },
+        order,
+        Relaxed,
+    )
 }
 
 /// Checks if `current` has been deleted from the linked list.
 fn is_deleted_entry<T>(current: &AtomicShared<T>, order: Ordering) -> bool {
-    current.tag(order) == Tag::Second
+    let tag = current.tag(order);
+    tag == Tag::Second || tag == Tag::Both
 }
 
 /// Appends the given entry to `current` and returns a pointer to the entry.
@@ -428,14 +437,20 @@ fn push_back_entry<'g, T, F: Fn(&T) -> &AtomicShared<T>>(
     current: &AtomicShared<T>,
     mut entry: Shared<T>,
     mark: bool,
-    next_getter: F,
+    state_getter: F,
     order: Ordering,
     guard: &'g Guard,
 ) -> Result<Ptr<'g, T>, Shared<T>> {
     let new_tag = if mark { Tag::First } else { Tag::None };
     let mut next_ptr = current.load(Relaxed, guard);
-    while next_ptr.tag() != Tag::Second {
-        next_getter(&*entry).swap((next_ptr.get_shared(), Tag::None), Relaxed);
+
+    loop {
+        let tag = next_ptr.tag();
+        if tag == Tag::Second || tag == Tag::Both {
+            break;
+        }
+
+        state_getter(&*entry).swap((next_ptr.get_shared(), Tag::None), Relaxed);
         match current.compare_exchange_weak(next_ptr, (Some(entry), new_tag), order, Relaxed, guard)
         {
             Ok((_, updated)) => {
@@ -455,51 +470,90 @@ fn push_back_entry<'g, T, F: Fn(&T) -> &AtomicShared<T>>(
 /// Returns the closest next valid [`Ptr`] reachable from `current`.
 ///
 /// This removes any invalid entry between `current` and the returned [`Ptr`].
-fn next_entry<'g, T, F: Fn(&T) -> &AtomicShared<T>>(
+fn next<'g, T, F: Fn(&T) -> &AtomicShared<T>>(
     current: &AtomicShared<T>,
-    next_getter: &F,
-    depth: usize,
+    state_getter: &F,
     order: Ordering,
     guard: &'g Guard,
 ) -> Ptr<'g, T> {
-    let self_next_ptr = current.load(order, guard);
-    let mut next_ptr = self_next_ptr;
+    let current_state = current.load(order, guard);
+    let mut entry_ptr = current_state;
+    let mut cleanup_target_range = (Ptr::null(), Ptr::null());
+    let mut cleanup_range_ended = false;
     let next_valid_ptr = loop {
-        if let Some(next_ref) = next_ptr.as_ref() {
-            let next_next_ptr = next_getter(next_ref).load(order, guard);
-            if next_next_ptr.tag() == Tag::None || next_next_ptr.tag() == Tag::First {
-                break next_ptr;
-            }
-            if depth == 0 {
-                next_ptr = next_next_ptr;
+        if let Some(entry) = entry_ptr.as_ref() {
+            let entry_state = state_getter(entry).load(order, guard);
+            let tag = entry_state.tag();
+            if tag == Tag::None || tag == Tag::First {
+                break entry_ptr;
+            } else if tag == Tag::Second
+                && !cleanup_range_ended
+                && state_getter(entry).update_tag_if(
+                    Tag::Both,
+                    |ptr| ptr == entry_state,
+                    Relaxed,
+                    Relaxed,
+                )
+            {
+                if cleanup_target_range.0.is_null() {
+                    cleanup_target_range.0 = entry_ptr.without_tag();
+                }
+                cleanup_target_range.1 = entry_ptr.without_tag();
             } else {
-                // This makes recursive calls.
-                //
-                // The stack size is 32-byte - `current`, `depth`, and `self_next_ptr`, therefore a
-                // recursive call of a depth of 32 requires 1KB stack size.
-                break next_entry(next_getter(next_ref), next_getter, depth - 1, order, guard);
+                cleanup_range_ended = true;
             }
-        } else {
-            break Ptr::null();
+            entry_ptr = entry_state;
+            continue;
         }
+        break entry_ptr;
     };
 
-    // Update its link if an invalid entry has been found.
-    if self_next_ptr != next_valid_ptr {
-        // Need to check the validity of the `Shared` otherwise the linked list can be broken.
+    // Update its link if an invalid entry was found.
+    if current_state != next_valid_ptr {
         let next_valid_entry = next_valid_ptr.get_shared();
-        if next_valid_ptr.is_null() == next_valid_entry.is_none() {
+        if next_valid_entry.is_none() == next_valid_ptr.is_null() {
             // Keep the tag value.
-            current
-                .compare_exchange(
-                    self_next_ptr,
-                    (next_valid_entry, self_next_ptr.tag()),
-                    Release,
-                    Relaxed,
-                    guard,
-                )
-                .ok()
-                .map(|(p, _)| p.map(|p| p.release(guard)));
+            if let Ok((Some(next), _)) = current.compare_exchange(
+                current_state,
+                (next_valid_entry.clone(), current_state.tag()),
+                Release,
+                Relaxed,
+                guard,
+            ) {
+                let _: bool = next.release(guard);
+
+                // Now `cleanup_range` is unreachable to new readers.
+                entry_ptr = cleanup_target_range.0;
+                while let Some(entry) = entry_ptr.as_ref() {
+                    debug_assert_eq!(state_getter(entry).tag(Relaxed), Tag::Both);
+                    let (next, _) =
+                        state_getter(entry).swap((next_valid_entry.clone(), Tag::Second), Release);
+                    if entry_ptr.without_tag() == cleanup_target_range.1 {
+                        break;
+                    }
+                    entry_ptr = next.map_or_else(Ptr::null, |n| {
+                        let ptr = n.get_guarded_ptr(guard);
+                        let _: bool = n.release(guard);
+                        ptr
+                    });
+                }
+
+                // Everything went smoothly.
+                return next_valid_ptr;
+            }
+        }
+
+        // Entries in `cleanup_range` need to be cleaned up.
+        entry_ptr = cleanup_target_range.0;
+        while let Some(entry) = entry_ptr.as_ref() {
+            let next_ptr = state_getter(entry).load(Relaxed, guard);
+            debug_assert_eq!(next_ptr.tag(), Tag::Both);
+            let _: bool =
+                state_getter(entry).update_tag_if(Tag::Second, |_| true, Relaxed, Relaxed);
+            if entry_ptr.without_tag() == cleanup_target_range.1 {
+                break;
+            }
+            entry_ptr = next_ptr;
         }
     }
 

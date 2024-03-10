@@ -1392,12 +1392,8 @@ mod test {
             task_handles.push(tokio::spawn(async move {
                 barrier_clone.wait().await;
                 let partial_hash = (task_id % BUCKET_LEN).try_into().unwrap();
-                let bucket_mut = unsafe {
-                    &mut *(bucket_clone.as_ptr() as *mut Bucket<usize, usize, (), SEQUENTIAL>)
-                };
-                let data_block_mut = unsafe {
-                    &mut *(data_block_clone.as_ptr() as *mut DataBlock<usize, usize, BUCKET_LEN>)
-                };
+                let bucket_mut = unsafe { &mut *bucket_clone.as_ptr().cast_mut() };
+                let data_block_mut = unsafe { &mut *data_block_clone.as_ptr().cast_mut() };
                 let guard = Guard::new();
                 for i in 0..2048 {
                     let mut exclusive_locker = Locker::lock(bucket_mut, &guard).unwrap();
@@ -1496,17 +1492,12 @@ mod test {
                         {
                             let guard = Guard::new();
                             if let Ok(exclusive_locker) = Locker::try_lock_or_wait(
-                                unsafe {
-                                    &mut *(bucket_clone.as_ptr()
-                                        as *mut Bucket<usize, usize, (), SEQUENTIAL>)
-                                },
+                                unsafe { &mut *bucket_clone.as_ptr().cast_mut() },
                                 async_wait_pinned.derive().unwrap(),
                                 &guard,
                             ) {
-                                let data_block_mut = unsafe {
-                                    &mut *(data_block_clone.as_ptr()
-                                        as *mut DataBlock<usize, usize, BUCKET_LEN>)
-                                };
+                                let data_block_mut =
+                                    unsafe { &mut *data_block_clone.as_ptr().cast_mut() };
                                 let mut exclusive_locker = exclusive_locker.unwrap();
                                 exclusive_locker.insert_with(
                                     data_block_mut,
@@ -1542,14 +1533,8 @@ mod test {
                         async_wait_pinned.await;
                     }
                     {
-                        let bucket_mut = unsafe {
-                            &mut *(bucket_clone.as_ptr()
-                                as *mut Bucket<usize, usize, (), SEQUENTIAL>)
-                        };
-                        let data_block_mut = unsafe {
-                            &mut *(data_block_clone.as_ptr()
-                                as *mut DataBlock<usize, usize, BUCKET_LEN>)
-                        };
+                        let bucket_mut = unsafe { &mut *bucket_clone.as_ptr().cast_mut() };
+                        let data_block_mut = unsafe { &mut *data_block_clone.as_ptr().cast_mut() };
                         let guard = Guard::new();
                         let mut exclusive_locker = Locker::lock(bucket_mut, &guard).unwrap();
                         let entry_ptr =
