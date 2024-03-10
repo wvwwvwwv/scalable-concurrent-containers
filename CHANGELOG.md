@@ -2,6 +2,11 @@
 
 ## Version 2
 
+2.1.0
+
+* API update: `Queue` and `Stack` entries no longer implement `LinkedList`.
+* Much faster `Queue` and `Stack` entry garbage collection.
+
 2.0.17
 
 * Faster `Queue` and `Stack` entry garbage collection.
