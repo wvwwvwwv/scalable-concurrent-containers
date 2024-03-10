@@ -479,7 +479,7 @@ fn next<'g, T, F: Fn(&T) -> &AtomicShared<T>>(
     let current_state = current.load(order, guard);
     let mut entry_ptr = current_state;
     let mut cleanup_target_range = (Ptr::null(), Ptr::null());
-    let mut cleanup_range_ended = false;
+    let mut cleanup_range_ended = current_state.tag() == Tag::Both;
     let next_valid_ptr = loop {
         if let Some(entry) = entry_ptr.as_ref() {
             let entry_state = state_getter(entry).load(order, guard);
@@ -509,7 +509,7 @@ fn next<'g, T, F: Fn(&T) -> &AtomicShared<T>>(
     };
 
     // Update its link if an invalid entry was found.
-    if current_state != next_valid_ptr {
+    if current_state.tag() != Tag::Both && current_state != next_valid_ptr {
         let next_valid_entry = next_valid_ptr.get_shared();
         if next_valid_entry.is_none() == next_valid_ptr.is_null() {
             // Keep the tag value.
