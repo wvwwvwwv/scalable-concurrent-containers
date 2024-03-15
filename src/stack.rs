@@ -420,10 +420,7 @@ impl<T> Stack<T> {
             if newest_entry.is_deleted() {
                 match self.newest.compare_exchange(
                     newest_ptr,
-                    (
-                        newest_entry.next_ptr(guard).get_shared(),
-                        Tag::None,
-                    ),
+                    (newest_entry.next_ptr(guard).get_shared(), Tag::None),
                     AcqRel,
                     Acquire,
                     guard,
