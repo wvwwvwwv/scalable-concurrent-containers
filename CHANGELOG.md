@@ -4,6 +4,7 @@
 
 2.0.18
 
+* API update: add `Entry::take_inner`.
 * Much faster `Queue` and `Stack` entry garbage collection.
 
 2.0.17

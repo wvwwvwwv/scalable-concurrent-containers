@@ -403,18 +403,38 @@ pub struct Entry<T> {
 }
 
 impl<T> Entry<T> {
+    /// Extracts the inner instance of `T`.
+    ///
+    /// # Safety
+    ///
+    /// This method has to be called at most once per [`Entry`], and the caller needs to make sure
+    /// that the [`Entry`] is not accessed via [`LinkedList`] methods.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::Stack;
+    ///
+    /// let stack: Stack<usize> = Stack::default();
+    ///
+    /// stack.push(37);
+    ///
+    /// let mut entry = stack.pop().unwrap();
+    /// let pushed = unsafe { entry.get_mut().unwrap().take_inner() };
+    /// assert_eq!(pushed, 37);
+    /// ```
+
+    #[inline]
+    pub unsafe fn take_inner(&mut self) -> T {
+        self.instance.take().unwrap_unchecked()
+    }
+
     #[inline]
     pub(super) fn new(val: T) -> Self {
         Self {
             instance: Some(val),
             next: AtomicShared::default(),
         }
-    }
-
-    /// Extracts the inner instance of `T`.
-    #[inline]
-    pub(super) unsafe fn take_inner(&mut self) -> T {
-        self.instance.take().unwrap_unchecked()
     }
 
     /// Returns a reference to `next`.
