@@ -1,7 +1,7 @@
 //! [`Stack`] is a lock-free concurrent last-in-first-out container.
 
 use super::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
-use super::linked_list::{Entry, LinkedList};
+use super::linked_list::Entry;
 use std::fmt::{self, Debug};
 use std::iter::FusedIterator;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
@@ -255,10 +255,10 @@ impl<T> Stack<T> {
         let mut newest_ptr = self.cleanup_newest(self.newest.load(Acquire, &guard), &guard);
         while !newest_ptr.is_null() {
             if let Some(newest_entry) = newest_ptr.get_shared() {
-                if !newest_entry.is_deleted(Relaxed) && !cond(&*newest_entry) {
+                if !newest_entry.is_deleted() && !cond(&*newest_entry) {
                     return Err(newest_entry);
                 }
-                if newest_entry.delete_self(Relaxed) {
+                if newest_entry.delete_self() {
                     self.cleanup_newest(newest_ptr, &guard);
                     return Ok(Some(newest_entry));
                 }
@@ -417,13 +417,10 @@ impl<T> Stack<T> {
         guard: &'g Guard,
     ) -> Ptr<'g, Entry<T>> {
         while let Some(newest_entry) = newest_ptr.as_ref() {
-            if newest_entry.is_deleted(Relaxed) {
+            if newest_entry.is_deleted() {
                 match self.newest.compare_exchange(
                     newest_ptr,
-                    (
-                        newest_entry.next_ptr(Acquire, guard).get_shared(),
-                        Tag::None,
-                    ),
+                    (newest_entry.next_ptr(guard).get_shared(), Tag::None),
                     AcqRel,
                     Acquire,
                     guard,
@@ -457,7 +454,7 @@ impl<T: Clone> Clone for Stack<T> {
                     .swap((Some(new_entry.clone()), Tag::None), Relaxed);
             }
             oldest.replace(new_entry);
-            current = entry.next_ptr(Acquire, &guard);
+            current = entry.next_ptr(&guard);
         }
         self_clone
     }
@@ -470,7 +467,7 @@ impl<T: Debug> Debug for Stack<T> {
         let guard = Guard::new();
         let mut current = self.newest.load(Acquire, &guard);
         while let Some(entry) = current.as_ref() {
-            let next = entry.next_ptr(Acquire, &guard);
+            let next = entry.next_ptr(&guard);
             d.entry(entry);
             current = next;
         }
@@ -495,7 +492,7 @@ impl<'g, T> Iterator for Iter<'g, T> {
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(current) = self.current.as_ref() {
-            self.current = current.next_ptr(Acquire, self.guard);
+            self.current = current.next_ptr(self.guard);
             Some(current)
         } else {
             None

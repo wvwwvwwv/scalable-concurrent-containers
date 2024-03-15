@@ -1,7 +1,7 @@
 //! [`Bag`] is a lock-free concurrent unordered instance container.
 
 use super::ebr::Guard;
-use super::{LinkedEntry, LinkedList, Stack};
+use super::{LinkedEntry, Stack};
 use std::iter::FusedIterator;
 use std::mem::{needs_drop, MaybeUninit};
 use std::panic::UnwindSafe;
@@ -138,12 +138,12 @@ impl<T, const ARRAY_LEN: usize> Bag<T, ARRAY_LEN> {
             while let Some(storage) = current {
                 let (val_opt, empty) = storage.pop();
                 if empty {
-                    storage.delete_self(Relaxed);
+                    storage.delete_self();
                 }
                 if let Some(val) = val_opt {
                     return Some(val);
                 }
-                current = storage.next_ptr(Acquire, &guard).as_ref();
+                current = storage.next_ptr(&guard).as_ref();
             }
             self.primary_storage.pop().0
         })
@@ -335,7 +335,7 @@ impl<'b, T, const ARRAY_LEN: usize> Iterator for IterMut<'b, T, ARRAY_LEN> {
 
             if let Some(linked) = self.current_stack_entry.as_mut() {
                 let guard = Guard::new();
-                if let Some(next) = linked.next_ptr(Acquire, &guard).as_ref() {
+                if let Some(next) = linked.next_ptr(&guard).as_ref() {
                     let entry_mut = (next as *const LinkedEntry<Storage<T, ARRAY_LEN>>).cast_mut();
                     self.current_stack_entry = unsafe { entry_mut.as_mut() };
                     self.current_index = 0;
