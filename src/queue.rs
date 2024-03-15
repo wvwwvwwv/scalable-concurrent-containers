@@ -1,7 +1,7 @@
 //! [`Queue`] is a lock-free concurrent first-in-first-out container.
 
 use super::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
-use super::linked_list::Entry;
+use super::linked_list::{Entry, LinkedList};
 use std::fmt::{self, Debug};
 use std::iter::FusedIterator;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
@@ -98,7 +98,7 @@ impl<T: 'static> Queue<T> {
     pub fn peek<'g>(&self, guard: &'g Guard) -> Option<&'g Entry<T>> {
         let mut current = self.oldest.load(Acquire, guard);
         while let Some(oldest_entry) = current.as_ref() {
-            if oldest_entry.is_deleted() {
+            if oldest_entry.is_deleted(Relaxed) {
                 current = self.cleanup_oldest(guard);
                 continue;
             }
@@ -228,10 +228,10 @@ impl<T> Queue<T> {
         let mut current = self.oldest.load(Acquire, &guard);
         while !current.is_null() {
             if let Some(oldest_entry) = current.get_shared() {
-                if !oldest_entry.is_deleted() && !cond(&*oldest_entry) {
+                if !oldest_entry.is_deleted(Relaxed) && !cond(&*oldest_entry) {
                     return Err(oldest_entry);
                 }
-                if oldest_entry.delete_self() {
+                if oldest_entry.delete_self(Relaxed) {
                     self.cleanup_oldest(&guard);
                     return Ok(Some(oldest_entry));
                 }
@@ -262,7 +262,7 @@ impl<T> Queue<T> {
         let guard = Guard::new();
         let mut current = self.oldest.load(Acquire, &guard);
         while let Some(oldest_entry) = current.as_ref() {
-            if oldest_entry.is_deleted() {
+            if oldest_entry.is_deleted(Relaxed) {
                 current = self.cleanup_oldest(&guard);
                 continue;
             }
@@ -419,10 +419,13 @@ impl<T> Queue<T> {
     fn cleanup_oldest<'g>(&self, guard: &'g Guard) -> Ptr<'g, Entry<T>> {
         let oldest_ptr = self.oldest.load(Acquire, guard);
         if let Some(oldest_entry) = oldest_ptr.as_ref() {
-            if oldest_entry.is_deleted() {
+            if oldest_entry.is_deleted(Relaxed) {
                 match self.oldest.compare_exchange(
                     oldest_ptr,
-                    (oldest_entry.next_ptr(guard).get_shared(), Tag::None),
+                    (
+                        oldest_entry.next_ptr(Acquire, guard).get_shared(),
+                        Tag::None,
+                    ),
                     AcqRel,
                     Acquire,
                     guard,
@@ -447,7 +450,7 @@ impl<T> Queue<T> {
     fn traverse<'g>(start: Ptr<'g, Entry<T>>, guard: &'g Guard) -> Ptr<'g, Entry<T>> {
         let mut current = start;
         while let Some(entry) = current.as_ref() {
-            let next = entry.next_ptr(guard);
+            let next = entry.next_ptr(Acquire, guard);
             if next.is_null() {
                 break;
             }
@@ -464,7 +467,7 @@ impl<T: Clone> Clone for Queue<T> {
         let guard = Guard::new();
         let mut current = self.oldest.load(Acquire, &guard);
         while let Some(entry) = current.as_ref() {
-            let next = entry.next_ptr(&guard);
+            let next = entry.next_ptr(Acquire, &guard);
             let _result = self_clone.push_if_internal((**entry).clone(), |_| true, &guard);
             current = next;
         }
@@ -479,7 +482,7 @@ impl<T: Debug> Debug for Queue<T> {
         let guard = Guard::new();
         let mut current = self.oldest.load(Acquire, &guard);
         while let Some(entry) = current.as_ref() {
-            let next = entry.next_ptr(&guard);
+            let next = entry.next_ptr(Acquire, &guard);
             d.entry(entry);
             current = next;
         }
@@ -505,7 +508,7 @@ impl<'g, T> Iterator for Iter<'g, T> {
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(current) = self.current.as_ref() {
-            self.current = current.next_ptr(self.guard);
+            self.current = current.next_ptr(Acquire, self.guard);
             Some(current)
         } else {
             None

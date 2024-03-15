@@ -1,4 +1,4 @@
-//! [`HashCache`] is a concurrent and asynchronous sampling-based LRU cache backed by
+//! [`HashCache`] is a concurrent and asynchronous 32-way associative cache backed by
 //! [`HashMap`](super::HashMap).
 
 use super::ebr::{AtomicShared, Guard, Shared, Tag};
@@ -16,9 +16,9 @@ use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
-/// Scalable concurrent sampling-based LRU cache backed by [`HashMap`](super::HashMap).
+/// Scalable concurrent 32-way associative cache backed by [`HashMap`](super::HashMap).
 ///
-/// [`HashCache`] is a concurrent 32-way associative sampling-based LRU cache that is based on the
+/// [`HashCache`] is a concurrent 32-way associative cache that is based on the
 /// [`HashMap`](super::HashMap) implementation. [`HashCache`] does not keep track of the least
 /// recently used entry in the entire cache, instead each bucket maintains a doubly linked list of
 /// occupied entries which is updated on access to entries in order to keep track of the least

@@ -23,7 +23,7 @@ A collection of high performance containers and utilities for concurrent and asy
 - [HashMap](#HashMap) is a concurrent and asynchronous hash map.
 - [HashSet](#HashSet) is a concurrent and asynchronous hash set.
 - [HashIndex](#HashIndex) is a read-optimized concurrent and asynchronous hash map.
-- [HashCache](#HashCache) is a sampling-based LRU cache backed by [HashMap](#HashMap).
+- [HashCache](#HashCache) is a 32-way associative cache backed by [HashMap](#HashMap).
 - [TreeIndex](#TreeIndex) is a read-optimized concurrent and asynchronous B-plus tree.
 
 #### Utilities for Concurrent Programming
@@ -211,7 +211,7 @@ assert_eq!(entry_ref, (&1, &1));
 
 ## HashCache
 
-[HashCache](#HashCache) is a 32-way associative concurrent sampling-based LRU cache that is based on the [HashMap](#HashMap) implementation. [HashCache](#HashCache) does not keep track of the least recently used entry in the entire cache, instead each bucket maintains a doubly linked list of occupied entries which is updated on access to entries in order to keep track of the least recently used entry within the bucket.
+[HashCache](#HashCache) is a 32-way associative concurrent cache that is based on the [HashMap](#HashMap) implementation. [HashCache](#HashCache) does not keep track of the least recently used entry in the entire cache, instead each bucket maintains a doubly linked list of occupied entries which is updated on access to entries in order to keep track of the least recently used entry within the bucket.
 
 ### Examples
 
