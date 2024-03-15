@@ -18,11 +18,12 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
 /// Scalable concurrent sampling-based LRU cache backed by [`HashMap`](super::HashMap).
 ///
-/// [`HashCache`] is a concurrent sampling-based LRU cache that is based on the
+/// [`HashCache`] is a concurrent 32-way associative sampling-based LRU cache that is based on the
 /// [`HashMap`](super::HashMap) implementation. [`HashCache`] does not keep track of the least
 /// recently used entry in the entire cache, instead each bucket maintains a doubly linked list of
 /// occupied entries which is updated on access to entries in order to keep track of the least
-/// recently used entry within the bucket.
+/// recently used entry within the bucket. Therefore, entries can be evicted before the cache is
+/// full.
 ///
 /// [`HashCache`] and [`HashMap`](super::HashMap) share the same runtime characteristic, except
 /// that each entry in a [`HashCache`] additionally uses 2-byte space for a doubly linked list, and

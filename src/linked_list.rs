@@ -8,7 +8,8 @@ pub trait LinkedList: Sized {
     /// Returns a reference to the forward link.
     ///
     /// The pointer value may be tagged if [`Self::mark`] or [`Self::delete_self`] has been
-    /// invoked.
+    /// invoked. The [`AtomicShared`] must only be updated through [`LinkedList`] in order to keep
+    /// the linked list consistent.
     fn link_ref(&self) -> &AtomicShared<Self>;
 
     /// Returns `true` if `self` is reachable and not marked.

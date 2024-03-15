@@ -211,7 +211,7 @@ assert_eq!(entry_ref, (&1, &1));
 
 ## HashCache
 
-[HashCache](#HashCache) is a concurrent sampling-based LRU cache that is based on the [HashMap](#HashMap) implementation. [HashCache](#HashCache) does not keep track of the least recently used entry in the entire cache, instead each bucket maintains a doubly linked list of occupied entries which is updated on access to entries in order to keep track of the least recently used entry within the bucket.
+[HashCache](#HashCache) is a 32-way associative concurrent sampling-based LRU cache that is based on the [HashMap](#HashMap) implementation. [HashCache](#HashCache) does not keep track of the least recently used entry in the entire cache, instead each bucket maintains a doubly linked list of occupied entries which is updated on access to entries in order to keep track of the least recently used entry within the bucket.
 
 ### Examples
 
