@@ -386,7 +386,7 @@ fn try_drop_local_collector() {
 }
 
 thread_local! {
-    static COLLECTOR_ANCHOR: CollectorAnchor = CollectorAnchor;
+    static COLLECTOR_ANCHOR: CollectorAnchor = const { CollectorAnchor };
     static LOCAL_COLLECTOR: AtomicPtr<Collector> = AtomicPtr::default();
 }
 
