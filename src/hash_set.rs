@@ -12,7 +12,6 @@ use std::ops::RangeInclusive;
 /// [`HashSet`] is a concurrent and asynchronous hash set based on [`HashMap`].
 pub struct HashSet<K, H = RandomState>
 where
-    K: Eq + Hash,
     H: BuildHasher,
 {
     map: HashMap<K, (), H>,
@@ -25,7 +24,6 @@ pub type Reserve<'h, K, H = RandomState> = super::hash_map::Reserve<'h, K, (), H
 
 impl<K, H> HashSet<K, H>
 where
-    K: Eq + Hash,
     H: BuildHasher,
 {
     /// Creates an empty [`HashSet`] with the given [`BuildHasher`].
@@ -44,7 +42,13 @@ where
             map: HashMap::with_hasher(build_hasher),
         }
     }
+}
 
+impl<K, H> HashSet<K, H>
+where
+    K: Eq + Hash,
+    H: BuildHasher,
+{
     /// Creates an empty [`HashSet`] with the specified capacity and [`BuildHasher`].
     ///
     /// The actual capacity is equal to or greater than the specified capacity.
@@ -710,7 +714,6 @@ impl<K: Eq + Hash> HashSet<K, RandomState> {
 
 impl<K, H> Default for HashSet<K, H>
 where
-    K: Eq + Hash,
     H: BuildHasher + Default,
 {
     /// Creates an empty default [`HashSet`].

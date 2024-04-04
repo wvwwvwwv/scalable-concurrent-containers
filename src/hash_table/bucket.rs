@@ -13,7 +13,7 @@ use std::sync::atomic::{fence, AtomicU32};
 ///
 /// `TYPE` is either one of [`SEQUENTIAL`], [`OPTIMISTIC`], or [`CACHE`].
 #[repr(align(64))]
-pub struct Bucket<K: Eq, V, L: LruList, const TYPE: char> {
+pub struct Bucket<K, V, L: LruList, const TYPE: char> {
     /// The state of the [`Bucket`].
     state: AtomicU32,
 
@@ -86,7 +86,7 @@ pub struct EntryPtr<'g, K: Eq, V, const TYPE: char> {
 }
 
 /// [`Metadata`] is a collection of metadata fields of [`Bucket`] and [`LinkedBucket`].
-pub(crate) struct Metadata<K: Eq, V, const LEN: usize> {
+pub(crate) struct Metadata<K, V, const LEN: usize> {
     /// Linked list of entries.
     link: AtomicShared<LinkedBucket<K, V, LINKED_BUCKET_LEN>>,
 
@@ -105,7 +105,7 @@ pub(crate) struct Metadata<K: Eq, V, const LEN: usize> {
 }
 
 /// [`LinkedBucket`] is a smaller [`Bucket`] that is attached to a [`Bucket`] as a linked list.
-pub(crate) struct LinkedBucket<K: Eq, V, const LEN: usize> {
+pub(crate) struct LinkedBucket<K, V, const LEN: usize> {
     metadata: Metadata<K, V, LEN>,
     data_block: DataBlock<K, V, LEN>,
     prev_link: AtomicPtr<LinkedBucket<K, V, LEN>>,
@@ -120,6 +120,51 @@ const WAITING: u32 = 1_u32 << 30;
 const LOCK: u32 = 1_u32 << 29;
 const SLOCK_MAX: u32 = LOCK - 1;
 const LOCK_MASK: u32 = LOCK | SLOCK_MAX;
+
+impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
+    /// Drops entries in the given [`DataBlock`] using the information stored in the [`Bucket`].
+    ///
+    /// The [`Bucket`] and the [`DataBlock`] should never be used afterwards.
+    #[inline]
+    pub(crate) unsafe fn drop_entries(
+        &mut self,
+        data_block: &mut DataBlock<K, V, BUCKET_LEN>,
+        guard: &Guard,
+    ) {
+        if !self.metadata.link.is_null(Relaxed) {
+            self.clear_links(guard);
+        }
+        if needs_drop::<(K, V)>() && self.metadata.occupied_bitmap != 0 {
+            let mut index = self.metadata.occupied_bitmap.trailing_zeros();
+            while index != 32 {
+                ptr::drop_in_place(data_block[index as usize].as_mut_ptr());
+                self.metadata.occupied_bitmap -= 1_u32 << index;
+                index = self.metadata.occupied_bitmap.trailing_zeros();
+            }
+        }
+    }
+
+    /// Clears all the linked arrays iteratively.
+    fn clear_links(&mut self, guard: &Guard) {
+        if let (Some(mut next), _) = self.metadata.link.swap((None, Tag::None), Acquire) {
+            loop {
+                let next_next = next.metadata.link.swap((None, Tag::None), Acquire);
+                let released = if TYPE == OPTIMISTIC {
+                    next.release(guard)
+                } else {
+                    // The `LinkedBucket` should be dropped immediately.
+                    unsafe { next.drop_in_place() }
+                };
+                debug_assert!(released);
+                if let (Some(next_next), _) = next_next {
+                    next = next_next;
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+}
 
 impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     /// Returns the number of occupied and reachable slots in the [`Bucket`].
@@ -191,28 +236,6 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         self.num_entries = 0;
         if !self.metadata.link.is_null(Relaxed) {
             self.clear_links(guard);
-        }
-    }
-
-    /// Drops entries in the given [`DataBlock`] using the information stored in the [`Bucket`].
-    ///
-    /// The [`Bucket`] and the [`DataBlock`] should never be used afterwards.
-    #[inline]
-    pub(crate) unsafe fn drop_entries(
-        &mut self,
-        data_block: &mut DataBlock<K, V, BUCKET_LEN>,
-        guard: &Guard,
-    ) {
-        if !self.metadata.link.is_null(Relaxed) {
-            self.clear_links(guard);
-        }
-        if needs_drop::<(K, V)>() && self.metadata.occupied_bitmap != 0 {
-            let mut index = self.metadata.occupied_bitmap.trailing_zeros();
-            while index != 32 {
-                ptr::drop_in_place(data_block[index as usize].as_mut_ptr());
-                self.metadata.occupied_bitmap -= 1_u32 << index;
-                index = self.metadata.occupied_bitmap.trailing_zeros();
-            }
         }
     }
 
@@ -297,27 +320,6 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         }
 
         None
-    }
-
-    /// Clears all the linked arrays iteratively.
-    fn clear_links(&mut self, guard: &Guard) {
-        if let (Some(mut next), _) = self.metadata.link.swap((None, Tag::None), Acquire) {
-            loop {
-                let next_next = next.metadata.link.swap((None, Tag::None), Acquire);
-                let released = if TYPE == OPTIMISTIC {
-                    next.release(guard)
-                } else {
-                    // The `LinkedBucket` should be dropped immediately.
-                    unsafe { next.drop_in_place() }
-                };
-                debug_assert!(released);
-                if let (Some(next_next), _) = next_next {
-                    next = next_next;
-                } else {
-                    break;
-                }
-            }
-        }
     }
 
     /// Searches for the next closest occupied entry slot number from the current one in the bitmap.
@@ -1207,7 +1209,7 @@ impl<K: Eq, V, const LEN: usize> Debug for LinkedBucket<K, V, LEN> {
     }
 }
 
-impl<K: Eq, V, const LEN: usize> Drop for LinkedBucket<K, V, LEN> {
+impl<K, V, const LEN: usize> Drop for LinkedBucket<K, V, LEN> {
     #[inline]
     fn drop(&mut self) {
         if needs_drop::<(K, V)>() {

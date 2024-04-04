@@ -65,7 +65,6 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 /// condition; `H::Hasher::hash`, `K::drop` and `V::drop` must not panic.
 pub struct HashMap<K, V, H = RandomState>
 where
-    K: Eq + Hash,
     H: BuildHasher,
 {
     array: AtomicShared<BucketArray<K, V, (), SEQUENTIAL>>,
@@ -122,7 +121,6 @@ where
 
 impl<K, V, H> HashMap<K, V, H>
 where
-    K: Eq + Hash,
     H: BuildHasher,
 {
     /// Creates an empty [`HashMap`] with the given [`BuildHasher`].
@@ -143,7 +141,13 @@ where
             build_hasher,
         }
     }
+}
 
+impl<K, V, H> HashMap<K, V, H>
+where
+    K: Eq + Hash,
+    H: BuildHasher,
+{
     /// Creates an empty [`HashMap`] with the specified capacity and [`BuildHasher`].
     ///
     /// The actual capacity is equal to or greater than the specified capacity.
@@ -1409,7 +1413,6 @@ where
 
 impl<K, V, H> Default for HashMap<K, V, H>
 where
-    K: Eq + Hash,
     H: BuildHasher + Default,
 {
     /// Creates an empty default [`HashMap`].
@@ -1432,7 +1435,6 @@ where
 
 impl<K, V, H> Drop for HashMap<K, V, H>
 where
-    K: Eq + Hash,
     H: BuildHasher,
 {
     #[inline]

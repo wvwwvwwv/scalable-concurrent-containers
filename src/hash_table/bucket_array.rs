@@ -6,7 +6,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 
 /// [`BucketArray`] is a special purpose array to manage [`Bucket`] and [`DataBlock`].
-pub struct BucketArray<K: Eq, V, L: LruList, const TYPE: char> {
+pub struct BucketArray<K, V, L: LruList, const TYPE: char> {
     bucket_ptr: *const Bucket<K, V, L, TYPE>,
     data_block_ptr: *const DataBlock<K, V, BUCKET_LEN>,
     array_len: usize,
@@ -15,6 +15,41 @@ pub struct BucketArray<K: Eq, V, L: LruList, const TYPE: char> {
     bucket_ptr_offset: u16,
     old_array: AtomicShared<BucketArray<K, V, L, TYPE>>,
     num_cleared_buckets: AtomicUsize,
+}
+
+impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
+    /// Returns the number of [`Bucket`] instances in the [`BucketArray`].
+    #[inline]
+    pub(crate) fn num_buckets(&self) -> usize {
+        self.array_len
+    }
+
+    /// Returns a mutable reference to a [`Bucket`] at the given position.
+    #[allow(clippy::mut_from_ref)]
+    #[inline]
+    pub(crate) fn bucket_mut(&self, index: usize) -> &mut Bucket<K, V, L, TYPE> {
+        debug_assert!(index < self.num_buckets());
+        unsafe { &mut *self.bucket_ptr.add(index).cast_mut() }
+    }
+
+    /// Returns a mutable reference to a [`DataBlock`] at the given position.
+    #[allow(clippy::mut_from_ref)]
+    #[inline]
+    pub(crate) fn data_block_mut(&self, index: usize) -> &mut DataBlock<K, V, BUCKET_LEN> {
+        debug_assert!(index < self.num_buckets());
+        unsafe { &mut *self.data_block_ptr.add(index).cast_mut() }
+    }
+
+    /// Calculates the layout of the memory block for an array of `T`.
+    const fn calculate_memory_layout<T: Sized>(array_len: usize) -> (usize, usize, Layout) {
+        let size_of_t = size_of::<T>();
+        let aligned_size = size_of_t.next_power_of_two();
+        let allocation_size = aligned_size + array_len * size_of_t;
+        (size_of_t, allocation_size, unsafe {
+            // Intentionally mis-aligned in order to take full advantage of demand paging.
+            Layout::from_size_align_unchecked(allocation_size, 1)
+        })
+    }
 }
 
 impl<K: Eq, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
@@ -104,14 +139,6 @@ impl<K: Eq, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         unsafe { &(*(self.bucket_ptr.add(index))) }
     }
 
-    /// Returns a mutable reference to a [`Bucket`] at the given position.
-    #[allow(clippy::mut_from_ref)]
-    #[inline]
-    pub(crate) fn bucket_mut(&self, index: usize) -> &mut Bucket<K, V, L, TYPE> {
-        debug_assert!(index < self.num_buckets());
-        unsafe { &mut *self.bucket_ptr.add(index).cast_mut() }
-    }
-
     /// Returns a reference to its rehashing metadata.
     #[inline]
     pub(crate) fn rehashing_metadata(&self) -> &AtomicUsize {
@@ -123,14 +150,6 @@ impl<K: Eq, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     pub(crate) fn data_block(&self, index: usize) -> &DataBlock<K, V, BUCKET_LEN> {
         debug_assert!(index < self.num_buckets());
         unsafe { &(*(self.data_block_ptr.add(index))) }
-    }
-
-    /// Returns a mutable reference to a [`DataBlock`] at the given position.
-    #[allow(clippy::mut_from_ref)]
-    #[inline]
-    pub(crate) fn data_block_mut(&self, index: usize) -> &mut DataBlock<K, V, BUCKET_LEN> {
-        debug_assert!(index < self.num_buckets());
-        unsafe { &mut *self.data_block_ptr.add(index).cast_mut() }
     }
 
     /// Checks if the index is within the sampling range of the array.
@@ -149,12 +168,6 @@ impl<K: Eq, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     #[inline]
     pub(crate) fn full_sample_size(&self) -> usize {
         ((self.sample_size as usize) * (self.sample_size as usize)).min(self.num_buckets())
-    }
-
-    /// Returns the number of [`Bucket`] instances in the [`BucketArray`].
-    #[inline]
-    pub(crate) fn num_buckets(&self) -> usize {
-        self.array_len
     }
 
     /// Returns the number of total entries.
@@ -212,20 +225,9 @@ impl<K: Eq, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         debug_assert!((1_usize << log2_capacity) * BUCKET_LEN >= adjusted_capacity);
         log2_capacity as u8
     }
-
-    /// Calculates the layout of the memory block for an array of `T`.
-    const fn calculate_memory_layout<T: Sized>(array_len: usize) -> (usize, usize, Layout) {
-        let size_of_t = size_of::<T>();
-        let aligned_size = size_of_t.next_power_of_two();
-        let allocation_size = aligned_size + array_len * size_of_t;
-        (size_of_t, allocation_size, unsafe {
-            // Intentionally mis-aligned in order to take full advantage of demand paging.
-            Layout::from_size_align_unchecked(allocation_size, 1)
-        })
-    }
 }
 
-impl<K: Eq, V, L: LruList, const TYPE: char> Drop for BucketArray<K, V, L, TYPE> {
+impl<K, V, L: LruList, const TYPE: char> Drop for BucketArray<K, V, L, TYPE> {
     fn drop(&mut self) {
         if TYPE != OPTIMISTIC && !self.old_array.is_null(Relaxed) {
             // The `BucketArray` should be dropped immediately.

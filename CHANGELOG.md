@@ -2,6 +2,11 @@
 
 ## Version 2
 
+2.0.19
+
+* Remove unnecessary trait bounds from type definitions of `HashCache`, `HashIndex`, `HashMap`, and `HashSet`.
+* Fix [#135](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/135).
+
 2.0.18
 
 * API update: add `Entry::take_inner`.

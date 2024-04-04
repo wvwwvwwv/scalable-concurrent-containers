@@ -43,8 +43,8 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 /// condition; `H::Hasher::hash`, `K::drop` and `V::drop` must not panic.
 pub struct HashIndex<K, V, H = RandomState>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static + Clone,
+    K: 'static,
+    V: 'static,
     H: BuildHasher,
 {
     array: AtomicShared<BucketArray<K, V, (), OPTIMISTIC>>,
@@ -122,8 +122,8 @@ where
 
 impl<K, V, H> HashIndex<K, V, H>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static + Clone,
+    K: 'static,
+    V: 'static,
     H: BuildHasher,
 {
     /// Creates an empty [`HashIndex`] with the given [`BuildHasher`].
@@ -145,7 +145,14 @@ where
             build_hasher,
         }
     }
+}
 
+impl<K, V, H> HashIndex<K, V, H>
+where
+    K: 'static + Clone + Eq + Hash,
+    V: 'static + Clone,
+    H: BuildHasher,
+{
     /// Creates an empty [`HashIndex`] with the specified capacity and [`BuildHasher`].
     ///
     /// The actual capacity is equal to or greater than the specified capacity.
@@ -1114,8 +1121,8 @@ where
 
 impl<K, V, H> Default for HashIndex<K, V, H>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static + Clone,
+    K: 'static,
+    V: 'static,
     H: BuildHasher + Default,
 {
     /// Creates an empty default [`HashIndex`].

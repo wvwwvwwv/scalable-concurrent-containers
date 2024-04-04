@@ -36,7 +36,6 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 /// condition; `H::Hasher::hash`, `K::drop` and `V::drop` must not panic.
 pub struct HashCache<K, V, H = RandomState>
 where
-    K: Eq + Hash,
     H: BuildHasher,
 {
     array: AtomicShared<BucketArray<K, V, DoublyLinkedList, CACHE>>,
@@ -88,7 +87,6 @@ where
 
 impl<K, V, H> HashCache<K, V, H>
 where
-    K: Eq + Hash,
     H: BuildHasher,
 {
     /// Creates an empty [`HashCache`] with the given [`BuildHasher`].
@@ -112,7 +110,13 @@ where
             build_hasher,
         }
     }
+}
 
+impl<K, V, H> HashCache<K, V, H>
+where
+    K: Eq + Hash,
+    H: BuildHasher,
+{
     /// Creates an empty [`HashCache`] with the specified capacity and [`BuildHasher`].
     ///
     /// The actual capacity is equal to or greater than the specified capacity.
@@ -1121,7 +1125,6 @@ where
 
 impl<K, V, H> Default for HashCache<K, V, H>
 where
-    K: Eq + Hash,
     H: BuildHasher + Default,
 {
     /// Creates an empty default [`HashCache`].
@@ -1168,7 +1171,6 @@ where
 
 impl<K, V, H> Drop for HashCache<K, V, H>
 where
-    K: Eq + Hash,
     H: BuildHasher,
 {
     #[inline]
