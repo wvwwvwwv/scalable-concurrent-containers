@@ -1104,7 +1104,7 @@ where
 }
 
 /// [`LockedEntry`] comprises pieces of data that are required for exclusive access to an entry.
-pub(super) struct LockedEntry<'h, K: Eq + Hash, V, L: LruList, const TYPE: char> {
+pub(super) struct LockedEntry<'h, K, V, L: LruList, const TYPE: char> {
     /// The [`Locker`] holding the exclusive lock on the bucket.
     pub(super) locker: Locker<'h, K, V, L, TYPE>,
 

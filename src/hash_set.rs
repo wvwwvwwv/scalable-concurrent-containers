@@ -42,13 +42,7 @@ where
             map: HashMap::with_hasher(build_hasher),
         }
     }
-}
 
-impl<K, H> HashSet<K, H>
-where
-    K: Eq + Hash,
-    H: BuildHasher,
-{
     /// Creates an empty [`HashSet`] with the specified capacity and [`BuildHasher`].
     ///
     /// The actual capacity is equal to or greater than the specified capacity.
@@ -71,7 +65,13 @@ where
             map: HashMap::with_capacity_and_hasher(capacity, build_hasher),
         }
     }
+}
 
+impl<K, H> HashSet<K, H>
+where
+    K: Eq + Hash,
+    H: BuildHasher,
+{
     /// Temporarily increases the minimum capacity of the [`HashSet`].
     ///
     /// A [`Reserve`] is returned if the [`HashSet`] could increase the minimum capacity while the

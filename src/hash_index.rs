@@ -43,8 +43,6 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 /// condition; `H::Hasher::hash`, `K::drop` and `V::drop` must not panic.
 pub struct HashIndex<K, V, H = RandomState>
 where
-    K: 'static,
-    V: 'static,
     H: BuildHasher,
 {
     array: AtomicShared<BucketArray<K, V, (), OPTIMISTIC>>,
@@ -55,8 +53,6 @@ where
 /// [`Entry`] represents a single entry in a [`HashIndex`].
 pub enum Entry<'h, K, V, H = RandomState>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static + Clone,
     H: BuildHasher,
 {
     /// An occupied entry.
@@ -69,8 +65,6 @@ where
 /// [`OccupiedEntry`] is a view into an occupied entry in a [`HashIndex`].
 pub struct OccupiedEntry<'h, K, V, H = RandomState>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static + Clone,
     H: BuildHasher,
 {
     hashindex: &'h HashIndex<K, V, H>,
@@ -80,8 +74,6 @@ where
 /// [`VacantEntry`] is a view into a vacant entry in a [`HashIndex`].
 pub struct VacantEntry<'h, K, V, H = RandomState>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static + Clone,
     H: BuildHasher,
 {
     hashindex: &'h HashIndex<K, V, H>,
@@ -108,8 +100,6 @@ where
 /// An [`Iter`] iterates over all the entries that survive the [`Iter`].
 pub struct Iter<'h, 'g, K, V, H = RandomState>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static + Clone,
     H: BuildHasher,
 {
     hashindex: &'h HashIndex<K, V, H>,
@@ -122,8 +112,6 @@ where
 
 impl<K, V, H> HashIndex<K, V, H>
 where
-    K: 'static,
-    V: 'static,
     H: BuildHasher,
 {
     /// Creates an empty [`HashIndex`] with the given [`BuildHasher`].
@@ -145,14 +133,7 @@ where
             build_hasher,
         }
     }
-}
 
-impl<K, V, H> HashIndex<K, V, H>
-where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static + Clone,
-    H: BuildHasher,
-{
     /// Creates an empty [`HashIndex`] with the specified capacity and [`BuildHasher`].
     ///
     /// The actual capacity is equal to or greater than the specified capacity.
@@ -192,7 +173,14 @@ where
             build_hasher,
         }
     }
+}
 
+impl<K, V, H> HashIndex<K, V, H>
+where
+    K: 'static + Clone + Eq + Hash,
+    V: 'static + Clone,
+    H: BuildHasher,
+{
     /// Temporarily increases the minimum capacity of the [`HashIndex`].
     ///
     /// A [`Reserve`] is returned if the [`HashIndex`] could increase the minimum capacity while

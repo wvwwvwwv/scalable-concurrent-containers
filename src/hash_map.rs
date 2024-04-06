@@ -75,7 +75,6 @@ where
 /// [`Entry`] represents a single entry in a [`HashMap`].
 pub enum Entry<'h, K, V, H = RandomState>
 where
-    K: Eq + Hash,
     H: BuildHasher,
 {
     /// An occupied entry.
@@ -88,7 +87,6 @@ where
 /// [`OccupiedEntry`] is a view into an occupied entry in a [`HashMap`].
 pub struct OccupiedEntry<'h, K, V, H = RandomState>
 where
-    K: Eq + Hash,
     H: BuildHasher,
 {
     hashmap: &'h HashMap<K, V, H>,
@@ -98,7 +96,6 @@ where
 /// [`VacantEntry`] is a view into a vacant entry in a [`HashMap`].
 pub struct VacantEntry<'h, K, V, H = RandomState>
 where
-    K: Eq + Hash,
     H: BuildHasher,
 {
     hashmap: &'h HashMap<K, V, H>,
@@ -141,13 +138,7 @@ where
             build_hasher,
         }
     }
-}
 
-impl<K, V, H> HashMap<K, V, H>
-where
-    K: Eq + Hash,
-    H: BuildHasher,
-{
     /// Creates an empty [`HashMap`] with the specified capacity and [`BuildHasher`].
     ///
     /// The actual capacity is equal to or greater than the specified capacity.
@@ -187,7 +178,13 @@ where
             build_hasher,
         }
     }
+}
 
+impl<K, V, H> HashMap<K, V, H>
+where
+    K: Eq + Hash,
+    H: BuildHasher,
+{
     /// Temporarily increases the minimum capacity of the [`HashMap`].
     ///
     /// A [`Reserve`] is returned if the [`HashMap`] could increase the minimum capacity while the

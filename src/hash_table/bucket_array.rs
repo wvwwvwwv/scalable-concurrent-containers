@@ -52,7 +52,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     }
 }
 
-impl<K: Eq, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
+impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     /// Returns the minimum capacity.
     #[inline]
     pub const fn minimum_capacity() -> usize {
@@ -277,14 +277,8 @@ impl<K, V, L: LruList, const TYPE: char> Drop for BucketArray<K, V, L, TYPE> {
     }
 }
 
-unsafe impl<K: Eq + Send, V: Send, L: LruList, const TYPE: char> Send
-    for BucketArray<K, V, L, TYPE>
-{
-}
-unsafe impl<K: Eq + Sync, V: Sync, L: LruList, const TYPE: char> Sync
-    for BucketArray<K, V, L, TYPE>
-{
-}
+unsafe impl<K: Send, V: Send, L: LruList, const TYPE: char> Send for BucketArray<K, V, L, TYPE> {}
+unsafe impl<K: Sync, V: Sync, L: LruList, const TYPE: char> Sync for BucketArray<K, V, L, TYPE> {}
 
 #[cfg(test)]
 mod test {

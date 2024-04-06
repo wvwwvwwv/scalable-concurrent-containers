@@ -43,8 +43,8 @@ mod benchmark {
     }
 
     trait BenchmarkOperation<
-        K: Clone + Eq + Hash + Ord + Send + Sync,
-        V: Clone + Send + Sync,
+        K: 'static + Clone + Eq + Hash + Ord + Send + Sync,
+        V: 'static + Clone + Send + Sync,
         H: BuildHasher,
     >
     {
@@ -54,8 +54,11 @@ mod benchmark {
         fn remove_test(&self, k: &K) -> bool;
     }
 
-    impl<K: Clone + Eq + Hash + Ord + Send + Sync, V: Clone + Send + Sync, H: BuildHasher>
-        BenchmarkOperation<K, V, H> for HashMap<K, V, H>
+    impl<
+            K: 'static + Clone + Eq + Hash + Ord + Send + Sync,
+            V: 'static + Clone + Send + Sync,
+            H: BuildHasher,
+        > BenchmarkOperation<K, V, H> for HashMap<K, V, H>
     {
         #[inline(always)]
         fn insert_test(&self, k: K, v: V) -> bool {
@@ -83,8 +86,8 @@ mod benchmark {
     }
 
     impl<
-            K: Clone + Eq + Hash + Ord + Send + Sync,
-            V: Clone + Send + Sync,
+            K: 'static + Clone + Eq + Hash + Ord + Send + Sync,
+            V: 'static + Clone + Send + Sync,
             H: 'static + BuildHasher,
         > BenchmarkOperation<K, V, H> for HashIndex<K, V, H>
     {
@@ -109,8 +112,11 @@ mod benchmark {
         }
     }
 
-    impl<K: Clone + Eq + Hash + Ord + Send + Sync, V: Clone + Send + Sync, H: BuildHasher>
-        BenchmarkOperation<K, V, H> for TreeIndex<K, V>
+    impl<
+            K: 'static + Clone + Eq + Hash + Ord + Send + Sync,
+            V: 'static + Clone + Send + Sync,
+            H: BuildHasher,
+        > BenchmarkOperation<K, V, H> for TreeIndex<K, V>
     {
         #[inline(always)]
         fn insert_test(&self, k: K, v: V) -> bool {
@@ -152,8 +158,8 @@ mod benchmark {
     }
 
     fn perform<
-        K: Clone + ConvertFromUsize + Eq + Hash + Ord + Send + Sync,
-        V: Clone + ConvertFromUsize + Send + Sync,
+        K: 'static + Clone + ConvertFromUsize + Eq + Hash + Ord + Send + Sync,
+        V: 'static + Clone + ConvertFromUsize + Send + Sync,
         C: BenchmarkOperation<K, V, RandomState> + 'static + Send + Sync,
     >(
         num_threads: usize,

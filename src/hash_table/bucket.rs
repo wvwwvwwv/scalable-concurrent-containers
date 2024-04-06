@@ -67,17 +67,17 @@ pub const BUCKET_LEN: usize = u32::BITS as usize;
 pub type DataBlock<K, V, const LEN: usize> = [MaybeUninit<(K, V)>; LEN];
 
 /// [`Locker`] owns a [`Bucket`] by holding the exclusive lock on it.
-pub struct Locker<'g, K: Eq, V, L: LruList, const TYPE: char> {
+pub struct Locker<'g, K, V, L: LruList, const TYPE: char> {
     bucket: &'g mut Bucket<K, V, L, TYPE>,
 }
 
 /// [`Locker`] owns a [`Bucket`] by holding a shared lock on it.
-pub struct Reader<'g, K: Eq, V, L: LruList, const TYPE: char> {
+pub struct Reader<'g, K, V, L: LruList, const TYPE: char> {
     bucket: &'g Bucket<K, V, L, TYPE>,
 }
 
 /// [`EntryPtr`] points to an occupied slot in a [`Bucket`].
-pub struct EntryPtr<'g, K: Eq, V, const TYPE: char> {
+pub struct EntryPtr<'g, K, V, const TYPE: char> {
     /// Points to the current [`LinkedBucket`].
     current_link_ptr: Ptr<'g, LinkedBucket<K, V, LINKED_BUCKET_LEN>>,
 
@@ -122,6 +122,42 @@ const SLOCK_MAX: u32 = LOCK - 1;
 const LOCK_MASK: u32 = LOCK | SLOCK_MAX;
 
 impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
+    /// Returns the number of occupied and reachable slots in the [`Bucket`].
+    #[inline]
+    pub(crate) const fn num_entries(&self) -> usize {
+        self.num_entries as usize
+    }
+
+    /// Returns `true` if the [`Bucket`] needs to be rebuilt.
+    ///
+    /// If `TYPE == OPTIMISTIC`, removed entries are not dropped, still occupying the slots,
+    /// therefore rebuilding the [`Bucket`] might be needed to keep the [`Bucket`] as small as
+    /// possible.
+    #[inline]
+    pub(crate) const fn need_rebuild(&self) -> bool {
+        TYPE == OPTIMISTIC
+            && self.metadata.removed_bitmap_or_lru_tail == (u32::MAX >> (32 - BUCKET_LEN))
+    }
+
+    /// Kills the bucket by marking it `KILLED` and unlinking [`LinkedBucket`].
+    #[inline]
+    pub(crate) fn kill(&mut self, guard: &Guard) {
+        if TYPE == OPTIMISTIC {
+            self.metadata.removed_bitmap_or_lru_tail = self.metadata.occupied_bitmap;
+        }
+        self.state.fetch_or(KILLED, Release);
+        self.num_entries = 0;
+        if !self.metadata.link.is_null(Relaxed) {
+            self.clear_links(guard);
+        }
+    }
+
+    /// Returns `true` if the [`Bucket`] has been killed.
+    #[inline]
+    pub(crate) fn killed(&self) -> bool {
+        (self.state.load(Relaxed) & KILLED) == KILLED
+    }
+
     /// Drops entries in the given [`DataBlock`] using the information stored in the [`Bucket`].
     ///
     /// The [`Bucket`] and the [`DataBlock`] should never be used afterwards.
@@ -164,32 +200,38 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             }
         }
     }
+
+    /// Searches for the next closest occupied entry slot number from the current one in the bitmap.
+    ///
+    /// If the specified slot is occupied and reachable, just returns its index number.
+    fn next_entry<const LEN: usize>(
+        metadata: &Metadata<K, V, LEN>,
+        current_index: usize,
+    ) -> Option<usize> {
+        if current_index >= LEN {
+            return None;
+        }
+
+        let bitmap = if TYPE == OPTIMISTIC {
+            (metadata.occupied_bitmap & (!metadata.removed_bitmap_or_lru_tail))
+                & (!((1_u32 << current_index) - 1))
+        } else {
+            metadata.occupied_bitmap & (!((1_u32 << current_index) - 1))
+        };
+
+        let next_index = bitmap.trailing_zeros() as usize;
+        if next_index < LEN {
+            if TYPE == OPTIMISTIC {
+                fence(Acquire);
+            }
+            return Some(next_index);
+        }
+
+        None
+    }
 }
 
 impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
-    /// Returns the number of occupied and reachable slots in the [`Bucket`].
-    #[inline]
-    pub(crate) const fn num_entries(&self) -> usize {
-        self.num_entries as usize
-    }
-
-    /// Returns `true` if the [`Bucket`] needs to be rebuilt.
-    ///
-    /// If `TYPE == OPTIMISTIC`, removed entries are not dropped, still occupying the slots,
-    /// therefore rebuilding the [`Bucket`] might be needed to keep the [`Bucket`] as small as
-    /// possible.
-    #[inline]
-    pub(crate) const fn need_rebuild(&self) -> bool {
-        TYPE == OPTIMISTIC
-            && self.metadata.removed_bitmap_or_lru_tail == (u32::MAX >> (32 - BUCKET_LEN))
-    }
-
-    /// Returns `true` if the [`Bucket`] has been killed.
-    #[inline]
-    pub(crate) fn killed(&self) -> bool {
-        (self.state.load(Relaxed) & KILLED) == KILLED
-    }
-
     /// Searches for an entry associated with the given key.
     #[inline]
     pub(crate) fn search<'g, Q>(
@@ -224,19 +266,6 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         }
 
         None
-    }
-
-    /// Kills the bucket by marking it `KILLED` and unlinking [`LinkedBucket`].
-    #[inline]
-    pub(crate) fn kill(&mut self, guard: &Guard) {
-        if TYPE == OPTIMISTIC {
-            self.metadata.removed_bitmap_or_lru_tail = self.metadata.occupied_bitmap;
-        }
-        self.state.fetch_or(KILLED, Release);
-        self.num_entries = 0;
-        if !self.metadata.link.is_null(Relaxed) {
-            self.clear_links(guard);
-        }
     }
 
     /// Gets an [`EntryPtr`] pointing to the slot containing the given key.
@@ -321,42 +350,9 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
 
         None
     }
-
-    /// Searches for the next closest occupied entry slot number from the current one in the bitmap.
-    ///
-    /// If the specified slot is occupied and reachable, just returns its index number.
-    fn next_entry<Q, const LEN: usize>(
-        metadata: &Metadata<K, V, LEN>,
-        current_index: usize,
-    ) -> Option<usize>
-    where
-        K: Borrow<Q>,
-        Q: Eq + ?Sized,
-    {
-        if current_index >= LEN {
-            return None;
-        }
-
-        let bitmap = if TYPE == OPTIMISTIC {
-            (metadata.occupied_bitmap & (!metadata.removed_bitmap_or_lru_tail))
-                & (!((1_u32 << current_index) - 1))
-        } else {
-            metadata.occupied_bitmap & (!((1_u32 << current_index) - 1))
-        };
-
-        let next_index = bitmap.trailing_zeros() as usize;
-        if next_index < LEN {
-            if TYPE == OPTIMISTIC {
-                fence(Acquire);
-            }
-            return Some(next_index);
-        }
-
-        None
-    }
 }
 
-impl<'g, K: Eq, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
+impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
     /// Creates a new invalid [`EntryPtr`].
     #[inline]
     pub(crate) const fn new(_guard: &'g Guard) -> Self {
@@ -526,7 +522,7 @@ impl<'g, K: Eq, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
     }
 }
 
-impl<'g, K: Eq, V, const TYPE: char> Debug for EntryPtr<'g, K, V, TYPE> {
+impl<'g, K, V, const TYPE: char> Debug for EntryPtr<'g, K, V, TYPE> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EntryPtr")
@@ -536,9 +532,9 @@ impl<'g, K: Eq, V, const TYPE: char> Debug for EntryPtr<'g, K, V, TYPE> {
     }
 }
 
-unsafe impl<'g, K: Eq + Sync, V: Sync, const TYPE: char> Sync for EntryPtr<'g, K, V, TYPE> {}
+unsafe impl<'g, K: Sync, V: Sync, const TYPE: char> Sync for EntryPtr<'g, K, V, TYPE> {}
 
-impl<'g, K: Eq, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
+impl<'g, K, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
     /// Locks the [`Bucket`].
     #[inline]
     pub(crate) fn lock(
@@ -599,24 +595,6 @@ impl<'g, K: Eq, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
                 bucket.state.fetch_or(WAITING, Release);
                 Self::try_lock(bucket, guard)
             })
-    }
-
-    /// Gets an [`EntryPtr`] pointing to an entry associated with the given key.
-    ///
-    /// The returned [`EntryPtr`] points to an occupied entry if the key is found.
-    #[inline]
-    pub(crate) fn get<Q>(
-        &self,
-        data_block: &DataBlock<K, V, BUCKET_LEN>,
-        key: &Q,
-        partial_hash: u8,
-        guard: &'g Guard,
-    ) -> EntryPtr<'g, K, V, TYPE>
-    where
-        K: Borrow<Q>,
-        Q: Eq + ?Sized,
-    {
-        self.bucket.get(data_block, key, partial_hash, guard)
     }
 
     /// Reserves memory for insertion, and then constructs the key-value pair.
@@ -928,7 +906,27 @@ impl<'g, K: Eq, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
     }
 }
 
-impl<'g, K: Eq, V, L: LruList, const TYPE: char> Deref for Locker<'g, K, V, L, TYPE> {
+impl<'g, K: Eq, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
+    /// Gets an [`EntryPtr`] pointing to an entry associated with the given key.
+    ///
+    /// The returned [`EntryPtr`] points to an occupied entry if the key is found.
+    #[inline]
+    pub(crate) fn get<Q>(
+        &self,
+        data_block: &DataBlock<K, V, BUCKET_LEN>,
+        key: &Q,
+        partial_hash: u8,
+        guard: &'g Guard,
+    ) -> EntryPtr<'g, K, V, TYPE>
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
+        self.bucket.get(data_block, key, partial_hash, guard)
+    }
+}
+
+impl<'g, K, V, L: LruList, const TYPE: char> Deref for Locker<'g, K, V, L, TYPE> {
     type Target = Bucket<K, V, L, TYPE>;
 
     #[inline]
@@ -937,13 +935,13 @@ impl<'g, K: Eq, V, L: LruList, const TYPE: char> Deref for Locker<'g, K, V, L, T
     }
 }
 
-impl<'g, K: Eq, V, L: LruList, const TYPE: char> DerefMut for Locker<'g, K, V, L, TYPE> {
+impl<'g, K, V, L: LruList, const TYPE: char> DerefMut for Locker<'g, K, V, L, TYPE> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.bucket
     }
 }
 
-impl<'g, K: Eq, V, L: LruList, const TYPE: char> Drop for Locker<'g, K, V, L, TYPE> {
+impl<'g, K, V, L: LruList, const TYPE: char> Drop for Locker<'g, K, V, L, TYPE> {
     #[inline]
     fn drop(&mut self) {
         let mut current = self.bucket.state.load(Relaxed);
@@ -962,7 +960,7 @@ impl<'g, K: Eq, V, L: LruList, const TYPE: char> Drop for Locker<'g, K, V, L, TY
     }
 }
 
-impl<'g, K: Eq, V, L: LruList, const TYPE: char> Reader<'g, K, V, L, TYPE> {
+impl<'g, K, V, L: LruList, const TYPE: char> Reader<'g, K, V, L, TYPE> {
     /// Locks the given [`Bucket`].
     ///
     /// Returns `None` if the [`Bucket`] has been killed or empty.
@@ -1048,7 +1046,7 @@ impl<'g, K: Eq, V, L: LruList, const TYPE: char> Reader<'g, K, V, L, TYPE> {
     }
 }
 
-impl<'g, K: Eq, V, L: LruList, const TYPE: char> Deref for Reader<'g, K, V, L, TYPE> {
+impl<'g, K, V, L: LruList, const TYPE: char> Deref for Reader<'g, K, V, L, TYPE> {
     type Target = &'g Bucket<K, V, L, TYPE>;
 
     #[inline]
@@ -1057,14 +1055,14 @@ impl<'g, K: Eq, V, L: LruList, const TYPE: char> Deref for Reader<'g, K, V, L, T
     }
 }
 
-impl<'g, K: Eq, V, L: LruList, const TYPE: char> Drop for Reader<'g, K, V, L, TYPE> {
+impl<'g, K, V, L: LruList, const TYPE: char> Drop for Reader<'g, K, V, L, TYPE> {
     #[inline]
     fn drop(&mut self) {
         Self::release(self.bucket);
     }
 }
 
-impl<K: Eq, V, const LEN: usize> Default for Metadata<K, V, LEN> {
+impl<K, V, const LEN: usize> Default for Metadata<K, V, LEN> {
     #[inline]
     fn default() -> Self {
         Self {
@@ -1183,7 +1181,7 @@ impl LruList for DoublyLinkedList {
     }
 }
 
-impl<K: Eq, V, const LEN: usize> LinkedBucket<K, V, LEN> {
+impl<K, V, const LEN: usize> LinkedBucket<K, V, LEN> {
     /// Creates an empty [`LinkedBucket`].
     fn new(next: Option<Shared<LinkedBucket<K, V, LINKED_BUCKET_LEN>>>) -> Self {
         Self {
@@ -1202,7 +1200,7 @@ impl<K: Eq, V, const LEN: usize> LinkedBucket<K, V, LEN> {
     }
 }
 
-impl<K: Eq, V, const LEN: usize> Debug for LinkedBucket<K, V, LEN> {
+impl<K, V, const LEN: usize> Debug for LinkedBucket<K, V, LEN> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LinkedBucket").finish()
