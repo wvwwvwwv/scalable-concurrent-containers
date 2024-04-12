@@ -361,8 +361,8 @@ where
 
 impl<'d, K, V> Visitor<'d> for TreeIndexVisitor<K, V>
 where
-    K: Clone + Deserialize<'d> + Ord,
-    V: Clone + Deserialize<'d>,
+    K: 'static + Clone + Deserialize<'d> + Ord,
+    V: 'static + Clone + Deserialize<'d>,
 {
     type Value = TreeIndex<K, V>;
 
@@ -384,8 +384,8 @@ where
 
 impl<'d, K, V> Deserialize<'d> for TreeIndex<K, V>
 where
-    K: Clone + Deserialize<'d> + Ord,
-    V: Clone + Deserialize<'d>,
+    K: 'static + Clone + Deserialize<'d> + Ord,
+    V: 'static + Clone + Deserialize<'d>,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -397,8 +397,8 @@ where
 
 impl<K, V> Serialize for TreeIndex<K, V>
 where
-    K: Clone + Ord + Serialize,
-    V: Clone + Serialize,
+    K: 'static + Clone + Ord + Serialize,
+    V: 'static + Clone + Serialize,
 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
