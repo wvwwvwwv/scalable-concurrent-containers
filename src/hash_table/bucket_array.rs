@@ -24,6 +24,13 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         self.array_len
     }
 
+    /// Returns a reference to a [`Bucket`] at the given position.
+    #[inline]
+    pub(crate) fn bucket(&self, index: usize) -> &Bucket<K, V, L, TYPE> {
+        debug_assert!(index < self.num_buckets());
+        unsafe { &(*(self.bucket_ptr.add(index))) }
+    }
+
     /// Returns a mutable reference to a [`Bucket`] at the given position.
     #[allow(clippy::mut_from_ref)]
     #[inline]
@@ -53,19 +60,6 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
 }
 
 impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
-    /// Returns the minimum capacity.
-    #[inline]
-    pub const fn minimum_capacity() -> usize {
-        BUCKET_LEN << 1
-    }
-
-    /// Returns the partial hash value of the given hash.
-    #[allow(clippy::cast_possible_truncation)]
-    #[inline]
-    pub(crate) const fn partial_hash(hash: u64) -> u8 {
-        (hash % (1 << 8)) as u8
-    }
-
     /// Creates a new [`BucketArray`] of the given capacity.
     ///
     /// `capacity` is the desired number entries, not the number of [`Bucket`] instances.
@@ -132,11 +126,17 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         }
     }
 
-    /// Returns a reference to a [`Bucket`] at the given position.
+    /// Returns the minimum capacity.
     #[inline]
-    pub(crate) fn bucket(&self, index: usize) -> &Bucket<K, V, L, TYPE> {
-        debug_assert!(index < self.num_buckets());
-        unsafe { &(*(self.bucket_ptr.add(index))) }
+    pub const fn minimum_capacity() -> usize {
+        BUCKET_LEN << 1
+    }
+
+    /// Returns the partial hash value of the given hash.
+    #[allow(clippy::cast_possible_truncation)]
+    #[inline]
+    pub(crate) const fn partial_hash(hash: u64) -> u8 {
+        (hash % (1 << 8)) as u8
     }
 
     /// Returns a reference to its rehashing metadata.

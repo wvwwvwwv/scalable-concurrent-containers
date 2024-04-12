@@ -55,11 +55,7 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 ///
 /// [`TreeIndex`] is impervious to out-of-memory errors and panics in user specified code on one
 /// condition; `K::drop` and `V::drop` must not panic.
-pub struct TreeIndex<K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
+pub struct TreeIndex<K, V> {
     root: AtomicShared<Node<K, V>>,
 }
 
@@ -67,23 +63,14 @@ where
 ///
 /// An [`Iter`] iterates over all the entries that survive the [`Iter`] in monotonically increasing
 /// order.
-pub struct Iter<'t, 'g, K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
+pub struct Iter<'t, 'g, K, V> {
     root: &'t AtomicShared<Node<K, V>>,
     leaf_scanner: Option<Scanner<'g, K, V>>,
     guard: &'g Guard,
 }
 
 /// An iterator over a sub-range of entries in a [`TreeIndex`].
-pub struct Range<'t, 'g, K, V, R>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-    R: RangeBounds<K>,
-{
+pub struct Range<'t, 'g, K, V, R: RangeBounds<K>> {
     root: &'t AtomicShared<Node<K, V>>,
     leaf_scanner: Option<Scanner<'g, K, V>>,
     range: R,
@@ -92,11 +79,7 @@ where
     guard: &'g Guard,
 }
 
-impl<K, V> TreeIndex<K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
+impl<K, V> TreeIndex<K, V> {
     /// Creates an empty [`TreeIndex`].
     ///
     /// # Examples
@@ -114,6 +97,48 @@ where
         }
     }
 
+    /// Clears the [`TreeIndex`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::TreeIndex;
+    ///
+    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    ///
+    /// treeindex.clear();
+    /// assert_eq!(treeindex.len(), 0);
+    /// ```
+    #[inline]
+    pub fn clear(&self) {
+        self.root.swap((None, Tag::None), Relaxed);
+    }
+
+    /// Returns the depth of the [`TreeIndex`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::TreeIndex;
+    ///
+    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    /// assert_eq!(treeindex.depth(), 0);
+    /// ```
+    #[inline]
+    pub fn depth(&self) -> usize {
+        let guard = Guard::new();
+        self.root
+            .load(Acquire, &guard)
+            .as_ref()
+            .map_or(0, |root_ref| root_ref.depth(1, &guard))
+    }
+}
+
+impl<K, V> TreeIndex<K, V>
+where
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
+{
     /// Inserts a key-value pair.
     ///
     /// # Errors
@@ -572,23 +597,6 @@ where
         self.peek(key, &Guard::new()).is_some()
     }
 
-    /// Clears the [`TreeIndex`].
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::TreeIndex;
-    ///
-    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
-    ///
-    /// treeindex.clear();
-    /// assert_eq!(treeindex.len(), 0);
-    /// ```
-    #[inline]
-    pub fn clear(&self) {
-        self.root.swap((None, Tag::None), Relaxed);
-    }
-
     /// Returns the size of the [`TreeIndex`].
     ///
     /// It internally scans all the leaf nodes, and therefore the time complexity is O(N).
@@ -622,25 +630,6 @@ where
     pub fn is_empty(&self) -> bool {
         let guard = Guard::new();
         !self.iter(&guard).any(|_| true)
-    }
-
-    /// Returns the depth of the [`TreeIndex`].
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::TreeIndex;
-    ///
-    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
-    /// assert_eq!(treeindex.depth(), 0);
-    /// ```
-    #[inline]
-    pub fn depth(&self) -> usize {
-        let guard = Guard::new();
-        self.root
-            .load(Acquire, &guard)
-            .as_ref()
-            .map_or(0, |root_ref| root_ref.depth(1, &guard))
     }
 
     /// Returns an [`Iter`].
@@ -721,11 +710,7 @@ where
     }
 }
 
-impl<K, V> Default for TreeIndex<K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
+impl<K, V> Default for TreeIndex<K, V> {
     /// Creates a [`TreeIndex`] with the default parameters.
     ///
     /// # Examples
@@ -754,11 +739,7 @@ where
     }
 }
 
-impl<'t, 'g, K, V> Iter<'t, 'g, K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
+impl<'t, 'g, K, V> Iter<'t, 'g, K, V> {
     #[inline]
     fn new(root: &'t AtomicShared<Node<K, V>>, guard: &'g Guard) -> Iter<'t, 'g, K, V> {
         Iter::<'t, 'g, K, V> {
@@ -769,11 +750,7 @@ where
     }
 }
 
-impl<'t, 'g, K, V> Debug for Iter<'t, 'g, K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
+impl<'t, 'g, K, V> Debug for Iter<'t, 'g, K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Iter")
             .field("root", &self.root)
@@ -829,19 +806,9 @@ where
 {
 }
 
-impl<'t, 'g, K, V> UnwindSafe for Iter<'t, 'g, K, V>
-where
-    K: 'static + Clone + Ord + UnwindSafe,
-    V: 'static + Clone + UnwindSafe,
-{
-}
+impl<'t, 'g, K, V> UnwindSafe for Iter<'t, 'g, K, V> {}
 
-impl<'t, 'g, K, V, R> Range<'t, 'g, K, V, R>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-    R: RangeBounds<K>,
-{
+impl<'t, 'g, K, V, R: RangeBounds<K>> Range<'t, 'g, K, V, R> {
     #[inline]
     fn new(
         root: &'t AtomicShared<Node<K, V>>,
@@ -857,7 +824,14 @@ where
             guard,
         }
     }
+}
 
+impl<'t, 'g, K, V, R> Range<'t, 'g, K, V, R>
+where
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
+    R: RangeBounds<K>,
+{
     #[inline]
     fn next_unbounded(&mut self) -> Option<(&'g K, &'g V)> {
         if self.leaf_scanner.is_none() {
@@ -929,12 +903,7 @@ where
     }
 }
 
-impl<'t, 'g, K, V, R> Debug for Range<'t, 'g, K, V, R>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-    R: RangeBounds<K>,
-{
+impl<'t, 'g, K, V, R: RangeBounds<K>> Debug for Range<'t, 'g, K, V, R> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Range")
@@ -1005,10 +974,4 @@ where
 {
 }
 
-impl<'t, 'g, K, V, R> UnwindSafe for Range<'t, 'g, K, V, R>
-where
-    K: 'static + Clone + Ord + UnwindSafe,
-    V: 'static + Clone + UnwindSafe,
-    R: RangeBounds<K> + UnwindSafe,
-{
-}
+impl<'t, 'g, K, V, R> UnwindSafe for Range<'t, 'g, K, V, R> where R: RangeBounds<K> + UnwindSafe {}

@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.0.20
+
+* Relax trait bounds of `TreeIndex`.
+
 2.0.19
 
 * Remove unnecessary trait bounds from type definitions of `HashCache`, `HashIndex`, `HashMap`, and `HashSet`.

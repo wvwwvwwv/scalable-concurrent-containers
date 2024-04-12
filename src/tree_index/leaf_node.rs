@@ -21,11 +21,7 @@ pub const LOCKED: Tag = Tag::Second;
 /// [`LeafNode`] contains a list of instances of `K, V` [`Leaf`].
 ///
 /// The layout of a leaf node: `|ptr(entry array)/max(child keys)|...|ptr(entry array)|`
-pub struct LeafNode<K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
+pub struct LeafNode<K, V> {
     /// Children of the [`LeafNode`].
     pub(super) children: Leaf<K, AtomicShared<Leaf<K, V>>>,
 
@@ -46,11 +42,7 @@ where
 }
 
 /// [`Locker`] holds exclusive ownership of a [`Leaf`].
-pub(super) struct Locker<'n, K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
+pub(super) struct Locker<'n, K, V> {
     leaf_node: &'n LeafNode<K, V>,
 }
 
@@ -76,11 +68,7 @@ pub(super) enum RemoveRangeState {
 ///
 /// `AtomicPtr` members may point to values under the protection of the [`Guard`] used for the
 /// split operation.
-pub(super) struct StructuralChange<K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
+pub(super) struct StructuralChange<K, V> {
     origin_leaf_key: AtomicPtr<K>,
     origin_leaf: AtomicShared<Leaf<K, V>>,
     low_key_leaf: AtomicShared<Leaf<K, V>>,
@@ -89,11 +77,7 @@ where
     high_key_leaf_node: AtomicPtr<LeafNode<K, V>>,
 }
 
-impl<K, V> LeafNode<K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
+impl<K, V> LeafNode<K, V> {
     /// Creates a new empty [`LeafNode`].
     #[inline]
     pub(super) fn new() -> LeafNode<K, V> {
@@ -112,6 +96,51 @@ where
         self.unbounded_child.tag(mo) == RETIRED
     }
 
+    /// Waits for the lock on the [`LeafNode`] to be released.
+    #[inline]
+    pub(super) fn wait<D: DeriveAsyncWait>(&self, async_wait: &mut D) {
+        let waiter = || {
+            if self.latch.load(Relaxed) == LOCKED.into() {
+                // The `LeafNode` is being split or locked.
+                return Err(());
+            }
+            Ok(())
+        };
+
+        if let Some(async_wait) = async_wait.derive() {
+            let _result = self.wait_queue.push_async_entry(async_wait, waiter);
+        } else {
+            let _result = self.wait_queue.wait_sync(waiter);
+        }
+    }
+
+    /// Tries to lock the [`LeafNode`].
+    fn try_lock(&self) -> bool {
+        self.latch
+            .compare_exchange(Tag::None.into(), LOCKED.into(), Acquire, Relaxed)
+            .is_ok()
+    }
+
+    /// Unlocks the [`LeafNode`].
+    fn unlock(&self) {
+        debug_assert_eq!(self.latch.load(Relaxed), LOCKED.into());
+        self.latch.store(Tag::None.into(), Release);
+        self.wait_queue.signal();
+    }
+
+    /// Retires itself.
+    fn retire(&self) {
+        debug_assert_eq!(self.latch.load(Relaxed), LOCKED.into());
+        self.latch.store(RETIRED.into(), Release);
+        self.wait_queue.signal();
+    }
+}
+
+impl<K, V> LeafNode<K, V>
+where
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
+{
     /// Searches for an entry associated with the given key.
     #[inline]
     pub(super) fn search<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<&'g V>
@@ -724,24 +753,6 @@ where
         true
     }
 
-    /// Waits for the lock on the [`LeafNode`] to be released.
-    #[inline]
-    pub(super) fn wait<D: DeriveAsyncWait>(&self, async_wait: &mut D) {
-        let waiter = || {
-            if self.latch.load(Relaxed) == LOCKED.into() {
-                // The `LeafNode` is being split or locked.
-                return Err(());
-            }
-            Ok(())
-        };
-
-        if let Some(async_wait) = async_wait.derive() {
-            let _result = self.wait_queue.push_async_entry(async_wait, waiter);
-        } else {
-            let _result = self.wait_queue.wait_sync(waiter);
-        }
-    }
-
     /// Splits a full leaf.
     ///
     /// # Errors
@@ -1009,34 +1020,9 @@ where
         }
         false
     }
-
-    /// Tries to lock the [`LeafNode`].
-    fn try_lock(&self) -> bool {
-        self.latch
-            .compare_exchange(Tag::None.into(), LOCKED.into(), Acquire, Relaxed)
-            .is_ok()
-    }
-
-    /// Unlocks the [`LeafNode`].
-    fn unlock(&self) {
-        debug_assert_eq!(self.latch.load(Relaxed), LOCKED.into());
-        self.latch.store(Tag::None.into(), Release);
-        self.wait_queue.signal();
-    }
-
-    /// Retires itself.
-    fn retire(&self) {
-        debug_assert_eq!(self.latch.load(Relaxed), LOCKED.into());
-        self.latch.store(RETIRED.into(), Release);
-        self.wait_queue.signal();
-    }
 }
 
-impl<'n, K, V> Locker<'n, K, V>
-where
-    K: Clone + Ord,
-    V: Clone,
-{
+impl<'n, K, V> Locker<'n, K, V> {
     /// Acquires exclusive lock on the [`LeafNode`].
     #[inline]
     pub(super) fn try_lock(leaf_node: &'n LeafNode<K, V>) -> Option<Locker<'n, K, V>> {
@@ -1048,11 +1034,7 @@ where
     }
 }
 
-impl<'n, K, V> Drop for Locker<'n, K, V>
-where
-    K: Clone + Ord,
-    V: Clone,
-{
+impl<'n, K, V> Drop for Locker<'n, K, V> {
     #[inline]
     fn drop(&mut self) {
         self.leaf_node.unlock();
@@ -1103,11 +1085,8 @@ impl RemoveRangeState {
         }
     }
 }
-impl<K, V> StructuralChange<K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
+
+impl<K, V> StructuralChange<K, V> {
     fn reset(&self) -> Option<Shared<Leaf<K, V>>> {
         self.origin_leaf_key.store(ptr::null_mut(), Relaxed);
         self.low_key_leaf.swap((None, Tag::None), Relaxed);
@@ -1118,11 +1097,7 @@ where
     }
 }
 
-impl<K, V> Default for StructuralChange<K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
+impl<K, V> Default for StructuralChange<K, V> {
     #[inline]
     fn default() -> Self {
         Self {

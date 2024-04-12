@@ -9,11 +9,7 @@ use std::ops::RangeBounds;
 use std::sync::atomic::Ordering::{self, Acquire, Relaxed, Release};
 
 /// [`Node`] is either [`Self::Internal`] or [`Self::Leaf`].
-pub enum Node<K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
+pub enum Node<K, V> {
     /// Internal node.
     Internal(InternalNode<K, V>),
 
@@ -21,11 +17,7 @@ where
     Leaf(LeafNode<K, V>),
 }
 
-impl<K, V> Node<K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
+impl<K, V> Node<K, V> {
     /// Creates a new [`InternalNode`].
     #[inline]
     pub(super) fn new_internal_node() -> Self {
@@ -55,7 +47,13 @@ where
             Self::Leaf(leaf_node) => leaf_node.retired(mo),
         }
     }
+}
 
+impl<K, V> Node<K, V>
+where
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
+{
     /// Searches for an entry associated with the given key.
     #[inline]
     pub(super) fn search<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<&'g V>
@@ -339,11 +337,7 @@ where
     }
 }
 
-impl<K, V> Debug for Node<K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
+impl<K, V> Debug for Node<K, V> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

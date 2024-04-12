@@ -11,11 +11,7 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 ///
 /// A constructed key-value pair entry is never dropped until the entire [`Leaf`] instance is
 /// dropped.
-pub struct Leaf<K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
+pub struct Leaf<K, V> {
     /// The metadata containing information about the [`Leaf`] and individual entries.
     ///
     /// The state of each entry is as follows.
@@ -85,11 +81,7 @@ pub enum RemoveResult {
     Frozen,
 }
 
-impl<K, V> Leaf<K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
+impl<K, V> Leaf<K, V> {
     /// Creates a new [`Leaf`].
     #[inline]
     pub(super) const fn new() -> Leaf<K, V> {
@@ -167,6 +159,154 @@ where
         None
     }
 
+    /// Inserts a key value pair at the specified position without checking the metadata.
+    ///
+    /// `rank` is calculated as `index + 1`.
+    #[inline]
+    pub(super) fn insert_unchecked(&self, key: K, val: V, index: usize) {
+        debug_assert!(index < DIMENSION.num_entries);
+        let metadata = self.metadata.load(Relaxed);
+        let new_metadata = DIMENSION.augment(metadata, index, index + 1);
+        self.write(index, key, val);
+        self.metadata.store(new_metadata, Release);
+    }
+
+    /// Compares the given metadata value with the current one.
+    #[inline]
+    pub(super) fn validate(&self, metadata: usize) -> bool {
+        // `Relaxed` is sufficient as long as the caller has read-acquired its contents.
+        self.metadata.load(Relaxed) == metadata
+    }
+
+    /// Freezes the [`Leaf`] temporarily.
+    ///
+    /// A frozen [`Leaf`] cannot store more entries, and on-going insertion is canceled.
+    #[inline]
+    pub(super) fn freeze(&self) -> bool {
+        self.metadata
+            .fetch_update(AcqRel, Acquire, |p| {
+                if Dimension::frozen(p) {
+                    None
+                } else {
+                    Some(Dimension::freeze(p))
+                }
+            })
+            .is_ok()
+    }
+
+    /// Returns the recommended number of entries that the left-side node shall store when a
+    /// [`Leaf`] is split.
+    ///
+    /// Returns a number in `[1, len(leaf))` that represents the recommended number of entries in
+    /// the left-side node. The number is calculated as, for each adjacent slots,
+    /// - Initial `score = len(leaf)`.
+    /// - Rank increased: `score -= 1`.
+    /// - Rank decreased: `score += 1`.
+    /// - Clamp `score` in `[len(leaf) / 2 + 1, len(leaf) / 2 + len(leaf) - 1)`.
+    /// - Take `score - len(leaf) / 2`.
+    ///
+    /// For instance, when the length of a [`Leaf`] is 7,
+    /// - Returns 6 for `rank = [1, 2, 3, 4, 5, 6, 7]`.
+    /// - Returns 1 for `rank = [7, 6, 5, 4, 3, 2, 1]`.
+    #[inline]
+    pub(super) fn optimal_boundary(mut mutable_metadata: usize) -> usize {
+        let mut boundary: usize = DIMENSION.num_entries;
+        let mut prev_rank = 1;
+        for _ in 0..DIMENSION.num_entries {
+            let rank = mutable_metadata % (1_usize << DIMENSION.num_bits_per_entry);
+            if rank != 0 && rank != DIMENSION.removed_rank() {
+                if prev_rank < rank {
+                    boundary += 1;
+                } else {
+                    boundary -= 1;
+                }
+                prev_rank = rank;
+            }
+            mutable_metadata >>= DIMENSION.num_bits_per_entry;
+        }
+        boundary.clamp(
+            DIMENSION.num_entries / 2 + 1,
+            DIMENSION.num_entries + DIMENSION.num_entries / 2 - 1,
+        ) - DIMENSION.num_entries / 2
+    }
+
+    const fn key_at(&self, index: usize) -> &K {
+        unsafe { &*self.entry_array.0[index].as_ptr() }
+    }
+
+    const fn value_at(&self, index: usize) -> &V {
+        unsafe { &*self.entry_array.1[index].as_ptr() }
+    }
+
+    fn rollback(&self, index: usize) -> InsertResult<K, V> {
+        let (key, val) = self.take(index);
+        let result = self
+            .metadata
+            .fetch_and(!DIMENSION.rank_mask(index), Relaxed)
+            & (!DIMENSION.rank_mask(index));
+        if Dimension::retired(result) {
+            InsertResult::Retired(key, val)
+        } else if Dimension::frozen(result) {
+            InsertResult::Frozen(key, val)
+        } else {
+            InsertResult::Duplicate(key, val)
+        }
+    }
+
+    fn take(&self, index: usize) -> (K, V) {
+        unsafe {
+            (
+                self.entry_array.0[index].as_ptr().read(),
+                self.entry_array.1[index].as_ptr().read(),
+            )
+        }
+    }
+
+    fn write(&self, index: usize, key: K, val: V) {
+        unsafe {
+            (self.entry_array.0[index].as_ptr().cast_mut()).write(key);
+            (self.entry_array.1[index].as_ptr().cast_mut()).write(val);
+        }
+    }
+
+    /// Returns the index of the corresponding entry of the next higher ranked entry.
+    fn next(index: usize, mut mutable_metadata: usize) -> usize {
+        debug_assert_ne!(index, usize::MAX);
+        let current_entry_rank = if index == DIMENSION.num_entries {
+            0
+        } else {
+            DIMENSION.rank(mutable_metadata, index)
+        };
+        let mut next_index = DIMENSION.num_entries;
+        if current_entry_rank < DIMENSION.num_entries {
+            let mut next_rank = DIMENSION.removed_rank();
+            for i in 0..DIMENSION.num_entries {
+                if mutable_metadata == 0 {
+                    break;
+                }
+                if i != index {
+                    let rank = mutable_metadata % (1_usize << DIMENSION.num_bits_per_entry);
+                    if rank != Dimension::uninit_rank() && rank < next_rank {
+                        if rank == current_entry_rank + 1 {
+                            return i;
+                        } else if rank > current_entry_rank {
+                            next_rank = rank;
+                            next_index = i;
+                        }
+                    }
+                }
+                mutable_metadata >>= DIMENSION.num_bits_per_entry;
+            }
+        }
+        next_index
+    }
+}
+
+impl<K, V> Leaf<K, V>
+where
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
+{
     /// Inserts a key value pair.
     #[inline]
     pub(super) fn insert(&self, key: K, val: V) -> InsertResult<K, V> {
@@ -206,18 +346,6 @@ where
             }
             return InsertResult::Full(key, val);
         }
-    }
-
-    /// Inserts a key value pair at the specified position without checking the metadata.
-    ///
-    /// `rank` is calculated as `index + 1`.
-    #[inline]
-    pub(super) fn insert_unchecked(&self, key: K, val: V, index: usize) {
-        debug_assert!(index < DIMENSION.num_entries);
-        let metadata = self.metadata.load(Relaxed);
-        let new_metadata = DIMENSION.augment(metadata, index, index + 1);
-        self.write(index, key, val);
-        self.metadata.store(new_metadata, Release);
     }
 
     /// Removes the key if the condition is met.
@@ -416,29 +544,6 @@ where
         (None, metadata)
     }
 
-    /// Compares the given metadata value with the current one.
-    #[inline]
-    pub(super) fn validate(&self, metadata: usize) -> bool {
-        // `Relaxed` is sufficient as long as the caller has read-acquired its contents.
-        self.metadata.load(Relaxed) == metadata
-    }
-
-    /// Freezes the [`Leaf`] temporarily.
-    ///
-    /// A frozen [`Leaf`] cannot store more entries, and on-going insertion is canceled.
-    #[inline]
-    pub(super) fn freeze(&self) -> bool {
-        self.metadata
-            .fetch_update(AcqRel, Acquire, |p| {
-                if Dimension::frozen(p) {
-                    None
-                } else {
-                    Some(Dimension::freeze(p))
-                }
-            })
-            .is_ok()
-    }
-
     /// Freezes the [`Leaf`] and distribute entries to two new leaves.
     #[inline]
     pub(super) fn freeze_and_distribute(
@@ -475,77 +580,6 @@ where
                     .insert_unchecked(k.clone(), v.clone(), i - boundary);
             };
         }
-    }
-
-    /// Returns the recommended number of entries that the left-side node shall store when a
-    /// [`Leaf`] is split.
-    ///
-    /// Returns a number in `[1, len(leaf))` that represents the recommended number of entries in
-    /// the left-side node. The number is calculated as, for each adjacent slots,
-    /// - Initial `score = len(leaf)`.
-    /// - Rank increased: `score -= 1`.
-    /// - Rank decreased: `score += 1`.
-    /// - Clamp `score` in `[len(leaf) / 2 + 1, len(leaf) / 2 + len(leaf) - 1)`.
-    /// - Take `score - len(leaf) / 2`.
-    ///
-    /// For instance, when the length of a [`Leaf`] is 7,
-    /// - Returns 6 for `rank = [1, 2, 3, 4, 5, 6, 7]`.
-    /// - Returns 1 for `rank = [7, 6, 5, 4, 3, 2, 1]`.
-    #[inline]
-    pub(super) fn optimal_boundary(mut mutable_metadata: usize) -> usize {
-        let mut boundary: usize = DIMENSION.num_entries;
-        let mut prev_rank = 1;
-        for _ in 0..DIMENSION.num_entries {
-            let rank = mutable_metadata % (1_usize << DIMENSION.num_bits_per_entry);
-            if rank != 0 && rank != DIMENSION.removed_rank() {
-                if prev_rank < rank {
-                    boundary += 1;
-                } else {
-                    boundary -= 1;
-                }
-                prev_rank = rank;
-            }
-            mutable_metadata >>= DIMENSION.num_bits_per_entry;
-        }
-        boundary.clamp(
-            DIMENSION.num_entries / 2 + 1,
-            DIMENSION.num_entries + DIMENSION.num_entries / 2 - 1,
-        ) - DIMENSION.num_entries / 2
-    }
-
-    /// Searches for a slot in which the key is stored.
-    fn search_slot<Q>(&self, key: &Q, mut mutable_metadata: usize) -> Option<usize>
-    where
-        K: Borrow<Q>,
-        Q: Ord + ?Sized,
-    {
-        let mut min_max_rank = DIMENSION.removed_rank();
-        let mut max_min_rank = 0;
-        for i in 0..DIMENSION.num_entries {
-            if mutable_metadata == 0 {
-                break;
-            }
-            let rank = mutable_metadata % (1_usize << DIMENSION.num_bits_per_entry);
-            if rank < min_max_rank && rank > max_min_rank {
-                match self.compare(i, key) {
-                    Ordering::Less => {
-                        if max_min_rank < rank {
-                            max_min_rank = rank;
-                        }
-                    }
-                    Ordering::Greater => {
-                        if min_max_rank > rank {
-                            min_max_rank = rank;
-                        }
-                    }
-                    Ordering::Equal => {
-                        return Some(i);
-                    }
-                }
-            }
-            mutable_metadata >>= DIMENSION.num_bits_per_entry;
-        }
-        None
     }
 
     /// Post-processing after reserving a free slot.
@@ -602,19 +636,39 @@ where
         }
     }
 
-    fn rollback(&self, index: usize) -> InsertResult<K, V> {
-        let (key, val) = self.take(index);
-        let result = self
-            .metadata
-            .fetch_and(!DIMENSION.rank_mask(index), Relaxed)
-            & (!DIMENSION.rank_mask(index));
-        if Dimension::retired(result) {
-            InsertResult::Retired(key, val)
-        } else if Dimension::frozen(result) {
-            InsertResult::Frozen(key, val)
-        } else {
-            InsertResult::Duplicate(key, val)
+    /// Searches for a slot in which the key is stored.
+    fn search_slot<Q>(&self, key: &Q, mut mutable_metadata: usize) -> Option<usize>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        let mut min_max_rank = DIMENSION.removed_rank();
+        let mut max_min_rank = 0;
+        for i in 0..DIMENSION.num_entries {
+            if mutable_metadata == 0 {
+                break;
+            }
+            let rank = mutable_metadata % (1_usize << DIMENSION.num_bits_per_entry);
+            if rank < min_max_rank && rank > max_min_rank {
+                match self.compare(i, key) {
+                    Ordering::Less => {
+                        if max_min_rank < rank {
+                            max_min_rank = rank;
+                        }
+                    }
+                    Ordering::Greater => {
+                        if min_max_rank > rank {
+                            min_max_rank = rank;
+                        }
+                    }
+                    Ordering::Equal => {
+                        return Some(i);
+                    }
+                }
+            }
+            mutable_metadata >>= DIMENSION.num_bits_per_entry;
         }
+        None
     }
 
     fn compare<Q>(&self, index: usize, key: &Q) -> Ordering
@@ -624,69 +678,9 @@ where
     {
         self.key_at(index).borrow().cmp(key)
     }
-
-    fn take(&self, index: usize) -> (K, V) {
-        unsafe {
-            (
-                self.entry_array.0[index].as_ptr().read(),
-                self.entry_array.1[index].as_ptr().read(),
-            )
-        }
-    }
-
-    fn write(&self, index: usize, key: K, val: V) {
-        unsafe {
-            (self.entry_array.0[index].as_ptr().cast_mut()).write(key);
-            (self.entry_array.1[index].as_ptr().cast_mut()).write(val);
-        }
-    }
-
-    const fn key_at(&self, index: usize) -> &K {
-        unsafe { &*self.entry_array.0[index].as_ptr() }
-    }
-
-    const fn value_at(&self, index: usize) -> &V {
-        unsafe { &*self.entry_array.1[index].as_ptr() }
-    }
-
-    /// Returns the index of the corresponding entry of the next higher ranked entry.
-    fn next(index: usize, mut mutable_metadata: usize) -> usize {
-        debug_assert_ne!(index, usize::MAX);
-        let current_entry_rank = if index == DIMENSION.num_entries {
-            0
-        } else {
-            DIMENSION.rank(mutable_metadata, index)
-        };
-        let mut next_index = DIMENSION.num_entries;
-        if current_entry_rank < DIMENSION.num_entries {
-            let mut next_rank = DIMENSION.removed_rank();
-            for i in 0..DIMENSION.num_entries {
-                if mutable_metadata == 0 {
-                    break;
-                }
-                if i != index {
-                    let rank = mutable_metadata % (1_usize << DIMENSION.num_bits_per_entry);
-                    if rank != Dimension::uninit_rank() && rank < next_rank {
-                        if rank == current_entry_rank + 1 {
-                            return i;
-                        } else if rank > current_entry_rank {
-                            next_rank = rank;
-                            next_index = i;
-                        }
-                    }
-                }
-                mutable_metadata >>= DIMENSION.num_bits_per_entry;
-            }
-        }
-        next_index
-    }
 }
 
-impl<K, V> Drop for Leaf<K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
+impl<K, V> Drop for Leaf<K, V> {
     #[inline]
     fn drop(&mut self) {
         if needs_drop::<(K, V)>() {
@@ -707,11 +701,7 @@ where
 }
 
 /// [`LinkedList`] implementation for [`Leaf`].
-impl<K, V> LinkedList for Leaf<K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
+impl<K, V> LinkedList for Leaf<K, V> {
     #[inline]
     fn link_ref(&self) -> &AtomicShared<Leaf<K, V>> {
         &self.link
@@ -812,21 +802,13 @@ pub type EntryArray<K, V> = (
 );
 
 /// Leaf scanner.
-pub struct Scanner<'l, K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
+pub struct Scanner<'l, K, V> {
     leaf: &'l Leaf<K, V>,
     metadata: usize,
     entry_index: usize,
 }
 
-impl<'l, K, V> Scanner<'l, K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
+impl<'l, K, V> Scanner<'l, K, V> {
     /// Creates a new [`Scanner`].
     #[inline]
     pub(super) fn new(leaf: &'l Leaf<K, V>) -> Scanner<'l, K, V> {
@@ -834,25 +816,6 @@ where
             leaf,
             metadata: leaf.metadata.load(Acquire),
             entry_index: DIMENSION.num_entries,
-        }
-    }
-    /// Returns a [`Scanner`] pointing to the max-less entry if there is one.
-    #[inline]
-    pub(super) fn max_less<Q>(leaf: &'l Leaf<K, V>, key: &Q) -> Option<Scanner<'l, K, V>>
-    where
-        K: Borrow<Q>,
-        Q: Ord + ?Sized,
-    {
-        let metadata = leaf.metadata.load(Acquire);
-        let index = leaf.max_less(metadata, key);
-        if index == DIMENSION.num_entries {
-            None
-        } else {
-            Some(Scanner {
-                leaf,
-                metadata,
-                entry_index: index,
-            })
         }
     }
 
@@ -931,11 +894,33 @@ where
     }
 }
 
-impl<'l, K, V> Debug for Scanner<'l, K, V>
+impl<'l, K, V> Scanner<'l, K, V>
 where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
 {
+    /// Returns a [`Scanner`] pointing to the max-less entry if there is one.
+    #[inline]
+    pub(super) fn max_less<Q>(leaf: &'l Leaf<K, V>, key: &Q) -> Option<Scanner<'l, K, V>>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        let metadata = leaf.metadata.load(Acquire);
+        let index = leaf.max_less(metadata, key);
+        if index == DIMENSION.num_entries {
+            None
+        } else {
+            Some(Scanner {
+                leaf,
+                metadata,
+                entry_index: index,
+            })
+        }
+    }
+}
+
+impl<'l, K, V> Debug for Scanner<'l, K, V> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Scanner")
@@ -945,11 +930,7 @@ where
     }
 }
 
-impl<'l, K, V> Iterator for Scanner<'l, K, V>
-where
-    K: Clone + Ord,
-    V: Clone,
-{
+impl<'l, K, V> Iterator for Scanner<'l, K, V> {
     type Item = (&'l K, &'l V);
 
     #[inline]

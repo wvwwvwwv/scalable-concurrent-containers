@@ -16,11 +16,7 @@ use std::sync::atomic::{AtomicPtr, AtomicU8};
 /// Internal node.
 ///
 /// The layout of an internal node: `|ptr(children)/max(child keys)|...|ptr(children)|`.
-pub struct InternalNode<K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
+pub struct InternalNode<K, V> {
     /// Children of the [`InternalNode`].
     pub(super) children: Leaf<K, AtomicShared<Node<K, V>>>,
 
@@ -41,11 +37,7 @@ where
 }
 
 /// [`Locker`] holds exclusive ownership of a [`InternalNode`].
-pub(super) struct Locker<'n, K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
+pub(super) struct Locker<'n, K, V> {
     internal_node: &'n InternalNode<K, V>,
 }
 
@@ -53,11 +45,7 @@ where
 ///
 /// `AtomicPtr` members may point to values under the protection of the [`Guard`] used for the
 /// split operation.
-struct StructuralChange<K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
+struct StructuralChange<K, V> {
     origin_node_key: AtomicPtr<K>,
     origin_node: AtomicShared<Node<K, V>>,
     low_key_node: AtomicShared<Node<K, V>>,
@@ -65,11 +53,7 @@ where
     high_key_node: AtomicShared<Node<K, V>>,
 }
 
-impl<K, V> InternalNode<K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
+impl<K, V> InternalNode<K, V> {
     /// Creates a new empty internal node.
     #[inline]
     pub(super) fn new() -> InternalNode<K, V> {
@@ -98,6 +82,51 @@ where
         self.unbounded_child.tag(mo) == RETIRED
     }
 
+    /// Waits for the lock on the [`InternalNode`] to be released.
+    #[inline]
+    pub(super) fn wait<D: DeriveAsyncWait>(&self, async_wait: &mut D) {
+        let waiter = || {
+            if self.latch.load(Relaxed) == LOCKED.into() {
+                // The `InternalNode` is being split or locked.
+                return Err(());
+            }
+            Ok(())
+        };
+
+        if let Some(async_wait) = async_wait.derive() {
+            let _result = self.wait_queue.push_async_entry(async_wait, waiter);
+        } else {
+            let _result = self.wait_queue.wait_sync(waiter);
+        }
+    }
+
+    /// Tries to lock the [`InternalNode`].
+    fn try_lock(&self) -> bool {
+        self.latch
+            .compare_exchange(Tag::None.into(), LOCKED.into(), Acquire, Relaxed)
+            .is_ok()
+    }
+
+    /// Unlocks the [`InternalNode`].
+    fn unlock(&self) {
+        debug_assert_eq!(self.latch.load(Relaxed), LOCKED.into());
+        self.latch.store(Tag::None.into(), Release);
+        self.wait_queue.signal();
+    }
+
+    /// Retires itself.
+    fn retire(&self) {
+        debug_assert_eq!(self.latch.load(Relaxed), LOCKED.into());
+        self.latch.store(RETIRED.into(), Release);
+        self.wait_queue.signal();
+    }
+}
+
+impl<K, V> InternalNode<K, V>
+where
+    K: 'static + Clone + Ord,
+    V: 'static + Clone,
+{
     /// Searches for an entry associated with the given key.
     #[inline]
     pub(super) fn search<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<&'g V>
@@ -878,24 +907,6 @@ where
         false
     }
 
-    /// Waits for the lock on the [`InternalNode`] to be released.
-    #[inline]
-    pub(super) fn wait<D: DeriveAsyncWait>(&self, async_wait: &mut D) {
-        let waiter = || {
-            if self.latch.load(Relaxed) == LOCKED.into() {
-                // The `InternalNode` is being split or locked.
-                return Err(());
-            }
-            Ok(())
-        };
-
-        if let Some(async_wait) = async_wait.derive() {
-            let _result = self.wait_queue.push_async_entry(async_wait, waiter);
-        } else {
-            let _result = self.wait_queue.wait_sync(waiter);
-        }
-    }
-
     /// Tries to coalesce nodes.
     fn coalesce<Q>(&self, guard: &Guard) -> RemoveResult
     where
@@ -1004,34 +1015,9 @@ where
         }
         false
     }
-
-    /// Tries to lock the [`InternalNode`].
-    fn try_lock(&self) -> bool {
-        self.latch
-            .compare_exchange(Tag::None.into(), LOCKED.into(), Acquire, Relaxed)
-            .is_ok()
-    }
-
-    /// Unlocks the [`InternalNode`].
-    fn unlock(&self) {
-        debug_assert_eq!(self.latch.load(Relaxed), LOCKED.into());
-        self.latch.store(Tag::None.into(), Release);
-        self.wait_queue.signal();
-    }
-
-    /// Retires itself.
-    fn retire(&self) {
-        debug_assert_eq!(self.latch.load(Relaxed), LOCKED.into());
-        self.latch.store(RETIRED.into(), Release);
-        self.wait_queue.signal();
-    }
 }
 
-impl<'n, K, V> Locker<'n, K, V>
-where
-    K: Clone + Ord,
-    V: Clone,
-{
+impl<'n, K, V> Locker<'n, K, V> {
     /// Acquires exclusive lock on the [`InternalNode`].
     #[inline]
     pub(super) fn try_lock(internal_node: &'n InternalNode<K, V>) -> Option<Locker<'n, K, V>> {
@@ -1049,22 +1035,14 @@ where
     }
 }
 
-impl<'n, K, V> Drop for Locker<'n, K, V>
-where
-    K: Clone + Ord,
-    V: Clone,
-{
+impl<'n, K, V> Drop for Locker<'n, K, V> {
     #[inline]
     fn drop(&mut self) {
         self.internal_node.unlock();
     }
 }
 
-impl<K, V> StructuralChange<K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
+impl<K, V> StructuralChange<K, V> {
     fn reset(&self) -> Option<Shared<Node<K, V>>> {
         self.origin_node_key.store(ptr::null_mut(), Relaxed);
         self.low_key_node.swap((None, Tag::None), Relaxed);
@@ -1074,11 +1052,7 @@ where
     }
 }
 
-impl<K, V> Default for StructuralChange<K, V>
-where
-    K: 'static + Clone + Ord,
-    V: 'static + Clone,
-{
+impl<K, V> Default for StructuralChange<K, V> {
     #[inline]
     fn default() -> Self {
         Self {
