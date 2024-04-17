@@ -29,7 +29,8 @@ pub use stack::Stack;
 pub mod tree_index;
 pub use tree_index::TreeIndex;
 
-pub mod ebr;
+/// Re-export the `sdd` crate for backward compatibility.
+pub use sdd as ebr;
 
 mod exit_guard;
 mod hash_table;

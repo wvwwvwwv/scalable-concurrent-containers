@@ -9,11 +9,9 @@ A collection of high performance containers and utilities for concurrent and asy
 #### Features
 
 - Asynchronous counterparts of blocking and synchronous methods.
-- Formally verified [EBR](#EBR) implementation.
 - Near-linear scalability.
 - No spin-locks and no busy loops.
 - SIMD lookup to scan multiple entries in parallel [^note].
-- Zero dependencies on other crates.
 - [Serde](https://serde.rs) support: `features = ["serde"]`.
 
 [^note]: Advanced SIMD instructions are used only when respective target features are enabled, e.g., `-C target_feature=+avx2`.
@@ -28,7 +26,6 @@ A collection of high performance containers and utilities for concurrent and asy
 
 #### Utilities for Concurrent Programming
 
-- [EBR](#EBR) implements lock-free epoch-based reclamation.
 - [LinkedList](#LinkedList) is a type trait implementing a lock-free concurrent singly linked list.
 - [Queue](#Queue) is a concurrent lock-free first-in-first-out container.
 - [Stack](#Stack) is a concurrent lock-free last-in-first-out container.
@@ -36,7 +33,7 @@ A collection of high performance containers and utilities for concurrent and asy
 
 ## HashMap
 
-[HashMap](#HashMap) is a concurrent hash map, optimized for highly parallel write-heavy workloads. [HashMap](#HashMap) is structured as a lock-free stack of entry bucket arrays. The entry bucket array is managed by [EBR](#EBR), thus enabling lock-free access to it and non-blocking container resizing. Each bucket is a fixed-size array of entries, and it is protected by a special read-write lock which provides both blocking and asynchronous methods.
+[HashMap](#HashMap) is a concurrent hash map, optimized for highly parallel write-heavy workloads. [HashMap](#HashMap) is structured as a lock-free stack of entry bucket arrays. The entry bucket array is managed by [`sdd`](https://crates.io/crates/sdd), thus enabling lock-free access to it and non-blocking container resizing. Each bucket is a fixed-size array of entries, and it is protected by a special read-write lock which provides both blocking and asynchronous methods.
 
 ### Locking behavior
 
@@ -142,7 +139,7 @@ let future_remove = hashset.remove_async(&1);
 
 ## HashIndex
 
-[HashIndex](#HashIndex) is a read-optimized version of [HashMap](#HashMap). In a [HashIndex](#HashIndex), not only is the memory of the bucket array managed by [EBR](#EBR), but also that of entry buckets is protected by [EBR](#EBR), enabling lock-free read access to individual entries.
+[HashIndex](#HashIndex) is a read-optimized version of [HashMap](#HashMap). In a [HashIndex](#HashIndex), not only is the memory of the bucket array managed by [`sdd`](https://crates.io/crates/sdd), but also that of entry buckets is protected by [`sdd`](https://crates.io/crates/sdd), enabling lock-free read access to individual entries.
 
 ### Examples
 
@@ -196,7 +193,7 @@ hashindex.get(&1).unwrap().update(1);
 
 let guard = Guard::new();
 
-// An `ebr::Guard` has to be supplied to `iter`.
+// An `Guard` has to be supplied to `iter`.
 let mut iter = hashindex.iter(&guard);
 
 // The derived reference can live as long as `guard`.
@@ -238,7 +235,7 @@ assert_eq!(hashcache.remove(&2).unwrap(), (2, 0));
 
 ## TreeIndex
 
-[TreeIndex](#TreeIndex) is a B-plus tree variant optimized for read operations. [EBR](#EBR) protects the memory used by individual entries, thus enabling lock-free read access to them.
+[TreeIndex](#TreeIndex) is a B-plus tree variant optimized for read operations. [`sdd`](https://crates.io/crates/sdd) protects the memory used by individual entries, thus enabling lock-free read access to them.
 
 ### Locking behavior
 
@@ -266,8 +263,8 @@ let future_remove = treeindex.remove_if_async(&1, |v| *v == 2);
 Entries can be scanned without acquiring any locks.
 
 ```rust
-use scc::ebr::Guard;
 use scc::TreeIndex;
+use sdd::Guard;
 
 let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
 
@@ -323,7 +320,7 @@ assert!(bag.is_empty());
 
 ## Queue
 
-[Queue](#Queue) is an [EBR](#EBR) backed concurrent lock-free first-in-first-out container.
+[Queue](#Queue) is a concurrent lock-free first-in-first-out container backed by [`sdd`](https://crates.io/crates/sdd).
 
 ### Examples
 
@@ -342,7 +339,7 @@ assert!(queue.pop().is_none());
 
 ## Stack
 
-[Stack](#Stack) is an [EBR](#EBR) backed concurrent lock-free last-in-first-out container.
+[Stack](#Stack) is a concurrent lock-free last-in-first-out container backed by [`sdd`](https://crates.io/crates/sdd).
 
 ### Examples
 
@@ -358,92 +355,15 @@ assert_eq!(stack.pop().map(|e| **e), Some(1));
 assert!(stack.pop().is_none());
 ```
 
-## EBR
-
-The `ebr` module implements epoch-based reclamation and various types of auxiliary data structures to make use of it safely. Its epoch-based reclamation algorithm is similar to that implemented in [crossbeam_epoch](https://docs.rs/crossbeam-epoch/), however users may find it easier to use as the lifetime of an instance is safely managed. For instance, `ebr::AtomicOwned` and `ebr::Owned` automatically retire the contained instance and `ebr::AtomicShared` and `ebr::Shared` hold a reference-counted instance which is retired when the last strong reference is dropped.
-
-### Memory Overhead
-
-Retired instances are stored in intrusive queues in thread-local storage, and therefore additional 16-byte space for `Option<NonNull<dyn Collectible>>` is allocated per instance.
-
-### Examples
-
-The `ebr` module can be used without an `unsafe` block.
-
-```rust
-use scc::ebr::{suspend, AtomicOwned, AtomicShared, Guard, Ptr, Shared, Tag};
-
-use std::sync::atomic::Ordering::Relaxed;
-
-// `atomic_shared` holds a strong reference to `17`.
-let atomic_shared: AtomicShared<usize> = AtomicShared::new(17);
-
-// `atomic_owned` owns `19`.
-let atomic_owned: AtomicOwned<usize> = AtomicOwned::new(19);
-
-// `guard` prevents the garbage collector from dropping reachable instances.
-let guard = Guard::new();
-
-// `ptr` cannot outlive `guard`.
-let mut ptr: Ptr<usize> = atomic_shared.load(Relaxed, &guard);
-assert_eq!(*ptr.as_ref().unwrap(), 17);
-
-// `atomic_shared` can be tagged.
-atomic_shared.update_tag_if(Tag::First, |p| p.tag() == Tag::None, Relaxed, Relaxed);
-
-// `ptr` is not tagged, so CAS fails.
-assert!(atomic_shared.compare_exchange(
-    ptr,
-    (Some(Shared::new(18)), Tag::First),
-    Relaxed,
-    Relaxed,
-    &guard).is_err());
-
-// `ptr` can be tagged.
-ptr.set_tag(Tag::First);
-
-// The return value of CAS is a handle to the instance that `atomic_shared` previously owned.
-let prev: Shared<usize> = atomic_shared.compare_exchange(
-    ptr,
-    (Some(Shared::new(18)), Tag::Second),
-    Relaxed,
-    Relaxed,
-    &guard).unwrap().0.unwrap();
-assert_eq!(*prev, 17);
-
-// `17` will be garbage-collected later.
-drop(prev);
-
-// `ebr::AtomicShared` can be converted into `ebr::Shared`.
-let shared: Shared<usize> = atomic_shared.into_shared(Relaxed).unwrap();
-assert_eq!(*shared, 18);
-
-// `18` and `19` will be garbage-collected later.
-drop(shared);
-drop(atomic_owned);
-
-// `17` is still valid as `guard` keeps the garbage collector from dropping it.
-assert_eq!(*ptr.as_ref().unwrap(), 17);
-
-// Execution of a closure can be deferred until all the current readers are gone.
-guard.defer_execute(|| println!("deferred"));
-drop(guard);
-
-// If the thread is expected to lie dormant for a while, call `suspend()` to allow other threads
-// to reclaim its own retired instances.
-suspend();
-```
-
 ## LinkedList
 
-[LinkedList](#LinkedList) is a type trait that implements lock-free concurrent singly linked list operations, backed by [EBR](#EBR). It additionally provides a method for marking an entry of a linked list to denote a user-defined state.
+[LinkedList](#LinkedList) is a type trait that implements lock-free concurrent singly linked list operations, backed by [`sdd`](https://crates.io/crates/sdd). It additionally provides a method for marking an entry of a linked list to denote a user-defined state.
 
 ### Examples
 
 ```rust
 use scc::ebr::{AtomicShared, Guard, Shared};
 use scc::LinkedList;
-
 use std::sync::atomic::Ordering::Relaxed;
 
 #[derive(Default)]
@@ -485,9 +405,5 @@ Comparison with [DashMap](https://github.com/xacrimon/dashmap).
 - [Results on Apple M1 (8 cores)](https://github.com/wvwwvwwv/conc-map-bench).
 - [Results on Intel Xeon (40 cores, avx2)](https://github.com/wvwwvwwv/conc-map-bench/tree/Intel).
 - *Interpret the results cautiously as benchmarks usually do not represent real world workloads.*
-
-### [EBR](#EBR)
-
-- The average time taken to enter and exit a protected region: 2.1 nanoseconds on Apple M1.
 
 ## [Changelog](https://github.com/wvwwvwwv/scalable-concurrent-containers/blob/main/CHANGELOG.md)
