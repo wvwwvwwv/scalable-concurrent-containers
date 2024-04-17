@@ -29,7 +29,7 @@ pub use stack::Stack;
 pub mod tree_index;
 pub use tree_index::TreeIndex;
 
-/// Re-export the `sdd` crate for backward compatibility.
+/// Re-export the [`sdd`](https://crates.io/crates/sdd) crate for backward compatibility.
 pub use sdd as ebr;
 
 mod exit_guard;

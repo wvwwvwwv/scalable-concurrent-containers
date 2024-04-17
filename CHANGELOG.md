@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.1.0
+
+* Use [`sdd`](https://crates.io/crates/sdd) as the memory reclaimer.
+
 2.0.20
 
 * Relax trait bounds of `TreeIndex`.
