@@ -1921,6 +1921,18 @@ where
     }
 }
 
+impl<'h, K, V, H> Deref for OccupiedEntry<'h, K, V, H>
+where
+    K: Eq + Hash,
+    H: BuildHasher,
+{
+    type Target = V;
+
+    fn deref(&self) -> &Self::Target {
+        self.get()
+    }
+}
+
 impl<'h, K, V, H> Debug for OccupiedEntry<'h, K, V, H>
 where
     K: Debug + Eq + Hash,
