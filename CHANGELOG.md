@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.1.1
+
+* Implement `Deref` and `DerefMut` for `OccupiedEntry`: [#140](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/140) by [gituser-rs](https://github.com/gituser-rs)
+
 2.1.0
 
 * Use [`sdd`](https://crates.io/crates/sdd) as the memory reclaimer.

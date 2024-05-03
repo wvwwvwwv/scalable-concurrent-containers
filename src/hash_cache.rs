@@ -11,7 +11,7 @@ use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
 use std::mem::replace;
-use std::ops::RangeInclusive;
+use std::ops::{Deref, DerefMut, RangeInclusive};
 use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
@@ -363,6 +363,9 @@ where
     /// assert!(hashcache.get(&1).is_none());
     /// assert!(hashcache.put(1, 10).is_ok());
     /// assert_eq!(*hashcache.get(&1).unwrap().get(), 10);
+    ///
+    /// *hashcache.get(&1).unwrap() = 11;
+    /// assert_eq!(*hashcache.get(&1).unwrap(), 11);
     /// ```
     #[inline]
     pub fn get<Q>(&self, key: &Q) -> Option<OccupiedEntry<K, V, H>>
@@ -1599,6 +1602,30 @@ where
             .field("key", self.key())
             .field("value", self.get())
             .finish_non_exhaustive()
+    }
+}
+
+impl<'h, K, V, H> Deref for OccupiedEntry<'h, K, V, H>
+where
+    K: Eq + Hash,
+    H: BuildHasher,
+{
+    type Target = V;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.get()
+    }
+}
+
+impl<'h, K, V, H> DerefMut for OccupiedEntry<'h, K, V, H>
+where
+    K: Eq + Hash,
+    H: BuildHasher,
+{
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.get_mut()
     }
 }
 

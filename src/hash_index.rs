@@ -588,6 +588,7 @@ where
     /// assert!(hashindex.get(&1).is_none());
     /// assert!(hashindex.insert(1, 10).is_ok());
     /// assert_eq!(*hashindex.get(&1).unwrap().get(), 10);
+    /// assert_eq!(*hashindex.get(&1).unwrap(), 10);
     /// ```
     #[inline]
     pub fn get<Q>(&self, key: &Q) -> Option<OccupiedEntry<K, V, H>>
@@ -1606,6 +1607,20 @@ where
             .field("key", self.key())
             .field("value", self.get())
             .finish_non_exhaustive()
+    }
+}
+
+impl<'h, K, V, H> Deref for OccupiedEntry<'h, K, V, H>
+where
+    K: 'static + Clone + Debug + Eq + Hash,
+    V: 'static + Clone + Debug,
+    H: BuildHasher,
+{
+    type Target = V;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.get()
     }
 }
 
