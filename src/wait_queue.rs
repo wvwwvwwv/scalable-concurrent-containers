@@ -67,7 +67,7 @@ impl WaitQueue {
         let wait_queue_ref: &WaitQueue = self;
         async_wait.next = current;
         async_wait.mutex.replace(Mutex::new((
-            Some(unsafe { std::mem::transmute(wait_queue_ref) }),
+            Some(unsafe { std::mem::transmute::<&WaitQueue, &WaitQueue>(wait_queue_ref) }),
             None,
         )));
 

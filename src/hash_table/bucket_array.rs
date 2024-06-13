@@ -215,7 +215,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     /// Returns a non-zero `u8`, even when `capacity < 2 * BUCKET_LEN`.
     #[allow(clippy::cast_possible_truncation)]
     fn calculate_log2_array_size(capacity: usize) -> u8 {
-        let adjusted_capacity = capacity.max(64).min((usize::MAX / 2) - (BUCKET_LEN - 1));
+        let adjusted_capacity = capacity.clamp(64, (usize::MAX / 2) - (BUCKET_LEN - 1));
         let required_buckets =
             ((adjusted_capacity + BUCKET_LEN - 1) / BUCKET_LEN).next_power_of_two();
         let log2_capacity = usize::BITS as usize - (required_buckets.leading_zeros() as usize) - 1;
@@ -297,7 +297,7 @@ mod test {
         array.num_cleared_buckets.store(array.array_len, Relaxed);
         drop(array);
         let after_dealloc = Instant::now();
-        println!("deallocation took {:?}", after_dealloc - after_alloc);
+        println!("de-allocation took {:?}", after_dealloc - after_alloc);
     }
 
     #[test]
