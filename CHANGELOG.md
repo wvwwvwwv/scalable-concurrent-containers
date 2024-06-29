@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.2.0
+
+* Implement `any_entry` and `any_entry_async` ([#148](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/148)).
+
 2.1.1
 
 * Implement `Deref` and `DerefMut` for `OccupiedEntry`: [#140](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/140) by [gituser-rs](https://github.com/gituser-rs)
@@ -97,31 +101,31 @@
 
 ### API update
 
-- `*::Visitor` -> `*::Iter`.
-- `*::Accessor` -> `*::IterMut`.
-- `ebr::Arc` -> `ebr::Shared`.
-- `ebr::Arc::get_ref_with` -> `ebr::Shared::get_guarded_ref`.
-- `ebr::Arc::ptr` -> `ebr::Shared::get_guarded_ptr`.
-- `ebr::Arc::release_drop_in_place` -> `ebr::Shared::drop_in_place`.
-- `ebr::AtomicArc` -> `ebr::AtomicShared`.
-- `ebr::AtomicArc::get_arc` -> `ebr::AtomicShared::get_shared`.
-- `ebr::AtomicArc::try_into_arc` -> `ebr::AtomicShared::into_shared`.
-- `ebr::AtomicOwned::try_into_owned` -> `ebr::AtomicOwned::into_owned`.
-- `ebr::Barrier` -> `ebr::Guard`.
-- `ebr::Owned::get_ref_with` -> `ebr::Owned::get_guarded_ref`.
-- `ebr::Owned::ptr` -> `ebr::Owned::get_guarded_ptr`.
-- `ebr::Ptr::as_raw` -> `ebr::Ptr::as_ptr`.
-- `ebr::Ptr::get_arc` -> `ebr::Ptr::get_shared`.
-- `*::first_occupied_entry*` -> `*::first_entry*`.
-- `HashIndex::read` -> `HashIndex::peek_with`.
-- `HashIndex::read_with` -> `HashIndex::peek`.
-- `Queue::peek` -> `Queue::peek_with`.
-- `Queue::peek_with` -> `Queue::peek`.
-- `Stack::peek` -> `Stack::peek_with`.
-- `Stack::peek_with` -> `Stack::peek`.
-- `TreeIndex::read` -> `TreeIndex::peek_with`.
-- `TreeIndex::read_with` -> `TreeIndex::peek`.
-- Remove `HashMap::upsert*`: superseded by `hash_map::Entry::and_modify` and `hash_map::Entry::or_insert`.
+* `*::Visitor` -> `*::Iter`.
+* `*::Accessor` -> `*::IterMut`.
+* `ebr::Arc` -> `ebr::Shared`.
+* `ebr::Arc::get_ref_with` -> `ebr::Shared::get_guarded_ref`.
+* `ebr::Arc::ptr` -> `ebr::Shared::get_guarded_ptr`.
+* `ebr::Arc::release_drop_in_place` -> `ebr::Shared::drop_in_place`.
+* `ebr::AtomicArc` -> `ebr::AtomicShared`.
+* `ebr::AtomicArc::get_arc` -> `ebr::AtomicShared::get_shared`.
+* `ebr::AtomicArc::try_into_arc` -> `ebr::AtomicShared::into_shared`.
+* `ebr::AtomicOwned::try_into_owned` -> `ebr::AtomicOwned::into_owned`.
+* `ebr::Barrier` -> `ebr::Guard`.
+* `ebr::Owned::get_ref_with` -> `ebr::Owned::get_guarded_ref`.
+* `ebr::Owned::ptr` -> `ebr::Owned::get_guarded_ptr`.
+* `ebr::Ptr::as_raw` -> `ebr::Ptr::as_ptr`.
+* `ebr::Ptr::get_arc` -> `ebr::Ptr::get_shared`.
+* `*::first_occupied_entry*` -> `*::first_entry*`.
+* `HashIndex::read` -> `HashIndex::peek_with`.
+* `HashIndex::read_with` -> `HashIndex::peek`.
+* `Queue::peek` -> `Queue::peek_with`.
+* `Queue::peek_with` -> `Queue::peek`.
+* `Stack::peek` -> `Stack::peek_with`.
+* `Stack::peek_with` -> `Stack::peek`.
+* `TreeIndex::read` -> `TreeIndex::peek_with`.
+* `TreeIndex::read_with` -> `TreeIndex::peek`.
+* Remove `HashMap::upsert*`: superseded by `hash_map::Entry::and_modify` and `hash_map::Entry::or_insert`.
 
 ```rust
 use scc::HashMap;
@@ -132,7 +136,7 @@ let hashmap: HashMap<u64, u32> = HashMap::default();
 hashmap.entry(1).and_modify(|v| { *v = 3 }).or_insert(2);
 ```
 
-- Remove  `HashIndex::modify*` and `HashIndex::update*`: superseded by `HashIndex::entry*`, `HashIndex::get*`.
+* Remove  `HashIndex::modify*` and `HashIndex::update*`: superseded by `HashIndex::entry*`, `HashIndex::get*`.
 
 ```rust
 use scc::HashIndex;
@@ -151,7 +155,7 @@ if let Some(mut o) = hashindex.get(&1) {
 };
 ```
 
-- Remove `Hash*::for_each*`: superseded by `HashMap::retain*`.
+* Remove `Hash*::for_each*`: superseded by `HashMap::retain*`.
 
 ```rust
 use scc::HashMap;
@@ -163,7 +167,7 @@ assert!(hashmap.insert(1, 1).is_ok());
 hashmap.retain(|_, v| { *v = 2; true });
 ```
 
-- `Hash*::clear*`, `Hash*::prune*`, and `Hash*::retain*` return `()`.
+* `Hash*::clear*`, `Hash*::prune*`, and `Hash*::retain*` return `()`.
 
 ## Version 1
 
