@@ -398,25 +398,14 @@ where
     /// assert_eq!(*entry.get(), 3);
     /// ```
     #[inline]
-    pub fn any_entry<P: FnMut(&K, &V) -> bool>(
-        &self,
-        mut pred: P,
-    ) -> Option<OccupiedEntry<K, V, H>> {
+    pub fn any_entry<P: FnMut(&K, &V) -> bool>(&self, pred: P) -> Option<OccupiedEntry<K, V, H>> {
         let guard = Guard::new();
         let prolonged_guard = self.prolonged_guard_ref(&guard);
-        if let Some(locked_entry) = self.lock_first_entry(prolonged_guard) {
-            let mut entry = OccupiedEntry {
-                hashindex: self,
-                locked_entry,
-            };
-            loop {
-                if pred(entry.key(), entry.get()) {
-                    return Some(entry);
-                }
-                entry = entry.next()?;
-            }
-        }
-        None
+        let locked_entry = self.find_entry(pred, prolonged_guard)?;
+        Some(OccupiedEntry {
+            hashindex: self,
+            locked_entry,
+        })
     }
 
     /// Finds any entry satisfying the supplied predicate for in-place manipulation.
@@ -431,9 +420,9 @@ where
     /// ```
     /// use scc::HashIndex;
     ///
-    /// let hashindex: HashIndex<char, u32> = HashIndex::default();
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// let future_entry = hashindex.any_entry_async(|k, _| *k == 'a');
+    /// let future_entry = hashindex.any_entry_async(|k, _| *k == 2);
     /// ```
     #[inline]
     pub async fn any_entry_async<P: FnMut(&K, &V) -> bool>(
@@ -449,7 +438,7 @@ where
                 if pred(entry.key(), entry.get()) {
                     return Some(entry);
                 }
-                entry = entry.next_async().await?;
+                entry = entry.next()?;
             }
         }
         None

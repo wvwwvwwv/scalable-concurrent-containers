@@ -776,7 +776,7 @@ where
     /// ```
     #[inline]
     pub fn any<P: FnMut(&K, &V) -> bool>(&self, mut pred: P) -> bool {
-        self.any_entry(|k, v| pred(k, v))
+        self.contains_entry(|k, v| pred(k, v))
     }
 
     /// Searches for any entry that satisfies the given predicate.

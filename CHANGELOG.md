@@ -2,9 +2,9 @@
 
 ## Version 2
 
-2.2.0
+2.1.2
 
-* Implement `any_entry` and `any_entry_async` ([#148](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/148)).
+* Implement `any_entry` and `any_entry_async` to `HashMap` and `HashIndex` ([#148](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/148)).
 
 2.1.1
 

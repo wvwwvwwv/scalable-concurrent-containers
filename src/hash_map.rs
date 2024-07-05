@@ -379,6 +379,71 @@ where
         None
     }
 
+    /// Finds any entry satisfying the supplied predicate for in-place manipulation.
+    ///
+    /// The returned [`OccupiedEntry`] in combination with [`OccupiedEntry::next`] or
+    /// [`OccupiedEntry::next_async`] can act as a mutable iterator over entries.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// assert!(hashmap.insert(2, 3).is_ok());
+    ///
+    /// let mut entry = hashmap.any_entry(|k, _| *k == 2).unwrap();
+    /// assert_eq!(*entry.get(), 3);
+    /// ```
+    #[inline]
+    pub fn any_entry<P: FnMut(&K, &V) -> bool>(&self, pred: P) -> Option<OccupiedEntry<K, V, H>> {
+        let guard = Guard::new();
+        let prolonged_guard = self.prolonged_guard_ref(&guard);
+        let locked_entry = self.find_entry(pred, prolonged_guard)?;
+        Some(OccupiedEntry {
+            hashmap: self,
+            locked_entry,
+        })
+    }
+
+    /// Finds any entry satisfying the supplied predicate for in-place manipulation.
+    ///
+    /// The returned [`OccupiedEntry`] in combination with [`OccupiedEntry::next`] or
+    /// [`OccupiedEntry::next_async`] can act as a mutable iterator over entries.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// let future_entry = hashmap.any_entry_async(|k, _| *k == 2);
+    /// ```
+    #[inline]
+    pub async fn any_entry_async<P: FnMut(&K, &V) -> bool>(
+        &self,
+        mut pred: P,
+    ) -> Option<OccupiedEntry<K, V, H>> {
+        if let Some(locked_entry) = LockedEntry::first_entry_async(self).await {
+            let mut entry = OccupiedEntry {
+                hashmap: self,
+                locked_entry,
+            };
+            loop {
+                if pred(entry.key(), entry.get()) {
+                    return Some(entry);
+                }
+                entry = entry.next()?;
+            }
+        }
+        None
+    }
+
     /// Inserts a key-value pair into the [`HashMap`].
     ///
     /// # Errors
@@ -906,7 +971,7 @@ where
     /// ```
     #[inline]
     pub fn any<P: FnMut(&K, &V) -> bool>(&self, pred: P) -> bool {
-        self.any_entry(pred)
+        self.contains_entry(pred)
     }
 
     /// Searches for any entry that satisfies the given predicate.

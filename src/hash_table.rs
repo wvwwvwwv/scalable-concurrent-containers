@@ -415,7 +415,7 @@ where
         Ok(None)
     }
 
-    /// Removes an entry if the condition is met.
+    /// Removes the entry containing the key if the condition is met.
     ///
     /// Returns an error if locking failed.
     #[inline]
@@ -481,9 +481,9 @@ where
         Ok(post_processor(None))
     }
 
-    /// Finds any entry that satisfies the specified predicate.
+    /// Checks if there is any entry that satisfies the specified predicate.
     #[inline]
-    fn any_entry<P: FnMut(&K, &V) -> bool>(&self, mut pred: P) -> bool {
+    fn contains_entry<P: FnMut(&K, &V) -> bool>(&self, mut pred: P) -> bool {
         let guard = Guard::new();
         let mut current_array_ptr = self.bucket_array().load(Acquire, &guard);
         while let Some(current_array) = current_array_ptr.as_ref() {
@@ -509,6 +509,44 @@ where
             current_array_ptr = new_current_array_ptr;
         }
         false
+    }
+
+    /// Finds the first entry that satisfies the specified predicate.
+    #[inline]
+    fn find_entry<'g, P: FnMut(&K, &V) -> bool>(
+        &self,
+        mut pred: P,
+        guard: &'g Guard,
+    ) -> Option<LockedEntry<'g, K, V, L, TYPE>> {
+        let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
+        while let Some(current_array) = current_array_ptr.as_ref() {
+            self.clear_old_array(current_array, guard);
+            for index in 0..current_array.num_buckets() {
+                let bucket = current_array.bucket_mut(index);
+                if let Some(locker) = Locker::lock(bucket, guard) {
+                    let data_block_mut = current_array.data_block_mut(index);
+                    let mut entry_ptr = EntryPtr::new(guard);
+                    while entry_ptr.next(&locker, guard) {
+                        let (k, v) = entry_ptr.get(data_block_mut);
+                        if pred(k, v) {
+                            return Some(LockedEntry {
+                                locker,
+                                data_block_mut,
+                                entry_ptr,
+                                index,
+                            });
+                        }
+                    }
+                }
+            }
+
+            let new_current_array_ptr = self.bucket_array().load(Acquire, guard);
+            if current_array_ptr.without_tag() == new_current_array_ptr.without_tag() {
+                break;
+            }
+            current_array_ptr = new_current_array_ptr;
+        }
+        None
     }
 
     /// Retains entries that satisfy the specified predicate.
