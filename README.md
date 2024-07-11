@@ -18,22 +18,22 @@ A collection of high performance containers and utilities for concurrent and asy
 
 #### Concurrent and Asynchronous Containers
 
-- [`HashMap`](#HashMap) is a concurrent and asynchronous hash map.
-- [`HashSet`](#HashSet) is a concurrent and asynchronous hash set.
-- [`HashIndex`](#HashIndex) is a read-optimized concurrent and asynchronous hash map.
-- [`HashCache`](#HashCache) is a 32-way associative cache backed by [`HashMap`](#HashMap).
-- [`TreeIndex`](#TreeIndex) is a read-optimized concurrent and asynchronous B-plus tree.
+- [`HashMap`](#hashmap) is a concurrent and asynchronous hash map.
+- [`HashSet`](#hashset) is a concurrent and asynchronous hash set.
+- [`HashIndex`](#hashindex) is a read-optimized concurrent and asynchronous hash map.
+- [`HashCache`](#hashcache) is a 32-way associative cache backed by [`HashMap`](#hashmap).
+- [`TreeIndex`](#treeindex) is a read-optimized concurrent and asynchronous B-plus tree.
 
 #### Utilities for Concurrent Programming
 
-- [`LinkedList`](#LinkedList) is a type trait implementing a lock-free concurrent singly linked list.
-- [`Queue`](#Queue) is a concurrent lock-free first-in-first-out container.
-- [`Stack`](#Stack) is a concurrent lock-free last-in-first-out container.
-- [`Bag`](#Bag) is a concurrent lock-free unordered opaque container.
+- [`LinkedList`](#linkedlist) is a type trait implementing a lock-free concurrent singly linked list.
+- [`Queue`](#queue) is a concurrent lock-free first-in-first-out container.
+- [`Stack`](#stack) is a concurrent lock-free last-in-first-out container.
+- [`Bag`](#bag) is a concurrent lock-free unordered opaque container.
 
 ## `HashMap`
 
-[`HashMap`](#HashMap) is a concurrent hash map, optimized for highly parallel write-heavy workloads. [`HashMap`](#HashMap) is structured as a lock-free stack of entry bucket arrays. The entry bucket array is managed by [`sdd`](https://crates.io/crates/sdd), thus enabling lock-free access to it and non-blocking container resizing. Each bucket is a fixed-size array of entries, and it is protected by a special read-write lock which provides both blocking and asynchronous methods.
+[`HashMap`](#hashmap) is a concurrent hash map, optimized for highly parallel write-heavy workloads. [`HashMap`](#hashmap) is structured as a lock-free stack of entry bucket arrays. The entry bucket array is managed by [`sdd`](https://crates.io/crates/sdd), thus enabling lock-free access to it and non-blocking container resizing. Each bucket is a fixed-size array of entries, and it is protected by a special read-write lock which provides both blocking and asynchronous methods.
 
 ### Locking behavior
 
@@ -43,7 +43,7 @@ Read/write access to an entry is serialized by the read-write lock in the bucket
 
 #### Resize: lock-free
 
-Resizing of a [`HashMap`](#HashMap) is completely non-blocking and lock-free; resizing does not block any other read/write access to the container or resizing attempts. _Resizing is analogous to pushing a new bucket array into a lock-free stack_. Each entry in the old bucket array will be incrementally relocated to the new bucket array on future access to the container, and the old bucket array gets dropped eventually after it becomes empty.
+Resizing of a [`HashMap`](#hashmap) is completely non-blocking and lock-free; resizing does not block any other read/write access to the container or resizing attempts. _Resizing is analogous to pushing a new bucket array into a lock-free stack_. Each entry in the old bucket array will be incrementally relocated to the new bucket array on future access to the container, and the old bucket array gets dropped eventually after it becomes empty.
 
 ### Examples
 
@@ -66,7 +66,7 @@ let future_insert = hashmap.insert_async(2, 1);
 let future_remove = hashmap.remove_async(&1);
 ```
 
-The `Entry` API of [`HashMap`](#HashMap) is useful if the workflow is complicated.
+The `Entry` API of [`HashMap`](#hashmap) is useful if the workflow is complicated.
 
 ```rust
 use scc::HashMap;
@@ -82,7 +82,7 @@ assert_eq!(hashmap.read(&4, |_, v| *v), Some(5));
 let future_entry = hashmap.entry_async(3);
 ```
 
-[`HashMap`](#HashMap) does not provide an [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) since it is impossible to confine the lifetime of [`Iterator::Item`](https://doc.rust-lang.org/std/iter/trait.Iterator.html#associatedtype.Item) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html). The limitation can be circumvented by relying on interior mutability, e.g., let the returned reference hold a lock, however it will easily lead to a deadlock if not correctly used, and frequent acquisition of locks may impact performance. Therefore, [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, [`HashMap`](#HashMap) provides a number of methods to iterate over entries synchronously or asynchronously: `any`, `any_async`, `prune`, `prune_async`, `retain`, `retain_async`, `scan`, `scan_async`, `OccupiedEntry::next`, and `OccupiedEntry::next_async`.
+[`HashMap`](#hashmap) does not provide an [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) since it is impossible to confine the lifetime of [`Iterator::Item`](https://doc.rust-lang.org/std/iter/trait.Iterator.html#associatedtype.Item) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html). The limitation can be circumvented by relying on interior mutability, e.g., let the returned reference hold a lock, however it will easily lead to a deadlock if not correctly used, and frequent acquisition of locks may impact performance. Therefore, [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, [`HashMap`](#hashmap) provides a number of methods to iterate over entries synchronously or asynchronously: `any`, `any_async`, `prune`, `prune_async`, `retain`, `retain_async`, `scan`, `scan_async`, `OccupiedEntry::next`, and `OccupiedEntry::next_async`.
 
 ```rust
 use scc::HashMap;
@@ -118,11 +118,11 @@ let future_scan = hashmap.scan_async(|k, v| println!("{k} {v}"));
 
 ## `HashSet`
 
-[`HashSet`](#HashSet) is a special version of [`HashMap`](#HashMap) where the value type is `()`.
+[`HashSet`](#hashset) is a special version of [`HashMap`](#hashmap) where the value type is `()`.
 
 ### Examples
 
-Most [`HashSet`](#HashSet) methods are identical to that of [`HashMap`](#HashMap) except that they do not receive a value argument, and some [`HashMap`](#HashMap) methods for value modification are not implemented for [`HashSet`](#HashSet).
+Most [`HashSet`](#hashset) methods are identical to that of [`HashMap`](#hashmap) except that they do not receive a value argument, and some [`HashMap`](#hashmap) methods for value modification are not implemented for [`HashSet`](#hashset).
 
 ```rust
 use scc::HashSet;
@@ -139,7 +139,7 @@ let future_remove = hashset.remove_async(&1);
 
 ## `HashIndex`
 
-[`HashIndex`](#HashIndex) is a read-optimized version of [`HashMap`](#HashMap). In a [`HashIndex`](#HashIndex), not only is the memory of the bucket array managed by [`sdd`](https://crates.io/crates/sdd), but also that of entry buckets is protected by [`sdd`](https://crates.io/crates/sdd), enabling lock-free read access to individual entries.
+[`HashIndex`](#hashindex) is a read-optimized version of [`HashMap`](#hashmap). In a [`HashIndex`](#hashindex), not only is the memory of the bucket array managed by [`sdd`](https://crates.io/crates/sdd), but also that of entry buckets is protected by [`sdd`](https://crates.io/crates/sdd), enabling lock-free read access to individual entries.
 
 ### Examples
 
@@ -159,7 +159,7 @@ let future_insert = hashindex.insert_async(2, 1);
 let future_remove = hashindex.remove_if_async(&1, |_| true);
 ```
 
-The `Entry` API of [`HashIndex`](#HashIndex) can be used to update an entry in-place.
+The `Entry` API of [`HashIndex`](#hashindex) can be used to update an entry in-place.
 
 ```rust
 use scc::HashIndex;
@@ -178,7 +178,7 @@ if let Some(mut o) = hashindex.get(&1) {
 };
 ```
 
-An [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is implemented for [`HashIndex`](#HashIndex), because any derived references can survive as long as the associated `ebr::Guard` lives.
+An [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is implemented for [`HashIndex`](#hashindex), because any derived references can survive as long as the associated `ebr::Guard` lives.
 
 ```rust
 use scc::ebr::Guard;
@@ -208,7 +208,7 @@ assert_eq!(entry_ref, (&1, &1));
 
 ## `HashCache`
 
-[`HashCache`](#HashCache) is a 32-way associative concurrent cache that is based on the [`HashMap`](#HashMap) implementation. [`HashCache`](#HashCache) does not keep track of the least recently used entry in the entire cache, instead each bucket maintains a doubly linked list of occupied entries which is updated on access to entries in order to keep track of the least recently used entry within the bucket.
+[`HashCache`](#hashcache) is a 32-way associative concurrent cache that is based on the [`HashMap`](#hashmap) implementation. [`HashCache`](#hashcache) does not keep track of the least recently used entry in the entire cache, instead each bucket maintains a doubly linked list of occupied entries which is updated on access to entries in order to keep track of the least recently used entry within the bucket.
 
 ### Examples
 
@@ -235,7 +235,7 @@ assert_eq!(hashcache.remove(&2).unwrap(), (2, 0));
 
 ## `TreeIndex`
 
-[`TreeIndex`](#TreeIndex) is a B-plus tree variant optimized for read operations. [`sdd`](https://crates.io/crates/sdd) protects the memory used by individual entries, thus enabling lock-free read access to them.
+[`TreeIndex`](#treeindex) is a B-plus tree variant optimized for read operations. [`sdd`](https://crates.io/crates/sdd) protects the memory used by individual entries, thus enabling lock-free read access to them.
 
 ### Locking behavior
 
@@ -303,7 +303,7 @@ assert_eq!(treeindex.range(4..=8, &guard).count(), 5);
 
 ## `Bag`
 
-[`Bag`](#Bag) is a concurrent lock-free unordered container. [`Bag`](#Bag) is completely opaque, disallowing access to contained instances until they are popped. [`Bag`](#Bag) is especially efficient if the number of contained instances can be maintained under `ARRAY_LEN (default: usize::BITS / 2)`
+[`Bag`](#bag) is a concurrent lock-free unordered container. [`Bag`](#bag) is completely opaque, disallowing access to contained instances until they are popped. [`Bag`](#bag) is especially efficient if the number of contained instances can be maintained under `ARRAY_LEN (default: usize::BITS / 2)`
 
 ### Examples
 
@@ -320,7 +320,7 @@ assert!(bag.is_empty());
 
 ## `Queue`
 
-[Queue](#Queue) is a concurrent lock-free first-in-first-out container backed by [`sdd`](https://crates.io/crates/sdd).
+[Queue](#queue) is a concurrent lock-free first-in-first-out container backed by [`sdd`](https://crates.io/crates/sdd).
 
 ### Examples
 
@@ -339,7 +339,7 @@ assert!(queue.pop().is_none());
 
 ## `Stack`
 
-[`Stack`](#Stack) is a concurrent lock-free last-in-first-out container backed by [`sdd`](https://crates.io/crates/sdd).
+[`Stack`](#stack) is a concurrent lock-free last-in-first-out container backed by [`sdd`](https://crates.io/crates/sdd).
 
 ### Examples
 
@@ -357,7 +357,7 @@ assert!(stack.pop().is_none());
 
 ## `LinkedList`
 
-[`LinkedList`](#LinkedList) is a type trait that implements lock-free concurrent singly linked list operations, backed by [`sdd`](https://crates.io/crates/sdd). It additionally provides a method for marking an entry of a linked list to denote a user-defined state.
+[`LinkedList`](#linkedlist) is a type trait that implements lock-free concurrent singly linked list operations, backed by [`sdd`](https://crates.io/crates/sdd). It additionally provides a method for marking an entry of a linked list to denote a user-defined state.
 
 ### Examples
 
@@ -398,10 +398,14 @@ assert!(head.next_ptr(Relaxed, &guard).is_null());
 
 ## Performance
 
-### [`HashMap`](#HashMap) and [`HashIndex`](#HashIndex)
+### [`HashMap`](#hashmap) Tail Latency
 
-- [Results on Apple M2 (12 cores)](https://github.com/wvwwvwwv/conc-map-bench).
+The expected tail latency of a distribution of latencies of 1048576 insertion operations (`K = u64, V = u64`) is 217 microseconds on Apple M2 Max.
+
+### [`HashMap`](#hashmap) and [`HashIndex`](#hashindex) Throughput
+
+- [Results on Apple M2 Max (12 cores)](https://github.com/wvwwvwwv/conc-map-bench).
 - [Results on Intel Xeon (40 cores, avx2)](https://github.com/wvwwvwwv/conc-map-bench/tree/Intel).
-- *Interpret the results cautiously as benchmarks usually do not represent real world workloads.*
+- _Interpret the results cautiously as benchmarks usually do not represent real world workloads._
 
 ## [Changelog](https://github.com/wvwwvwwv/scalable-concurrent-containers/blob/main/CHANGELOG.md)
