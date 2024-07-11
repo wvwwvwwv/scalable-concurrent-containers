@@ -400,7 +400,7 @@ assert!(head.next_ptr(Relaxed, &guard).is_null());
 
 ### [`HashMap`](#hashmap) Tail Latency
 
-The expected tail latency of a distribution of latencies of 1048576 insertion operations (`K = u64, V = u64`) is 217 microseconds on Apple M2 Max.
+The expected tail latency of a distribution of latencies of 1048576 insertion operations (`K = u64, V = u64`) ranges from 200 microseconds to 240 microseconds on Apple M2 Max.
 
 ### [`HashMap`](#hashmap) and [`HashIndex`](#hashindex) Throughput
 
