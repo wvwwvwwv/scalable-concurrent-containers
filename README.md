@@ -141,6 +141,10 @@ let future_remove = hashset.remove_async(&1);
 
 [`HashIndex`](#hashindex) is a read-optimized version of [`HashMap`](#hashmap). In a [`HashIndex`](#hashindex), not only is the memory of the bucket array managed by [`sdd`](https://crates.io/crates/sdd), but also that of entry buckets is protected by [`sdd`](https://crates.io/crates/sdd), enabling lock-free read access to individual entries.
 
+### Entry lifetime
+
+`HashIndex` does not drop removed entries immediately, instead they are dropped when the `HashIndex` is cleared, resized or the number of removed entries reaches a certain threshold. Entry-level recycling is being implemented and will be available soon: [#150](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/150). However, non-determinism in the entry life expectancy will still remain, therefore `HashIndex` would not be an optimal choice if the workload is write-heavy.
+
 ### Examples
 
 The `peek` and `peek_with` methods are completely lock-free.
@@ -240,6 +244,10 @@ assert_eq!(hashcache.remove(&2).unwrap(), (2, 0));
 ### Locking behavior
 
 Read access is always lock-free and non-blocking. Write access to an entry is also lock-free and non-blocking as long as no structural changes are required. However, when nodes are being split or merged by a write operation, other write operations on keys in the affected range are blocked.
+
+### Entry lifetime
+
+`TreeIndex` does not drop removed entries immediately, instead they are dropped when the leaf node is cleared or split, and this makes `TreeIndex` a sub-optimal choice if the workload is write-heavy.
 
 ### Examples
 
@@ -400,12 +408,12 @@ assert!(head.next_ptr(Relaxed, &guard).is_null());
 
 ### [`HashMap`](#hashmap) Tail Latency
 
-The expected tail latency of a distribution of latencies of 1048576 insertion operations (`K = u64, V = u64`) ranges from 200 microseconds to 240 microseconds on Apple M2 Max.
+The expected tail latency of a distribution of latencies of 1048576 insertion operations (`K = u64, V = u64`) ranges from 180 microseconds to 220 microseconds on Apple M2 Max.
 
 ### [`HashMap`](#hashmap) and [`HashIndex`](#hashindex) Throughput
 
 - [Results on Apple M2 Max (12 cores)](https://github.com/wvwwvwwv/conc-map-bench).
-- [Results on Intel Xeon (40 cores, avx2)](https://github.com/wvwwvwwv/conc-map-bench/tree/Intel).
+- [Results on Intel Xeon (32 cores, avx2)](https://github.com/wvwwvwwv/conc-map-bench/tree/Intel).
 - _Interpret the results cautiously as benchmarks usually do not represent real world workloads._
 
 ## [Changelog](https://github.com/wvwwvwwv/scalable-concurrent-containers/blob/main/CHANGELOG.md)

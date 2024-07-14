@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.1.3
+
+* Update [`sdd`](https://crates.io/crates/sdd).
+
 2.1.2
 
 * Implement `any_entry` and `any_entry_async` to `HashMap` and `HashIndex` ([#148](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/148)).

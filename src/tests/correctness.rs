@@ -133,7 +133,6 @@ mod hashmap_test {
         assert_eq!(INST_CNT.load(Relaxed), 0);
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn compare() {
         let hashmap1: HashMap<String, usize> = HashMap::new();
@@ -1241,7 +1240,6 @@ mod hashset_test {
     static_assertions::assert_impl_all!(HashSet<String>: Send, Sync, UnwindSafe);
     static_assertions::assert_not_impl_all!(HashSet<*const String>: Send, Sync, UnwindSafe);
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn compare() {
         let hashset1: HashSet<String> = HashSet::new();

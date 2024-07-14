@@ -15,6 +15,7 @@ HashMap
 HashSet
 io
 iteratively
+latencies
 linearizable
 Linearizable
 Linearizability
