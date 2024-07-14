@@ -143,7 +143,7 @@ let future_remove = hashset.remove_async(&1);
 
 ### Entry lifetime
 
-`HashIndex` does not drop removed entries immediately, instead they are dropped when the `HashIndex` is cleared, resized or the number of removed entries reaches a certain threshold. Entry-level recycling is being implemented and will be available soon: [#150](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/150). However, non-determinism in the entry life expectancy will still remain, therefore `HashIndex` would not be an optimal choice if the workload is write-heavy.
+`HashIndex` does not drop removed entries immediately, instead they are dropped when the `HashIndex` is cleared, resized, or the number of removed entries reaches a certain threshold. Entry-level drop-and-recycling is being implemented and will be available soon: [#150](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/150). However, non-determinism in the entry life expectancy will still remain, therefore `HashIndex` would not be an optimal choice if the workload is write-heavy and the entry size is large.
 
 ### Examples
 
