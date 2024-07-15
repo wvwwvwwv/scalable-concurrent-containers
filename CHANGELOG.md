@@ -4,7 +4,7 @@
 
 2.1.4.
 
-* More aggressive entry removal in `HashIndex`.
+* Implement more aggressive entry removal in `HashIndex` ([#150](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/150)).
 
 2.1.3
 
