@@ -117,7 +117,9 @@ const LINKED_BUCKET_LEN: usize = BUCKET_LEN / 4;
 /// State bits.
 const KILLED: u32 = 1_u32 << 31;
 const WAITING: u32 = 1_u32 << 30;
-const LOCK: u32 = 1_u32 << 29;
+const EPOCH_POS: u32 = 28;
+const EPOCH_MASK: u32 = 3_u32 << EPOCH_POS;
+const LOCK: u32 = 1_u32 << (EPOCH_POS - 1);
 const SLOCK_MAX: u32 = LOCK - 1;
 const LOCK_MASK: u32 = LOCK | SLOCK_MAX;
 
@@ -178,6 +180,49 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
                 index = self.metadata.occupied_bitmap.trailing_zeros();
             }
         }
+    }
+
+    /// Drops removed entries if they are completely unreachable.
+    #[inline]
+    pub(crate) fn drop_removed_entries(
+        &mut self,
+        data_block: &mut DataBlock<K, V, BUCKET_LEN>,
+        guard: &Guard,
+    ) {
+        debug_assert_eq!(TYPE, OPTIMISTIC);
+
+        if self.metadata.removed_bitmap_or_lru_tail == 0 {
+            return;
+        }
+
+        let current_epoch = u32::from(u8::from(guard.epoch()));
+        let target_epoch = (self.state.load(Relaxed) & EPOCH_MASK) >> EPOCH_POS;
+        if current_epoch == target_epoch {
+            let mut index = self.metadata.removed_bitmap_or_lru_tail.trailing_zeros();
+            while index != 32 {
+                let bit = 1_u32 << index;
+                debug_assert_ne!(self.metadata.occupied_bitmap | bit, 0);
+                self.metadata.occupied_bitmap -= bit;
+                self.metadata.removed_bitmap_or_lru_tail -= bit;
+                unsafe { ptr::drop_in_place(data_block[index as usize].as_mut_ptr()) };
+                index = self.metadata.removed_bitmap_or_lru_tail.trailing_zeros();
+            }
+        }
+    }
+
+    /// Updates the target epoch after removing an entry.
+    #[inline]
+    fn update_target_epoch(&mut self, guard: &Guard) {
+        debug_assert_eq!(TYPE, OPTIMISTIC);
+        debug_assert_ne!(self.metadata.removed_bitmap_or_lru_tail, 0);
+
+        let target_epoch = guard.epoch().next_generation();
+        debug_assert_eq!(u8::from(target_epoch) & (!3_u8), 0);
+
+        let result = self.state.fetch_update(Relaxed, Relaxed, |s| {
+            Some((s & (!EPOCH_MASK)) | (u32::from(u8::from(target_epoch)) << EPOCH_POS))
+        });
+        debug_assert!(result.is_ok());
     }
 
     /// Clears all the linked arrays iteratively.
@@ -608,6 +653,10 @@ impl<'g, K, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
     ) -> EntryPtr<'g, K, V, TYPE> {
         assert!(self.bucket.num_entries != u32::MAX, "array overflow");
 
+        if TYPE == OPTIMISTIC && self.bucket.metadata.removed_bitmap_or_lru_tail != 0 {
+            self.drop_removed_entries(data_block, guard);
+        }
+
         let free_index = self.bucket.metadata.occupied_bitmap.trailing_ones() as usize;
         if free_index == BUCKET_LEN {
             let mut link_ptr = self.bucket.metadata.link.load(Acquire, guard);
@@ -670,43 +719,28 @@ impl<'g, K, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
 
     /// Removes the key-value pair being pointed by the given [`EntryPtr`].
     #[inline]
-    pub(crate) fn erase(
+    pub(crate) fn remove(
         &mut self,
         data_block: &mut DataBlock<K, V, BUCKET_LEN>,
         entry_ptr: &EntryPtr<K, V, TYPE>,
-    ) -> Option<(K, V)> {
+    ) -> (K, V) {
+        debug_assert_ne!(TYPE, OPTIMISTIC);
         debug_assert_ne!(entry_ptr.current_index, usize::MAX);
         debug_assert_ne!(entry_ptr.current_index, BUCKET_LEN);
 
         self.bucket.num_entries -= 1;
         let link_ptr = entry_ptr.current_link_ptr.as_ptr().cast_mut();
         if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
-            if TYPE == OPTIMISTIC {
-                debug_assert_eq!(
-                    link_mut.metadata.removed_bitmap_or_lru_tail
-                        & (1_u32 << entry_ptr.current_index),
-                    0
-                );
-                link_mut.metadata.removed_bitmap_or_lru_tail |= 1_u32 << entry_ptr.current_index;
-            } else {
-                debug_assert_ne!(
-                    link_mut.metadata.occupied_bitmap & (1_u32 << entry_ptr.current_index),
-                    0
-                );
-                link_mut.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
-                return Some(unsafe {
-                    link_mut.data_block[entry_ptr.current_index]
-                        .as_mut_ptr()
-                        .read()
-                });
-            }
-        } else if TYPE == OPTIMISTIC {
-            debug_assert_eq!(
-                self.bucket.metadata.removed_bitmap_or_lru_tail
-                    & (1_u32 << entry_ptr.current_index),
+            debug_assert_ne!(
+                link_mut.metadata.occupied_bitmap & (1_u32 << entry_ptr.current_index),
                 0
             );
-            self.bucket.metadata.removed_bitmap_or_lru_tail |= 1_u32 << entry_ptr.current_index;
+            link_mut.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
+            unsafe {
+                link_mut.data_block[entry_ptr.current_index]
+                    .as_mut_ptr()
+                    .read()
+            }
         } else {
             debug_assert_ne!(
                 self.bucket.metadata.occupied_bitmap & (1_u32 << entry_ptr.current_index),
@@ -718,10 +752,34 @@ impl<'g, K, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
             }
 
             self.bucket.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
-            return Some(unsafe { data_block[entry_ptr.current_index].as_mut_ptr().read() });
+            unsafe { data_block[entry_ptr.current_index].as_mut_ptr().read() }
         }
+    }
 
-        None
+    /// Marks the entry removed without dropping the contains instances.
+    #[inline]
+    pub(crate) fn mark_removed(&mut self, entry_ptr: &EntryPtr<K, V, TYPE>, guard: &Guard) {
+        debug_assert_eq!(TYPE, OPTIMISTIC);
+        debug_assert_ne!(entry_ptr.current_index, usize::MAX);
+        debug_assert_ne!(entry_ptr.current_index, BUCKET_LEN);
+
+        self.bucket.num_entries -= 1;
+        let link_ptr = entry_ptr.current_link_ptr.as_ptr().cast_mut();
+        if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
+            debug_assert_eq!(
+                link_mut.metadata.removed_bitmap_or_lru_tail & (1_u32 << entry_ptr.current_index),
+                0
+            );
+            link_mut.metadata.removed_bitmap_or_lru_tail |= 1_u32 << entry_ptr.current_index;
+        } else {
+            debug_assert_eq!(
+                self.bucket.metadata.removed_bitmap_or_lru_tail
+                    & (1_u32 << entry_ptr.current_index),
+                0
+            );
+            self.bucket.metadata.removed_bitmap_or_lru_tail |= 1_u32 << entry_ptr.current_index;
+            self.update_target_epoch(guard);
+        }
     }
 
     /// Keeps or consumes the key-value pair being pointed by the given [`EntryPtr`].
@@ -1029,7 +1087,7 @@ impl<'g, K, V, L: LruList, const TYPE: char> Reader<'g, K, V, L, TYPE> {
         let mut current = bucket.state.load(Relaxed);
         loop {
             let wakeup = (current & WAITING) == WAITING;
-            let next = (current - 1) & !(WAITING);
+            let next = (current - 1) & (!WAITING);
             match bucket
                 .state
                 .compare_exchange_weak(current, next, Relaxed, Relaxed)
@@ -1290,8 +1348,7 @@ mod test {
                 for v in 0..xs {
                     let entry_ptr = locker.get(&data_block, &v, 0, &guard);
                     if entry_ptr.is_valid() {
-                        let erased = locker.erase(&mut data_block, &entry_ptr);
-                        assert!(erased.is_some());
+                        let _erased = locker.remove(&mut data_block, &entry_ptr);
                     } else {
                         assert_eq!(v, evicted_key.unwrap());
                     }
@@ -1540,7 +1597,7 @@ mod test {
                         let entry_ptr =
                             exclusive_locker.get(&data_block_clone, &task_id, partial_hash, &guard);
                         assert_eq!(
-                            exclusive_locker.erase(data_block_mut, &entry_ptr).unwrap(),
+                            exclusive_locker.remove(data_block_mut, &entry_ptr),
                             (task_id, 0_usize)
                         );
                     }

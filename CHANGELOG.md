@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.1.4.
+
+* More aggressive entry removal in `HashIndex`.
+
 2.1.3
 
 * Update [`sdd`](https://crates.io/crates/sdd).

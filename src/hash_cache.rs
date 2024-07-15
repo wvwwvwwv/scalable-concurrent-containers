@@ -918,7 +918,7 @@ where
                                 while entry_ptr.next(&locker, &guard) {
                                     let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
                                     if !filter(k, v) {
-                                        locker.erase(data_block_mut, &entry_ptr);
+                                        locker.remove(data_block_mut, &entry_ptr);
                                         removed = true;
                                     }
                                 }
@@ -1462,15 +1462,10 @@ where
     #[inline]
     #[must_use]
     pub fn remove_entry(mut self) -> (K, V) {
-        let (k, v) = unsafe {
-            self.locked_entry
-                .locker
-                .erase(
-                    self.locked_entry.data_block_mut,
-                    &self.locked_entry.entry_ptr,
-                )
-                .unwrap_unchecked()
-        };
+        let (k, v) = self.locked_entry.locker.remove(
+            self.locked_entry.data_block_mut,
+            &self.locked_entry.entry_ptr,
+        );
         if self.locked_entry.locker.num_entries() <= 1 || self.locked_entry.locker.need_rebuild() {
             let guard = Guard::new();
             let hashcache = self.hashcache;

@@ -260,12 +260,13 @@ where
                     let data_block_mut = current_array.data_block_mut(index);
                     let mut entry_ptr = EntryPtr::new(guard);
                     if entry_ptr.next(&locker, guard) {
-                        return Some(LockedEntry {
+                        return Some(LockedEntry::new(
                             locker,
                             data_block_mut,
                             entry_ptr,
                             index,
-                        });
+                            guard,
+                        ));
                     }
                 }
             }
@@ -394,12 +395,13 @@ where
                     guard,
                 );
                 if entry_ptr.is_valid() {
-                    return Ok(Some(LockedEntry {
+                    return Ok(Some(LockedEntry::new(
                         locker,
                         data_block_mut,
                         entry_ptr,
                         index,
-                    }));
+                        guard,
+                    )));
                 }
             }
 
@@ -465,7 +467,12 @@ where
                 if entry_ptr.is_valid()
                     && condition(&mut entry_ptr.get_mut(data_block_mut, &mut locker).1)
                 {
-                    let result = locker.erase(data_block_mut, &entry_ptr);
+                    let result = if TYPE == OPTIMISTIC {
+                        locker.mark_removed(&entry_ptr, guard);
+                        None
+                    } else {
+                        Some(locker.remove(data_block_mut, &entry_ptr))
+                    };
                     if shrinkable
                         && (locker.num_entries() <= 1 || locker.need_rebuild())
                         && current_array.within_sampling_range(index)
@@ -529,12 +536,13 @@ where
                     while entry_ptr.next(&locker, guard) {
                         let (k, v) = entry_ptr.get(data_block_mut);
                         if pred(k, v) {
-                            return Some(LockedEntry {
+                            return Some(LockedEntry::new(
                                 locker,
                                 data_block_mut,
                                 entry_ptr,
                                 index,
-                            });
+                                guard,
+                            ));
                         }
                     }
                 }
@@ -565,7 +573,11 @@ where
                     while entry_ptr.next(&locker, &guard) {
                         let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
                         if !pred(k, v) {
-                            locker.erase(data_block_mut, &entry_ptr);
+                            if TYPE == OPTIMISTIC {
+                                locker.mark_removed(&entry_ptr, &guard);
+                            } else {
+                                locker.remove(data_block_mut, &entry_ptr);
+                            }
                             removed = true;
                         }
                     }
@@ -681,12 +693,13 @@ where
                     BucketArray::<K, V, L, TYPE>::partial_hash(hash),
                     guard,
                 );
-                return Ok(LockedEntry {
+                return Ok(LockedEntry::new(
                     locker,
                     data_block_mut,
                     entry_ptr,
                     index,
-                });
+                    guard,
+                ));
             }
 
             // Reaching here means that `self.bucket_array()` has been updated.
@@ -828,7 +841,7 @@ where
                     // In order for readers that have observed the following erasure to see the above
                     // insertion, a `Release` fence is needed.
                     fence(Release);
-                    old_locker.erase(old_data_block_mut, &entry_ptr);
+                    old_locker.mark_removed(&entry_ptr, guard);
                 }
             }
         }
@@ -1157,6 +1170,25 @@ pub(super) struct LockedEntry<'h, K, V, L: LruList, const TYPE: char> {
 }
 
 impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h, K, V, L, TYPE> {
+    /// Creates a new [`LockedEntry`].
+    pub(super) fn new(
+        mut locker: Locker<'h, K, V, L, TYPE>,
+        data_block_mut: &'h mut DataBlock<K, V, BUCKET_LEN>,
+        entry_ptr: EntryPtr<'h, K, V, TYPE>,
+        index: usize,
+        guard: &Guard,
+    ) -> LockedEntry<'h, K, V, L, TYPE> {
+        if TYPE == OPTIMISTIC {
+            locker.drop_removed_entries(data_block_mut, guard);
+        }
+        LockedEntry {
+            locker,
+            data_block_mut,
+            entry_ptr,
+            index,
+        }
+    }
+
     /// Gets the first occupied entry.
     pub(super) async fn first_entry_async<H: BuildHasher, T: HashTable<K, V, H, L, TYPE>>(
         hash_table: &'h T,
@@ -1195,12 +1227,13 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
                                 let data_block_mut = prolonged_current_array.data_block_mut(index);
                                 let mut entry_ptr = EntryPtr::new(prolonged_guard);
                                 if entry_ptr.next(&locker, prolonged_guard) {
-                                    return Some(LockedEntry {
+                                    return Some(LockedEntry::new(
                                         locker,
                                         data_block_mut,
                                         entry_ptr,
                                         index,
-                                    });
+                                        &guard,
+                                    ));
                                 }
                             }
                             break;
@@ -1256,12 +1289,13 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
                     let data_block_mut = current_array.data_block_mut(index);
                     let mut entry_ptr = EntryPtr::new(prolonged_guard);
                     if entry_ptr.next(&locker, prolonged_guard) {
-                        return Some(LockedEntry {
+                        return Some(LockedEntry::new(
                             locker,
                             data_block_mut,
                             entry_ptr,
                             index,
-                        });
+                            &guard,
+                        ));
                     }
                 }
             }
