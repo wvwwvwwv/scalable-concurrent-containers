@@ -143,11 +143,11 @@ let future_remove = hashset.remove_async(&1);
 
 ### Entry lifetime
 
-`HashIndex` does not drop removed entries immediately, instead they are dropped when the one of following conditions are met.
+`HashIndex` does not drop removed entries immediately, instead they are dropped when one of following conditions is met.
 
 1. [`Epoch`](https://docs.rs/sdd/latest/sdd/struct.Epoch.html) reaches the next generation since the last entry removal in a bucket, and the bucket is write-accessed.
 2. `HashIndex` is cleared, or resized.
-3. Buckets full of removed entries occupies 50% of the capacity.
+3. Buckets full of removed entries occupy 50% of the capacity.
 
 Those conditions do not guarantee that the removed entry is dropped within a definite period of time, therefore `HashIndex` would not be an optimal choice if the workload is write-heavy and the entry size is large.
 
