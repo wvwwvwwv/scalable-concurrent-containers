@@ -755,7 +755,7 @@ mod hashindex_test {
     use std::collections::BTreeSet;
     use std::panic::UnwindSafe;
     use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
-    use std::sync::atomic::{AtomicU64, AtomicUsize};
+    use std::sync::atomic::{fence, AtomicU64, AtomicUsize};
     use std::sync::{Arc, Barrier};
     use std::thread;
     use tokio::sync::Barrier as AsyncBarrier;
@@ -925,6 +925,63 @@ mod hashindex_test {
         for r in futures::future::join_all(task_handles).await {
             assert!(r.is_ok());
         }
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn drop_entries() {
+        let hashindex: Arc<HashIndex<usize, String>> = Arc::new(HashIndex::default());
+        let num_tasks = 4;
+        let num_iter = 64;
+        let workload_size = 256;
+
+        let str = "HOW ARE YOU HOW ARE YOU";
+        for k in 0..num_tasks * workload_size {
+            assert!(hashindex.insert(k, str.to_string()).is_ok());
+        }
+
+        let mut task_handles = Vec::with_capacity(num_tasks);
+        let barrier = Arc::new(AsyncBarrier::new(num_tasks));
+        for task_id in 0..num_tasks {
+            let barrier_clone = barrier.clone();
+            let hashindex_clone = hashindex.clone();
+            task_handles.push(tokio::task::spawn(async move {
+                barrier_clone.wait().await;
+                let range = (task_id * workload_size)..((task_id + 1) * workload_size);
+                if task_id == 0 {
+                    for _ in 0..num_iter {
+                        let guard = Guard::new();
+                        let v = hashindex_clone
+                            .peek(&(task_id * workload_size), &guard)
+                            .unwrap();
+                        assert_eq!(str, v);
+                        fence(Acquire);
+                        for id in range.clone() {
+                            assert!(hashindex_clone.remove(&id));
+                            assert!(hashindex_clone.insert(id, str.to_string()).is_ok());
+                        }
+                        fence(Acquire);
+                        assert_eq!(str, v);
+                    }
+                } else {
+                    for _ in 0..num_iter {
+                        for id in range.clone() {
+                            assert!(hashindex_clone.remove_async(&id).await);
+                            assert!(hashindex_clone
+                                .insert_async(id, str.to_string())
+                                .await
+                                .is_ok());
+                        }
+                    }
+                }
+            }));
+        }
+
+        for r in futures::future::join_all(task_handles).await {
+            assert!(r.is_ok());
+        }
+
+        assert_eq!(hashindex.len(), num_tasks * workload_size);
     }
 
     #[cfg_attr(miri, ignore)]

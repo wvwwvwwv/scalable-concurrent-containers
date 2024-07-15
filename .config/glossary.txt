@@ -1,4 +1,5 @@
 44
+50%
 avx2
 CAS
 Changelog

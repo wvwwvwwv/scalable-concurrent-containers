@@ -653,10 +653,6 @@ impl<'g, K, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
     ) -> EntryPtr<'g, K, V, TYPE> {
         assert!(self.bucket.num_entries != u32::MAX, "array overflow");
 
-        if TYPE == OPTIMISTIC && self.bucket.metadata.removed_bitmap_or_lru_tail != 0 {
-            self.drop_removed_entries(data_block, guard);
-        }
-
         let free_index = self.bucket.metadata.occupied_bitmap.trailing_ones() as usize;
         if free_index == BUCKET_LEN {
             let mut link_ptr = self.bucket.metadata.link.load(Acquire, guard);
