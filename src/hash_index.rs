@@ -869,7 +869,7 @@ where
                             if let Some(mut locker) = locker {
                                 let data_block_mut = current_array.data_block_mut(index);
                                 let mut entry_ptr = EntryPtr::new(&guard);
-                                while entry_ptr.next(&locker, &guard) {
+                                while entry_ptr.move_to_next(&locker, &guard) {
                                     let (k, v) = entry_ptr.get(data_block_mut);
                                     if !pred(k, v) {
                                         locker.mark_removed(&entry_ptr, &guard);
@@ -1896,7 +1896,7 @@ where
         loop {
             if let Some(bucket) = self.current_bucket.take() {
                 // Go to the next entry in the bucket.
-                if self.current_entry_ptr.next(bucket, self.guard) {
+                if self.current_entry_ptr.move_to_next(bucket, self.guard) {
                     let (k, v) = self
                         .current_entry_ptr
                         .get(array.data_block(self.current_index));

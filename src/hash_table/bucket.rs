@@ -417,7 +417,7 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
     ///
     /// Returns `true` if it successfully found the next occupied entry.
     #[inline]
-    pub(crate) fn next<L: LruList>(
+    pub(crate) fn move_to_next<L: LruList>(
         &mut self,
         bucket: &Bucket<K, V, L, TYPE>,
         guard: &'g Guard,
@@ -1508,7 +1508,7 @@ mod test {
 
         let mut count = 0;
         let mut entry_ptr = EntryPtr::new(&epoch_guard);
-        while entry_ptr.next(&bucket, &epoch_guard) {
+        while entry_ptr.move_to_next(&bucket, &epoch_guard) {
             count += 1;
         }
         assert_eq!(bucket.num_entries(), count);

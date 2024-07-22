@@ -430,9 +430,7 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
                             let result = self.metadata.fetch_update(Release, Relaxed, |m| {
                                 debug_assert_ne!(m & (1_usize << index), 0);
                                 debug_assert_eq!(m & (1_usize << (index + ARRAY_LEN)), 0);
-                                if !allow_empty
-                                    && (Self::instance_bitmap(m) & (!Self::owned_bitmap(m))) == 0
-                                {
+                                if !allow_empty && Self::instance_bitmap(m) == 0 {
                                     // Disallow pushing a value into an empty array.
                                     None
                                 } else {
@@ -516,7 +514,6 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
                 }
             }
 
-            // All the entries are vacant or owned.
             return (None, instance_bitmap == 0);
         }
     }

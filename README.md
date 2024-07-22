@@ -12,7 +12,7 @@ A collection of high performance containers and utilities for concurrent and asy
 - Near-linear scalability.
 - No spin-locks and no busy loops.
 - SIMD lookup to scan multiple entries in parallel [^note].
-- [Serde](https://serde.rs) support: `features = ["serde"]`.
+- [`Serde`](https://serde.rs) support:`features = ["serde"]`.
 
 [^note]: Advanced SIMD instructions are used only when respective target features are enabled, e.g., `-C target_feature=+avx2`.
 
@@ -143,7 +143,7 @@ let future_remove = hashset.remove_async(&1);
 
 ### Entry lifetime
 
-`HashIndex` does not drop removed entries immediately, instead they are dropped when one of following conditions is met.
+`HashIndex` does not drop removed entries immediately, instead they are dropped when one of the following conditions is met.
 
 1. [`Epoch`](https://docs.rs/sdd/latest/sdd/struct.Epoch.html) reaches the next generation since the last entry removal in a bucket, and the bucket is write-accessed.
 2. `HashIndex` is cleared, or resized.

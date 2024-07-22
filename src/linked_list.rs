@@ -305,88 +305,35 @@ pub trait LinkedList: Sized {
     /// ```
     #[inline]
     fn next_ptr<'g>(&self, order: Ordering, guard: &'g Guard) -> Ptr<'g, Self> {
-        let current_state = self.link_ref().load(order, guard);
-        let mut entry_ptr = current_state;
-        let mut cleanup_target_range = (Ptr::null(), Ptr::null());
-        let mut cleanup_range_ended = current_state.tag() == Tag::Both;
+        let self_next_ptr = self.link_ref().load(order, guard);
+        let self_tag = self_next_ptr.tag();
+        let mut next_ptr = self_next_ptr;
+        let mut update_self = false;
         let next_valid_ptr = loop {
-            if let Some(entry) = entry_ptr.as_ref() {
-                let entry_state = entry.link_ref().load(order, guard);
-                let tag = entry_state.tag();
-                if tag == Tag::None || tag == Tag::First {
-                    break entry_ptr;
-                } else if tag == Tag::Second
-                    && !cleanup_range_ended
-                    && entry.link_ref().update_tag_if(
-                        Tag::Both,
-                        |ptr| ptr == entry_state,
-                        Relaxed,
-                        Relaxed,
-                    )
-                {
-                    if cleanup_target_range.0.is_null() {
-                        cleanup_target_range.0 = entry_ptr.without_tag();
-                    }
-                    cleanup_target_range.1 = entry_ptr.without_tag();
-                } else {
-                    cleanup_range_ended = true;
+            if let Some(next_ref) = next_ptr.as_ref() {
+                let next_next_ptr = next_ref.link_ref().load(order, guard);
+                if next_next_ptr.tag() != Tag::Second {
+                    break next_ptr;
                 }
-                entry_ptr = entry_state;
-                continue;
+                update_self = true;
+                next_ptr = next_next_ptr;
+            } else {
+                break Ptr::null();
             }
-            break entry_ptr;
         };
 
-        // Update its link if an invalid entry was found.
-        if current_state.tag() != Tag::Both && current_state != next_valid_ptr {
-            let next_valid_entry = next_valid_ptr.get_shared();
-            if next_valid_entry.is_none() == next_valid_ptr.is_null() {
-                // Keep the tag value.
-                if let Ok((Some(next), _)) = self.link_ref().compare_exchange(
-                    current_state,
-                    (next_valid_entry.clone(), current_state.tag()),
+        // Updates its link if an invalid entry has been found, and `self` is a valid one.
+        if update_self && self_tag != Tag::Second {
+            self.link_ref()
+                .compare_exchange(
+                    self_next_ptr,
+                    (next_valid_ptr.get_shared(), self_tag),
                     Release,
                     Relaxed,
                     guard,
-                ) {
-                    let _: bool = next.release(guard);
-
-                    // Now `cleanup_range` is unreachable to new readers.
-                    entry_ptr = cleanup_target_range.0;
-                    while let Some(entry) = entry_ptr.as_ref() {
-                        debug_assert_eq!(entry.link_ref().tag(Relaxed), Tag::Both);
-                        let (next, _) = entry
-                            .link_ref()
-                            .swap((next_valid_entry.clone(), Tag::Second), Release);
-                        if entry_ptr.without_tag() == cleanup_target_range.1 {
-                            break;
-                        }
-                        entry_ptr = next.map_or_else(Ptr::null, |n| {
-                            let ptr = n.get_guarded_ptr(guard);
-                            let _: bool = n.release(guard);
-                            ptr
-                        });
-                    }
-
-                    // Everything went smoothly.
-                    return next_valid_ptr;
-                }
-            }
-
-            // Entries in `cleanup_range` need to be cleaned up.
-            entry_ptr = cleanup_target_range.0;
-            while let Some(entry) = entry_ptr.as_ref() {
-                let next_ptr = entry.link_ref().load(Relaxed, guard);
-                debug_assert_eq!(next_ptr.tag(), Tag::Both);
-                let _: bool =
-                    entry
-                        .link_ref()
-                        .update_tag_if(Tag::Second, |_| true, Relaxed, Relaxed);
-                if entry_ptr.without_tag() == cleanup_target_range.1 {
-                    break;
-                }
-                entry_ptr = next_ptr;
-            }
+                )
+                .ok()
+                .map(|(p, _)| p.map(|p| p.release(guard)));
         }
 
         next_valid_ptr
@@ -498,6 +445,7 @@ impl<T> DerefMut for Entry<T> {
 impl<T> Drop for Entry<T> {
     #[inline]
     fn drop(&mut self) {
+        // TODO: accelerate linked list cleanup.
         if !self.next.is_null(Relaxed) {
             self.next_ptr(Relaxed, &Guard::new());
         }

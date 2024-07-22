@@ -1012,7 +1012,7 @@ where
                             if let Some(reader) = reader {
                                 let data_block = current_array.data_block(index);
                                 let mut entry_ptr = EntryPtr::new(&guard);
-                                while entry_ptr.next(*reader, &guard) {
+                                while entry_ptr.move_to_next(*reader, &guard) {
                                     let (k, v) = entry_ptr.get(data_block);
                                     if pred(k, v) {
                                         // Found one entry satisfying the predicate.
@@ -1109,7 +1109,7 @@ where
                             if let Some(mut locker) = locker {
                                 let data_block_mut = current_array.data_block_mut(index);
                                 let mut entry_ptr = EntryPtr::new(&guard);
-                                while entry_ptr.next(&locker, &guard) {
+                                while entry_ptr.move_to_next(&locker, &guard) {
                                     let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
                                     if !pred(k, v) {
                                         locker.remove(data_block_mut, &entry_ptr);
@@ -1207,7 +1207,7 @@ where
                             if let Some(mut locker) = locker {
                                 let data_block_mut = current_array.data_block_mut(index);
                                 let mut entry_ptr = EntryPtr::new(&guard);
-                                while entry_ptr.next(&locker, &guard) {
+                                while entry_ptr.move_to_next(&locker, &guard) {
                                     if locker.keep_or_consume(data_block_mut, &entry_ptr, &mut pred)
                                     {
                                         removed = true;

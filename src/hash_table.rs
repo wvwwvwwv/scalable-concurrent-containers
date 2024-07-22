@@ -259,7 +259,7 @@ where
                 if let Some(locker) = lock_result {
                     let data_block_mut = current_array.data_block_mut(index);
                     let mut entry_ptr = EntryPtr::new(guard);
-                    if entry_ptr.next(&locker, guard) {
+                    if entry_ptr.move_to_next(&locker, guard) {
                         return Some(LockedEntry::new(
                             locker,
                             data_block_mut,
@@ -500,7 +500,7 @@ where
                 if let Some(locker) = Reader::lock(bucket, &guard) {
                     let data_block = current_array.data_block(index);
                     let mut entry_ptr = EntryPtr::new(&guard);
-                    while entry_ptr.next(*locker, &guard) {
+                    while entry_ptr.move_to_next(*locker, &guard) {
                         let (k, v) = entry_ptr.get(data_block);
                         if pred(k, v) {
                             return true;
@@ -533,7 +533,7 @@ where
                 if let Some(locker) = Locker::lock(bucket, guard) {
                     let data_block_mut = current_array.data_block_mut(index);
                     let mut entry_ptr = EntryPtr::new(guard);
-                    while entry_ptr.next(&locker, guard) {
+                    while entry_ptr.move_to_next(&locker, guard) {
                         let (k, v) = entry_ptr.get(data_block_mut);
                         if pred(k, v) {
                             return Some(LockedEntry::new(
@@ -570,7 +570,7 @@ where
                 if let Some(mut locker) = Locker::lock(bucket, &guard) {
                     let data_block_mut = current_array.data_block_mut(index);
                     let mut entry_ptr = EntryPtr::new(&guard);
-                    while entry_ptr.next(&locker, &guard) {
+                    while entry_ptr.move_to_next(&locker, &guard) {
                         let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
                         if !pred(k, v) {
                             if TYPE == OPTIMISTIC {
@@ -609,7 +609,7 @@ where
                 if let Some(mut locker) = Locker::lock(bucket, &guard) {
                     let data_block_mut = current_array.data_block_mut(index);
                     let mut entry_ptr = EntryPtr::new(&guard);
-                    while entry_ptr.next(&locker, &guard) {
+                    while entry_ptr.move_to_next(&locker, &guard) {
                         if locker.keep_or_consume(data_block_mut, &entry_ptr, &mut pred) {
                             removed = true;
                         }
@@ -780,7 +780,7 @@ where
             let mut max_index = 0;
             let mut entry_ptr = EntryPtr::new(guard);
             let old_data_block_mut = old_array.data_block_mut(old_index);
-            while entry_ptr.next(old_locker, guard) {
+            while entry_ptr.move_to_next(old_locker, guard) {
                 let old_entry = entry_ptr.get(old_data_block_mut);
                 let (new_index, partial_hash) =
                     if old_array.num_buckets() >= current_array.num_buckets() {
@@ -1226,7 +1226,7 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
                             if let Some(locker) = locker {
                                 let data_block_mut = prolonged_current_array.data_block_mut(index);
                                 let mut entry_ptr = EntryPtr::new(prolonged_guard);
-                                if entry_ptr.next(&locker, prolonged_guard) {
+                                if entry_ptr.move_to_next(&locker, prolonged_guard) {
                                     return Some(LockedEntry::new(
                                         locker,
                                         data_block_mut,
@@ -1266,7 +1266,7 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
         let guard = Guard::new();
         let prolonged_guard = hash_table.prolonged_guard_ref(&guard);
 
-        if self.entry_ptr.next(
+        if self.entry_ptr.move_to_next(
             &self.locker,
             hash_table.prolonged_guard_ref(prolonged_guard),
         ) {
@@ -1281,14 +1281,21 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
             }
 
             let prev_index = self.index;
+            let try_shrink_or_rebuild = (self.locker.num_entries() <= 1
+                || self.locker.need_rebuild())
+                && current_array.within_sampling_range(prev_index);
             drop(self);
+
+            if try_shrink_or_rebuild {
+                hash_table.try_shrink_or_rebuild(current_array, prev_index, &guard);
+            }
 
             for index in (prev_index + 1)..current_array.num_buckets() {
                 let bucket = current_array.bucket_mut(index);
                 if let Some(locker) = Locker::lock(bucket, prolonged_guard) {
                     let data_block_mut = current_array.data_block_mut(index);
                     let mut entry_ptr = EntryPtr::new(prolonged_guard);
-                    if entry_ptr.next(&locker, prolonged_guard) {
+                    if entry_ptr.move_to_next(&locker, prolonged_guard) {
                         return Some(LockedEntry::new(
                             locker,
                             data_block_mut,
@@ -1316,7 +1323,7 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
     ) -> Option<LockedEntry<'h, K, V, L, TYPE>> {
         if self
             .entry_ptr
-            .next(&self.locker, hash_table.prolonged_guard_ref(&Guard::new()))
+            .move_to_next(&self.locker, hash_table.prolonged_guard_ref(&Guard::new()))
         {
             return Some(self);
         }
@@ -1329,7 +1336,14 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
             }
 
             let prev_index = self.index;
+            let try_shrink_or_rebuild = (self.locker.num_entries() <= 1
+                || self.locker.need_rebuild())
+                && current_array.within_sampling_range(prev_index);
             drop(self);
+
+            if try_shrink_or_rebuild {
+                hash_table.try_shrink_or_rebuild(&current_array, prev_index, &Guard::new());
+            }
 
             for index in (prev_index + 1)..current_array.num_buckets() {
                 loop {
@@ -1349,7 +1363,7 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
                             if let Some(locker) = locker {
                                 let data_block_mut = prolonged_current_array.data_block_mut(index);
                                 let mut entry_ptr = EntryPtr::new(prolonged_guard);
-                                if entry_ptr.next(&locker, prolonged_guard) {
+                                if entry_ptr.move_to_next(&locker, prolonged_guard) {
                                     return Some(Self {
                                         locker,
                                         data_block_mut,
