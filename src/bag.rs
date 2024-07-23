@@ -179,12 +179,10 @@ impl<T, const ARRAY_LEN: usize> Bag<T, ARRAY_LEN> {
         let mut acc = init;
         let popped = self.stack.pop_all();
         while let Some(storage) = popped.pop() {
-            acc = storage.pop_all(acc, &mut fold);
+            // TODO: make sure entries being inserted either popped or failed.
+            acc = storage.pop_all(acc, &mut fold, false);
         }
-        while let Some(val) = self.primary_storage.pop().0 {
-            acc = fold(acc, val);
-        }
-        acc
+        self.primary_storage.pop_all(acc, &mut fold, true)
     }
 
     /// Returns the number of entries in the [`Bag`].
@@ -415,13 +413,12 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
         'after_read_metadata: loop {
             // Look for a free slot.
             let mut instance_bitmap = Self::instance_bitmap(metadata);
+            let owned_bitmap = Self::owned_bitmap(metadata);
 
             // Regard entries being removed as removed ones.
-            if !allow_empty && instance_bitmap == 0 {
+            if !allow_empty && (instance_bitmap & (!owned_bitmap)) == 0 {
                 return Some(val);
             }
-
-            let owned_bitmap = Self::owned_bitmap(metadata);
             let mut index = instance_bitmap.trailing_ones() as usize;
             while index < ARRAY_LEN {
                 if (owned_bitmap & (1_u32 << index)) == 0 {
@@ -529,35 +526,58 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
 
     /// Pops all the values, and folds them.
     #[allow(clippy::cast_possible_truncation)]
-    fn pop_all<B, F: FnMut(B, T) -> B>(&self, init: B, fold: &mut F) -> B {
+    fn pop_all<B, F: FnMut(B, T) -> B>(&self, init: B, fold: &mut F, allow_nonempty: bool) -> B {
         let mut acc = init;
         let mut metadata = self.metadata.load(Relaxed);
         loop {
             // Look for an instantiated, and reachable entries.
             let instance_bitmap = Self::instance_bitmap(metadata) as usize;
             let owned_bitmap = Self::owned_bitmap(metadata) as usize;
-            let mut instances_to_pop = instance_bitmap & (!owned_bitmap);
+            let instances_to_pop = instance_bitmap & (!owned_bitmap);
+            debug_assert_eq!(instances_to_pop & owned_bitmap, 0);
 
-            // Nothing to pop.
             if instances_to_pop == 0 {
                 return acc;
             }
 
+            let marked_for_removal = metadata | instances_to_pop;
             match self.metadata.compare_exchange_weak(
                 metadata,
-                metadata & (!(instances_to_pop << ARRAY_LEN)),
+                marked_for_removal,
                 Acquire,
                 Relaxed,
             ) {
                 Ok(_) => {
-                    // Now all the valid slots are removed, or being removed.
+                    // Now all the valid slots are locked for removal.
                     let mut index = instances_to_pop.trailing_zeros() as usize;
                     while index < ARRAY_LEN {
                         acc = fold(acc, unsafe { self.storage[index].as_ptr().read() });
-                        instances_to_pop &= !(1_usize << index as u32);
-                        index = instances_to_pop.trailing_zeros() as usize;
+                        index = (instances_to_pop & (!((1_usize << (index + 1) as u32) - 1)))
+                            .trailing_zeros() as usize;
                     }
-                    return acc;
+
+                    metadata = marked_for_removal;
+                    loop {
+                        let new_metadata =
+                            metadata & (!((instances_to_pop << ARRAY_LEN) | instances_to_pop));
+                        match self.metadata.compare_exchange_weak(
+                            metadata,
+                            new_metadata,
+                            Release,
+                            Relaxed,
+                        ) {
+                            Ok(_) => {
+                                if allow_nonempty {
+                                    return acc;
+                                }
+
+                                // Need to check if a new instance was inserted.
+                                metadata = new_metadata;
+                                break;
+                            }
+                            Err(actual) => metadata = actual,
+                        }
+                    }
                 }
                 Err(actual) => metadata = actual,
             }

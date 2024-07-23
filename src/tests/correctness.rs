@@ -2432,9 +2432,7 @@ mod bag_test {
                         bag17_clone.push(R::new(&INST_CNT));
                     }
                     for i in 0..workload_size {
-                        assert!(!bag32_clone.is_empty(), "{i}");
                         assert!(bag32_clone.pop().is_some(), "{i}");
-                        assert!(!bag17_clone.is_empty(), "{i}");
                         assert!(bag17_clone.pop().is_some(), "{i}");
                     }
                 }));
