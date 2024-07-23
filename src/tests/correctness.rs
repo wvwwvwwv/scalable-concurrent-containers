@@ -826,7 +826,7 @@ mod hashindex_test {
         drop(hashindex);
 
         while INST_CNT.load(Relaxed) != 0 {
-            drop(Guard::new());
+            Guard::new().accelerate();
             tokio::task::yield_now().await;
         }
     }
@@ -1682,7 +1682,7 @@ mod treeindex_test {
         drop(tree);
 
         while INST_CNT.load(Relaxed) != 0 {
-            drop(Guard::new());
+            Guard::new().accelerate();
             tokio::task::yield_now().await;
         }
     }
@@ -1705,7 +1705,7 @@ mod treeindex_test {
         assert_eq!(tree.len(), 0);
 
         while INST_CNT.load(Relaxed) != 0 {
-            drop(Guard::new());
+            Guard::new().accelerate();
             tokio::task::yield_now().await;
         }
     }
@@ -1725,7 +1725,7 @@ mod treeindex_test {
         tree.clear();
 
         while INST_CNT.load(Relaxed) != 0 {
-            drop(Guard::new());
+            Guard::new().accelerate();
             tokio::task::yield_now().await;
         }
     }
@@ -1748,7 +1748,7 @@ mod treeindex_test {
         tree_clone.clear();
 
         while INST_CNT.load(Relaxed) != 0 {
-            drop(Guard::new());
+            Guard::new().accelerate();
             tokio::task::yield_now().await;
         }
     }
@@ -1893,8 +1893,7 @@ mod treeindex_test {
 
         let mut cnt = 0;
         while INST_CNT.load(Relaxed) > 0 {
-            let guard = Guard::new();
-            drop(guard);
+            Guard::new().accelerate();
             cnt += 1;
         }
         println!("{cnt}");
@@ -1907,8 +1906,7 @@ mod treeindex_test {
         tree.clear();
 
         while INST_CNT.load(Relaxed) > 0 {
-            let guard = Guard::new();
-            drop(guard);
+            Guard::new().accelerate();
         }
     }
 
@@ -2413,7 +2411,7 @@ mod bag_test {
     }
 
     #[cfg_attr(miri, ignore)]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 12)]
     async fn mpmc() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         const NUM_TASKS: usize = 6;
@@ -2435,9 +2433,9 @@ mod bag_test {
                     }
                     for i in 0..workload_size {
                         assert!(!bag32_clone.is_empty(), "{i}");
-                        assert!(bag32_clone.pop().is_some());
+                        assert!(bag32_clone.pop().is_some(), "{i}");
                         assert!(!bag17_clone.is_empty(), "{i}");
-                        assert!(bag17_clone.pop().is_some());
+                        assert!(bag17_clone.pop().is_some(), "{i}");
                     }
                 }));
             }
@@ -2512,16 +2510,22 @@ mod queue_test {
     use std::panic::UnwindSafe;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
-    use std::sync::Arc;
-    use tokio::sync::Barrier as AsyncBarrier;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
 
     static_assertions::assert_impl_all!(Queue<String>: Send, Sync, UnwindSafe);
     static_assertions::assert_not_impl_all!(Queue<*const String>: Send, Sync, UnwindSafe);
 
-    struct R(usize, usize);
+    struct R(&'static AtomicUsize, usize, usize);
     impl R {
-        fn new(task_id: usize, seq: usize) -> R {
-            R(task_id, seq)
+        fn new(cnt: &'static AtomicUsize, task_id: usize, seq: usize) -> R {
+            cnt.fetch_add(1, Relaxed);
+            R(cnt, task_id, seq)
+        }
+    }
+    impl Drop for R {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Relaxed);
         }
     }
 
@@ -2547,24 +2551,57 @@ mod queue_test {
     }
 
     #[cfg_attr(miri, ignore)]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn iterator() {
-        const NUM_TASKS: usize = 2;
+    #[test]
+    fn pop_all() {
+        const NUM_ENTRIES: usize = 4096;
+        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+
+        let queue = Queue::default();
+
+        for i in 0..NUM_ENTRIES {
+            queue.push(R::new(&INST_CNT, i, i));
+        }
+
+        let mut expected = 0;
+        while let Some(e) = queue.pop() {
+            assert_eq!(e.1, expected);
+            expected += 1;
+        }
+        assert_eq!(expected, NUM_ENTRIES);
+        assert!(queue.is_empty());
+
+        let mut cnt = 0;
+        while INST_CNT.load(Relaxed) != 0 {
+            Guard::new().accelerate();
+            thread::yield_now();
+            cnt += 1;
+        }
+
+        // Expect `cnt <= 10`.
+        println!("{cnt}");
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn iter_push_pop() {
+        const NUM_TASKS: usize = 4;
+        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+
         let queue: Arc<Queue<R>> = Arc::new(Queue::default());
         let workload_size = 256;
         for _ in 0..16 {
-            let mut task_handles = Vec::with_capacity(NUM_TASKS);
-            let barrier = Arc::new(AsyncBarrier::new(NUM_TASKS));
+            let mut thread_handles = Vec::with_capacity(NUM_TASKS);
+            let barrier = Arc::new(Barrier::new(NUM_TASKS));
             for task_id in 0..NUM_TASKS {
                 let barrier_clone = barrier.clone();
                 let queue_clone = queue.clone();
-                task_handles.push(tokio::task::spawn(async move {
+                thread_handles.push(thread::spawn(move || {
                     if task_id == 0 {
                         for seq in 0..workload_size {
                             if seq == workload_size / 2 {
-                                barrier_clone.wait().await;
+                                barrier_clone.wait();
                             }
-                            assert_eq!(queue_clone.push(R::new(task_id, seq)).1, seq);
+                            assert_eq!(queue_clone.push(R::new(&INST_CNT, task_id, seq)).2, seq);
                         }
                         let mut last = 0;
                         while let Some(popped) = queue_clone.pop() {
@@ -2575,7 +2612,7 @@ mod queue_test {
                     } else {
                         let mut last = 0;
 
-                        barrier_clone.wait().await;
+                        barrier_clone.wait();
                         let guard = Guard::new();
                         let iter = queue_clone.iter(&guard);
                         for current in iter {
@@ -2587,33 +2624,45 @@ mod queue_test {
                 }));
             }
 
-            for r in futures::future::join_all(task_handles).await {
-                assert!(r.is_ok());
+            for t in thread_handles {
+                assert!(t.join().is_ok());
             }
         }
         assert!(queue.is_empty());
+
+        let mut cnt = 0;
+        while INST_CNT.load(Relaxed) != 0 {
+            Guard::new().accelerate();
+            thread::yield_now();
+            cnt += 1;
+        }
+
+        // Expect `cnt <= 10`.
+        println!("{cnt}");
     }
 
     #[cfg_attr(miri, ignore)]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
-    async fn mpmc() {
-        const NUM_TASKS: usize = 12;
+    #[test]
+    fn mpmc() {
+        const NUM_TASKS: usize = 6;
         const NUM_PRODUCERS: usize = NUM_TASKS / 2;
+        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+
         let queue: Arc<Queue<R>> = Arc::new(Queue::default());
         let workload_size = 256;
         for _ in 0..16 {
             let num_popped: Arc<AtomicUsize> = Arc::new(AtomicUsize::default());
-            let mut task_handles = Vec::with_capacity(NUM_TASKS);
-            let barrier = Arc::new(AsyncBarrier::new(NUM_TASKS));
+            let mut thread_handles = Vec::with_capacity(NUM_TASKS);
+            let barrier = Arc::new(Barrier::new(NUM_TASKS));
             for task_id in 0..NUM_TASKS {
                 let barrier_clone = barrier.clone();
                 let queue_clone = queue.clone();
                 let num_popped_clone = num_popped.clone();
-                task_handles.push(tokio::task::spawn(async move {
-                    barrier_clone.wait().await;
+                thread_handles.push(thread::spawn(move || {
+                    barrier_clone.wait();
                     if task_id < NUM_PRODUCERS {
                         for seq in 1..=workload_size {
-                            assert_eq!(queue_clone.push(R::new(task_id, seq)).1, seq);
+                            assert_eq!(queue_clone.push(R::new(&INST_CNT, task_id, seq)).2, seq);
                         }
                     } else {
                         let mut popped_acc: [usize; NUM_PRODUCERS] = Default::default();
@@ -2621,25 +2670,35 @@ mod queue_test {
                             let mut cnt = 0;
                             while let Some(popped) = queue_clone.pop() {
                                 cnt += 1;
-                                assert!(popped_acc[popped.0] < popped.1);
-                                popped_acc[popped.0] = popped.1;
+                                assert!(popped_acc[popped.1] < popped.2);
+                                popped_acc[popped.1] = popped.2;
                             }
                             if num_popped_clone.fetch_add(cnt, Relaxed) + cnt
                                 == workload_size * NUM_PRODUCERS
                             {
                                 break;
                             }
-                            tokio::task::yield_now().await;
+                            thread::yield_now();
                         }
                     }
                 }));
             }
 
-            for r in futures::future::join_all(task_handles).await {
-                assert!(r.is_ok());
+            for t in thread_handles {
+                assert!(t.join().is_ok());
             }
         }
         assert!(queue.is_empty());
+
+        let mut cnt = 0;
+        while INST_CNT.load(Relaxed) != 0 {
+            Guard::new().accelerate();
+            thread::yield_now();
+            cnt += 1;
+        }
+
+        // Expect `cnt <= 50`.
+        println!("{cnt}");
     }
 }
 

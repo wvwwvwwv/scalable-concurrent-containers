@@ -2,7 +2,12 @@
 
 ## Version 2
 
-2.1.4.
+2.1.5
+
+* Optimize `LinkedList` deleted node reclamation.
+* Optimize `Bag`.
+
+2.1.4
 
 * Implement more aggressive entry removal in `HashIndex` ([#150](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/150)).
 

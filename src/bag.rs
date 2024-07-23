@@ -132,21 +132,26 @@ impl<T, const ARRAY_LEN: usize> Bag<T, ARRAY_LEN> {
     /// ```
     #[inline]
     pub fn pop(&self) -> Option<T> {
-        let guard = Guard::new();
-        self.stack.peek_with(|e| {
-            let mut current = e;
-            while let Some(storage) = current {
-                let (val_opt, empty) = storage.pop();
-                if empty {
-                    storage.delete_self(Relaxed);
-                }
-                if let Some(val) = val_opt {
-                    return Some(val);
-                }
-                current = storage.next_ptr(Acquire, &guard).as_ref();
+        while !self.stack.is_empty() {
+            let result = self.stack.peek_with(|e| {
+                e.and_then(|storage| {
+                    let (val, empty) = storage.pop();
+                    if empty {
+                        // Once marked deleted, new entries will be inserted in a new `Storage`
+                        // that may not be reachable from this one.
+                        storage.delete_self(Relaxed);
+                    }
+                    val
+                })
+            });
+            if let Some(val) = result {
+                return Some(val);
             }
-            self.primary_storage.pop().0
-        })
+            if let Some(val) = self.primary_storage.pop().0 {
+                return Some(val);
+            }
+        }
+        self.primary_storage.pop().0
     }
 
     /// Pops all the entries at once, and folds them into an accumulator.
@@ -174,9 +179,12 @@ impl<T, const ARRAY_LEN: usize> Bag<T, ARRAY_LEN> {
         let mut acc = init;
         let popped = self.stack.pop_all();
         while let Some(storage) = popped.pop() {
-            acc = storage.pop_all(acc, &mut fold, false);
+            acc = storage.pop_all(acc, &mut fold);
         }
-        self.primary_storage.pop_all(acc, &mut fold, true)
+        while let Some(val) = self.primary_storage.pop().0 {
+            acc = fold(acc, val);
+        }
+        acc
     }
 
     /// Returns the number of entries in the [`Bag`].
@@ -407,12 +415,13 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
         'after_read_metadata: loop {
             // Look for a free slot.
             let mut instance_bitmap = Self::instance_bitmap(metadata);
-            let owned_bitmap = Self::owned_bitmap(metadata);
 
             // Regard entries being removed as removed ones.
-            if !allow_empty && (instance_bitmap & (!owned_bitmap)) == 0 {
+            if !allow_empty && instance_bitmap == 0 {
                 return Some(val);
             }
+
+            let owned_bitmap = Self::owned_bitmap(metadata);
             let mut index = instance_bitmap.trailing_ones() as usize;
             while index < ARRAY_LEN {
                 if (owned_bitmap & (1_u32 << index)) == 0 {
@@ -520,7 +529,7 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
 
     /// Pops all the values, and folds them.
     #[allow(clippy::cast_possible_truncation)]
-    fn pop_all<B, F: FnMut(B, T) -> B>(&self, init: B, fold: &mut F, allow_nonempty: bool) -> B {
+    fn pop_all<B, F: FnMut(B, T) -> B>(&self, init: B, fold: &mut F) -> B {
         let mut acc = init;
         let mut metadata = self.metadata.load(Relaxed);
         loop {
@@ -528,50 +537,27 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
             let instance_bitmap = Self::instance_bitmap(metadata) as usize;
             let owned_bitmap = Self::owned_bitmap(metadata) as usize;
             let instances_to_pop = instance_bitmap & (!owned_bitmap);
-            debug_assert_eq!(instances_to_pop & owned_bitmap, 0);
 
+            // Nothing to pop.
             if instances_to_pop == 0 {
                 return acc;
             }
 
-            let marked_for_removal = metadata | instances_to_pop;
             match self.metadata.compare_exchange_weak(
                 metadata,
-                marked_for_removal,
+                metadata & (!(instances_to_pop << ARRAY_LEN)),
                 Acquire,
                 Relaxed,
             ) {
                 Ok(_) => {
-                    // Now all the valid slots are locked for removal.
+                    // Now all the valid slots are removed, or being removed.
                     let mut index = instances_to_pop.trailing_zeros() as usize;
                     while index < ARRAY_LEN {
                         acc = fold(acc, unsafe { self.storage[index].as_ptr().read() });
                         index = (instances_to_pop & (!((1_usize << (index + 1) as u32) - 1)))
                             .trailing_zeros() as usize;
                     }
-
-                    metadata = marked_for_removal;
-                    loop {
-                        let new_metadata =
-                            metadata & (!((instances_to_pop << ARRAY_LEN) | instances_to_pop));
-                        match self.metadata.compare_exchange_weak(
-                            metadata,
-                            new_metadata,
-                            Release,
-                            Relaxed,
-                        ) {
-                            Ok(_) => {
-                                if allow_nonempty {
-                                    return acc;
-                                }
-
-                                // Need to check if a new instance was inserted.
-                                metadata = new_metadata;
-                                break;
-                            }
-                            Err(actual) => metadata = actual,
-                        }
-                    }
+                    return acc;
                 }
                 Err(actual) => metadata = actual,
             }
