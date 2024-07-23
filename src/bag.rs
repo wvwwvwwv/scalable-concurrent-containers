@@ -536,7 +536,7 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
             // Look for an instantiated, and reachable entries.
             let instance_bitmap = Self::instance_bitmap(metadata) as usize;
             let owned_bitmap = Self::owned_bitmap(metadata) as usize;
-            let instances_to_pop = instance_bitmap & (!owned_bitmap);
+            let mut instances_to_pop = instance_bitmap & (!owned_bitmap);
 
             // Nothing to pop.
             if instances_to_pop == 0 {
@@ -554,8 +554,8 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
                     let mut index = instances_to_pop.trailing_zeros() as usize;
                     while index < ARRAY_LEN {
                         acc = fold(acc, unsafe { self.storage[index].as_ptr().read() });
-                        index = (instances_to_pop & (!((1_usize << (index + 1) as u32) - 1)))
-                            .trailing_zeros() as usize;
+                        instances_to_pop &= !(1_usize << index as u32);
+                        index = instances_to_pop.trailing_zeros() as usize;
                     }
                     return acc;
                 }
