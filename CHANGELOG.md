@@ -5,7 +5,7 @@
 2.1.5
 
 * Optimize `LinkedList` deleted node reclamation.
-* Optimize `Bag`.
+* Optimize `Bag` by not allowing pushed instances to be dropped without being used.
 
 2.1.4
 
