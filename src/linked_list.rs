@@ -497,7 +497,7 @@ fn next_ptr_recursive<'g, T: LinkedList>(
             ) {
                 Ok((prev, _)) => {
                     if let Some(removed) = prev {
-                        let _: bool = removed.release(guard);
+                        let _: bool = removed.release();
                     }
                 }
                 Err((_, actual)) => {

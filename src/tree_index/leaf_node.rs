@@ -637,7 +637,7 @@ where
         if let Some(origin_leaf) = self.split_op.origin_leaf.swap((None, Tag::None), Relaxed).0 {
             // Make the origin leaf unreachable before making the new leaves updatable.
             origin_leaf.delete_self(Relaxed);
-            let _: bool = origin_leaf.release(guard);
+            let _: bool = origin_leaf.release();
         }
         let low_key_leaf = self
             .split_op
@@ -663,7 +663,7 @@ where
         {
             let origin = low_key_leaf_node.split_op.reset();
             low_key_leaf_node.unlock();
-            origin.map(|o| o.release(guard));
+            origin.map(Shared::release);
         }
 
         if let Some(high_key_leaf_node) =
@@ -671,12 +671,12 @@ where
         {
             let origin = high_key_leaf_node.split_op.reset();
             high_key_leaf_node.unlock();
-            origin.map(|o| o.release(guard));
+            origin.map(Shared::release);
         }
 
         let origin = self.split_op.reset();
         self.retire();
-        origin.map(|o| o.release(guard));
+        origin.map(Shared::release);
     }
 
     /// Rolls back the ongoing split operation.
@@ -715,7 +715,7 @@ where
 
         let origin = self.split_op.reset();
         self.unlock();
-        origin.map(|o| o.release(guard));
+        origin.map(Shared::release);
     }
 
     /// Cleans up logically deleted [`LeafNode`] instances in the linked list.
@@ -911,8 +911,8 @@ where
 
         let origin = self.split_op.reset();
         self.unlock();
-        origin.map(|o| o.release(guard));
-        unused_leaf.map(|u| u.release(guard));
+        origin.map(Shared::release);
+        unused_leaf.map(Shared::release);
 
         // Since a new leaf has been inserted, the caller can retry.
         Ok(InsertResult::Retry(key, val))
@@ -940,7 +940,7 @@ where
                     // The pointer is nullified after the metadata of `self.children` is updated so
                     // that readers are able to retry when they find it being `null`.
                     if let Some(leaf) = entry.1.swap((None, Tag::None), Release).0 {
-                        let _: bool = leaf.release(guard);
+                        let _: bool = leaf.release();
                         if let Some(prev_leaf) = prev_valid_leaf.as_ref() {
                             // One jump is sufficient.
                             Scanner::new(*prev_leaf).jump(None, guard);
@@ -968,7 +968,7 @@ where
                         if let Some(obsolete_leaf) =
                             self.unbounded_child.swap((None, RETIRED), Release).0
                         {
-                            let _: bool = obsolete_leaf.release(guard);
+                            let _: bool = obsolete_leaf.release();
                             uncleaned_leaf = true;
                         }
                         true

@@ -3,6 +3,7 @@
 use super::ebr::Guard;
 use super::exit_guard::ExitGuard;
 use super::{LinkedEntry, LinkedList, Stack};
+use std::cell::UnsafeCell;
 use std::iter::FusedIterator;
 use std::mem::{needs_drop, MaybeUninit};
 use std::panic::UnwindSafe;
@@ -47,7 +48,7 @@ const DEFAULT_ARRAY_LEN: usize = usize::BITS as usize / 2;
 #[derive(Debug)]
 struct Storage<T, const ARRAY_LEN: usize> {
     /// Storage.
-    storage: [MaybeUninit<T>; ARRAY_LEN],
+    storage: UnsafeCell<[MaybeUninit<T>; ARRAY_LEN]>,
 
     /// Storage metadata.
     ///
@@ -334,7 +335,7 @@ impl<'b, T, const ARRAY_LEN: usize> Iterator for IterMut<'b, T, ARRAY_LEN> {
             self.current_index = next_occupied + 1;
             if (next_occupied as usize) < ARRAY_LEN {
                 return Some(unsafe {
-                    &mut *current_storage.storage[next_occupied as usize].as_mut_ptr()
+                    &mut *(*current_storage.storage.get())[next_occupied as usize].as_mut_ptr()
                 });
             }
             self.current_index = u32::MAX;
@@ -388,12 +389,12 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
     /// Creates a new [`Storage`] with one inserted.
     fn with_val(val: T) -> Self {
         #[allow(clippy::uninit_assumed_init)]
-        let mut storage = Self {
-            storage: unsafe { MaybeUninit::uninit().assume_init() },
+        let storage = Self {
+            storage: UnsafeCell::new(unsafe { MaybeUninit::uninit().assume_init() }),
             metadata: AtomicUsize::new(1_usize << ARRAY_LEN),
         };
         unsafe {
-            storage.storage[0].as_mut_ptr().write(val);
+            (*storage.storage.get())[0].as_mut_ptr().write(val);
         }
         storage
     }
@@ -431,7 +432,7 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
                         Ok(_) => {
                             // Now the free slot is owned by the thread.
                             unsafe {
-                                (self.storage[index].as_ptr().cast_mut()).write(val);
+                                (*self.storage.get())[index].as_mut_ptr().write(val);
                             }
                             let result = self.metadata.fetch_update(Release, Relaxed, |m| {
                                 debug_assert_ne!(m & (1_usize << index), 0);
@@ -452,7 +453,7 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
                             }
 
                             // The array was empty, thus rolling back the change.
-                            let val = unsafe { self.storage[index].as_ptr().read() };
+                            let val = unsafe { (*self.storage.get())[index].as_ptr().read() };
                             self.metadata.fetch_and(!(1_usize << index), Relaxed);
                             return Some(val);
                         }
@@ -492,7 +493,7 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
                     {
                         Ok(_) => {
                             // Now the desired slot is owned by the thread.
-                            let inst = unsafe { self.storage[index].as_ptr().read() };
+                            let inst = unsafe { (*self.storage.get())[index].as_ptr().read() };
                             let mut empty = false;
                             let result = self.metadata.fetch_update(Relaxed, Relaxed, |m| {
                                 debug_assert_ne!(m & (1_usize << index), 0);
@@ -569,7 +570,7 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
                     // Now all the valid slots are locked for removal.
                     let mut index = instances_to_pop.trailing_zeros() as usize;
                     while index < ARRAY_LEN {
-                        acc = fold(acc, unsafe { self.storage[index].as_ptr().read() });
+                        acc = fold(acc, unsafe { (*self.storage.get())[index].as_ptr().read() });
                         index = (instances_to_pop & (!((1_usize << (index + 1) as u32) - 1)))
                             .trailing_zeros() as usize;
                     }
@@ -602,8 +603,11 @@ impl<T, const ARRAY_LEN: usize> Drop for Storage<T, ARRAY_LEN> {
                     break;
                 }
                 instance_bitmap &= !(1_u32 << index);
-                unsafe { drop_in_place(self.storage[index as usize].as_mut_ptr()) };
+                unsafe { drop_in_place((*self.storage.get())[index as usize].as_mut_ptr()) };
             }
         }
     }
 }
+
+unsafe impl<T: Send, const ARRAY_LEN: usize> Send for Storage<T, ARRAY_LEN> {}
+unsafe impl<T: Sync, const ARRAY_LEN: usize> Sync for Storage<T, ARRAY_LEN> {}

@@ -837,13 +837,13 @@ where
         }
 
         // Unlock the node.
-        self.finish_split(guard);
+        self.finish_split();
 
         // Drop the deprecated nodes.
         if let Some(unused_node) = unused_node {
             // Clean up the split operation by committing it.
             unused_node.commit(guard);
-            let _: bool = unused_node.release(guard);
+            let _: bool = unused_node.release();
         }
 
         // Since a new node has been inserted, the caller can retry.
@@ -852,11 +852,11 @@ where
 
     /// Finishes splitting the [`InternalNode`].
     #[inline]
-    pub(super) fn finish_split(&self, guard: &Guard) {
+    pub(super) fn finish_split(&self) {
         let origin = self.split_op.reset();
         self.unlock();
         self.wait_queue.signal();
-        origin.map(|o| o.release(guard));
+        origin.map(Shared::release);
     }
 
     /// Commits an on-going structural change recursively.
@@ -868,7 +868,7 @@ where
         self.retire();
         if let Some(origin) = origin {
             origin.commit(guard);
-            let _: bool = origin.release(guard);
+            let _: bool = origin.release();
         }
     }
 
@@ -879,7 +879,7 @@ where
         self.unlock();
         if let Some(origin) = origin {
             origin.rollback(guard);
-            let _: bool = origin.release(guard);
+            let _: bool = origin.release();
         }
     }
 
@@ -926,7 +926,7 @@ where
                     // Once the key is removed, it is safe to deallocate the node as the validation
                     // loop ensures the absence of readers.
                     if let Some(node) = node.swap((None, Tag::None), Release).0 {
-                        let _: bool = node.release(guard);
+                        let _: bool = node.release();
                         node_deleted = true;
                     }
                 } else {
@@ -948,13 +948,13 @@ where
                             .0
                         {
                             debug_assert!(obsolete_node.retired(Relaxed));
-                            let _: bool = obsolete_node.release(guard);
+                            let _: bool = obsolete_node.release();
                             node_deleted = true;
                         }
                         let result = self.children.remove_if(key.borrow(), &mut |_| true);
                         debug_assert_ne!(result, RemoveResult::Fail);
                         if let Some(node) = max_key_child.swap((None, Tag::None), Release).0 {
-                            let _: bool = node.release(guard);
+                            let _: bool = node.release();
                             node_deleted = true;
                         }
                         false
@@ -963,7 +963,7 @@ where
                             self.unbounded_child.swap((None, RETIRED), Release).0
                         {
                             debug_assert!(obsolete_node.retired(Relaxed));
-                            let _: bool = obsolete_node.release(guard);
+                            let _: bool = obsolete_node.release();
                             node_deleted = true;
                         }
                         true

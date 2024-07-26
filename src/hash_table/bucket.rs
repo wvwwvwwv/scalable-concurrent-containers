@@ -143,14 +143,14 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
 
     /// Kills the bucket by marking it `KILLED` and unlinking [`LinkedBucket`].
     #[inline]
-    pub(crate) fn kill(&mut self, guard: &Guard) {
+    pub(crate) fn kill(&mut self) {
         if TYPE == OPTIMISTIC {
             self.metadata.removed_bitmap_or_lru_tail = self.metadata.occupied_bitmap;
         }
         self.state.fetch_or(KILLED, Release);
         self.num_entries = 0;
         if !self.metadata.link.is_null(Relaxed) {
-            self.clear_links(guard);
+            self.clear_links();
         }
     }
 
@@ -164,13 +164,9 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     ///
     /// The [`Bucket`] and the [`DataBlock`] should never be used afterwards.
     #[inline]
-    pub(crate) unsafe fn drop_entries(
-        &mut self,
-        data_block: &mut DataBlock<K, V, BUCKET_LEN>,
-        guard: &Guard,
-    ) {
+    pub(crate) unsafe fn drop_entries(&mut self, data_block: &mut DataBlock<K, V, BUCKET_LEN>) {
         if !self.metadata.link.is_null(Relaxed) {
-            self.clear_links(guard);
+            self.clear_links();
         }
         if needs_drop::<(K, V)>() && self.metadata.occupied_bitmap != 0 {
             let mut index = self.metadata.occupied_bitmap.trailing_zeros();
@@ -226,12 +222,12 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     }
 
     /// Clears all the linked arrays iteratively.
-    fn clear_links(&mut self, guard: &Guard) {
+    fn clear_links(&mut self) {
         if let (Some(mut next), _) = self.metadata.link.swap((None, Tag::None), Acquire) {
             loop {
                 let next_next = next.metadata.link.swap((None, Tag::None), Acquire);
                 let released = if TYPE == OPTIMISTIC {
-                    next.release(guard)
+                    next.release()
                 } else {
                     // The `LinkedBucket` should be dropped immediately.
                     unsafe { next.drop_in_place() }
@@ -526,7 +522,7 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
         };
         let released = old_link.map_or(true, |l| {
             if TYPE == OPTIMISTIC {
-                l.release(guard)
+                l.release()
             } else {
                 // The `LinkedBucket` should be dropped immediately.
                 unsafe { l.drop_in_place() }
@@ -1514,7 +1510,7 @@ mod test {
         assert_eq!(bucket.num_entries(), count);
 
         let mut xlocker = Locker::lock(unsafe { bucket.get_mut().unwrap() }, &epoch_guard).unwrap();
-        (*xlocker).kill(&epoch_guard);
+        (*xlocker).kill();
         drop(xlocker);
 
         assert!(bucket.killed());

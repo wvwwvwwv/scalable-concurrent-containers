@@ -190,14 +190,14 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
 
     /// Drops the old array.
     #[inline]
-    pub(crate) fn drop_old_array(&self, guard: &Guard) {
+    pub(crate) fn drop_old_array(&self) {
         self.old_array.swap((None, Tag::None), Relaxed).0.map(|a| {
             // It is OK to pass the old array instance to the garbage collector, deferring destruction.
             debug_assert_eq!(
                 a.num_cleared_buckets.load(Relaxed),
                 a.array_len.max(BUCKET_LEN)
             );
-            a.release(guard)
+            a.release()
         });
     }
 
@@ -248,11 +248,10 @@ impl<K, V, L: LruList, const TYPE: char> Drop for BucketArray<K, V, L, TYPE> {
         };
 
         if num_cleared_buckets < self.array_len {
-            let guard = Guard::new();
             for index in num_cleared_buckets..self.array_len {
                 unsafe {
                     self.bucket_mut(index)
-                        .drop_entries(self.data_block_mut(index), &guard);
+                        .drop_entries(self.data_block_mut(index));
                 }
             }
         }

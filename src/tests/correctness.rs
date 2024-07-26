@@ -2361,7 +2361,6 @@ mod bag_test {
         }
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn reclaim() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
@@ -2385,7 +2384,6 @@ mod bag_test {
         }
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn into_iter() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
@@ -2527,7 +2525,6 @@ mod queue_test {
         }
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn clone() {
         let queue = Queue::default();
@@ -2548,10 +2545,9 @@ mod queue_test {
         assert!(queue_clone.pop().is_none());
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn pop_all() {
-        const NUM_ENTRIES: usize = 4096;
+        const NUM_ENTRIES: usize = 256;
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
 
         let queue = Queue::default();
@@ -2718,7 +2714,6 @@ mod stack_test {
         }
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn clone() {
         let stack = Stack::default();

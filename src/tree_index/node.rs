@@ -198,10 +198,10 @@ where
             let new_root_ref = new_root.get_guarded_ptr(guard).as_ref();
             if let Some(old_root) = root.swap((Some(new_root), Tag::None), Release).0 {
                 if let Some(Self::Internal(internal_node)) = new_root_ref.as_ref() {
-                    internal_node.finish_split(guard);
+                    internal_node.finish_split();
                     old_root.commit(guard);
                 }
-                let _: bool = old_root.release(guard);
+                let _: bool = old_root.release();
             };
 
             (key, val)
@@ -292,7 +292,7 @@ where
             }
 
             if let (Some(old_root), _) = root.swap((new_root, Tag::None), Release) {
-                let _: bool = old_root.release(guard);
+                let _: bool = old_root.release();
             }
 
             if let Some(internal_node_locker) = internal_node_locker {

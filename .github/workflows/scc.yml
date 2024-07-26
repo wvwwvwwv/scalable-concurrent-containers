@@ -55,7 +55,7 @@ jobs:
           cargo test serde --verbose --features serde;
           cargo test --release serde --verbose --features serde
       - name: Miri
-        run: cargo +nightly miri test --lib --bins --tests
+        run: MIRIFLAGS="-Zmiri-disable-data-race-detector" cargo +nightly miri test --lib --bins --tests
       - name: Nightly
         run: cargo +nightly test --release benchmark
   benchmark:

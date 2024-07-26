@@ -845,7 +845,7 @@ where
                 }
             }
         }
-        old_locker.kill(guard);
+        old_locker.kill();
         Ok(())
     }
 
@@ -907,7 +907,7 @@ where
                     let current = rehashing_metadata.fetch_sub(1, Relaxed) - 1;
                     if (current & (BUCKET_LEN - 1) == 0) && current >= old_array.num_buckets() {
                         // The last one trying to relocate old entries gets rid of the old array.
-                        current_array.drop_old_array(guard);
+                        current_array.drop_old_array();
                     }
                 } else {
                     // On failure, `rehashing` reverts to its previous state.
@@ -1098,7 +1098,7 @@ where
                             for i in 0..num_locked_buckets {
                                 let bucket = current_array.bucket_mut(i);
                                 if success {
-                                    bucket.kill(guard);
+                                    bucket.kill();
                                 }
                                 Reader::release(bucket);
                             }
