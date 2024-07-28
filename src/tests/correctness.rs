@@ -80,15 +80,14 @@ mod hashmap_test {
         }
     }
 
-    #[cfg_attr(miri, ignore)]
-    #[tokio::test]
-    async fn insert_drop() {
+    #[test]
+    fn insert_drop() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
 
         let hashmap: HashMap<usize, R> = HashMap::default();
         let workload_size = 1024;
         for k in 0..workload_size {
-            assert!(hashmap.insert_async(k, R::new(&INST_CNT)).await.is_ok());
+            assert!(hashmap.insert(k, R::new(&INST_CNT)).is_ok());
         }
         assert_eq!(INST_CNT.load(Relaxed), workload_size);
         assert_eq!(hashmap.len(), workload_size);

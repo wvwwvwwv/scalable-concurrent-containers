@@ -2,7 +2,7 @@
 name = "scc"
 description = "High performance containers and utilities for concurrent and asynchronous programming"
 documentation = "https://docs.rs/scc"
-version = "2.1.5"
+version = "2.1.6"
 authors = ["wvwwvwwv <wvwwvwwv@me.com>"]
 edition = "2021"
 rust-version = "1.65.0"
@@ -16,7 +16,7 @@ keywords = ["async", "cache", "concurrent", "hashmap", "tree"]
 members = [".", "examples"]
 
 [dependencies]
-sdd = "2.0.0"
+sdd = "2.1.0"
 serde = { version = "1.0", optional = true }
 
 [dev-dependencies]

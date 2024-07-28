@@ -7,8 +7,8 @@ use std::sync::atomic::Ordering::Relaxed;
 
 /// [`BucketArray`] is a special purpose array to manage [`Bucket`] and [`DataBlock`].
 pub struct BucketArray<K, V, L: LruList, const TYPE: char> {
-    bucket_ptr: *const Bucket<K, V, L, TYPE>,
-    data_block_ptr: *const DataBlock<K, V, BUCKET_LEN>,
+    bucket_ptr: *mut Bucket<K, V, L, TYPE>,
+    data_block_ptr: *mut DataBlock<K, V, BUCKET_LEN>,
     array_len: usize,
     hash_offset: u32,
     sample_size: u16,
@@ -20,7 +20,7 @@ pub struct BucketArray<K, V, L: LruList, const TYPE: char> {
 impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     /// Returns the number of [`Bucket`] instances in the [`BucketArray`].
     #[inline]
-    pub(crate) fn num_buckets(&self) -> usize {
+    pub(crate) const fn num_buckets(&self) -> usize {
         self.array_len
     }
 
@@ -36,7 +36,14 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     #[inline]
     pub(crate) fn bucket_mut(&self, index: usize) -> &mut Bucket<K, V, L, TYPE> {
         debug_assert!(index < self.num_buckets());
-        unsafe { &mut *self.bucket_ptr.add(index).cast_mut() }
+        unsafe { &mut *self.bucket_ptr.add(index) }
+    }
+
+    /// Returns a mutable reference to a [`DataBlock`] at the given position.
+    #[inline]
+    pub(crate) fn data_block(&self, index: usize) -> &DataBlock<K, V, BUCKET_LEN> {
+        debug_assert!(index < self.num_buckets());
+        unsafe { &*self.data_block_ptr.add(index) }
     }
 
     /// Returns a mutable reference to a [`DataBlock`] at the given position.
@@ -44,7 +51,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     #[inline]
     pub(crate) fn data_block_mut(&self, index: usize) -> &mut DataBlock<K, V, BUCKET_LEN> {
         debug_assert!(index < self.num_buckets());
-        unsafe { &mut *self.data_block_ptr.add(index).cast_mut() }
+        unsafe { &mut *self.data_block_ptr.add(index) }
     }
 
     /// Calculates the layout of the memory block for an array of `T`.
@@ -126,6 +133,21 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         }
     }
 
+    /// Returns the number of total entries.
+    #[inline]
+    pub(crate) const fn num_entries(&self) -> usize {
+        self.array_len * BUCKET_LEN
+    }
+
+    /// Calculates the [`Bucket`] index for the hash value.
+    #[allow(clippy::cast_possible_truncation)]
+    #[inline]
+    pub(crate) const fn calculate_bucket_index(&self, hash: u64) -> usize {
+        // Take the upper n-bits to make sure that a single bucket is spread across a few adjacent
+        // buckets when the hash table is resized.
+        hash.wrapping_shr(self.hash_offset) as usize
+    }
+
     /// Returns the minimum capacity.
     #[inline]
     pub const fn minimum_capacity() -> usize {
@@ -141,26 +163,19 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
 
     /// Returns a reference to its rehashing metadata.
     #[inline]
-    pub(crate) fn rehashing_metadata(&self) -> &AtomicUsize {
+    pub(crate) const fn rehashing_metadata(&self) -> &AtomicUsize {
         &self.num_cleared_buckets
-    }
-
-    /// Returns a reference to a [`DataBlock`] at the given position.
-    #[inline]
-    pub(crate) fn data_block(&self, index: usize) -> &DataBlock<K, V, BUCKET_LEN> {
-        debug_assert!(index < self.num_buckets());
-        unsafe { &(*(self.data_block_ptr.add(index))) }
     }
 
     /// Checks if the index is within the sampling range of the array.
     #[inline]
-    pub(crate) fn within_sampling_range(&self, index: usize) -> bool {
+    pub(crate) const fn within_sampling_range(&self, index: usize) -> bool {
         (index % self.sample_size()) == 0
     }
 
     /// Returns the recommended sampling size.
     #[inline]
-    pub(crate) fn sample_size(&self) -> usize {
+    pub(crate) const fn sample_size(&self) -> usize {
         self.sample_size as usize
     }
 
@@ -168,12 +183,6 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     #[inline]
     pub(crate) fn full_sample_size(&self) -> usize {
         ((self.sample_size as usize) * (self.sample_size as usize)).min(self.num_buckets())
-    }
-
-    /// Returns the number of total entries.
-    #[inline]
-    pub(crate) fn num_entries(&self) -> usize {
-        self.array_len * BUCKET_LEN
     }
 
     /// Returns a [`Ptr`] to the old array.
@@ -199,15 +208,6 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
             );
             a.release()
         });
-    }
-
-    /// Calculates the [`Bucket`] index for the hash value.
-    #[allow(clippy::cast_possible_truncation)]
-    #[inline]
-    pub(crate) fn calculate_bucket_index(&self, hash: u64) -> usize {
-        // Take the upper n-bits to make sure that a single bucket is spread across a few adjacent
-        // buckets when the hash table is resized.
-        hash.wrapping_shr(self.hash_offset) as usize
     }
 
     /// Calculates `log_2` of the array size from the given capacity.
@@ -259,13 +259,12 @@ impl<K, V, L: LruList, const TYPE: char> Drop for BucketArray<K, V, L, TYPE> {
         unsafe {
             dealloc(
                 self.bucket_ptr
-                    .cast_mut()
                     .cast::<u8>()
                     .sub(self.bucket_ptr_offset as usize),
                 Self::calculate_memory_layout::<Bucket<K, V, L, TYPE>>(self.array_len).2,
             );
             dealloc(
-                self.data_block_ptr.cast_mut().cast::<u8>(),
+                self.data_block_ptr.cast::<u8>(),
                 Layout::from_size_align(
                     size_of::<DataBlock<K, V, BUCKET_LEN>>() * self.array_len,
                     align_of::<[DataBlock<K, V, BUCKET_LEN>; 0]>(),

@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.1.6
+
+* Minor optimization: bump `SDD` to `2.1.0`.
+
 2.1.5
 
 * Optimize `LinkedList` deleted node reclamation.
