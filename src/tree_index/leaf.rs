@@ -89,7 +89,7 @@ impl<K, V> Leaf<K, V> {
         #[allow(clippy::uninit_assumed_init)]
         Leaf {
             metadata: AtomicUsize::new(0),
-            entry_array: unsafe { MaybeUninit::uninit().assume_init() },
+            entry_array: UnsafeCell::new(unsafe { MaybeUninit::uninit().assume_init() }),
             link: AtomicShared::null(),
         }
     }
@@ -952,7 +952,6 @@ mod test {
     use std::sync::atomic::AtomicBool;
     use tokio::sync::Barrier;
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn basic() {
         let leaf: Leaf<String, String> = Leaf::new();
@@ -1030,7 +1029,6 @@ mod test {
         ));
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn calculate_boundary() {
         let leaf: Leaf<usize, usize> = Leaf::new();
@@ -1068,7 +1066,6 @@ mod test {
         );
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn special() {
         let leaf: Leaf<usize, usize> = Leaf::new();

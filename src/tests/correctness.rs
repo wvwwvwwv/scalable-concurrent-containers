@@ -151,7 +151,7 @@ mod hashmap_test {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
 
         let hashmap: HashMap<usize, R> = HashMap::default();
-        let workload_size = 1024;
+        let workload_size = 256;
         for k in 0..workload_size {
             assert!(hashmap.insert(k, R::new(&INST_CNT)).is_ok());
         }
@@ -1909,7 +1909,7 @@ mod treeindex_test {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         let tree: TreeIndex<usize, R> = TreeIndex::default();
 
-        let workload_size = 1024;
+        let workload_size = 256;
         for k in 0..workload_size {
             assert!(tree.insert(k, R::new(&INST_CNT)).is_ok());
         }
@@ -2056,7 +2056,6 @@ mod treeindex_test {
         }
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn reclaim() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
@@ -2078,7 +2077,7 @@ mod treeindex_test {
             }
         }
 
-        let data_size = 1_048_576;
+        let data_size = 256;
         let tree: TreeIndex<usize, R> = TreeIndex::new();
         for k in 0..data_size {
             assert!(tree.insert(k, R::new()).is_ok());
@@ -2108,7 +2107,7 @@ mod treeindex_test {
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn basic() {
+    fn mixed() {
         let range = 4096;
         let num_threads = 16;
         let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::new());
@@ -2167,7 +2166,6 @@ mod treeindex_test {
         }
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn compare() {
         let tree1: TreeIndex<String, usize> = TreeIndex::new();
@@ -2342,7 +2340,7 @@ mod treeindex_test {
         let mut checker1 = BTreeSet::new();
         let mut checker2 = BTreeSet::new();
         let mut runner = TestRunner::default();
-        let test_size = 4096;
+        let test_size = 1024;
         for i in 0..test_size {
             let prop_str = "[a-z]{1,16}".new_tree(&mut runner).unwrap();
             let str_val = prop_str.current();
@@ -2438,7 +2436,6 @@ mod treeindex_test {
         }
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn range() {
         let tree: TreeIndex<String, usize> = TreeIndex::default();

@@ -1117,7 +1117,6 @@ mod test {
     use std::sync::atomic::AtomicBool;
     use tokio::sync::Barrier;
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn basic() {
         let guard = Guard::new();

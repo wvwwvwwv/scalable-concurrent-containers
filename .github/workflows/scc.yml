@@ -25,19 +25,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Prepare
-        run:
-          sudo apt-get install gcc-multilib;
+        run: sudo apt-get install gcc-multilib;
           rustup toolchain add nightly;
           rustup component add rust-src --toolchain nightly;
           rustup component add miri --toolchain nightly
       - name: Serde
-        run:
-          cargo test serde --verbose --features serde;
+        run: cargo test serde --verbose --features serde;
           cargo test --release serde --verbose --features serde
       - name: Miri
         run: MIRIFLAGS="-Zmiri-disable-data-race-detector" cargo +nightly miri test --lib --bins --tests
-      - name: Nightly
-        run: cargo +nightly test --release benchmark
  
   check-misc:
     runs-on: ubuntu-latest
@@ -45,8 +41,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Prepare
-        run:
-          sudo apt-get install gcc-multilib;
+        run: sudo apt-get install gcc-multilib;
           rustup toolchain add nightly;
           rustup target add i686-unknown-linux-gnu;
           rustup component add rust-src --toolchain nightly;
@@ -61,16 +56,16 @@ jobs:
       - name: Spell-check
         run: cargo spellcheck check
       - name: Format
-        run:
-          cargo fmt --check;
+        run: cargo fmt --check;
           cargo fmt -p examples --check
       - name: Examples
         run:
           RUST_BACKTRACE=1 cargo test --release -p examples -- --nocapture;
           RUST_BACKTRACE=1 cargo test --target i686-unknown-linux-gnu --release -p examples -- --nocapture
       - name: Doc
-        run:
-          cargo doc --document-private-items;
+        run: cargo doc --document-private-items;
+      - name: Nightly
+        run: cargo +nightly test --release benchmark
   benchmark:
     runs-on: ubuntu-latest
     timeout-minutes: 15
