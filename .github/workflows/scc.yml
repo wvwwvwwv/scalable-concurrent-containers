@@ -47,6 +47,7 @@ jobs:
       - name: Prepare
         run:
           sudo apt-get install gcc-multilib;
+          rustup toolchain add nightly;
           rustup target add i686-unknown-linux-gnu;
           rustup component add rust-src --toolchain nightly;
           rustup component add clippy --toolchain nightly;
