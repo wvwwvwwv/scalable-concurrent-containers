@@ -80,9 +80,24 @@ mod hashmap_test {
         }
     }
 
+    #[test]
+    fn insert_drop() {
+        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+
+        let hashmap: HashMap<usize, R> = HashMap::default();
+        let workload_size = 256;
+        for k in 0..workload_size {
+            assert!(hashmap.insert(k, R::new(&INST_CNT)).is_ok());
+        }
+        assert_eq!(INST_CNT.load(Relaxed), workload_size);
+        assert_eq!(hashmap.len(), workload_size);
+        drop(hashmap);
+        assert_eq!(INST_CNT.load(Relaxed), 0);
+    }
+
     #[cfg_attr(miri, ignore)]
     #[tokio::test]
-    async fn insert_drop() {
+    async fn insert_drop_async() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
 
         let hashmap: HashMap<usize, R> = HashMap::default();
@@ -96,9 +111,26 @@ mod hashmap_test {
         assert_eq!(INST_CNT.load(Relaxed), 0);
     }
 
+    #[test]
+    fn clear() {
+        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+
+        let hashmap: HashMap<usize, R> = HashMap::default();
+        let workload_size = 1_usize << 8;
+        for _ in 0..2 {
+            for k in 0..workload_size {
+                assert!(hashmap.insert(k, R::new(&INST_CNT)).is_ok());
+            }
+            assert_eq!(INST_CNT.load(Relaxed), workload_size);
+            assert_eq!(hashmap.len(), workload_size);
+            hashmap.clear();
+            assert_eq!(INST_CNT.load(Relaxed), 0);
+        }
+    }
+
     #[cfg_attr(miri, ignore)]
     #[tokio::test]
-    async fn clear() {
+    async fn clear_async() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
 
         let hashmap: HashMap<usize, R> = HashMap::default();
@@ -114,15 +146,14 @@ mod hashmap_test {
         }
     }
 
-    #[cfg_attr(miri, ignore)]
-    #[tokio::test]
-    async fn clone() {
+    #[test]
+    fn clone() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
 
         let hashmap: HashMap<usize, R> = HashMap::default();
         let workload_size = 1024;
         for k in 0..workload_size {
-            assert!(hashmap.insert_async(k, R::new(&INST_CNT)).await.is_ok());
+            assert!(hashmap.insert(k, R::new(&INST_CNT)).is_ok());
         }
         let hashmap_clone = hashmap.clone();
         hashmap.clear();
@@ -155,7 +186,6 @@ mod hashmap_test {
         assert_ne!(hashmap1, hashmap2);
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn local_ref() {
         struct L<'a>(&'a AtomicUsize);
@@ -171,7 +201,7 @@ mod hashmap_test {
             }
         }
 
-        let workload_size = 65536;
+        let workload_size = 256;
         let cnt = AtomicUsize::new(0);
         let hashmap: HashMap<usize, L> = HashMap::default();
 
@@ -784,7 +814,6 @@ mod hashindex_test {
         }
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn compare() {
         let hashindex1: HashIndex<String, usize> = HashIndex::new();
@@ -807,9 +836,32 @@ mod hashindex_test {
         assert_ne!(hashindex1, hashindex2);
     }
 
+    #[test]
+    fn clear() {
+        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+        let hashindex: HashIndex<usize, R> = HashIndex::default();
+
+        let workload_size = 1_usize << 8;
+
+        for _ in 0..2 {
+            for k in 0..workload_size {
+                assert!(hashindex.insert(k, R::new(&INST_CNT)).is_ok());
+            }
+            assert!(INST_CNT.load(Relaxed) >= workload_size);
+            assert_eq!(hashindex.len(), workload_size);
+            hashindex.clear();
+        }
+        drop(hashindex);
+
+        while INST_CNT.load(Relaxed) != 0 {
+            Guard::new().accelerate();
+            thread::yield_now();
+        }
+    }
+
     #[cfg_attr(miri, ignore)]
     #[tokio::test]
-    async fn clear() {
+    async fn clear_async() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         let hashindex: HashIndex<usize, R> = HashIndex::default();
 
@@ -831,9 +883,32 @@ mod hashindex_test {
         }
     }
 
+    #[test]
+    fn clone() {
+        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+        let hashindex: HashIndex<usize, R> = HashIndex::default();
+
+        let workload_size = 256;
+
+        for k in 0..workload_size {
+            assert!(hashindex.insert(k, R::new(&INST_CNT)).is_ok());
+        }
+        let hashindex_clone = hashindex.clone();
+        drop(hashindex);
+        for k in 0..workload_size {
+            assert!(hashindex_clone.peek_with(&k, |_, _| ()).is_some());
+        }
+        drop(hashindex_clone);
+
+        while INST_CNT.load(Relaxed) != 0 {
+            drop(Guard::new());
+            thread::yield_now();
+        }
+    }
+
     #[cfg_attr(miri, ignore)]
     #[tokio::test]
-    async fn clone() {
+    async fn clone_async() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         let hashindex: HashIndex<usize, R> = HashIndex::default();
 
@@ -1357,9 +1432,23 @@ mod hashcache_test {
         }
     }
 
+    #[test]
+    fn put_drop() {
+        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+        let hashcache: HashCache<usize, R> = HashCache::default();
+
+        let workload_size = 256;
+        for k in 0..workload_size {
+            assert!(hashcache.put(k, R::new(&INST_CNT)).is_ok());
+        }
+        assert!(INST_CNT.load(Relaxed) <= hashcache.capacity());
+        drop(hashcache);
+        assert_eq!(INST_CNT.load(Relaxed), 0);
+    }
+
     #[cfg_attr(miri, ignore)]
     #[tokio::test]
-    async fn put_drop() {
+    async fn put_drop_async() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         let hashcache: HashCache<usize, R> = HashCache::default();
 
@@ -1372,9 +1461,36 @@ mod hashcache_test {
         assert_eq!(INST_CNT.load(Relaxed), 0);
     }
 
+    #[test]
+    fn put_full_clear_put() {
+        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+        let capacity = 256;
+        let hashcache: HashCache<usize, R> = HashCache::with_capacity(capacity, capacity);
+
+        let mut max_key = 0;
+        for k in 0..=capacity {
+            if let Ok(Some(_)) = hashcache.put(k, R::new(&INST_CNT)) {
+                max_key = k;
+                break;
+            }
+        }
+
+        hashcache.clear();
+        for k in 0..=capacity {
+            if let Ok(Some(_)) = hashcache.put(k, R::new(&INST_CNT)) {
+                assert_eq!(max_key, k);
+                break;
+            }
+        }
+
+        assert!(INST_CNT.load(Relaxed) <= hashcache.capacity());
+        drop(hashcache);
+        assert_eq!(INST_CNT.load(Relaxed), 0);
+    }
+
     #[cfg_attr(miri, ignore)]
     #[tokio::test]
-    async fn put_full_clear_put() {
+    async fn put_full_clear_put_async() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         let capacity = 256;
         let hashcache: HashCache<usize, R> = HashCache::with_capacity(capacity, capacity);
@@ -1406,11 +1522,10 @@ mod hashcache_test {
         assert_eq!(INST_CNT.load(Relaxed), 0);
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn put_retain_get() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
-        let workload_size = 4096;
+        let workload_size = 256;
         let retain_limit = 64;
         let hashcache: HashCache<usize, R> = HashCache::with_capacity(0, 256);
 
@@ -1448,7 +1563,6 @@ mod hashcache_test {
         assert_eq!(INST_CNT.load(Relaxed), 0);
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn sparse_cache() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
@@ -1667,9 +1781,28 @@ mod treeindex_test {
         }
     }
 
+    #[test]
+    fn insert_drop() {
+        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+        let tree: TreeIndex<usize, R> = TreeIndex::default();
+
+        let workload_size = 256;
+        for k in 0..workload_size {
+            assert!(tree.insert(k, R::new(&INST_CNT)).is_ok());
+        }
+        assert!(INST_CNT.load(Relaxed) >= workload_size);
+        assert_eq!(tree.len(), workload_size);
+        drop(tree);
+
+        while INST_CNT.load(Relaxed) != 0 {
+            Guard::new().accelerate();
+            thread::yield_now();
+        }
+    }
+
     #[cfg_attr(miri, ignore)]
     #[tokio::test]
-    async fn insert_drop() {
+    async fn insert_drop_async() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         let tree: TreeIndex<usize, R> = TreeIndex::default();
 
@@ -1687,9 +1820,31 @@ mod treeindex_test {
         }
     }
 
+    #[test]
+    fn insert_remove() {
+        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+        let tree: TreeIndex<usize, R> = TreeIndex::default();
+
+        let workload_size = 256;
+        for k in 0..workload_size {
+            assert!(tree.insert(k, R::new(&INST_CNT)).is_ok());
+        }
+        assert!(INST_CNT.load(Relaxed) >= workload_size);
+        assert_eq!(tree.len(), workload_size);
+        for k in 0..workload_size {
+            assert!(tree.remove(&k));
+        }
+        assert_eq!(tree.len(), 0);
+
+        while INST_CNT.load(Relaxed) != 0 {
+            Guard::new().accelerate();
+            thread::yield_now();
+        }
+    }
+
     #[cfg_attr(miri, ignore)]
     #[tokio::test]
-    async fn insert_remove() {
+    async fn insert_remove_async() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         let tree: TreeIndex<usize, R> = TreeIndex::default();
 
@@ -1710,9 +1865,28 @@ mod treeindex_test {
         }
     }
 
+    #[test]
+    fn clear() {
+        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+        let tree: TreeIndex<usize, R> = TreeIndex::default();
+
+        let workload_size = 256;
+        for k in 0..workload_size {
+            assert!(tree.insert(k, R::new(&INST_CNT)).is_ok());
+        }
+        assert!(INST_CNT.load(Relaxed) >= workload_size);
+        assert_eq!(tree.len(), workload_size);
+        tree.clear();
+
+        while INST_CNT.load(Relaxed) != 0 {
+            Guard::new().accelerate();
+            thread::yield_now();
+        }
+    }
+
     #[cfg_attr(miri, ignore)]
     #[tokio::test]
-    async fn clear() {
+    async fn clear_async() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         let tree: TreeIndex<usize, R> = TreeIndex::default();
 
@@ -1730,9 +1904,31 @@ mod treeindex_test {
         }
     }
 
+    #[test]
+    fn clone() {
+        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+        let tree: TreeIndex<usize, R> = TreeIndex::default();
+
+        let workload_size = 1024;
+        for k in 0..workload_size {
+            assert!(tree.insert(k, R::new(&INST_CNT)).is_ok());
+        }
+        let tree_clone = tree.clone();
+        tree.clear();
+        for k in 0..workload_size {
+            assert!(tree_clone.peek_with(&k, |_, _| ()).is_some());
+        }
+        tree_clone.clear();
+
+        while INST_CNT.load(Relaxed) != 0 {
+            Guard::new().accelerate();
+            thread::yield_now();
+        }
+    }
+
     #[cfg_attr(miri, ignore)]
     #[tokio::test]
-    async fn clone() {
+    async fn clone_async() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         let tree: TreeIndex<usize, R> = TreeIndex::default();
 

@@ -1,6 +1,7 @@
 use crate::ebr::{AtomicShared, Guard, Shared};
 use crate::LinkedList;
 use std::borrow::Borrow;
+use std::cell::UnsafeCell;
 use std::cmp::Ordering;
 use std::fmt::{self, Debug};
 use std::mem::{needs_drop, MaybeUninit};
@@ -24,7 +25,7 @@ pub struct Leaf<K, V> {
     metadata: AtomicUsize,
 
     /// The array of key-value pairs.
-    entry_array: EntryArray<K, V>,
+    entry_array: UnsafeCell<EntryArray<K, V>>,
 
     /// A pointer that points to the next adjacent [`Leaf`].
     link: AtomicShared<Leaf<K, V>>,
@@ -230,12 +231,12 @@ impl<K, V> Leaf<K, V> {
         ) - DIMENSION.num_entries / 2
     }
 
-    const fn key_at(&self, index: usize) -> &K {
-        unsafe { &*self.entry_array.0[index].as_ptr() }
+    fn key_at(&self, index: usize) -> &K {
+        unsafe { &*(*self.entry_array.get()).0[index].as_ptr() }
     }
 
-    const fn value_at(&self, index: usize) -> &V {
-        unsafe { &*self.entry_array.1[index].as_ptr() }
+    fn value_at(&self, index: usize) -> &V {
+        unsafe { &*(*self.entry_array.get()).1[index].as_ptr() }
     }
 
     fn rollback(&self, index: usize) -> InsertResult<K, V> {
@@ -256,16 +257,16 @@ impl<K, V> Leaf<K, V> {
     fn take(&self, index: usize) -> (K, V) {
         unsafe {
             (
-                self.entry_array.0[index].as_ptr().read(),
-                self.entry_array.1[index].as_ptr().read(),
+                (*self.entry_array.get()).0[index].as_ptr().read(),
+                (*self.entry_array.get()).1[index].as_ptr().read(),
             )
         }
     }
 
     fn write(&self, index: usize, key: K, val: V) {
         unsafe {
-            (self.entry_array.0[index].as_ptr().cast_mut()).write(key);
-            (self.entry_array.1[index].as_ptr().cast_mut()).write(val);
+            (*self.entry_array.get()).0[index].as_mut_ptr().write(key);
+            (*self.entry_array.get()).1[index].as_mut_ptr().write(val);
         }
     }
 
@@ -708,6 +709,10 @@ impl<K, V> LinkedList for Leaf<K, V> {
     }
 }
 
+unsafe impl<K: Send, V: Send> Send for Leaf<K, V> {}
+
+unsafe impl<K: Sync, V: Sync> Sync for Leaf<K, V> {}
+
 impl Dimension {
     /// Checks if the [`Leaf`] is frozen.
     const fn frozen(metadata: usize) -> bool {
@@ -827,7 +832,7 @@ impl<'l, K, V> Scanner<'l, K, V> {
 
     /// Returns a reference to the entry that the scanner is currently pointing to
     #[inline]
-    pub(super) const fn get(&self) -> Option<(&'l K, &'l V)> {
+    pub(super) fn get(&self) -> Option<(&'l K, &'l V)> {
         if self.entry_index >= DIMENSION.num_entries {
             return None;
         }

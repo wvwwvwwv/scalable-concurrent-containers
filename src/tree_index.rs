@@ -739,6 +739,8 @@ where
     }
 }
 
+impl<K, V> UnwindSafe for TreeIndex<K, V> {}
+
 impl<'t, 'g, K, V> Iter<'t, 'g, K, V> {
     #[inline]
     fn new(root: &'t AtomicShared<Node<K, V>>, guard: &'g Guard) -> Iter<'t, 'g, K, V> {

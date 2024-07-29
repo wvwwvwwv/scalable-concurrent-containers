@@ -669,7 +669,7 @@ where
             };
 
             let index = current_array.calculate_bucket_index(hash);
-            let bucket = current_array.bucket_mut(index);
+            let mut bucket = current_array.bucket_mut(index);
 
             // Try to resize the array.
             if resizable
@@ -678,6 +678,7 @@ where
                 && bucket.num_entries() >= BUCKET_LEN - 1
             {
                 self.try_enlarge(current_array, index, bucket.num_entries(), guard);
+                bucket = current_array.bucket_mut(index);
             }
 
             let lock_result = if let Some(async_wait) = async_wait.derive() {
