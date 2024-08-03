@@ -10,47 +10,71 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check-basic:
+  check-basic-x86_64:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Debug
-        run: RUST_BACKTRACE=1 cargo test --verbose -- --nocapture
+        run: RUST_BACKTRACE=1 cargo test;
+          RUST_BACKTRACE=1 cargo test -p examples
       - name: Release
-        run: RUST_BACKTRACE=1 cargo test --release --verbose -- --nocapture
+        run: RUST_BACKTRACE=1 cargo test --release;
+          RUST_BACKTRACE=1 cargo test --release -p examples
+  check-basic-x86:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare
+        run: sudo apt-get install gcc-multilib;
+          rustup target add i686-unknown-linux-gnu
+      - name: Debug
+        run: RUST_BACKTRACE=1 cargo test --target i686-unknown-linux-gnu;
+          RUST_BACKTRACE=1 cargo test --target i686-unknown-linux-gnu -p examples
+      - name: Release
+        run: RUST_BACKTRACE=1 cargo test --target i686-unknown-linux-gnu --release;
+          RUST_BACKTRACE=1 cargo test --target i686-unknown-linux-gnu --release -p examples
+  check-basic-aarch64:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Debug
+        run: RUST_BACKTRACE=1 cargo test;
+          RUST_BACKTRACE=1 cargo test -p examples
+      - name: Release
+        run: RUST_BACKTRACE=1 cargo test --release;
+          RUST_BACKTRACE=1 cargo test --release -p examples
   check-extended:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Prepare
-        run: sudo apt-get install gcc-multilib;
-          rustup toolchain add nightly;
+        run: rustup toolchain add nightly;
           rustup component add rust-src --toolchain nightly;
           rustup component add miri --toolchain nightly
       - name: Serde
-        run: cargo test serde --verbose --features serde;
-          cargo test --release serde --verbose --features serde
+        run: cargo test serde --features serde;
+          cargo test --release serde --features serde
       - name: Miri
         run: MIRIFLAGS="-Zmiri-disable-data-race-detector" cargo +nightly miri test --lib --bins --tests
- 
   check-misc:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Prepare
-        run: sudo apt-get install gcc-multilib;
-          rustup toolchain add nightly;
-          rustup target add i686-unknown-linux-gnu;
+        run: rustup toolchain add nightly;
           rustup component add rust-src --toolchain nightly;
-          rustup component add clippy --toolchain nightly;
+          rustup component add clippy --toolchain nightly
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-msrv, cargo-spellcheck
       - name: Clippy 
-        run: cargo clippy --all
+        run: cargo clippy --all;
+          cargo clippy -p examples --all
       - name: MSRV
         run: cargo msrv verify
       - name: Spell-check
@@ -58,14 +82,11 @@ jobs:
       - name: Format
         run: cargo fmt --check;
           cargo fmt -p examples --check
-      - name: Examples
-        run:
-          RUST_BACKTRACE=1 cargo test --release -p examples -- --nocapture;
-          RUST_BACKTRACE=1 cargo test --target i686-unknown-linux-gnu --release -p examples -- --nocapture
       - name: Doc
         run: cargo doc --document-private-items;
       - name: Nightly
-        run: cargo +nightly test --release benchmark
+        run: cargo +nightly test --release benchmark;
+          cargo +nightly test -p examples --release
   benchmark:
     runs-on: ubuntu-latest
     timeout-minutes: 15
