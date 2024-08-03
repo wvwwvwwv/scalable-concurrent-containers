@@ -212,14 +212,14 @@ impl<K, V> Leaf<K, V> {
     #[inline]
     pub(super) fn optimal_boundary(mut mutable_metadata: usize) -> usize {
         let mut boundary: usize = DIMENSION.num_entries;
-        let mut prev_rank = 1;
+        let mut prev_rank = 0;
         for _ in 0..DIMENSION.num_entries {
             let rank = mutable_metadata % (1_usize << DIMENSION.num_bits_per_entry);
             if rank != 0 && rank != DIMENSION.removed_rank() {
-                if prev_rank < rank {
-                    boundary += 1;
-                } else {
+                if prev_rank >= rank {
                     boundary -= 1;
+                } else if prev_rank != 0 {
+                    boundary += 1;
                 }
                 prev_rank = rank;
             }
@@ -945,7 +945,7 @@ impl<'l, K, V> Iterator for Scanner<'l, K, V> {
     }
 }
 
-#[cfg(target_arch = "x86_64")] // Issue #153.
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))] // Issue #153.
 #[cfg(test)]
 mod test {
     use super::*;
@@ -1063,7 +1063,7 @@ mod test {
         }
         assert_eq!(
             Leaf::<usize, usize>::optimal_boundary(leaf.metadata.load(Relaxed)),
-            DIMENSION.num_entries / 2
+            (DIMENSION.num_entries - 1) / 2
         );
     }
 

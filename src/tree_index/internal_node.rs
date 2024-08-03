@@ -1065,7 +1065,7 @@ impl<K, V> Default for StructuralChange<K, V> {
     }
 }
 
-#[cfg(target_arch = "x86_64")] // Issue #153.
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))] // Issue #153.
 #[cfg(test)]
 mod test {
     use super::*;

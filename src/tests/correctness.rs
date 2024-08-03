@@ -1737,7 +1737,7 @@ mod hashcache_test {
     }
 }
 
-#[cfg(target_arch = "x86_64")] // Issue #153.
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))] // Issue #153.
 #[cfg(test)]
 mod treeindex_test {
     use crate::ebr::Guard;
@@ -2503,7 +2503,11 @@ mod treeindex_test {
             for k in 256_usize..1024_usize {
                 assert!(tree.insert(k, k).is_ok());
             }
-            assert_eq!(tree.depth(), 2);
+            if usize::BITS == 32 {
+                assert_eq!(tree.depth(), 3);
+            } else {
+                assert_eq!(tree.depth(), 2);
+            }
             tree.remove_range(remove_range.clone());
             if remove_range.contains(&256) && remove_range.contains(&1023) {
                 assert!(tree.is_empty());
