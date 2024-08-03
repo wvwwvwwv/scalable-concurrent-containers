@@ -1737,7 +1737,7 @@ mod hashcache_test {
     }
 }
 
-#[cfg(not(target_arch = "x86_64"))] // Issue #153.
+#[cfg(target_arch = "x86_64")] // Issue #153.
 #[cfg(test)]
 mod treeindex_test {
     use crate::ebr::Guard;
