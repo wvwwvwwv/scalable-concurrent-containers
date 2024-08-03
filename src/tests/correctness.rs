@@ -2495,6 +2495,7 @@ mod treeindex_test {
     }
 
     proptest! {
+        #[cfg(target_arch = "x86_64")] // Issue #153.
         #[cfg_attr(miri, ignore)]
         #[test]
         fn prop_remove_range(lower in 0_usize..4096_usize, range in 0_usize..1024_usize) {

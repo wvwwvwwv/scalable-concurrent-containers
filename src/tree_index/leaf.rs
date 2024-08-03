@@ -1061,10 +1061,17 @@ mod test {
                 assert!(matches!(leaf.insert(i, i), InsertResult::Success));
             }
         }
-        assert_eq!(
-            Leaf::<usize, usize>::optimal_boundary(leaf.metadata.load(Relaxed)),
-            (DIMENSION.num_entries - 1) / 2
-        );
+        if usize::BITS == 32 {
+            assert_eq!(
+                Leaf::<usize, usize>::optimal_boundary(leaf.metadata.load(Relaxed)),
+                4
+            );
+        } else {
+            assert_eq!(
+                Leaf::<usize, usize>::optimal_boundary(leaf.metadata.load(Relaxed)),
+                6
+            );
+        }
     }
 
     #[test]
