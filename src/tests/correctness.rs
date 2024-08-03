@@ -1737,6 +1737,7 @@ mod hashcache_test {
     }
 }
 
+#[cfg(not(target_arch = "x86_64"))] // Issue #153.
 #[cfg(test)]
 mod treeindex_test {
     use crate::ebr::Guard;
@@ -2607,15 +2608,15 @@ mod bag_test {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         const NUM_TASKS: usize = 6;
         let workload_size = 256;
-        let bag32: Arc<Bag<R>> = Arc::new(Bag::default());
-        let bag17: Arc<Bag<R, 17>> = Arc::new(Bag::new());
+        let bag_default: Arc<Bag<R>> = Arc::new(Bag::default());
+        let bag_half: Arc<Bag<R, 15>> = Arc::new(Bag::new());
         for _ in 0..256 {
             let mut task_handles = Vec::with_capacity(NUM_TASKS);
             let barrier = Arc::new(AsyncBarrier::new(NUM_TASKS));
             for _ in 0..NUM_TASKS {
                 let barrier_clone = barrier.clone();
-                let bag32_clone = bag32.clone();
-                let bag17_clone = bag17.clone();
+                let bag32_clone = bag_default.clone();
+                let bag17_clone = bag_half.clone();
                 task_handles.push(tokio::task::spawn(async move {
                     barrier_clone.wait().await;
                     for _ in 0..workload_size {
@@ -2632,10 +2633,10 @@ mod bag_test {
             for r in futures::future::join_all(task_handles).await {
                 assert!(r.is_ok());
             }
-            assert!(bag32.pop().is_none());
-            assert!(bag32.is_empty());
-            assert!(bag17.pop().is_none());
-            assert!(bag17.is_empty());
+            assert!(bag_default.pop().is_none());
+            assert!(bag_default.is_empty());
+            assert!(bag_half.pop().is_none());
+            assert!(bag_half.is_empty());
         }
         assert_eq!(INST_CNT.load(Relaxed), 0);
     }

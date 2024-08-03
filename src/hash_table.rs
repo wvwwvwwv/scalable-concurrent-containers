@@ -12,6 +12,9 @@ use std::pin::Pin;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 use std::sync::atomic::{fence, AtomicUsize};
 
+/// The maximum resize factor.
+const MAX_RESIZE_FACTOR: usize = (usize::BITS / 2) as usize;
+
 /// `HashTable` defines common functions for hash table implementations.
 pub(super) trait HashTable<K, V, H, L: LruList, const TYPE: char>
 where
@@ -776,7 +779,7 @@ where
                 old_index * ratio
             };
 
-            let mut target_buckets: [Option<Locker<K, V, L, TYPE>>; usize::BITS as usize / 2] =
+            let mut target_buckets: [Option<Locker<K, V, L, TYPE>>; MAX_RESIZE_FACTOR] =
                 Default::default();
             let mut max_index = 0;
             let mut entry_ptr = EntryPtr::new(guard);
@@ -1055,7 +1058,7 @@ where
                         if new_capacity == self.maximum_capacity() {
                             break;
                         }
-                        if new_capacity / capacity == 32 {
+                        if new_capacity / capacity == MAX_RESIZE_FACTOR {
                             break;
                         }
                         new_capacity *= 2;

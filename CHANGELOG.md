@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.1.7
+
+* Fix a correctness issue with `HashMap` on a 32-bit CPU.
+
 2.1.6
 
 * Minor optimization: bump `SDD` to `2.1.0`.
