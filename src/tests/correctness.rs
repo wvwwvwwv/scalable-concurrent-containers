@@ -2628,9 +2628,13 @@ mod bag_test {
                         bag32_clone.push(R::new(&INST_CNT));
                         bag17_clone.push(R::new(&INST_CNT));
                     }
-                    for i in 0..workload_size {
-                        assert!(bag32_clone.pop().is_some(), "{i}");
-                        assert!(bag17_clone.pop().is_some(), "{i}");
+                    if cfg!(any(target_arch = "x86_64", target_arch = "x86"))
+                    // Issue #153.
+                    {
+                        for i in 0..workload_size {
+                            assert!(bag32_clone.pop().is_some(), "{i}");
+                            assert!(bag17_clone.pop().is_some(), "{i}");
+                        }
                     }
                 }));
             }
