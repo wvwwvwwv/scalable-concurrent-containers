@@ -423,6 +423,7 @@ where
     /// Removes a range of entries.
     ///
     /// Returns the number of remaining children.
+    #[allow(clippy::too_many_lines)]
     #[inline]
     pub(super) fn remove_range<'g, R: RangeBounds<K>, D: DeriveAsyncWait>(
         &self,
@@ -459,13 +460,19 @@ where
                 }
                 RemoveRangeState::FullyContained => {
                     // There can be another thread inserting keys into the node, and this may
-                    // render those operations completely ineffective.
+                    // render those concurrent operations completely ineffective.
                     self.children.remove_if(key, &mut |_| true);
                     node.swap((None, Tag::None), Relaxed);
                 }
                 RemoveRangeState::MaybeAbove => {
-                    num_children += 1;
-                    upper_border.replace(node);
+                    if valid_upper_min_node.is_some() {
+                        // `valid_upper_min_node` is not in this sub-tree.
+                        self.children.remove_if(key, &mut |_| true);
+                        node.swap((None, Tag::None), Relaxed);
+                    } else {
+                        num_children += 1;
+                        upper_border.replace(node);
+                    }
                     break;
                 }
             }
@@ -474,13 +481,12 @@ where
         // Now, examine the unbounded child.
         match current_state {
             RemoveRangeState::Below => {
-                // The unbounded child is an only child, or all the children are below the range.
+                // The unbounded child is the only child, or all the children are below the range.
                 debug_assert!(lower_border.is_none() && upper_border.is_none());
-                if valid_lower_max_leaf.is_some() {
-                    upper_border.replace(&self.unbounded_child);
-                }
                 if valid_upper_min_node.is_some() {
                     lower_border.replace(&self.unbounded_child);
+                } else {
+                    upper_border.replace(&self.unbounded_child);
                 }
             }
             RemoveRangeState::MaybeBelow => {
@@ -498,12 +504,21 @@ where
         }
 
         if let Some(lower_leaf) = valid_lower_max_leaf {
+            // It is currently in the middle of a recursive call: pass `lower_leaf` to connect leaves.
             debug_assert!(start_unbounded && lower_border.is_none() && upper_border.is_some());
             if let Some(upper_node) = upper_border.and_then(|n| n.load(Acquire, guard).as_ref()) {
                 upper_node.remove_range(range, true, Some(lower_leaf), None, async_wait, guard)?;
             }
         } else if let Some(upper_node) = valid_upper_min_node {
+            // Pass `upper_node` to the lower leaf to connect leaves.
             debug_assert!(lower_border.is_some());
+            if let Some(max_key) = self.children.max_key() {
+                self.children.remove_if(max_key, &mut |_| true);
+                if let Some(lower_node) = lower_border {
+                    self.unbounded_child
+                        .swap((lower_node.get_shared(Acquire, guard), Tag::None), Release);
+                }
+            }
             if let Some(lower_node) = lower_border.and_then(|n| n.load(Acquire, guard).as_ref()) {
                 lower_node.remove_range(
                     range,
@@ -514,19 +529,33 @@ where
                     guard,
                 )?;
             }
-        } else if let (Some(lower_node), Some(upper_node)) = (
-            lower_border.and_then(|n| n.load(Acquire, guard).as_ref()),
-            upper_border.and_then(|n| n.load(Acquire, guard).as_ref()),
-        ) {
-            debug_assert!(!ptr::eq(lower_node, upper_node));
-            lower_node.remove_range(
-                range,
-                start_unbounded,
-                None,
-                Some(upper_node),
-                async_wait,
-                guard,
-            )?;
+        } else {
+            let lower_node = lower_border.and_then(|n| n.load(Acquire, guard).as_ref());
+            let upper_node = upper_border.and_then(|n| n.load(Acquire, guard).as_ref());
+            match (lower_node, upper_node) {
+                (_, None) => (),
+                (None, Some(upper_node)) => {
+                    upper_node.remove_range(
+                        range,
+                        start_unbounded,
+                        None,
+                        None,
+                        async_wait,
+                        guard,
+                    )?;
+                }
+                (Some(lower_node), Some(upper_node)) => {
+                    debug_assert!(!ptr::eq(lower_node, upper_node));
+                    lower_node.remove_range(
+                        range,
+                        start_unbounded,
+                        None,
+                        Some(upper_node),
+                        async_wait,
+                        guard,
+                    )?;
+                }
+            }
         }
 
         Ok(num_children)

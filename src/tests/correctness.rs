@@ -2495,31 +2495,31 @@ mod treeindex_test {
     }
 
     proptest! {
-        #[cfg(target_arch = "x86_64")] // Issue #153.
         #[cfg_attr(miri, ignore)]
         #[test]
-        fn prop_remove_range(lower in 0_usize..4096_usize, range in 0_usize..1024_usize) {
+        fn prop_remove_range(lower in 0_usize..4096_usize, range in 0_usize..4096_usize) {
             let remove_range = lower..lower + range;
+            let insert_range = (256_usize, 4095_usize);
             let tree = TreeIndex::default();
-            for k in 256_usize..1024_usize {
-                assert!(tree.insert(k, k).is_ok());
+            for k in insert_range.0..=insert_range.1 {
+                prop_assert!(tree.insert(k, k).is_ok());
             }
             if usize::BITS == 32 {
-                assert_eq!(tree.depth(), 3);
+                prop_assert_eq!(tree.depth(), 4);
             } else {
-                assert_eq!(tree.depth(), 2);
+                prop_assert_eq!(tree.depth(), 3);
             }
             tree.remove_range(remove_range.clone());
-            if remove_range.contains(&256) && remove_range.contains(&1023) {
-                assert!(tree.is_empty());
+            if remove_range.contains(&insert_range.0) && remove_range.contains(&insert_range.1) {
+                prop_assert!(tree.is_empty());
             }
             for (k, v) in tree.iter(&Guard::new()) {
-                assert_eq!(k, v);
-                assert!(!remove_range.contains(k), "{k}");
+                prop_assert_eq!(k, v);
+                prop_assert!(!remove_range.contains(k), "{k}");
             }
             for k in 0_usize..4096_usize {
                 if tree.peek_with(&k, |_, _|()).is_some() {
-                    assert!(!remove_range.contains(&k), "{k}");
+                    prop_assert!(!remove_range.contains(&k), "{k}");
                 }
             }
         }
