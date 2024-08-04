@@ -2607,6 +2607,7 @@ mod bag_test {
         }
     }
 
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 12)]
     async fn mpmc() {
@@ -2628,13 +2629,9 @@ mod bag_test {
                         bag32_clone.push(R::new(&INST_CNT));
                         bag17_clone.push(R::new(&INST_CNT));
                     }
-                    if cfg!(any(target_arch = "x86_64", target_arch = "x86"))
-                    // Issue #153.
-                    {
-                        for i in 0..workload_size {
-                            assert!(bag32_clone.pop().is_some(), "{i}");
-                            assert!(bag17_clone.pop().is_some(), "{i}");
-                        }
+                    for i in 0..workload_size {
+                        assert!(bag32_clone.pop().is_some(), "{i}");
+                        assert!(bag17_clone.pop().is_some(), "{i}");
                     }
                 }));
             }
