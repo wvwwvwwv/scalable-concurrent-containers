@@ -5,6 +5,7 @@ use std::cell::UnsafeCell;
 use std::cmp::Ordering;
 use std::fmt::{self, Debug};
 use std::mem::{needs_drop, MaybeUninit};
+use std::ops::RangeBounds;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
@@ -444,6 +445,27 @@ where
         }
 
         RemoveResult::Fail
+    }
+
+    /// Removes a range of entries.
+    ///
+    /// Returns the number of remaining children.
+    #[inline]
+    pub(super) fn remove_range<R: RangeBounds<K>>(&self, range: &R) {
+        let mut mutable_metadata = self.metadata.load(Acquire);
+        for i in 0..DIMENSION.num_entries {
+            if mutable_metadata == 0 {
+                break;
+            }
+            let rank = mutable_metadata % (1_usize << DIMENSION.num_bits_per_entry);
+            if rank != Dimension::uninit_rank() && rank != DIMENSION.removed_rank() {
+                let k = self.key_at(i);
+                if range.contains(k) {
+                    self.remove_if(k, &mut |_| true);
+                }
+            }
+            mutable_metadata >>= DIMENSION.num_bits_per_entry;
+        }
     }
 
     /// Returns a value associated with the key.
@@ -1103,7 +1125,7 @@ mod test {
     proptest! {
         #[cfg_attr(miri, ignore)]
         #[test]
-        fn prop(insert in 0_usize..DIMENSION.num_entries, remove in 0_usize..DIMENSION.num_entries) {
+        fn general(insert in 0_usize..DIMENSION.num_entries, remove in 0_usize..DIMENSION.num_entries) {
             let leaf: Leaf<usize, usize> = Leaf::new();
             assert!(leaf.is_empty());
             for i in 0..insert {
@@ -1148,6 +1170,21 @@ mod test {
                     assert!(leaf.is_empty());
                 }
             }
+        }
+
+        #[cfg_attr(miri, ignore)]
+        #[test]
+        fn range(start in 0_usize..DIMENSION.num_entries, end in 0_usize..DIMENSION.num_entries) {
+            let leaf: Leaf<usize, usize> = Leaf::new();
+            for i in 1..DIMENSION.num_entries - 1 {
+                prop_assert!(matches!(leaf.insert(i, i), InsertResult::Success));
+            }
+            leaf.remove_range(&(start..end));
+            for i in 1..DIMENSION.num_entries - 1 {
+                prop_assert!(leaf.search(&i).is_none() == (start..end).contains(&i));
+            }
+            prop_assert!(leaf.search(&0).is_none());
+            prop_assert!(leaf.search(&(DIMENSION.num_entries - 1)).is_none());
         }
     }
 

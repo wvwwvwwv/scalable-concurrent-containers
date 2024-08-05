@@ -456,7 +456,7 @@ where
                 RemoveRangeState::MaybeBelow => {
                     debug_assert!(!start_unbounded);
                     num_children += 1;
-                    lower_border.replace(node);
+                    lower_border.replace((Some(key), node));
                 }
                 RemoveRangeState::FullyContained => {
                     // There can be another thread inserting keys into the node, and this may
@@ -484,7 +484,7 @@ where
                 // The unbounded child is the only child, or all the children are below the range.
                 debug_assert!(lower_border.is_none() && upper_border.is_none());
                 if valid_upper_min_node.is_some() {
-                    lower_border.replace(&self.unbounded_child);
+                    lower_border.replace((None, &self.unbounded_child));
                 } else {
                     upper_border.replace(&self.unbounded_child);
                 }
@@ -510,16 +510,16 @@ where
                 upper_node.remove_range(range, true, Some(lower_leaf), None, async_wait, guard)?;
             }
         } else if let Some(upper_node) = valid_upper_min_node {
-            // Pass `upper_node` to the lower leaf to connect leaves.
+            // Pass `upper_node` to the lower leaf to connect leaves, so that this method can be
+            // recursively invoked on `upper_node`.
             debug_assert!(lower_border.is_some());
-            if let Some(max_key) = self.children.max_key() {
-                self.children.remove_if(max_key, &mut |_| true);
-                if let Some(lower_node) = lower_border {
-                    self.unbounded_child
-                        .swap((lower_node.get_shared(Acquire, guard), Tag::None), Release);
-                }
+            if let Some((Some(key), lower_node)) = lower_border {
+                self.children.remove_if(key, &mut |_| true);
+                self.unbounded_child
+                    .swap((lower_node.get_shared(Acquire, guard), Tag::None), Release);
+                lower_node.swap((None, Tag::None), Relaxed);
             }
-            if let Some(lower_node) = lower_border.and_then(|n| n.load(Acquire, guard).as_ref()) {
+            if let Some(lower_node) = self.unbounded_child.load(Acquire, guard).as_ref() {
                 lower_node.remove_range(
                     range,
                     start_unbounded,
@@ -530,7 +530,7 @@ where
                 )?;
             }
         } else {
-            let lower_node = lower_border.and_then(|n| n.load(Acquire, guard).as_ref());
+            let lower_node = lower_border.and_then(|n| n.1.load(Acquire, guard).as_ref());
             let upper_node = upper_border.and_then(|n| n.load(Acquire, guard).as_ref());
             match (lower_node, upper_node) {
                 (_, None) => (),

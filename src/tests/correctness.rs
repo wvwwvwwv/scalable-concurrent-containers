@@ -2024,8 +2024,10 @@ mod treeindex_test {
                                 for (k, _) in tree_clone.range(..end_bound, &Guard::new()) {
                                     tree_clone.remove(k);
                                 }
-                            } else {
+                            } else if end_bound % 3 == 0 {
                                 tree_clone.remove_range(..end_bound);
+                            } else {
+                                tree_clone.remove_range_async(..end_bound).await;
                             }
                             if end_bound % 5 == 0 {
                                 for (k, v) in tree_clone.iter(&Guard::new()) {
@@ -2522,6 +2524,17 @@ mod treeindex_test {
                     prop_assert!(!remove_range.contains(&k), "{k}");
                 }
             }
+            for k in remove_range.clone() {
+                prop_assert!(tree.insert(k, k).is_ok());
+            }
+            let mut cnt = 0;
+            for (k, v) in tree.iter(&Guard::new()) {
+                prop_assert_eq!(k, v);
+                if remove_range.contains(k) {
+                    cnt += 1;
+                }
+            }
+            assert_eq!(cnt, range);
         }
     }
 }

@@ -477,10 +477,7 @@ where
     /// # Notes
     ///
     /// Internally, multiple internal node locks need to be acquired, thus making this method
-    /// susceptible to lock starvation. Also, no asynchronous version of this method is provided
-    /// which will be added once
-    /// [`Issue 123`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/123) is
-    /// resolved.
+    /// susceptible to lock starvation.
     ///
     /// # Examples
     ///
@@ -503,7 +500,7 @@ where
         let start_unbounded = matches!(range.start_bound(), Unbounded);
         let guard = Guard::new();
 
-        // Remove internal nodes.
+        // Remove internal nodes, and individual entries in affected leaves.
         //
         // It takes O(N) to traverse sub-trees on the range border.
         while let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
@@ -516,12 +513,68 @@ where
                 break;
             }
         }
+    }
 
-        // Remove individual entries in leaves on the border.
-        //
-        // The expected number of calls to `remove` is `14`: the number of entry slots in a leaf.
-        for (k, _) in self.range(range, &guard) {
-            self.remove(k);
+    /// Removes keys in the specified range.
+    ///
+    /// This method removes internal nodes that are definitely contained in the specified range
+    /// first, and then removes remaining entries individually.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
+    ///
+    /// # Notes
+    ///
+    /// Internally, multiple internal node locks need to be acquired, thus making this method
+    /// susceptible to lock starvation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::TreeIndex;
+    ///
+    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    ///
+    /// for k in 2..8 {
+    ///     assert!(treeindex.insert(k, 1).is_ok());
+    /// }
+    ///
+    /// let future_remove_range = treeindex.remove_range_async(3..8);
+    /// ```
+    #[inline]
+    pub async fn remove_range_async<R: RangeBounds<K>>(&self, range: R) {
+        let start_unbounded = matches!(range.start_bound(), Unbounded);
+
+        loop {
+            let mut async_wait = AsyncWait::default();
+            let mut async_wait_pinned = Pin::new(&mut async_wait);
+            {
+                let guard = Guard::new();
+
+                // Remove internal nodes, and individual entries in affected leaves.
+                //
+                // It takes O(N) to traverse sub-trees on the range border.
+                if let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
+                    if let Ok(num_children) = root_ref.remove_range(
+                        &range,
+                        start_unbounded,
+                        None,
+                        None,
+                        &mut async_wait_pinned,
+                        &guard,
+                    ) {
+                        if num_children >= 2
+                            || Node::cleanup_root(&self.root, &mut async_wait_pinned, &guard)
+                        {
+                            // Completed removal and cleaning up the root.
+                            return;
+                        }
+                    }
+                } else {
+                    // Nothing to remove.
+                    return;
+                }
+            }
+            async_wait_pinned.await;
         }
     }
 

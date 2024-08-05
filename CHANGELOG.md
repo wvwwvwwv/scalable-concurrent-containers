@@ -2,9 +2,15 @@
 
 ## Version 2
 
+2.1.8
+
+* Fix a correctness issue with `TreeIndex::remove_range`: ([#153](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/153)).
+* Add `TreeIndex::remove_range_async`: ([#123](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/123)).
+
 2.1.7
 
-* Fix a correctness issue with `HashMap` on a 32-bit CPU.
+* Fix a correctness issue with `HashMap` on a 32-bit CPU: ([#153](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/153)).
+
 
 2.1.6
 

@@ -455,6 +455,9 @@ where
             current_state = current_state.next(key, range, start_unbounded);
             match current_state {
                 RemoveRangeState::Below | RemoveRangeState::MaybeBelow => {
+                    if let Some(leaf) = leaf.load(Acquire, guard).as_ref() {
+                        leaf.remove_range(range);
+                    }
                     num_leaves += 1;
                     if first_valid_leaf.is_none() {
                         first_valid_leaf.replace(leaf);
@@ -469,6 +472,9 @@ where
                     }
                 }
                 RemoveRangeState::MaybeAbove => {
+                    if let Some(leaf) = leaf.load(Acquire, guard).as_ref() {
+                        leaf.remove_range(range);
+                    }
                     num_leaves += 1;
                     if first_valid_leaf.is_none() {
                         first_valid_leaf.replace(leaf);
@@ -476,6 +482,10 @@ where
                     break;
                 }
             }
+        }
+
+        if let Some(unbounded) = self.unbounded_child.load(Acquire, guard).as_ref() {
+            unbounded.remove_range(range);
         }
 
         if let Some(valid_lower_max_leaf) = valid_lower_max_leaf {
