@@ -210,7 +210,7 @@ pub trait LinkedList: Sized {
     /// ```
     /// use scc::LinkedList;
     /// use scc::ebr::{AtomicShared, Guard, Shared};
-    /// use std::sync::atomic::Ordering::Relaxed;
+    /// use std::sync::atomic::Ordering::{Relaxed, Release};
     ///
     /// #[derive(Default)]
     /// struct L(AtomicShared<L>, usize);
@@ -223,14 +223,14 @@ pub trait LinkedList: Sized {
     /// let guard = Guard::new();
     ///
     /// let head: L = L::default();
-    /// assert!(head.push_back(Shared::new(L::default()), true, Relaxed, &guard).is_ok());
+    /// assert!(head.push_back(Shared::new(L::default()), true, Release, &guard).is_ok());
     /// assert!(head.is_marked(Relaxed));
-    /// assert!(head.push_back(Shared::new(L::default()), false, Relaxed, &guard).is_ok());
+    /// assert!(head.push_back(Shared::new(L::default()), false, Release, &guard).is_ok());
     /// assert!(!head.is_marked(Relaxed));
     ///
     /// head.delete_self(Relaxed);
     /// assert!(!head.is_marked(Relaxed));
-    /// assert!(head.push_back(Shared::new(L::default()), false, Relaxed, &guard).is_err());
+    /// assert!(head.push_back(Shared::new(L::default()), false, Release, &guard).is_err());
     /// ```
     #[inline]
     fn push_back<'g>(
@@ -282,7 +282,7 @@ pub trait LinkedList: Sized {
     /// ```
     /// use scc::LinkedList;
     /// use scc::ebr::{AtomicShared, Guard, Shared};
-    /// use std::sync::atomic::Ordering::Relaxed;
+    /// use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
     ///
     /// #[derive(Default)]
     /// struct L(AtomicShared<L>, usize);
@@ -296,10 +296,10 @@ pub trait LinkedList: Sized {
     ///
     /// let head: L = L::default();
     /// assert!(
-    ///     head.push_back(Shared::new(L(AtomicShared::null(), 1)), false, Relaxed, &guard).is_ok());
+    ///     head.push_back(Shared::new(L(AtomicShared::null(), 1)), false, Release, &guard).is_ok());
     /// head.mark(Relaxed);
     ///
-    /// let next_ptr = head.next_ptr(Relaxed, &guard);
+    /// let next_ptr = head.next_ptr(Acquire, &guard);
     /// assert_eq!(next_ptr.as_ref().unwrap().1, 1);
     /// assert!(head.is_marked(Relaxed));
     /// ```
@@ -317,7 +317,7 @@ pub trait LinkedList: Sized {
     /// ```
     /// use scc::LinkedList;
     /// use scc::ebr::{AtomicShared, Guard, Shared};
-    /// use std::sync::atomic::Ordering::Relaxed;
+    /// use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
     ///
     /// #[derive(Default)]
     /// struct L(AtomicShared<L>, usize);
@@ -331,10 +331,10 @@ pub trait LinkedList: Sized {
     ///
     /// let head: L = L::default();
     /// assert!(
-    ///     head.push_back(Shared::new(L(AtomicShared::null(), 1)), false, Relaxed, &guard).is_ok());
+    ///     head.push_back(Shared::new(L(AtomicShared::null(), 1)), false, Release, &guard).is_ok());
     /// head.mark(Relaxed);
     ///
-    /// let next_shared = head.next_shared(Relaxed, &guard);
+    /// let next_shared = head.next_shared(Acquire, &guard);
     /// assert_eq!(next_shared.unwrap().1, 1);
     /// assert!(head.is_marked(Relaxed));
     /// ```
