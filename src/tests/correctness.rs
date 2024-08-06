@@ -1,3 +1,4 @@
+#[cfg(not(feature = "loom"))]
 #[cfg(test)]
 mod hashmap_test {
     use crate::hash_map::{self, Entry, Reserve};
@@ -775,6 +776,7 @@ mod hashmap_test {
     }
 }
 
+#[cfg(not(feature = "loom"))]
 #[cfg(test)]
 mod hashindex_test {
     use crate::ebr::Guard;
@@ -1364,6 +1366,7 @@ mod hashindex_test {
     }
 }
 
+#[cfg(not(feature = "loom"))]
 #[cfg(test)]
 mod hashset_test {
     use crate::HashSet;
@@ -1395,6 +1398,7 @@ mod hashset_test {
     }
 }
 
+#[cfg(not(feature = "loom"))]
 #[cfg(test)]
 mod hashcache_test {
     use crate::hash_cache;
@@ -1737,7 +1741,7 @@ mod hashcache_test {
     }
 }
 
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))] // Issue #153.
+#[cfg(not(feature = "loom"))]
 #[cfg(test)]
 mod treeindex_test {
     use crate::ebr::Guard;
@@ -2539,6 +2543,7 @@ mod treeindex_test {
     }
 }
 
+#[cfg(not(feature = "loom"))]
 #[cfg(test)]
 mod bag_test {
     use crate::bag::IterMut;
@@ -2722,6 +2727,7 @@ mod bag_test {
     }
 }
 
+#[cfg(not(feature = "loom"))]
 #[cfg(test)]
 mod queue_test {
     use crate::ebr::Guard;
@@ -2919,6 +2925,7 @@ mod queue_test {
     }
 }
 
+#[cfg(not(feature = "loom"))]
 #[cfg(test)]
 mod stack_test {
     use crate::ebr::Guard;
@@ -3088,6 +3095,7 @@ mod stack_test {
     }
 }
 
+#[cfg(not(feature = "loom"))]
 #[cfg(test)]
 mod random_failure_test {
     use crate::ebr::{Guard, Shared};

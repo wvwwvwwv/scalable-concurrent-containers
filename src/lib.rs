@@ -36,6 +36,16 @@ mod exit_guard;
 mod hash_table;
 mod wait_queue;
 
+#[cfg(feature = "loom")]
+mod maybe_std {
+    pub(crate) use loom::sync::atomic::AtomicUsize;
+}
+
+#[cfg(not(feature = "loom"))]
+mod maybe_std {
+    pub(crate) use std::sync::atomic::AtomicUsize;
+}
+
 #[cfg(feature = "serde")]
 mod serde;
 

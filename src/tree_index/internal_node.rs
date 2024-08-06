@@ -1094,7 +1094,7 @@ impl<K, V> Default for StructuralChange<K, V> {
     }
 }
 
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))] // Issue #153.
+#[cfg(not(feature = "loom"))]
 #[cfg(test)]
 mod test {
     use super::*;

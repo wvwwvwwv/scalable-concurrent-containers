@@ -1,4 +1,5 @@
-44
+59
+|_key
 50%
 avx2
 CAS
@@ -15,6 +16,7 @@ HashIndex
 HashMap
 HashSet
 io
+is_none
 iteratively
 latencies
 linearizable
@@ -28,6 +30,7 @@ M3
 M4
 metadata
 overcount
+peek_with
 Resize
 resize
 resized
@@ -41,6 +44,7 @@ Serde
 SIMD
 TODO
 TreeIndex
+tree_index
 Unlinking
 unlinking
 unordered
@@ -48,6 +52,7 @@ unlink
 unlinked
 unlinks
 updatable
+value|
 vectorized
 VM
 Workflow

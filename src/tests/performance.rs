@@ -1,6 +1,7 @@
 #![allow(clippy::inline_always)]
 #![allow(clippy::needless_pass_by_value)]
 
+#[cfg(not(feature = "loom"))]
 #[cfg(test)]
 mod benchmark {
     use crate::ebr::Guard;
@@ -685,6 +686,7 @@ mod benchmark {
     }
 }
 
+#[cfg(not(feature = "loom"))]
 #[cfg(test)]
 mod benchmark_async {
     use crate::ebr::Guard;

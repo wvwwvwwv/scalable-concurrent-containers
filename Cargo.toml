@@ -16,8 +16,12 @@ keywords = ["async", "cache", "concurrent", "hashmap", "tree"]
 members = [".", "examples"]
 
 [dependencies]
+loom = { version = "0.7", optional = true }
 sdd = "2.1.0"
 serde = { version = "1.0", optional = true }
+
+[features]
+loom = ["dep:loom", "sdd/loom"]
 
 [dev-dependencies]
 criterion = "0.5"

@@ -1,4 +1,5 @@
 use crate::ebr::{AtomicShared, Guard, Shared};
+use crate::maybe_std::AtomicUsize;
 use crate::LinkedList;
 use std::borrow::Borrow;
 use std::cell::UnsafeCell;
@@ -6,7 +7,6 @@ use std::cmp::Ordering;
 use std::fmt::{self, Debug};
 use std::mem::{needs_drop, MaybeUninit};
 use std::ops::RangeBounds;
-use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
 /// [`Leaf`] is an ordered array of key-value pairs.
@@ -85,8 +85,20 @@ pub enum RemoveResult {
 
 impl<K, V> Leaf<K, V> {
     /// Creates a new [`Leaf`].
+    #[cfg(not(feature = "loom"))]
     #[inline]
     pub(super) const fn new() -> Leaf<K, V> {
+        #[allow(clippy::uninit_assumed_init)]
+        Leaf {
+            metadata: AtomicUsize::new(0),
+            entry_array: UnsafeCell::new(unsafe { MaybeUninit::uninit().assume_init() }),
+            link: AtomicShared::null(),
+        }
+    }
+
+    #[cfg(feature = "loom")]
+    #[inline]
+    pub(super) fn new() -> Leaf<K, V> {
         #[allow(clippy::uninit_assumed_init)]
         Leaf {
             metadata: AtomicUsize::new(0),
@@ -967,6 +979,7 @@ impl<'l, K, V> Iterator for Scanner<'l, K, V> {
     }
 }
 
+#[cfg(not(feature = "loom"))]
 #[cfg(test)]
 mod test {
     use super::*;

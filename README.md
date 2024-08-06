@@ -9,10 +9,10 @@ A collection of high performance containers and utilities for concurrent and asy
 #### Features
 
 - Asynchronous counterparts of blocking and synchronous methods.
+- [`Loom`](https://github.com/tokio-rs/loom) and [`Serde`](https://serde.rs) support: `features = ["loom", "serde"]`.
 - Near-linear scalability.
 - No spin-locks and no busy loops.
 - SIMD lookup to scan multiple entries in parallel [^note].
-- [`Serde`](https://serde.rs) support:`features = ["serde"]`.
 
 [^note]: Advanced SIMD instructions are used only when respective target features are enabled, e.g., `-C target_feature=+avx2`.
 

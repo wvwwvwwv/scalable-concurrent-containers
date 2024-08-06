@@ -58,6 +58,8 @@ jobs:
       - name: Serde
         run: cargo test serde --features serde;
           cargo test --release serde --features serde
+      - name: Loom
+        run: cargo test --features loom --release --lib
       - name: Miri
         run: MIRIFLAGS="-Zmiri-disable-data-race-detector" cargo +nightly miri test --lib --bins --tests
   check-misc:

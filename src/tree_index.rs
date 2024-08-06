@@ -89,9 +89,20 @@ impl<K, V> TreeIndex<K, V> {
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     /// ```
+    #[cfg(not(feature = "loom"))]
     #[inline]
     #[must_use]
     pub const fn new() -> Self {
+        Self {
+            root: AtomicShared::null(),
+        }
+    }
+
+    /// Creates an empty [`TreeIndex`].
+    #[cfg(feature = "loom")]
+    #[inline]
+    #[must_use]
+    pub fn new() -> Self {
         Self {
             root: AtomicShared::null(),
         }

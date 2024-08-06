@@ -4,6 +4,7 @@
 
 2.1.9
 
+* Add `loom` support.
 * Fix a correctness issue with `Stack`, `Queue`, and `Bag::pop`: ([#153](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/153)).
 
 2.1.8

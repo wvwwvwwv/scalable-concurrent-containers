@@ -299,6 +299,7 @@ impl SyncWait {
     }
 }
 
+#[cfg(not(feature = "loom"))]
 #[cfg(test)]
 mod test {
     use super::*;

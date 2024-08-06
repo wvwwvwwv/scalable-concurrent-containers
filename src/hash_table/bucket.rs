@@ -1273,6 +1273,7 @@ impl<K, V, const LEN: usize> Drop for LinkedBucket<K, V, LEN> {
     }
 }
 
+#[cfg(not(feature = "loom"))]
 #[cfg(test)]
 mod test {
     use super::*;
