@@ -422,10 +422,7 @@ impl<T> Queue<T> {
             if oldest_entry.is_deleted(Relaxed) {
                 match self.oldest.compare_exchange(
                     oldest_ptr,
-                    (
-                        oldest_entry.next_ptr(Acquire, guard).get_shared(),
-                        Tag::None,
-                    ),
+                    (oldest_entry.next_shared(Acquire, guard), Tag::None),
                     AcqRel,
                     Acquire,
                     guard,

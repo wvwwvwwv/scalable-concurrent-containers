@@ -134,24 +134,19 @@ impl<T, const ARRAY_LEN: usize> Bag<T, ARRAY_LEN> {
     /// ```
     #[inline]
     pub fn pop(&self) -> Option<T> {
-        while !self.stack.is_empty() {
-            let result = self.stack.peek_with(|e| {
-                e.and_then(|storage| {
-                    let (val, empty) = storage.pop();
-                    if empty {
-                        // Once marked deleted, new entries will be inserted in a new `Storage`
-                        // that may not be reachable from this one.
-                        storage.delete_self(Relaxed);
-                    }
-                    val
-                })
-            });
-            if let Some(val) = result {
-                return Some(val);
-            }
-            if let Some(val) = self.primary_storage.pop().0 {
-                return Some(val);
-            }
+        let result = self.stack.peek_with(|e| {
+            e.and_then(|storage| {
+                let (val, empty) = storage.pop();
+                if empty {
+                    // Once marked deleted, new entries will be inserted in a new `Storage`
+                    // that may not be reachable from this one.
+                    storage.delete_self(Relaxed);
+                }
+                val
+            })
+        });
+        if let Some(val) = result {
+            return Some(val);
         }
         self.primary_storage.pop().0
     }
@@ -454,7 +449,7 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
 
                             // The array was empty, thus rolling back the change.
                             let val = unsafe { (*self.storage.get())[index].as_ptr().read() };
-                            self.metadata.fetch_and(!(1_usize << index), Relaxed);
+                            self.metadata.fetch_and(!(1_usize << index), Release);
                             return Some(val);
                         }
                         Err(prev) => {
@@ -480,9 +475,9 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
         let mut metadata = self.metadata.load(Relaxed);
         'after_read_metadata: loop {
             // Look for an instantiated, yet to be owned entry.
-            let instance_bitmap = Self::instance_bitmap(metadata);
+            let mut instance_bitmap_inverted = !Self::instance_bitmap(metadata);
             let owned_bitmap = Self::owned_bitmap(metadata);
-            let mut index = instance_bitmap.trailing_zeros() as usize;
+            let mut index = instance_bitmap_inverted.trailing_ones() as usize;
             while index < ARRAY_LEN {
                 if (owned_bitmap & (1_u32 << index)) == 0 {
                     // Mark the slot `owned`.
@@ -495,7 +490,7 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
                             // Now the desired slot is owned by the thread.
                             let inst = unsafe { (*self.storage.get())[index].as_ptr().read() };
                             let mut empty = false;
-                            let result = self.metadata.fetch_update(Relaxed, Relaxed, |m| {
+                            let result = self.metadata.fetch_update(Release, Relaxed, |m| {
                                 debug_assert_ne!(m & (1_usize << index), 0);
                                 debug_assert_ne!(m & (1_usize << (index + ARRAY_LEN)), 0);
                                 let new =
@@ -515,15 +510,11 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
                 }
 
                 // Look for another valid slot.
-                {
-                    #![allow(clippy::cast_possible_truncation)]
-                    index = (instance_bitmap
-                        & (u32::MAX.wrapping_shl(index as u32).wrapping_shl(1)))
-                    .trailing_zeros() as usize;
-                }
+                instance_bitmap_inverted |= 1_u32 << index;
+                index = instance_bitmap_inverted.trailing_ones() as usize;
             }
 
-            return (None, instance_bitmap == 0);
+            return (None, false);
         }
     }
 

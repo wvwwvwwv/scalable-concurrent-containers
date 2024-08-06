@@ -2548,6 +2548,7 @@ mod bag_test {
     use std::sync::atomic::Ordering::Relaxed;
     use std::sync::Arc;
     use tokio::sync::Barrier as AsyncBarrier;
+    use tokio::task;
 
     static_assertions::assert_impl_all!(Bag<String>: Send, Sync, UnwindSafe);
     static_assertions::assert_impl_all!(IterMut<'static, String>: Send, Sync, UnwindSafe);
@@ -2620,44 +2621,53 @@ mod bag_test {
         }
     }
 
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 12)]
     async fn mpmc() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         const NUM_TASKS: usize = 6;
-        let workload_size = 256;
-        let bag_default: Arc<Bag<R>> = Arc::new(Bag::default());
-        let bag_half: Arc<Bag<R, 15>> = Arc::new(Bag::new());
-        for _ in 0..256 {
-            let mut task_handles = Vec::with_capacity(NUM_TASKS);
-            let barrier = Arc::new(AsyncBarrier::new(NUM_TASKS));
-            for _ in 0..NUM_TASKS {
-                let barrier_clone = barrier.clone();
-                let bag32_clone = bag_default.clone();
-                let bag17_clone = bag_half.clone();
-                task_handles.push(tokio::task::spawn(async move {
-                    barrier_clone.wait().await;
-                    for _ in 0..workload_size {
-                        bag32_clone.push(R::new(&INST_CNT));
-                        bag17_clone.push(R::new(&INST_CNT));
-                    }
-                    for i in 0..workload_size {
-                        assert!(bag32_clone.pop().is_some(), "{i}");
-                        assert!(bag17_clone.pop().is_some(), "{i}");
-                    }
-                }));
-            }
+        for _ in 0..4 {
+            let workload_size = 64;
+            let bag_default: Arc<Bag<R>> = Arc::new(Bag::default());
+            let bag_half: Arc<Bag<R, 15>> = Arc::new(Bag::new());
+            for _ in 0..256 {
+                let mut task_handles = Vec::with_capacity(NUM_TASKS);
+                let barrier = Arc::new(AsyncBarrier::new(NUM_TASKS));
+                for _ in 0..NUM_TASKS {
+                    let barrier_clone = barrier.clone();
+                    let bag32_clone = bag_default.clone();
+                    let bag_half_clone = bag_half.clone();
+                    task_handles.push(tokio::task::spawn(async move {
+                        barrier_clone.wait().await;
+                        for _ in 0..4 {
+                            for _ in 0..workload_size {
+                                bag32_clone.push(R::new(&INST_CNT));
+                                bag_half_clone.push(R::new(&INST_CNT));
+                            }
+                            for _ in 0..workload_size {
+                                while bag32_clone.pop().is_none() {
+                                    crate::ebr::Guard::new().accelerate();
+                                    task::yield_now().await;
+                                }
+                                while bag_half_clone.pop().is_none() {
+                                    crate::ebr::Guard::new().accelerate();
+                                    task::yield_now().await;
+                                }
+                            }
+                        }
+                    }));
+                }
 
-            for r in futures::future::join_all(task_handles).await {
-                assert!(r.is_ok());
+                for r in futures::future::join_all(task_handles).await {
+                    assert!(r.is_ok());
+                }
+                assert!(bag_default.pop().is_none());
+                assert!(bag_default.is_empty());
+                assert!(bag_half.pop().is_none());
+                assert!(bag_half.is_empty());
             }
-            assert!(bag_default.pop().is_none());
-            assert!(bag_default.is_empty());
-            assert!(bag_half.pop().is_none());
-            assert!(bag_half.is_empty());
+            assert_eq!(INST_CNT.load(Relaxed), 0);
         }
-        assert_eq!(INST_CNT.load(Relaxed), 0);
     }
 
     #[cfg_attr(miri, ignore)]

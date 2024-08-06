@@ -1,7 +1,7 @@
 use super::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use std::fmt::{self, Debug, Display};
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::Ordering::{self, Relaxed, Release};
+use std::sync::atomic::Ordering::{self, AcqRel, Acquire, Relaxed};
 
 /// [`LinkedList`] is a type trait implementing a lock-free singly linked list.
 pub trait LinkedList: Sized {
@@ -307,6 +307,51 @@ pub trait LinkedList: Sized {
     fn next_ptr<'g>(&self, order: Ordering, guard: &'g Guard) -> Ptr<'g, Self> {
         next_ptr_recursive(self, order, 64, guard)
     }
+
+    /// Returns a [`Shared`] handle to the closest next valid entry.
+    ///
+    /// It unlinks deleted entries until it reaches a valid one.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::LinkedList;
+    /// use scc::ebr::{AtomicShared, Guard, Shared};
+    /// use std::sync::atomic::Ordering::Relaxed;
+    ///
+    /// #[derive(Default)]
+    /// struct L(AtomicShared<L>, usize);
+    /// impl LinkedList for L {
+    ///     fn link_ref(&self) -> &AtomicShared<L> {
+    ///         &self.0
+    ///     }
+    /// }
+    ///
+    /// let guard = Guard::new();
+    ///
+    /// let head: L = L::default();
+    /// assert!(
+    ///     head.push_back(Shared::new(L(AtomicShared::null(), 1)), false, Relaxed, &guard).is_ok());
+    /// head.mark(Relaxed);
+    ///
+    /// let next_shared = head.next_shared(Relaxed, &guard);
+    /// assert_eq!(next_shared.unwrap().1, 1);
+    /// assert!(head.is_marked(Relaxed));
+    /// ```
+    #[inline]
+    fn next_shared(&self, order: Ordering, guard: &Guard) -> Option<Shared<Self>> {
+        let mut next_ptr = self.next_ptr(order, guard);
+        let mut next_entry = next_ptr.get_shared();
+        while !next_ptr.is_null() && next_entry.is_none() {
+            // The entry was released in the mean time.
+            next_ptr = next_ptr
+                .as_ref()
+                .map_or_else(Ptr::null, |n| n.next_ptr(Acquire, guard));
+            next_entry = next_ptr.get_shared();
+            continue;
+        }
+        next_entry
+    }
 }
 
 /// [`Entry`] stores an instance of `T` and a link to the next entry.
@@ -491,8 +536,8 @@ fn next_ptr_recursive<'g, T: LinkedList>(
             match head.link_ref().compare_exchange(
                 head_next_ptr,
                 (next_valid_entry, head_tag),
-                Release,
-                Relaxed,
+                AcqRel,
+                Acquire,
                 guard,
             ) {
                 Ok((prev, _)) => {
