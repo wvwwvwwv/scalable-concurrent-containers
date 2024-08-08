@@ -4,14 +4,15 @@ use super::leaf_node::{LOCKED, RETIRED};
 use super::node::Node;
 use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::exit_guard::ExitGuard;
+use crate::maybe_std::{yield_now, AtomicU8};
 use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
 use std::borrow::Borrow;
 use std::cmp::Ordering::{Equal, Greater, Less};
 use std::mem::forget;
 use std::ops::RangeBounds;
 use std::ptr;
+use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{self, Acquire, Relaxed, Release};
-use std::sync::atomic::{AtomicPtr, AtomicU8};
 
 /// Internal node.
 ///
@@ -86,12 +87,17 @@ impl<K, V> InternalNode<K, V> {
     #[inline]
     pub(super) fn wait<D: DeriveAsyncWait>(&self, async_wait: &mut D) {
         let waiter = || {
-            if self.latch.load(Relaxed) == LOCKED.into() {
+            if self.latch.load(Acquire) == LOCKED.into() {
                 // The `InternalNode` is being split or locked.
                 return Err(());
             }
             Ok(())
         };
+
+        if cfg!(feature = "loom") {
+            yield_now();
+            return;
+        }
 
         if let Some(async_wait) = async_wait.derive() {
             let _result = self.wait_queue.push_async_entry(async_wait, waiter);

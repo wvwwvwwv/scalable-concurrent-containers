@@ -1,4 +1,4 @@
-59
+60
 |_key
 50%
 avx2
@@ -7,6 +7,7 @@ Changelog
 crossbeam_epoch
 DashMap
 deallocate
+deallocated
 deallocating
 dereference
 dereferenced

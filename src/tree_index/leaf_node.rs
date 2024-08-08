@@ -3,14 +3,15 @@ use super::node::Node;
 use super::Leaf;
 use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::exit_guard::ExitGuard;
+use crate::maybe_std::{yield_now, AtomicU8};
 use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
 use crate::LinkedList;
 use std::borrow::Borrow;
 use std::cmp::Ordering::{Equal, Greater, Less};
 use std::ops::{Bound, RangeBounds};
 use std::ptr;
+use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{self, AcqRel, Acquire, Relaxed, Release};
-use std::sync::atomic::{AtomicPtr, AtomicU8};
 
 /// [`Tag::First`] indicates the corresponding node has retired.
 pub const RETIRED: Tag = Tag::First;
@@ -100,12 +101,17 @@ impl<K, V> LeafNode<K, V> {
     #[inline]
     pub(super) fn wait<D: DeriveAsyncWait>(&self, async_wait: &mut D) {
         let waiter = || {
-            if self.latch.load(Relaxed) == LOCKED.into() {
+            if self.latch.load(Acquire) == LOCKED.into() {
                 // The `LeafNode` is being split or locked.
                 return Err(());
             }
             Ok(())
         };
+
+        if cfg!(feature = "loom") {
+            yield_now();
+            return;
+        }
 
         if let Some(async_wait) = async_wait.derive() {
             let _result = self.wait_queue.push_async_entry(async_wait, waiter);
@@ -339,7 +345,9 @@ where
                 match insert_result {
                     InsertResult::Success
                     | InsertResult::Duplicate(..)
-                    | InsertResult::Retry(..) => return Ok(insert_result),
+                    | InsertResult::Retry(..) => {
+                        return Ok(insert_result);
+                    }
                     InsertResult::Full(k, v) | InsertResult::Retired(k, v) => {
                         let split_result = self.split_leaf(
                             k,
@@ -855,14 +863,13 @@ where
 
             // Take the max key value stored in the low key leaf as the leaf key.
             let low_key_leaf = low_key_leaf_ptr.as_ref().unwrap();
-            let max_key = low_key_leaf.max_key().unwrap();
 
             // Need to freeze the leaf before trying to make it reachable.
             let frozen = low_key_leaf.freeze();
             debug_assert!(frozen);
 
             match self.children.insert(
-                max_key.clone(),
+                low_key_leaf.max_key().unwrap().clone(),
                 self.split_op.low_key_leaf.clone(Relaxed, guard),
             ) {
                 InsertResult::Success => (),
@@ -898,7 +905,7 @@ where
                 .0;
             full_leaf.swap((high_key_leaf, Tag::None), Release).0
         } else {
-            // From here, `Scanners` can reach the new leaf.
+            // From here, `Scanner` can reach the new leaf.
             //
             // The full leaf is marked so that readers know that the next leaves may contain
             // smaller keys.

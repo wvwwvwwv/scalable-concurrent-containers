@@ -111,7 +111,7 @@ impl<K, V> Leaf<K, V> {
     #[inline]
     pub(super) fn thaw(&self) -> bool {
         self.metadata
-            .fetch_update(Relaxed, Relaxed, |p| {
+            .fetch_update(Release, Relaxed, |p| {
                 if Dimension::frozen(p) {
                     Some(Dimension::thaw(p))
                 } else {

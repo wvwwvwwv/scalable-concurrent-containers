@@ -2,9 +2,13 @@
 
 ## Version 2
 
-2.1.9
+2.1.10
 
 * Add `loom` support.
+* Fix data races in `TreeIndex`: ([#153](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/153)).
+
+2.1.9
+
 * Fix a correctness issue with `Stack`, `Queue`, and `Bag::pop`: ([#153](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/153)).
 
 2.1.8

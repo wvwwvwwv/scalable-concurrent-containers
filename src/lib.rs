@@ -38,12 +38,14 @@ mod wait_queue;
 
 #[cfg(feature = "loom")]
 mod maybe_std {
-    pub(crate) use loom::sync::atomic::AtomicUsize;
+    pub(crate) use loom::sync::atomic::{AtomicU8, AtomicUsize};
+    pub(crate) use loom::thread::yield_now;
 }
 
 #[cfg(not(feature = "loom"))]
 mod maybe_std {
-    pub(crate) use std::sync::atomic::AtomicUsize;
+    pub(crate) use std::sync::atomic::{AtomicU8, AtomicUsize};
+    pub(crate) use std::thread::yield_now;
 }
 
 #[cfg(feature = "serde")]
