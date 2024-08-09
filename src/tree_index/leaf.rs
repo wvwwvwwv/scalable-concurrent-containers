@@ -124,13 +124,13 @@ impl<K, V> Leaf<K, V> {
     /// Returns `true` if the [`Leaf`] has retired.
     #[inline]
     pub(super) fn is_retired(&self) -> bool {
-        Dimension::retired(self.metadata.load(Relaxed))
+        Dimension::retired(self.metadata.load(Acquire))
     }
 
     /// Returns `true` if the [`Leaf`] has no reachable entry.
     #[inline]
     pub(super) fn is_empty(&self) -> bool {
-        let mut mutable_metadata = self.metadata.load(Relaxed);
+        let mut mutable_metadata = self.metadata.load(Acquire);
         for _ in 0..DIMENSION.num_entries {
             if mutable_metadata == 0 {
                 break;
@@ -188,7 +188,7 @@ impl<K, V> Leaf<K, V> {
     /// Compares the given metadata value with the current one.
     #[inline]
     pub(super) fn validate(&self, metadata: usize) -> bool {
-        // `Relaxed` is sufficient as long as the caller has read-acquired its contents.
+        // `Relaxed` is sufficient as long as the caller has load-acquired its contents.
         self.metadata.load(Relaxed) == metadata
     }
 
@@ -430,8 +430,8 @@ where
                             match self.metadata.compare_exchange(
                                 metadata,
                                 new_metadata,
-                                Release,
-                                Relaxed,
+                                AcqRel,
+                                Acquire,
                             ) {
                                 Ok(_) => {
                                     if empty {

@@ -946,10 +946,10 @@ where
         while let Some(lock) = Locker::try_lock(self) {
             prev_valid_leaf.take();
             for entry in Scanner::new(&self.children) {
-                let leaf_ptr = entry.1.load(Relaxed, guard);
+                let leaf_ptr = entry.1.load(Acquire, guard);
                 let leaf = leaf_ptr.as_ref().unwrap();
                 if leaf.is_retired() {
-                    let deleted = leaf.delete_self(Relaxed);
+                    let deleted = leaf.delete_self(Release);
                     debug_assert!(deleted);
                     let result = self.children.remove_if(entry.0.borrow(), &mut |_| true);
                     debug_assert_ne!(result, RemoveResult::Fail);
@@ -974,10 +974,10 @@ where
             let fully_empty = if prev_valid_leaf.is_some() {
                 false
             } else {
-                let unbounded_ptr = self.unbounded_child.load(Relaxed, guard);
+                let unbounded_ptr = self.unbounded_child.load(Acquire, guard);
                 if let Some(unbounded) = unbounded_ptr.as_ref() {
                     if unbounded.is_retired() {
-                        let deleted = unbounded.delete_self(Relaxed);
+                        let deleted = unbounded.delete_self(Release);
                         debug_assert!(deleted);
 
                         // It has to mark the pointer in order to prevent `LeafNode::insert` from

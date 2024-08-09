@@ -468,13 +468,13 @@ where
                     // There can be another thread inserting keys into the node, and this may
                     // render those concurrent operations completely ineffective.
                     self.children.remove_if(key, &mut |_| true);
-                    node.swap((None, Tag::None), Relaxed);
+                    node.swap((None, Tag::None), Release);
                 }
                 RemoveRangeState::MaybeAbove => {
                     if valid_upper_min_node.is_some() {
                         // `valid_upper_min_node` is not in this sub-tree.
                         self.children.remove_if(key, &mut |_| true);
-                        node.swap((None, Tag::None), Relaxed);
+                        node.swap((None, Tag::None), Release);
                     } else {
                         num_children += 1;
                         upper_border.replace(node);
@@ -523,7 +523,7 @@ where
                 self.children.remove_if(key, &mut |_| true);
                 self.unbounded_child
                     .swap((lower_node.get_shared(Acquire, guard), Tag::None), Release);
-                lower_node.swap((None, Tag::None), Relaxed);
+                lower_node.swap((None, Tag::None), Release);
             }
             if let Some(lower_node) = self.unbounded_child.load(Acquire, guard).as_ref() {
                 lower_node.remove_range(
@@ -952,7 +952,7 @@ where
         while let Some(lock) = Locker::try_lock(self) {
             let mut max_key_entry = None;
             for (key, node) in Scanner::new(&self.children) {
-                let node_ptr = node.load(Relaxed, guard);
+                let node_ptr = node.load(Acquire, guard);
                 let node_ref = node_ptr.as_ref().unwrap();
                 if node_ref.retired() {
                     let result = self.children.remove_if(key.borrow(), &mut |_| true);
@@ -970,7 +970,7 @@ where
             }
 
             // The unbounded node is replaced with the maximum key node if retired.
-            let unbounded_ptr = self.unbounded_child.load(Relaxed, guard);
+            let unbounded_ptr = self.unbounded_child.load(Acquire, guard);
             let fully_empty = if let Some(unbounded) = unbounded_ptr.as_ref() {
                 if unbounded.retired() {
                     if let Some((key, max_key_child)) = max_key_entry {
