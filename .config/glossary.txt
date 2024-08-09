@@ -1,4 +1,4 @@
-60
+61
 |_key
 50%
 avx2
@@ -30,6 +30,7 @@ M2
 M3
 M4
 metadata
+miri
 overcount
 peek_with
 Resize

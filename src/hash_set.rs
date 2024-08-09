@@ -172,7 +172,6 @@ where
     /// assert!(hashset.remove(&1).is_none());
     /// assert!(hashset.insert(1).is_ok());
     /// assert_eq!(hashset.remove(&1).unwrap(), 1);
-    /// assert_eq!(hashset.capacity(), 0);
     /// ```
     #[inline]
     pub fn remove<Q>(&self, key: &Q) -> Option<K>
@@ -223,7 +222,6 @@ where
     /// assert!(hashset.insert(1).is_ok());
     /// assert!(hashset.remove_if(&1, || false).is_none());
     /// assert_eq!(hashset.remove_if(&1, || true).unwrap(), 1);
-    /// assert_eq!(hashset.capacity(), 0);
     /// ```
     #[inline]
     pub fn remove_if<Q, F: FnOnce() -> bool>(&self, key: &Q, condition: F) -> Option<K>

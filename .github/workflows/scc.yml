@@ -61,7 +61,7 @@ jobs:
       - name: Loom
         run: cargo test --features loom --release --lib -- --nocapture
       - name: Miri
-        run: MIRIFLAGS="-Zmiri-disable-data-race-detector" cargo +nightly miri test --lib --bins --tests
+        run: cargo +nightly miri test
   check-misc:
     runs-on: ubuntu-latest
     timeout-minutes: 20

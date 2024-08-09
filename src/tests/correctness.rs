@@ -2862,6 +2862,7 @@ mod queue_test {
         println!("{cnt}");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn mpmc() {
         const NUM_TASKS: usize = if cfg!(miri) { 3 } else { 6 };

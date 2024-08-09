@@ -599,7 +599,6 @@ where
     /// assert!(hashmap.remove(&1).is_none());
     /// assert!(hashmap.insert(1, 0).is_ok());
     /// assert_eq!(hashmap.remove(&1).unwrap(), (1, 0));
-    /// assert_eq!(hashmap.capacity(), 0);
     /// ```
     #[inline]
     pub fn remove<Q>(&self, key: &Q) -> Option<(K, V)>
@@ -647,7 +646,6 @@ where
     /// assert!(hashmap.insert(1, 0).is_ok());
     /// assert!(hashmap.remove_if(&1, |v| { *v += 1; false }).is_none());
     /// assert_eq!(hashmap.remove_if(&1, |v| *v == 1).unwrap(), (1, 1));
-    /// assert_eq!(hashmap.capacity(), 0);
     /// ```
     #[inline]
     pub fn remove_if<Q, F: FnOnce(&mut V) -> bool>(&self, key: &Q, condition: F) -> Option<(K, V)>

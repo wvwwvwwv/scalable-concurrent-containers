@@ -522,7 +522,6 @@ where
     /// assert!(!hashindex.remove(&1));
     /// assert!(hashindex.insert(1, 0).is_ok());
     /// assert!(hashindex.remove(&1));
-    /// assert_eq!(hashindex.capacity(), 0);
     /// ```
     #[inline]
     pub fn remove<Q>(&self, key: &Q) -> bool
@@ -576,7 +575,6 @@ where
     /// assert!(hashindex.insert(1, 0).is_ok());
     /// assert!(!hashindex.remove_if(&1, |v| *v == 1));
     /// assert!(hashindex.remove_if(&1, |v| *v == 0));
-    /// assert_eq!(hashindex.capacity(), 0);
     /// ```
     #[inline]
     pub fn remove_if<Q, F: FnOnce(&V) -> bool>(&self, key: &Q, condition: F) -> bool

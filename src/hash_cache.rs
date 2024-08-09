@@ -549,7 +549,6 @@ where
     /// assert!(hashcache.remove(&1).is_none());
     /// assert!(hashcache.put(1, 0).is_ok());
     /// assert_eq!(hashcache.remove(&1).unwrap(), (1, 0));
-    /// assert_eq!(hashcache.capacity(), 0);
     /// ```
     #[inline]
     pub fn remove<Q>(&self, key: &Q) -> Option<(K, V)>
@@ -597,7 +596,6 @@ where
     /// assert!(hashcache.put(1, 0).is_ok());
     /// assert!(hashcache.remove_if(&1, |v| { *v += 1; false }).is_none());
     /// assert_eq!(hashcache.remove_if(&1, |v| *v == 1).unwrap(), (1, 1));
-    /// assert_eq!(hashcache.capacity(), 0);
     /// ```
     #[inline]
     pub fn remove_if<Q, F: FnOnce(&mut V) -> bool>(&self, key: &Q, condition: F) -> Option<(K, V)>

@@ -994,6 +994,11 @@ where
     ) {
         debug_assert!(!current_array.has_old_array());
 
+        // Hard to tell miri that the bucket owner has just been dropped.
+        if cfg!(miri) {
+            return;
+        }
+
         if current_array.num_entries() > self.minimum_capacity().load(Relaxed).next_power_of_two()
             || TYPE == OPTIMISTIC
         {

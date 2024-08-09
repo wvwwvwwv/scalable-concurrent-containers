@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.1.11
+
+* Activate Miri tests: ([#88](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/88)).
+
 2.1.10
 
 * Add `loom` support.
