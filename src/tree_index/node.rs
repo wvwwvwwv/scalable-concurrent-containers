@@ -6,7 +6,7 @@ use crate::wait_queue::DeriveAsyncWait;
 use std::borrow::Borrow;
 use std::fmt::{self, Debug};
 use std::ops::RangeBounds;
-use std::sync::atomic::Ordering::{self, Acquire, Relaxed, Release};
+use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 /// [`Node`] is either [`Self::Internal`] or [`Self::Leaf`].
 pub enum Node<K, V> {
@@ -41,10 +41,10 @@ impl<K, V> Node<K, V> {
 
     /// Checks if the node has retired.
     #[inline]
-    pub(super) fn retired(&self, mo: Ordering) -> bool {
+    pub(super) fn retired(&self) -> bool {
         match &self {
-            Self::Internal(internal_node) => internal_node.retired(mo),
-            Self::Leaf(leaf_node) => leaf_node.retired(mo),
+            Self::Internal(internal_node) => internal_node.retired(),
+            Self::Leaf(leaf_node) => leaf_node.retired(),
         }
     }
 }
@@ -228,7 +228,7 @@ where
             let mut leaf_node_locker = None;
             match root_ref {
                 Self::Internal(internal_node) => {
-                    if !internal_node.retired(Relaxed) && !internal_node.children.is_empty() {
+                    if !internal_node.retired() && !internal_node.children.is_empty() {
                         // The internal node is still usable.
                         break;
                     } else if let Some(locker) = internal_node::Locker::try_lock(internal_node) {
@@ -238,7 +238,7 @@ where
                     }
                 }
                 Self::Leaf(leaf_node) => {
-                    if !leaf_node.retired(Relaxed) {
+                    if !leaf_node.retired() {
                         // The leaf node is still usable.
                         break;
                     } else if let Some(locker) = leaf_node::Locker::try_lock(leaf_node) {
@@ -263,7 +263,7 @@ where
 
             let new_root = match root_ref {
                 Node::Internal(internal_node) => {
-                    if internal_node.retired(Relaxed) {
+                    if internal_node.retired() {
                         // The internal node is empty, therefore the entire tree can be emptied.
                         None
                     } else if internal_node.children.is_empty() {
@@ -275,7 +275,7 @@ where
                     }
                 }
                 Node::Leaf(leaf_node) => {
-                    if leaf_node.retired(Relaxed) {
+                    if leaf_node.retired() {
                         // The leaf node is empty, therefore the entire tree can be emptied.
                         None
                     } else {

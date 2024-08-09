@@ -37,10 +37,11 @@ mod test_model {
     fn tree_index_split_leaf_node() {
         let _guard = SERIALIZER.lock().unwrap();
 
+        let keys = 14;
+        let key_to_remove = 0;
         let mut model_builder_leaf_node = Builder::new();
         model_builder_leaf_node.max_branches = 1_048_576;
-        model_builder_leaf_node.check(|| {
-            let keys = 14;
+        model_builder_leaf_node.check(move || {
             let cnt = Arc::new(AtomicUsize::new(0));
             let tree_index = Arc::new(TreeIndex::<usize, A>::default());
 
@@ -57,7 +58,7 @@ mod test_model {
             });
 
             let thread_remove = spawn(move || {
-                let key = 1;
+                let key: usize = key_to_remove;
                 assert_eq!(
                     tree_index
                         .peek_with(key.borrow(), |_key, value| value.0)
@@ -85,10 +86,11 @@ mod test_model {
     fn tree_index_split_internal_node() {
         let _guard = SERIALIZER.lock().unwrap();
 
+        let keys = 365;
+        let key_to_remove = 0;
         let mut model_builder_new_internal_node = Builder::new();
         model_builder_new_internal_node.max_branches = 1_048_576 * 16;
-        model_builder_new_internal_node.check(|| {
-            let keys = 365;
+        model_builder_new_internal_node.check(move || {
             let cnt = Arc::new(AtomicUsize::new(0));
             let tree_index = Arc::new(TreeIndex::<usize, A>::default());
 
@@ -105,7 +107,7 @@ mod test_model {
             });
 
             let thread_remove = spawn(move || {
-                let key = 1;
+                let key: usize = key_to_remove;
                 assert_eq!(
                     tree_index
                         .peek_with(key.borrow(), |_key, value| value.0)
@@ -130,10 +132,11 @@ mod test_model {
     fn tree_index_remove_leaf_node() {
         let _guard = SERIALIZER.lock().unwrap();
 
+        let keys = 15;
+        let key_to_remove = 14;
         let mut model_builder_remove_leaf = Builder::new();
         model_builder_remove_leaf.max_branches = 1_048_576 * 16;
-        model_builder_remove_leaf.check(|| {
-            let keys = 15;
+        model_builder_remove_leaf.check(move || {
             let cnt = Arc::new(AtomicUsize::new(0));
             let tree_index = Arc::new(TreeIndex::<usize, A>::default());
 
@@ -152,7 +155,7 @@ mod test_model {
             });
 
             let thread_read = spawn(move || {
-                let key = keys - 1;
+                let key = key_to_remove;
                 assert_eq!(
                     tree_index.peek_with(&key, |_key, value| value.0).unwrap(),
                     key
@@ -174,10 +177,11 @@ mod test_model {
     fn tree_index_remove_internal_node() {
         let _guard = SERIALIZER.lock().unwrap();
 
+        let keys = 366;
+        let key_to_remove = 338;
         let mut model_builder_remove_node = Builder::new();
         model_builder_remove_node.max_branches = 1_048_576 * 16;
-        model_builder_remove_node.check(|| {
-            let keys = 366;
+        model_builder_remove_node.check(move || {
             let cnt = Arc::new(AtomicUsize::new(0));
             let tree_index = Arc::new(TreeIndex::<usize, A>::default());
 
@@ -185,8 +189,7 @@ mod test_model {
                 assert!(tree_index.insert(k, A::new(k, cnt.clone())).is_ok());
             }
 
-            let boundary_key = 338;
-            for k in boundary_key + 1..keys {
+            for k in key_to_remove + 1..keys {
                 assert!(tree_index.remove(&k));
             }
 
@@ -201,7 +204,7 @@ mod test_model {
             });
 
             let thread_remove = spawn(move || {
-                assert!(tree_index.remove(boundary_key.borrow()));
+                assert!(tree_index.remove(key_to_remove.borrow()));
             });
 
             assert!(thread_read.join().is_ok());

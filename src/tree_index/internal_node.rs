@@ -12,7 +12,7 @@ use std::mem::forget;
 use std::ops::RangeBounds;
 use std::ptr;
 use std::sync::atomic::AtomicPtr;
-use std::sync::atomic::Ordering::{self, Acquire, Relaxed, Release};
+use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 /// Internal node.
 ///
@@ -79,8 +79,8 @@ impl<K, V> InternalNode<K, V> {
 
     /// Returns `true` if the [`InternalNode`] has retired.
     #[inline]
-    pub(super) fn retired(&self, mo: Ordering) -> bool {
-        self.unbounded_child.tag(mo) == RETIRED
+    pub(super) fn retired(&self) -> bool {
+        self.unbounded_child.tag(Acquire) == RETIRED
     }
 
     /// Waits for the lock on the [`InternalNode`] to be released.
@@ -286,9 +286,9 @@ where
                                 return Ok(split_result);
                             }
                             InsertResult::Retired(k, v) => {
-                                debug_assert!(child_ref.retired(Relaxed));
+                                debug_assert!(child_ref.retired());
                                 if self.coalesce(guard) == RemoveResult::Retired {
-                                    debug_assert!(self.retired(Relaxed));
+                                    debug_assert!(self.retired());
                                     return Ok(InsertResult::Retired(k, v));
                                 }
                                 return Err((k, v));
@@ -339,9 +339,9 @@ where
                         return Ok(split_result);
                     }
                     InsertResult::Retired(k, v) => {
-                        debug_assert!(unbounded.retired(Relaxed));
+                        debug_assert!(unbounded.retired());
                         if self.coalesce(guard) == RemoveResult::Retired {
-                            debug_assert!(self.retired(Relaxed));
+                            debug_assert!(self.retired());
                             return Ok(InsertResult::Retired(k, v));
                         }
                         return Err((k, v));
@@ -590,7 +590,7 @@ where
             self.wait(async_wait);
             return Err((key, val));
         }
-        debug_assert!(!self.retired(Relaxed));
+        debug_assert!(!self.retired());
 
         if full_node_ptr != full_node.load(Relaxed, guard) {
             self.unlock();
@@ -954,7 +954,7 @@ where
             for (key, node) in Scanner::new(&self.children) {
                 let node_ptr = node.load(Relaxed, guard);
                 let node_ref = node_ptr.as_ref().unwrap();
-                if node_ref.retired(Relaxed) {
+                if node_ref.retired() {
                     let result = self.children.remove_if(key.borrow(), &mut |_| true);
                     debug_assert_ne!(result, RemoveResult::Fail);
 
@@ -972,7 +972,7 @@ where
             // The unbounded node is replaced with the maximum key node if retired.
             let unbounded_ptr = self.unbounded_child.load(Relaxed, guard);
             let fully_empty = if let Some(unbounded) = unbounded_ptr.as_ref() {
-                if unbounded.retired(Relaxed) {
+                if unbounded.retired() {
                     if let Some((key, max_key_child)) = max_key_entry {
                         if let Some(obsolete_node) = self
                             .unbounded_child
@@ -982,7 +982,7 @@ where
                             )
                             .0
                         {
-                            debug_assert!(obsolete_node.retired(Relaxed));
+                            debug_assert!(obsolete_node.retired());
                             let _: bool = obsolete_node.release();
                             node_deleted = true;
                         }
@@ -997,7 +997,7 @@ where
                         if let Some(obsolete_node) =
                             self.unbounded_child.swap((None, RETIRED), Release).0
                         {
-                            debug_assert!(obsolete_node.retired(Relaxed));
+                            debug_assert!(obsolete_node.retired());
                             let _: bool = obsolete_node.release();
                             node_deleted = true;
                         }
@@ -1034,7 +1034,7 @@ where
         for entry in Scanner::new(&self.children) {
             let leaf_ptr = entry.1.load(Relaxed, guard);
             if let Some(leaf) = leaf_ptr.as_ref() {
-                if leaf.retired(Relaxed) {
+                if leaf.retired() {
                     return true;
                 }
                 has_valid_node = true;
@@ -1043,7 +1043,7 @@ where
         if !has_valid_node {
             let unbounded_ptr = self.unbounded_child.load(Relaxed, guard);
             if let Some(unbounded) = unbounded_ptr.as_ref() {
-                if unbounded.retired(Relaxed) {
+                if unbounded.retired() {
                     return true;
                 }
             }

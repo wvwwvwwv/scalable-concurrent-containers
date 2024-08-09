@@ -11,7 +11,7 @@ use std::cmp::Ordering::{Equal, Greater, Less};
 use std::ops::{Bound, RangeBounds};
 use std::ptr;
 use std::sync::atomic::AtomicPtr;
-use std::sync::atomic::Ordering::{self, AcqRel, Acquire, Relaxed, Release};
+use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
 /// [`Tag::First`] indicates the corresponding node has retired.
 pub const RETIRED: Tag = Tag::First;
@@ -93,8 +93,8 @@ impl<K, V> LeafNode<K, V> {
 
     /// Returns `true` if the [`LeafNode`] has retired.
     #[inline]
-    pub(super) fn retired(&self, mo: Ordering) -> bool {
-        self.unbounded_child.tag(mo) == RETIRED
+    pub(super) fn retired(&self) -> bool {
+        self.unbounded_child.tag(Acquire) == RETIRED
     }
 
     /// Waits for the lock on the [`LeafNode`] to be released.
@@ -475,7 +475,7 @@ where
                     // There can be another thread inserting keys into the leaf, and this may
                     // render those operations completely ineffective.
                     self.children.remove_if(key, &mut |_| true);
-                    if let Some(leaf) = leaf.swap((None, Tag::None), Relaxed).0 {
+                    if let Some(leaf) = leaf.swap((None, Tag::None), Release).0 {
                         leaf.delete_self(Release);
                     }
                 }
@@ -654,7 +654,7 @@ where
         // Unfreeze both leaves.
         if let Some(origin_leaf) = self.split_op.origin_leaf.swap((None, Tag::None), Relaxed).0 {
             // Make the origin leaf unreachable before making the new leaves updatable.
-            origin_leaf.delete_self(Relaxed);
+            origin_leaf.delete_self(Release);
             let _: bool = origin_leaf.release();
         }
         let low_key_leaf = self
@@ -716,9 +716,9 @@ where
         // Roll back the linked list state.
         //
         // `high_key_leaf` must be deleted first in order for `Scanners` not to omit entries.
-        let deleted = high_key_leaf.delete_self(Relaxed);
+        let deleted = high_key_leaf.delete_self(Release);
         debug_assert!(deleted);
-        let deleted = low_key_leaf.delete_self(Relaxed);
+        let deleted = low_key_leaf.delete_self(Release);
         debug_assert!(deleted);
 
         if let Some(origin_leaf) = self.split_op.origin_leaf.swap((None, Tag::None), Relaxed).0 {
@@ -791,7 +791,7 @@ where
             self.wait(async_wait);
             return Err((key, val));
         }
-        if self.retired(Relaxed) {
+        if self.retired() {
             self.unlock();
             return Ok(InsertResult::Retired(key, val));
         }
