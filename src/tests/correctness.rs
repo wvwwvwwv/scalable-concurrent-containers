@@ -2339,7 +2339,6 @@ mod treeindex_test {
         assert_eq!(tree.depth(), 0);
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn string_key() {
         let tree1: TreeIndex<String, u32> = TreeIndex::default();
@@ -2347,7 +2346,7 @@ mod treeindex_test {
         let mut checker1 = BTreeSet::new();
         let mut checker2 = BTreeSet::new();
         let mut runner = TestRunner::default();
-        let test_size = 1024;
+        let test_size = if cfg!(miri) { 16 } else { 1024 };
         for i in 0..test_size {
             let prop_str = "[a-z]{1,16}".new_tree(&mut runner).unwrap();
             let str_val = prop_str.current();
@@ -2804,14 +2803,13 @@ mod queue_test {
         println!("{cnt}");
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn iter_push_pop() {
         const NUM_TASKS: usize = 4;
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
 
         let queue: Arc<Queue<R>> = Arc::new(Queue::default());
-        let workload_size = 256;
+        let workload_size = if cfg!(miri) { 16 } else { 256 };
         for _ in 0..16 {
             let mut thread_handles = Vec::with_capacity(NUM_TASKS);
             let barrier = Arc::new(Barrier::new(NUM_TASKS));
@@ -2864,15 +2862,14 @@ mod queue_test {
         println!("{cnt}");
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn mpmc() {
-        const NUM_TASKS: usize = 6;
+        const NUM_TASKS: usize = if cfg!(miri) { 3 } else { 6 };
         const NUM_PRODUCERS: usize = NUM_TASKS / 2;
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
 
         let queue: Arc<Queue<R>> = Arc::new(Queue::default());
-        let workload_size = 256;
+        let workload_size = if cfg!(miri) { 16 } else { 256 };
         for _ in 0..16 {
             let num_popped: Arc<AtomicUsize> = Arc::new(AtomicUsize::default());
             let mut thread_handles = Vec::with_capacity(NUM_TASKS);

@@ -38,7 +38,7 @@ impl WaitQueue {
             Relaxed,
         ) {
             current = actual;
-            entry_mut.next = current;
+            entry_mut.next.store(current, Relaxed);
         }
 
         // Execute the closure.
@@ -65,7 +65,7 @@ impl WaitQueue {
 
         let mut current = self.wait_queue.load(Relaxed);
         let wait_queue_ref: &WaitQueue = self;
-        async_wait.next = current;
+        async_wait.next.store(current, Relaxed);
         async_wait.mutex.replace(Mutex::new((
             Some(unsafe { std::mem::transmute::<&WaitQueue, &WaitQueue>(wait_queue_ref) }),
             None,
@@ -78,7 +78,7 @@ impl WaitQueue {
             Relaxed,
         ) {
             current = actual;
-            async_wait.next = current;
+            async_wait.next.store(current, Relaxed);
         }
 
         // Execute the closure.
@@ -106,16 +106,22 @@ impl WaitQueue {
         while (current & (!ASYNC)) != 0 {
             current = if (current & ASYNC) == 0 {
                 // Synchronous.
-                let entry_ref = unsafe { &mut *(current as *mut SyncWait) };
-                let next = entry_ref.next;
-                entry_ref.next = prev;
+                let entry_ptr = current as *const SyncWait;
+                let next = unsafe {
+                    let next = (*entry_ptr).next.load(Relaxed);
+                    (*entry_ptr).next.store(prev, Relaxed);
+                    next
+                };
                 prev = current;
                 next
             } else {
                 // Asynchronous.
-                let entry_ref = unsafe { &mut *((current & (!ASYNC)) as *mut AsyncWait) };
-                let next = entry_ref.next;
-                entry_ref.next = prev;
+                let entry_ptr = (current & (!ASYNC)) as *const AsyncWait;
+                let next = unsafe {
+                    let next = (*entry_ptr).next.load(Relaxed);
+                    (*entry_ptr).next.store(prev, Relaxed);
+                    next
+                };
                 prev = current;
                 next
             };
@@ -126,16 +132,20 @@ impl WaitQueue {
         while (current & (!ASYNC)) != 0 {
             current = if (current & ASYNC) == 0 {
                 // Synchronous.
-                let entry_ref = unsafe { &*(current as *mut SyncWait) };
-                let next = entry_ref.next;
-                entry_ref.signal();
-                next
+                let entry_ptr = current as *const SyncWait;
+                unsafe {
+                    let next = (*entry_ptr).next.load(Relaxed);
+                    (*entry_ptr).signal();
+                    next
+                }
             } else {
                 // Asynchronous.
-                let entry_ref = unsafe { &*((current & (!ASYNC)) as *mut AsyncWait) };
-                let next = entry_ref.next;
-                entry_ref.signal();
-                next
+                let entry_ptr = (current & (!ASYNC)) as *const AsyncWait;
+                unsafe {
+                    let next = (*entry_ptr).next.load(Relaxed);
+                    (*entry_ptr).signal();
+                    next
+                }
             };
         }
     }
@@ -168,7 +178,7 @@ impl DeriveAsyncWait for () {
 /// pinned.
 #[derive(Debug, Default)]
 pub(crate) struct AsyncWait {
-    next: usize,
+    next: AtomicUsize,
     mutex: Option<Mutex<(Option<&'static WaitQueue>, Option<Waker>)>>,
 }
 
@@ -265,7 +275,7 @@ impl Future for AsyncWait {
 /// signaled.
 #[derive(Debug)]
 struct SyncWait {
-    next: usize,
+    next: AtomicUsize,
     condvar: Condvar,
     mutex: Mutex<bool>,
 }
@@ -275,7 +285,7 @@ impl SyncWait {
     const fn new(next: usize) -> Self {
         #[allow(clippy::mutex_atomic)]
         Self {
-            next,
+            next: AtomicUsize::new(next),
             condvar: Condvar::new(),
             mutex: Mutex::new(false),
         }
