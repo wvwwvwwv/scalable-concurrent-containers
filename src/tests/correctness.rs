@@ -578,7 +578,6 @@ mod hashmap_test {
         }
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn string_key() {
         let hashmap1: HashMap<String, u32> = HashMap::default();
@@ -586,7 +585,7 @@ mod hashmap_test {
         let mut checker1 = BTreeSet::new();
         let mut checker2 = BTreeSet::new();
         let mut runner = TestRunner::default();
-        let test_size = 4096;
+        let test_size = if cfg!(miri) { 16 } else { 4096 };
         for i in 0..test_size {
             let prop_str = "[a-z]{1,16}".new_tree(&mut runner).unwrap();
             let str_val = prop_str.current();
@@ -932,7 +931,6 @@ mod hashindex_test {
         }
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn string_key() {
         let hashindex1: HashIndex<String, u32> = HashIndex::default();
@@ -940,7 +938,7 @@ mod hashindex_test {
         let mut checker1 = BTreeSet::new();
         let mut checker2 = BTreeSet::new();
         let mut runner = TestRunner::default();
-        let test_size = 4096;
+        let test_size = if cfg!(miri) { 16 } else { 4096 };
         for i in 0..test_size {
             let prop_str = "[a-z]{1,16}".new_tree(&mut runner).unwrap();
             let str_val = prop_str.current();
@@ -2803,6 +2801,7 @@ mod queue_test {
         println!("{cnt}");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn iter_push_pop() {
         const NUM_TASKS: usize = 4;

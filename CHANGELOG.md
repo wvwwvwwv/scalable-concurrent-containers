@@ -2,6 +2,11 @@
 
 ## Version 2
 
+2.1.12
+
+* Bump `SDD` to `3.0`.
+* Update doc to clearly state that `Hash*::get*` owns the entry for modification, and recommend `Hash*::read*` for read-only access.
+
 2.1.11
 
 * Activate Miri tests: ([#88](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/88)).

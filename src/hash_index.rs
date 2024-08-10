@@ -637,7 +637,10 @@ where
         }
     }
 
-    /// Gets an occupied entry corresponding to the key.
+    /// Gets an [`OccupiedEntry`] corresponding to the key for in-place modification.
+    ///
+    /// [`OccupiedEntry`] exclusively owns the entry, preventing others from gaining access to it:
+    /// use [`peek`](Self::peek) if read-only access is sufficient.
     ///
     /// Returns `None` if the key does not exist.
     ///
@@ -675,7 +678,10 @@ where
         })
     }
 
-    /// Gets an occupied entry corresponding to the key.
+    /// Gets an [`OccupiedEntry`] corresponding to the key for in-place modification.
+    ///
+    /// [`OccupiedEntry`] exclusively owns the entry, preventing others from gaining access to it:
+    /// use [`peek`](Self::peek) if read-only access is sufficient.
     ///
     /// Returns `None` if the key does not exist. It is an asynchronous method returning an
     /// `impl Future` for the caller to await.

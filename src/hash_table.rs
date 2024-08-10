@@ -994,13 +994,10 @@ where
     ) {
         debug_assert!(!current_array.has_old_array());
 
-        // Hard to tell miri that the bucket owner has just been dropped.
-        if cfg!(miri) {
-            return;
-        }
-
-        if current_array.num_entries() > self.minimum_capacity().load(Relaxed).next_power_of_two()
-            || TYPE == OPTIMISTIC
+        if !cfg!(miri)
+            && (current_array.num_entries()
+                > self.minimum_capacity().load(Relaxed).next_power_of_two()
+                || TYPE == OPTIMISTIC)
         {
             let sample_size = current_array.sample_size();
             let shrink_threshold = sample_size * BUCKET_LEN / 16;
