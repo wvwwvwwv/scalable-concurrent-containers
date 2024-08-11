@@ -1,3 +1,5 @@
+use crate::ebr::Guard;
+use crate::maybe_std::yield_now;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
@@ -5,8 +7,6 @@ use std::sync::atomic::Ordering::{AcqRel, Relaxed};
 use std::sync::{Condvar, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::thread;
-
-use crate::ebr::Guard;
 
 /// `ASYNC` is a flag indicating that the referenced instance corresponds to an asynchronous
 /// operation.
@@ -27,6 +27,11 @@ impl WaitQueue {
     /// Waits for the condition to be met or signaled.
     #[inline]
     pub(crate) fn wait_sync<T, F: FnOnce() -> Result<T, ()>>(&self, f: F) -> Result<T, ()> {
+        if cfg!(miri) || cfg!(feature = "loom") {
+            yield_now();
+            return f();
+        }
+
         let mut current = self.wait_queue.load(Relaxed);
         let mut entry = SyncWait::new(current);
         let mut entry_mut = Pin::new(&mut entry);
@@ -99,6 +104,10 @@ impl WaitQueue {
     /// Signals the threads in the wait queue.
     #[inline]
     pub(crate) fn signal(&self) {
+        if cfg!(miri) || cfg!(feature = "loom") {
+            return;
+        }
+
         let mut current = self.wait_queue.swap(0, AcqRel);
 
         // Flip the queue to prioritize oldest entries.

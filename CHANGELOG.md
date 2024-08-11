@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.1.13
+
+* Fix a data race in `TreeIndex::insert*`.
+
 2.1.12
 
 * Bump `SDD` to `3.0`.

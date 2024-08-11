@@ -2110,11 +2110,10 @@ mod treeindex_test {
         }
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn mixed() {
-        let range = 4096;
-        let num_threads = 16;
+        let range = if cfg!(miri) { 64 } else { 4096 };
+        let num_threads = if cfg!(miri) { 4 } else { 16 };
         let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::new());
         let barrier = Arc::new(Barrier::new(num_threads));
         let mut thread_handles = Vec::with_capacity(num_threads);
@@ -2193,11 +2192,10 @@ mod treeindex_test {
         assert_ne!(tree1, tree2);
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn complex() {
-        let range = 4096;
-        let num_threads = 16;
+        let range = if cfg!(miri) { 64 } else { 4096 };
+        let num_threads = if cfg!(miri) { 4 } else { 16 };
         let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::new());
         for t in 0..num_threads {
             // insert markers
@@ -2259,7 +2257,9 @@ mod treeindex_test {
             }));
         }
         barrier.wait();
-        for _ in 0..512 {
+
+        let iteration = if cfg!(miri) { 16 } else { 512 };
+        for _ in 0..iteration {
             let mut found_0 = false;
             let mut found_markers = 0;
             let mut prev_marker = 0;
@@ -2290,10 +2290,9 @@ mod treeindex_test {
         }
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn remove() {
-        let num_threads = 16;
+        let num_threads = if cfg!(miri) { 4 } else { 16 };
         let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::new());
         let barrier = Arc::new(Barrier::new(num_threads));
         let mut thread_handles = Vec::with_capacity(num_threads);
@@ -2302,7 +2301,8 @@ mod treeindex_test {
             let barrier_copied = barrier.clone();
             thread_handles.push(thread::spawn(move || {
                 barrier_copied.wait();
-                for _ in 0..4096 {
+                let data_size = if cfg!(miri) { 32 } else { 4096 };
+                for _ in 0..data_size {
                     let range = 0..32;
                     let inserted = range
                         .clone()
@@ -2368,11 +2368,11 @@ mod treeindex_test {
         }
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn scanner() {
-        let data_size = 4096;
-        for _ in 0..64 {
+        let data_size = if cfg!(miri) { 128 } else { 4096 };
+        let iteration = if cfg!(miri) { 4 } else { 64 };
+        for _ in 0..iteration {
             let tree: Arc<TreeIndex<usize, u64>> = Arc::new(TreeIndex::default());
             let barrier = Arc::new(Barrier::new(3));
             let inserted = Arc::new(AtomicUsize::new(0));
@@ -2861,7 +2861,6 @@ mod queue_test {
         println!("{cnt}");
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn mpmc() {
         const NUM_TASKS: usize = if cfg!(miri) { 3 } else { 6 };

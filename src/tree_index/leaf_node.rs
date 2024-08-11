@@ -3,7 +3,7 @@ use super::node::Node;
 use super::Leaf;
 use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::exit_guard::ExitGuard;
-use crate::maybe_std::{yield_now, AtomicU8};
+use crate::maybe_std::AtomicU8;
 use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
 use crate::LinkedList;
 use std::borrow::Borrow;
@@ -107,11 +107,6 @@ impl<K, V> LeafNode<K, V> {
             }
             Ok(())
         };
-
-        if cfg!(feature = "loom") {
-            yield_now();
-            return;
-        }
 
         if let Some(async_wait) = async_wait.derive() {
             let _result = self.wait_queue.push_async_entry(async_wait, waiter);
@@ -1189,7 +1184,6 @@ mod test {
         ));
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn bulk() {
         let guard = Guard::new();

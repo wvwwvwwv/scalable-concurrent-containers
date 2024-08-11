@@ -256,7 +256,7 @@ impl<K, V> Leaf<K, V> {
         let (key, val) = self.take(index);
         let result = self
             .metadata
-            .fetch_and(!DIMENSION.rank_mask(index), Relaxed)
+            .fetch_and(!DIMENSION.rank_mask(index), Release)
             & (!DIMENSION.rank_mask(index));
         if Dimension::retired(result) {
             InsertResult::Retired(key, val)

@@ -4,7 +4,7 @@ use super::leaf_node::{LOCKED, RETIRED};
 use super::node::Node;
 use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::exit_guard::ExitGuard;
-use crate::maybe_std::{yield_now, AtomicU8};
+use crate::maybe_std::AtomicU8;
 use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
 use std::borrow::Borrow;
 use std::cmp::Ordering::{Equal, Greater, Less};
@@ -93,11 +93,6 @@ impl<K, V> InternalNode<K, V> {
             }
             Ok(())
         };
-
-        if cfg!(feature = "loom") {
-            yield_now();
-            return;
-        }
 
         if let Some(async_wait) = async_wait.derive() {
             let _result = self.wait_queue.push_async_entry(async_wait, waiter);
@@ -1123,14 +1118,14 @@ mod test {
         }
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn bulk() {
         let internal_node = new_level_3_node();
         let guard = Guard::new();
         assert_eq!(internal_node.depth(1, &guard), 3);
 
-        for k in 0..8192 {
+        let data_size = if cfg!(miri) { 256 } else { 8192 };
+        for k in 0..data_size {
             match internal_node.insert(k, k, &mut (), &guard) {
                 Ok(result) => match result {
                     InsertResult::Success => {
