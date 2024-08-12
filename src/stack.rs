@@ -386,7 +386,7 @@ impl<T> Stack<T> {
         loop {
             new_entry
                 .next()
-                .swap((newest_ptr.get_shared(), Tag::None), Relaxed);
+                .swap((newest_ptr.get_shared(), Tag::None), Acquire);
             let result = self.newest.compare_exchange(
                 newest_ptr,
                 (Some(new_entry.clone()), Tag::None),
@@ -447,11 +447,11 @@ impl<T: Clone> Clone for Stack<T> {
             if let Some(oldest) = oldest.take() {
                 oldest
                     .next()
-                    .swap((Some(new_entry.clone()), Tag::None), Relaxed);
+                    .swap((Some(new_entry.clone()), Tag::None), Acquire);
             } else {
                 self_clone
                     .newest
-                    .swap((Some(new_entry.clone()), Tag::None), Relaxed);
+                    .swap((Some(new_entry.clone()), Tag::None), Acquire);
             }
             oldest.replace(new_entry);
             current = entry.next_ptr(Acquire, &guard);

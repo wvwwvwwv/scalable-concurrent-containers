@@ -389,7 +389,7 @@ impl<T> Queue<T> {
                         .swap((Some(new_entry.clone()), Tag::None), AcqRel);
                     if self.oldest.is_null(Relaxed) {
                         // The `Queue` was emptied in the meantime.
-                        self.newest.swap((None, Tag::None), Release);
+                        self.newest.swap((None, Tag::None), Acquire);
                     }
                     return Ok(new_entry);
                 }
@@ -430,7 +430,7 @@ impl<T> Queue<T> {
                     Ok((_, new_ptr)) => {
                         if new_ptr.is_null() {
                             // Reset `newest`.
-                            self.newest.swap((None, Tag::None), Relaxed);
+                            self.newest.swap((None, Tag::None), Acquire);
                         }
                         return new_ptr;
                     }
