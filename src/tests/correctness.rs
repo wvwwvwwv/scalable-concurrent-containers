@@ -2248,9 +2248,10 @@ mod treeindex_test {
         assert_ne!(tree1, tree2);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn complex() {
-        let range = if cfg!(miri) { 64 } else { 4096 };
+        let range = if cfg!(miri) { 4 } else { 4096 };
         let num_threads = if cfg!(miri) { 4 } else { 16 };
         let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::new());
         for t in 0..num_threads {
