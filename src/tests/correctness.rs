@@ -2166,6 +2166,7 @@ mod treeindex_test {
         }
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn mixed() {
         let range = if cfg!(miri) { 64 } else { 4096 };
@@ -2347,6 +2348,7 @@ mod treeindex_test {
         }
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn remove() {
         let num_threads = if cfg!(miri) { 4 } else { 16 };
@@ -2425,6 +2427,7 @@ mod treeindex_test {
         }
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn scanner() {
         let data_size = if cfg!(miri) { 128 } else { 4096 };
