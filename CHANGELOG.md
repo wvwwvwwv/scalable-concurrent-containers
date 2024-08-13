@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.1.14
+
+* Fix theoretical data race issues in `TreeIndex`: replace dependent loads with load-acquires.
+
 2.1.13
 
 * Fix a data race in `TreeIndex::insert*`.

@@ -136,7 +136,6 @@ where
     /// Removes a range of entries.
     ///
     /// Returns the number of remaining children.
-    #[allow(dead_code, clippy::too_many_arguments)]
     #[inline]
     pub(super) fn remove_range<'g, R: RangeBounds<K>, D: DeriveAsyncWait>(
         &self,
@@ -184,7 +183,7 @@ where
                 key,
                 val,
                 None,
-                root.load(Relaxed, guard),
+                root.load(Acquire, guard),
                 &internal_node.unbounded_child,
                 true,
                 &mut (),
@@ -254,7 +253,7 @@ where
                 return false;
             }
 
-            let new_root_ptr = root.load(Relaxed, guard);
+            let new_root_ptr = root.load(Acquire, guard);
             if root_ptr != new_root_ptr {
                 // The root node has been changed.
                 root_ptr = new_root_ptr;
