@@ -184,7 +184,7 @@ where
                 key,
                 val,
                 None,
-                root.load(Relaxed, guard),
+                root.load(Acquire, guard),
                 &internal_node.unbounded_child,
                 true,
                 &mut (),
@@ -254,7 +254,7 @@ where
                 return false;
             }
 
-            let new_root_ptr = root.load(Relaxed, guard);
+            let new_root_ptr = root.load(Acquire, guard);
             if root_ptr != new_root_ptr {
                 // The root node has been changed.
                 root_ptr = new_root_ptr;
