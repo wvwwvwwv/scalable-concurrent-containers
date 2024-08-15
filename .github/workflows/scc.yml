@@ -55,13 +55,10 @@ jobs:
         run: rustup toolchain add nightly;
           rustup component add rust-src --toolchain nightly;
           rustup component add miri --toolchain nightly
-      - name: Serde
-        run: cargo test serde --features serde;
-          cargo test --release serde --features serde
-      - name: Loom
-        run: cargo test --features loom --release --lib -- --nocapture
       - name: Miri
         run: cargo +nightly miri test
+      - name: Loom
+        run: cargo test --features loom --release --lib -- --nocapture
   check-misc:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -86,6 +83,9 @@ jobs:
           cargo fmt -p examples --check
       - name: Doc
         run: cargo doc --document-private-items;
+      - name: Serde
+        run: cargo test serde --features serde;
+          cargo test --release serde --features serde
       - name: Nightly
         run: cargo +nightly test --release benchmark;
           cargo +nightly test -p examples --release
