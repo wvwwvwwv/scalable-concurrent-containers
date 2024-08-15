@@ -537,13 +537,8 @@ where
 
     /// Upserts a key-value pair into the [`HashMap`].
     ///
-    /// Returns the old value if the [`HashMap`] has this key present, or returns `None`.
-    ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error along with the supplied key-value pair if the key exists.
+    /// Returns the old value if the [`HashMap`] has this key present, or returns `None`. It is an
+    /// asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
