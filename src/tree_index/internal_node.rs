@@ -12,7 +12,7 @@ use std::mem::forget;
 use std::ops::RangeBounds;
 use std::ptr;
 use std::sync::atomic::AtomicPtr;
-use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
 /// Internal node.
 ///
@@ -463,13 +463,13 @@ where
                     // There can be another thread inserting keys into the node, and this may
                     // render those concurrent operations completely ineffective.
                     self.children.remove_if(key, &mut |_| true);
-                    node.swap((None, Tag::None), Release);
+                    node.swap((None, Tag::None), AcqRel);
                 }
                 RemoveRangeState::MaybeAbove => {
                     if valid_upper_min_node.is_some() {
                         // `valid_upper_min_node` is not in this sub-tree.
                         self.children.remove_if(key, &mut |_| true);
-                        node.swap((None, Tag::None), Release);
+                        node.swap((None, Tag::None), AcqRel);
                     } else {
                         num_children += 1;
                         upper_border.replace(node);
@@ -517,7 +517,7 @@ where
             if let Some((Some(key), lower_node)) = lower_border {
                 self.children.remove_if(key, &mut |_| true);
                 self.unbounded_child
-                    .swap((lower_node.get_shared(Acquire, guard), Tag::None), Release);
+                    .swap((lower_node.get_shared(Acquire, guard), Tag::None), AcqRel);
                 lower_node.swap((None, Tag::None), Release);
             }
             if let Some(lower_node) = self.unbounded_child.load(Acquire, guard).as_ref() {
@@ -681,7 +681,7 @@ where
                         }
                     } else {
                         entry_array[num_entries]
-                            .replace((Some(entry.0), entry.1.clone(Relaxed, guard)));
+                            .replace((Some(entry.0), entry.1.clone(Acquire, guard)));
                         num_entries += 1;
                     }
                 }

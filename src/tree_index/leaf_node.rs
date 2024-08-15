@@ -470,7 +470,7 @@ where
                     // There can be another thread inserting keys into the leaf, and this may
                     // render those operations completely ineffective.
                     self.children.remove_if(key, &mut |_| true);
-                    if let Some(leaf) = leaf.swap((None, Tag::None), Release).0 {
+                    if let Some(leaf) = leaf.swap((None, Tag::None), AcqRel).0 {
                         leaf.delete_self(Release);
                     }
                 }
@@ -501,7 +501,7 @@ where
                     first_valid_leaf.and_then(|l| l.get_shared(Acquire, guard)),
                     Tag::None,
                 ),
-                Release,
+                AcqRel,
             );
         } else if let Some(valid_upper_min_node) = valid_upper_min_node {
             // Connect the unbounded child with the minimum valid leaf in the node.
@@ -578,7 +578,7 @@ where
                     num_entries += 1;
                 }
             } else {
-                entry_array[num_entries].replace((Some(entry.0), entry.1.clone(Relaxed, guard)));
+                entry_array[num_entries].replace((Some(entry.0), entry.1.clone(Acquire, guard)));
                 num_entries += 1;
             }
         }
