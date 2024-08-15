@@ -2174,24 +2174,24 @@ mod treeindex_test {
         let barrier = Arc::new(Barrier::new(num_threads));
         let mut thread_handles = Vec::with_capacity(num_threads);
         for thread_id in 0..num_threads {
-            let tree_copied = tree.clone();
+            let tree_clone = tree.clone();
             let barrier_clone = barrier.clone();
             thread_handles.push(thread::spawn(move || {
                 let first_key = thread_id * range;
                 barrier_clone.wait();
                 for key in first_key..(first_key + range / 2) {
-                    assert!(tree_copied.insert(key, key).is_ok());
+                    assert!(tree_clone.insert(key, key).is_ok());
                 }
                 for key in first_key..(first_key + range / 2) {
-                    assert!(tree_copied
+                    assert!(tree_clone
                         .peek_with(&key, |key, val| assert_eq!(key, val))
                         .is_some());
                 }
                 for key in (first_key + range / 2)..(first_key + range) {
-                    assert!(tree_copied.insert(key, key).is_ok());
+                    assert!(tree_clone.insert(key, key).is_ok());
                 }
                 for key in (first_key + range / 2)..(first_key + range) {
-                    assert!(tree_copied
+                    assert!(tree_clone
                         .peek_with(&key, |key, val| assert_eq!(key, val))
                         .is_some());
                 }
@@ -2261,7 +2261,7 @@ mod treeindex_test {
         let barrier = Arc::new(Barrier::new(num_threads + 1));
         let mut thread_handles = Vec::with_capacity(num_threads);
         for thread_id in 0..num_threads {
-            let tree_copied = tree.clone();
+            let tree_clone = tree.clone();
             let stopped_copied = stopped.clone();
             let barrier_clone = barrier.clone();
             thread_handles.push(thread::spawn(move || {
@@ -2269,16 +2269,16 @@ mod treeindex_test {
                 barrier_clone.wait();
                 while !stopped_copied.load(Relaxed) {
                     for key in (first_key + 1)..(first_key + range) {
-                        assert!(tree_copied.insert(key, key).is_ok());
+                        assert!(tree_clone.insert(key, key).is_ok());
                     }
                     for key in (first_key + 1)..(first_key + range) {
-                        assert!(tree_copied
+                        assert!(tree_clone
                             .peek_with(&key, |key, val| assert_eq!(key, val))
                             .is_some());
                     }
                     {
                         let guard = Guard::new();
-                        let mut range_scanner = tree_copied.range(first_key.., &guard);
+                        let mut range_scanner = tree_clone.range(first_key.., &guard);
                         let mut entry = range_scanner.next().unwrap();
                         assert_eq!(entry, (&first_key, &first_key));
                         entry = range_scanner.next().unwrap();
@@ -2293,19 +2293,19 @@ mod treeindex_test {
                     for key in (first_key + 1)..(first_key + range) {
                         if key == key_at_halfway {
                             let guard = Guard::new();
-                            let mut range_scanner = tree_copied.range((first_key + 1).., &guard);
+                            let mut range_scanner = tree_clone.range((first_key + 1).., &guard);
                             let entry = range_scanner.next().unwrap();
                             assert_eq!(entry, (&key_at_halfway, &key_at_halfway));
                             let entry = range_scanner.next().unwrap();
                             assert_eq!(entry, (&(key_at_halfway + 1), &(key_at_halfway + 1)));
                         }
-                        assert!(tree_copied.remove(&key));
-                        assert!(!tree_copied.remove(&key));
-                        assert!(tree_copied.peek_with(&(first_key + 1), |_, _| ()).is_none());
-                        assert!(tree_copied.peek_with(&key, |_, _| ()).is_none());
+                        assert!(tree_clone.remove(&key));
+                        assert!(!tree_clone.remove(&key));
+                        assert!(tree_clone.peek_with(&(first_key + 1), |_, _| ()).is_none());
+                        assert!(tree_clone.peek_with(&key, |_, _| ()).is_none());
                     }
                     for key in (first_key + 1)..(first_key + range) {
-                        assert!(tree_copied
+                        assert!(tree_clone
                             .peek_with(&key, |key, val| assert_eq!(key, val))
                             .is_none());
                     }
@@ -2346,39 +2346,40 @@ mod treeindex_test {
         }
     }
 
-    #[test]
-    fn remove() {
-        let num_threads = if cfg!(miri) { 4 } else { 16 };
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    async fn remove() {
+        let num_tasks = 16;
         let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::new());
-        let barrier = Arc::new(Barrier::new(num_threads));
-        let mut thread_handles = Vec::with_capacity(num_threads);
-        for thread_id in 0..num_threads {
-            let tree_copied = tree.clone();
+        let barrier = Arc::new(AsyncBarrier::new(num_tasks));
+        let mut task_handles = Vec::with_capacity(num_tasks);
+        for task_id in 0..num_tasks {
+            let tree_clone = tree.clone();
             let barrier_clone = barrier.clone();
-            thread_handles.push(thread::spawn(move || {
-                barrier_clone.wait();
-                let data_size = if cfg!(miri) { 32 } else { 4096 };
+            task_handles.push(tokio::task::spawn(async move {
+                barrier_clone.wait().await;
+                let data_size = 4096;
                 for _ in 0..data_size {
                     let range = 0..32;
                     let inserted = range
                         .clone()
-                        .filter(|i| tree_copied.insert(*i, thread_id).is_ok())
+                        .filter(|i| tree_clone.insert(*i, task_id).is_ok())
                         .count();
                     let found = range
                         .clone()
                         .filter(|i| {
-                            tree_copied
-                                .peek_with(i, |_, v| *v == thread_id)
+                            tree_clone
+                                .peek_with(i, |_, v| *v == task_id)
                                 .map_or(false, |t| t)
                         })
                         .count();
                     let removed = range
                         .clone()
-                        .filter(|i| tree_copied.remove_if(i, |v| *v == thread_id))
+                        .filter(|i| tree_clone.remove_if(i, |v| *v == task_id))
                         .count();
                     let removed_again = range
                         .clone()
-                        .filter(|i| tree_copied.remove_if(i, |v| *v == thread_id))
+                        .filter(|i| tree_clone.remove_if(i, |v| *v == task_id))
                         .count();
                     assert_eq!(removed_again, 0);
                     assert_eq!(found, removed, "{inserted} {found} {removed}");
@@ -2386,8 +2387,8 @@ mod treeindex_test {
                 }
             }));
         }
-        for handle in thread_handles {
-            handle.join().unwrap();
+        for r in futures::future::join_all(task_handles).await {
+            assert!(r.is_ok());
         }
         assert_eq!(tree.len(), 0);
         assert_eq!(tree.depth(), 0);
@@ -2435,7 +2436,7 @@ mod treeindex_test {
             let removed = Arc::new(AtomicUsize::new(data_size));
             let mut thread_handles = Vec::new();
             for _ in 0..2 {
-                let tree_copied = tree.clone();
+                let tree_clone = tree.clone();
                 let barrier_clone = barrier.clone();
                 let inserted_clone = inserted.clone();
                 let removed_clone = removed.clone();
@@ -2447,7 +2448,7 @@ mod treeindex_test {
                         let mut prev = 0;
                         let mut iterated = 0;
                         let guard = Guard::new();
-                        for iter in tree_copied.iter(&guard) {
+                        for iter in tree_clone.iter(&guard) {
                             assert!(
                                 prev == 0
                                     || (*iter.0 <= max && prev + 1 == *iter.0)
@@ -2464,7 +2465,7 @@ mod treeindex_test {
                         let mut prev = 0;
                         let max = removed_clone.load(Acquire);
                         let guard = Guard::new();
-                        for iter in tree_copied.iter(&guard) {
+                        for iter in tree_clone.iter(&guard) {
                             let current = *iter.0;
                             assert!(current < max);
                             assert!(prev + 1 == current || prev == 0);
