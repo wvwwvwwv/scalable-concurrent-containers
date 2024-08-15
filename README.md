@@ -55,9 +55,11 @@ use scc::HashMap;
 let hashmap: HashMap<u64, u32> = HashMap::default();
 
 assert!(hashmap.insert(1, 0).is_ok());
-assert_eq!(hashmap.update(&1, |_, v| { *v = 2; *v }).unwrap(), 2);
-assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
-assert_eq!(hashmap.remove(&1).unwrap(), (1, 2));
+assert!(hashmap.insert(1, 1).is_err());
+assert_eq!(hashmap.upsert(1, 1).unwrap(), 0);
+assert_eq!(hashmap.update(&1, |_, v| { *v = 3; *v }).unwrap(), 3);
+assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 3);
+assert_eq!(hashmap.remove(&1).unwrap(), (1, 3));
 
 hashmap.entry(7).or_insert(17);
 assert_eq!(hashmap.read(&7, |_, v| *v).unwrap(), 17);

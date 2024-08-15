@@ -505,6 +505,65 @@ where
         }
     }
 
+    /// Upserts a key-value pair into the [`HashMap`].
+    ///
+    /// Returns the old value if the [`HashMap`] has this key present, or returns `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error along with the supplied key-value pair if the key exists.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// assert!(hashmap.upsert(1, 0).is_none());
+    /// assert_eq!(hashmap.upsert(1, 1).unwrap(), 0);
+    /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 1);
+    /// ```
+    #[inline]
+    pub fn upsert(&self, key: K, val: V) -> Option<V> {
+        match self.entry(key) {
+            Entry::Occupied(mut o) => Some(replace(o.get_mut(), val)),
+            Entry::Vacant(v) => {
+                v.insert_entry(val);
+                None
+            }
+        }
+    }
+
+    /// Upserts a key-value pair into the [`HashMap`].
+    ///
+    /// Returns the old value if the [`HashMap`] has this key present, or returns `None`.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error along with the supplied key-value pair if the key exists.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    /// let future_upsert = hashmap.upsert_async(11, 17);
+    /// ```
+    #[inline]
+    pub async fn upsert_async(&self, key: K, val: V) -> Option<V> {
+        match self.entry_async(key).await {
+            Entry::Occupied(mut o) => Some(replace(o.get_mut(), val)),
+            Entry::Vacant(v) => {
+                v.insert_entry(val);
+                None
+            }
+        }
+    }
+
     /// Updates an existing key-value pair in-place.
     ///
     /// Returns `None` if the key does not exist.

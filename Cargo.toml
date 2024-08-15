@@ -2,7 +2,7 @@
 name = "scc"
 description = "High performance containers and utilities for concurrent and asynchronous programming"
 documentation = "https://docs.rs/scc"
-version = "2.1.14"
+version = "2.1.15"
 authors = ["wvwwvwwv <wvwwvwwv@me.com>"]
 edition = "2021"
 rust-version = "1.65.0"

@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.1.15
+
+* Add `upsert` to `HashMap`.
+
 2.1.14
 
 * Fix theoretical data race issues in `TreeIndex`: replace dependent loads with load-acquires.
