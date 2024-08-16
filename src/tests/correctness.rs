@@ -298,7 +298,7 @@ mod hashmap_test {
                     let result = hashmap_clone.read_async(&id, |_, v| *v).await;
                     assert_eq!(result, Some(id + 1));
                     let result = hashmap_clone.read(&id, |_, v| *v);
-                    assert_eq!(result, Some(id + 1)); // TODO: 28 vs 1262?????? WTF????
+                    assert_eq!(result, Some(id + 1));
                     assert_eq!(*hashmap_clone.get(&id).unwrap().get(), id + 1);
                     assert_eq!(*hashmap_clone.get_async(&id).await.unwrap().get(), id + 1);
                 }
