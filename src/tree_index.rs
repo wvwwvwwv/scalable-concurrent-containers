@@ -17,7 +17,7 @@ use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::ops::RangeBounds;
 use std::panic::UnwindSafe;
 use std::pin::Pin;
-use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
+use std::sync::atomic::Ordering::{AcqRel, Acquire};
 
 /// Scalable concurrent B-plus tree.
 ///
@@ -122,7 +122,7 @@ impl<K, V> TreeIndex<K, V> {
     /// ```
     #[inline]
     pub fn clear(&self) {
-        self.root.swap((None, Tag::None), Relaxed);
+        self.root.swap((None, Tag::None), Acquire);
     }
 
     /// Returns the depth of the [`TreeIndex`].
