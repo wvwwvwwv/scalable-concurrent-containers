@@ -1082,7 +1082,7 @@ impl<'g, K, V, L: LruList, const TYPE: char> Reader<'g, K, V, L, TYPE> {
             let next = (current - 1) & (!WAITING);
             match bucket
                 .state
-                .compare_exchange_weak(current, next, Relaxed, Relaxed)
+                .compare_exchange_weak(current, next, Release, Relaxed)
             {
                 Ok(_) => {
                     if wakeup {

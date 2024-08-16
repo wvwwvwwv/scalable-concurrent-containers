@@ -298,7 +298,7 @@ mod hashmap_test {
                     let result = hashmap_clone.read_async(&id, |_, v| *v).await;
                     assert_eq!(result, Some(id + 1));
                     let result = hashmap_clone.read(&id, |_, v| *v);
-                    assert_eq!(result, Some(id + 1));
+                    assert_eq!(result, Some(id + 1)); // TODO: 28 vs 1262?????? WTF????
                     assert_eq!(*hashmap_clone.get(&id).unwrap().get(), id + 1);
                     assert_eq!(*hashmap_clone.get_async(&id).await.unwrap().get(), id + 1);
                 }
@@ -622,7 +622,7 @@ mod hashmap_test {
         let data_size = 4096;
         for _ in 0..16 {
             let hashmap: Arc<HashMap<u64, u64>> = Arc::new(HashMap::default());
-            let hashmap_copied = hashmap.clone();
+            let hashmap_clone = hashmap.clone();
             let barrier = Arc::new(AsyncBarrier::new(2));
             let barrier_clone = barrier.clone();
             let inserted = Arc::new(AtomicU64::new(0));
@@ -635,7 +635,7 @@ mod hashmap_test {
                 let mut scanned = 0;
                 let mut checker = BTreeSet::new();
                 let mut max = inserted_clone.load(Acquire);
-                hashmap_copied.retain(|k, _| {
+                hashmap_clone.retain(|k, _| {
                     scanned += 1;
                     checker.insert(*k);
                     true
@@ -648,7 +648,7 @@ mod hashmap_test {
                 scanned = 0;
                 checker = BTreeSet::new();
                 max = inserted_clone.load(Acquire);
-                hashmap_copied
+                hashmap_clone
                     .retain_async(|k, _| {
                         scanned += 1;
                         checker.insert(*k);
@@ -663,7 +663,7 @@ mod hashmap_test {
                 barrier_clone.wait().await;
                 scanned = 0;
                 max = removed_clone.load(Acquire);
-                hashmap_copied.retain(|k, _| {
+                hashmap_clone.retain(|k, _| {
                     scanned += 1;
                     assert!(*k < max);
                     true
@@ -672,7 +672,7 @@ mod hashmap_test {
                 barrier_clone.wait().await;
                 scanned = 0;
                 max = removed_clone.load(Acquire);
-                hashmap_copied
+                hashmap_clone
                     .retain_async(|k, _| {
                         scanned += 1;
                         assert!(*k < max);
@@ -2262,12 +2262,12 @@ mod treeindex_test {
         let mut thread_handles = Vec::with_capacity(num_threads);
         for thread_id in 0..num_threads {
             let tree_clone = tree.clone();
-            let stopped_copied = stopped.clone();
+            let stopped_clone = stopped.clone();
             let barrier_clone = barrier.clone();
             thread_handles.push(thread::spawn(move || {
                 let first_key = thread_id * range;
                 barrier_clone.wait();
-                while !stopped_copied.load(Relaxed) {
+                while !stopped_clone.load(Relaxed) {
                     for key in (first_key + 1)..(first_key + range) {
                         assert!(tree_clone.insert(key, key).is_ok());
                     }
@@ -2346,40 +2346,39 @@ mod treeindex_test {
         }
     }
 
-    #[cfg_attr(miri, ignore)]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
-    async fn remove() {
-        let num_tasks = 16;
+    #[test]
+    fn remove() {
+        let num_threads = if cfg!(miri) { 4 } else { 16 };
         let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::new());
-        let barrier = Arc::new(AsyncBarrier::new(num_tasks));
-        let mut task_handles = Vec::with_capacity(num_tasks);
-        for task_id in 0..num_tasks {
+        let barrier = Arc::new(Barrier::new(num_threads));
+        let mut thread_handles = Vec::with_capacity(num_threads);
+        for thread_id in 0..num_threads {
             let tree_clone = tree.clone();
             let barrier_clone = barrier.clone();
-            task_handles.push(tokio::task::spawn(async move {
-                barrier_clone.wait().await;
-                let data_size = 4096;
+            thread_handles.push(thread::spawn(move || {
+                barrier_clone.wait();
+                let data_size = if cfg!(miri) { 16 } else { 4096 };
                 for _ in 0..data_size {
                     let range = 0..32;
                     let inserted = range
                         .clone()
-                        .filter(|i| tree_clone.insert(*i, task_id).is_ok())
+                        .filter(|i| tree_clone.insert(*i, thread_id).is_ok())
                         .count();
                     let found = range
                         .clone()
                         .filter(|i| {
                             tree_clone
-                                .peek_with(i, |_, v| *v == task_id)
+                                .peek_with(i, |_, v| *v == thread_id)
                                 .map_or(false, |t| t)
                         })
                         .count();
                     let removed = range
                         .clone()
-                        .filter(|i| tree_clone.remove_if(i, |v| *v == task_id))
+                        .filter(|i| tree_clone.remove_if(i, |v| *v == thread_id))
                         .count();
                     let removed_again = range
                         .clone()
-                        .filter(|i| tree_clone.remove_if(i, |v| *v == task_id))
+                        .filter(|i| tree_clone.remove_if(i, |v| *v == thread_id))
                         .count();
                     assert_eq!(removed_again, 0);
                     assert_eq!(found, removed, "{inserted} {found} {removed}");
@@ -2387,8 +2386,8 @@ mod treeindex_test {
                 }
             }));
         }
-        for r in futures::future::join_all(task_handles).await {
-            assert!(r.is_ok());
+        for handle in thread_handles {
+            handle.join().unwrap();
         }
         assert_eq!(tree.len(), 0);
         assert_eq!(tree.depth(), 0);

@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.1.16
+
+* Fix potential data races in `HashMap` and `TreeIndex`.
+
 2.1.15
 
 * Add `upsert` to `HashMap`.
