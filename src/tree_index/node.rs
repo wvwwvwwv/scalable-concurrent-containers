@@ -30,6 +30,15 @@ impl<K, V> Node<K, V> {
         Self::Leaf(LeafNode::new())
     }
 
+    /// Clears the node.
+    #[inline]
+    pub(super) fn clear(&self, guard: &Guard) {
+        match &self {
+            Self::Internal(internal_node) => internal_node.clear(guard),
+            Self::Leaf(leaf_node) => leaf_node.clear(guard),
+        }
+    }
+
     /// Returns the depth of the node.
     #[inline]
     pub(super) fn depth(&self, depth: usize, guard: &Guard) -> usize {

@@ -122,7 +122,9 @@ impl<K, V> TreeIndex<K, V> {
     /// ```
     #[inline]
     pub fn clear(&self) {
-        self.root.swap((None, Tag::None), Acquire);
+        if let (Some(root), _) = self.root.swap((None, Tag::None), Acquire) {
+            root.clear(&Guard::new());
+        }
     }
 
     /// Returns the depth of the [`TreeIndex`].
@@ -787,6 +789,13 @@ impl<K, V> Default for TreeIndex<K, V> {
     #[inline]
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<K, V> Drop for TreeIndex<K, V> {
+    #[inline]
+    fn drop(&mut self) {
+        self.clear();
     }
 }
 

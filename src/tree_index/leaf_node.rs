@@ -91,6 +91,22 @@ impl<K, V> LeafNode<K, V> {
         }
     }
 
+    /// Clears the leaf node by unlinking all the leaves.
+    #[inline]
+    pub(super) fn clear(&self, guard: &Guard) {
+        let scanner = Scanner::new(&self.children);
+        for (_, child) in scanner {
+            let child_ptr = child.load(Acquire, guard);
+            if let Some(child) = child_ptr.as_ref() {
+                child.link_ref().swap((None, Tag::None), Acquire);
+            }
+        }
+        let unbounded_ptr = self.unbounded_child.load(Acquire, guard);
+        if let Some(unbounded) = unbounded_ptr.as_ref() {
+            unbounded.link_ref().swap((None, Tag::None), Acquire);
+        }
+    }
+
     /// Returns `true` if the [`LeafNode`] has retired.
     #[inline]
     pub(super) fn retired(&self) -> bool {

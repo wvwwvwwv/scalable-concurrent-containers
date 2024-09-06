@@ -290,12 +290,12 @@ assert!(treeindex.insert(3, 13).is_ok());
 
 let guard = Guard::new();
 
-// `visitor` iterates over entries without acquiring a lock.
-let mut visitor = treeindex.iter(&guard);
-assert_eq!(visitor.next().unwrap(), (&1, &10));
-assert_eq!(visitor.next().unwrap(), (&2, &11));
-assert_eq!(visitor.next().unwrap(), (&3, &13));
-assert!(visitor.next().is_none());
+// `iter` iterates over entries without acquiring a lock.
+let mut iter = treeindex.iter(&guard);
+assert_eq!(iter.next().unwrap(), (&1, &10));
+assert_eq!(iter.next().unwrap(), (&2, &11));
+assert_eq!(iter.next().unwrap(), (&3, &13));
+assert!(iter.next().is_none());
 ```
 
 A specific range of keys can be scanned.

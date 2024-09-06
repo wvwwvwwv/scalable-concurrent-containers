@@ -112,7 +112,7 @@ mod hashmap_test {
     }
 
     #[test]
-    fn clear() {
+    fn clear_sync() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
 
         let hashmap: HashMap<usize, R> = HashMap::default();
@@ -863,7 +863,7 @@ mod hashindex_test {
     }
 
     #[test]
-    fn clear() {
+    fn clear_sync() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         let hashindex: HashIndex<usize, R> = HashIndex::default();
 
@@ -1929,7 +1929,7 @@ mod treeindex_test {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         let tree: TreeIndex<usize, R> = TreeIndex::default();
 
-        let workload_size = 256;
+        let workload_size = if cfg!(miri) { 256 } else { 1024 * 1024 };
         for k in 0..workload_size {
             assert!(tree.insert(k, R::new(&INST_CNT)).is_ok());
         }
@@ -1937,30 +1937,13 @@ mod treeindex_test {
         assert_eq!(tree.len(), workload_size);
         tree.clear();
 
+        let mut cnt: usize = 0;
         while INST_CNT.load(Relaxed) != 0 {
             Guard::new().accelerate();
             thread::yield_now();
+            cnt += 1;
         }
-    }
-
-    #[cfg_attr(miri, ignore)]
-    #[tokio::test]
-    async fn clear_async() {
-        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
-        let tree: TreeIndex<usize, R> = TreeIndex::default();
-
-        let workload_size = 1024;
-        for k in 0..workload_size {
-            assert!(tree.insert_async(k, R::new(&INST_CNT)).await.is_ok());
-        }
-        assert!(INST_CNT.load(Relaxed) >= workload_size);
-        assert_eq!(tree.len(), workload_size);
-        tree.clear();
-
-        while INST_CNT.load(Relaxed) != 0 {
-            Guard::new().accelerate();
-            tokio::task::yield_now().await;
-        }
+        println!("{cnt}");
     }
 
     #[test]

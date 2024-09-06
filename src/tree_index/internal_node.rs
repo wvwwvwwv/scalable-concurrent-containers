@@ -67,6 +67,22 @@ impl<K, V> InternalNode<K, V> {
         }
     }
 
+    /// Clears the internal node.
+    #[inline]
+    pub(super) fn clear(&self, guard: &Guard) {
+        let scanner = Scanner::new(&self.children);
+        for (_, child) in scanner {
+            let child_ptr = child.load(Acquire, guard);
+            if let Some(child) = child_ptr.as_ref() {
+                child.clear(guard);
+            }
+        }
+        let unbounded_ptr = self.unbounded_child.load(Acquire, guard);
+        if let Some(unbounded) = unbounded_ptr.as_ref() {
+            unbounded.clear(guard);
+        }
+    }
+
     /// Returns the depth of the node.
     #[inline]
     pub(super) fn depth(&self, depth: usize, guard: &Guard) -> usize {
