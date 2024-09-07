@@ -2,7 +2,7 @@
 mod examples {
     use scc::Stack;
 
-    #[test]
+    #[test] // TODO: #156.
     fn single_threaded() {
         let workload_size = 256;
         let stack: Stack<isize> = Stack::default();
