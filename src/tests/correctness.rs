@@ -1804,6 +1804,7 @@ mod treeindex_test {
     use proptest::prelude::*;
     use proptest::strategy::ValueTree;
     use proptest::test_runner::TestRunner;
+    use sdd::suspend;
     use std::collections::BTreeSet;
     use std::ops::RangeInclusive;
     use std::panic::UnwindSafe;
@@ -1901,26 +1902,57 @@ mod treeindex_test {
         }
     }
 
-    #[cfg_attr(miri, ignore)]
-    #[tokio::test]
-    async fn insert_remove_async() {
+    #[test]
+    fn insert_remove_clear() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
-        let tree: TreeIndex<usize, R> = TreeIndex::default();
 
-        let workload_size = 1024;
-        for k in 0..workload_size {
-            assert!(tree.insert_async(k, R::new(&INST_CNT)).await.is_ok());
+        let num_threads = 3;
+        let num_iter = if cfg!(miri) { 1 } else { 8 };
+        let workload_size = if cfg!(miri) { 32 } else { 1024 };
+        let tree: Arc<TreeIndex<usize, R>> = Arc::new(TreeIndex::default());
+        let mut thread_handles = Vec::with_capacity(num_threads);
+        let barrier = Arc::new(Barrier::new(num_threads));
+        for task_id in 0..num_threads {
+            let barrier_clone = barrier.clone();
+            let tree_clone = tree.clone();
+            thread_handles.push(thread::spawn(move || {
+                for _ in 0..num_iter {
+                    barrier_clone.wait();
+                    match task_id {
+                        0 => {
+                            for k in 0..workload_size {
+                                assert!(tree_clone.insert(k, R::new(&INST_CNT)).is_ok());
+                            }
+                        }
+                        1 => {
+                            for k in 0..workload_size / 8 {
+                                tree_clone.remove(&(k * 4));
+                            }
+                        }
+                        _ => {
+                            for _ in 0..workload_size / 64 {
+                                if tree_clone.len() >= workload_size / 4 {
+                                    tree_clone.clear();
+                                }
+                            }
+                        }
+                    }
+                    tree_clone.clear();
+                    assert!(suspend());
+                }
+                drop(tree_clone);
+            }))
         }
-        assert!(INST_CNT.load(Relaxed) >= workload_size);
-        assert_eq!(tree.len(), workload_size);
-        for k in 0..workload_size {
-            assert!(tree.remove_async(&k).await);
+
+        for handle in thread_handles {
+            handle.join().unwrap();
         }
-        assert_eq!(tree.len(), 0);
+
+        drop(tree);
 
         while INST_CNT.load(Relaxed) != 0 {
             Guard::new().accelerate();
-            tokio::task::yield_now().await;
+            thread::yield_now();
         }
     }
 
@@ -1965,29 +1997,6 @@ mod treeindex_test {
         while INST_CNT.load(Relaxed) != 0 {
             Guard::new().accelerate();
             thread::yield_now();
-        }
-    }
-
-    #[cfg_attr(miri, ignore)]
-    #[tokio::test]
-    async fn clone_async() {
-        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
-        let tree: TreeIndex<usize, R> = TreeIndex::default();
-
-        let workload_size = 1024;
-        for k in 0..workload_size {
-            assert!(tree.insert_async(k, R::new(&INST_CNT)).await.is_ok());
-        }
-        let tree_clone = tree.clone();
-        tree.clear();
-        for k in 0..workload_size {
-            assert!(tree_clone.peek_with(&k, |_, _| ()).is_some());
-        }
-        tree_clone.clear();
-
-        while INST_CNT.load(Relaxed) != 0 {
-            Guard::new().accelerate();
-            tokio::task::yield_now().await;
         }
     }
 

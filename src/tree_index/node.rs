@@ -178,16 +178,19 @@ where
     /// Splits the current root node.
     #[inline]
     pub(super) fn split_root(
+        root_ptr: Ptr<Node<K, V>>,
+        root: &AtomicShared<Node<K, V>>,
         key: K,
         val: V,
-        root: &AtomicShared<Node<K, V>>,
         guard: &Guard,
     ) -> (K, V) {
-        // The fact that the `TreeIndex` calls this function means that the root is full and
-        // locked.
+        // The fact that the `TreeIndex` calls this function means the root is full and locked.
         let mut new_root = Shared::new(Node::new_internal_node());
-        if let Some(Self::Internal(internal_node)) = unsafe { new_root.get_mut() } {
-            internal_node.unbounded_child = root.clone(Relaxed, guard);
+        if let (Some(Self::Internal(internal_node)), Some(old_root)) = (
+            unsafe { new_root.get_mut() },
+            root.get_shared(Relaxed, guard),
+        ) {
+            internal_node.unbounded_child = AtomicShared::from(old_root);
             let result = internal_node.split_node(
                 key,
                 val,
@@ -203,17 +206,37 @@ where
             };
 
             // Updates the pointer before unlocking the root.
-            let new_root_ref = new_root.get_guarded_ptr(guard).as_ref();
-            if let Some(old_root) = root.swap((Some(new_root), Tag::None), Release).0 {
-                if let Some(Self::Internal(internal_node)) = new_root_ref.as_ref() {
-                    internal_node.finish_split();
-                    old_root.commit(guard);
+            match root.compare_exchange(
+                root_ptr,
+                (Some(new_root), Tag::None),
+                Release,
+                Relaxed,
+                guard,
+            ) {
+                Ok((old_root, new_root_ptr)) => {
+                    if let Some(Self::Internal(internal_node)) = new_root_ptr.as_ref() {
+                        internal_node.finish_split();
+                    }
+                    if let Some(old_root) = old_root {
+                        old_root.commit(guard);
+                    };
                 }
-                let _: bool = old_root.release();
-            };
-
+                Err((new_root, old_root_ptr)) => {
+                    // The root has been cleared.
+                    if let Some(Self::Internal(internal_node)) = new_root.as_deref() {
+                        internal_node.finish_split();
+                    }
+                    if let Some(old_root) = old_root_ptr.as_ref() {
+                        old_root.rollback(guard);
+                    }
+                }
+            }
             (key, val)
         } else {
+            // The root has been cleared.
+            if let Some(old_root) = root_ptr.as_ref() {
+                old_root.rollback(guard);
+            }
             (key, val)
         }
     }
@@ -262,13 +285,6 @@ where
                 return false;
             }
 
-            let new_root_ptr = root.load(Acquire, guard);
-            if root_ptr != new_root_ptr {
-                // The root node has been changed.
-                root_ptr = new_root_ptr;
-                continue;
-            }
-
             let new_root = match root_ref {
                 Node::Internal(internal_node) => {
                     if internal_node.retired() {
@@ -293,18 +309,17 @@ where
                 }
             };
 
-            if let Some(new_root_ptr) = new_root.as_ref().map(|n| n.get_guarded_ptr(guard)) {
-                root_ptr = new_root_ptr;
-            } else {
-                root_ptr = Ptr::null();
-            }
-
-            if let (Some(old_root), _) = root.swap((new_root, Tag::None), Release) {
-                let _: bool = old_root.release();
-            }
-
-            if let Some(internal_node_locker) = internal_node_locker {
-                internal_node_locker.unlock_retire();
+            match root.compare_exchange(root_ptr, (new_root, Tag::None), Release, Relaxed, guard) {
+                Ok((_, new_root_ptr)) => {
+                    root_ptr = new_root_ptr;
+                    if let Some(internal_node_locker) = internal_node_locker {
+                        internal_node_locker.unlock_retire();
+                    }
+                }
+                Err((_, new_root_ptr)) => {
+                    // The root node has been changed.
+                    root_ptr = new_root_ptr;
+                }
             }
         }
 

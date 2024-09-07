@@ -174,7 +174,8 @@ where
         let mut new_root = None;
         loop {
             let guard = Guard::new();
-            if let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
+            let root_ptr = self.root.load(Acquire, &guard);
+            if let Some(root_ref) = root_ptr.as_ref() {
                 match root_ref.insert(key, val, &mut (), &guard) {
                     Ok(r) => match r {
                         InsertResult::Success => return Ok(()),
@@ -185,7 +186,7 @@ where
                         }
                         InsertResult::Duplicate(k, v) => return Err((k, v)),
                         InsertResult::Full(k, v) => {
-                            let (k, v) = Node::split_root(k, v, &self.root, &guard);
+                            let (k, v) = Node::split_root(root_ptr, &self.root, k, v, &guard);
                             key = k;
                             val = v;
                             continue;
@@ -245,7 +246,8 @@ where
 
             let need_await = {
                 let guard = Guard::new();
-                if let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
+                let root_ptr = self.root.load(Acquire, &guard);
+                if let Some(root_ref) = root_ptr.as_ref() {
                     match root_ref.insert(key, val, &mut async_wait_pinned, &guard) {
                         Ok(r) => match r {
                             InsertResult::Success => return Ok(()),
@@ -257,7 +259,7 @@ where
                             }
                             InsertResult::Duplicate(k, v) => return Err((k, v)),
                             InsertResult::Full(k, v) => {
-                                let (k, v) = Node::split_root(k, v, &self.root, &guard);
+                                let (k, v) = Node::split_root(root_ptr, &self.root, k, v, &guard);
                                 key = k;
                                 val = v;
                                 continue;
