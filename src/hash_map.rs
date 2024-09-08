@@ -1384,8 +1384,8 @@ where
     /// assert!(hashmap_default.insert(1, 0).is_ok());
     /// assert_eq!(hashmap_default.capacity(), 64);
     ///
-    /// let hashmap: HashMap<u64, u32> = HashMap::with_capacity(1000000);
-    /// assert_eq!(hashmap.capacity(), 1048576);
+    /// let hashmap: HashMap<u64, u32> = HashMap::with_capacity(1000);
+    /// assert_eq!(hashmap.capacity(), 1024);
     /// ```
     #[inline]
     pub fn capacity(&self) -> usize {

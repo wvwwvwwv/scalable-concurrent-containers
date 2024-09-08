@@ -991,8 +991,8 @@ where
     /// assert!(hashindex_default.insert(1, 0).is_ok());
     /// assert_eq!(hashindex_default.capacity(), 64);
     ///
-    /// let hashindex: HashIndex<u64, u32> = HashIndex::with_capacity(1000000);
-    /// assert_eq!(hashindex.capacity(), 1048576);
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::with_capacity(1000);
+    /// assert_eq!(hashindex.capacity(), 1024);
     /// ```
     #[inline]
     pub fn capacity(&self) -> usize {

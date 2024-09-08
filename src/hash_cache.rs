@@ -1036,8 +1036,8 @@ where
     /// let hashcache_default: HashCache<u64, u32> = HashCache::default();
     /// assert_eq!(hashcache_default.capacity(), 0);
     ///
-    /// let hashcache: HashCache<u64, u32> = HashCache::with_capacity(1000000, 2000000);
-    /// assert_eq!(hashcache.capacity(), 1048576);
+    /// let hashcache: HashCache<u64, u32> = HashCache::with_capacity(1000, 2000);
+    /// assert_eq!(hashcache.capacity(), 1024);
     /// ```
     #[inline]
     pub fn capacity(&self) -> usize {

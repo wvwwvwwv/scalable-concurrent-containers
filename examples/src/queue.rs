@@ -2,7 +2,7 @@
 mod examples {
     use scc::Queue;
 
-    #[test] // TODO: #156.
+    #[test]
     fn single_threaded() {
         let workload_size = 256;
         let queue: Queue<isize> = Queue::default();

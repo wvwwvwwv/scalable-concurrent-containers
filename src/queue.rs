@@ -497,6 +497,20 @@ impl<T> Default for Queue<T> {
     }
 }
 
+impl<T> Drop for Queue<T> {
+    #[inline]
+    fn drop(&mut self) {
+        if !self.oldest.is_null(Relaxed) {
+            let guard = Guard::new();
+            let mut iter = self.iter(&guard);
+            while let Some(entry) = iter.current.as_ref() {
+                entry.delete_self(Relaxed);
+                iter.next();
+            }
+        }
+    }
+}
+
 impl<'g, T> FusedIterator for Iter<'g, T> {}
 
 impl<'g, T> Iterator for Iter<'g, T> {

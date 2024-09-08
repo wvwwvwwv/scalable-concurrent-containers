@@ -2338,7 +2338,6 @@ mod treeindex_test {
         }
     }
 
-    #[cfg_attr(miri, ignore)] // TODO: #156.
     #[test]
     fn remove() {
         let num_threads = if cfg!(miri) { 4 } else { 16 };

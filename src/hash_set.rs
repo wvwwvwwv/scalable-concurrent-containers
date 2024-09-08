@@ -588,8 +588,8 @@ where
     /// assert!(hashset_default.insert(1).is_ok());
     /// assert_eq!(hashset_default.capacity(), 64);
     ///
-    /// let hashset: HashSet<u64> = HashSet::with_capacity(1000000);
-    /// assert_eq!(hashset.capacity(), 1048576);
+    /// let hashset: HashSet<u64> = HashSet::with_capacity(1000);
+    /// assert_eq!(hashset.capacity(), 1024);
     /// ```
     #[inline]
     pub fn capacity(&self) -> usize {

@@ -6,7 +6,7 @@ use crate::wait_queue::DeriveAsyncWait;
 use std::borrow::Borrow;
 use std::fmt::{self, Debug};
 use std::ops::RangeBounds;
-use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
 /// [`Node`] is either [`Self::Internal`] or [`Self::Leaf`].
 pub enum Node<K, V> {
@@ -309,7 +309,7 @@ where
                 }
             };
 
-            match root.compare_exchange(root_ptr, (new_root, Tag::None), Release, Relaxed, guard) {
+            match root.compare_exchange(root_ptr, (new_root, Tag::None), AcqRel, Acquire, guard) {
                 Ok((_, new_root_ptr)) => {
                     root_ptr = new_root_ptr;
                     if let Some(internal_node_locker) = internal_node_locker {
