@@ -616,7 +616,7 @@ where
         Q: Ord + ?Sized,
     {
         if let Some(root_ref) = self.root.load(Acquire, guard).as_ref() {
-            return root_ref.search(key, guard);
+            return root_ref.search(key, guard).map(|(_k, v)| v);
         }
         None
     }
@@ -641,6 +641,39 @@ where
     {
         let guard = Guard::new();
         self.peek(key, &guard).map(|v| reader(key, v))
+    }
+
+    /// Returns a guarded reference to the key-value pair for the specified key without acquiring locks.
+    ///
+    /// Returns `None` if the key does not exist. The returned reference can survive as long as the
+    /// associated [`Guard`] is alive.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use scc::TreeIndex;
+    /// use scc::ebr::Guard;
+    ///
+    /// let treeindex: TreeIndex<Arc<str>, u32> = TreeIndex::new();
+    /// treeindex.insert("foo".into(), 1).expect("insert in empty TreeIndex");
+    ///
+    /// let guard = Guard::new();
+    /// let key: Arc<str> = treeindex
+    ///     .peek_entry("foo", &guard)
+    ///     .map(|(k, _v)| Arc::clone(k))
+    ///     .expect("peek by borrowed value");
+    /// ```
+    #[inline]
+    pub fn peek_entry<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<(&'g K, &'g V)>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        if let Some(root_ref) = self.root.load(Acquire, guard).as_ref() {
+            return root_ref.search(key, guard);
+        }
+        None
     }
 
     /// Returns `true` if the [`TreeIndex`] contains the key.
