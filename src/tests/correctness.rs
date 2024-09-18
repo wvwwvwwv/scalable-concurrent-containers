@@ -1817,10 +1817,10 @@ mod treeindex_test {
 
     static_assertions::assert_impl_all!(TreeIndex<String, String>: Send, Sync, UnwindSafe);
     static_assertions::assert_impl_all!(Iter<'static, 'static, String, String>: UnwindSafe);
-    static_assertions::assert_impl_all!(Range<'static, 'static, String, String, RangeInclusive<String>>: UnwindSafe);
+    static_assertions::assert_impl_all!(Range<'static, 'static, String, String, String, RangeInclusive<String>>: UnwindSafe);
     static_assertions::assert_not_impl_all!(TreeIndex<String, *const String>: Send, Sync, UnwindSafe);
     static_assertions::assert_not_impl_all!(Iter<'static, 'static, String, *const String>: Send, Sync, UnwindSafe);
-    static_assertions::assert_not_impl_all!(Range<'static, 'static, String, *const String, RangeInclusive<String>>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_all!(Range<'static, 'static, String, *const String, String, RangeInclusive<String>>: Send, Sync, UnwindSafe);
 
     struct R(&'static AtomicUsize);
     impl R {
@@ -1941,7 +1941,7 @@ mod treeindex_test {
                     assert!(suspend());
                 }
                 drop(tree_clone);
-            }))
+            }));
         }
 
         for handle in thread_handles {
