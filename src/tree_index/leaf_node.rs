@@ -1,5 +1,3 @@
-use equivalent::Comparable;
-
 use super::leaf::{InsertResult, RemoveResult, Scanner, DIMENSION};
 use super::node::Node;
 use super::Leaf;
@@ -7,6 +5,7 @@ use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::exit_guard::ExitGuard;
 use crate::maybe_std::AtomicU8;
 use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
+use crate::Comparable;
 use crate::LinkedList;
 use std::borrow::Borrow;
 use std::cmp::Ordering::{Equal, Greater, Less};

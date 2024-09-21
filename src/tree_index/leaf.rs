@@ -1,7 +1,6 @@
-use equivalent::Comparable;
-
 use crate::ebr::{AtomicShared, Guard, Shared};
 use crate::maybe_std::AtomicUsize;
+use crate::Comparable;
 use crate::LinkedList;
 use std::cell::UnsafeCell;
 use std::cmp::Ordering;

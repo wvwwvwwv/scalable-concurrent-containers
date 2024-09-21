@@ -7,7 +7,7 @@ mod node;
 
 use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::wait_queue::AsyncWait;
-use equivalent::Comparable;
+use crate::Comparable;
 use leaf::{InsertResult, Leaf, RemoveResult, Scanner};
 use node::Node;
 use std::fmt::{self, Debug};
