@@ -7,10 +7,9 @@ mod node;
 
 use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::wait_queue::AsyncWait;
+use equivalent::Comparable;
 use leaf::{InsertResult, Leaf, RemoveResult, Scanner};
 use node::Node;
-use std::borrow::Borrow;
-use std::cmp::Ordering;
 use std::fmt::{self, Debug};
 use std::iter::FusedIterator;
 use std::marker::PhantomData;
@@ -325,8 +324,7 @@ where
     #[inline]
     pub fn remove<Q>(&self, key: &Q) -> bool
     where
-        K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: Comparable<K> + ?Sized,
     {
         self.remove_if(key, |_| true)
     }
@@ -350,8 +348,7 @@ where
     #[inline]
     pub async fn remove_async<Q>(&self, key: &Q) -> bool
     where
-        K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: Comparable<K> + ?Sized,
     {
         self.remove_if_async(key, |_| true).await
     }
@@ -377,8 +374,7 @@ where
     #[inline]
     pub fn remove_if<Q, F: FnMut(&V) -> bool>(&self, key: &Q, mut condition: F) -> bool
     where
-        K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: Comparable<K> + ?Sized,
     {
         let mut removed = false;
         loop {
@@ -435,8 +431,7 @@ where
     #[inline]
     pub async fn remove_if_async<Q, F: FnMut(&V) -> bool>(&self, key: &Q, mut condition: F) -> bool
     where
-        K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: Comparable<K> + ?Sized,
     {
         let mut removed = false;
         loop {
@@ -614,8 +609,7 @@ where
     #[inline]
     pub fn peek<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<&'g V>
     where
-        K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: Comparable<K> + ?Sized,
     {
         if let Some(root_ref) = self.root.load(Acquire, guard).as_ref() {
             return root_ref.search(key, guard).map(|(_k, v)| v);
@@ -638,8 +632,7 @@ where
     #[inline]
     pub fn peek_with<Q, R, F: FnOnce(&Q, &V) -> R>(&self, key: &Q, reader: F) -> Option<R>
     where
-        K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: Comparable<K> + ?Sized,
     {
         let guard = Guard::new();
         self.peek(key, &guard).map(|v| reader(key, v))
@@ -669,8 +662,7 @@ where
     #[inline]
     pub fn peek_entry<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<(&'g K, &'g V)>
     where
-        K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: Comparable<K> + ?Sized,
     {
         if let Some(root_ref) = self.root.load(Acquire, guard).as_ref() {
             return root_ref.search(key, guard);
@@ -694,8 +686,7 @@ where
     #[inline]
     pub fn contains<Q>(&self, key: &Q) -> bool
     where
-        K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: Comparable<K> + ?Sized,
     {
         self.peek(key, &Guard::new()).is_some()
     }
@@ -783,8 +774,7 @@ where
         guard: &'g Guard,
     ) -> Range<'t, 'g, K, V, Q, R>
     where
-        K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: Comparable<K> + ?Sized,
     {
         Range::new(&self.root, range, guard)
     }
@@ -945,9 +935,9 @@ impl<'t, 'g, K, V, Q: ?Sized, R: RangeBounds<Q>> Range<'t, 'g, K, V, Q, R> {
 
 impl<'t, 'g, K, V, Q, R> Range<'t, 'g, K, V, Q, R>
 where
-    K: 'static + Clone + Ord + Borrow<Q>,
+    K: 'static + Clone + Ord,
     V: 'static + Clone,
-    Q: ?Sized + Ord,
+    Q: Comparable<K> + ?Sized,
     R: RangeBounds<Q>,
 {
     #[inline]
@@ -989,7 +979,7 @@ where
 
         // Go to the next entry.
         if let Some(mut leaf_scanner) = self.leaf_scanner.take() {
-            let min_allowed_key = leaf_scanner.get().map(|(key, _)| key.borrow());
+            let min_allowed_key = leaf_scanner.get().map(|(key, _)| key);
             if let Some(result) = leaf_scanner.next() {
                 self.leaf_scanner.replace(leaf_scanner);
                 return Some(result);
@@ -1010,14 +1000,12 @@ where
     #[inline]
     fn set_check_upper_bound(&mut self, scanner: &Scanner<K, V>) {
         self.check_upper_bound = match self.range.end_bound() {
-            Excluded(key) => scanner.max_key().map_or(false, |max_key| {
-                let kq: &Q = max_key.borrow();
-                kq.cmp(key) != Ordering::Less
-            }),
-            Included(key) => scanner.max_key().map_or(false, |max_key| {
-                let kq: &Q = max_key.borrow();
-                kq.cmp(key) == Ordering::Greater
-            }),
+            Excluded(key) => scanner
+                .max_key()
+                .map_or(false, |max_key| key.compare(max_key).is_le()),
+            Included(key) => scanner
+                .max_key()
+                .map_or(false, |max_key| key.compare(max_key).is_lt()),
             Unbounded => false,
         };
     }
@@ -1037,9 +1025,9 @@ impl<'t, 'g, K, V, Q: ?Sized, R: RangeBounds<Q>> Debug for Range<'t, 'g, K, V, Q
 
 impl<'t, 'g, K, V, Q, R> Iterator for Range<'t, 'g, K, V, Q, R>
 where
-    K: 'static + Clone + Ord + Borrow<Q>,
+    K: 'static + Clone + Ord,
     V: 'static + Clone,
-    Q: ?Sized + Ord,
+    Q: Comparable<K> + ?Sized,
     R: RangeBounds<Q>,
 {
     type Item = (&'g K, &'g V);
@@ -1047,16 +1035,15 @@ where
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         while let Some((k, v)) = self.next_unbounded() {
-            let kq: &Q = k.borrow();
             if self.check_lower_bound {
                 match self.range.start_bound() {
                     Excluded(key) => {
-                        if kq.cmp(key) != Ordering::Greater {
+                        if key.compare(k).is_ge() {
                             continue;
                         }
                     }
                     Included(key) => {
-                        if kq.cmp(key) == Ordering::Less {
+                        if key.compare(k).is_gt() {
                             continue;
                         }
                     }
@@ -1067,12 +1054,12 @@ where
             if self.check_upper_bound {
                 match self.range.end_bound() {
                     Excluded(key) => {
-                        if kq.cmp(key) == Ordering::Less {
+                        if key.compare(k).is_gt() {
                             return Some((k, v));
                         }
                     }
                     Included(key) => {
-                        if kq.cmp(key) != Ordering::Greater {
+                        if key.compare(k).is_ge() {
                             return Some((k, v));
                         }
                     }
@@ -1090,9 +1077,9 @@ where
 
 impl<'t, 'g, K, V, Q, R> FusedIterator for Range<'t, 'g, K, V, Q, R>
 where
-    K: 'static + Clone + Ord + Borrow<Q>,
+    K: 'static + Clone + Ord,
     V: 'static + Clone,
-    Q: ?Sized + Ord,
+    Q: Comparable<K> + ?Sized,
     R: RangeBounds<Q>,
 {
 }

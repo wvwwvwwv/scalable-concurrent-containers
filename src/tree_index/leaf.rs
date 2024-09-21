@@ -1,7 +1,8 @@
+use equivalent::Comparable;
+
 use crate::ebr::{AtomicShared, Guard, Shared};
 use crate::maybe_std::AtomicUsize;
 use crate::LinkedList;
-use std::borrow::Borrow;
 use std::cell::UnsafeCell;
 use std::cmp::Ordering;
 use std::fmt::{self, Debug};
@@ -370,8 +371,7 @@ where
         condition: &mut F,
     ) -> RemoveResult
     where
-        K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: Comparable<K> + ?Sized,
     {
         let mut metadata = self.metadata.load(Acquire);
         if Dimension::frozen(metadata) {
@@ -484,8 +484,7 @@ where
     #[inline]
     pub(super) fn search<Q>(&self, key: &Q) -> Option<(&K, &V)>
     where
-        K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: Comparable<K> + ?Sized,
     {
         let metadata = self.metadata.load(Acquire);
         self.search_slot(key, metadata)
@@ -496,8 +495,7 @@ where
     #[inline]
     pub(super) fn max_less<Q>(&self, mut mutable_metadata: usize, key: &Q) -> usize
     where
-        K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: Comparable<K> + ?Sized,
     {
         let mut min_max_rank = DIMENSION.removed_rank();
         let mut max_min_rank = 0;
@@ -537,8 +535,7 @@ where
     #[inline]
     pub(super) fn min_greater_equal<Q>(&self, key: &Q) -> (Option<(&K, &V)>, usize)
     where
-        K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: Comparable<K> + ?Sized,
     {
         let metadata = self.metadata.load(Acquire);
         let mut min_max_rank = DIMENSION.removed_rank();
@@ -552,14 +549,13 @@ where
             let rank = mutable_metadata % (1_usize << DIMENSION.num_bits_per_entry);
             if rank < min_max_rank && rank > max_min_rank {
                 let k = self.key_at(i);
-                let kq: &Q = k.borrow();
-                match kq.cmp(key) {
-                    Ordering::Less => {
+                match key.compare(k) {
+                    Ordering::Greater => {
                         if max_min_rank < rank {
                             max_min_rank = rank;
                         }
                     }
-                    Ordering::Greater => {
+                    Ordering::Less => {
                         if min_max_rank > rank {
                             min_max_rank = rank;
                             min_max_index = i;
@@ -676,8 +672,7 @@ where
     /// Searches for a slot in which the key is stored.
     fn search_slot<Q>(&self, key: &Q, mut mutable_metadata: usize) -> Option<usize>
     where
-        K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: Comparable<K> + ?Sized,
     {
         let mut min_max_rank = DIMENSION.removed_rank();
         let mut max_min_rank = 0;
@@ -710,11 +705,9 @@ where
 
     fn compare<Q>(&self, index: usize, key: &Q) -> Ordering
     where
-        K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: Comparable<K> + ?Sized,
     {
-        let kq: &Q = self.key_at(index).borrow();
-        kq.cmp(key)
+        key.compare(self.key_at(index)).reverse()
     }
 }
 
@@ -887,14 +880,13 @@ impl<'l, K, V> Scanner<'l, K, V> {
 
     /// Traverses the linked list.
     #[inline]
-    pub(super) fn jump<'g, Q>(
+    pub(super) fn jump<'g>(
         &self,
-        min_allowed_key: Option<&Q>,
+        min_allowed_key: Option<&K>,
         guard: &'g Guard,
     ) -> Option<Scanner<'g, K, V>>
     where
-        K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        K: Ord,
     {
         let mut next_leaf_ptr = self.leaf.next_ptr(Acquire, guard);
         while let Some(next_leaf_ref) = next_leaf_ptr.as_ref() {
@@ -905,8 +897,8 @@ impl<'l, K, V> Scanner<'l, K, V> {
                     //
                     // There is a chance that the current leaf has been deleted, and smaller
                     // keys have been inserted into the next leaf.
-                    while let Some(entry) = leaf_scanner.next() {
-                        if key.cmp(entry.0.borrow()) == Ordering::Less {
+                    while let Some((k, _)) = leaf_scanner.next() {
+                        if key.cmp(k) == Ordering::Less {
                             return Some(leaf_scanner);
                         }
                     }
@@ -945,8 +937,7 @@ where
     #[inline]
     pub(super) fn max_less<Q>(leaf: &'l Leaf<K, V>, key: &Q) -> Option<Scanner<'l, K, V>>
     where
-        K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: Comparable<K> + ?Sized,
     {
         let metadata = leaf.metadata.load(Acquire);
         let index = leaf.max_less(metadata, key);

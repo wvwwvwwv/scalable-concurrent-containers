@@ -1,3 +1,5 @@
+use equivalent::Comparable;
+
 use super::leaf::{InsertResult, Leaf, RemoveResult, Scanner, DIMENSION};
 use super::leaf_node::RemoveRangeState;
 use super::leaf_node::{LOCKED, RETIRED};
@@ -148,8 +150,8 @@ where
     #[inline]
     pub(super) fn search<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<(&'g K, &'g V)>
     where
-        K: 'g + Borrow<Q>,
-        Q: Ord + ?Sized,
+        K: 'g,
+        Q: Comparable<K> + ?Sized,
     {
         loop {
             let (child, metadata) = self.children.min_greater_equal(key);
@@ -217,8 +219,8 @@ where
     #[inline]
     pub(super) fn max_le_appr<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<Scanner<'g, K, V>>
     where
-        K: 'g + Borrow<Q>,
-        Q: Ord + ?Sized,
+        K: 'g,
+        Q: Comparable<K> + ?Sized,
     {
         loop {
             if let Some(scanner) = Scanner::max_less(&self.children, key) {
@@ -246,7 +248,7 @@ where
         min_scanner.next();
         loop {
             if let Some((k, _)) = min_scanner.get() {
-                if k.borrow() <= key {
+                if key.compare(k).is_ge() {
                     return Some(min_scanner);
                 }
                 break;
@@ -386,8 +388,7 @@ where
         guard: &Guard,
     ) -> Result<RemoveResult, ()>
     where
-        K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: Comparable<K> + ?Sized,
         D: DeriveAsyncWait,
     {
         loop {
@@ -935,8 +936,8 @@ where
     #[inline]
     pub(super) fn cleanup_link<'g, Q>(&self, key: &Q, traverse_max: bool, guard: &'g Guard) -> bool
     where
-        K: 'g + Borrow<Q>,
-        Q: Ord + ?Sized,
+        K: 'g,
+        Q: Comparable<K> + ?Sized,
     {
         if traverse_max {
             // It just has to search for the maximum leaf node in the tree.

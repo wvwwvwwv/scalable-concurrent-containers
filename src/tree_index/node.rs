@@ -1,9 +1,10 @@
+use equivalent::Comparable;
+
 use super::internal_node::{self, InternalNode};
 use super::leaf::{InsertResult, Leaf, RemoveResult, Scanner};
 use super::leaf_node::{self, LeafNode};
 use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::wait_queue::DeriveAsyncWait;
-use std::borrow::Borrow;
 use std::fmt::{self, Debug};
 use std::ops::RangeBounds;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
@@ -67,8 +68,8 @@ where
     #[inline]
     pub(super) fn search<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<(&'g K, &'g V)>
     where
-        K: 'g + Borrow<Q>,
-        Q: Ord + ?Sized,
+        K: 'g,
+        Q: Comparable<K> + ?Sized,
     {
         match &self {
             Self::Internal(internal_node) => internal_node.search(key, guard),
@@ -94,8 +95,8 @@ where
     #[inline]
     pub(super) fn max_le_appr<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<Scanner<'g, K, V>>
     where
-        K: 'g + Borrow<Q>,
-        Q: Ord + ?Sized,
+        K: 'g,
+        Q: Comparable<K> + ?Sized,
     {
         match &self {
             Self::Internal(internal_node) => internal_node.max_le_appr(key, guard),
@@ -128,8 +129,7 @@ where
         guard: &Guard,
     ) -> Result<RemoveResult, ()>
     where
-        K: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: Comparable<K> + ?Sized,
         D: DeriveAsyncWait,
     {
         match &self {
@@ -350,8 +350,8 @@ where
     #[inline]
     pub(super) fn cleanup_link<'g, Q>(&self, key: &Q, traverse_max: bool, guard: &'g Guard) -> bool
     where
-        K: 'g + Borrow<Q>,
-        Q: Ord + ?Sized,
+        K: 'g,
+        Q: Comparable<K> + ?Sized,
     {
         match &self {
             Self::Internal(internal_node) => internal_node.cleanup_link(key, traverse_max, guard),
