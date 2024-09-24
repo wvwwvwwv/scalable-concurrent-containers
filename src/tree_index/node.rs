@@ -65,7 +65,7 @@ where
 {
     /// Searches for an entry associated with the given key.
     #[inline]
-    pub(super) fn search<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<&'g V>
+    pub(super) fn search<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<(&'g K, &'g V)>
     where
         K: 'g + Borrow<Q>,
         Q: Ord + ?Sized,

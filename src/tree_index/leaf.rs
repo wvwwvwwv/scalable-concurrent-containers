@@ -482,13 +482,14 @@ where
 
     /// Returns a value associated with the key.
     #[inline]
-    pub(super) fn search<Q>(&self, key: &Q) -> Option<&V>
+    pub(super) fn search<Q>(&self, key: &Q) -> Option<(&K, &V)>
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
         let metadata = self.metadata.load(Acquire);
-        self.search_slot(key, metadata).map(|i| self.value_at(i))
+        self.search_slot(key, metadata)
+            .map(|i| (self.key_at(i), self.value_at(i)))
     }
 
     /// Returns the index of the key-value pair that is smaller than the given key.
@@ -551,7 +552,8 @@ where
             let rank = mutable_metadata % (1_usize << DIMENSION.num_bits_per_entry);
             if rank < min_max_rank && rank > max_min_rank {
                 let k = self.key_at(i);
-                match k.borrow().cmp(key) {
+                let kq: &Q = k.borrow();
+                match kq.cmp(key) {
                     Ordering::Less => {
                         if max_min_rank < rank {
                             max_min_rank = rank;
@@ -711,7 +713,8 @@ where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        self.key_at(index).borrow().cmp(key)
+        let kq: &Q = self.key_at(index).borrow();
+        kq.cmp(key)
     }
 }
 
@@ -998,8 +1001,8 @@ mod test {
             leaf.insert("GOOD DAY".to_owned(), "OH MY GOD!!".to_owned()),
             InsertResult::Success
         ));
-        assert_eq!(leaf.search("MY GOODNESS!").unwrap(), "OH MY GOD!!");
-        assert_eq!(leaf.search("GOOD DAY").unwrap(), "OH MY GOD!!");
+        assert_eq!(leaf.search("MY GOODNESS!").unwrap().1, "OH MY GOD!!");
+        assert_eq!(leaf.search("GOOD DAY").unwrap().1, "OH MY GOD!!");
 
         for i in 0..DIMENSION.num_entries {
             if let InsertResult::Full(k, v) = leaf.insert(i.to_string(), i.to_string()) {
@@ -1008,7 +1011,10 @@ mod test {
                 assert_eq!(v, i.to_string());
                 break;
             }
-            assert_eq!(leaf.search(&i.to_string()).unwrap(), &i.to_string());
+            assert_eq!(
+                leaf.search(&i.to_string()).unwrap(),
+                (&i.to_string(), &i.to_string())
+            );
         }
 
         for i in 0..DIMENSION.num_entries {
@@ -1117,8 +1123,8 @@ mod test {
         let mut leaf1 = None;
         let mut leaf2 = None;
         leaf.freeze_and_distribute(&mut leaf1, &mut leaf2);
-        assert_eq!(leaf1.as_ref().and_then(|l| l.search(&11)), Some(&17));
-        assert_eq!(leaf1.as_ref().and_then(|l| l.search(&17)), Some(&11));
+        assert_eq!(leaf1.as_ref().and_then(|l| l.search(&11)), Some((&11, &17)));
+        assert_eq!(leaf1.as_ref().and_then(|l| l.search(&17)), Some((&17, &11)));
         assert!(leaf2.is_none());
         assert!(matches!(leaf.insert(1, 7), InsertResult::Frozen(..)));
         assert_eq!(leaf.remove_if(&17, &mut |_| true), RemoveResult::Frozen);
@@ -1162,7 +1168,7 @@ mod test {
                 assert_eq!(result.0, Some((&i, &i)));
             }
             for i in 0..insert {
-                assert_eq!(*leaf.search(&i).unwrap(), i);
+                assert_eq!(leaf.search(&i).unwrap(), (&i, &i));
             }
             if insert == DIMENSION.num_entries {
                 assert!(matches!(leaf.insert(usize::MAX, usize::MAX), InsertResult::Full(..)));
@@ -1220,7 +1226,7 @@ mod test {
                     barrier_clone.wait().await;
                     let inserted = match leaf_clone.insert(t, t) {
                         InsertResult::Success => {
-                            assert_eq!(*leaf_clone.search(&t).unwrap(), t);
+                            assert_eq!(leaf_clone.search(&t).unwrap(), (&t, &t));
                             true
                         }
                         InsertResult::Duplicate(_, _)
@@ -1249,7 +1255,7 @@ mod test {
                     barrier_clone.wait().await;
                     assert_eq!((*full_clone).load(Relaxed), num_excess);
                     if inserted {
-                        assert_eq!(*leaf_clone.search(&t).unwrap(), t);
+                        assert_eq!(leaf_clone.search(&t).unwrap(), (&t, &t));
                     }
                     {
                         let scanner = Scanner::new(&leaf_clone);
@@ -1303,11 +1309,11 @@ mod test {
                                     let _result = leaf_clone.insert(i, i);
                                 }
                                 assert!(!leaf_clone.is_retired());
-                                assert_eq!(leaf_clone.search(&k).unwrap(), &k);
+                                assert_eq!(leaf_clone.search(&k).unwrap(), (&k, &k));
                             }
                             for i in 0..workload_size {
                                 let _result = leaf_clone.remove_if(&i, &mut |v| *v != k);
-                                assert_eq!(leaf_clone.search(&k).unwrap(), &k);
+                                assert_eq!(leaf_clone.search(&k).unwrap(), (&k, &k));
                             }
                         }
                     }));

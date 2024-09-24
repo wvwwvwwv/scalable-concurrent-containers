@@ -160,7 +160,7 @@ where
 {
     /// Searches for an entry associated with the given key.
     #[inline]
-    pub(super) fn search<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<&'g V>
+    pub(super) fn search<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<(&'g K, &'g V)>
     where
         K: 'g + Borrow<Q>,
         Q: Ord + ?Sized,
@@ -1169,10 +1169,13 @@ mod test {
             Ok(InsertResult::Success)
         ));
         assert_eq!(
-            leaf_node.search("MY GOODNESS!", &guard).unwrap(),
+            leaf_node.search("MY GOODNESS!", &guard).unwrap().1,
             "OH MY GOD!!"
         );
-        assert_eq!(leaf_node.search("GOOD DAY", &guard).unwrap(), "OH MY GOD!!");
+        assert_eq!(
+            leaf_node.search("GOOD DAY", &guard).unwrap().1,
+            "OH MY GOD!!"
+        );
         assert!(matches!(
             leaf_node.remove_if::<_, _, _>("GOOD DAY", &mut |v| v == "OH MY", &mut (), &guard),
             Ok(RemoveResult::Fail)
@@ -1211,7 +1214,7 @@ mod test {
             }
             match result.unwrap() {
                 InsertResult::Success => {
-                    assert_eq!(leaf_node.search(&k, &guard), Some(&k));
+                    assert_eq!(leaf_node.search(&k, &guard), Some((&k, &k)));
                     continue;
                 }
                 InsertResult::Duplicate(..)
@@ -1220,13 +1223,16 @@ mod test {
                 InsertResult::Full(_, _) => {
                     leaf_node.rollback(&guard);
                     for r in 0..(k - 1) {
-                        assert_eq!(leaf_node.search(&r, &guard), Some(&r));
+                        assert_eq!(leaf_node.search(&r, &guard), Some((&r, &r)));
                         assert!(leaf_node
                             .remove_if::<_, _, _>(&r, &mut |_| true, &mut (), &guard)
                             .is_ok());
                         assert_eq!(leaf_node.search(&r, &guard), None);
                     }
-                    assert_eq!(leaf_node.search(&(k - 1), &guard), Some(&(k - 1)));
+                    assert_eq!(
+                        leaf_node.search(&(k - 1), &guard),
+                        Some((&(k - 1), &(k - 1)))
+                    );
                     assert_eq!(
                         leaf_node.remove_if::<_, _, _>(&(k - 1), &mut |_| true, &mut (), &guard),
                         Ok(RemoveResult::Retired)
@@ -1292,7 +1298,7 @@ mod test {
                         if max_key.map_or(false, |m| m == id) {
                             break;
                         }
-                        assert_eq!(leaf_node_clone.search(&id, &guard), Some(&id));
+                        assert_eq!(leaf_node_clone.search(&id, &guard), Some((&id, &id)));
                     }
                     for id in range {
                         if max_key.map_or(false, |m| m == id) {
@@ -1376,7 +1382,7 @@ mod test {
                                         leaf_node_clone.rollback(&guard);
                                     }
                                 }
-                                assert_eq!(leaf_node_clone.search(&k, &guard).unwrap(), &k);
+                                assert_eq!(leaf_node_clone.search(&k, &guard).unwrap(), (&k, &k));
                             }
                             for i in 0..workload_size {
                                 let max_scanner = leaf_node_clone.max_le_appr(&k, &guard).unwrap();
@@ -1397,7 +1403,7 @@ mod test {
                                     &mut (),
                                     &guard,
                                 );
-                                assert_eq!(leaf_node_clone.search(&k, &guard).unwrap(), &k);
+                                assert_eq!(leaf_node_clone.search(&k, &guard).unwrap(), (&k, &k));
                             }
                         }
                     }));

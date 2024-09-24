@@ -146,7 +146,7 @@ where
 {
     /// Searches for an entry associated with the given key.
     #[inline]
-    pub(super) fn search<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<&'g V>
+    pub(super) fn search<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<(&'g K, &'g V)>
     where
         K: 'g + Borrow<Q>,
         Q: Ord + ?Sized,
@@ -1145,7 +1145,7 @@ mod test {
             match internal_node.insert(k, k, &mut (), &guard) {
                 Ok(result) => match result {
                     InsertResult::Success => {
-                        assert_eq!(internal_node.search(&k, &guard), Some(&k));
+                        assert_eq!(internal_node.search(&k, &guard), Some((&k, &k)));
                     }
                     InsertResult::Duplicate(..)
                     | InsertResult::Frozen(..)
@@ -1153,7 +1153,7 @@ mod test {
                     InsertResult::Full(_, _) => {
                         internal_node.rollback(&guard);
                         for j in 0..k {
-                            assert_eq!(internal_node.search(&j, &guard), Some(&j));
+                            assert_eq!(internal_node.search(&j, &guard), Some((&j, &j)));
                             if j == k - 1 {
                                 assert!(matches!(
                                     internal_node.remove_if::<_, _, _>(
@@ -1176,13 +1176,13 @@ mod test {
                     InsertResult::Retry(k, v) => {
                         let result = internal_node.insert(k, v, &mut (), &guard);
                         assert!(result.is_ok());
-                        assert_eq!(internal_node.search(&k, &guard), Some(&k));
+                        assert_eq!(internal_node.search(&k, &guard), Some((&k, &k)));
                     }
                 },
                 Err((k, v)) => {
                     let result = internal_node.insert(k, v, &mut (), &guard);
                     assert!(result.is_ok());
-                    assert_eq!(internal_node.search(&k, &guard), Some(&k));
+                    assert_eq!(internal_node.search(&k, &guard), Some((&k, &k)));
                 }
             }
         }
@@ -1239,7 +1239,7 @@ mod test {
                         if max_key.map_or(false, |m| m == id) {
                             break;
                         }
-                        assert_eq!(internal_node_clone.search(&id, &guard), Some(&id));
+                        assert_eq!(internal_node_clone.search(&id, &guard), Some((&id, &id)));
                     }
                     for id in range {
                         if max_key.map_or(false, |m| m == id) {
@@ -1319,7 +1319,7 @@ mod test {
                             };
                             assert_eq!(
                                 internal_node_clone.search(&fixed_point, &guard).unwrap(),
-                                &fixed_point
+                                (&fixed_point, &fixed_point)
                             );
                         }
                         {
@@ -1336,7 +1336,7 @@ mod test {
                                 }
                                 assert_eq!(
                                     internal_node_clone.search(&fixed_point, &guard).unwrap(),
-                                    &fixed_point
+                                    (&fixed_point, &fixed_point)
                                 );
                             }
                             for i in 0..workload_size {
@@ -1362,7 +1362,7 @@ mod test {
                                 );
                                 assert_eq!(
                                     internal_node_clone.search(&fixed_point, &guard).unwrap(),
-                                    &fixed_point
+                                    (&fixed_point, &fixed_point)
                                 );
                             }
                         }
