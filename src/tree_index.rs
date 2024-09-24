@@ -13,6 +13,7 @@ use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::fmt::{self, Debug};
 use std::iter::FusedIterator;
+use std::marker::PhantomData;
 use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::ops::RangeBounds;
 use std::panic::UnwindSafe;
@@ -70,13 +71,14 @@ pub struct Iter<'t, 'g, K, V> {
 }
 
 /// An iterator over a sub-range of entries in a [`TreeIndex`].
-pub struct Range<'t, 'g, K, V, R: RangeBounds<K>> {
+pub struct Range<'t, 'g, K, V, Q: ?Sized, R: RangeBounds<Q>> {
     root: &'t AtomicShared<Node<K, V>>,
     leaf_scanner: Option<Scanner<'g, K, V>>,
     range: R,
     check_lower_bound: bool,
     check_upper_bound: bool,
     guard: &'g Guard,
+    query: PhantomData<fn() -> Q>,
 }
 
 impl<K, V> TreeIndex<K, V> {
@@ -742,11 +744,15 @@ where
     /// assert_eq!(treeindex.range(4..=8, &guard).count(), 0);
     /// ```
     #[inline]
-    pub fn range<'t, 'g, R: RangeBounds<K>>(
+    pub fn range<'t, 'g, Q, R: RangeBounds<Q>>(
         &'t self,
         range: R,
         guard: &'g Guard,
-    ) -> Range<'t, 'g, K, V, R> {
+    ) -> Range<'t, 'g, K, V, Q, R>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         Range::new(&self.root, range, guard)
     }
 }
@@ -885,29 +891,31 @@ where
 
 impl<'t, 'g, K, V> UnwindSafe for Iter<'t, 'g, K, V> {}
 
-impl<'t, 'g, K, V, R: RangeBounds<K>> Range<'t, 'g, K, V, R> {
+impl<'t, 'g, K, V, Q: ?Sized, R: RangeBounds<Q>> Range<'t, 'g, K, V, Q, R> {
     #[inline]
     fn new(
         root: &'t AtomicShared<Node<K, V>>,
         range: R,
         guard: &'g Guard,
-    ) -> Range<'t, 'g, K, V, R> {
-        Range::<'t, 'g, K, V, R> {
+    ) -> Range<'t, 'g, K, V, Q, R> {
+        Range::<'t, 'g, K, V, Q, R> {
             root,
             leaf_scanner: None,
             range,
             check_lower_bound: true,
             check_upper_bound: false,
             guard,
+            query: PhantomData,
         }
     }
 }
 
-impl<'t, 'g, K, V, R> Range<'t, 'g, K, V, R>
+impl<'t, 'g, K, V, Q, R> Range<'t, 'g, K, V, Q, R>
 where
-    K: 'static + Clone + Ord,
+    K: 'static + Clone + Ord + Borrow<Q>,
     V: 'static + Clone,
-    R: RangeBounds<K>,
+    Q: ?Sized + Ord,
+    R: RangeBounds<Q>,
 {
     #[inline]
     fn next_unbounded(&mut self) -> Option<(&'g K, &'g V)> {
@@ -948,7 +956,7 @@ where
 
         // Go to the next entry.
         if let Some(mut leaf_scanner) = self.leaf_scanner.take() {
-            let min_allowed_key = leaf_scanner.get().map(|(key, _)| key);
+            let min_allowed_key = leaf_scanner.get().map(|(key, _)| key.borrow());
             if let Some(result) = leaf_scanner.next() {
                 self.leaf_scanner.replace(leaf_scanner);
                 return Some(result);
@@ -969,18 +977,20 @@ where
     #[inline]
     fn set_check_upper_bound(&mut self, scanner: &Scanner<K, V>) {
         self.check_upper_bound = match self.range.end_bound() {
-            Excluded(key) => scanner
-                .max_key()
-                .map_or(false, |max_key| max_key.cmp(key) != Ordering::Less),
-            Included(key) => scanner
-                .max_key()
-                .map_or(false, |max_key| max_key.cmp(key) == Ordering::Greater),
+            Excluded(key) => scanner.max_key().map_or(false, |max_key| {
+                let kq: &Q = max_key.borrow();
+                kq.cmp(key) != Ordering::Less
+            }),
+            Included(key) => scanner.max_key().map_or(false, |max_key| {
+                let kq: &Q = max_key.borrow();
+                kq.cmp(key) == Ordering::Greater
+            }),
             Unbounded => false,
         };
     }
 }
 
-impl<'t, 'g, K, V, R: RangeBounds<K>> Debug for Range<'t, 'g, K, V, R> {
+impl<'t, 'g, K, V, Q: ?Sized, R: RangeBounds<Q>> Debug for Range<'t, 'g, K, V, Q, R> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Range")
@@ -992,26 +1002,28 @@ impl<'t, 'g, K, V, R: RangeBounds<K>> Debug for Range<'t, 'g, K, V, R> {
     }
 }
 
-impl<'t, 'g, K, V, R> Iterator for Range<'t, 'g, K, V, R>
+impl<'t, 'g, K, V, Q, R> Iterator for Range<'t, 'g, K, V, Q, R>
 where
-    K: 'static + Clone + Ord,
+    K: 'static + Clone + Ord + Borrow<Q>,
     V: 'static + Clone,
-    R: RangeBounds<K>,
+    Q: ?Sized + Ord,
+    R: RangeBounds<Q>,
 {
     type Item = (&'g K, &'g V);
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         while let Some((k, v)) = self.next_unbounded() {
+            let kq: &Q = k.borrow();
             if self.check_lower_bound {
                 match self.range.start_bound() {
                     Excluded(key) => {
-                        if k.cmp(key) != Ordering::Greater {
+                        if kq.cmp(key) != Ordering::Greater {
                             continue;
                         }
                     }
                     Included(key) => {
-                        if k.cmp(key) == Ordering::Less {
+                        if kq.cmp(key) == Ordering::Less {
                             continue;
                         }
                     }
@@ -1022,12 +1034,12 @@ where
             if self.check_upper_bound {
                 match self.range.end_bound() {
                     Excluded(key) => {
-                        if k.cmp(key) == Ordering::Less {
+                        if kq.cmp(key) == Ordering::Less {
                             return Some((k, v));
                         }
                     }
                     Included(key) => {
-                        if k.cmp(key) != Ordering::Greater {
+                        if kq.cmp(key) != Ordering::Greater {
                             return Some((k, v));
                         }
                     }
@@ -1043,12 +1055,18 @@ where
     }
 }
 
-impl<'t, 'g, K, V, R> FusedIterator for Range<'t, 'g, K, V, R>
+impl<'t, 'g, K, V, Q, R> FusedIterator for Range<'t, 'g, K, V, Q, R>
 where
-    K: 'static + Clone + Ord,
+    K: 'static + Clone + Ord + Borrow<Q>,
     V: 'static + Clone,
-    R: RangeBounds<K>,
+    Q: ?Sized + Ord,
+    R: RangeBounds<Q>,
 {
 }
 
-impl<'t, 'g, K, V, R> UnwindSafe for Range<'t, 'g, K, V, R> where R: RangeBounds<K> + UnwindSafe {}
+impl<'t, 'g, K, V, Q, R> UnwindSafe for Range<'t, 'g, K, V, Q, R>
+where
+    Q: ?Sized,
+    R: RangeBounds<Q> + UnwindSafe,
+{
+}
