@@ -63,16 +63,29 @@ where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
 {
-    /// Searches for an entry associated with the given key.
+    /// Searches for an entry containing the specified key.
     #[inline]
-    pub(super) fn search<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<(&'g K, &'g V)>
+    pub(super) fn search_entry<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<(&'g K, &'g V)>
     where
         K: 'g,
         Q: Comparable<K> + ?Sized,
     {
         match &self {
-            Self::Internal(internal_node) => internal_node.search(key, guard),
-            Self::Leaf(leaf_node) => leaf_node.search(key, guard),
+            Self::Internal(internal_node) => internal_node.search_entry(key, guard),
+            Self::Leaf(leaf_node) => leaf_node.search_entry(key, guard),
+        }
+    }
+
+    /// Searches for the value associated with the specified key.
+    #[inline]
+    pub(super) fn search_value<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<&'g V>
+    where
+        K: 'g + Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        match &self {
+            Self::Internal(internal_node) => internal_node.search_value(key, guard),
+            Self::Leaf(leaf_node) => leaf_node.search_value(key, guard),
         }
     }
 

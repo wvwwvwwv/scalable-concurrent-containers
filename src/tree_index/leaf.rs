@@ -479,15 +479,26 @@ where
         }
     }
 
-    /// Returns a value associated with the key.
+    /// Returns an entry containing the specified key.
     #[inline]
-    pub(super) fn search<Q>(&self, key: &Q) -> Option<(&K, &V)>
+    pub(super) fn search_entry<Q>(&self, key: &Q) -> Option<(&K, &V)>
     where
         Q: Comparable<K> + ?Sized,
     {
         let metadata = self.metadata.load(Acquire);
         self.search_slot(key, metadata)
             .map(|i| (self.key_at(i), self.value_at(i)))
+    }
+
+    /// Returns the value associated with the specified key.
+    #[inline]
+    pub(super) fn search_value<Q>(&self, key: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        let metadata = self.metadata.load(Acquire);
+        self.search_slot(key, metadata).map(|i| self.value_at(i))
     }
 
     /// Returns the index of the key-value pair that is smaller than the given key.
@@ -991,8 +1002,8 @@ mod test {
             leaf.insert("GOOD DAY".to_owned(), "OH MY GOD!!".to_owned()),
             InsertResult::Success
         ));
-        assert_eq!(leaf.search("MY GOODNESS!").unwrap().1, "OH MY GOD!!");
-        assert_eq!(leaf.search("GOOD DAY").unwrap().1, "OH MY GOD!!");
+        assert_eq!(leaf.search_entry("MY GOODNESS!").unwrap().1, "OH MY GOD!!");
+        assert_eq!(leaf.search_entry("GOOD DAY").unwrap().1, "OH MY GOD!!");
 
         for i in 0..DIMENSION.num_entries {
             if let InsertResult::Full(k, v) = leaf.insert(i.to_string(), i.to_string()) {
@@ -1002,7 +1013,7 @@ mod test {
                 break;
             }
             assert_eq!(
-                leaf.search(&i.to_string()).unwrap(),
+                leaf.search_entry(&i.to_string()).unwrap(),
                 (&i.to_string(), &i.to_string())
             );
         }
@@ -1024,13 +1035,13 @@ mod test {
             leaf.remove_if("GOOD DAY", &mut |v| v == "OH MY GOD!!"),
             RemoveResult::Success
         );
-        assert!(leaf.search("GOOD DAY").is_none());
+        assert!(leaf.search_entry("GOOD DAY").is_none());
         assert_eq!(
             leaf.remove_if("MY GOODNESS!", &mut |_| true),
             RemoveResult::Success
         );
-        assert!(leaf.search("MY GOODNESS!").is_none());
-        assert!(leaf.search("1").is_some());
+        assert!(leaf.search_entry("MY GOODNESS!").is_none());
+        assert!(leaf.search_entry("1").is_some());
         assert!(matches!(
             leaf.insert("1".to_owned(), "1".to_owned()),
             InsertResult::Duplicate(..)
@@ -1113,8 +1124,14 @@ mod test {
         let mut leaf1 = None;
         let mut leaf2 = None;
         leaf.freeze_and_distribute(&mut leaf1, &mut leaf2);
-        assert_eq!(leaf1.as_ref().and_then(|l| l.search(&11)), Some((&11, &17)));
-        assert_eq!(leaf1.as_ref().and_then(|l| l.search(&17)), Some((&17, &11)));
+        assert_eq!(
+            leaf1.as_ref().and_then(|l| l.search_entry(&11)),
+            Some((&11, &17))
+        );
+        assert_eq!(
+            leaf1.as_ref().and_then(|l| l.search_entry(&17)),
+            Some((&17, &11))
+        );
         assert!(leaf2.is_none());
         assert!(matches!(leaf.insert(1, 7), InsertResult::Frozen(..)));
         assert_eq!(leaf.remove_if(&17, &mut |_| true), RemoveResult::Frozen);
@@ -1158,7 +1175,7 @@ mod test {
                 assert_eq!(result.0, Some((&i, &i)));
             }
             for i in 0..insert {
-                assert_eq!(leaf.search(&i).unwrap(), (&i, &i));
+                assert_eq!(leaf.search_entry(&i).unwrap(), (&i, &i));
             }
             if insert == DIMENSION.num_entries {
                 assert!(matches!(leaf.insert(usize::MAX, usize::MAX), InsertResult::Full(..)));
@@ -1189,10 +1206,10 @@ mod test {
             }
             leaf.remove_range(&(start..end));
             for i in 1..DIMENSION.num_entries - 1 {
-                prop_assert!(leaf.search(&i).is_none() == (start..end).contains(&i));
+                prop_assert!(leaf.search_entry(&i).is_none() == (start..end).contains(&i));
             }
-            prop_assert!(leaf.search(&0).is_none());
-            prop_assert!(leaf.search(&(DIMENSION.num_entries - 1)).is_none());
+            prop_assert!(leaf.search_entry(&0).is_none());
+            prop_assert!(leaf.search_entry(&(DIMENSION.num_entries - 1)).is_none());
         }
     }
 
@@ -1216,7 +1233,7 @@ mod test {
                     barrier_clone.wait().await;
                     let inserted = match leaf_clone.insert(t, t) {
                         InsertResult::Success => {
-                            assert_eq!(leaf_clone.search(&t).unwrap(), (&t, &t));
+                            assert_eq!(leaf_clone.search_entry(&t).unwrap(), (&t, &t));
                             true
                         }
                         InsertResult::Duplicate(_, _)
@@ -1245,7 +1262,7 @@ mod test {
                     barrier_clone.wait().await;
                     assert_eq!((*full_clone).load(Relaxed), num_excess);
                     if inserted {
-                        assert_eq!(leaf_clone.search(&t).unwrap(), (&t, &t));
+                        assert_eq!(leaf_clone.search_entry(&t).unwrap(), (&t, &t));
                     }
                     {
                         let scanner = Scanner::new(&leaf_clone);
@@ -1299,11 +1316,11 @@ mod test {
                                     let _result = leaf_clone.insert(i, i);
                                 }
                                 assert!(!leaf_clone.is_retired());
-                                assert_eq!(leaf_clone.search(&k).unwrap(), (&k, &k));
+                                assert_eq!(leaf_clone.search_entry(&k).unwrap(), (&k, &k));
                             }
                             for i in 0..workload_size {
                                 let _result = leaf_clone.remove_if(&i, &mut |v| *v != k);
-                                assert_eq!(leaf_clone.search(&k).unwrap(), (&k, &k));
+                                assert_eq!(leaf_clone.search_entry(&k).unwrap(), (&k, &k));
                             }
                         }
                     }));

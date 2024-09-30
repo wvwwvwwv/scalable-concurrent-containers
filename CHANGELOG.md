@@ -2,6 +2,11 @@
 
 ## Version 2
 
+2.1.18
+
+* Add `TreeIndex::peek_entry`: [#157](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/157).
+* `tree_index::Range` accepts borrowed key ranges: [#158](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/158).
+
 2.1.17
 
 * Optimize `TreeIndex::{clear, drop}`: [#156](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/156).

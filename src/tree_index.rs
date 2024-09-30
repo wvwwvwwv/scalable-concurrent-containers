@@ -598,13 +598,16 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::TreeIndex;
     /// use scc::ebr::Guard;
+    /// use std::sync::Arc;
+    /// use scc::TreeIndex;
     ///
-    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    /// let treeindex: TreeIndex<Arc<str>, u32> = TreeIndex::new();
     ///
     /// let guard = Guard::new();
-    /// assert!(treeindex.peek(&1, &guard).is_none());
+    /// assert!(treeindex.peek("foo", &guard).is_none());
+    ///
+    /// treeindex.insert("foo".into(), 1).expect("insert in empty TreeIndex");
     /// ```
     #[inline]
     pub fn peek<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<&'g V>
@@ -612,7 +615,7 @@ where
         Q: Comparable<K> + ?Sized,
     {
         if let Some(root_ref) = self.root.load(Acquire, guard).as_ref() {
-            return root_ref.search(key, guard).map(|(_k, v)| v);
+            return root_ref.search_value(key, guard);
         }
         None
     }
@@ -624,18 +627,26 @@ where
     /// # Examples
     ///
     /// ```
+    /// use std::sync::Arc;
     /// use scc::TreeIndex;
     ///
-    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
-    /// assert!(treeindex.peek_with(&1, |k, v| *v).is_none());
+    /// let treeindex: TreeIndex<Arc<str>, u32> = TreeIndex::new();
+    ///
+    /// assert!(treeindex.peek_with("foo", |k, v| *v).is_none());
+    ///
+    /// treeindex.insert("foo".into(), 1).expect("insert in empty TreeIndex");
+    ///
+    /// let key: Arc<str> = treeindex
+    ///     .peek_with("foo", |k, _v| Arc::clone(k))
+    ///     .expect("peek_with by borrowed key");
     /// ```
     #[inline]
-    pub fn peek_with<Q, R, F: FnOnce(&Q, &V) -> R>(&self, key: &Q, reader: F) -> Option<R>
+    pub fn peek_with<Q, R, F: FnOnce(&K, &V) -> R>(&self, key: &Q, reader: F) -> Option<R>
     where
         Q: Comparable<K> + ?Sized,
     {
         let guard = Guard::new();
-        self.peek(key, &guard).map(|v| reader(key, v))
+        self.peek_entry(key, &guard).map(|(k, v)| reader(k, v))
     }
 
     /// Returns a guarded reference to the key-value pair for the specified key without acquiring locks.
@@ -646,18 +657,21 @@ where
     /// # Examples
     ///
     /// ```
+    /// use scc::ebr::Guard;
     /// use std::sync::Arc;
     /// use scc::TreeIndex;
-    /// use scc::ebr::Guard;
     ///
     /// let treeindex: TreeIndex<Arc<str>, u32> = TreeIndex::new();
-    /// treeindex.insert("foo".into(), 1).expect("insert in empty TreeIndex");
     ///
     /// let guard = Guard::new();
+    /// assert!(treeindex.peek_entry("foo", &guard).is_none());
+    ///
+    /// treeindex.insert("foo".into(), 1).expect("insert in empty TreeIndex");
+    ///
     /// let key: Arc<str> = treeindex
     ///     .peek_entry("foo", &guard)
     ///     .map(|(k, _v)| Arc::clone(k))
-    ///     .expect("peek by borrowed value");
+    ///     .expect("peek_entry by borrowed key");
     /// ```
     #[inline]
     pub fn peek_entry<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<(&'g K, &'g V)>
@@ -665,7 +679,7 @@ where
         Q: Comparable<K> + ?Sized,
     {
         if let Some(root_ref) = self.root.load(Acquire, guard).as_ref() {
-            return root_ref.search(key, guard);
+            return root_ref.search_entry(key, guard);
         }
         None
     }
