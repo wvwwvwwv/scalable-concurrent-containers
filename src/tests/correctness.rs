@@ -2158,6 +2158,7 @@ mod treeindex_test {
         }
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn mixed() {
         let range = if cfg!(miri) { 64 } else { 4096 };

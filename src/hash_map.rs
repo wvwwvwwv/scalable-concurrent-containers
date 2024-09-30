@@ -5,7 +5,7 @@ use super::hash_table::bucket::{EntryPtr, Locker, Reader, SEQUENTIAL};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::{HashTable, LockedEntry};
 use super::wait_queue::AsyncWait;
-use std::borrow::Borrow;
+use super::Equivalent;
 use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
@@ -578,8 +578,7 @@ where
     #[inline]
     pub fn update<Q, U, R>(&self, key: &Q, updater: U) -> Option<R>
     where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
         U: FnOnce(&K, &mut V) -> R,
     {
         let guard = Guard::new();
@@ -614,8 +613,7 @@ where
     #[inline]
     pub async fn update_async<Q, U, R>(&self, key: &Q, updater: U) -> Option<R>
     where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
         U: FnOnce(&K, &mut V) -> R,
     {
         let hash = self.hash(key);
@@ -657,8 +655,7 @@ where
     #[inline]
     pub fn remove<Q>(&self, key: &Q) -> Option<(K, V)>
     where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
     {
         self.remove_if(key, |_| true)
     }
@@ -680,8 +677,7 @@ where
     #[inline]
     pub async fn remove_async<Q>(&self, key: &Q) -> Option<(K, V)>
     where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
     {
         self.remove_if_async(key, |_| true).await
     }
@@ -704,8 +700,7 @@ where
     #[inline]
     pub fn remove_if<Q, F: FnOnce(&mut V) -> bool>(&self, key: &Q, condition: F) -> Option<(K, V)>
     where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
     {
         self.remove_entry(
             key,
@@ -740,8 +735,7 @@ where
         mut condition: F,
     ) -> Option<(K, V)>
     where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
     {
         let hash = self.hash(key);
         loop {
@@ -786,8 +780,7 @@ where
     #[inline]
     pub fn get<Q>(&self, key: &Q) -> Option<OccupiedEntry<K, V, H>>
     where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
     {
         let guard = Guard::new();
         let locked_entry = self
@@ -825,8 +818,7 @@ where
     #[inline]
     pub async fn get_async<Q>(&self, key: &Q) -> Option<OccupiedEntry<K, V, H>>
     where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
     {
         let hash = self.hash(key);
         loop {
@@ -868,8 +860,7 @@ where
     #[inline]
     pub fn read<Q, R, F: FnOnce(&K, &V) -> R>(&self, key: &Q, reader: F) -> Option<R>
     where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
     {
         self.read_entry(key, self.hash(key), &mut (), &Guard::new())
             .ok()
@@ -894,8 +885,7 @@ where
     #[inline]
     pub async fn read_async<Q, R, F: FnOnce(&K, &V) -> R>(&self, key: &Q, reader: F) -> Option<R>
     where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
     {
         let hash = self.hash(key);
         loop {
@@ -924,8 +914,7 @@ where
     #[inline]
     pub fn contains<Q>(&self, key: &Q) -> bool
     where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
     {
         self.read(key, |_, _| ()).is_some()
     }
@@ -946,8 +935,7 @@ where
     #[inline]
     pub async fn contains_async<Q>(&self, key: &Q) -> bool
     where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
     {
         self.read_async(key, |_, _| ()).await.is_some()
     }
@@ -1429,8 +1417,7 @@ where
     #[inline]
     pub fn bucket_index<Q>(&self, key: &Q) -> usize
     where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
     {
         self.calculate_bucket_index(key)
     }
@@ -1440,7 +1427,7 @@ where
         while current_array.has_old_array() {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if self.incremental_rehash::<_, _, false>(
+            if self.incremental_rehash::<K, _, false>(
                 current_array,
                 &mut async_wait_pinned,
                 &Guard::new(),

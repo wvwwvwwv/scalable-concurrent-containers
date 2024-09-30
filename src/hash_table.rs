@@ -4,9 +4,9 @@ pub mod bucket_array;
 use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::exit_guard::ExitGuard;
 use crate::wait_queue::{AsyncWait, DeriveAsyncWait};
+use crate::Equivalent;
 use bucket::{DataBlock, EntryPtr, Locker, LruList, Reader, BUCKET_LEN, CACHE, OPTIMISTIC};
 use bucket_array::BucketArray;
-use std::borrow::Borrow;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::pin::Pin;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
@@ -26,8 +26,7 @@ where
     #[inline]
     fn hash<Q>(&self, key: &Q) -> u64
     where
-        K: Borrow<Q>,
-        Q: Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
     {
         let mut hasher = self.hasher().build_hasher();
         key.hash(&mut hasher);
@@ -49,8 +48,7 @@ where
     #[inline]
     fn calculate_bucket_index<Q>(&self, key: &Q) -> usize
     where
-        K: Borrow<Q>,
-        Q: Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
     {
         self.bucket_array()
             .load(Acquire, &Guard::new())
@@ -293,8 +291,7 @@ where
         guard: &'g Guard,
     ) -> Result<Option<(&'g K, &'g V)>, ()>
     where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
         D: DeriveAsyncWait,
     {
         let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
@@ -315,7 +312,7 @@ where
                         }
                     }
                 } else {
-                    self.move_entry(current_array, old_array, hash, async_wait, guard)?;
+                    self.move_entry::<Q, D>(current_array, old_array, hash, async_wait, guard)?;
                 }
             };
 
@@ -372,14 +369,13 @@ where
         guard: &'g Guard,
     ) -> Result<Option<LockedEntry<'g, K, V, L, TYPE>>, ()>
     where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
         D: DeriveAsyncWait,
     {
         let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
         while let Some(current_array) = current_array_ptr.as_ref() {
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                self.move_entry(current_array, old_array, hash, async_wait, guard)?;
+                self.move_entry::<Q, D>(current_array, old_array, hash, async_wait, guard)?;
             };
 
             let index = current_array.calculate_bucket_index(hash);
@@ -434,14 +430,13 @@ where
         guard: &Guard,
     ) -> Result<R, F>
     where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
         D: DeriveAsyncWait,
     {
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             // The reasoning behind this loop can be found in `acquire_entry`.
             let shrinkable = if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                match self.move_entry(current_array, old_array, hash, async_wait, guard) {
+                match self.move_entry::<Q, D>(current_array, old_array, hash, async_wait, guard) {
                     Ok(r) => r,
                     Err(()) => return Err(condition),
                 }
@@ -646,8 +641,7 @@ where
         guard: &'g Guard,
     ) -> Result<LockedEntry<'g, K, V, L, TYPE>, ()>
     where
-        K: Borrow<Q>,
-        Q: Hash + Eq + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
         D: DeriveAsyncWait,
     {
         // It is guaranteed that the thread reads a consistent snapshot of the current and old
@@ -665,7 +659,7 @@ where
         loop {
             let current_array = self.get_current_array(guard);
             let resizable = if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                self.move_entry(current_array, old_array, hash, async_wait, guard)?;
+                self.move_entry::<Q, D>(current_array, old_array, hash, async_wait, guard)?;
                 false
             } else {
                 true
@@ -723,8 +717,7 @@ where
         guard: &Guard,
     ) -> Result<bool, ()>
     where
-        K: Borrow<Q>,
-        Q: Hash + Eq + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
         D: DeriveAsyncWait,
     {
         if !self.incremental_rehash::<Q, D, false>(current_array, async_wait, guard)? {
@@ -764,8 +757,7 @@ where
         guard: &Guard,
     ) -> Result<(), ()>
     where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
         D: DeriveAsyncWait,
     {
         debug_assert!(!old_locker.killed());
@@ -789,12 +781,12 @@ where
                 let (new_index, partial_hash) =
                     if old_array.num_buckets() >= current_array.num_buckets() {
                         debug_assert_eq!(
-                            current_array.calculate_bucket_index(self.hash(old_entry.0.borrow())),
+                            current_array.calculate_bucket_index(self.hash(&old_entry.0)),
                             target_index
                         );
                         (target_index, entry_ptr.partial_hash(&*old_locker))
                     } else {
-                        let hash = self.hash(old_entry.0.borrow());
+                        let hash = self.hash(&old_entry.0);
                         let new_index = current_array.calculate_bucket_index(hash);
                         debug_assert!(
                             new_index - target_index
@@ -856,7 +848,7 @@ where
     /// Clears the old array.
     fn clear_old_array(&self, current_array: &BucketArray<K, V, L, TYPE>, guard: &Guard) {
         while current_array.has_old_array() {
-            if self.incremental_rehash::<_, _, false>(current_array, &mut (), guard) == Ok(true) {
+            if self.incremental_rehash::<K, _, false>(current_array, &mut (), guard) == Ok(true) {
                 break;
             }
         }
@@ -872,8 +864,7 @@ where
         guard: &Guard,
     ) -> Result<bool, ()>
     where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
         D: DeriveAsyncWait,
     {
         if let Some(old_array) = current_array.old_array(guard).as_ref() {
@@ -943,7 +934,7 @@ where
                     Locker::lock(old_bucket, guard)
                 };
                 if let Some(mut locker) = lock_result {
-                    self.relocate_bucket::<_, _, TRY_LOCK>(
+                    self.relocate_bucket::<Q, D, TRY_LOCK>(
                         current_array,
                         old_array,
                         index,
@@ -1204,7 +1195,7 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
             while current_array.has_old_array() {
                 let mut async_wait = AsyncWait::default();
                 let mut async_wait_pinned = Pin::new(&mut async_wait);
-                if hash_table.incremental_rehash::<_, _, false>(
+                if hash_table.incremental_rehash::<K, _, false>(
                     current_array.as_ref(),
                     &mut async_wait_pinned,
                     &Guard::new(),

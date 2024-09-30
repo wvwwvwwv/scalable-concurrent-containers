@@ -1,10 +1,10 @@
-//! Vendor the ['equivalent'](https://crates.io/crates/equivalent) crate in order to avoid any conflicts.
+//! Vendor the [`equivalent`](https://crates.io/crates/equivalent) crate in order to avoid any conflicts.
 
 use std::{borrow::Borrow, cmp::Ordering};
 
 /// Key equivalence trait.
 pub trait Equivalent<K: ?Sized> {
-    /// Compare self to `key` and return `true` if they are equal.
+    /// Compares `self` to `key` and returns `true` if they are equal.
     fn equivalent(&self, key: &K) -> bool;
 }
 
@@ -21,7 +21,7 @@ where
 
 /// Key ordering trait.
 pub trait Comparable<K: ?Sized>: Equivalent<K> {
-    /// Compare self to `key` and return their ordering.
+    /// Compares `self` to `key` and returns their ordering.
     fn compare(&self, key: &K) -> Ordering;
 }
 

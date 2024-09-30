@@ -1,6 +1,6 @@
 use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::wait_queue::{AsyncWait, WaitQueue};
-use std::borrow::Borrow;
+use crate::Equivalent;
 use std::fmt::{self, Debug};
 use std::mem::{needs_drop, MaybeUninit};
 use std::ops::{Deref, DerefMut};
@@ -283,8 +283,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         guard: &'g Guard,
     ) -> Option<&'g (K, V)>
     where
-        K: Borrow<Q>,
-        Q: Eq + ?Sized,
+        Q: Equivalent<K> + ?Sized,
     {
         if self.num_entries == 0 {
             return None;
@@ -319,8 +318,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         guard: &'g Guard,
     ) -> EntryPtr<'g, K, V, TYPE>
     where
-        K: Borrow<Q>,
-        Q: Eq + ?Sized,
+        Q: Equivalent<K> + ?Sized,
     {
         if self.num_entries == 0 {
             return EntryPtr::new(guard);
@@ -358,8 +356,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         partial_hash: u8,
     ) -> Option<(usize, &'g (K, V))>
     where
-        K: Borrow<Q>,
-        Q: Eq + ?Sized,
+        Q: Equivalent<K> + ?Sized,
     {
         let mut bitmap = if TYPE == OPTIMISTIC {
             metadata.occupied_bitmap & (!metadata.removed_bitmap_or_lru_tail)
@@ -382,7 +379,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         let mut offset = bitmap.trailing_zeros();
         while offset != u32::BITS {
             let entry_ref = unsafe { &(*data_block[offset as usize].as_ptr()) };
-            if entry_ref.0.borrow() == key {
+            if key.equivalent(&entry_ref.0) {
                 return Some((offset as usize, entry_ref));
             }
             bitmap -= 1_u32 << offset;
@@ -969,8 +966,7 @@ impl<'g, K: Eq, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
         guard: &'g Guard,
     ) -> EntryPtr<'g, K, V, TYPE>
     where
-        K: Borrow<Q>,
-        Q: Eq + ?Sized,
+        Q: Equivalent<K> + ?Sized,
     {
         self.bucket.get(data_block, key, partial_hash, guard)
     }
