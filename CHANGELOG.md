@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.2.0
+
+* (IN-PROGRESS) Add `Comparable` and `Equivalent` traits: [#162](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/162) by [qthree](https://github.com/qthree).
+
 2.1.18
 
 * Add `TreeIndex::peek_entry`: [#157](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/157) by [qthree](https://github.com/qthree).

@@ -1282,7 +1282,9 @@ mod test {
     use std::pin::Pin;
     use tokio::sync::Barrier;
 
+    #[cfg(not(miri))]
     static_assertions::assert_eq_size!(Bucket<String, String, (), OPTIMISTIC>, [u8; BUCKET_LEN * 2]);
+    #[cfg(not(miri))]
     static_assertions::assert_eq_size!(Bucket<String, String, DoublyLinkedList, CACHE>, [u8; BUCKET_LEN * 4]);
 
     fn default_bucket<K: Eq, V, L: LruList, const TYPE: char>() -> Bucket<K, V, L, TYPE> {
