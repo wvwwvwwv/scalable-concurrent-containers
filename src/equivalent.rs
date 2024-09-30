@@ -3,6 +3,9 @@
 use std::{borrow::Borrow, cmp::Ordering};
 
 /// Key equivalence trait.
+///
+/// [`Hash`](std::hash::Hash) will have to be implemented to make sure that the same hash value
+/// is generated for equivalent keys.
 pub trait Equivalent<K: ?Sized> {
     /// Compares `self` to `key` and returns `true` if they are equal.
     fn equivalent(&self, key: &K) -> bool;

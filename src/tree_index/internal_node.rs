@@ -7,7 +7,6 @@ use crate::exit_guard::ExitGuard;
 use crate::maybe_std::AtomicU8;
 use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
 use crate::Comparable;
-use std::borrow::Borrow;
 use std::cmp::Ordering::{Equal, Greater, Less};
 use std::mem::forget;
 use std::ops::RangeBounds;
@@ -986,11 +985,7 @@ where
     }
 
     /// Tries to coalesce nodes.
-    fn coalesce<Q>(&self, guard: &Guard) -> RemoveResult
-    where
-        K: Borrow<Q>,
-        Q: Ord + ?Sized,
-    {
+    fn coalesce(&self, guard: &Guard) -> RemoveResult {
         let mut node_deleted = false;
         while let Some(lock) = Locker::try_lock(self) {
             let mut max_key_entry = None;
@@ -998,7 +993,7 @@ where
                 let node_ptr = node.load(Acquire, guard);
                 let node_ref = node_ptr.as_ref().unwrap();
                 if node_ref.retired() {
-                    let result = self.children.remove_if(key.borrow(), &mut |_| true);
+                    let result = self.children.remove_if(key, &mut |_| true);
                     debug_assert_ne!(result, RemoveResult::Fail);
 
                     // Once the key is removed, it is safe to deallocate the node as the validation
@@ -1029,7 +1024,7 @@ where
                             let _: bool = obsolete_node.release();
                             node_deleted = true;
                         }
-                        let result = self.children.remove_if(key.borrow(), &mut |_| true);
+                        let result = self.children.remove_if(key, &mut |_| true);
                         debug_assert_ne!(result, RemoveResult::Fail);
                         if let Some(node) = max_key_child.swap((None, Tag::None), Release).0 {
                             let _: bool = node.release();

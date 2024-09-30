@@ -1,7 +1,6 @@
 //! [`HashSet`] is a concurrent and asynchronous hash set.
 
-use super::HashMap;
-use std::borrow::Borrow;
+use super::{Equivalent, HashMap};
 use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
@@ -176,8 +175,7 @@ where
     #[inline]
     pub fn remove<Q>(&self, key: &Q) -> Option<K>
     where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
     {
         self.map.remove(key).map(|(k, ())| k)
     }
@@ -199,8 +197,7 @@ where
     #[inline]
     pub async fn remove_async<Q>(&self, key: &Q) -> Option<K>
     where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
     {
         self.map
             .remove_if_async(key, |()| true)
@@ -226,8 +223,7 @@ where
     #[inline]
     pub fn remove_if<Q, F: FnOnce() -> bool>(&self, key: &Q, condition: F) -> Option<K>
     where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
     {
         self.map.remove_if(key, |()| condition()).map(|(k, ())| k)
     }
@@ -249,8 +245,7 @@ where
     #[inline]
     pub async fn remove_if_async<Q, F: FnOnce() -> bool>(&self, key: &Q, condition: F) -> Option<K>
     where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
     {
         self.map
             .remove_if_async(key, |()| condition())
@@ -276,8 +271,7 @@ where
     #[inline]
     pub fn read<Q, R, F: FnOnce(&K) -> R>(&self, key: &Q, reader: F) -> Option<R>
     where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
     {
         self.map.read(key, |k, ()| reader(k))
     }
@@ -299,8 +293,7 @@ where
     #[inline]
     pub async fn read_async<Q, R, F: FnOnce(&K) -> R>(&self, key: &Q, reader: F) -> Option<R>
     where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
     {
         self.map.read_async(key, |k, ()| reader(k)).await
     }
@@ -321,8 +314,7 @@ where
     #[inline]
     pub fn contains<Q>(&self, key: &Q) -> bool
     where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
     {
         self.read(key, |_| ()).is_some()
     }
@@ -343,8 +335,7 @@ where
     #[inline]
     pub async fn contains_async<Q>(&self, key: &Q) -> bool
     where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
     {
         self.map.contains_async(key).await
     }
@@ -633,8 +624,7 @@ where
     #[inline]
     pub fn bucket_index<Q>(&self, key: &Q) -> usize
     where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
+        Q: Equivalent<K> + Hash + ?Sized,
     {
         self.map.bucket_index(key)
     }

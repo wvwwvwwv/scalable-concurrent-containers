@@ -2,7 +2,7 @@
 #[cfg(test)]
 mod hashmap_test {
     use crate::hash_map::{self, Entry, Reserve};
-    use crate::HashMap;
+    use crate::{Equivalent, HashMap};
     use proptest::prelude::*;
     use proptest::strategy::ValueTree;
     use proptest::test_runner::TestRunner;
@@ -78,6 +78,29 @@ mod hashmap_test {
         fn eq(&self, other: &Self) -> bool {
             self.data == other.data
         }
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct EqTest(String, usize);
+
+    impl Equivalent<EqTest> for str {
+        fn equivalent(&self, key: &EqTest) -> bool {
+            key.0.eq(self)
+        }
+    }
+
+    impl Hash for EqTest {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            self.0.hash(state)
+        }
+    }
+
+    #[test]
+    fn equivalent() {
+        let hashmap: HashMap<EqTest, usize> = HashMap::default();
+        assert!(hashmap.insert(EqTest("HELLO".to_owned(), 1), 1).is_ok());
+        assert!(!hashmap.contains("NO"));
+        assert!(hashmap.contains("HELLO"));
     }
 
     #[test]
@@ -805,10 +828,11 @@ mod hashmap_test {
 mod hashindex_test {
     use crate::ebr::Guard;
     use crate::hash_index::Iter;
-    use crate::HashIndex;
+    use crate::{Equivalent, HashIndex};
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
     use std::collections::BTreeSet;
+    use std::hash::{Hash, Hasher};
     use std::panic::UnwindSafe;
     use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
     use std::sync::atomic::{fence, AtomicU64, AtomicUsize};
@@ -838,6 +862,29 @@ mod hashindex_test {
         fn drop(&mut self) {
             self.0.fetch_sub(1, Relaxed);
         }
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct EqTest(String, usize);
+
+    impl Equivalent<EqTest> for str {
+        fn equivalent(&self, key: &EqTest) -> bool {
+            key.0.eq(self)
+        }
+    }
+
+    impl Hash for EqTest {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            self.0.hash(state)
+        }
+    }
+
+    #[test]
+    fn equivalent() {
+        let hashindex: HashIndex<EqTest, usize> = HashIndex::default();
+        assert!(hashindex.insert(EqTest("HELLO".to_owned(), 1), 1).is_ok());
+        assert!(!hashindex.contains("NO"));
+        assert!(hashindex.contains("HELLO"));
     }
 
     #[test]
@@ -1423,11 +1470,35 @@ mod hashindex_test {
 #[cfg(not(feature = "loom"))]
 #[cfg(test)]
 mod hashset_test {
-    use crate::HashSet;
+    use crate::{Equivalent, HashSet};
+    use std::hash::{Hash, Hasher};
     use std::panic::UnwindSafe;
 
     static_assertions::assert_impl_all!(HashSet<String>: Send, Sync, UnwindSafe);
     static_assertions::assert_not_impl_all!(HashSet<*const String>: Send, Sync, UnwindSafe);
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct EqTest(String, usize);
+
+    impl Equivalent<EqTest> for str {
+        fn equivalent(&self, key: &EqTest) -> bool {
+            key.0.eq(self)
+        }
+    }
+
+    impl Hash for EqTest {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            self.0.hash(state)
+        }
+    }
+
+    #[test]
+    fn equivalent() {
+        let hashset: HashSet<EqTest> = HashSet::default();
+        assert!(hashset.insert(EqTest("HELLO".to_owned(), 1)).is_ok());
+        assert!(!hashset.contains("NO"));
+        assert!(hashset.contains("HELLO"));
+    }
 
     #[test]
     fn compare() {
@@ -1456,8 +1527,9 @@ mod hashset_test {
 #[cfg(test)]
 mod hashcache_test {
     use crate::hash_cache;
-    use crate::HashCache;
+    use crate::{Equivalent, HashCache};
     use proptest::prelude::*;
+    use std::hash::{Hash, Hasher};
     use std::panic::UnwindSafe;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
@@ -1488,6 +1560,29 @@ mod hashcache_test {
         fn drop(&mut self) {
             self.0.fetch_sub(1, Relaxed);
         }
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct EqTest(String, usize);
+
+    impl Equivalent<EqTest> for str {
+        fn equivalent(&self, key: &EqTest) -> bool {
+            key.0.eq(self)
+        }
+    }
+
+    impl Hash for EqTest {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            self.0.hash(state)
+        }
+    }
+
+    #[test]
+    fn equivalent() {
+        let hashcache: HashCache<EqTest, usize> = HashCache::default();
+        assert!(hashcache.put(EqTest("HELLO".to_owned(), 1), 1).is_ok());
+        assert!(!hashcache.contains("NO"));
+        assert!(hashcache.contains("HELLO"));
     }
 
     #[test]
@@ -1800,11 +1895,13 @@ mod hashcache_test {
 mod treeindex_test {
     use crate::ebr::Guard;
     use crate::tree_index::{Iter, Range};
-    use crate::TreeIndex;
+    use crate::{Comparable, Equivalent, TreeIndex};
     use proptest::prelude::*;
     use proptest::strategy::ValueTree;
     use proptest::test_runner::TestRunner;
     use sdd::suspend;
+    use std::borrow::Borrow;
+    use std::cmp::Ordering;
     use std::collections::BTreeSet;
     use std::ops::RangeInclusive;
     use std::panic::UnwindSafe;
@@ -1839,6 +1936,55 @@ mod treeindex_test {
         fn drop(&mut self) {
             self.0.fetch_sub(1, Relaxed);
         }
+    }
+
+    #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+    struct CmpTest(String, usize);
+
+    impl Comparable<CmpTest> for &str {
+        fn compare(&self, key: &CmpTest) -> Ordering {
+            self.cmp(&key.0.borrow())
+        }
+    }
+
+    impl Equivalent<CmpTest> for &str {
+        fn equivalent(&self, key: &CmpTest) -> bool {
+            key.0.eq(self)
+        }
+    }
+
+    #[test]
+    fn comparable() {
+        let tree: TreeIndex<CmpTest, usize> = TreeIndex::default();
+
+        assert!(tree.insert(CmpTest("A".to_owned(), 0), 0).is_ok());
+        assert!(tree.peek_with(&"A", |_, _| true).unwrap());
+        assert!(tree.insert(CmpTest("B".to_owned(), 0), 0).is_ok());
+        assert!(tree.peek_with(&"B", |_, _| true).unwrap());
+        assert!(tree.insert(CmpTest("C".to_owned(), 0), 0).is_ok());
+        assert!(tree.peek_with(&"C", |_, _| true).unwrap());
+
+        assert!(tree.insert(CmpTest("Z".to_owned(), 0), 0).is_ok());
+        assert!(tree.peek_with(&"Z", |_, _| true).unwrap());
+        assert!(tree.insert(CmpTest("Y".to_owned(), 0), 0).is_ok());
+        assert!(tree.peek_with(&"Y", |_, _| true).unwrap());
+        assert!(tree.insert(CmpTest("X".to_owned(), 0), 0).is_ok());
+        assert!(tree.peek_with(&"X", |_, _| true).unwrap());
+
+        let guard = Guard::new();
+        let mut range = tree.range("C".."Y", &guard);
+        assert_eq!(range.next().unwrap().0 .0, "C");
+        assert_eq!(range.next().unwrap().0 .0, "X");
+        assert!(range.next().is_none());
+
+        tree.remove_range("C".."Y");
+
+        assert!(tree.peek_with(&"A", |_, _| true).unwrap());
+        assert!(tree.peek_with(&"B", |_, _| true).unwrap());
+        assert!(tree.peek_with(&"C", |_, _| true).is_none());
+        assert!(tree.peek_with(&"X", |_, _| true).is_none());
+        assert!(tree.peek_with(&"Y", |_, _| true).unwrap());
+        assert!(tree.peek_with(&"Z", |_, _| true).unwrap());
     }
 
     #[test]

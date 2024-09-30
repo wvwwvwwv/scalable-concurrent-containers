@@ -7,7 +7,6 @@ use crate::maybe_std::AtomicU8;
 use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
 use crate::LinkedList;
 use crate::{range_helper, Comparable};
-use std::borrow::Borrow;
 use std::cmp::Ordering::{Equal, Greater, Less};
 use std::ops::{Bound, RangeBounds};
 use std::ptr;
@@ -992,7 +991,7 @@ where
                 if leaf.is_retired() {
                     let deleted = leaf.delete_self(Release);
                     debug_assert!(deleted);
-                    let result = self.children.remove_if(entry.0.borrow(), &mut |_| true);
+                    let result = self.children.remove_if(entry.0, &mut |_| true);
                     debug_assert_ne!(result, RemoveResult::Fail);
 
                     // The pointer is nullified after the metadata of `self.children` is updated so
