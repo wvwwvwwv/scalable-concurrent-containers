@@ -768,8 +768,9 @@ where
             debug_assert!(unfrozen);
 
             // Remove the mark from the full leaf node.
-            let unmarked = origin_leaf.unmark(Release);
-            debug_assert!(unmarked);
+            //
+            // `clear` clears the tag, so there is no guarantee that the tag has been kept.
+            origin_leaf.unmark(Release);
         }
 
         let origin = self.split_op.reset();
