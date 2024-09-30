@@ -29,9 +29,6 @@ pub use stack::Stack;
 pub mod tree_index;
 pub use tree_index::TreeIndex;
 
-/// Re-exports the [`sdd`](https://crates.io/crates/sdd) crate for backward compatibility.
-pub use sdd as ebr;
-
 mod exit_guard;
 mod hash_table;
 mod wait_queue;
@@ -39,7 +36,8 @@ mod wait_queue;
 #[cfg(not(feature = "equivalent"))]
 mod equivalent;
 
-pub use equivalent::{Comparable, Equivalent};
+#[cfg(feature = "serde")]
+mod serde;
 
 #[cfg(feature = "loom")]
 mod maybe_std {
@@ -53,8 +51,32 @@ mod maybe_std {
     pub(crate) use std::thread::yield_now;
 }
 
-#[cfg(feature = "serde")]
-mod serde;
+mod range_helper {
+    use crate::Comparable;
+    use std::ops::Bound::{Excluded, Included, Unbounded};
+    use std::ops::RangeBounds;
+
+    /// Emulates `RangeBounds::contains`.
+    pub(crate) fn contains<K, Q, R: RangeBounds<Q>>(range: &R, key: &K) -> bool
+    where
+        Q: Comparable<K> + ?Sized,
+    {
+        (match range.start_bound() {
+            Included(start) => start.compare(key).is_le(),
+            Excluded(start) => start.compare(key).is_lt(),
+            Unbounded => true,
+        }) && (match range.end_bound() {
+            Included(end) => end.compare(key).is_ge(),
+            Excluded(end) => end.compare(key).is_gt(),
+            Unbounded => true,
+        })
+    }
+}
+
+/// Re-exports the [`sdd`](https://crates.io/crates/sdd) crate for backward compatibility.
+pub use sdd as ebr;
+
+pub use equivalent::{Comparable, Equivalent};
 
 #[cfg(test)]
 mod tests;

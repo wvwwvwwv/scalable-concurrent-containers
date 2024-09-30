@@ -5,8 +5,8 @@ use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::exit_guard::ExitGuard;
 use crate::maybe_std::AtomicU8;
 use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
-use crate::Comparable;
 use crate::LinkedList;
+use crate::{range_helper, Comparable};
 use std::borrow::Borrow;
 use std::cmp::Ordering::{Equal, Greater, Less};
 use std::ops::{Bound, RangeBounds};
@@ -479,7 +479,7 @@ where
     ///
     /// Returns the number of remaining children.
     #[inline]
-    pub(super) fn remove_range<'g, R: RangeBounds<K>, D: DeriveAsyncWait>(
+    pub(super) fn remove_range<'g, Q, R: RangeBounds<Q>, D: DeriveAsyncWait>(
         &self,
         range: &R,
         start_unbounded: bool,
@@ -487,7 +487,10 @@ where
         valid_upper_min_node: Option<&'g Node<K, V>>,
         async_wait: &mut D,
         guard: &'g Guard,
-    ) -> Result<usize, ()> {
+    ) -> Result<usize, ()>
+    where
+        Q: Comparable<K> + ?Sized,
+    {
         debug_assert!(valid_lower_max_leaf.is_none() || start_unbounded);
         debug_assert!(valid_lower_max_leaf.is_none() || valid_upper_min_node.is_none());
 
@@ -1098,13 +1101,16 @@ impl<'n, K, V> Drop for Locker<'n, K, V> {
 
 impl RemoveRangeState {
     /// Returns the next state.
-    pub(super) fn next<K: Ord, R: RangeBounds<K>>(
+    pub(super) fn next<K, Q, R: RangeBounds<Q>>(
         self,
         key: &K,
         range: &R,
         start_unbounded: bool,
-    ) -> Self {
-        if range.contains(key) {
+    ) -> Self
+    where
+        Q: Comparable<K> + ?Sized,
+    {
+        if range_helper::contains(range, key) {
             match self {
                 RemoveRangeState::Below => {
                     if start_unbounded {
@@ -1121,14 +1127,13 @@ impl RemoveRangeState {
         } else {
             match self {
                 RemoveRangeState::Below => match range.start_bound() {
-                    Bound::Included(k) => match key.cmp(k) {
-                        Less => RemoveRangeState::Below,
-                        Equal => unreachable!(),
-                        Greater => RemoveRangeState::MaybeAbove,
+                    Bound::Included(k) => match k.compare(key) {
+                        Less | Equal => RemoveRangeState::MaybeAbove,
+                        Greater => RemoveRangeState::Below,
                     },
-                    Bound::Excluded(k) => match key.cmp(k) {
-                        Less | Equal => RemoveRangeState::Below,
-                        Greater => RemoveRangeState::MaybeAbove,
+                    Bound::Excluded(k) => match k.compare(key) {
+                        Less => RemoveRangeState::MaybeAbove,
+                        Greater | Equal => RemoveRangeState::Below,
                     },
                     Bound::Unbounded => RemoveRangeState::MaybeAbove,
                 },

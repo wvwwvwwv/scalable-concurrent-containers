@@ -158,7 +158,7 @@ where
     ///
     /// Returns the number of remaining children.
     #[inline]
-    pub(super) fn remove_range<'g, R: RangeBounds<K>, D: DeriveAsyncWait>(
+    pub(super) fn remove_range<'g, Q, R: RangeBounds<Q>, D: DeriveAsyncWait>(
         &self,
         range: &R,
         start_unbounded: bool,
@@ -166,7 +166,10 @@ where
         valid_upper_min_node: Option<&'g Node<K, V>>,
         async_wait: &mut D,
         guard: &'g Guard,
-    ) -> Result<usize, ()> {
+    ) -> Result<usize, ()>
+    where
+        Q: Comparable<K> + ?Sized,
+    {
         match &self {
             Self::Internal(internal_node) => internal_node.remove_range(
                 range,

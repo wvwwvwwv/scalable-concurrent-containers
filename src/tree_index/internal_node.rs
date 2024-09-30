@@ -471,7 +471,7 @@ where
     /// Returns the number of remaining children.
     #[allow(clippy::too_many_lines)]
     #[inline]
-    pub(super) fn remove_range<'g, R: RangeBounds<K>, D: DeriveAsyncWait>(
+    pub(super) fn remove_range<'g, Q, R: RangeBounds<Q>, D: DeriveAsyncWait>(
         &self,
         range: &R,
         start_unbounded: bool,
@@ -479,7 +479,10 @@ where
         valid_upper_min_node: Option<&'g Node<K, V>>,
         async_wait: &mut D,
         guard: &'g Guard,
-    ) -> Result<usize, ()> {
+    ) -> Result<usize, ()>
+    where
+        Q: Comparable<K> + ?Sized,
+    {
         debug_assert!(valid_lower_max_leaf.is_none() || start_unbounded);
         debug_assert!(valid_lower_max_leaf.is_none() || valid_upper_min_node.is_none());
 

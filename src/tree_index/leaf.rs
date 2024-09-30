@@ -1,7 +1,7 @@
 use crate::ebr::{AtomicShared, Guard, Shared};
 use crate::maybe_std::AtomicUsize;
-use crate::Comparable;
 use crate::LinkedList;
+use crate::{range_helper, Comparable};
 use std::cell::UnsafeCell;
 use std::cmp::Ordering;
 use std::fmt::{self, Debug};
@@ -462,7 +462,10 @@ where
     ///
     /// Returns the number of remaining children.
     #[inline]
-    pub(super) fn remove_range<R: RangeBounds<K>>(&self, range: &R) {
+    pub(super) fn remove_range<Q, R: RangeBounds<Q>>(&self, range: &R)
+    where
+        Q: Comparable<K> + ?Sized,
+    {
         let mut mutable_metadata = self.metadata.load(Acquire);
         for i in 0..DIMENSION.num_entries {
             if mutable_metadata == 0 {
@@ -471,7 +474,7 @@ where
             let rank = mutable_metadata % (1_usize << DIMENSION.num_bits_per_entry);
             if rank != Dimension::uninit_rank() && rank != DIMENSION.removed_rank() {
                 let k = self.key_at(i);
-                if range.contains(k) {
+                if range_helper::contains(range, k) {
                     self.remove_if(k, &mut |_| true);
                 }
             }

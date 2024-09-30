@@ -508,7 +508,10 @@ where
     /// assert!(!treeindex.contains(&3));
     /// ```
     #[inline]
-    pub fn remove_range<R: RangeBounds<K>>(&self, range: R) {
+    pub fn remove_range<Q, R: RangeBounds<Q>>(&self, range: R)
+    where
+        Q: Comparable<K> + ?Sized,
+    {
         let start_unbounded = matches!(range.start_bound(), Unbounded);
         let guard = Guard::new();
 
@@ -553,7 +556,10 @@ where
     /// let future_remove_range = treeindex.remove_range_async(3..8);
     /// ```
     #[inline]
-    pub async fn remove_range_async<R: RangeBounds<K>>(&self, range: R) {
+    pub async fn remove_range_async<Q, R: RangeBounds<Q>>(&self, range: R)
+    where
+        Q: Comparable<K> + ?Sized,
+    {
         let start_unbounded = matches!(range.start_bound(), Unbounded);
 
         loop {

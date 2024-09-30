@@ -2158,11 +2158,10 @@ mod treeindex_test {
         }
     }
 
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn mixed() {
         let range = if cfg!(miri) { 64 } else { 4096 };
-        let num_threads = if cfg!(miri) { 4 } else { 16 };
+        let num_threads = if cfg!(miri) { 2 } else { 16 };
         let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::new());
         let barrier = Arc::new(Barrier::new(num_threads));
         let mut thread_handles = Vec::with_capacity(num_threads);
