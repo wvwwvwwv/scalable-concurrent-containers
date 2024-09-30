@@ -71,7 +71,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-msrv, cargo-spellcheck
-      - name: Clippy 
+      - name: Clippy
         run: cargo clippy --all;
           cargo clippy -p examples --all
       - name: MSRV
@@ -82,7 +82,9 @@ jobs:
         run: cargo fmt --check;
           cargo fmt -p examples --check
       - name: Doc
-        run: cargo doc --document-private-items;
+        run: cargo doc --document-private-items
+      - name: Loom
+        run: cargo test --features equivalent --release --lib -- --nocapture
       - name: Serde
         run: cargo test serde --features serde;
           cargo test --release serde --features serde

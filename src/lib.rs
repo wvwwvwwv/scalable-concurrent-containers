@@ -36,6 +36,11 @@ mod exit_guard;
 mod hash_table;
 mod wait_queue;
 
+#[cfg(not(feature = "equivalent"))]
+mod equivalent;
+
+pub use equivalent::{Comparable, Equivalent};
+
 #[cfg(feature = "loom")]
 mod maybe_std {
     pub(crate) use loom::sync::atomic::{AtomicU8, AtomicUsize};
