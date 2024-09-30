@@ -9,7 +9,7 @@ A collection of high performance containers and utilities for concurrent and asy
 #### Features
 
 - Asynchronous counterparts of blocking and synchronous methods.
-- [`Equivalent`](`https://github.com/indexmap-rs/equivalent`), [`Loom`](https://github.com/tokio-rs/loom) and [`Serde`](https://github.com/serde-rs/serde) support: `features = ["equivalent", "loom", "serde"]`.
+- [`Equivalent`](https://github.com/indexmap-rs/equivalent), [`Loom`](https://github.com/tokio-rs/loom) and [`Serde`](https://github.com/serde-rs/serde) support: `features = ["equivalent", "loom", "serde"]`.
 - Near-linear scalability.
 - No spin-locks and no busy loops.
 - SIMD lookup to scan multiple entries in parallel [^note].
