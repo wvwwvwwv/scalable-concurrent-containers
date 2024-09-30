@@ -1,10 +1,10 @@
 pub mod bucket;
 pub mod bucket_array;
 
-use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
-use crate::exit_guard::ExitGuard;
-use crate::wait_queue::{AsyncWait, DeriveAsyncWait};
-use crate::Equivalent;
+use super::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
+use super::exit_guard::ExitGuard;
+use super::wait_queue::{AsyncWait, DeriveAsyncWait};
+use super::Equivalent;
 use bucket::{DataBlock, EntryPtr, Locker, LruList, Reader, BUCKET_LEN, CACHE, OPTIMISTIC};
 use bucket_array::BucketArray;
 use std::hash::{BuildHasher, Hash, Hasher};

@@ -83,7 +83,7 @@ jobs:
           cargo fmt -p examples --check
       - name: Doc
         run: cargo doc --document-private-items
-      - name: Loom
+      - name: Equivalent
         run: cargo test --features equivalent --release --lib -- --nocapture
       - name: Serde
         run: cargo test serde --features serde;

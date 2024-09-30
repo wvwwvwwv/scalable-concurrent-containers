@@ -1,11 +1,11 @@
 //! [`HashIndex`] is a read-optimized concurrent and asynchronous hash map.
 
 use super::ebr::{AtomicShared, Guard, Shared};
-use super::equivalent::Equivalent;
 use super::hash_table::bucket::{Bucket, EntryPtr, Locker, OPTIMISTIC};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::{HashTable, LockedEntry};
 use super::wait_queue::AsyncWait;
+use super::Equivalent;
 use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
