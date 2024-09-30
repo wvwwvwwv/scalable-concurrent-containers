@@ -2486,7 +2486,7 @@ mod treeindex_test {
 
     #[test]
     fn remove() {
-        let num_threads = if cfg!(miri) { 4 } else { 16 };
+        let num_threads = if cfg!(miri) { 2 } else { 16 };
         let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::new());
         let barrier = Arc::new(Barrier::new(num_threads));
         let mut thread_handles = Vec::with_capacity(num_threads);
