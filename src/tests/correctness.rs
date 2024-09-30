@@ -14,21 +14,13 @@ mod hashmap_test {
     use std::sync::Arc;
     use tokio::sync::Barrier as AsyncBarrier;
 
-    #[cfg(not(miri))]
     static_assertions::assert_impl_all!(HashMap<String, String>: Send, Sync, UnwindSafe);
-    #[cfg(not(miri))]
     static_assertions::assert_impl_all!(Reserve<String, String>: Send, Sync, UnwindSafe);
-    #[cfg(not(miri))]
     static_assertions::assert_not_impl_all!(HashMap<String, *const String>: Send, Sync, UnwindSafe);
-    #[cfg(not(miri))]
     static_assertions::assert_not_impl_all!(Reserve<String, *const String>: Send, Sync, UnwindSafe);
-    #[cfg(not(miri))]
     static_assertions::assert_impl_all!(hash_map::OccupiedEntry<String, String>: Send, Sync);
-    #[cfg(not(miri))]
     static_assertions::assert_not_impl_all!(hash_map::OccupiedEntry<String, *const String>: Send, Sync, UnwindSafe);
-    #[cfg(not(miri))]
     static_assertions::assert_impl_all!(hash_map::VacantEntry<String, String>: Send, Sync);
-    #[cfg(not(miri))]
     static_assertions::assert_not_impl_all!(hash_map::VacantEntry<String, *const String>: Send, Sync, UnwindSafe);
 
     struct R(&'static AtomicUsize);
@@ -824,13 +816,9 @@ mod hashindex_test {
     use std::thread;
     use tokio::sync::Barrier as AsyncBarrier;
 
-    #[cfg(not(miri))]
     static_assertions::assert_impl_all!(HashIndex<String, String>: Send, Sync, UnwindSafe);
-    #[cfg(not(miri))]
     static_assertions::assert_impl_all!(Iter<'static, 'static, String, String>: UnwindSafe);
-    #[cfg(not(miri))]
     static_assertions::assert_not_impl_all!(HashIndex<String, *const String>: Send, Sync, UnwindSafe);
-    #[cfg(not(miri))]
     static_assertions::assert_not_impl_all!(Iter<'static, 'static, String, *const String>: Send, Sync, UnwindSafe);
 
     struct R(&'static AtomicUsize);
@@ -1438,9 +1426,7 @@ mod hashset_test {
     use crate::HashSet;
     use std::panic::UnwindSafe;
 
-    #[cfg(not(miri))]
     static_assertions::assert_impl_all!(HashSet<String>: Send, Sync, UnwindSafe);
-    #[cfg(not(miri))]
     static_assertions::assert_not_impl_all!(HashSet<*const String>: Send, Sync, UnwindSafe);
 
     #[test]
@@ -1478,17 +1464,11 @@ mod hashcache_test {
     use std::sync::Arc;
     use tokio::sync::Barrier as AsyncBarrier;
 
-    #[cfg(not(miri))]
     static_assertions::assert_impl_all!(HashCache<String, String>: Send, Sync, UnwindSafe);
-    #[cfg(not(miri))]
     static_assertions::assert_not_impl_all!(HashCache<String, *const String>: Send, Sync, UnwindSafe);
-    #[cfg(not(miri))]
     static_assertions::assert_impl_all!(hash_cache::OccupiedEntry<String, String>: Send, Sync);
-    #[cfg(not(miri))]
     static_assertions::assert_not_impl_all!(hash_cache::OccupiedEntry<String, *const String>: Send, Sync, UnwindSafe);
-    #[cfg(not(miri))]
     static_assertions::assert_impl_all!(hash_cache::VacantEntry<String, String>: Send, Sync);
-    #[cfg(not(miri))]
     static_assertions::assert_not_impl_all!(hash_cache::VacantEntry<String, *const String>: Send, Sync, UnwindSafe);
 
     struct R(&'static AtomicUsize);
@@ -1835,17 +1815,11 @@ mod treeindex_test {
     use tokio::sync::Barrier as AsyncBarrier;
     use tokio::task;
 
-    #[cfg(not(miri))]
     static_assertions::assert_impl_all!(TreeIndex<String, String>: Send, Sync, UnwindSafe);
-    #[cfg(not(miri))]
     static_assertions::assert_impl_all!(Iter<'static, 'static, String, String>: UnwindSafe);
-    #[cfg(not(miri))]
     static_assertions::assert_impl_all!(Range<'static, 'static, String, String, String, RangeInclusive<String>>: UnwindSafe);
-    #[cfg(not(miri))]
     static_assertions::assert_not_impl_all!(TreeIndex<String, *const String>: Send, Sync, UnwindSafe);
-    #[cfg(not(miri))]
     static_assertions::assert_not_impl_all!(Iter<'static, 'static, String, *const String>: Send, Sync, UnwindSafe);
-    #[cfg(not(miri))]
     static_assertions::assert_not_impl_all!(Range<'static, 'static, String, *const String, String, RangeInclusive<String>>: Send, Sync, UnwindSafe);
 
     struct R(&'static AtomicUsize);
@@ -2626,13 +2600,9 @@ mod bag_test {
     use tokio::sync::Barrier as AsyncBarrier;
     use tokio::task;
 
-    #[cfg(not(miri))]
     static_assertions::assert_impl_all!(Bag<String>: Send, Sync, UnwindSafe);
-    #[cfg(not(miri))]
     static_assertions::assert_impl_all!(IterMut<'static, String>: Send, Sync, UnwindSafe);
-    #[cfg(not(miri))]
     static_assertions::assert_not_impl_all!(Bag<*const String>: Send, Sync, UnwindSafe);
-    #[cfg(not(miri))]
     static_assertions::assert_not_impl_all!(IterMut<'static, *const String>: Send, Sync, UnwindSafe);
 
     struct R(&'static AtomicUsize);
@@ -2813,9 +2783,7 @@ mod queue_test {
     use std::sync::{Arc, Barrier};
     use std::thread;
 
-    #[cfg(not(miri))]
     static_assertions::assert_impl_all!(Queue<String>: Send, Sync, UnwindSafe);
-    #[cfg(not(miri))]
     static_assertions::assert_not_impl_all!(Queue<*const String>: Send, Sync, UnwindSafe);
 
     struct R(&'static AtomicUsize, usize, usize);
@@ -3008,9 +2976,7 @@ mod stack_test {
     use std::{panic::UnwindSafe, sync::Arc};
     use tokio::sync::Barrier as AsyncBarrier;
 
-    #[cfg(not(miri))]
     static_assertions::assert_impl_all!(Stack<String>: Send, Sync, UnwindSafe);
-    #[cfg(not(miri))]
     static_assertions::assert_not_impl_all!(Stack<*const String>: Send, Sync, UnwindSafe);
 
     #[derive(Debug)]
