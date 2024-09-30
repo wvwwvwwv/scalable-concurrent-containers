@@ -158,9 +158,9 @@ where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
 {
-    /// Searches for an entry associated with the given key.
+    /// Searches for an entry containing the specified key.
     #[inline]
-    pub(super) fn search<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<(&'g K, &'g V)>
+    pub(super) fn search_entry<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<(&'g K, &'g V)>
     where
         K: 'g + Borrow<Q>,
         Q: Ord + ?Sized,
@@ -179,7 +179,7 @@ where
                         // Consequently, the reader may miss keys in the low key leaf.
                         //
                         // Resolution: metadata validation.
-                        return child.search(key);
+                        return child.search_entry(key);
                     }
                 }
 
@@ -191,7 +191,37 @@ where
                 let unbounded_ptr = self.unbounded_child.load(Acquire, guard);
                 if let Some(unbounded) = unbounded_ptr.as_ref() {
                     if self.children.validate(metadata) {
-                        return unbounded.search(key);
+                        return unbounded.search_entry(key);
+                    }
+                } else {
+                    return None;
+                }
+            }
+        }
+    }
+
+    /// Searches for the value associated with the specified key.
+    #[inline]
+    pub(super) fn search_value<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<&'g V>
+    where
+        K: 'g + Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        loop {
+            let (child, metadata) = self.children.min_greater_equal(key);
+            if let Some((_, child)) = child {
+                if let Some(child) = child.load(Acquire, guard).as_ref() {
+                    if self.children.validate(metadata) {
+                        // Data race resolution - see `LeafNode::search_entry`.
+                        return child.search_value(key);
+                    }
+                }
+                // Data race resolution - see `LeafNode::search_entry`.
+            } else {
+                let unbounded_ptr = self.unbounded_child.load(Acquire, guard);
+                if let Some(unbounded) = unbounded_ptr.as_ref() {
+                    if self.children.validate(metadata) {
+                        return unbounded.search_value(key);
                     }
                 } else {
                     return None;
@@ -210,11 +240,11 @@ where
                 let child_ptr = child.load(Acquire, guard);
                 if let Some(child) = child_ptr.as_ref() {
                     if self.children.validate(metadata) {
-                        // Data race resolution - see `LeafNode::search`.
+                        // Data race resolution - see `LeafNode::search_entry`.
                         return Some(Scanner::new(child));
                     }
                 }
-                // It is not a hot loop - see `LeafNode::search`.
+                // It is not a hot loop - see `LeafNode::search_entry`.
                 continue;
             }
             let unbounded_ptr = self.unbounded_child.load(Acquire, guard);
@@ -244,7 +274,7 @@ where
                 if let Some((_, child)) = scanner.get() {
                     if let Some(child) = child.load(Acquire, guard).as_ref() {
                         if self.children.validate(scanner.metadata()) {
-                            // Data race resolution - see `LeafNode::search`.
+                            // Data race resolution - see `LeafNode::search_entry`.
                             if let Some(scanner) = Scanner::max_less(child, key) {
                                 return Some(scanner);
                             }
@@ -252,7 +282,7 @@ where
                             break;
                         }
                     }
-                    // It is not a hot loop - see `LeafNode::search`.
+                    // It is not a hot loop - see `LeafNode::search_entry`.
                     continue;
                 }
             }
@@ -295,7 +325,7 @@ where
                 let child_ptr = child.load(Acquire, guard);
                 if let Some(child_ref) = child_ptr.as_ref() {
                     if self.children.validate(metadata) {
-                        // Data race resolution - see `LeafNode::search`.
+                        // Data race resolution - see `LeafNode::search_entry`.
                         let insert_result = child_ref.insert(key, val);
                         match insert_result {
                             InsertResult::Success
@@ -326,7 +356,7 @@ where
                         };
                     }
                 }
-                // It is not a hot loop - see `LeafNode::search`.
+                // It is not a hot loop - see `LeafNode::search_entry`.
                 continue;
             }
 
@@ -409,7 +439,7 @@ where
                 let child_ptr = child.load(Acquire, guard);
                 if let Some(child) = child_ptr.as_ref() {
                     if self.children.validate(metadata) {
-                        // Data race resolution - see `LeafNode::search`.
+                        // Data race resolution - see `LeafNode::search_entry`.
                         let result = child.remove_if(key, condition);
                         if result == RemoveResult::Frozen {
                             // When a `Leaf` is frozen, its entries may be being copied to new
@@ -422,14 +452,14 @@ where
                         return Ok(result);
                     }
                 }
-                // It is not a hot loop - see `LeafNode::search`.
+                // It is not a hot loop - see `LeafNode::search_entry`.
                 continue;
             }
             let unbounded_ptr = self.unbounded_child.load(Acquire, guard);
             if let Some(unbounded) = unbounded_ptr.as_ref() {
                 debug_assert!(unbounded_ptr.tag() == Tag::None);
                 if !self.children.validate(metadata) {
-                    // Data race resolution - see `LeafNode::search`.
+                    // Data race resolution - see `LeafNode::search_entry`.
                     continue;
                 }
                 let result = unbounded.remove_if(key, condition);
@@ -1169,11 +1199,11 @@ mod test {
             Ok(InsertResult::Success)
         ));
         assert_eq!(
-            leaf_node.search("MY GOODNESS!", &guard).unwrap().1,
+            leaf_node.search_entry("MY GOODNESS!", &guard).unwrap().1,
             "OH MY GOD!!"
         );
         assert_eq!(
-            leaf_node.search("GOOD DAY", &guard).unwrap().1,
+            leaf_node.search_entry("GOOD DAY", &guard).unwrap().1,
             "OH MY GOD!!"
         );
         assert!(matches!(
@@ -1214,7 +1244,7 @@ mod test {
             }
             match result.unwrap() {
                 InsertResult::Success => {
-                    assert_eq!(leaf_node.search(&k, &guard), Some((&k, &k)));
+                    assert_eq!(leaf_node.search_entry(&k, &guard), Some((&k, &k)));
                     continue;
                 }
                 InsertResult::Duplicate(..)
@@ -1223,21 +1253,21 @@ mod test {
                 InsertResult::Full(_, _) => {
                     leaf_node.rollback(&guard);
                     for r in 0..(k - 1) {
-                        assert_eq!(leaf_node.search(&r, &guard), Some((&r, &r)));
+                        assert_eq!(leaf_node.search_entry(&r, &guard), Some((&r, &r)));
                         assert!(leaf_node
                             .remove_if::<_, _, _>(&r, &mut |_| true, &mut (), &guard)
                             .is_ok());
-                        assert_eq!(leaf_node.search(&r, &guard), None);
+                        assert_eq!(leaf_node.search_entry(&r, &guard), None);
                     }
                     assert_eq!(
-                        leaf_node.search(&(k - 1), &guard),
+                        leaf_node.search_entry(&(k - 1), &guard),
                         Some((&(k - 1), &(k - 1)))
                     );
                     assert_eq!(
                         leaf_node.remove_if::<_, _, _>(&(k - 1), &mut |_| true, &mut (), &guard),
                         Ok(RemoveResult::Retired)
                     );
-                    assert_eq!(leaf_node.search(&(k - 1), &guard), None);
+                    assert_eq!(leaf_node.search_entry(&(k - 1), &guard), None);
                     break;
                 }
                 InsertResult::Retry(..) => {
@@ -1298,7 +1328,7 @@ mod test {
                         if max_key.map_or(false, |m| m == id) {
                             break;
                         }
-                        assert_eq!(leaf_node_clone.search(&id, &guard), Some((&id, &id)));
+                        assert_eq!(leaf_node_clone.search_entry(&id, &guard), Some((&id, &id)));
                     }
                     for id in range {
                         if max_key.map_or(false, |m| m == id) {
@@ -1319,7 +1349,11 @@ mod test {
                                 }
                             }
                         }
-                        assert!(leaf_node_clone.search(&id, &guard).is_none(), "{}", id);
+                        assert!(
+                            leaf_node_clone.search_entry(&id, &guard).is_none(),
+                            "{}",
+                            id
+                        );
                         if let Ok(RemoveResult::Success) = leaf_node_clone.remove_if::<_, _, _>(
                             &id,
                             &mut |_| true,
@@ -1382,7 +1416,10 @@ mod test {
                                         leaf_node_clone.rollback(&guard);
                                     }
                                 }
-                                assert_eq!(leaf_node_clone.search(&k, &guard).unwrap(), (&k, &k));
+                                assert_eq!(
+                                    leaf_node_clone.search_entry(&k, &guard).unwrap(),
+                                    (&k, &k)
+                                );
                             }
                             for i in 0..workload_size {
                                 let max_scanner = leaf_node_clone.max_le_appr(&k, &guard).unwrap();
@@ -1403,7 +1440,10 @@ mod test {
                                     &mut (),
                                     &guard,
                                 );
-                                assert_eq!(leaf_node_clone.search(&k, &guard).unwrap(), (&k, &k));
+                                assert_eq!(
+                                    leaf_node_clone.search_entry(&k, &guard).unwrap(),
+                                    (&k, &k)
+                                );
                             }
                         }
                     }));
