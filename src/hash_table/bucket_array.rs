@@ -92,7 +92,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
                 bucket_array_ptr_offset + bucket_size * array_len <= bucket_array_allocation_size,
             );
             assert_eq!(
-                (bucket_array_ptr as usize + bucket_array_ptr_offset) % bucket_size,
+                (bucket_array_ptr as usize + bucket_array_ptr_offset) % bucket_size.next_power_of_two(),
                 0
             );
 

@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.2.1
+
+* Fix a minor Miri specific assertion failure.
+
 2.2.0
 
 * Add `Comparable` and `Equivalent` traits: [#162](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/162) by [qthree](https://github.com/qthree).
