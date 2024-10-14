@@ -12,9 +12,7 @@ A collection of high performance containers and utilities for concurrent and asy
 - [`Equivalent`](https://github.com/indexmap-rs/equivalent), [`Loom`](https://github.com/tokio-rs/loom) and [`Serde`](https://github.com/serde-rs/serde) support: `features = ["equivalent", "loom", "serde"]`.
 - Near-linear scalability.
 - No spin-locks and no busy loops.
-- SIMD lookup to scan multiple entries in parallel [^note].
-
-[^note]: Advanced SIMD instructions are used only when respective target features are enabled, e.g., `-C target_feature=+avx2`.
+- SIMD lookup to scan multiple entries in parallel: require `RUSTFLAGS='-C target_feature=+avx2'` on `x86_64`.
 
 #### Concurrent and Asynchronous Containers
 
@@ -80,11 +78,9 @@ assert_eq!(hashmap.read(&3, |_, v| *v), Some(7));
 
 hashmap.entry(4).and_modify(|v| { *v += 1 }).or_insert(5);
 assert_eq!(hashmap.read(&4, |_, v| *v), Some(5));
-
-let future_entry = hashmap.entry_async(3);
 ```
 
-[`HashMap`](#hashmap) does not provide an [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) since it is impossible to confine the lifetime of [`Iterator::Item`](https://doc.rust-lang.org/std/iter/trait.Iterator.html#associatedtype.Item) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html). The limitation can be circumvented by relying on interior mutability, e.g., let the returned reference hold a lock, however it will easily lead to a deadlock if not correctly used, and frequent acquisition of locks may impact performance. Therefore, [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, [`HashMap`](#hashmap) provides a number of methods to iterate over entries synchronously or asynchronously: `any`, `any_async`, `prune`, `prune_async`, `retain`, `retain_async`, `scan`, `scan_async`, `OccupiedEntry::next`, and `OccupiedEntry::next_async`.
+[`HashMap`](#hashmap) does not provide an [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) since it is impossible to confine the lifetime of [`Iterator::Item`](https://doc.rust-lang.org/std/iter/trait.Iterator.html#associatedtype.Item) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html). The limitation can be circumvented by relying on interior mutability, e.g., let the returned reference hold a lock, however it will easily lead to a deadlock if not correctly used, and frequent acquisition of locks may impact performance. Therefore, [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, [`HashMap`](#hashmap) provides a number of methods to iterate over entries synchronously or asynchronously: `any`, `any_async`, `first_entry`, `first_entry_async`, `prune`, `prune_async`, `retain`, `retain_async`, `scan`, `scan_async`, `OccupiedEntry::next`, and `OccupiedEntry::next_async`.
 
 ```rust
 use scc::HashMap;
@@ -110,12 +106,29 @@ hashmap.retain(|k, v| *k == 1 && *v == 2);
 
 // `hash_map::OccupiedEntry` also can return the next closest occupied entry.
 let first_entry = hashmap.first_entry();
-assert!(first_entry.is_some());
+assert_eq!(*first_entry.as_ref().unwrap().key(), 1);
 let second_entry = first_entry.and_then(|e| e.next());
 assert!(second_entry.is_none());
 
+fn is_send<T: Send>(f: &T) -> bool {
+    true
+}
+
 // Asynchronous iteration over entries using `scan_async`.
 let future_scan = hashmap.scan_async(|k, v| println!("{k} {v}"));
+assert!(is_send(&future_scan));
+
+// Asynchronous iteration over entries using the `Entry` API.
+let future_iter = async {
+    let mut iter = hashmap.first_entry_async().await;
+    while let Some(entry) = iter {
+        // `OccupiedEntry` can be sent across awaits and threads.
+        assert!(is_send(&entry));
+        assert_eq!(*entry.key(), 1);
+        iter = entry.next_async().await;
+    }
+};
+assert!(is_send(&future_iter));
 ```
 
 ## `HashSet`
@@ -422,6 +435,5 @@ The expected tail latency of a distribution of latencies of 1048576 insertion op
 
 - [Results on Apple M2 Max (12 cores)](https://github.com/wvwwvwwv/conc-map-bench).
 - [Results on Intel Xeon (32 cores, avx2)](https://github.com/wvwwvwwv/conc-map-bench/tree/Intel).
-- _Interpret the results cautiously as benchmarks usually do not represent real world workloads._
 
 ## [Changelog](https://github.com/wvwwvwwv/scalable-concurrent-containers/blob/main/CHANGELOG.md)

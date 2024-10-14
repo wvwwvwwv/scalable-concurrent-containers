@@ -1,6 +1,7 @@
-//! Vendor the [`equivalent`](https://crates.io/crates/equivalent) crate in order to avoid any conflicts.
+//! Vendors the [`equivalent`](https://crates.io/crates/equivalent) crate in order to avoid conflicts.
 
-use std::{borrow::Borrow, cmp::Ordering};
+use std::borrow::Borrow;
+use std::cmp::Ordering;
 
 /// Key equivalence trait.
 ///

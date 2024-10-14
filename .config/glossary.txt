@@ -1,4 +1,4 @@
-62
+63
 |_key
 50%
 avx2
@@ -60,4 +60,5 @@ vectorized
 VM
 Workflow
 workflow
+x86_64
 Xeon

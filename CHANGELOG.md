@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.2.2
+
+* Update internal doc.
+
 2.2.1
 
 * Fix a minor Miri specific assertion failure.
