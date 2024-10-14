@@ -4,6 +4,7 @@
 
 2.2.2
 
+* Fix a data race between `TreeIndex::clear` and `TreeIndex::insert`.
 * Update internal doc.
 
 2.2.1

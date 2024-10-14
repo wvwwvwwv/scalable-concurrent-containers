@@ -210,7 +210,7 @@ where
                 key,
                 val,
                 None,
-                root.load(Acquire, guard),
+                root_ptr,
                 &internal_node.unbounded_child,
                 true,
                 &mut (),
