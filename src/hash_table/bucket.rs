@@ -843,7 +843,7 @@ impl<'g, K, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
         data_block: &mut DataBlock<K, V, BUCKET_LEN>,
         entry_ptr: &EntryPtr<K, V, TYPE>,
     ) -> (K, V) {
-        debug_assert_eq!(TYPE, OPTIMISTIC);
+        debug_assert_ne!(TYPE, OPTIMISTIC);
 
         self.bucket.num_entries -= 1;
         let link_ptr = entry_ptr.current_link_ptr.as_ptr().cast_mut();
