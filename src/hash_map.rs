@@ -1158,7 +1158,7 @@ where
                                 while entry_ptr.move_to_next(&locker, &guard) {
                                     let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
                                     if !pred(k, v) {
-                                        locker.remove(data_block_mut, &entry_ptr);
+                                        locker.remove(data_block_mut, &mut entry_ptr, &guard);
                                         removed = true;
                                     }
                                 }
@@ -1833,12 +1833,13 @@ where
     #[inline]
     #[must_use]
     pub fn remove_entry(mut self) -> (K, V) {
+        let guard = Guard::new();
         let entry = self.locked_entry.locker.remove(
             self.locked_entry.data_block_mut,
-            &self.locked_entry.entry_ptr,
+            &mut self.locked_entry.entry_ptr,
+            self.hashmap.prolonged_guard_ref(&guard),
         );
         if self.locked_entry.locker.num_entries() <= 1 || self.locked_entry.locker.need_rebuild() {
-            let guard = Guard::new();
             let hashmap = self.hashmap;
             if let Some(current_array) = hashmap.bucket_array().load(Acquire, &guard).as_ref() {
                 if !current_array.has_old_array() {

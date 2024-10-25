@@ -615,7 +615,7 @@ impl<'g, K, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
         }
     }
 
-    /// Tries to lock the [`Bucket`], and if it fails, pushes an [`AsyncWait`].
+    /// Tries to lock the [`Bucket`], and if it fails, pushes an [`AsyncWait`] to the wait queue.
     #[inline]
     pub(crate) fn try_lock_or_wait(
         bucket: &'g mut Bucket<K, V, L, TYPE>,
@@ -635,7 +635,7 @@ impl<'g, K, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
             })
     }
 
-    /// Reserves memory for insertion, and then constructs the key-value pair.
+    /// Reserves memory for insertion, and then constructs the key-value pair in-place.
     #[inline]
     pub(crate) fn insert_with<C: FnOnce() -> (K, V)>(
         &mut self,
@@ -706,12 +706,13 @@ impl<'g, K, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
         }
     }
 
-    /// Removes the key-value pair being pointed by the given [`EntryPtr`].
+    /// Removes the key-value pair being pointed to by the supplied [`EntryPtr`].
     #[inline]
     pub(crate) fn remove(
         &mut self,
         data_block: &mut DataBlock<K, V, BUCKET_LEN>,
-        entry_ptr: &EntryPtr<K, V, TYPE>,
+        entry_ptr: &mut EntryPtr<'g, K, V, TYPE>,
+        guard: &'g Guard,
     ) -> (K, V) {
         debug_assert_ne!(TYPE, OPTIMISTIC);
         debug_assert_ne!(entry_ptr.current_index, usize::MAX);
@@ -725,11 +726,15 @@ impl<'g, K, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
                 0
             );
             link_mut.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
-            unsafe {
+            let removed = unsafe {
                 link_mut.data_block[entry_ptr.current_index]
                     .as_mut_ptr()
                     .read()
+            };
+            if link_mut.metadata.occupied_bitmap == 0 {
+                entry_ptr.unlink(self, link_mut, guard);
             }
+            removed
         } else {
             debug_assert_ne!(
                 self.bucket.metadata.occupied_bitmap & (1_u32 << entry_ptr.current_index),
@@ -831,35 +836,27 @@ impl<'g, K, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
         true
     }
 
-    /// Extracts the key-value pair being pointed by the [`EntryPtr`].
+    /// Extracts the key-value pair being pointed to by the [`EntryPtr`].
     #[inline]
-    pub(crate) fn extract<'e>(
+    pub(crate) fn extract(
         &mut self,
         data_block: &mut DataBlock<K, V, BUCKET_LEN>,
-        entry_ptr: &mut EntryPtr<'e, K, V, TYPE>,
-        guard: &'e Guard,
+        entry_ptr: &EntryPtr<K, V, TYPE>,
     ) -> (K, V) {
-        debug_assert_ne!(TYPE, OPTIMISTIC);
+        debug_assert_eq!(TYPE, OPTIMISTIC);
+
+        self.bucket.num_entries -= 1;
         let link_ptr = entry_ptr.current_link_ptr.as_ptr().cast_mut();
-        if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
-            let extracted = Self::extract_entry(
-                &mut link_mut.metadata,
-                &mut link_mut.data_block,
-                entry_ptr.current_index,
-                &mut self.bucket.num_entries,
-            );
-            if link_mut.metadata.occupied_bitmap == 0 {
-                entry_ptr.unlink(self, link_mut, guard);
-            }
-            extracted
+        let data_entry = if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
+            debug_assert!(entry_ptr.current_index < LINKED_BUCKET_LEN);
+            link_mut.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
+            &mut link_mut.data_block[entry_ptr.current_index]
         } else {
-            Self::extract_entry(
-                &mut self.bucket.metadata,
-                data_block,
-                entry_ptr.current_index,
-                &mut self.bucket.num_entries,
-            )
-        }
+            debug_assert!(entry_ptr.current_index < BUCKET_LEN);
+            self.bucket.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
+            &mut data_block[entry_ptr.current_index]
+        };
+        unsafe { data_entry.as_mut_ptr().read() }
     }
 
     /// Evicts the least recently used entry if the [`Bucket`] is full.
@@ -936,20 +933,6 @@ impl<'g, K, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
             }
             metadata.occupied_bitmap |= 1_u32 << index;
         }
-    }
-
-    /// Extracts and removes the key-value pair in the slot.
-    fn extract_entry<const LEN: usize>(
-        metadata: &mut Metadata<K, V, LEN>,
-        data_block: &mut DataBlock<K, V, LEN>,
-        index: usize,
-        num_entries_field: &mut u32,
-    ) -> (K, V) {
-        debug_assert!(index < LEN);
-
-        *num_entries_field -= 1;
-        metadata.occupied_bitmap &= !(1_u32 << index);
-        unsafe { data_block[index].as_mut_ptr().read() }
     }
 }
 
@@ -1337,9 +1320,9 @@ mod test {
                 assert_ne!(locker.metadata.removed_bitmap_or_lru_tail, 0);
 
                 for v in 0..xs {
-                    let entry_ptr = locker.get(&data_block, &v, 0, &guard);
+                    let mut entry_ptr = locker.get(&data_block, &v, 0, &guard);
                     if entry_ptr.is_valid() {
-                        let _erased = locker.remove(&mut data_block, &entry_ptr);
+                        let _erased = locker.remove(&mut data_block, &mut entry_ptr, &guard);
                     } else {
                         assert_eq!(v, evicted_key.unwrap());
                     }
@@ -1585,10 +1568,10 @@ mod test {
                         let data_block_mut = unsafe { &mut *data_block_clone.as_ptr().cast_mut() };
                         let guard = Guard::new();
                         let mut exclusive_locker = Locker::lock(bucket_mut, &guard).unwrap();
-                        let entry_ptr =
+                        let mut entry_ptr =
                             exclusive_locker.get(&data_block_clone, &task_id, partial_hash, &guard);
                         assert_eq!(
-                            exclusive_locker.remove(data_block_mut, &entry_ptr),
+                            exclusive_locker.remove(data_block_mut, &mut entry_ptr, &guard),
                             (task_id, 0_usize)
                         );
                     }

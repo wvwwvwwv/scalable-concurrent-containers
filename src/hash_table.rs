@@ -469,7 +469,7 @@ where
                         locker.mark_removed(&entry_ptr, guard);
                         None
                     } else {
-                        Some(locker.remove(data_block_mut, &entry_ptr))
+                        Some(locker.remove(data_block_mut, &mut entry_ptr, guard))
                     };
                     if shrinkable
                         && (locker.num_entries() <= 1 || locker.need_rebuild())
@@ -574,7 +574,7 @@ where
                             if TYPE == OPTIMISTIC {
                                 locker.mark_removed(&entry_ptr, &guard);
                             } else {
-                                locker.remove(data_block_mut, &entry_ptr);
+                                locker.remove(data_block_mut, &mut entry_ptr, &guard);
                             }
                             removed = true;
                         }
@@ -826,9 +826,8 @@ where
                         // Stack unwinding during a call to `insert` will result in the entry being
                         // removed from the map, any map entry modification should take place after all
                         // the memory is reserved.
-                        entry_clone.unwrap_or_else(|| {
-                            old_locker.extract(old_data_block_mut, &mut entry_ptr, guard)
-                        })
+                        entry_clone
+                            .unwrap_or_else(|| old_locker.extract(old_data_block_mut, &entry_ptr))
                     },
                     guard,
                 );

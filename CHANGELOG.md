@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.2.3
+
+* Minor `Hash*` memory optimization.
+
 2.2.2
 
 * Fix a data race between `TreeIndex::clear` and `TreeIndex::insert`.
