@@ -1199,11 +1199,11 @@ where
     /// ```
     /// use scc::HashMap;
     ///
-    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    /// let hashmap: HashMap<u64, String> = HashMap::default();
     ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.insert(2, 1).is_ok());
-    /// assert!(hashmap.insert(3, 2).is_ok());
+    /// assert!(hashmap.insert(1, String::from("1")).is_ok());
+    /// assert!(hashmap.insert(2, String::from("2")).is_ok());
+    /// assert!(hashmap.insert(3, String::from("3")).is_ok());
     ///
     /// hashmap.prune(|k, v| if *k == 1 { Some(v) } else { None });
     /// assert_eq!(hashmap.len(), 1);
@@ -1254,8 +1254,12 @@ where
                                 let data_block_mut = current_array.data_block_mut(index);
                                 let mut entry_ptr = EntryPtr::new(&guard);
                                 while entry_ptr.move_to_next(&locker, &guard) {
-                                    if locker.keep_or_consume(data_block_mut, &entry_ptr, &mut pred)
-                                    {
+                                    if locker.keep_or_consume(
+                                        data_block_mut,
+                                        &mut entry_ptr,
+                                        &mut pred,
+                                        &guard,
+                                    ) {
                                         removed = true;
                                     }
                                 }

@@ -867,7 +867,7 @@ where
                                 while entry_ptr.move_to_next(&locker, &guard) {
                                     let (k, v) = entry_ptr.get(data_block_mut);
                                     if !pred(k, v) {
-                                        locker.mark_removed(&entry_ptr, &guard);
+                                        locker.mark_removed(&mut entry_ptr, &guard);
                                         removed = true;
                                     }
                                 }
@@ -1459,9 +1459,10 @@ where
     #[inline]
     pub fn remove_entry(mut self) {
         let guard = Guard::new();
-        self.locked_entry
-            .locker
-            .mark_removed(&self.locked_entry.entry_ptr, &guard);
+        self.locked_entry.locker.mark_removed(
+            &mut self.locked_entry.entry_ptr,
+            self.hashindex.prolonged_guard_ref(&guard),
+        );
         if self.locked_entry.locker.num_entries() <= 1 || self.locked_entry.locker.need_rebuild() {
             let hashindex = self.hashindex;
             if let Some(current_array) = hashindex.bucket_array().load(Acquire, &guard).as_ref() {
@@ -1574,9 +1575,10 @@ where
             || (key, val),
             self.hashindex.prolonged_guard_ref(&guard),
         );
-        self.locked_entry
-            .locker
-            .mark_removed(&self.locked_entry.entry_ptr, &guard);
+        self.locked_entry.locker.mark_removed(
+            &mut self.locked_entry.entry_ptr,
+            self.hashindex.prolonged_guard_ref(&guard),
+        );
     }
 
     /// Gets the next closest occupied entry.

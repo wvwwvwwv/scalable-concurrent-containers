@@ -250,10 +250,8 @@ impl<K, V, L: LruList, const TYPE: char> Drop for BucketArray<K, V, L, TYPE> {
 
         if num_cleared_buckets < self.array_len {
             for index in num_cleared_buckets..self.array_len {
-                unsafe {
-                    self.bucket_mut(index)
-                        .drop_entries(self.data_block_mut(index));
-                }
+                self.bucket_mut(index)
+                    .drop_entries(self.data_block_mut(index));
             }
         }
 

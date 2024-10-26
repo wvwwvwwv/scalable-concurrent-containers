@@ -302,7 +302,7 @@ where
                         != Ok(true)
                     {
                         let index = old_array.calculate_bucket_index(hash);
-                        if let Some((k, v)) = old_array.bucket(index).search(
+                        if let Some((k, v)) = old_array.bucket(index).search_entry(
                             old_array.data_block(index),
                             key,
                             BucketArray::<K, V, L, TYPE>::partial_hash(hash),
@@ -319,7 +319,7 @@ where
             let index = current_array.calculate_bucket_index(hash);
             let bucket = current_array.bucket(index);
             if TYPE == OPTIMISTIC {
-                if let Some(entry) = bucket.search(
+                if let Some(entry) = bucket.search_entry(
                     current_array.data_block(index),
                     key,
                     BucketArray::<K, V, L, TYPE>::partial_hash(hash),
@@ -334,7 +334,7 @@ where
                     Reader::lock(bucket, guard)
                 };
                 if let Some(reader) = lock_result {
-                    if let Some((key, val)) = reader.search(
+                    if let Some((key, val)) = reader.search_entry(
                         current_array.data_block(index),
                         key,
                         BucketArray::<K, V, L, TYPE>::partial_hash(hash),
@@ -387,7 +387,7 @@ where
             };
             if let Some(locker) = lock_result {
                 let data_block_mut = current_array.data_block_mut(index);
-                let entry_ptr = locker.get(
+                let entry_ptr = locker.get_entry_ptr(
                     data_block_mut,
                     key,
                     BucketArray::<K, V, L, TYPE>::partial_hash(hash),
@@ -456,7 +456,7 @@ where
             };
             if let Some(mut locker) = lock_result {
                 let data_block_mut = current_array.data_block_mut(index);
-                let mut entry_ptr = locker.get(
+                let mut entry_ptr = locker.get_entry_ptr(
                     data_block_mut,
                     key,
                     BucketArray::<K, V, L, TYPE>::partial_hash(hash),
@@ -466,7 +466,7 @@ where
                     && condition(&mut entry_ptr.get_mut(data_block_mut, &mut locker).1)
                 {
                     let result = if TYPE == OPTIMISTIC {
-                        locker.mark_removed(&entry_ptr, guard);
+                        locker.mark_removed(&mut entry_ptr, guard);
                         None
                     } else {
                         Some(locker.remove(data_block_mut, &mut entry_ptr, guard))
@@ -572,7 +572,7 @@ where
                         let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
                         if !pred(k, v) {
                             if TYPE == OPTIMISTIC {
-                                locker.mark_removed(&entry_ptr, &guard);
+                                locker.mark_removed(&mut entry_ptr, &guard);
                             } else {
                                 locker.remove(data_block_mut, &mut entry_ptr, &guard);
                             }
@@ -608,7 +608,8 @@ where
                     let data_block_mut = current_array.data_block_mut(index);
                     let mut entry_ptr = EntryPtr::new(&guard);
                     while entry_ptr.move_to_next(&locker, &guard) {
-                        if locker.keep_or_consume(data_block_mut, &entry_ptr, &mut pred) {
+                        if locker.keep_or_consume(data_block_mut, &mut entry_ptr, &mut pred, &guard)
+                        {
                             removed = true;
                         }
                     }
@@ -685,7 +686,7 @@ where
             };
             if let Some(locker) = lock_result {
                 let data_block_mut = current_array.data_block_mut(index);
-                let entry_ptr = locker.get(
+                let entry_ptr = locker.get_entry_ptr(
                     data_block_mut,
                     key,
                     BucketArray::<K, V, L, TYPE>::partial_hash(hash),
@@ -826,8 +827,9 @@ where
                         // Stack unwinding during a call to `insert` will result in the entry being
                         // removed from the map, any map entry modification should take place after all
                         // the memory is reserved.
-                        entry_clone
-                            .unwrap_or_else(|| old_locker.extract(old_data_block_mut, &entry_ptr))
+                        entry_clone.unwrap_or_else(|| {
+                            old_locker.extract(old_data_block_mut, &mut entry_ptr, guard)
+                        })
                     },
                     guard,
                 );
@@ -836,7 +838,7 @@ where
                     // In order for readers that have observed the following erasure to see the above
                     // insertion, a `Release` fence is needed.
                     fence(Release);
-                    old_locker.mark_removed(&entry_ptr, guard);
+                    old_locker.mark_removed(&mut entry_ptr, guard);
                 }
             }
         }
@@ -1175,7 +1177,7 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
         guard: &Guard,
     ) -> LockedEntry<'h, K, V, L, TYPE> {
         if TYPE == OPTIMISTIC {
-            locker.drop_removed_entries(data_block_mut, guard);
+            locker.drop_removed_unreachable_entries(data_block_mut, guard);
         }
         LockedEntry {
             locker,
