@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.2.4
+
+* Minor `Hash*` performance optimization.
+
 2.2.3
 
 * Minor `Hash*` memory optimization.

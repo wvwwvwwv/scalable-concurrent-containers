@@ -148,6 +148,277 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             && self.metadata.removed_bitmap_or_lru_tail == (u32::MAX >> (32 - BUCKET_LEN))
     }
 
+    /// Reserves memory for insertion, and then constructs the key-value pair in-place.
+    #[inline]
+    pub(crate) fn insert_with<'g, C: FnOnce() -> (K, V)>(
+        &mut self,
+        data_block: &mut DataBlock<K, V, BUCKET_LEN>,
+        partial_hash: u8,
+        constructor: C,
+        guard: &'g Guard,
+    ) -> EntryPtr<'g, K, V, TYPE> {
+        assert!(self.num_entries != u32::MAX, "bucket overflow");
+
+        let free_index = self.metadata.occupied_bitmap.trailing_ones() as usize;
+        if free_index == BUCKET_LEN {
+            let mut link_ptr = self.metadata.link.load(Acquire, guard);
+            while let Some(link_mut) = unsafe { link_ptr.as_ptr().cast_mut().as_mut() } {
+                let free_index = link_mut.metadata.occupied_bitmap.trailing_ones() as usize;
+                if free_index != LINKED_BUCKET_LEN {
+                    Self::insert_entry_with(
+                        &mut link_mut.metadata,
+                        &mut link_mut.data_block,
+                        free_index,
+                        partial_hash,
+                        constructor,
+                    );
+                    self.num_entries += 1;
+                    return EntryPtr {
+                        current_link_ptr: link_ptr,
+                        current_index: free_index,
+                    };
+                }
+                link_ptr = link_mut.metadata.link.load(Acquire, guard);
+            }
+
+            // Insert a new `LinkedBucket` at the linked list head.
+            let head = self.metadata.link.get_shared(Relaxed, guard);
+            let link = unsafe { Shared::new_unchecked(LinkedBucket::new(head)) };
+            let link_ptr = link.get_guarded_ptr(guard);
+            unsafe {
+                let link_mut = &mut *link_ptr.as_ptr().cast_mut();
+                link_mut.data_block[0].as_mut_ptr().write(constructor());
+                link_mut.metadata.partial_hash_array[0] = partial_hash;
+                link_mut.metadata.occupied_bitmap = 1;
+            }
+            if let Some(head) = link.metadata.link.load(Relaxed, guard).as_ref() {
+                head.prev_link.store(link.as_ptr().cast_mut(), Relaxed);
+            }
+            self.metadata.link.swap((Some(link), Tag::None), Release);
+            self.num_entries += 1;
+            EntryPtr {
+                current_link_ptr: link_ptr,
+                current_index: 0,
+            }
+        } else {
+            Self::insert_entry_with(
+                &mut self.metadata,
+                data_block,
+                free_index,
+                partial_hash,
+                constructor,
+            );
+            self.num_entries += 1;
+            EntryPtr {
+                current_link_ptr: Ptr::null(),
+                current_index: free_index,
+            }
+        }
+    }
+
+    /// Removes the key-value pair being pointed to by the supplied [`EntryPtr`].
+    #[inline]
+    pub(crate) fn remove<'g>(
+        &mut self,
+        data_block: &mut DataBlock<K, V, BUCKET_LEN>,
+        entry_ptr: &mut EntryPtr<'g, K, V, TYPE>,
+        guard: &'g Guard,
+    ) -> (K, V) {
+        debug_assert_ne!(TYPE, OPTIMISTIC);
+        debug_assert_ne!(entry_ptr.current_index, usize::MAX);
+        debug_assert_ne!(entry_ptr.current_index, BUCKET_LEN);
+
+        self.num_entries -= 1;
+        let link_ptr = entry_ptr.current_link_ptr.as_ptr().cast_mut();
+        if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
+            debug_assert_ne!(
+                link_mut.metadata.occupied_bitmap & (1_u32 << entry_ptr.current_index),
+                0
+            );
+            link_mut.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
+            let removed = unsafe {
+                link_mut.data_block[entry_ptr.current_index]
+                    .as_mut_ptr()
+                    .read()
+            };
+            if link_mut.metadata.occupied_bitmap == 0 {
+                entry_ptr.unlink(self, link_mut, guard);
+            }
+            removed
+        } else {
+            debug_assert_ne!(
+                self.metadata.occupied_bitmap & (1_u32 << entry_ptr.current_index),
+                0
+            );
+            if TYPE == CACHE {
+                self.remove_from_lru_list(entry_ptr);
+            }
+            self.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
+            unsafe { data_block[entry_ptr.current_index].as_mut_ptr().read() }
+        }
+    }
+
+    /// Marks the entry removed without dropping the contained instances.
+    #[inline]
+    pub(crate) fn mark_removed<'g>(
+        &mut self,
+        entry_ptr: &mut EntryPtr<'g, K, V, TYPE>,
+        guard: &'g Guard,
+    ) {
+        debug_assert_eq!(TYPE, OPTIMISTIC);
+        debug_assert_ne!(entry_ptr.current_index, usize::MAX);
+        debug_assert_ne!(entry_ptr.current_index, BUCKET_LEN);
+
+        self.num_entries -= 1;
+        let link_ptr = entry_ptr.current_link_ptr.as_ptr().cast_mut();
+        if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
+            debug_assert_eq!(
+                link_mut.metadata.removed_bitmap_or_lru_tail & (1_u32 << entry_ptr.current_index),
+                0
+            );
+            link_mut.metadata.removed_bitmap_or_lru_tail |= 1_u32 << entry_ptr.current_index;
+            if link_mut.metadata.occupied_bitmap == link_mut.metadata.removed_bitmap_or_lru_tail {
+                entry_ptr.unlink(self, link_mut, guard);
+            }
+        } else {
+            debug_assert_eq!(
+                self.metadata.removed_bitmap_or_lru_tail & (1_u32 << entry_ptr.current_index),
+                0
+            );
+            self.metadata.removed_bitmap_or_lru_tail |= 1_u32 << entry_ptr.current_index;
+            self.update_target_epoch(guard);
+        }
+    }
+
+    /// Keeps or consumes the key-value pair being pointed to by the supplied [`EntryPtr`].
+    ///
+    /// Returns `true` if the entry was consumed.
+    #[inline]
+    pub(crate) fn keep_or_consume<'g, F: FnMut(&K, V) -> Option<V>>(
+        &mut self,
+        data_block: &mut DataBlock<K, V, BUCKET_LEN>,
+        entry_ptr: &mut EntryPtr<'g, K, V, TYPE>,
+        pred: &mut F,
+        guard: &'g Guard,
+    ) -> bool {
+        debug_assert_ne!(TYPE, OPTIMISTIC);
+        debug_assert_ne!(entry_ptr.current_index, usize::MAX);
+
+        // `pred` may panic, therefore it is safe to assume that the entry will be consumed.
+        self.num_entries -= 1;
+
+        let link_ptr = entry_ptr.current_link_ptr.as_ptr().cast_mut();
+        if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
+            debug_assert_ne!(
+                link_mut.metadata.occupied_bitmap & (1_u32 << entry_ptr.current_index),
+                0
+            );
+            let (k, v) = unsafe {
+                link_mut.data_block[entry_ptr.current_index]
+                    .as_mut_ptr()
+                    .read()
+            };
+            link_mut.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
+            if let Some(v) = pred(&k, v) {
+                // The instances returned: revive the entry.
+                forget(k);
+                forget(v);
+                link_mut.metadata.occupied_bitmap |= 1_u32 << entry_ptr.current_index;
+                self.num_entries += 1;
+                return false;
+            }
+            if link_mut.metadata.occupied_bitmap == 0 {
+                entry_ptr.unlink(self, link_mut, guard);
+            }
+        } else {
+            debug_assert_ne!(
+                self.metadata.occupied_bitmap & (1_u32 << entry_ptr.current_index),
+                0
+            );
+            self.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
+            let (k, v) = unsafe { data_block[entry_ptr.current_index].as_mut_ptr().read() };
+            if let Some(v) = pred(&k, v) {
+                forget(k);
+                forget(v);
+                self.metadata.occupied_bitmap |= 1_u32 << entry_ptr.current_index;
+                self.num_entries += 1;
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Evicts the least recently used entry if the [`Bucket`] is full.
+    pub(crate) fn evict_lru_head(
+        &mut self,
+        data_block: &mut DataBlock<K, V, BUCKET_LEN>,
+    ) -> Option<(K, V)> {
+        debug_assert_eq!(TYPE, CACHE);
+
+        if self.metadata.occupied_bitmap == 0b1111_1111_1111_1111_1111_1111_1111_1111 {
+            self.num_entries -= 1;
+            let tail = self.metadata.removed_bitmap_or_lru_tail;
+            let evicted = if let Some((evicted, new_tail)) = self.lru_list.evict(tail) {
+                self.metadata.removed_bitmap_or_lru_tail = new_tail;
+                evicted as usize
+            } else {
+                // Evict the first occupied entry.
+                0
+            };
+            debug_assert_ne!(self.metadata.occupied_bitmap & (1_u32 << evicted), 0);
+            self.metadata.occupied_bitmap &= !(1_u32 << evicted);
+            return Some(unsafe { data_block[evicted].as_mut_ptr().read() });
+        }
+        None
+    }
+
+    /// Sets the entry having been just accessed.
+    pub(crate) fn update_lru_tail(&mut self, entry_ptr: &EntryPtr<K, V, TYPE>) {
+        debug_assert_eq!(TYPE, CACHE);
+        debug_assert_ne!(entry_ptr.current_index, usize::MAX);
+        debug_assert_ne!(entry_ptr.current_index, BUCKET_LEN);
+
+        if entry_ptr.current_link_ptr.is_null() {
+            #[allow(clippy::cast_possible_truncation)]
+            let entry = entry_ptr.current_index as u8;
+            let tail = self.metadata.removed_bitmap_or_lru_tail;
+            if let Some(new_tail) = self.lru_list.promote(tail, entry) {
+                self.metadata.removed_bitmap_or_lru_tail = new_tail;
+            }
+        }
+    }
+
+    /// Extracts the entry being pointed to by the [`EntryPtr`].
+    #[inline]
+    pub(super) fn extract<'g>(
+        &mut self,
+        data_block: &mut DataBlock<K, V, BUCKET_LEN>,
+        entry_ptr: &mut EntryPtr<'g, K, V, TYPE>,
+        guard: &'g Guard,
+    ) -> (K, V) {
+        debug_assert_ne!(TYPE, OPTIMISTIC);
+
+        self.num_entries -= 1;
+        let link_ptr = entry_ptr.current_link_ptr.as_ptr().cast_mut();
+        if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
+            debug_assert!(entry_ptr.current_index < LINKED_BUCKET_LEN);
+            link_mut.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
+            let extracted = unsafe {
+                link_mut.data_block[entry_ptr.current_index]
+                    .as_mut_ptr()
+                    .read()
+            };
+            if link_mut.metadata.occupied_bitmap == 0 {
+                entry_ptr.unlink(self, link_mut, guard);
+            }
+            extracted
+        } else {
+            debug_assert!(entry_ptr.current_index < BUCKET_LEN);
+            self.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
+            unsafe { data_block[entry_ptr.current_index].as_mut_ptr().read() }
+        }
+    }
+
     /// Marks the [`Bucket`] as [`KILLED`] in order to prevent others from using it any further.
     #[inline]
     pub(super) fn kill(&mut self) {
@@ -220,6 +491,42 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
                 self.metadata.removed_bitmap_or_lru_tail -= bit;
                 unsafe { ptr::drop_in_place(data_block[index as usize].as_mut_ptr()) };
                 index = self.metadata.removed_bitmap_or_lru_tail.trailing_zeros();
+            }
+        }
+    }
+
+    /// Inserts a key-value pair in the slot.
+    fn insert_entry_with<C: FnOnce() -> (K, V), const LEN: usize>(
+        metadata: &mut Metadata<K, V, LEN>,
+        data_block: &mut DataBlock<K, V, LEN>,
+        index: usize,
+        partial_hash: u8,
+        constructor: C,
+    ) {
+        debug_assert!(index < LEN);
+
+        unsafe {
+            data_block[index].as_mut_ptr().write(constructor());
+            metadata.partial_hash_array[index] = partial_hash;
+            if TYPE == OPTIMISTIC {
+                fence(Release);
+            }
+            metadata.occupied_bitmap |= 1_u32 << index;
+        }
+    }
+
+    /// Removes the entry from the LRU linked list.
+    fn remove_from_lru_list(&mut self, entry_ptr: &EntryPtr<K, V, TYPE>) {
+        debug_assert_eq!(TYPE, CACHE);
+        debug_assert_ne!(entry_ptr.current_index, usize::MAX);
+        debug_assert_ne!(entry_ptr.current_index, BUCKET_LEN);
+
+        if entry_ptr.current_link_ptr.is_null() {
+            #[allow(clippy::cast_possible_truncation)]
+            let entry = entry_ptr.current_index as u8;
+            let tail = self.metadata.removed_bitmap_or_lru_tail;
+            if let Some(new_tail) = self.lru_list.remove(tail, entry) {
+                self.metadata.removed_bitmap_or_lru_tail = new_tail;
             }
         }
     }
@@ -457,7 +764,7 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
     /// The associated [`Bucket`] must be locked.
     fn unlink<L: LruList>(
         &mut self,
-        locker: &mut Locker<K, V, L, TYPE>,
+        bucket: &mut Bucket<K, V, L, TYPE>,
         link: &LinkedBucket<K, V, LINKED_BUCKET_LEN>,
         guard: &'g Guard,
     ) {
@@ -481,12 +788,7 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
                 .swap((next_link, Tag::None), Relaxed)
                 .0
         } else {
-            locker
-                .bucket
-                .metadata
-                .link
-                .swap((next_link, Tag::None), Relaxed)
-                .0
+            bucket.metadata.link.swap((next_link, Tag::None), Relaxed).0
         };
         let released = old_link.map_or(true, |l| {
             if TYPE == OPTIMISTIC {
@@ -620,317 +922,6 @@ impl<'g, K, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
                 bucket.state.fetch_or(WAITING, Release);
                 Self::try_lock(bucket, guard)
             })
-    }
-
-    /// Reserves memory for insertion, and then constructs the key-value pair in-place.
-    #[inline]
-    pub(crate) fn insert_with<C: FnOnce() -> (K, V)>(
-        &mut self,
-        data_block: &mut DataBlock<K, V, BUCKET_LEN>,
-        partial_hash: u8,
-        constructor: C,
-        guard: &'g Guard,
-    ) -> EntryPtr<'g, K, V, TYPE> {
-        assert!(self.bucket.num_entries != u32::MAX, "array overflow");
-
-        let free_index = self.bucket.metadata.occupied_bitmap.trailing_ones() as usize;
-        if free_index == BUCKET_LEN {
-            let mut link_ptr = self.bucket.metadata.link.load(Acquire, guard);
-            while let Some(link_mut) = unsafe { link_ptr.as_ptr().cast_mut().as_mut() } {
-                let free_index = link_mut.metadata.occupied_bitmap.trailing_ones() as usize;
-                if free_index != LINKED_BUCKET_LEN {
-                    Self::insert_entry_with(
-                        &mut link_mut.metadata,
-                        &mut link_mut.data_block,
-                        free_index,
-                        partial_hash,
-                        constructor,
-                    );
-                    self.bucket.num_entries += 1;
-                    return EntryPtr {
-                        current_link_ptr: link_ptr,
-                        current_index: free_index,
-                    };
-                }
-                link_ptr = link_mut.metadata.link.load(Acquire, guard);
-            }
-
-            // Insert a new `LinkedBucket` at the linked list head.
-            let head = self.bucket.metadata.link.get_shared(Relaxed, guard);
-            let link = unsafe { Shared::new_unchecked(LinkedBucket::new(head)) };
-            let link_ptr = link.get_guarded_ptr(guard);
-            unsafe {
-                let link_mut = &mut *link_ptr.as_ptr().cast_mut();
-                link_mut.data_block[0].as_mut_ptr().write(constructor());
-                link_mut.metadata.partial_hash_array[0] = partial_hash;
-                link_mut.metadata.occupied_bitmap = 1;
-            }
-            if let Some(head) = link.metadata.link.load(Relaxed, guard).as_ref() {
-                head.prev_link.store(link.as_ptr().cast_mut(), Relaxed);
-            }
-            self.bucket
-                .metadata
-                .link
-                .swap((Some(link), Tag::None), Release);
-            self.bucket.num_entries += 1;
-            EntryPtr {
-                current_link_ptr: link_ptr,
-                current_index: 0,
-            }
-        } else {
-            Self::insert_entry_with(
-                &mut self.bucket.metadata,
-                data_block,
-                free_index,
-                partial_hash,
-                constructor,
-            );
-            self.bucket.num_entries += 1;
-            EntryPtr {
-                current_link_ptr: Ptr::null(),
-                current_index: free_index,
-            }
-        }
-    }
-
-    /// Removes the key-value pair being pointed to by the supplied [`EntryPtr`].
-    #[inline]
-    pub(crate) fn remove(
-        &mut self,
-        data_block: &mut DataBlock<K, V, BUCKET_LEN>,
-        entry_ptr: &mut EntryPtr<'g, K, V, TYPE>,
-        guard: &'g Guard,
-    ) -> (K, V) {
-        debug_assert_ne!(TYPE, OPTIMISTIC);
-        debug_assert_ne!(entry_ptr.current_index, usize::MAX);
-        debug_assert_ne!(entry_ptr.current_index, BUCKET_LEN);
-
-        self.bucket.num_entries -= 1;
-        let link_ptr = entry_ptr.current_link_ptr.as_ptr().cast_mut();
-        if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
-            debug_assert_ne!(
-                link_mut.metadata.occupied_bitmap & (1_u32 << entry_ptr.current_index),
-                0
-            );
-            link_mut.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
-            let removed = unsafe {
-                link_mut.data_block[entry_ptr.current_index]
-                    .as_mut_ptr()
-                    .read()
-            };
-            if link_mut.metadata.occupied_bitmap == 0 {
-                entry_ptr.unlink(self, link_mut, guard);
-            }
-            removed
-        } else {
-            debug_assert_ne!(
-                self.bucket.metadata.occupied_bitmap & (1_u32 << entry_ptr.current_index),
-                0
-            );
-            if TYPE == CACHE {
-                self.remove_from_lru_list(entry_ptr);
-            }
-            self.bucket.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
-            unsafe { data_block[entry_ptr.current_index].as_mut_ptr().read() }
-        }
-    }
-
-    /// Marks the entry removed without dropping the contained instances.
-    #[inline]
-    pub(crate) fn mark_removed<'e>(
-        &mut self,
-        entry_ptr: &mut EntryPtr<'e, K, V, TYPE>,
-        guard: &'e Guard,
-    ) {
-        debug_assert_eq!(TYPE, OPTIMISTIC);
-        debug_assert_ne!(entry_ptr.current_index, usize::MAX);
-        debug_assert_ne!(entry_ptr.current_index, BUCKET_LEN);
-
-        self.bucket.num_entries -= 1;
-        let link_ptr = entry_ptr.current_link_ptr.as_ptr().cast_mut();
-        if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
-            debug_assert_eq!(
-                link_mut.metadata.removed_bitmap_or_lru_tail & (1_u32 << entry_ptr.current_index),
-                0
-            );
-            link_mut.metadata.removed_bitmap_or_lru_tail |= 1_u32 << entry_ptr.current_index;
-            if link_mut.metadata.occupied_bitmap == link_mut.metadata.removed_bitmap_or_lru_tail {
-                entry_ptr.unlink(self, link_mut, guard);
-            }
-        } else {
-            debug_assert_eq!(
-                self.bucket.metadata.removed_bitmap_or_lru_tail
-                    & (1_u32 << entry_ptr.current_index),
-                0
-            );
-            self.bucket.metadata.removed_bitmap_or_lru_tail |= 1_u32 << entry_ptr.current_index;
-            self.update_target_epoch(guard);
-        }
-    }
-
-    /// Keeps or consumes the key-value pair being pointed to by the supplied [`EntryPtr`].
-    ///
-    /// Returns `true` if the entry was consumed.
-    #[inline]
-    pub(crate) fn keep_or_consume<'e, F: FnMut(&K, V) -> Option<V>>(
-        &mut self,
-        data_block: &mut DataBlock<K, V, BUCKET_LEN>,
-        entry_ptr: &mut EntryPtr<'e, K, V, TYPE>,
-        pred: &mut F,
-        guard: &'e Guard,
-    ) -> bool {
-        debug_assert_ne!(TYPE, OPTIMISTIC);
-        debug_assert_ne!(entry_ptr.current_index, usize::MAX);
-
-        // `pred` may panic, therefore it is safe to assume that the entry will be consumed.
-        self.bucket.num_entries -= 1;
-
-        let link_ptr = entry_ptr.current_link_ptr.as_ptr().cast_mut();
-        if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
-            debug_assert_ne!(
-                link_mut.metadata.occupied_bitmap & (1_u32 << entry_ptr.current_index),
-                0
-            );
-            let (k, v) = unsafe {
-                link_mut.data_block[entry_ptr.current_index]
-                    .as_mut_ptr()
-                    .read()
-            };
-            link_mut.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
-            if let Some(v) = pred(&k, v) {
-                // The instances returned: revive the entry.
-                forget(k);
-                forget(v);
-                link_mut.metadata.occupied_bitmap |= 1_u32 << entry_ptr.current_index;
-                self.bucket.num_entries += 1;
-                return false;
-            }
-            if link_mut.metadata.occupied_bitmap == 0 {
-                entry_ptr.unlink(self, link_mut, guard);
-            }
-        } else {
-            debug_assert_ne!(
-                self.bucket.metadata.occupied_bitmap & (1_u32 << entry_ptr.current_index),
-                0
-            );
-            self.bucket.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
-            let (k, v) = unsafe { data_block[entry_ptr.current_index].as_mut_ptr().read() };
-            if let Some(v) = pred(&k, v) {
-                forget(k);
-                forget(v);
-                self.bucket.metadata.occupied_bitmap |= 1_u32 << entry_ptr.current_index;
-                self.bucket.num_entries += 1;
-                return false;
-            }
-        }
-        true
-    }
-
-    /// Evicts the least recently used entry if the [`Bucket`] is full.
-    pub(crate) fn evict_lru_head(
-        &mut self,
-        data_block: &mut DataBlock<K, V, BUCKET_LEN>,
-    ) -> Option<(K, V)> {
-        debug_assert_eq!(TYPE, CACHE);
-
-        if self.metadata.occupied_bitmap == 0b1111_1111_1111_1111_1111_1111_1111_1111 {
-            self.num_entries -= 1;
-            let tail = self.metadata.removed_bitmap_or_lru_tail;
-            let evicted = if let Some((evicted, new_tail)) = self.lru_list.evict(tail) {
-                self.metadata.removed_bitmap_or_lru_tail = new_tail;
-                evicted as usize
-            } else {
-                // Evict the first occupied entry.
-                0
-            };
-            debug_assert_ne!(self.metadata.occupied_bitmap & (1_u32 << evicted), 0);
-            self.metadata.occupied_bitmap &= !(1_u32 << evicted);
-            return Some(unsafe { data_block[evicted].as_mut_ptr().read() });
-        }
-        None
-    }
-
-    /// Sets the entry having been just accessed.
-    pub(crate) fn update_lru_tail(&mut self, entry_ptr: &EntryPtr<K, V, TYPE>) {
-        debug_assert_eq!(TYPE, CACHE);
-        debug_assert_ne!(entry_ptr.current_index, usize::MAX);
-        debug_assert_ne!(entry_ptr.current_index, BUCKET_LEN);
-
-        if entry_ptr.current_link_ptr.is_null() {
-            #[allow(clippy::cast_possible_truncation)]
-            let entry = entry_ptr.current_index as u8;
-            let tail = self.metadata.removed_bitmap_or_lru_tail;
-            if let Some(new_tail) = self.lru_list.promote(tail, entry) {
-                self.metadata.removed_bitmap_or_lru_tail = new_tail;
-            }
-        }
-    }
-
-    /// Extracts the entry being pointed to by the [`EntryPtr`].
-    #[inline]
-    pub(super) fn extract<'e>(
-        &mut self,
-        data_block: &mut DataBlock<K, V, BUCKET_LEN>,
-        entry_ptr: &mut EntryPtr<'e, K, V, TYPE>,
-        guard: &'e Guard,
-    ) -> (K, V) {
-        debug_assert_ne!(TYPE, OPTIMISTIC);
-
-        self.bucket.num_entries -= 1;
-        let link_ptr = entry_ptr.current_link_ptr.as_ptr().cast_mut();
-        if let Some(link_mut) = unsafe { link_ptr.as_mut() } {
-            debug_assert!(entry_ptr.current_index < LINKED_BUCKET_LEN);
-            link_mut.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
-            let extracted = unsafe {
-                link_mut.data_block[entry_ptr.current_index]
-                    .as_mut_ptr()
-                    .read()
-            };
-            if link_mut.metadata.occupied_bitmap == 0 {
-                entry_ptr.unlink(self, link_mut, guard);
-            }
-            extracted
-        } else {
-            debug_assert!(entry_ptr.current_index < BUCKET_LEN);
-            self.bucket.metadata.occupied_bitmap &= !(1_u32 << entry_ptr.current_index);
-            unsafe { data_block[entry_ptr.current_index].as_mut_ptr().read() }
-        }
-    }
-
-    /// Inserts a key-value pair in the slot.
-    fn insert_entry_with<C: FnOnce() -> (K, V), const LEN: usize>(
-        metadata: &mut Metadata<K, V, LEN>,
-        data_block: &mut DataBlock<K, V, LEN>,
-        index: usize,
-        partial_hash: u8,
-        constructor: C,
-    ) {
-        debug_assert!(index < LEN);
-
-        unsafe {
-            data_block[index].as_mut_ptr().write(constructor());
-            metadata.partial_hash_array[index] = partial_hash;
-            if TYPE == OPTIMISTIC {
-                fence(Release);
-            }
-            metadata.occupied_bitmap |= 1_u32 << index;
-        }
-    }
-
-    /// Removes the entry from the LRU linked list.
-    fn remove_from_lru_list(&mut self, entry_ptr: &EntryPtr<K, V, TYPE>) {
-        debug_assert_eq!(TYPE, CACHE);
-        debug_assert_ne!(entry_ptr.current_index, usize::MAX);
-        debug_assert_ne!(entry_ptr.current_index, BUCKET_LEN);
-
-        if entry_ptr.current_link_ptr.is_null() {
-            #[allow(clippy::cast_possible_truncation)]
-            let entry = entry_ptr.current_index as u8;
-            let tail = self.metadata.removed_bitmap_or_lru_tail;
-            if let Some(new_tail) = self.lru_list.remove(tail, entry) {
-                self.metadata.removed_bitmap_or_lru_tail = new_tail;
-            }
-        }
     }
 }
 
