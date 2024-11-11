@@ -509,10 +509,6 @@ where
     ///
     /// Returns the old value if the [`HashMap`] has this key present, or returns `None`.
     ///
-    /// # Errors
-    ///
-    /// Returns an error along with the supplied key-value pair if the key exists.
-    ///
     /// # Examples
     ///
     /// ```
