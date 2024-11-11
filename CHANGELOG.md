@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.2.5
+
+* Fix the `HashMap::upsert` document: by [dfaust](https://github.com/dfaust).
+
 2.2.4
 
 * Minor `Hash*` performance optimization.
