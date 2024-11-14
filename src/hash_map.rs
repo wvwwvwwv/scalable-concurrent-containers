@@ -131,7 +131,7 @@ where
     /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::with_hasher(RandomState::new());
     /// ```
     #[inline]
-    pub fn with_hasher(build_hasher: H) -> Self {
+    pub const fn with_hasher(build_hasher: H) -> Self {
         Self {
             array: AtomicShared::null(),
             minimum_capacity: AtomicUsize::new(0),
