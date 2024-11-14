@@ -130,8 +130,20 @@ where
     ///
     /// let hashmap: HashMap<u64, u32, RandomState> = HashMap::with_hasher(RandomState::new());
     /// ```
+    #[cfg(not(feature = "loom"))]
     #[inline]
     pub const fn with_hasher(build_hasher: H) -> Self {
+        Self {
+            array: AtomicShared::null(),
+            minimum_capacity: AtomicUsize::new(0),
+            build_hasher,
+        }
+    }
+
+    /// Creates an empty [`HashMap`] with the given [`BuildHasher`].
+    #[cfg(feature = "loom")]
+    #[inline]
+    pub fn with_hasher(build_hasher: H) -> Self {
         Self {
             array: AtomicShared::null(),
             minimum_capacity: AtomicUsize::new(0),

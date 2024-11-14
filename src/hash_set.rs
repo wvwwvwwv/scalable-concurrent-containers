@@ -35,6 +35,16 @@ where
     ///
     /// let hashset: HashSet<u64, RandomState> = HashSet::with_hasher(RandomState::new());
     /// ```
+    #[cfg(not(feature = "loom"))]
+    #[inline]
+    pub const fn with_hasher(build_hasher: H) -> Self {
+        Self {
+            map: HashMap::with_hasher(build_hasher),
+        }
+    }
+
+    /// Creates an empty [`HashSet`] with the given [`BuildHasher`].
+    #[cfg(feature = "loom")]
     #[inline]
     pub fn with_hasher(build_hasher: H) -> Self {
         Self {
