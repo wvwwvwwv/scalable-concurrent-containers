@@ -98,6 +98,7 @@ where
     ///
     /// let hashcache: HashCache<u64, u32, RandomState> = HashCache::with_hasher(RandomState::new());
     /// ```
+    #[cfg(not(feature = "loom"))]
     #[inline]
     pub const fn with_hasher(build_hasher: H) -> Self {
         HashCache {

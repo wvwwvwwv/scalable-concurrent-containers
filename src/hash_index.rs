@@ -125,6 +125,7 @@ where
     /// let hashindex: HashIndex<u64, u32, RandomState> =
     ///     HashIndex::with_hasher(RandomState::new());
     /// ```
+    #[cfg(not(feature = "loom"))]
     #[inline]
     pub const fn with_hasher(build_hasher: H) -> Self {
         Self {
