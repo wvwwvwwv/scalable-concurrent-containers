@@ -99,8 +99,20 @@ where
     /// let hashcache: HashCache<u64, u32, RandomState> = HashCache::with_hasher(RandomState::new());
     /// ```
     #[inline]
-    pub fn with_hasher(build_hasher: H) -> Self {
+    pub const fn with_hasher(build_hasher: H) -> Self {
         HashCache {
+            array: AtomicShared::null(),
+            minimum_capacity: AtomicUsize::new(0),
+            maximum_capacity: DEFAULT_MAXIMUM_CAPACITY,
+            build_hasher,
+        }
+    }
+
+    /// Creates an empty [`HashCache`] with the given [`BuildHasher`].
+    #[cfg(feature = "loom")]
+    #[inline]
+    pub fn with_hasher(build_hasher: H) -> Self {
+        Self {
             array: AtomicShared::null(),
             minimum_capacity: AtomicUsize::new(0),
             maximum_capacity: DEFAULT_MAXIMUM_CAPACITY,

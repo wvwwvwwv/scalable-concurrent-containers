@@ -4,6 +4,7 @@
 
 2.2.5
 
+* `Hash*::with_hasher` is now a const function: by [Daniel-Aaron-Bloom](https://github.com/Daniel-Aaron-Bloom).
 * Fix the `HashMap::upsert` document: by [dfaust](https://github.com/dfaust).
 
 2.2.4
