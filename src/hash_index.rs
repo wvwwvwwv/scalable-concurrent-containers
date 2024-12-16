@@ -19,15 +19,15 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
 /// Scalable concurrent hash index.
 ///
-/// [`HashIndex`] is a concurrent and asynchronous hash map data structure that is optimized for
-/// parallel read operations. The key characteristics of [`HashIndex`] are similar to that of
-/// [`HashMap`](super::HashMap) except that its read operations are lock-free.
+/// [`HashIndex`] is a concurrent and asynchronous hash map data structure optimized for parallel
+/// read operations. The key characteristics of [`HashIndex`] are similar to that of
+/// [`HashMap`](super::HashMap) except its read operations are lock-free.
 ///
 /// ## The key differences between [`HashIndex`] and [`HashMap`](crate::HashMap).
 ///
-/// * Lock-free-read: read and scan operations do not modify shared data and are never blocked.
+/// * Lock-free-read: read and scan operations are never blocked and do not modify shared data.
 /// * Immutability: the data in the container is immutable until it becomes unreachable.
-/// * Linearizability: [`HashIndex`] read operations are not linearizable.
+/// * Linearizability: linearizability of read operations relies on the CPU architecture.
 ///
 /// ## The key statistics for [`HashIndex`]
 ///
@@ -39,7 +39,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 ///
 /// ### Unwind safety
 ///
-/// [`HashIndex`] is impervious to out-of-memory errors and panics in user specified code on one
+/// [`HashIndex`] is impervious to out-of-memory errors and panics in user-specified code on one
 /// condition; `H::Hasher::hash`, `K::drop` and `V::drop` must not panic.
 pub struct HashIndex<K, V, H = RandomState>
 where
@@ -734,8 +734,6 @@ where
     /// Returns `None` if the key does not exist. The returned reference can survive as long as the
     /// associated [`Guard`] is alive.
     ///
-    /// This method is not linearizable since the entry can be removed while being read.
-    ///
     /// # Examples
     ///
     /// ```
@@ -764,8 +762,6 @@ where
     /// Peeks a key-value pair without acquiring locks.
     ///
     /// Returns `None` if the key does not exist.
-    ///
-    /// This method is not linearizable since the entry can be removed while being read.
     ///
     /// # Examples
     ///
@@ -1409,7 +1405,7 @@ where
     }
 }
 
-impl<'h, K, V, H> Debug for Entry<'h, K, V, H>
+impl<K, V, H> Debug for Entry<'_, K, V, H>
 where
     K: 'static + Clone + Debug + Eq + Hash,
     V: 'static + Clone + Debug,
@@ -1572,7 +1568,6 @@ where
     ///
     /// assert_eq!(hashindex.peek_with(&37, |_, v| *v), Some(29));
     /// ```
-
     #[inline]
     pub fn update(mut self, val: V) {
         let key = self.key().clone();
@@ -1667,7 +1662,7 @@ where
     }
 }
 
-impl<'h, K, V, H> Debug for OccupiedEntry<'h, K, V, H>
+impl<K, V, H> Debug for OccupiedEntry<'_, K, V, H>
 where
     K: 'static + Clone + Debug + Eq + Hash,
     V: 'static + Clone + Debug,
@@ -1682,7 +1677,7 @@ where
     }
 }
 
-impl<'h, K, V, H> Deref for OccupiedEntry<'h, K, V, H>
+impl<K, V, H> Deref for OccupiedEntry<'_, K, V, H>
 where
     K: 'static + Clone + Debug + Eq + Hash,
     V: 'static + Clone + Debug,
@@ -1773,7 +1768,7 @@ where
     }
 }
 
-impl<'h, K, V, H> Debug for VacantEntry<'h, K, V, H>
+impl<K, V, H> Debug for VacantEntry<'_, K, V, H>
 where
     K: 'static + Clone + Debug + Eq + Hash,
     V: 'static + Clone + Debug,
@@ -1785,7 +1780,7 @@ where
     }
 }
 
-impl<'h, K, V, H> Reserve<'h, K, V, H>
+impl<K, V, H> Reserve<'_, K, V, H>
 where
     K: 'static + Clone + Eq + Hash,
     V: 'static + Clone,
@@ -1799,7 +1794,7 @@ where
     }
 }
 
-impl<'h, K, V, H> AsRef<HashIndex<K, V, H>> for Reserve<'h, K, V, H>
+impl<K, V, H> AsRef<HashIndex<K, V, H>> for Reserve<'_, K, V, H>
 where
     K: 'static + Clone + Eq + Hash,
     V: 'static + Clone,
@@ -1811,7 +1806,7 @@ where
     }
 }
 
-impl<'h, K, V, H> Debug for Reserve<'h, K, V, H>
+impl<K, V, H> Debug for Reserve<'_, K, V, H>
 where
     K: 'static + Clone + Eq + Hash,
     V: 'static + Clone,
@@ -1823,7 +1818,7 @@ where
     }
 }
 
-impl<'h, K, V, H> Deref for Reserve<'h, K, V, H>
+impl<K, V, H> Deref for Reserve<'_, K, V, H>
 where
     K: 'static + Clone + Eq + Hash,
     V: 'static + Clone,
@@ -1837,7 +1832,7 @@ where
     }
 }
 
-impl<'h, K, V, H> Drop for Reserve<'h, K, V, H>
+impl<K, V, H> Drop for Reserve<'_, K, V, H>
 where
     K: 'static + Clone + Eq + Hash,
     V: 'static + Clone,
@@ -1854,7 +1849,7 @@ where
     }
 }
 
-impl<'h, 'g, K, V, H> Debug for Iter<'h, 'g, K, V, H>
+impl<K, V, H> Debug for Iter<'_, '_, K, V, H>
 where
     K: 'static + Clone + Eq + Hash,
     V: 'static + Clone,
@@ -1869,7 +1864,7 @@ where
     }
 }
 
-impl<'h, 'g, K, V, H> Iterator for Iter<'h, 'g, K, V, H>
+impl<'g, K, V, H> Iterator for Iter<'_, 'g, K, V, H>
 where
     K: 'static + Clone + Eq + Hash,
     V: 'static + Clone,
@@ -1964,7 +1959,7 @@ where
     }
 }
 
-impl<'h, 'g, K, V, H> FusedIterator for Iter<'h, 'g, K, V, H>
+impl<K, V, H> FusedIterator for Iter<'_, '_, K, V, H>
 where
     K: 'static + Clone + Eq + Hash,
     V: 'static + Clone,
@@ -1972,7 +1967,7 @@ where
 {
 }
 
-impl<'h, 'g, K, V, H> UnwindSafe for Iter<'h, 'g, K, V, H>
+impl<K, V, H> UnwindSafe for Iter<'_, '_, K, V, H>
 where
     K: 'static + Clone + Eq + Hash + UnwindSafe,
     V: 'static + Clone + UnwindSafe,

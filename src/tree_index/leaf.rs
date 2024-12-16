@@ -965,7 +965,7 @@ where
     }
 }
 
-impl<'l, K, V> Debug for Scanner<'l, K, V> {
+impl<K, V> Debug for Scanner<'_, K, V> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Scanner")

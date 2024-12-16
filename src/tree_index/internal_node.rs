@@ -1108,7 +1108,7 @@ impl<'n, K, V> Locker<'n, K, V> {
     }
 }
 
-impl<'n, K, V> Drop for Locker<'n, K, V> {
+impl<K, V> Drop for Locker<'_, K, V> {
     #[inline]
     fn drop(&mut self) {
         self.internal_node.unlock();

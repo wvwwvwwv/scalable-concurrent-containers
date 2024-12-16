@@ -511,7 +511,7 @@ impl<T> Drop for Queue<T> {
     }
 }
 
-impl<'g, T> FusedIterator for Iter<'g, T> {}
+impl<T> FusedIterator for Iter<'_, T> {}
 
 impl<'g, T> Iterator for Iter<'g, T> {
     type Item = &'g T;

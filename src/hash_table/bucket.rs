@@ -849,7 +849,7 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
     }
 }
 
-impl<'g, K, V, const TYPE: char> Debug for EntryPtr<'g, K, V, TYPE> {
+impl<K, V, const TYPE: char> Debug for EntryPtr<'_, K, V, TYPE> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EntryPtr")
@@ -859,7 +859,7 @@ impl<'g, K, V, const TYPE: char> Debug for EntryPtr<'g, K, V, TYPE> {
     }
 }
 
-unsafe impl<'g, K: Sync, V: Sync, const TYPE: char> Sync for EntryPtr<'g, K, V, TYPE> {}
+unsafe impl<K: Sync, V: Sync, const TYPE: char> Sync for EntryPtr<'_, K, V, TYPE> {}
 
 impl<'g, K, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
     /// Locks the [`Bucket`].
@@ -925,7 +925,7 @@ impl<'g, K, V, L: LruList, const TYPE: char> Locker<'g, K, V, L, TYPE> {
     }
 }
 
-impl<'g, K, V, L: LruList, const TYPE: char> Deref for Locker<'g, K, V, L, TYPE> {
+impl<K, V, L: LruList, const TYPE: char> Deref for Locker<'_, K, V, L, TYPE> {
     type Target = Bucket<K, V, L, TYPE>;
 
     #[inline]
@@ -934,14 +934,14 @@ impl<'g, K, V, L: LruList, const TYPE: char> Deref for Locker<'g, K, V, L, TYPE>
     }
 }
 
-impl<'g, K, V, L: LruList, const TYPE: char> DerefMut for Locker<'g, K, V, L, TYPE> {
+impl<K, V, L: LruList, const TYPE: char> DerefMut for Locker<'_, K, V, L, TYPE> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.bucket
     }
 }
 
-impl<'g, K, V, L: LruList, const TYPE: char> Drop for Locker<'g, K, V, L, TYPE> {
+impl<K, V, L: LruList, const TYPE: char> Drop for Locker<'_, K, V, L, TYPE> {
     #[inline]
     fn drop(&mut self) {
         let mut current = self.bucket.state.load(Relaxed);
@@ -1055,7 +1055,7 @@ impl<'g, K, V, L: LruList, const TYPE: char> Deref for Reader<'g, K, V, L, TYPE>
     }
 }
 
-impl<'g, K, V, L: LruList, const TYPE: char> Drop for Reader<'g, K, V, L, TYPE> {
+impl<K, V, L: LruList, const TYPE: char> Drop for Reader<'_, K, V, L, TYPE> {
     #[inline]
     fn drop(&mut self) {
         Self::release(self.bucket);

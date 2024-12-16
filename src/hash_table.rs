@@ -1389,7 +1389,7 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
 }
 
 /// [`LockedEntry`] is safe to be sent across threads and awaits as long as the entry is.
-unsafe impl<'h, K: Eq + Hash + Send, V: Send, L: LruList, const TYPE: char> Send
-    for LockedEntry<'h, K, V, L, TYPE>
+unsafe impl<K: Eq + Hash + Send, V: Send, L: LruList, const TYPE: char> Send
+    for LockedEntry<'_, K, V, L, TYPE>
 {
 }

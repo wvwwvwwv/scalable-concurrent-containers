@@ -20,19 +20,18 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 ///
 /// [`HashCache`] is a concurrent 32-way associative cache that is based on the
 /// [`HashMap`](super::HashMap) implementation. [`HashCache`] does not keep track of the least
-/// recently used entry in the entire cache, instead each bucket maintains a doubly linked list of
-/// occupied entries which is updated on access to entries in order to keep track of the least
-/// recently used entry within the bucket. Therefore, entries can be evicted before the cache is
-/// full.
+/// recently used entry in the entire cache. Instead, each bucket maintains a doubly linked list of
+/// occupied entries, updated on access to entries to keep track of the least recently used entries
+/// within the bucket. Therefore, entries can be evicted before the cache is full.
 ///
-/// [`HashCache`] and [`HashMap`](super::HashMap) share the same runtime characteristic, except
-/// that each entry in a [`HashCache`] additionally uses 2-byte space for a doubly linked list, and
-/// a [`HashCache`] starts evicting least recently used entries if the bucket is full instead of
+/// [`HashCache`] and [`HashMap`](super::HashMap) share the same runtime characteristic, except that
+/// each entry in a [`HashCache`] additionally uses 2-byte space for a doubly linked list and a
+/// [`HashCache`] starts evicting least recently used entries if the bucket is full instead of
 /// allocating linked list of entries.
 ///
 /// ### Unwind safety
 ///
-/// [`HashCache`] is impervious to out-of-memory errors and panics in user specified code on one
+/// [`HashCache`] is impervious to out-of-memory errors and panics in user-specified code on one
 /// condition; `H::Hasher::hash`, `K::drop` and `V::drop` must not panic.
 pub struct HashCache<K, V, H = RandomState>
 where
@@ -1409,7 +1408,7 @@ where
     }
 }
 
-impl<'h, K, V, H> Debug for Entry<'h, K, V, H>
+impl<K, V, H> Debug for Entry<'_, K, V, H>
 where
     K: Debug + Eq + Hash,
     V: Debug,
@@ -1424,7 +1423,7 @@ where
     }
 }
 
-impl<'h, K, V, H> OccupiedEntry<'h, K, V, H>
+impl<K, V, H> OccupiedEntry<'_, K, V, H>
 where
     K: Eq + Hash,
     H: BuildHasher,
@@ -1593,7 +1592,7 @@ where
     }
 }
 
-impl<'h, K, V, H> Debug for OccupiedEntry<'h, K, V, H>
+impl<K, V, H> Debug for OccupiedEntry<'_, K, V, H>
 where
     K: Debug + Eq + Hash,
     V: Debug,
@@ -1608,7 +1607,7 @@ where
     }
 }
 
-impl<'h, K, V, H> Deref for OccupiedEntry<'h, K, V, H>
+impl<K, V, H> Deref for OccupiedEntry<'_, K, V, H>
 where
     K: Eq + Hash,
     H: BuildHasher,
@@ -1621,7 +1620,7 @@ where
     }
 }
 
-impl<'h, K, V, H> DerefMut for OccupiedEntry<'h, K, V, H>
+impl<K, V, H> DerefMut for OccupiedEntry<'_, K, V, H>
 where
     K: Eq + Hash,
     H: BuildHasher,
@@ -1716,7 +1715,7 @@ where
     }
 }
 
-impl<'h, K, V, H> Debug for VacantEntry<'h, K, V, H>
+impl<K, V, H> Debug for VacantEntry<'_, K, V, H>
 where
     K: Debug + Eq + Hash,
     V: Debug,

@@ -212,7 +212,6 @@ impl<T> Stack<T> {
     /// assert_eq!(popped.pop().map(|e| **e), Some(37));
     /// assert!(popped.pop().is_none());
     /// ```
-
     #[inline]
     #[must_use]
     pub fn pop_all(&self) -> Self {
@@ -498,7 +497,7 @@ impl<T> Drop for Stack<T> {
     }
 }
 
-impl<'g, T> FusedIterator for Iter<'g, T> {}
+impl<T> FusedIterator for Iter<'_, T> {}
 
 impl<'g, T> Iterator for Iter<'g, T> {
     type Item = &'g T;

@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.2.6
+
+* Fix linting errors.
+
 2.2.5
 
 * `Hash*::with_hasher` is now a const function: by [Daniel-Aaron-Bloom](https://github.com/Daniel-Aaron-Bloom).

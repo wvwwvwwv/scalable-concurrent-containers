@@ -384,7 +384,6 @@ impl<T> Entry<T> {
     /// let pushed = unsafe { entry.get_mut().unwrap().take_inner() };
     /// assert_eq!(pushed, 37);
     /// ```
-
     #[inline]
     pub unsafe fn take_inner(&mut self) -> T {
         self.instance.take().unwrap_unchecked()

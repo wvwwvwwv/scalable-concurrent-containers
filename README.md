@@ -4,7 +4,7 @@
 ![Crates.io](https://img.shields.io/crates/l/scc)
 ![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/wvwwvwwv/scalable-concurrent-containers/scc.yml?branch=main)
 
-A collection of high performance containers and utilities for concurrent and asynchronous programming.
+A collection of high-performance containers and utilities for concurrent and asynchronous programming.
 
 #### Features
 
@@ -31,21 +31,21 @@ A collection of high performance containers and utilities for concurrent and asy
 
 ## `HashMap`
 
-[`HashMap`](#hashmap) is a concurrent hash map, optimized for highly parallel write-heavy workloads. [`HashMap`](#hashmap) is structured as a lock-free stack of entry bucket arrays. The entry bucket array is managed by [`sdd`](https://crates.io/crates/sdd), thus enabling lock-free access to it and non-blocking container resizing. Each bucket is a fixed-size array of entries, and it is protected by a special read-write lock which provides both blocking and asynchronous methods.
+[`HashMap`](#hashmap) is a concurrent hash map optimized for highly parallel write-heavy workloads. [`HashMap`](#hashmap) is structured as a lock-free stack of entry bucket arrays. The entry bucket array is managed by [`sdd`](https://crates.io/crates/sdd), thus enabling lock-free access to it and non-blocking container resizing. Each bucket is a fixed-size array of entries, protected by a read-write lock that simultaneously provides blocking and asynchronous methods.
 
 ### Locking behavior
 
 #### Entry access: fine-grained locking
 
-Read/write access to an entry is serialized by the read-write lock in the bucket containing the entry. There are no container-level locks, therefore, the larger the container gets, the lower the chance of the bucket-level lock being contended.
+Read/write access to an entry is serialized by the read-write lock in the bucket containing the entry. There are no container-level locks; therefore, the larger the container gets, the lower the chance of the bucket-level lock being contended.
 
 #### Resize: lock-free
 
-Resizing of a [`HashMap`](#hashmap) is completely non-blocking and lock-free; resizing does not block any other read/write access to the container or resizing attempts. _Resizing is analogous to pushing a new bucket array into a lock-free stack_. Each entry in the old bucket array will be incrementally relocated to the new bucket array on future access to the container, and the old bucket array gets dropped eventually after it becomes empty.
+Resizing of a [`HashMap`](#hashmap) is entirely non-blocking and lock-free; resizing does not block any other read/write access to the container or resizing attempts. _Resizing is analogous to pushing a new bucket array into a lock-free stack_. Each entry in the old bucket array will be incrementally relocated to the new bucket array upon future access to the container, and the old bucket array will eventually be dropped after it becomes empty.
 
 ### Examples
 
-An entry can be inserted if the key is unique. The inserted entry can be updated, read, and removed synchronously or asynchronously.
+If the key is unique, an entry can be inserted. The inserted entry can be updated, read, and removed synchronously or asynchronously.
 
 ```rust
 use scc::HashMap;
@@ -66,7 +66,7 @@ let future_insert = hashmap.insert_async(2, 1);
 let future_remove = hashmap.remove_async(&1);
 ```
 
-The `Entry` API of [`HashMap`](#hashmap) is useful if the workflow is complicated.
+The `Entry` API of [`HashMap`](#hashmap) is helpful if the workflow is complicated.
 
 ```rust
 use scc::HashMap;
@@ -80,7 +80,7 @@ hashmap.entry(4).and_modify(|v| { *v += 1 }).or_insert(5);
 assert_eq!(hashmap.read(&4, |_, v| *v), Some(5));
 ```
 
-[`HashMap`](#hashmap) does not provide an [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) since it is impossible to confine the lifetime of [`Iterator::Item`](https://doc.rust-lang.org/std/iter/trait.Iterator.html#associatedtype.Item) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html). The limitation can be circumvented by relying on interior mutability, e.g., let the returned reference hold a lock, however it will easily lead to a deadlock if not correctly used, and frequent acquisition of locks may impact performance. Therefore, [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented, instead, [`HashMap`](#hashmap) provides a number of methods to iterate over entries synchronously or asynchronously: `any`, `any_async`, `first_entry`, `first_entry_async`, `prune`, `prune_async`, `retain`, `retain_async`, `scan`, `scan_async`, `OccupiedEntry::next`, and `OccupiedEntry::next_async`.
+[`HashMap`](#hashmap) does not provide an [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) since it is impossible to confine the lifetime of [`Iterator::Item`](https://doc.rust-lang.org/std/iter/trait.Iterator.html#associatedtype.Item) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html). The limitation can be circumvented by relying on interior mutability, e.g., letting the returned reference hold a lock. However, it may lead to a deadlock if not correctly used, and frequent acquisition of locks may impact performance. Therefore, [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented; instead, [`HashMap`](#hashmap) provides several methods to iterate over entries synchronously or asynchronously: `any`, `any_async`, `first_entry`, `first_entry_async`, `prune`, `prune_async`, `retain`, `retain_async`, `scan`, `scan_async`, `OccupiedEntry::next`, and `OccupiedEntry::next_async`.
 
 ```rust
 use scc::HashMap;
@@ -97,7 +97,7 @@ assert_eq!(acc, 3);
 assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
 assert_eq!(hashmap.read(&2, |_, v| *v).unwrap(), 2);
 
-// `any` returns `true` as soon as an entry satisfying the predicate is found.
+// `any` returns `true` when an entry satisfying the predicate is found.
 assert!(hashmap.insert(3, 2).is_ok());
 assert!(hashmap.any(|k, _| *k == 3));
 
@@ -154,17 +154,17 @@ let future_remove = hashset.remove_async(&1);
 
 ## `HashIndex`
 
-[`HashIndex`](#hashindex) is a read-optimized version of [`HashMap`](#hashmap). In a [`HashIndex`](#hashindex), not only is the memory of the bucket array managed by [`sdd`](https://crates.io/crates/sdd), but also that of entry buckets is protected by [`sdd`](https://crates.io/crates/sdd), enabling lock-free read access to individual entries.
+[`HashIndex`](#hashindex) is a read-optimized version of [`HashMap`](#hashmap). In a [`HashIndex`](#hashindex), not only is the memory of the bucket array managed by [`sdd`](https://crates.io/crates/sdd), but also that of entry buckets is protected by [`sdd`](https://crates.io/crates/sdd), enabling lock-free-read access to individual entries.
 
 ### Entry lifetime
 
-`HashIndex` does not drop removed entries immediately, instead they are dropped when one of the following conditions is met.
+`HashIndex` does not drop removed entries immediately; instead, they are dropped when one of the following conditions is met.
 
-1. [`Epoch`](https://docs.rs/sdd/latest/sdd/struct.Epoch.html) reaches the next generation since the last entry removal in a bucket, and the bucket is write-accessed.
+1. [`Epoch`](https://docs.rs/sdd/latest/sdd/struct.Epoch.html) reaches the next generation since the last entry was removed in a bucket, and the bucket is write-accessed.
 2. `HashIndex` is cleared, or resized.
 3. Buckets full of removed entries occupy 50% of the capacity.
 
-Those conditions do not guarantee that the removed entry is dropped within a definite period of time, therefore `HashIndex` would not be an optimal choice if the workload is write-heavy and the entry size is large.
+Those conditions do not guarantee that the removed entry will be dropped within a definite period of time; therefore, `HashIndex` would not be an optimal choice if the workload is write-heavy and the entry size is large.
 
 ### Examples
 
@@ -184,7 +184,7 @@ let future_insert = hashindex.insert_async(2, 1);
 let future_remove = hashindex.remove_if_async(&1, |_| true);
 ```
 
-The `Entry` API of [`HashIndex`](#hashindex) can be used to update an entry in-place.
+The `Entry` API of [`HashIndex`](#hashindex) can update an existing entry.
 
 ```rust
 use scc::HashIndex;
@@ -198,12 +198,12 @@ if let Some(mut o) = hashindex.get(&1) {
 };
 
 if let Some(mut o) = hashindex.get(&1) {
-    // Update the entry in-place.
+    // Update the entry in place.
     unsafe { *o.get_mut() = 3; }
 };
 ```
 
-An [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is implemented for [`HashIndex`](#hashindex), because any derived references can survive as long as the associated `ebr::Guard` lives.
+An [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is implemented for [`HashIndex`](#hashindex) because any derived references can survive as long as the associated `ebr::Guard` lives.
 
 ```rust
 use scc::ebr::Guard;
@@ -233,11 +233,11 @@ assert_eq!(entry_ref, (&1, &1));
 
 ## `HashCache`
 
-[`HashCache`](#hashcache) is a 32-way associative concurrent cache that is based on the [`HashMap`](#hashmap) implementation. [`HashCache`](#hashcache) does not keep track of the least recently used entry in the entire cache, instead each bucket maintains a doubly linked list of occupied entries which is updated on access to entries in order to keep track of the least recently used entry within the bucket.
+[`HashCache`](#hashcache) is a 32-way associative concurrent cache based on the [`HashMap`](#hashmap) implementation. [`HashCache`](#hashcache) does not keep track of the least recently used entry in the entire cache. Instead, each bucket maintains a doubly linked list of occupied entries, which is updated on entry access.
 
 ### Examples
 
-The LRU entry in a bucket is evicted when a new entry is being inserted and the bucket is full.
+The LRU entry in a bucket is evicted when a new entry is inserted, and the bucket is full.
 
 ```rust
 use scc::HashCache;
@@ -264,15 +264,15 @@ assert_eq!(hashcache.remove(&2).unwrap(), (2, 0));
 
 ### Locking behavior
 
-Read access is always lock-free and non-blocking. Write access to an entry is also lock-free and non-blocking as long as no structural changes are required. However, when nodes are being split or merged by a write operation, other write operations on keys in the affected range are blocked.
+Read access is always lock-free and non-blocking. Write access to an entry is lock-free and non-blocking as long as no structural changes are required. However, when nodes are split or merged by a write operation, other write operations on keys in the affected range are blocked.
 
 ### Entry lifetime
 
-`TreeIndex` does not drop removed entries immediately, instead they are dropped when the leaf node is cleared or split, and this makes `TreeIndex` a sub-optimal choice if the workload is write-heavy.
+`TreeIndex` does not drop removed entries immediately. Instead, they are dropped when the leaf node is cleared or split, and this makes `TreeIndex` a sub-optimal choice if the workload is write-heavy.
 
 ### Examples
 
-An entry can be inserted if the key is unique, and it can be read, and removed afterwards. Locks are acquired or awaited only when internal nodes are split or merged.
+If the key is unique, an entry can be inserted, read, and removed afterward. Locks are acquired or awaited only when internal nodes are split or merged.
 
 ```rust
 use scc::TreeIndex;
@@ -386,7 +386,7 @@ assert!(stack.pop().is_none());
 
 ## `LinkedList`
 
-[`LinkedList`](#linkedlist) is a type trait that implements lock-free concurrent singly linked list operations, backed by [`sdd`](https://crates.io/crates/sdd). It additionally provides a method for marking an entry of a linked list to denote a user-defined state.
+[`LinkedList`](#linkedlist) is a type trait that implements lock-free concurrent singly linked list operations backed by [`sdd`](https://crates.io/crates/sdd). It additionally provides a method for marking a linked list entry to denote a user-defined state.
 
 ### Examples
 

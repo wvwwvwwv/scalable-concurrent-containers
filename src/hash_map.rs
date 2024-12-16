@@ -17,10 +17,10 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
 /// Scalable concurrent hash map.
 ///
-/// [`HashMap`] is a concurrent and asynchronous hash map data structure that is optimized for
-/// highly concurrent workloads. [`HashMap`] has a dynamically sized array of buckets where a
-/// bucket is a fixed size hash table with linear probing that can be expanded by allocating a
-/// linked list of smaller buckets when it is full.
+/// [`HashMap`] is a concurrent and asynchronous hash map data structure optimized for highly
+/// concurrent workloads. [`HashMap`] has a dynamically sized array of buckets where a bucket is a
+/// fixed-size hash table with linear probing that can be expanded by allocating a linked list of
+/// smaller buckets when it is full.
 ///
 /// ## The key features of [`HashMap`]
 ///
@@ -47,21 +47,21 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 ///
 /// ### Entry access
 ///
-/// Each read/write access to an entry is serialized by the read-write lock in the bucket
-/// containing the entry. There are no container-level locks, therefore, the larger the [`HashMap`]
-/// gets, the lower the chance that the bucket-level lock being contended.
+/// Each read/write access to an entry is serialized by the read-write lock in the bucket containing
+/// the entry. There are no container-level locks, therefore, the larger the [`HashMap`] gets, the
+/// lower the chance that the bucket-level lock is being contended.
 ///
 /// ### Resize
 ///
-/// Resizing of the [`HashMap`] is totally non-blocking and lock-free; resizing does not block any
-/// other read/write access to the [`HashMap`] or resizing attempts. Resizing is analogous to
-/// pushing a new bucket array into a lock-free stack. Each individual entry in the old bucket
-/// array will be incrementally relocated to the new bucket array on future access to the
-/// [`HashMap`], and the old bucket array gets dropped when it becomes empty and unreachable.
+/// Resizing of the [`HashMap`] is non-blocking and lock-free; resizing does not block any other
+/// read/write access to the [`HashMap`] or resizing attempts. Resizing is analogous to pushing a
+/// new bucket array into a lock-free stack. Each entry in the old bucket array will be
+/// incrementally relocated to the new bucket array on future access to the [`HashMap`], and the old
+/// bucket array gets dropped when it becomes empty and unreachable.
 ///
 /// ### Unwind safety
 ///
-/// [`HashMap`] is impervious to out-of-memory errors and panics in user specified code on one
+/// [`HashMap`] is impervious to out-of-memory errors and panics in user-specified code on one
 /// condition; `H::Hasher::hash`, `K::drop` and `V::drop` must not panic.
 pub struct HashMap<K, V, H = RandomState>
 where
@@ -1785,7 +1785,7 @@ where
     }
 }
 
-impl<'h, K, V, H> Debug for Entry<'h, K, V, H>
+impl<K, V, H> Debug for Entry<'_, K, V, H>
 where
     K: Debug + Eq + Hash,
     V: Debug,
@@ -2042,7 +2042,7 @@ where
     }
 }
 
-impl<'h, K, V, H> Debug for OccupiedEntry<'h, K, V, H>
+impl<K, V, H> Debug for OccupiedEntry<'_, K, V, H>
 where
     K: Debug + Eq + Hash,
     V: Debug,
@@ -2057,7 +2057,7 @@ where
     }
 }
 
-impl<'h, K, V, H> Deref for OccupiedEntry<'h, K, V, H>
+impl<K, V, H> Deref for OccupiedEntry<'_, K, V, H>
 where
     K: Eq + Hash,
     H: BuildHasher,
@@ -2070,7 +2070,7 @@ where
     }
 }
 
-impl<'h, K, V, H> DerefMut for OccupiedEntry<'h, K, V, H>
+impl<K, V, H> DerefMut for OccupiedEntry<'_, K, V, H>
 where
     K: Eq + Hash,
     H: BuildHasher,
@@ -2157,7 +2157,7 @@ where
     }
 }
 
-impl<'h, K, V, H> Debug for VacantEntry<'h, K, V, H>
+impl<K, V, H> Debug for VacantEntry<'_, K, V, H>
 where
     K: Debug + Eq + Hash,
     V: Debug,
@@ -2169,7 +2169,7 @@ where
     }
 }
 
-impl<'h, K, V, H> Reserve<'h, K, V, H>
+impl<K, V, H> Reserve<'_, K, V, H>
 where
     K: Eq + Hash,
     H: BuildHasher,
@@ -2182,7 +2182,7 @@ where
     }
 }
 
-impl<'h, K, V, H> AsRef<HashMap<K, V, H>> for Reserve<'h, K, V, H>
+impl<K, V, H> AsRef<HashMap<K, V, H>> for Reserve<'_, K, V, H>
 where
     K: Eq + Hash,
     H: BuildHasher,
@@ -2193,7 +2193,7 @@ where
     }
 }
 
-impl<'h, K, V, H> Debug for Reserve<'h, K, V, H>
+impl<K, V, H> Debug for Reserve<'_, K, V, H>
 where
     K: Eq + Hash,
     H: BuildHasher,
@@ -2204,7 +2204,7 @@ where
     }
 }
 
-impl<'h, K, V, H> Deref for Reserve<'h, K, V, H>
+impl<K, V, H> Deref for Reserve<'_, K, V, H>
 where
     K: Eq + Hash,
     H: BuildHasher,
@@ -2217,7 +2217,7 @@ where
     }
 }
 
-impl<'h, K, V, H> Drop for Reserve<'h, K, V, H>
+impl<K, V, H> Drop for Reserve<'_, K, V, H>
 where
     K: Eq + Hash,
     H: BuildHasher,

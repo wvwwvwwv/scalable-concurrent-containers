@@ -308,7 +308,7 @@ impl<'b, T, const ARRAY_LEN: usize> IntoIterator for &'b mut Bag<T, ARRAY_LEN> {
     }
 }
 
-impl<'b, T, const ARRAY_LEN: usize> FusedIterator for IterMut<'b, T, ARRAY_LEN> {}
+impl<T, const ARRAY_LEN: usize> FusedIterator for IterMut<'_, T, ARRAY_LEN> {}
 
 impl<'b, T, const ARRAY_LEN: usize> Iterator for IterMut<'b, T, ARRAY_LEN> {
     type Item = &'b mut T;
@@ -356,7 +356,7 @@ impl<'b, T, const ARRAY_LEN: usize> Iterator for IterMut<'b, T, ARRAY_LEN> {
     }
 }
 
-impl<'b, T, const ARRAY_LEN: usize> UnwindSafe for IterMut<'b, T, ARRAY_LEN> where T: UnwindSafe {}
+impl<T, const ARRAY_LEN: usize> UnwindSafe for IterMut<'_, T, ARRAY_LEN> where T: UnwindSafe {}
 
 impl<T, const ARRAY_LEN: usize> FusedIterator for IntoIter<T, ARRAY_LEN> {}
 

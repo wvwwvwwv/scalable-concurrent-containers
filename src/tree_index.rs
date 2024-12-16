@@ -21,20 +21,20 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire};
 
 /// Scalable concurrent B-plus tree.
 ///
-/// [`TreeIndex`] is a concurrent and asynchronous B-plus tree variant that is optimized for read
-/// operations. Read operations, such as read, iteration over entries, are neither blocked nor
-/// interrupted by other threads or tasks. Write operations, such as insert, remove, do not block
+/// [`TreeIndex`] is a concurrent and asynchronous B-plus tree variant optimized for read
+/// operations. Read operations, such as read iteration over entries, are neither blocked nor
+/// interrupted by other threads or tasks. Write operations, such as insert and remove, do not block
 /// if structural changes are not required.
 ///
 /// ## Notes
 ///
-/// [`TreeIndex`] methods are linearizable, however its iterator methods are not; [`Iter`] and
-/// [`Range`] are only guaranteed to observe events happened before the first call to
+/// [`TreeIndex`] methods are linearizable. However, its iterator methods are not; [`Iter`] and
+/// [`Range`] are only guaranteed to observe events that happened before the first call to
 /// [`Iterator::next`].
 ///
 /// ## The key features of [`TreeIndex`]
 ///
-/// * Lock-free-read: read and scan operations do not modify shared data and are never blocked.
+/// * Lock-free-read: read and scan operations are never blocked and do not modify shared data.
 /// * Near lock-free write: write operations do not block unless a structural change is needed.
 /// * No busy waiting: each node has a wait queue to avoid spinning.
 /// * Immutability: the data in the container is immutable until it becomes unreachable.
@@ -42,18 +42,17 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire};
 /// ## The key statistics for [`TreeIndex`]
 ///
 /// * The maximum number of entries that a leaf can contain: 14.
-/// * The maximum number of leaves or child nodes that a node can point to: 15.
+/// * The maximum number of leaves or child nodes a node can contain: 15.
 ///
 /// ## Locking behavior
 ///
-/// Read access is always lock-free and non-blocking. Write access to an entry is also lock-free
-/// and non-blocking as long as no structural changes are required. However, when nodes are being
-/// split or merged by a write operation, other write operations on keys in the affected range are
-/// blocked.
+/// Read access is always lock-free and non-blocking. Write access to an entry is also lock-free and
+/// non-blocking as long as no structural changes are required. However, when nodes are split or
+/// merged by a write operation, other write operations on keys in the affected range are blocked.
 ///
 /// ### Unwind safety
 ///
-/// [`TreeIndex`] is impervious to out-of-memory errors and panics in user specified code on one
+/// [`TreeIndex`] is impervious to out-of-memory errors and panics in user-specified code on one
 /// condition; `K::drop` and `V::drop` must not panic.
 pub struct TreeIndex<K, V> {
     root: AtomicShared<Node<K, V>>,
@@ -876,7 +875,7 @@ impl<'t, 'g, K, V> Iter<'t, 'g, K, V> {
     }
 }
 
-impl<'t, 'g, K, V> Debug for Iter<'t, 'g, K, V> {
+impl<K, V> Debug for Iter<'_, '_, K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Iter")
             .field("root", &self.root)
@@ -885,7 +884,7 @@ impl<'t, 'g, K, V> Debug for Iter<'t, 'g, K, V> {
     }
 }
 
-impl<'t, 'g, K, V> Iterator for Iter<'t, 'g, K, V>
+impl<'g, K, V> Iterator for Iter<'_, 'g, K, V>
 where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
@@ -925,14 +924,14 @@ where
     }
 }
 
-impl<'t, 'g, K, V> FusedIterator for Iter<'t, 'g, K, V>
+impl<K, V> FusedIterator for Iter<'_, '_, K, V>
 where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
 {
 }
 
-impl<'t, 'g, K, V> UnwindSafe for Iter<'t, 'g, K, V> {}
+impl<K, V> UnwindSafe for Iter<'_, '_, K, V> {}
 
 impl<'t, 'g, K, V, Q: ?Sized, R: RangeBounds<Q>> Range<'t, 'g, K, V, Q, R> {
     #[inline]
@@ -953,7 +952,7 @@ impl<'t, 'g, K, V, Q: ?Sized, R: RangeBounds<Q>> Range<'t, 'g, K, V, Q, R> {
     }
 }
 
-impl<'t, 'g, K, V, Q, R> Range<'t, 'g, K, V, Q, R>
+impl<'g, K, V, Q, R> Range<'_, 'g, K, V, Q, R>
 where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
@@ -1031,7 +1030,7 @@ where
     }
 }
 
-impl<'t, 'g, K, V, Q: ?Sized, R: RangeBounds<Q>> Debug for Range<'t, 'g, K, V, Q, R> {
+impl<K, V, Q: ?Sized, R: RangeBounds<Q>> Debug for Range<'_, '_, K, V, Q, R> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Range")
@@ -1043,7 +1042,7 @@ impl<'t, 'g, K, V, Q: ?Sized, R: RangeBounds<Q>> Debug for Range<'t, 'g, K, V, Q
     }
 }
 
-impl<'t, 'g, K, V, Q, R> Iterator for Range<'t, 'g, K, V, Q, R>
+impl<'g, K, V, Q, R> Iterator for Range<'_, 'g, K, V, Q, R>
 where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
@@ -1095,7 +1094,7 @@ where
     }
 }
 
-impl<'t, 'g, K, V, Q, R> FusedIterator for Range<'t, 'g, K, V, Q, R>
+impl<K, V, Q, R> FusedIterator for Range<'_, '_, K, V, Q, R>
 where
     K: 'static + Clone + Ord,
     V: 'static + Clone,
@@ -1104,7 +1103,7 @@ where
 {
 }
 
-impl<'t, 'g, K, V, Q, R> UnwindSafe for Range<'t, 'g, K, V, Q, R>
+impl<K, V, Q, R> UnwindSafe for Range<'_, '_, K, V, Q, R>
 where
     Q: ?Sized,
     R: RangeBounds<Q> + UnwindSafe,
