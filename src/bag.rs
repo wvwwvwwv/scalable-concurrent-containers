@@ -601,4 +601,4 @@ impl<T, const ARRAY_LEN: usize> Drop for Storage<T, ARRAY_LEN> {
 }
 
 unsafe impl<T: Send, const ARRAY_LEN: usize> Send for Storage<T, ARRAY_LEN> {}
-unsafe impl<T: Sync, const ARRAY_LEN: usize> Sync for Storage<T, ARRAY_LEN> {}
+unsafe impl<T: Send + Sync, const ARRAY_LEN: usize> Sync for Storage<T, ARRAY_LEN> {}

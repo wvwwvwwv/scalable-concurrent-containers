@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.2.7
+
+* Fix incorrect Sync trait bounds of `Bag` and `Hash*`.
+
 2.2.6
 
 * Fix linting errors.

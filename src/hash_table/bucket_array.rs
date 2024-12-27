@@ -275,7 +275,10 @@ impl<K, V, L: LruList, const TYPE: char> Drop for BucketArray<K, V, L, TYPE> {
 }
 
 unsafe impl<K: Send, V: Send, L: LruList, const TYPE: char> Send for BucketArray<K, V, L, TYPE> {}
-unsafe impl<K: Sync, V: Sync, L: LruList, const TYPE: char> Sync for BucketArray<K, V, L, TYPE> {}
+unsafe impl<K: Send + Sync, V: Send + Sync, L: LruList, const TYPE: char> Sync
+    for BucketArray<K, V, L, TYPE>
+{
+}
 
 #[cfg(not(feature = "loom"))]
 #[cfg(test)]
