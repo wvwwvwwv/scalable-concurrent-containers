@@ -9,11 +9,14 @@ mod hashmap_test {
     use std::collections::BTreeSet;
     use std::hash::{Hash, Hasher};
     use std::panic::UnwindSafe;
+    use std::rc::Rc;
     use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
     use std::sync::atomic::{AtomicU64, AtomicUsize};
     use std::sync::Arc;
     use tokio::sync::Barrier as AsyncBarrier;
 
+    static_assertions::assert_not_impl_all!(HashMap<Rc<String>, Rc<String>>: Send, Sync);
+    static_assertions::assert_not_impl_all!(hash_map::Entry<Rc<String>, Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(HashMap<String, String>: Send, Sync, UnwindSafe);
     static_assertions::assert_impl_all!(Reserve<String, String>: Send, Sync, UnwindSafe);
     static_assertions::assert_not_impl_all!(HashMap<String, *const String>: Send, Sync, UnwindSafe);
@@ -827,19 +830,22 @@ mod hashmap_test {
 #[cfg(test)]
 mod hashindex_test {
     use crate::ebr::Guard;
-    use crate::hash_index::Iter;
+    use crate::hash_index::{self, Iter};
     use crate::{Equivalent, HashIndex};
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
     use std::collections::BTreeSet;
     use std::hash::{Hash, Hasher};
     use std::panic::UnwindSafe;
+    use std::rc::Rc;
     use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
     use std::sync::atomic::{fence, AtomicU64, AtomicUsize};
     use std::sync::Arc;
     use std::thread;
     use tokio::sync::Barrier as AsyncBarrier;
 
+    static_assertions::assert_not_impl_all!(HashIndex<Rc<String>, Rc<String>>: Send, Sync);
+    static_assertions::assert_not_impl_all!(hash_index::Entry<Rc<String>, Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(HashIndex<String, String>: Send, Sync, UnwindSafe);
     static_assertions::assert_impl_all!(Iter<'static, 'static, String, String>: UnwindSafe);
     static_assertions::assert_not_impl_all!(HashIndex<String, *const String>: Send, Sync, UnwindSafe);
@@ -1473,7 +1479,9 @@ mod hashset_test {
     use crate::{Equivalent, HashSet};
     use std::hash::{Hash, Hasher};
     use std::panic::UnwindSafe;
+    use std::rc::Rc;
 
+    static_assertions::assert_not_impl_all!(HashSet<Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(HashSet<String>: Send, Sync, UnwindSafe);
     static_assertions::assert_not_impl_all!(HashSet<*const String>: Send, Sync, UnwindSafe);
 
@@ -1531,11 +1539,14 @@ mod hashcache_test {
     use proptest::prelude::*;
     use std::hash::{Hash, Hasher};
     use std::panic::UnwindSafe;
+    use std::rc::Rc;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
     use std::sync::Arc;
     use tokio::sync::Barrier as AsyncBarrier;
 
+    static_assertions::assert_not_impl_all!(HashCache<Rc<String>, Rc<String>>: Send, Sync);
+    static_assertions::assert_not_impl_all!(hash_cache::Entry<Rc<String>, Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(HashCache<String, String>: Send, Sync, UnwindSafe);
     static_assertions::assert_not_impl_all!(HashCache<String, *const String>: Send, Sync, UnwindSafe);
     static_assertions::assert_impl_all!(hash_cache::OccupiedEntry<String, String>: Send, Sync);
@@ -1905,6 +1916,7 @@ mod treeindex_test {
     use std::collections::BTreeSet;
     use std::ops::RangeInclusive;
     use std::panic::UnwindSafe;
+    use std::rc::Rc;
     use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
     use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::sync::{Arc, Barrier};
@@ -1912,6 +1924,7 @@ mod treeindex_test {
     use tokio::sync::Barrier as AsyncBarrier;
     use tokio::task;
 
+    static_assertions::assert_not_impl_all!(TreeIndex<Rc<String>, Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(TreeIndex<String, String>: Send, Sync, UnwindSafe);
     static_assertions::assert_impl_all!(Iter<'static, 'static, String, String>: UnwindSafe);
     static_assertions::assert_impl_all!(Range<'static, 'static, String, String, String, RangeInclusive<String>>: UnwindSafe);
@@ -2740,12 +2753,14 @@ mod bag_test {
     use crate::bag::IterMut;
     use crate::Bag;
     use std::panic::UnwindSafe;
+    use std::rc::Rc;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
     use std::sync::Arc;
     use tokio::sync::Barrier as AsyncBarrier;
     use tokio::task;
 
+    static_assertions::assert_not_impl_all!(Bag<Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(Bag<String>: Send, Sync, UnwindSafe);
     static_assertions::assert_impl_all!(IterMut<'static, String>: Send, Sync, UnwindSafe);
     static_assertions::assert_not_impl_all!(Bag<*const String>: Send, Sync, UnwindSafe);
@@ -2924,11 +2939,13 @@ mod queue_test {
     use crate::ebr::Guard;
     use crate::Queue;
     use std::panic::UnwindSafe;
+    use std::rc::Rc;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
     use std::sync::{Arc, Barrier};
     use std::thread;
 
+    static_assertions::assert_not_impl_all!(Queue<Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(Queue<String>: Send, Sync, UnwindSafe);
     static_assertions::assert_not_impl_all!(Queue<*const String>: Send, Sync, UnwindSafe);
 
@@ -3119,9 +3136,10 @@ mod queue_test {
 mod stack_test {
     use crate::ebr::Guard;
     use crate::Stack;
-    use std::{panic::UnwindSafe, sync::Arc};
+    use std::{panic::UnwindSafe, rc::Rc, sync::Arc};
     use tokio::sync::Barrier as AsyncBarrier;
 
+    static_assertions::assert_not_impl_all!(Stack<Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(Stack<String>: Send, Sync, UnwindSafe);
     static_assertions::assert_not_impl_all!(Stack<*const String>: Send, Sync, UnwindSafe);
 
