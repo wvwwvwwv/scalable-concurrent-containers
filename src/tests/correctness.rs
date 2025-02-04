@@ -12,7 +12,7 @@ mod hashmap_test {
     use std::rc::Rc;
     use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
     use std::sync::atomic::{AtomicU64, AtomicUsize};
-    use std::sync::{Arc, Barrier};
+    use std::sync::Arc;
     use tokio::sync::Barrier as AsyncBarrier;
 
     static_assertions::assert_not_impl_all!(HashMap<Rc<String>, Rc<String>>: Send, Sync);
