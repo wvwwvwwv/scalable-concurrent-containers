@@ -1145,6 +1145,17 @@ where
         }
     }
 
+    // Returns an estimated required size of the container based on the size hint.
+    fn capacity_from_size_hint(size_hint: (usize, Option<usize>)) -> usize {
+        // A resize can be triggered when the load factor reaches ~80%.
+        (size_hint
+            .1
+            .unwrap_or(size_hint.0)
+            .min(1_usize << (usize::BITS - 2))
+            / 4)
+            * 5
+    }
+
     /// Returns a reference to the specified [`Guard`] whose lifetime matches that of `self`.
     fn prolonged_guard_ref<'h>(&'h self, guard: &Guard) -> &'h Guard {
         let _: &Self = self;

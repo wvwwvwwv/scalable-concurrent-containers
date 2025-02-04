@@ -154,6 +154,20 @@ mod hashmap_test {
         }
     }
 
+    #[test]
+    fn from_iter() {
+        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+
+        let workload_size = 256;
+        let hashmap = (0..workload_size)
+            .into_iter()
+            .map(|k| (k / 2, R::new(&INST_CNT)))
+            .collect::<HashMap<usize, R>>();
+        assert_eq!(hashmap.len(), workload_size / 2);
+        hashmap.clear();
+        assert_eq!(INST_CNT.load(Relaxed), 0);
+    }
+
     #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn clear_async() {

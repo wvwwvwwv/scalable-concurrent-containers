@@ -46,7 +46,7 @@ where
         let hashmap =
             HashMap::with_capacity_and_hasher(access.size_hint().unwrap_or(0), H::default());
         while let Some((key, val)) = access.next_entry()? {
-            let _result = hashmap.insert(key, val);
+            hashmap.upsert(key, val);
         }
         Ok(hashmap)
     }

@@ -4,7 +4,8 @@
 
 2.3.1
 
-* Fix documentation.
+* Fix `HashCache` documentation: [#175](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/175).
+* Implement `FromIterator` for collection types: [#173](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/173).
 
 2.3.0
 

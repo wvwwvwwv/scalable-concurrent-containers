@@ -1572,6 +1572,25 @@ where
     }
 }
 
+impl<K, V, H> FromIterator<(K, V)> for HashMap<K, V, H>
+where
+    K: Eq + Hash,
+    H: BuildHasher + Default,
+{
+    #[inline]
+    fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
+        let into_iter = iter.into_iter();
+        let hashmap = Self::with_capacity_and_hasher(
+            Self::capacity_from_size_hint(into_iter.size_hint()),
+            H::default(),
+        );
+        into_iter.for_each(|e| {
+            hashmap.upsert(e.0, e.1);
+        });
+        hashmap
+    }
+}
+
 impl<K, V, H> HashTable<K, V, H, (), SEQUENTIAL> for HashMap<K, V, H>
 where
     K: Eq + Hash,
