@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.3.1
+
+* Fix documentation.
+
 2.3.0
 
 * Fix incorrect Sync trait bounds of `Bag` and `Hash*`.

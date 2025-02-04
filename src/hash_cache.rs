@@ -1109,8 +1109,9 @@ where
 
     /// Creates an empty [`HashCache`] with the specified capacity.
     ///
-    /// The supplied minimum and maximum capacity values are adjusted to any suitable
-    /// `power-of-two` values that are close to them.
+    /// The supplied minimum and maximum capacity values are adjusted to power-of-two values equal
+    /// to or larger than them, while the adjusted values cannot be in a range of (0, 64), and the
+    /// maximum capacity cannot be 0.
     ///
     /// # Examples
     ///
@@ -1121,6 +1122,10 @@ where
     ///
     /// let result = hashcache.capacity();
     /// assert_eq!(result, 1024);
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::with_capacity(0, 0);
+    /// let result = hashcache.capacity_range();
+    /// assert_eq!(result, 0..=64);
     /// ```
     #[inline]
     #[must_use]
