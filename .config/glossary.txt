@@ -23,6 +23,7 @@ latencies
 linearizable
 Linearizable
 Linearizability
+linearizability
 LinkedList
 LRU
 M1

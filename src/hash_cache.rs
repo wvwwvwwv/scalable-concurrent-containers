@@ -1110,8 +1110,8 @@ where
     /// Creates an empty [`HashCache`] with the specified capacity.
     ///
     /// The supplied minimum and maximum capacity values are adjusted to power-of-two values equal
-    /// to or larger than them, while the adjusted values cannot be in a range of (0, 64), and the
-    /// maximum capacity cannot be 0.
+    /// to or larger than the provided values and `64` with one exception; if `0` is specified as
+    /// the minimum capacity, the minimum capacity of the `HashCache` becomes `0`.
     ///
     /// # Examples
     ///

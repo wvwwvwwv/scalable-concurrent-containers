@@ -393,47 +393,6 @@ mod hashmap_test {
     }
 
     #[cfg_attr(miri, ignore)]
-    #[test]
-    fn insert_read() {
-        for i in 0..65536 {
-            let hashmap: Arc<HashMap<[u8; 32], usize>> = Arc::new(HashMap::default());
-            let num_tasks = 16;
-            let workload_size = 65536;
-            let mut task_handles = Vec::with_capacity(num_tasks);
-            let barrier = Arc::new(Barrier::new(num_tasks));
-            for task_id in 0..num_tasks {
-                let barrier_clone = barrier.clone();
-                let hashmap_clone = hashmap.clone();
-                task_handles.push(std::thread::spawn(move || {
-                    barrier_clone.wait();
-                    let range = (task_id * workload_size)..((task_id + 1) * workload_size);
-                    let mut key = [0_u8; 32];
-                    for id in range.clone() {
-                        for i in 0..8 {
-                            key[i] = (id >> (i * 8)) as u8;
-                        }
-                        let e = hashmap_clone.entry(key.clone()).insert_entry(id);
-                        assert_eq!(e.get(), &id);
-                        drop(e);
-                        assert!(hashmap_clone.read(&key, |_, _| ()).is_some());
-                    }
-                    for id in range {
-                        for i in 0..8 {
-                            key[i] = (id >> (i * 8)) as u8;
-                        }
-                        assert!(hashmap_clone.read(&key, |_, _| ()).is_some());
-                    }
-                }));
-            }
-            println!("OK {i}");
-
-            for r in task_handles {
-                assert!(r.join().is_ok());
-            }
-        }
-    }
-
-    #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn entry_next_retain() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
