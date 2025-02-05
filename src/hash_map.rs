@@ -870,14 +870,9 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        self.read_entry(key, self.hash(key), &mut (), &Guard::new())
+        self.read_entry(key, self.hash(key), reader, &mut (), &Guard::new())
             .ok()
             .flatten()
-            .map(|(r, (k, v))| {
-                let result = reader(k, v);
-                drop(r);
-                result
-            })
     }
 
     /// Reads a key-value pair.
@@ -895,7 +890,11 @@ where
     /// let future_read = hashmap.read_async(&11, |_, v| *v);
     /// ```
     #[inline]
-    pub async fn read_async<Q, R, F: FnOnce(&K, &V) -> R>(&self, key: &Q, reader: F) -> Option<R>
+    pub async fn read_async<Q, R, F: FnOnce(&K, &V) -> R>(
+        &self,
+        key: &Q,
+        mut reader: F,
+    ) -> Option<R>
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
@@ -903,13 +902,11 @@ where
         loop {
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if let Ok(result) = self.read_entry(key, hash, &mut async_wait_pinned, &Guard::new()) {
-                return result.map(|(r, (k, v))| {
-                    let result = reader(k, v);
-                    drop(r);
-                    result
-                });
+            match self.read_entry(key, hash, reader, &mut async_wait_pinned, &Guard::new()) {
+                Ok(result) => return result,
+                Err(f) => reader = f,
             }
+
             async_wait_pinned.await;
         }
     }

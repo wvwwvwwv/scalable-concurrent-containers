@@ -753,10 +753,7 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        self.read_entry(key, self.hash(key), &mut (), guard)
-            .ok()
-            .flatten()
-            .map(|(_, (_, v))| v)
+        self.peek_entry(key, self.hash(key), guard).map(|(_, v)| v)
     }
 
     /// Peeks a key-value pair without acquiring locks.
@@ -780,10 +777,8 @@ where
         Q: Equivalent<K> + Hash + ?Sized,
     {
         let guard = Guard::new();
-        self.read_entry(key, self.hash(key), &mut (), &guard)
-            .ok()
-            .flatten()
-            .map(|(_, (k, v))| reader(k, v))
+        self.peek_entry(key, self.hash(key), &guard)
+            .map(|(k, v)| reader(k, v))
     }
 
     /// Returns `true` if the [`HashIndex`] contains a value for the specified key.

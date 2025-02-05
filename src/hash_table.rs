@@ -281,16 +281,63 @@ where
         None
     }
 
-    /// Reads an entry from the [`HashTable`].
-    #[allow(clippy::type_complexity)]
+    /// Peeks an entry from the [`HashTable`].
     #[inline]
-    fn read_entry<'g, Q, D>(
+    fn peek_entry<'g, Q>(&self, key: &Q, hash: u64, guard: &'g Guard) -> Option<&'g (K, V)>
+    where
+        Q: Equivalent<K> + Hash + ?Sized,
+    {
+        debug_assert_eq!(TYPE, OPTIMISTIC);
+        let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
+        while let Some(current_array) = current_array_ptr.as_ref() {
+            if let Some(old_array) = current_array.old_array(guard).as_ref() {
+                if self.incremental_rehash::<Q, (), true>(current_array, &mut (), guard) != Ok(true)
+                {
+                    let index = old_array.calculate_bucket_index(hash);
+                    if let Some(entry) = old_array.bucket(index).search_entry(
+                        old_array.data_block(index),
+                        key,
+                        BucketArray::<K, V, L, TYPE>::partial_hash(hash),
+                        guard,
+                    ) {
+                        return Some(entry);
+                    }
+                }
+            };
+
+            let index = current_array.calculate_bucket_index(hash);
+            let bucket = current_array.bucket(index);
+            if let Some(entry) = bucket.search_entry(
+                current_array.data_block(index),
+                key,
+                BucketArray::<K, V, L, TYPE>::partial_hash(hash),
+                guard,
+            ) {
+                return Some(entry);
+            }
+
+            let new_current_array_ptr = self.bucket_array().load(Acquire, guard);
+            if current_array_ptr == new_current_array_ptr {
+                break;
+            }
+
+            // A new array has been allocated.
+            current_array_ptr = new_current_array_ptr;
+        }
+
+        None
+    }
+
+    /// Reads an entry from the [`HashTable`].
+    #[inline]
+    fn read_entry<'g, Q, D, R, F: FnOnce(&K, &V) -> R>(
         &self,
         key: &Q,
         hash: u64,
+        f: F,
         async_wait: &mut D,
         guard: &'g Guard,
-    ) -> Result<Option<(Option<Reader<'g, K, V, L, TYPE>>, &'g (K, V))>, ()>
+    ) -> Result<Option<R>, F>
     where
         Q: Equivalent<K> + Hash + ?Sized,
         D: DeriveAsyncWait,
@@ -298,51 +345,32 @@ where
         let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
         while let Some(current_array) = current_array_ptr.as_ref() {
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                if TYPE == OPTIMISTIC {
-                    if self.incremental_rehash::<Q, D, true>(current_array, async_wait, guard)
-                        != Ok(true)
-                    {
-                        let index = old_array.calculate_bucket_index(hash);
-                        if let Some(entry) = old_array.bucket(index).search_entry(
-                            old_array.data_block(index),
-                            key,
-                            BucketArray::<K, V, L, TYPE>::partial_hash(hash),
-                            guard,
-                        ) {
-                            return Ok(Some((None, entry)));
-                        }
-                    }
-                } else {
-                    self.move_entry::<Q, D>(current_array, old_array, hash, async_wait, guard)?;
+                if self
+                    .move_entry::<Q, D>(current_array, old_array, hash, async_wait, guard)
+                    .is_err()
+                {
+                    return Err(f);
                 }
             };
 
             let index = current_array.calculate_bucket_index(hash);
             let bucket = current_array.bucket(index);
-            if TYPE == OPTIMISTIC {
-                if let Some(entry) = bucket.search_entry(
+            let lock_result = if let Some(async_wait) = async_wait.derive() {
+                match Reader::try_lock_or_wait(bucket, async_wait, guard) {
+                    Ok(result) => result,
+                    Err(_) => return Err(f),
+                }
+            } else {
+                Reader::lock(bucket, guard)
+            };
+            if let Some(reader) = lock_result {
+                if let Some(entry) = reader.search_entry(
                     current_array.data_block(index),
                     key,
                     BucketArray::<K, V, L, TYPE>::partial_hash(hash),
                     guard,
                 ) {
-                    return Ok(Some((None, entry)));
-                }
-            } else {
-                let lock_result = if let Some(async_wait) = async_wait.derive() {
-                    Reader::try_lock_or_wait(bucket, async_wait, guard)?
-                } else {
-                    Reader::lock(bucket, guard)
-                };
-                if let Some(reader) = lock_result {
-                    if let Some(entry) = reader.search_entry(
-                        current_array.data_block(index),
-                        key,
-                        BucketArray::<K, V, L, TYPE>::partial_hash(hash),
-                        guard,
-                    ) {
-                        return Ok(Some((Some(reader), entry)));
-                    }
+                    return Ok(Some(f(&entry.0, &entry.1)));
                 }
             }
 

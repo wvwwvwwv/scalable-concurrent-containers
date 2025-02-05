@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.3.2
+
+* Minor performance optimization for `HashIndex`.
+
 2.3.1
 
 * Fix a problem with `HashCache::read` and `HashMap::read` where the read lock is dropped too early: [#176](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/176).
