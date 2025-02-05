@@ -28,10 +28,10 @@ loom = ["dep:loom", "sdd/loom"]
 criterion = "0.5"
 futures = "0.3"
 proptest = "1.6"
-rand = "0.8"
+rand = "0.9"
 serde_test = "1.0"
 static_assertions = "1.1"
-tokio = { version = "1.42", features = ["full"] }
+tokio = { version = "1.43", features = ["full"] }
 
 [[bench]]
 name = "bag"
