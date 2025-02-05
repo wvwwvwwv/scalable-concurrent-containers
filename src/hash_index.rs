@@ -756,7 +756,7 @@ where
         self.read_entry(key, self.hash(key), &mut (), guard)
             .ok()
             .flatten()
-            .map(|(_, v)| v)
+            .map(|(_, v, _)| v)
     }
 
     /// Peeks a key-value pair without acquiring locks.
@@ -783,7 +783,7 @@ where
         self.read_entry(key, self.hash(key), &mut (), &guard)
             .ok()
             .flatten()
-            .map(|(k, v)| reader(k, v))
+            .map(|(k, v, _)| reader(k, v))
     }
 
     /// Returns `true` if the [`HashIndex`] contains a value for the specified key.

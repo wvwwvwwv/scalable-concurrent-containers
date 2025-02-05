@@ -12,7 +12,9 @@ mod hashmap_test {
     use std::rc::Rc;
     use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
     use std::sync::atomic::{AtomicU64, AtomicUsize};
-    use std::sync::Arc;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+    use std::time::Duration;
     use tokio::sync::Barrier as AsyncBarrier;
 
     static_assertions::assert_not_impl_all!(HashMap<Rc<String>, Rc<String>>: Send, Sync);
@@ -152,6 +154,35 @@ mod hashmap_test {
             hashmap.clear();
             assert_eq!(INST_CNT.load(Relaxed), 0);
         }
+    }
+
+    #[test]
+    fn read_remove() {
+        let hashmap = Arc::new(HashMap::<String, Vec<u8>>::new());
+        let barrier = Arc::new(Barrier::new(2));
+
+        hashmap.insert("first".into(), vec![123]).unwrap();
+
+        let hashmap_clone = hashmap.clone();
+        let barrier_clone = barrier.clone();
+        let task = thread::spawn(move || {
+            hashmap_clone.read("first".into(), |_key, value| {
+                {
+                    let first_item = value.get(0);
+                    assert_eq!(first_item.unwrap(), &123_u8);
+                }
+                barrier_clone.wait();
+                thread::sleep(Duration::from_millis(100));
+                {
+                    let first_item = value.get(0);
+                    assert_eq!(first_item.unwrap(), &123_u8);
+                }
+            });
+        });
+
+        barrier.wait();
+        assert!(hashmap.remove("first".into()).is_some());
+        assert!(task.join().is_ok());
     }
 
     #[test]

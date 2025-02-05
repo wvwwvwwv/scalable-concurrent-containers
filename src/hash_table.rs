@@ -289,7 +289,7 @@ where
         hash: u64,
         async_wait: &mut D,
         guard: &'g Guard,
-    ) -> Result<Option<(&'g K, &'g V)>, ()>
+    ) -> Result<Option<(&'g K, &'g V, Option<Reader<'g, K, V, L, TYPE>>)>, ()>
     where
         Q: Equivalent<K> + Hash + ?Sized,
         D: DeriveAsyncWait,
@@ -308,7 +308,7 @@ where
                             BucketArray::<K, V, L, TYPE>::partial_hash(hash),
                             guard,
                         ) {
-                            return Ok(Some((k, v)));
+                            return Ok(Some((k, v, None)));
                         }
                     }
                 } else {
@@ -325,7 +325,7 @@ where
                     BucketArray::<K, V, L, TYPE>::partial_hash(hash),
                     guard,
                 ) {
-                    return Ok(Some((&entry.0, &entry.1)));
+                    return Ok(Some((&entry.0, &entry.1, None)));
                 }
             } else {
                 let lock_result = if let Some(async_wait) = async_wait.derive() {
@@ -340,7 +340,7 @@ where
                         BucketArray::<K, V, L, TYPE>::partial_hash(hash),
                         guard,
                     ) {
-                        return Ok(Some((key, val)));
+                        return Ok(Some((key, val, Some(reader))));
                     }
                 }
             }
