@@ -552,7 +552,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     /// Returns `None` if the key is not present.
     #[inline]
     pub(super) fn search_entry<'g, Q>(
-        &'g self,
+        &self,
         data_block: &'g DataBlock<K, V, BUCKET_LEN>,
         key: &Q,
         partial_hash: u8,
@@ -565,18 +565,18 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             return None;
         }
 
-        if let Some((_, entry_ref)) =
+        if let Some((entry, _)) =
             Self::search_data_block(&self.metadata, data_block, key, partial_hash)
         {
-            return Some(entry_ref);
+            return Some(entry);
         }
 
         let mut link_ptr = self.metadata.link.load(Acquire, guard);
         while let Some(link) = link_ptr.as_ref() {
-            if let Some((_, entry_ref)) =
+            if let Some((entry, _)) =
                 Self::search_data_block(&link.metadata, &link.data_block, key, partial_hash)
             {
-                return Some(entry_ref);
+                return Some(entry);
             }
             link_ptr = link.metadata.link.load(Acquire, guard);
         }
@@ -602,7 +602,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             return EntryPtr::new(guard);
         }
 
-        if let Some((index, _)) =
+        if let Some((_, index)) =
             Self::search_data_block(&self.metadata, data_block, key, partial_hash)
         {
             return EntryPtr {
@@ -613,7 +613,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
 
         let mut current_link_ptr = self.metadata.link.load(Acquire, guard);
         while let Some(link) = current_link_ptr.as_ref() {
-            if let Some((index, _)) =
+            if let Some((_, index)) =
                 Self::search_data_block(&link.metadata, &link.data_block, key, partial_hash)
             {
                 return EntryPtr {
@@ -628,12 +628,14 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     }
 
     /// Searches the supplied data block for an entry matching the key.
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
     fn search_data_block<'g, Q, const LEN: usize>(
-        metadata: &'g Metadata<K, V, LEN>,
+        metadata: &Metadata<K, V, LEN>,
         data_block: &'g DataBlock<K, V, LEN>,
         key: &Q,
         partial_hash: u8,
-    ) -> Option<(usize, &'g (K, V))>
+    ) -> Option<(&'g (K, V), usize)>
     where
         Q: Equivalent<K> + ?Sized,
     {
@@ -657,9 +659,9 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
 
         let mut offset = bitmap.trailing_zeros();
         while offset != u32::BITS {
-            let entry_ref = unsafe { &(*data_block[offset as usize].as_ptr()) };
-            if key.equivalent(&entry_ref.0) {
-                return Some((offset as usize, entry_ref));
+            let entry = unsafe { &(*data_block[offset as usize].as_ptr()) };
+            if key.equivalent(&entry.0) {
+                return Some((entry, offset as usize));
             }
             bitmap -= 1_u32 << offset;
             offset = bitmap.trailing_zeros();
