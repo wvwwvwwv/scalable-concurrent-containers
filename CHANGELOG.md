@@ -2,7 +2,7 @@
 
 ## Version 2
 
-2.3.2
+2.3.3
 
 * Minor performance optimization for `HashIndex`.
 
