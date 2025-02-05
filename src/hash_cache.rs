@@ -472,7 +472,7 @@ where
         self.read_entry(key, self.hash(key), &mut (), &Guard::new())
             .ok()
             .flatten()
-            .map(|(k, v, r)| {
+            .map(|(r, (k, v))| {
                 let result = reader(k, v);
                 drop(r);
                 result
@@ -503,7 +503,7 @@ where
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             if let Ok(result) = self.read_entry(key, hash, &mut async_wait_pinned, &Guard::new()) {
-                return result.map(|(k, v, r)| {
+                return result.map(|(r, (k, v))| {
                     let result = reader(k, v);
                     drop(r);
                     result
@@ -1202,6 +1202,27 @@ where
                 // remain outside the lifetime of the `HashCache`.
                 a.drop_in_place()
             });
+    }
+}
+
+impl<K, V, H> FromIterator<(K, V)> for HashCache<K, V, H>
+where
+    K: Eq + Hash,
+    H: BuildHasher + Default,
+{
+    #[inline]
+    fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
+        let into_iter = iter.into_iter();
+        let size_hint = into_iter.size_hint();
+        let hashcache = Self::with_capacity_and_hasher(
+            size_hint.0,
+            Self::capacity_from_size_hint(size_hint),
+            H::default(),
+        );
+        into_iter.for_each(|e| {
+            let _result = hashcache.put(e.0, e.1);
+        });
+        hashcache
     }
 }
 

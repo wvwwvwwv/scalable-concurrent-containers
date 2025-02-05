@@ -1,5 +1,6 @@
 //! [`HashSet`] is a concurrent and asynchronous hash set.
 
+use super::hash_table::HashTable;
 use super::{Equivalent, HashMap};
 use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};
@@ -733,6 +734,25 @@ where
         Self {
             map: HashMap::default(),
         }
+    }
+}
+
+impl<K, H> FromIterator<K> for HashSet<K, H>
+where
+    K: Eq + Hash,
+    H: BuildHasher + Default,
+{
+    #[inline]
+    fn from_iter<T: IntoIterator<Item = K>>(iter: T) -> Self {
+        let into_iter = iter.into_iter();
+        let hashset = Self::with_capacity_and_hasher(
+            HashMap::<K, (), H>::capacity_from_size_hint(into_iter.size_hint()),
+            H::default(),
+        );
+        into_iter.for_each(|k| {
+            let _result = hashset.insert(k);
+        });
+        hashset
     }
 }
 

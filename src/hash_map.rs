@@ -873,7 +873,7 @@ where
         self.read_entry(key, self.hash(key), &mut (), &Guard::new())
             .ok()
             .flatten()
-            .map(|(k, v, r)| {
+            .map(|(r, (k, v))| {
                 let result = reader(k, v);
                 drop(r);
                 result
@@ -904,7 +904,7 @@ where
             let mut async_wait = AsyncWait::default();
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             if let Ok(result) = self.read_entry(key, hash, &mut async_wait_pinned, &Guard::new()) {
-                return result.map(|(k, v, r)| {
+                return result.map(|(r, (k, v))| {
                     let result = reader(k, v);
                     drop(r);
                     result

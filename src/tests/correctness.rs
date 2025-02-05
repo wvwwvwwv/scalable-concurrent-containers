@@ -172,7 +172,7 @@ mod hashmap_test {
                     assert_eq!(first_item.unwrap(), &123_u8);
                 }
                 barrier_clone.wait();
-                thread::sleep(Duration::from_millis(100));
+                thread::sleep(Duration::from_millis(16));
                 {
                     let first_item = value.get(0);
                     assert_eq!(first_item.unwrap(), &123_u8);
@@ -1008,6 +1008,24 @@ mod hashindex_test {
     }
 
     #[test]
+    fn from_iter() {
+        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+
+        let workload_size = 256;
+        let hashindex = (0..workload_size)
+            .into_iter()
+            .map(|k| (k / 2, R::new(&INST_CNT)))
+            .collect::<HashIndex<usize, R>>();
+        assert_eq!(hashindex.len(), workload_size / 2);
+        drop(hashindex);
+
+        while INST_CNT.load(Relaxed) != 0 {
+            Guard::new().accelerate();
+            thread::yield_now();
+        }
+    }
+
+    #[test]
     fn clone() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         let hashindex: HashIndex<usize, R> = HashIndex::default();
@@ -1551,6 +1569,16 @@ mod hashset_test {
         assert!(hashset.insert(EqTest("HELLO".to_owned(), 1)).is_ok());
         assert!(!hashset.contains("NO"));
         assert!(hashset.contains("HELLO"));
+    }
+
+    #[test]
+    fn from_iter() {
+        let workload_size = 256;
+        let hashset = (0..workload_size)
+            .into_iter()
+            .map(|k| k / 2)
+            .collect::<HashSet<usize>>();
+        assert_eq!(hashset.len(), workload_size / 2);
     }
 
     #[test]

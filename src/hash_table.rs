@@ -282,6 +282,7 @@ where
     }
 
     /// Reads an entry from the [`HashTable`].
+    #[allow(clippy::type_complexity)]
     #[inline]
     fn read_entry<'g, Q, D>(
         &self,
@@ -289,7 +290,7 @@ where
         hash: u64,
         async_wait: &mut D,
         guard: &'g Guard,
-    ) -> Result<Option<(&'g K, &'g V, Option<Reader<'g, K, V, L, TYPE>>)>, ()>
+    ) -> Result<Option<(Option<Reader<'g, K, V, L, TYPE>>, &'g (K, V))>, ()>
     where
         Q: Equivalent<K> + Hash + ?Sized,
         D: DeriveAsyncWait,
@@ -302,13 +303,13 @@ where
                         != Ok(true)
                     {
                         let index = old_array.calculate_bucket_index(hash);
-                        if let Some((k, v)) = old_array.bucket(index).search_entry(
+                        if let Some(entry) = old_array.bucket(index).search_entry(
                             old_array.data_block(index),
                             key,
                             BucketArray::<K, V, L, TYPE>::partial_hash(hash),
                             guard,
                         ) {
-                            return Ok(Some((k, v, None)));
+                            return Ok(Some((None, entry)));
                         }
                     }
                 } else {
@@ -325,7 +326,7 @@ where
                     BucketArray::<K, V, L, TYPE>::partial_hash(hash),
                     guard,
                 ) {
-                    return Ok(Some((&entry.0, &entry.1, None)));
+                    return Ok(Some((None, entry)));
                 }
             } else {
                 let lock_result = if let Some(async_wait) = async_wait.derive() {
@@ -334,13 +335,13 @@ where
                     Reader::lock(bucket, guard)
                 };
                 if let Some(reader) = lock_result {
-                    if let Some((key, val)) = reader.search_entry(
+                    if let Some(entry) = reader.search_entry(
                         current_array.data_block(index),
                         key,
                         BucketArray::<K, V, L, TYPE>::partial_hash(hash),
                         guard,
                     ) {
-                        return Ok(Some((key, val, Some(reader))));
+                        return Ok(Some((Some(reader), entry)));
                     }
                 }
             }
