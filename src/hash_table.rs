@@ -330,13 +330,13 @@ where
 
     /// Reads an entry from the [`HashTable`].
     #[inline]
-    fn read_entry<'g, Q, D, R, F: FnOnce(&K, &V) -> R>(
+    fn read_entry<Q, D, R, F: FnOnce(&K, &V) -> R>(
         &self,
         key: &Q,
         hash: u64,
         f: F,
         async_wait: &mut D,
-        guard: &'g Guard,
+        guard: &Guard,
     ) -> Result<Option<R>, F>
     where
         Q: Equivalent<K> + Hash + ?Sized,
@@ -358,7 +358,7 @@ where
             let lock_result = if let Some(async_wait) = async_wait.derive() {
                 match Reader::try_lock_or_wait(bucket, async_wait, guard) {
                     Ok(result) => result,
-                    Err(_) => return Err(f),
+                    Err(()) => return Err(f),
                 }
             } else {
                 Reader::lock(bucket, guard)
