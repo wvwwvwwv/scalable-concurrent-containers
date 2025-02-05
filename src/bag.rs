@@ -288,6 +288,18 @@ impl<T, const ARRAY_LEN: usize> Drop for Bag<T, ARRAY_LEN> {
     }
 }
 
+impl<T, const ARRAY_LEN: usize> FromIterator<T> for Bag<T, ARRAY_LEN> {
+    #[inline]
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        let into_iter = iter.into_iter();
+        let bag = Self::new();
+        into_iter.for_each(|v| {
+            bag.push(v);
+        });
+        bag
+    }
+}
+
 impl<T, const ARRAY_LEN: usize> IntoIterator for Bag<T, ARRAY_LEN> {
     type Item = T;
     type IntoIter = IntoIter<T, ARRAY_LEN>;

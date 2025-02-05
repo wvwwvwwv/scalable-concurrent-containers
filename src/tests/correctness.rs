@@ -156,6 +156,7 @@ mod hashmap_test {
         }
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn read_remove() {
         let hashmap = Arc::new(HashMap::<String, Vec<u8>>::new());
@@ -2882,6 +2883,20 @@ mod bag_test {
     }
 
     #[test]
+    fn from_iter() {
+        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+
+        let workload_size = 16;
+        let bag = (0..workload_size)
+            .into_iter()
+            .map(|_| R::new(&INST_CNT))
+            .collect::<Bag<R>>();
+        assert_eq!(bag.len(), workload_size);
+        drop(bag);
+        assert_eq!(INST_CNT.load(Relaxed), 0);
+    }
+
+    #[test]
     fn into_iter() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         for workload_size in [2, 18, 32, 40, 120] {
@@ -3053,6 +3068,24 @@ mod queue_test {
         assert_eq!(queue_clone.pop().map(|e| **e), Some(3));
         assert_eq!(queue_clone.pop().map(|e| **e), Some(1));
         assert!(queue_clone.pop().is_none());
+    }
+
+    #[test]
+    fn from_iter() {
+        static INST_CNT: AtomicUsize = AtomicUsize::new(0);
+
+        let workload_size = 16;
+        let queue = (0..workload_size)
+            .into_iter()
+            .map(|i| R::new(&INST_CNT, i, i))
+            .collect::<Queue<R>>();
+        assert_eq!(queue.len(), workload_size);
+        drop(queue);
+
+        while INST_CNT.load(Relaxed) != 0 {
+            Guard::new().accelerate();
+            thread::yield_now();
+        }
     }
 
     #[test]
@@ -3242,6 +3275,16 @@ mod stack_test {
         assert_eq!(stack_clone.pop().map(|e| **e), Some(3));
         assert_eq!(stack_clone.pop().map(|e| **e), Some(37));
         assert!(stack_clone.pop().is_none());
+    }
+
+    #[test]
+    fn from_iter() {
+        let workload_size = 16;
+        let stack = (0..workload_size).into_iter().collect::<Stack<usize>>();
+        assert_eq!(stack.len(), workload_size);
+        for i in (0..workload_size).rev() {
+            assert_eq!(stack.pop().map(|e| **e), Some(i));
+        }
     }
 
     #[cfg_attr(miri, ignore)]

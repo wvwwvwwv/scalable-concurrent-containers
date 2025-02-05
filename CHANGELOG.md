@@ -6,7 +6,7 @@
 
 * Fix a problem with `HashCache::read` and `HashMap::read` where the read lock is dropped too early: [#176](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/176).
 * Fix `HashCache` documentation: [#175](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/175).
-* Implement `FromIterator` for `Hash*` types: [#173](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/173).
+* Implement `FromIterator` for all collection types: [#173](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/173).
 
 2.3.0
 
