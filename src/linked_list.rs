@@ -348,7 +348,6 @@ pub trait LinkedList: Sized {
                 .as_ref()
                 .map_or_else(Ptr::null, |n| n.next_ptr(Acquire, guard));
             next_entry = next_ptr.get_shared();
-            continue;
         }
         next_entry
     }

@@ -256,7 +256,7 @@ impl Drop for AsyncWait {
     fn drop(&mut self) {
         if self.mutex.is_some() {
             self.pull();
-        };
+        }
     }
 }
 

@@ -450,7 +450,7 @@ where
                             }
                         }
                     }
-                };
+                }
             }
             mutable_metadata >>= DIMENSION.num_bits_per_entry;
         }
@@ -623,7 +623,7 @@ where
                 high_key_leaf
                     .get_or_insert_with(|| Shared::new(Leaf::new()))
                     .insert_unchecked(k.clone(), v.clone(), i - boundary);
-            };
+            }
         }
     }
 

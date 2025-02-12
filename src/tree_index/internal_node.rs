@@ -820,7 +820,7 @@ where
                                         .swap((v.get_shared(Relaxed, guard), Tag::None), Relaxed);
                                 }
                             }
-                        };
+                        }
                     } else {
                         break;
                     }
@@ -871,7 +871,7 @@ where
                     .high_key_node
                     .swap((Some(leaf_nodes.1), Tag::None), Relaxed);
             }
-        };
+        }
 
         // Inserts the newly allocated internal nodes into the main array.
         match self.children.insert(
@@ -894,7 +894,7 @@ where
                 *exit_guard = false;
                 return Ok(InsertResult::Full(key, val));
             }
-        };
+        }
         *exit_guard = false;
 
         // Replace the full node with the high-key node.

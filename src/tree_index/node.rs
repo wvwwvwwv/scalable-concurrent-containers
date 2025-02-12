@@ -234,7 +234,7 @@ where
                     }
                     if let Some(old_root) = old_root {
                         old_root.commit(guard);
-                    };
+                    }
                 }
                 Err((new_root, old_root_ptr)) => {
                     // The root has been cleared.
@@ -293,7 +293,7 @@ where
                         leaf_node.wait(async_wait);
                     }
                 }
-            };
+            }
 
             if internal_node_locker.is_none() && leaf_node_locker.is_none() {
                 // The root node is locked by another thread.

@@ -303,7 +303,7 @@ where
                         return Some(entry);
                     }
                 }
-            };
+            }
 
             let index = current_array.calculate_bucket_index(hash);
             let bucket = current_array.bucket(index);
@@ -351,7 +351,7 @@ where
                 {
                     return Err(f);
                 }
-            };
+            }
 
             let index = current_array.calculate_bucket_index(hash);
             let bucket = current_array.bucket(index);
@@ -405,7 +405,7 @@ where
         while let Some(current_array) = current_array_ptr.as_ref() {
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
                 self.move_entry::<Q, D>(current_array, old_array, hash, async_wait, guard)?;
-            };
+            }
 
             let index = current_array.calculate_bucket_index(hash);
             let bucket = current_array.bucket_mut(index);
