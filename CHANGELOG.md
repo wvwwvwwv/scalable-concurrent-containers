@@ -8,6 +8,7 @@
 
 2.3.1
 
+* **Yanked `[2.0.0, 2.3.0]` due to a read-after-use problem: [#176](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/176).**
 * Fix a problem with `HashCache::read` and `HashMap::read` where the read lock is dropped too early: [#176](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/176).
 * Fix `HashCache` documentation: [#175](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/175).
 * Implement `FromIterator` for all collection types: [#173](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/173).
