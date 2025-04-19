@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.3.4
+
+* Limit the maximum initial capacity of serialized containers to `1 << 24`.
+
 2.3.3
 
 * Minor performance optimization for `HashIndex`.

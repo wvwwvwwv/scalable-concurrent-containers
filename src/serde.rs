@@ -15,6 +15,9 @@ pub struct HashMapVisitor<K: Eq + Hash, V, H: BuildHasher> {
     marker: PhantomData<fn() -> HashMap<K, V, H>>,
 }
 
+/// The maximum initial capacity for containers.
+const MAX_CAPACITY: usize = 1 << 24;
+
 impl<K, V, H> HashMapVisitor<K, V, H>
 where
     K: Eq + Hash,
@@ -43,8 +46,10 @@ where
     where
         M: MapAccess<'d>,
     {
-        let hashmap =
-            HashMap::with_capacity_and_hasher(access.size_hint().unwrap_or(0), H::default());
+        let hashmap = HashMap::with_capacity_and_hasher(
+            access.size_hint().unwrap_or(0).max(MAX_CAPACITY),
+            H::default(),
+        );
         while let Some((key, val)) = access.next_entry()? {
             hashmap.upsert(key, val);
         }
@@ -125,8 +130,10 @@ where
     where
         M: SeqAccess<'d>,
     {
-        let hashset =
-            HashSet::with_capacity_and_hasher(access.size_hint().unwrap_or(0), H::default());
+        let hashset = HashSet::with_capacity_and_hasher(
+            access.size_hint().unwrap_or(0).max(MAX_CAPACITY),
+            H::default(),
+        );
         while let Some(key) = access.next_element()? {
             let _result = hashset.insert(key);
         }
@@ -207,8 +214,10 @@ where
     where
         M: MapAccess<'d>,
     {
-        let hashindex =
-            HashIndex::with_capacity_and_hasher(access.size_hint().unwrap_or(0), H::default());
+        let hashindex = HashIndex::with_capacity_and_hasher(
+            access.size_hint().unwrap_or(0).max(MAX_CAPACITY),
+            H::default(),
+        );
         while let Some((key, val)) = access.next_entry()? {
             let _result = hashindex.insert(key, val);
         }
@@ -291,7 +300,7 @@ where
     where
         M: MapAccess<'d>,
     {
-        let capacity = access.size_hint().unwrap_or(0);
+        let capacity = access.size_hint().unwrap_or(0).max(MAX_CAPACITY);
         let hashcache = HashCache::with_capacity_and_hasher(0, capacity, H::default());
         while let Some((key, val)) = access.next_entry()? {
             let _result = hashcache.put(key, val);
