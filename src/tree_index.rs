@@ -72,7 +72,7 @@ pub struct Iter<'t, 'g, K, V> {
 pub struct Range<'t, 'g, K, V, Q: ?Sized, R: RangeBounds<Q>> {
     root: &'t AtomicShared<Node<K, V>>,
     leaf_scanner: Option<Scanner<'g, K, V>>,
-    range: R,
+    bounds: R,
     check_lower_bound: bool,
     check_upper_bound: bool,
     guard: &'g Guard,
@@ -138,6 +138,7 @@ impl<K, V> TreeIndex<K, V> {
     /// assert_eq!(treeindex.depth(), 0);
     /// ```
     #[inline]
+    #[must_use]
     pub fn depth(&self) -> usize {
         let guard = Guard::new();
         self.root
@@ -943,7 +944,7 @@ impl<'t, 'g, K, V, Q: ?Sized, R: RangeBounds<Q>> Range<'t, 'g, K, V, Q, R> {
         Range::<'t, 'g, K, V, Q, R> {
             root,
             leaf_scanner: None,
-            range,
+            bounds: range,
             check_lower_bound: true,
             check_upper_bound: false,
             guard,
@@ -965,7 +966,7 @@ where
             // Start scanning.
             let root_ptr = self.root.load(Acquire, self.guard);
             if let Some(root_ref) = root_ptr.as_ref() {
-                let min_allowed_key = match self.range.start_bound() {
+                let min_allowed_key = match self.bounds.start_bound() {
                     Excluded(key) | Included(key) => Some(key),
                     Unbounded => {
                         self.check_lower_bound = false;
@@ -1018,7 +1019,7 @@ where
 
     #[inline]
     fn set_check_upper_bound(&mut self, scanner: &Scanner<K, V>) {
-        self.check_upper_bound = match self.range.end_bound() {
+        self.check_upper_bound = match self.bounds.end_bound() {
             Excluded(key) => scanner
                 .max_key()
                 .map_or(false, |max_key| key.compare(max_key).is_le()),
@@ -1055,7 +1056,7 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         while let Some((k, v)) = self.next_unbounded() {
             if self.check_lower_bound {
-                match self.range.start_bound() {
+                match self.bounds.start_bound() {
                     Excluded(key) => {
                         if key.compare(k).is_ge() {
                             continue;
@@ -1071,7 +1072,7 @@ where
             }
             self.check_lower_bound = false;
             if self.check_upper_bound {
-                match self.range.end_bound() {
+                match self.bounds.end_bound() {
                     Excluded(key) => {
                         if key.compare(k).is_gt() {
                             return Some((k, v));
