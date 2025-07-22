@@ -15,7 +15,7 @@ const ASYNC: usize = 1_usize;
 /// [`WaitQueue`] implements an unfair wait queue.
 ///
 /// The sole purpose of the data structure is to avoid busy-waiting. [`WaitQueue`] should always
-/// protected by [`ebr`](crate::ebr).
+/// protected by [`sdd`].
 #[derive(Debug, Default)]
 pub(crate) struct WaitQueue {
     /// Stores the pointer value of the actual wait queue entry and a flag indicating that the
