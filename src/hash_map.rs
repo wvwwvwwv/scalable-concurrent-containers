@@ -43,7 +43,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 ///
 /// ### Bucket access
 ///
-/// Bucket arrays are protected by [`ebr`](super::ebr), thus allowing lock-free access to them.
+/// Bucket arrays are protected by [`sdd`], thus allowing lock-free access to them.
 ///
 /// ### Entry access
 ///
