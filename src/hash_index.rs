@@ -229,7 +229,7 @@ where
     /// assert_eq!(hashindex.capacity(), 1024);
     /// ```
     #[inline]
-    pub fn reserve(&self, additional_capacity: usize) -> Option<Reserve<K, V, H>> {
+    pub fn reserve(&self, additional_capacity: usize) -> Option<Reserve<'_, K, V, H>> {
         let additional = self.reserve_capacity(additional_capacity);
         if additional == 0 {
             None
@@ -261,7 +261,7 @@ where
     /// assert!(hashindex.peek_with(&'y', |_, v| *v).is_none());
     /// ```
     #[inline]
-    pub fn entry(&self, key: K) -> Entry<K, V, H> {
+    pub fn entry(&self, key: K) -> Entry<'_, K, V, H> {
         let guard = Guard::new();
         let hash = self.hash(&key);
         let locked_entry = unsafe {
@@ -298,7 +298,7 @@ where
     /// let future_entry = hashindex.entry_async('b');
     /// ```
     #[inline]
-    pub async fn entry_async(&self, key: K) -> Entry<K, V, H> {
+    pub async fn entry_async(&self, key: K) -> Entry<'_, K, V, H> {
         let hash = self.hash(&key);
         loop {
             let mut async_wait = AsyncWait::default();
@@ -352,7 +352,7 @@ where
     /// assert_eq!(hashindex.peek_with(&1, |_, v| *v), Some(2));
     /// ```
     #[inline]
-    pub fn first_entry(&self) -> Option<OccupiedEntry<K, V, H>> {
+    pub fn first_entry(&self) -> Option<OccupiedEntry<'_, K, V, H>> {
         let guard = Guard::new();
         let prolonged_guard = self.prolonged_guard_ref(&guard);
         if let Some(locked_entry) = self.lock_first_entry(prolonged_guard) {
@@ -381,7 +381,7 @@ where
     /// let future_entry = hashindex.first_entry_async();
     /// ```
     #[inline]
-    pub async fn first_entry_async(&self) -> Option<OccupiedEntry<K, V, H>> {
+    pub async fn first_entry_async(&self) -> Option<OccupiedEntry<'_, K, V, H>> {
         if let Some(locked_entry) = LockedEntry::first_entry_async(self).await {
             return Some(OccupiedEntry {
                 hashindex: self,
@@ -410,7 +410,10 @@ where
     /// assert_eq!(*entry.get(), 3);
     /// ```
     #[inline]
-    pub fn any_entry<P: FnMut(&K, &V) -> bool>(&self, pred: P) -> Option<OccupiedEntry<K, V, H>> {
+    pub fn any_entry<P: FnMut(&K, &V) -> bool>(
+        &self,
+        pred: P,
+    ) -> Option<OccupiedEntry<'_, K, V, H>> {
         let guard = Guard::new();
         let prolonged_guard = self.prolonged_guard_ref(&guard);
         let locked_entry = self.find_entry(pred, prolonged_guard)?;
@@ -440,7 +443,7 @@ where
     pub async fn any_entry_async<P: FnMut(&K, &V) -> bool>(
         &self,
         mut pred: P,
-    ) -> Option<OccupiedEntry<K, V, H>> {
+    ) -> Option<OccupiedEntry<'_, K, V, H>> {
         if let Some(locked_entry) = LockedEntry::first_entry_async(self).await {
             let mut entry = OccupiedEntry {
                 hashindex: self,
@@ -665,7 +668,7 @@ where
     /// assert_eq!(*hashindex.get(&1).unwrap(), 10);
     /// ```
     #[inline]
-    pub fn get<Q>(&self, key: &Q) -> Option<OccupiedEntry<K, V, H>>
+    pub fn get<Q>(&self, key: &Q) -> Option<OccupiedEntry<'_, K, V, H>>
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
@@ -703,7 +706,7 @@ where
     /// let future_get = hashindex.get_async(&11);
     /// ```
     #[inline]
-    pub async fn get_async<Q>(&self, key: &Q) -> Option<OccupiedEntry<K, V, H>>
+    pub async fn get_async<Q>(&self, key: &Q) -> Option<OccupiedEntry<'_, K, V, H>>
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {

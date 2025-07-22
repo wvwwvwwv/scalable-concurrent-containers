@@ -194,7 +194,7 @@ where
     /// assert!(hashcache.get(&'y').is_none());
     /// ```
     #[inline]
-    pub fn entry(&self, key: K) -> Entry<K, V, H> {
+    pub fn entry(&self, key: K) -> Entry<'_, K, V, H> {
         let guard = Guard::new();
         let hash = self.hash(&key);
         let mut locked_entry = unsafe {
@@ -232,7 +232,7 @@ where
     /// let future_entry = hashcache.entry_async('b');
     /// ```
     #[inline]
-    pub async fn entry_async(&self, key: K) -> Entry<K, V, H> {
+    pub async fn entry_async(&self, key: K) -> Entry<'_, K, V, H> {
         let hash = self.hash(&key);
         loop {
             let mut async_wait = AsyncWait::default();
@@ -383,7 +383,7 @@ where
     /// assert_eq!(*hashcache.get(&1).unwrap(), 11);
     /// ```
     #[inline]
-    pub fn get<Q>(&self, key: &Q) -> Option<OccupiedEntry<K, V, H>>
+    pub fn get<Q>(&self, key: &Q) -> Option<OccupiedEntry<'_, K, V, H>>
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
@@ -422,7 +422,7 @@ where
     /// let future_get = hashcache.get_async(&11);
     /// ```
     #[inline]
-    pub async fn get_async<Q>(&self, key: &Q) -> Option<OccupiedEntry<K, V, H>>
+    pub async fn get_async<Q>(&self, key: &Q) -> Option<OccupiedEntry<'_, K, V, H>>
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {

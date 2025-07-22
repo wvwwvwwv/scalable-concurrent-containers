@@ -257,7 +257,7 @@ impl<T, const ARRAY_LEN: usize> Bag<T, ARRAY_LEN> {
     /// assert!(bag.pop().is_none());
     /// ```
     #[inline]
-    pub fn iter_mut(&mut self) -> IterMut<T, ARRAY_LEN> {
+    pub fn iter_mut(&mut self) -> IterMut<'_, T, ARRAY_LEN> {
         IterMut {
             bag: self,
             current_index: 0,

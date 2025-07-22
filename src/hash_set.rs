@@ -118,7 +118,7 @@ where
     /// assert_eq!(hashset.capacity(), 1024);
     /// ```
     #[inline]
-    pub fn reserve(&self, capacity: usize) -> Option<Reserve<K, H>> {
+    pub fn reserve(&self, capacity: usize) -> Option<Reserve<'_, K, H>> {
         self.map.reserve(capacity)
     }
 
