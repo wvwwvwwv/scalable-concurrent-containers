@@ -1280,7 +1280,7 @@ mod test {
                             assert!(inserted);
                             assert_eq!(retire_clone.swap(1, Relaxed), 0);
                         }
-                    };
+                    }
                 }));
             }
             for r in futures::future::join_all(task_handles).await {

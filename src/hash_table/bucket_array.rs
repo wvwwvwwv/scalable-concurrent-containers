@@ -11,7 +11,7 @@ pub struct BucketArray<K, V, L: LruList, const TYPE: char> {
     data_block_ptr: *mut DataBlock<K, V, BUCKET_LEN>,
     array_len: usize,
     hash_offset: u32,
-    sample_size: u16,
+    sample_size_mask: u16,
     bucket_ptr_offset: u16,
     old_array: AtomicShared<BucketArray<K, V, L, TYPE>>,
     num_cleared_buckets: AtomicUsize,
@@ -60,7 +60,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         let aligned_size = size_of_t.next_power_of_two();
         let allocation_size = aligned_size + array_len * size_of_t;
         (size_of_t, allocation_size, unsafe {
-            // Intentionally mis-aligned in order to take full advantage of demand paging.
+            // Intentionally misaligned in order to take full advantage of demand paging.
             Layout::from_size_align_unchecked(allocation_size, 1)
         })
     }
@@ -119,14 +119,14 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
                 data_block_array_layout.size(),
             );
 
-            let sample_size = u16::from(log2_array_len).next_power_of_two();
+            let sample_size_mask = u16::from(log2_array_len).next_power_of_two() - 1;
 
             Self {
                 bucket_ptr: bucket_array_ptr,
                 data_block_ptr: data_block_array_ptr,
                 array_len,
                 hash_offset: 64 - u32::from(log2_array_len),
-                sample_size,
+                sample_size_mask,
                 bucket_ptr_offset: bucket_array_ptr_offset,
                 old_array,
                 num_cleared_buckets: AtomicUsize::new(0),
@@ -146,7 +146,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     pub(crate) const fn calculate_bucket_index(&self, hash: u64) -> usize {
         // Take the upper n-bits to make sure that a single bucket is spread across a few adjacent
         // buckets when the hash table is resized.
-        hash.wrapping_shr(self.hash_offset) as usize
+        (hash >> self.hash_offset) as usize
     }
 
     /// Returns the minimum capacity.
@@ -159,7 +159,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     #[allow(clippy::cast_possible_truncation)]
     #[inline]
     pub(crate) const fn partial_hash(hash: u64) -> u8 {
-        (hash % (1 << 8)) as u8
+        (hash & (u8::MAX as u64)) as u8
     }
 
     /// Returns a reference to its rehashing metadata.
@@ -171,19 +171,19 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     /// Checks if the index is within the sampling range of the array.
     #[inline]
     pub(crate) const fn within_sampling_range(&self, index: usize) -> bool {
-        (index % self.sample_size()) == 0
+        (index & self.sample_size_mask as usize) == 0
     }
 
     /// Returns the recommended sampling size.
     #[inline]
     pub(crate) const fn sample_size(&self) -> usize {
-        self.sample_size as usize
+        (self.sample_size_mask + 1) as usize
     }
 
     /// Returns the recommended sampling size.
     #[inline]
     pub(crate) fn full_sample_size(&self) -> usize {
-        ((self.sample_size as usize) * (self.sample_size as usize)).min(self.num_buckets())
+        (self.sample_size() * self.sample_size()).min(self.num_buckets())
     }
 
     /// Returns a [`Ptr`] to the old array.

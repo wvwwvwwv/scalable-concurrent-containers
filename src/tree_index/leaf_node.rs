@@ -784,12 +784,12 @@ where
     ///
     /// If the target leaf does not exist in the [`LeafNode`], returns `false`.
     #[inline]
-    pub(super) fn cleanup_link<'g, Q>(&self, key: &Q, tranverse_max: bool, guard: &'g Guard) -> bool
+    pub(super) fn cleanup_link<'g, Q>(&self, key: &Q, traverse_max: bool, guard: &'g Guard) -> bool
     where
         K: 'g,
         Q: Comparable<K> + ?Sized,
     {
-        let scanner = if tranverse_max {
+        let scanner = if traverse_max {
             if let Some(unbounded) = self.unbounded_child.load(Acquire, guard).as_ref() {
                 Scanner::new(unbounded)
             } else {
@@ -1246,7 +1246,6 @@ mod test {
             match result.unwrap() {
                 InsertResult::Success => {
                     assert_eq!(leaf_node.search_entry(&k, &guard), Some((&k, &k)));
-                    continue;
                 }
                 InsertResult::Duplicate(..)
                 | InsertResult::Frozen(..)
@@ -1314,9 +1313,7 @@ mod test {
                                         max_key.replace(id);
                                         break;
                                     }
-                                    InsertResult::Frozen(..) | InsertResult::Retry(..) => {
-                                        continue;
-                                    }
+                                    InsertResult::Frozen(..) | InsertResult::Retry(..) => (),
                                     _ => unreachable!(),
                                 }
                             }
@@ -1326,13 +1323,13 @@ mod test {
                         }
                     }
                     for id in range.clone() {
-                        if max_key.map_or(false, |m| m == id) {
+                        if max_key == Some(id) {
                             break;
                         }
                         assert_eq!(leaf_node_clone.search_entry(&id, &guard), Some((&id, &id)));
                     }
                     for id in range {
-                        if max_key.map_or(false, |m| m == id) {
+                        if max_key == Some(id) {
                             break;
                         }
                         loop {
@@ -1403,7 +1400,7 @@ mod test {
                                     leaf_node_clone.rollback(&guard);
                                 }
                                 _ => (),
-                            };
+                            }
                         }
                         {
                             barrier_clone.wait().await;

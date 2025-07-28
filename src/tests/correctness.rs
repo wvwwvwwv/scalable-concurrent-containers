@@ -96,7 +96,7 @@ mod hashmap_test {
 
     impl Hash for EqTest {
         fn hash<H: Hasher>(&self, state: &mut H) {
-            self.0.hash(state)
+            self.0.hash(state);
         }
     }
 
@@ -167,22 +167,22 @@ mod hashmap_test {
         let hashmap_clone = hashmap.clone();
         let barrier_clone = barrier.clone();
         let task = thread::spawn(move || {
-            hashmap_clone.read("first".into(), |_key, value| {
+            hashmap_clone.read("first", |_key, value| {
                 {
-                    let first_item = value.get(0);
+                    let first_item = value.first();
                     assert_eq!(first_item.unwrap(), &123_u8);
                 }
                 barrier_clone.wait();
                 thread::sleep(Duration::from_millis(16));
                 {
-                    let first_item = value.get(0);
+                    let first_item = value.first();
                     assert_eq!(first_item.unwrap(), &123_u8);
                 }
             });
         });
 
         barrier.wait();
-        assert!(hashmap.remove("first".into()).is_some());
+        assert!(hashmap.remove("first").is_some());
         assert!(task.join().is_ok());
     }
 
@@ -192,7 +192,6 @@ mod hashmap_test {
 
         let workload_size = 256;
         let hashmap = (0..workload_size)
-            .into_iter()
             .map(|k| (k / 2, R::new(&INST_CNT)))
             .collect::<HashMap<usize, R>>();
         assert_eq!(hashmap.len(), workload_size / 2);
@@ -267,7 +266,7 @@ mod hashmap_test {
                 L(cnt)
             }
         }
-        impl<'a> Drop for L<'a> {
+        impl Drop for L<'_> {
             fn drop(&mut self) {
                 self.0.fetch_sub(1, Relaxed);
             }
@@ -562,7 +561,7 @@ mod hashmap_test {
                                 }
                             })
                             .await;
-                    };
+                    }
                     assert_eq!(removed, workload_size);
                     assert!(!hashmap_clone.any_async(|k, _| range.contains(k)).await);
                 }));
@@ -633,7 +632,7 @@ mod hashmap_test {
                                 }
                             })
                             .await;
-                    };
+                    }
                     assert_eq!(removed, workload_size);
 
                     assert!(!hashmap_clone.any(|k, _| range.contains(k)));
@@ -927,7 +926,7 @@ mod hashindex_test {
 
     impl Hash for EqTest {
         fn hash<H: Hasher>(&self, state: &mut H) {
-            self.0.hash(state)
+            self.0.hash(state);
         }
     }
 
@@ -1014,7 +1013,6 @@ mod hashindex_test {
 
         let workload_size = 256;
         let hashindex = (0..workload_size)
-            .into_iter()
             .map(|k| (k / 2, R::new(&INST_CNT)))
             .collect::<HashIndex<usize, R>>();
         assert_eq!(hashindex.len(), workload_size / 2);
@@ -1520,7 +1518,7 @@ mod hashindex_test {
                                 }
                             })
                             .await;
-                    };
+                    }
                     assert_eq!(removed, workload_size);
                     assert!(!hashindex_clone
                         .iter(&Guard::new())
@@ -1560,7 +1558,7 @@ mod hashset_test {
 
     impl Hash for EqTest {
         fn hash<H: Hasher>(&self, state: &mut H) {
-            self.0.hash(state)
+            self.0.hash(state);
         }
     }
 
@@ -1576,7 +1574,6 @@ mod hashset_test {
     fn from_iter() {
         let workload_size = 256;
         let hashset = (0..workload_size)
-            .into_iter()
             .map(|k| k / 2)
             .collect::<HashSet<usize>>();
         assert_eq!(hashset.len(), workload_size / 2);
@@ -1658,7 +1655,7 @@ mod hashcache_test {
 
     impl Hash for EqTest {
         fn hash<H: Hasher>(&self, state: &mut H) {
-            self.0.hash(state)
+            self.0.hash(state);
         }
     }
 
@@ -2888,7 +2885,6 @@ mod bag_test {
 
         let workload_size = 16;
         let bag = (0..workload_size)
-            .into_iter()
             .map(|_| R::new(&INST_CNT))
             .collect::<Bag<R>>();
         assert_eq!(bag.len(), workload_size);
@@ -3076,7 +3072,6 @@ mod queue_test {
 
         let workload_size = 16;
         let queue = (0..workload_size)
-            .into_iter()
             .map(|i| R::new(&INST_CNT, i, i))
             .collect::<Queue<R>>();
         assert_eq!(queue.len(), workload_size);
@@ -3280,7 +3275,7 @@ mod stack_test {
     #[test]
     fn from_iter() {
         let workload_size = 16;
-        let stack = (0..workload_size).into_iter().collect::<Stack<usize>>();
+        let stack = (0..workload_size).collect::<Stack<usize>>();
         assert_eq!(stack.len(), workload_size);
         for i in (0..workload_size).rev() {
             assert_eq!(stack.pop().map(|e| **e), Some(i));

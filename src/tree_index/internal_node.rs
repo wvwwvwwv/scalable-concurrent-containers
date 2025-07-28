@@ -1251,9 +1251,7 @@ mod test {
                                         max_key.replace(id);
                                         break;
                                     }
-                                    InsertResult::Frozen(..) | InsertResult::Retry(..) => {
-                                        continue;
-                                    }
+                                    InsertResult::Frozen(..) | InsertResult::Retry(..) => (),
                                     _ => unreachable!(),
                                 }
                             }
@@ -1263,7 +1261,7 @@ mod test {
                         }
                     }
                     for id in range.clone() {
-                        if max_key.map_or(false, |m| m == id) {
+                        if max_key == Some(id) {
                             break;
                         }
                         assert_eq!(
@@ -1272,7 +1270,7 @@ mod test {
                         );
                     }
                     for id in range {
-                        if max_key.map_or(false, |m| m == id) {
+                        if max_key == Some(id) {
                             break;
                         }
                         loop {
@@ -1346,7 +1344,7 @@ mod test {
                                     internal_node_clone.rollback(&guard);
                                 }
                                 _ => (),
-                            };
+                            }
                             assert_eq!(
                                 internal_node_clone
                                     .search_entry(&fixed_point, &guard)

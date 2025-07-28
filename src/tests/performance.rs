@@ -666,7 +666,7 @@ mod benchmark {
         treeindex_benchmark::<usize>(65536, vec![1, 2, 4]);
     }
 
-    #[ignore]
+    #[ignore = "too long"]
     #[test]
     fn full_scale_benchmarks_sync() {
         hashmap_benchmark::<usize>(
@@ -1434,7 +1434,7 @@ mod benchmark_async {
         treeindex_benchmark(65536, vec![1, 2, 4]).await;
     }
 
-    #[ignore]
+    #[ignore = "too long"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 96)]
     async fn full_scale_benchmarks_async() {
         hashmap_benchmark(
