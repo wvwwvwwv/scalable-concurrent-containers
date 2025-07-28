@@ -502,7 +502,7 @@ where
                     };
                     if shrinkable
                         && (locker.num_entries() <= 1 || locker.need_rebuild())
-                        && current_array.within_sampling_range(index)
+                        && current_array.initiate_sampling(index)
                     {
                         drop(locker);
                         self.try_shrink_or_rebuild(current_array, index, guard);
@@ -701,7 +701,7 @@ where
             // Try to resize the array.
             if resizable
                 && (TYPE != CACHE || current_array.num_entries() < self.maximum_capacity())
-                && current_array.within_sampling_range(index)
+                && current_array.initiate_sampling(index)
                 && bucket.num_entries() >= BUCKET_LEN - 1
             {
                 self.try_enlarge(current_array, index, bucket.num_entries(), guard);
@@ -1321,7 +1321,7 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
             let prev_index = self.index;
             let try_shrink_or_rebuild = (self.locker.num_entries() <= 1
                 || self.locker.need_rebuild())
-                && current_array.within_sampling_range(prev_index);
+                && current_array.initiate_sampling(prev_index);
             drop(self);
 
             if try_shrink_or_rebuild {
@@ -1376,7 +1376,7 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
             let prev_index = self.index;
             let try_shrink_or_rebuild = (self.locker.num_entries() <= 1
                 || self.locker.need_rebuild())
-                && current_array.within_sampling_range(prev_index);
+                && current_array.initiate_sampling(prev_index);
             drop(self);
 
             if try_shrink_or_rebuild {

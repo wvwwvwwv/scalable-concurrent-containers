@@ -1110,7 +1110,7 @@ where
     fn clone(&self) -> Self {
         let self_clone = Self::with_capacity_and_hasher(self.capacity(), self.hasher().clone());
         for (k, v) in self.iter(&Guard::new()) {
-            let _reuslt = self_clone.insert(k.clone(), v.clone());
+            let _result = self_clone.insert(k.clone(), v.clone());
         }
         self_clone
     }
@@ -1494,7 +1494,7 @@ where
             if let Some(current_array) = hashindex.bucket_array().load(Acquire, &guard).as_ref() {
                 if !current_array.has_old_array() {
                     let index = self.locked_entry.index;
-                    if current_array.within_sampling_range(index) {
+                    if current_array.initiate_sampling(index) {
                         drop(self);
                         hashindex.try_shrink_or_rebuild(current_array, index, &guard);
                     }

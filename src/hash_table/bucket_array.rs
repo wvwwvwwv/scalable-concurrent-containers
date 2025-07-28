@@ -168,9 +168,9 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         &self.num_cleared_buckets
     }
 
-    /// Checks if the index is within the sampling range of the array.
+    /// Checks if the bucket is allowed to initiate sampling.
     #[inline]
-    pub(crate) const fn within_sampling_range(&self, index: usize) -> bool {
+    pub(crate) const fn initiate_sampling(&self, index: usize) -> bool {
         (index & self.sample_size_mask as usize) == 0
     }
 

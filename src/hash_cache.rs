@@ -1509,7 +1509,7 @@ where
             if let Some(current_array) = hashcache.bucket_array().load(Acquire, &guard).as_ref() {
                 if !current_array.has_old_array() {
                     let index = self.locked_entry.index;
-                    if current_array.within_sampling_range(index) {
+                    if current_array.initiate_sampling(index) {
                         drop(self);
                         hashcache.try_shrink_or_rebuild(current_array, index, &guard);
                     }
