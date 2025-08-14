@@ -297,8 +297,10 @@ where
     ///
     /// let hashmap: HashMap<usize, usize> = HashMap::default();
     ///
-    /// let entry = hashmap.entry(0);
-    /// assert!(hashmap.try_entry(0).is_none());
+    /// async {
+    ///     let entry = hashmap.entry_async(0).await;
+    ///     assert!(hashmap.try_entry(0).is_none());
+    /// };
     /// ```
     #[inline]
     pub fn try_entry(&self, key: K) -> Option<Entry<'_, K, V, H>> {
