@@ -2714,7 +2714,9 @@ mod treeindex_test {
                 assert!(tree.remove(&i));
                 removed.store(i, Release);
             }
-            thread_handles.into_iter().for_each(|t| t.join().unwrap());
+            for t in thread_handles {
+                t.join().unwrap();
+            }
         }
     }
 

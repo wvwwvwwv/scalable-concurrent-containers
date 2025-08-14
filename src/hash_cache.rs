@@ -264,6 +264,42 @@ where
         }
     }
 
+    /// Tries to get the entry associated with the given key in the map for in-place manipulation.
+    ///
+    /// Returns `None` if the entry could not be locked.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<usize, usize> = HashCache::default();
+    ///
+    /// async {
+    ///     let entry = hashcache.entry_async(0).await;
+    ///     assert!(hashcache.try_entry(0).is_none());
+    /// };
+    /// ```
+    #[inline]
+    pub fn try_entry(&self, key: K) -> Option<Entry<'_, K, V, H>> {
+        let guard = Guard::new();
+        let hash = self.hash(&key);
+        let locked_entry = self.try_reserve_entry(&key, hash, self.prolonged_guard_ref(&guard))?;
+        if locked_entry.entry_ptr.is_valid() {
+            Some(Entry::Occupied(OccupiedEntry {
+                hashcache: self,
+                locked_entry,
+            }))
+        } else {
+            Some(Entry::Vacant(VacantEntry {
+                hashcache: self,
+                key,
+                hash,
+                locked_entry,
+            }))
+        }
+    }
+
     /// Puts a key-value pair into the [`HashCache`].
     ///
     /// Returns `Some` if an entry was evicted for the new key-value pair.
