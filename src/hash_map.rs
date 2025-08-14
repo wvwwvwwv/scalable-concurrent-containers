@@ -286,6 +286,40 @@ where
         }
     }
 
+    /// Tries to get the entry associated with the given key in the map for in-place manipulation.
+    ///
+    /// Returns `None` if the entry could not be locked.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<usize, usize> = HashMap::default();
+    ///
+    /// let entry = hashmap.entry(0);
+    /// assert!(hashmap.try_entry(0).is_none());
+    /// ```
+    #[inline]
+    pub fn try_entry(&self, key: K) -> Option<Entry<'_, K, V, H>> {
+        let guard = Guard::new();
+        let hash = self.hash(&key);
+        let locked_entry = self.try_reserve_entry(&key, hash, self.prolonged_guard_ref(&guard))?;
+        if locked_entry.entry_ptr.is_valid() {
+            Some(Entry::Occupied(OccupiedEntry {
+                hashmap: self,
+                locked_entry,
+            }))
+        } else {
+            Some(Entry::Vacant(VacantEntry {
+                hashmap: self,
+                key,
+                hash,
+                locked_entry,
+            }))
+        }
+    }
+
     /// Gets the entry associated with the given key in the map for in-place manipulation.
     ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.

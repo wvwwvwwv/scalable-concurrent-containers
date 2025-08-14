@@ -661,7 +661,7 @@ where
     ///
     /// The returned [`EntryPtr`] may point to an occupied entry if the key exists.
     ///
-    /// Returns an error if locking failed
+    /// Returns an error if locking failed.
     #[inline]
     fn reserve_entry<'g, Q, D>(
         &self,
@@ -722,6 +722,68 @@ where
                     guard,
                 );
                 return Ok(LockedEntry::new(
+                    locker,
+                    data_block_mut,
+                    entry_ptr,
+                    index,
+                    guard,
+                ));
+            }
+
+            // Reaching here means that `self.bucket_array()` has been updated.
+        }
+    }
+
+    /// Tries to reserve an entry and returns a [`Locker`] and [`EntryPtr`] corresponding to the
+    /// key.
+    ///
+    /// The returned [`EntryPtr`] may point to an occupied entry if the key exists.
+    ///
+    /// Returns `None` if locking failed.
+    #[inline]
+    fn try_reserve_entry<'g, Q>(
+        &self,
+        key: &Q,
+        hash: u64,
+        guard: &'g Guard,
+    ) -> Option<LockedEntry<'g, K, V, L, TYPE>>
+    where
+        Q: Equivalent<K> + Hash + ?Sized,
+    {
+        // See `Self::reserve_entry`.
+        loop {
+            let current_array = self.get_current_array(guard);
+            let resizable = if let Some(old_array) = current_array.old_array(guard).as_ref() {
+                self.move_entry::<Q, _>(current_array, old_array, hash, &mut (), guard)
+                    .ok()?;
+                false
+            } else {
+                true
+            };
+
+            let index = current_array.calculate_bucket_index(hash);
+            let mut bucket = current_array.bucket_mut(index);
+
+            // Try to resize the array.
+            if resizable
+                && (TYPE != CACHE || current_array.num_entries() < self.maximum_capacity())
+                && current_array.initiate_sampling(index)
+                && bucket.num_entries() >= BUCKET_LEN - 1
+            {
+                self.try_enlarge(current_array, index, bucket.num_entries(), guard);
+                bucket = current_array.bucket_mut(index);
+            }
+
+            let lock_result = Locker::try_lock(bucket, guard).ok()?;
+            if let Some(locker) = lock_result {
+                let data_block_mut = current_array.data_block_mut(index);
+                let entry_ptr = locker.get_entry_ptr(
+                    data_block_mut,
+                    key,
+                    BucketArray::<K, V, L, TYPE>::partial_hash(hash),
+                    guard,
+                );
+                return Some(LockedEntry::new(
                     locker,
                     data_block_mut,
                     entry_ptr,
