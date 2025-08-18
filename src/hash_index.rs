@@ -37,7 +37,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 /// * The number of entries managed by a single bucket without a linked list: 32.
 /// * The expected maximum linked list length when resize is triggered: log(capacity) / 8.
 ///
-/// ### Unwind safety
+/// ## Unwind safety
 ///
 /// [`HashIndex`] is impervious to out-of-memory errors and panics in user-specified code on one
 /// condition; `H::Hasher::hash`, `K::drop` and `V::drop` must not panic.
@@ -340,10 +340,8 @@ where
     ///
     /// let hashindex: HashIndex<usize, usize> = HashIndex::default();
     ///
-    /// async {
-    ///     let entry = hashindex.entry_async(0).await;
-    ///     assert!(hashindex.try_entry(0).is_none());
-    /// };
+    /// assert!(hashindex.insert(0, 1).is_ok());
+    /// assert!(hashindex.try_entry(0).is_some());
     /// ```
     #[inline]
     pub fn try_entry(&self, key: K) -> Option<Entry<'_, K, V, H>> {

@@ -2,6 +2,10 @@
 
 ## Version 2
 
+2.4.0
+
+* Add `Hash*::try_entry`.
+
 2.3.4
 
 * Limit the maximum initial capacity of serialized containers to `1 << 24`.

@@ -29,7 +29,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 /// [`HashCache`] starts evicting least recently used entries if the bucket is full instead of
 /// allocating linked list of entries.
 ///
-/// ### Unwind safety
+/// ## Unwind safety
 ///
 /// [`HashCache`] is impervious to out-of-memory errors and panics in user-specified code on one
 /// condition; `H::Hasher::hash`, `K::drop` and `V::drop` must not panic.
@@ -275,10 +275,8 @@ where
     ///
     /// let hashcache: HashCache<usize, usize> = HashCache::default();
     ///
-    /// async {
-    ///     let entry = hashcache.entry_async(0).await;
-    ///     assert!(hashcache.try_entry(0).is_none());
-    /// };
+    /// assert!(hashcache.put(0, 1).is_ok());
+    /// assert!(hashcache.try_entry(0).is_some());
     /// ```
     #[inline]
     pub fn try_entry(&self, key: K) -> Option<Entry<'_, K, V, H>> {

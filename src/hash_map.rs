@@ -59,7 +59,13 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 /// incrementally relocated to the new bucket array on future access to the [`HashMap`], and the old
 /// bucket array gets dropped when it becomes empty and unreachable.
 ///
-/// ### Unwind safety
+/// ### Blocking methods in an asynchronous code block
+///
+/// It is generally not recommended to use blocking methods, such as [`HashMap::insert`], in an
+/// asynchronous code block or [`poll`](std::future::Future::poll), since it may lead to deadlocks
+/// or performance degradation.
+///
+/// ## Unwind safety
 ///
 /// [`HashMap`] is impervious to out-of-memory errors and panics in user-specified code on one
 /// condition; `H::Hasher::hash`, `K::drop` and `V::drop` must not panic.
@@ -342,10 +348,8 @@ where
     ///
     /// let hashmap: HashMap<usize, usize> = HashMap::default();
     ///
-    /// async {
-    ///     let entry = hashmap.entry_async(0).await;
-    ///     assert!(hashmap.try_entry(0).is_none());
-    /// };
+    /// assert!(hashmap.insert(0, 1).is_ok());
+    /// assert!(hashmap.try_entry(0).is_some());
     /// ```
     #[inline]
     pub fn try_entry(&self, key: K) -> Option<Entry<'_, K, V, H>> {
