@@ -1,11 +1,12 @@
 //! [`HashSet`] is a concurrent and asynchronous hash set.
 
-use super::hash_table::HashTable;
-use super::{Equivalent, HashMap};
 use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
 use std::ops::RangeInclusive;
+
+use super::hash_table::HashTable;
+use super::{Equivalent, HashMap};
 
 /// Scalable concurrent hash set.
 ///

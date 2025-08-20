@@ -1,6 +1,7 @@
+use std::time::Instant;
+
 use criterion::{criterion_group, criterion_main, Criterion};
 use scc::HashCache;
-use std::time::Instant;
 
 fn get(c: &mut Criterion) {
     c.bench_function("HashCache: get", |b| {

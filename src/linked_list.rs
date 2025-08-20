@@ -1,7 +1,8 @@
-use super::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use std::fmt::{self, Debug, Display};
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::Ordering::{self, AcqRel, Acquire, Relaxed};
+
+use super::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 
 /// [`LinkedList`] is a type trait implementing a lock-free singly linked list.
 pub trait LinkedList: Sized {

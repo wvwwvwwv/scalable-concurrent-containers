@@ -364,9 +364,9 @@ mod test {
         data.fetch_add(1, Release);
         wait_queue.signal();
 
-        task_handles
-            .into_iter()
-            .for_each(|t| assert!(t.join().is_ok()));
+        for t in task_handles {
+            assert!(t.join().is_ok());
+        }
     }
 
     #[cfg_attr(miri, ignore)]

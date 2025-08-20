@@ -1,16 +1,17 @@
 pub mod bucket;
 pub mod bucket_array;
 
-use super::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
-use super::exit_guard::ExitGuard;
-use super::wait_queue::{AsyncWait, DeriveAsyncWait};
-use super::Equivalent;
 use bucket::{DataBlock, EntryPtr, Locker, LruList, Reader, BUCKET_LEN, CACHE, OPTIMISTIC};
 use bucket_array::BucketArray;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::pin::Pin;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 use std::sync::atomic::{fence, AtomicUsize};
+
+use super::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
+use super::exit_guard::ExitGuard;
+use super::wait_queue::{AsyncWait, DeriveAsyncWait};
+use super::Equivalent;
 
 /// The maximum resize factor.
 const MAX_RESIZE_FACTOR: usize = (usize::BITS / 2) as usize;

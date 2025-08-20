@@ -1,13 +1,15 @@
 //! This module implements helper types and traits for `serde`.
 
-use super::ebr::Guard;
-use super::{HashCache, HashIndex, HashMap, HashSet, TreeIndex};
-use serde::de::{Deserialize, MapAccess, SeqAccess, Visitor};
-use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
-use serde::Deserializer;
 use std::fmt;
 use std::hash::{BuildHasher, Hash};
 use std::marker::PhantomData;
+
+use serde::de::{Deserialize, MapAccess, SeqAccess, Visitor};
+use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
+use serde::Deserializer;
+
+use super::ebr::Guard;
+use super::{HashCache, HashIndex, HashMap, HashSet, TreeIndex};
 
 /// Helper type to allow `serde` to access [`HashMap`] entries.
 pub struct HashMapVisitor<K: Eq + Hash, V, H: BuildHasher> {

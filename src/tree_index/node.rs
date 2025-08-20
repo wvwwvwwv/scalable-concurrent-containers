@@ -1,12 +1,13 @@
+use std::fmt::{self, Debug};
+use std::ops::RangeBounds;
+use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
+
 use super::internal_node::{self, InternalNode};
 use super::leaf::{InsertResult, Leaf, RemoveResult, Scanner};
 use super::leaf_node::{self, LeafNode};
 use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::wait_queue::DeriveAsyncWait;
 use crate::Comparable;
-use std::fmt::{self, Debug};
-use std::ops::RangeBounds;
-use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 
 /// [`Node`] is either [`Self::Internal`] or [`Self::Leaf`].
 pub enum Node<K, V> {

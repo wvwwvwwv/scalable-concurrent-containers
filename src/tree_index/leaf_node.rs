@@ -1,3 +1,9 @@
+use std::cmp::Ordering::{Equal, Greater, Less};
+use std::ops::{Bound, RangeBounds};
+use std::ptr;
+use std::sync::atomic::AtomicPtr;
+use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
+
 use super::leaf::{InsertResult, RemoveResult, Scanner, DIMENSION};
 use super::node::Node;
 use super::Leaf;
@@ -7,11 +13,6 @@ use crate::maybe_std::AtomicU8;
 use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
 use crate::LinkedList;
 use crate::{range_helper, Comparable};
-use std::cmp::Ordering::{Equal, Greater, Less};
-use std::ops::{Bound, RangeBounds};
-use std::ptr;
-use std::sync::atomic::AtomicPtr;
-use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
 /// [`Tag::First`] indicates the corresponding node has retired.
 pub const RETIRED: Tag = Tag::First;

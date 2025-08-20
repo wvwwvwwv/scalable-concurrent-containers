@@ -1,11 +1,7 @@
 #![allow(clippy::inline_always)]
 #![allow(clippy::needless_pass_by_value)]
 
-#[cfg(not(feature = "loom"))]
-#[cfg(test)]
-mod benchmark {
-    use crate::ebr::Guard;
-    use crate::{HashIndex, HashMap, TreeIndex};
+mod sync_benchmarks {
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hash};
     use std::ptr::addr_of;
@@ -14,6 +10,9 @@ mod benchmark {
     use std::sync::{Arc, Barrier};
     use std::thread;
     use std::time::{Duration, Instant};
+
+    use crate::ebr::Guard;
+    use crate::{HashIndex, HashMap, TreeIndex};
 
     #[derive(Clone)]
     struct Workload {
@@ -686,17 +685,17 @@ mod benchmark {
     }
 }
 
-#[cfg(not(feature = "loom"))]
-#[cfg(test)]
-mod benchmark_async {
-    use crate::ebr::Guard;
-    use crate::{HashIndex, HashMap, TreeIndex};
+mod async_benchmarks {
     use std::collections::hash_map::RandomState;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
+
     use tokio::sync::Barrier;
+
+    use crate::ebr::Guard;
+    use crate::{HashIndex, HashMap, TreeIndex};
 
     #[derive(Clone)]
     struct Workload {

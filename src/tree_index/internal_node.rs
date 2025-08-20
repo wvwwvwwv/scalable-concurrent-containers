@@ -1,3 +1,10 @@
+use std::cmp::Ordering::{Equal, Greater, Less};
+use std::mem::forget;
+use std::ops::RangeBounds;
+use std::ptr;
+use std::sync::atomic::AtomicPtr;
+use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
+
 use super::leaf::{InsertResult, Leaf, RemoveResult, Scanner, DIMENSION};
 use super::leaf_node::RemoveRangeState;
 use super::leaf_node::{LOCKED, RETIRED};
@@ -7,12 +14,6 @@ use crate::exit_guard::ExitGuard;
 use crate::maybe_std::AtomicU8;
 use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
 use crate::Comparable;
-use std::cmp::Ordering::{Equal, Greater, Less};
-use std::mem::forget;
-use std::ops::RangeBounds;
-use std::ptr;
-use std::sync::atomic::AtomicPtr;
-use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
 /// Internal node.
 ///

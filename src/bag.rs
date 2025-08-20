@@ -1,8 +1,5 @@
 //! [`Bag`] is a lock-free concurrent unordered instance container.
 
-use super::ebr::Guard;
-use super::exit_guard::ExitGuard;
-use super::{LinkedEntry, LinkedList, Stack};
 use std::cell::UnsafeCell;
 use std::iter::FusedIterator;
 use std::mem::{needs_drop, MaybeUninit};
@@ -10,6 +7,10 @@ use std::panic::UnwindSafe;
 use std::ptr::drop_in_place;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+
+use super::ebr::Guard;
+use super::exit_guard::ExitGuard;
+use super::{LinkedEntry, LinkedList, Stack};
 
 /// [`Bag`] is a lock-free concurrent unordered instance container.
 ///
@@ -447,7 +448,7 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
                                 if !allow_empty
                                     && (Self::instance_bitmap(m) & !Self::owned_bitmap(m)) == 0
                                 {
-                                    // Disallow pushing a value into an empty, or a soon-to-be-empted array.
+                                    // Disallow pushing a value into an empty, or a soon-to-be-emptied array.
                                     None
                                 } else {
                                     let new = (m & (!(1_usize << index)))

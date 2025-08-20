@@ -1,11 +1,5 @@
 //! [`HashMap`] is a concurrent and asynchronous hash map.
 
-use super::ebr::{AtomicShared, Guard, Shared, Tag};
-use super::hash_table::bucket::{EntryPtr, Locker, Reader, SEQUENTIAL};
-use super::hash_table::bucket_array::BucketArray;
-use super::hash_table::{HashTable, LockedEntry};
-use super::wait_queue::AsyncWait;
-use super::Equivalent;
 use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
@@ -14,6 +8,13 @@ use std::ops::{Deref, DerefMut, RangeInclusive};
 use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
+
+use super::ebr::{AtomicShared, Guard, Shared, Tag};
+use super::hash_table::bucket::{EntryPtr, Locker, Reader, SEQUENTIAL};
+use super::hash_table::bucket_array::BucketArray;
+use super::hash_table::{HashTable, LockedEntry};
+use super::wait_queue::AsyncWait;
+use super::Equivalent;
 
 /// Scalable concurrent hash map.
 ///

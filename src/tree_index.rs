@@ -5,11 +5,6 @@ mod leaf;
 mod leaf_node;
 mod node;
 
-use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
-use crate::wait_queue::AsyncWait;
-use crate::Comparable;
-use leaf::{InsertResult, Leaf, RemoveResult, Scanner};
-use node::Node;
 use std::fmt::{self, Debug};
 use std::iter::FusedIterator;
 use std::marker::PhantomData;
@@ -18,6 +13,12 @@ use std::ops::RangeBounds;
 use std::panic::UnwindSafe;
 use std::pin::Pin;
 use std::sync::atomic::Ordering::{AcqRel, Acquire};
+
+use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
+use crate::wait_queue::AsyncWait;
+use crate::Comparable;
+use leaf::{InsertResult, Leaf, RemoveResult, Scanner};
+use node::Node;
 
 /// Scalable concurrent B-plus tree.
 ///
@@ -809,7 +810,7 @@ where
     fn clone(&self) -> Self {
         let self_clone = Self::default();
         for (k, v) in self.iter(&Guard::new()) {
-            let _reuslt = self_clone.insert(k.clone(), v.clone());
+            let _result: Result<(), (K, V)> = self_clone.insert(k.clone(), v.clone());
         }
         self_clone
     }

@@ -1,10 +1,11 @@
 //! [`Queue`] is a lock-free concurrent first-in-first-out container.
 
-use super::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
-use super::linked_list::{Entry, LinkedList};
 use std::fmt::{self, Debug};
 use std::iter::FusedIterator;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
+
+use super::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
+use super::linked_list::{Entry, LinkedList};
 
 /// [`Queue`] is a lock-free concurrent first-in-first-out container.
 pub struct Queue<T> {

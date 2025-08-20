@@ -1,7 +1,8 @@
+use std::time::Instant;
+
 use criterion::{criterion_group, criterion_main, Criterion};
 use scc::ebr::Guard;
 use scc::HashIndex;
-use std::time::Instant;
 
 fn iter_with(c: &mut Criterion) {
     c.bench_function("HashIndex: iter_with", |b| {

@@ -1,6 +1,3 @@
-use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
-use crate::wait_queue::{AsyncWait, WaitQueue};
-use crate::Equivalent;
 use std::fmt::{self, Debug};
 use std::mem::{forget, needs_drop, MaybeUninit};
 use std::ops::{Deref, DerefMut};
@@ -8,6 +5,10 @@ use std::ptr;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{fence, AtomicU32};
+
+use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
+use crate::wait_queue::{AsyncWait, WaitQueue};
+use crate::Equivalent;
 
 /// [`Bucket`] is a fixed-size hash table with linear probing.
 ///

@@ -1,9 +1,10 @@
-use super::bucket::{Bucket, DataBlock, LruList, BUCKET_LEN, OPTIMISTIC};
-use crate::ebr::{AtomicShared, Guard, Ptr, Tag};
 use std::alloc::{alloc, alloc_zeroed, dealloc, Layout};
 use std::mem::{align_of, needs_drop, size_of};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
+
+use super::bucket::{Bucket, DataBlock, LruList, BUCKET_LEN, OPTIMISTIC};
+use crate::ebr::{AtomicShared, Guard, Ptr, Tag};
 
 /// [`BucketArray`] is a special purpose array to manage [`Bucket`] and [`DataBlock`].
 pub struct BucketArray<K, V, L: LruList, const TYPE: char> {

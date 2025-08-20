@@ -1,11 +1,4 @@
-#[cfg(not(feature = "loom"))]
-#[cfg(test)]
-mod hashmap_test {
-    use crate::hash_map::{self, Entry, Reserve};
-    use crate::{Equivalent, HashMap};
-    use proptest::prelude::*;
-    use proptest::strategy::ValueTree;
-    use proptest::test_runner::TestRunner;
+mod hashmap {
     use std::collections::BTreeSet;
     use std::hash::{Hash, Hasher};
     use std::panic::UnwindSafe;
@@ -15,7 +8,14 @@ mod hashmap_test {
     use std::sync::{Arc, Barrier};
     use std::thread;
     use std::time::Duration;
+
+    use proptest::prelude::*;
+    use proptest::strategy::ValueTree;
+    use proptest::test_runner::TestRunner;
     use tokio::sync::Barrier as AsyncBarrier;
+
+    use crate::hash_map::{self, Entry, Reserve};
+    use crate::{Equivalent, HashMap};
 
     static_assertions::assert_not_impl_all!(HashMap<Rc<String>, Rc<String>>: Send, Sync);
     static_assertions::assert_not_impl_all!(hash_map::Entry<Rc<String>, Rc<String>>: Send, Sync);
@@ -871,14 +871,7 @@ mod hashmap_test {
     }
 }
 
-#[cfg(not(feature = "loom"))]
-#[cfg(test)]
-mod hashindex_test {
-    use crate::ebr::Guard;
-    use crate::hash_index::{self, Iter};
-    use crate::{Equivalent, HashIndex};
-    use proptest::strategy::{Strategy, ValueTree};
-    use proptest::test_runner::TestRunner;
+mod hashindex {
     use std::collections::BTreeSet;
     use std::hash::{Hash, Hasher};
     use std::panic::UnwindSafe;
@@ -888,6 +881,13 @@ mod hashindex_test {
     use std::sync::Arc;
     use std::thread;
     use tokio::sync::Barrier as AsyncBarrier;
+
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+
+    use crate::ebr::Guard;
+    use crate::hash_index::{self, Iter};
+    use crate::{Equivalent, HashIndex};
 
     static_assertions::assert_not_impl_all!(HashIndex<Rc<String>, Rc<String>>: Send, Sync);
     static_assertions::assert_not_impl_all!(hash_index::Entry<Rc<String>, Rc<String>>: Send, Sync);
@@ -1535,13 +1535,12 @@ mod hashindex_test {
     }
 }
 
-#[cfg(not(feature = "loom"))]
-#[cfg(test)]
-mod hashset_test {
-    use crate::{Equivalent, HashSet};
+mod hashset {
     use std::hash::{Hash, Hasher};
     use std::panic::UnwindSafe;
     use std::rc::Rc;
+
+    use crate::{Equivalent, HashSet};
 
     static_assertions::assert_not_impl_all!(HashSet<Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(HashSet<String>: Send, Sync, UnwindSafe);
@@ -1602,12 +1601,7 @@ mod hashset_test {
     }
 }
 
-#[cfg(not(feature = "loom"))]
-#[cfg(test)]
-mod hashcache_test {
-    use crate::hash_cache;
-    use crate::{Equivalent, HashCache};
-    use proptest::prelude::*;
+mod hashcache {
     use std::hash::{Hash, Hasher};
     use std::panic::UnwindSafe;
     use std::rc::Rc;
@@ -1615,6 +1609,11 @@ mod hashcache_test {
     use std::sync::atomic::Ordering::Relaxed;
     use std::sync::Arc;
     use tokio::sync::Barrier as AsyncBarrier;
+
+    use proptest::prelude::*;
+
+    use crate::hash_cache;
+    use crate::{Equivalent, HashCache};
 
     static_assertions::assert_not_impl_all!(HashCache<Rc<String>, Rc<String>>: Send, Sync);
     static_assertions::assert_not_impl_all!(hash_cache::Entry<Rc<String>, Rc<String>>: Send, Sync);
@@ -1972,15 +1971,7 @@ mod hashcache_test {
     }
 }
 
-#[cfg(not(feature = "loom"))]
-#[cfg(test)]
-mod treeindex_test {
-    use crate::ebr::Guard;
-    use crate::tree_index::{Iter, Range};
-    use crate::{Comparable, Equivalent, TreeIndex};
-    use proptest::prelude::*;
-    use proptest::strategy::ValueTree;
-    use proptest::test_runner::TestRunner;
+mod treeindex {
     use sdd::suspend;
     use std::borrow::Borrow;
     use std::cmp::Ordering;
@@ -1994,6 +1985,14 @@ mod treeindex_test {
     use std::thread;
     use tokio::sync::Barrier as AsyncBarrier;
     use tokio::task;
+
+    use proptest::prelude::*;
+    use proptest::strategy::ValueTree;
+    use proptest::test_runner::TestRunner;
+
+    use crate::ebr::Guard;
+    use crate::tree_index::{Iter, Range};
+    use crate::{Comparable, Equivalent, TreeIndex};
 
     static_assertions::assert_not_impl_all!(TreeIndex<Rc<String>, Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(TreeIndex<String, String>: Send, Sync, UnwindSafe);
@@ -2820,11 +2819,7 @@ mod treeindex_test {
     }
 }
 
-#[cfg(not(feature = "loom"))]
-#[cfg(test)]
-mod bag_test {
-    use crate::bag::IterMut;
-    use crate::Bag;
+mod bag {
     use std::panic::UnwindSafe;
     use std::rc::Rc;
     use std::sync::atomic::AtomicUsize;
@@ -2832,6 +2827,9 @@ mod bag_test {
     use std::sync::Arc;
     use tokio::sync::Barrier as AsyncBarrier;
     use tokio::task;
+
+    use crate::bag::IterMut;
+    use crate::Bag;
 
     static_assertions::assert_not_impl_all!(Bag<Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(Bag<String>: Send, Sync, UnwindSafe);
@@ -3019,17 +3017,16 @@ mod bag_test {
     }
 }
 
-#[cfg(not(feature = "loom"))]
-#[cfg(test)]
-mod queue_test {
-    use crate::ebr::Guard;
-    use crate::Queue;
+mod queue {
     use std::panic::UnwindSafe;
     use std::rc::Rc;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
     use std::sync::{Arc, Barrier};
     use std::thread;
+
+    use crate::ebr::Guard;
+    use crate::Queue;
 
     static_assertions::assert_not_impl_all!(Queue<Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(Queue<String>: Send, Sync, UnwindSafe);
@@ -3234,13 +3231,13 @@ mod queue_test {
     }
 }
 
-#[cfg(not(feature = "loom"))]
-#[cfg(test)]
-mod stack_test {
+mod stack {
+    use std::{panic::UnwindSafe, rc::Rc, sync::Arc};
+
+    use tokio::sync::Barrier as AsyncBarrier;
+
     use crate::ebr::Guard;
     use crate::Stack;
-    use std::{panic::UnwindSafe, rc::Rc, sync::Arc};
-    use tokio::sync::Barrier as AsyncBarrier;
 
     static_assertions::assert_not_impl_all!(Stack<Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(Stack<String>: Send, Sync, UnwindSafe);
@@ -3415,16 +3412,15 @@ mod stack_test {
     }
 }
 
-#[cfg(not(feature = "loom"))]
-#[cfg(test)]
-mod random_failure_test {
-    use crate::ebr::{Guard, Shared};
-    use crate::hash_map::Entry;
-    use crate::{HashCache, HashIndex, HashMap, TreeIndex};
+mod malfunction {
     use std::any::Any;
     use std::panic::catch_unwind;
     use std::sync::atomic::Ordering::{AcqRel, Relaxed};
     use std::sync::atomic::{AtomicBool, AtomicUsize};
+
+    use crate::ebr::{Guard, Shared};
+    use crate::hash_map::Entry;
+    use crate::{HashCache, HashIndex, HashMap, TreeIndex};
 
     struct R(&'static AtomicUsize, &'static AtomicBool, bool);
     impl R {
@@ -3590,11 +3586,10 @@ mod random_failure_test {
 }
 
 #[cfg(feature = "serde")]
-#[cfg(test)]
-mod serde_test {
-    use crate::{HashCache, HashIndex, HashMap, HashSet, TreeIndex};
-
+mod serde {
     use serde_test::{assert_tokens, Token};
+
+    use crate::{HashCache, HashIndex, HashMap, HashSet, TreeIndex};
 
     #[test]
     fn hashmap() {
