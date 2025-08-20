@@ -1,8 +1,8 @@
 use std::time::Instant;
 
-use criterion::{criterion_group, criterion_main, Criterion};
-use scc::ebr::Guard;
+use criterion::{Criterion, criterion_group, criterion_main};
 use scc::TreeIndex;
+use scc::ebr::Guard;
 
 fn insert(c: &mut Criterion) {
     c.bench_function("TreeIndex: insert", |b| {

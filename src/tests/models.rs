@@ -51,9 +51,11 @@ fn tree_index_split_leaf_node() {
         let cnt_clone = cnt.clone();
         let tree_index_clone = tree_index.clone();
         let thread_insert = spawn(move || {
-            assert!(tree_index_clone
-                .insert(keys, A::new(keys, cnt_clone))
-                .is_ok());
+            assert!(
+                tree_index_clone
+                    .insert(keys, A::new(keys, cnt_clone))
+                    .is_ok()
+            );
         });
 
         let thread_remove = spawn(move || {
@@ -65,9 +67,11 @@ fn tree_index_split_leaf_node() {
                 key
             );
             assert!(tree_index.remove(key.borrow()));
-            assert!(tree_index
-                .peek_with(key.borrow(), |_key, value| value.0)
-                .is_none());
+            assert!(
+                tree_index
+                    .peek_with(key.borrow(), |_key, value| value.0)
+                    .is_none()
+            );
         });
 
         assert!(thread_insert.join().is_ok());
@@ -100,9 +104,11 @@ fn tree_index_split_internal_node() {
         let cnt_clone = cnt.clone();
         let tree_index_clone = tree_index.clone();
         let thread_insert = spawn(move || {
-            assert!(tree_index_clone
-                .insert(keys, A::new(keys, cnt_clone))
-                .is_ok());
+            assert!(
+                tree_index_clone
+                    .insert(keys, A::new(keys, cnt_clone))
+                    .is_ok()
+            );
         });
 
         let thread_remove = spawn(move || {

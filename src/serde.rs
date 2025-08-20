@@ -4,9 +4,9 @@ use std::fmt;
 use std::hash::{BuildHasher, Hash};
 use std::marker::PhantomData;
 
+use serde::Deserializer;
 use serde::de::{Deserialize, MapAccess, SeqAccess, Visitor};
 use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
-use serde::Deserializer;
 
 use super::ebr::Guard;
 use super::{HashCache, HashIndex, HashMap, HashSet, TreeIndex};

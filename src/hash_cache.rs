@@ -10,12 +10,12 @@ use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
+use super::Equivalent;
 use super::ebr::{AtomicShared, Guard, Shared, Tag};
-use super::hash_table::bucket::{DoublyLinkedList, EntryPtr, Locker, Reader, CACHE};
+use super::hash_table::bucket::{CACHE, DoublyLinkedList, EntryPtr, Reader, Writer};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::{HashTable, LockedEntry};
 use super::wait_queue::AsyncWait;
-use super::Equivalent;
 
 /// Scalable concurrent 32-way associative cache backed by [`HashMap`](super::HashMap).
 ///
@@ -198,7 +198,7 @@ where
     pub fn entry(&self, key: K) -> Entry<'_, K, V, H> {
         let guard = Guard::new();
         let hash = self.hash(&key);
-        let mut locked_entry = unsafe {
+        let locked_entry = unsafe {
             self.reserve_entry(&key, hash, &mut (), self.prolonged_guard_ref(&guard))
                 .ok()
                 .unwrap_unchecked()
@@ -240,7 +240,7 @@ where
             let mut async_wait_pinned = Pin::new(&mut async_wait);
             {
                 let guard = Guard::new();
-                if let Ok(mut locked_entry) = self.reserve_entry(
+                if let Ok(locked_entry) = self.reserve_entry(
                     &key,
                     hash,
                     &mut async_wait_pinned,
@@ -321,9 +321,9 @@ where
     pub fn put(&self, key: K, val: V) -> Result<EvictedEntry<K, V>, (K, V)> {
         let guard = Guard::new();
         let hash = self.hash(&key);
-        let result = match self.reserve_entry(&key, hash, &mut (), &guard) {
+        match self.reserve_entry(&key, hash, &mut (), &guard) {
             Ok(LockedEntry {
-                mut locker,
+                locker,
                 data_block_mut,
                 entry_ptr,
                 index: _,
@@ -342,8 +342,7 @@ where
                 Ok(evicted)
             }
             Err(()) => Err((key, val)),
-        };
-        result
+        }
     }
 
     /// Puts a key-value pair into the [`HashCache`].
@@ -372,7 +371,7 @@ where
             {
                 let guard = Guard::new();
                 if let Ok(LockedEntry {
-                    mut locker,
+                    locker,
                     data_block_mut,
                     entry_ptr,
                     index: _,
@@ -390,7 +389,7 @@ where
                     );
                     locker.update_lru_tail(&entry_ptr);
                     return Ok(evicted);
-                };
+                }
             }
             async_wait_pinned.await;
         }
@@ -423,7 +422,7 @@ where
         Q: Equivalent<K> + Hash + ?Sized,
     {
         let guard = Guard::new();
-        let mut locked_entry = self
+        let locked_entry = self
             .get_entry(
                 key,
                 self.hash(key),
@@ -471,7 +470,7 @@ where
                 &mut async_wait_pinned,
                 self.prolonged_guard_ref(&Guard::new()),
             ) {
-                if let Some(mut locked_entry) = result {
+                if let Some(locked_entry) = result {
                     locked_entry.locker.update_lru_tail(&locked_entry.entry_ptr);
                     return Some(OccupiedEntry {
                         hashcache: self,
@@ -780,7 +779,7 @@ where
                                 }
                             }
                             break;
-                        };
+                        }
                     }
                     async_wait_pinned.await;
                 }
@@ -871,7 +870,7 @@ where
                                 }
                             }
                             break;
-                        };
+                        }
                     }
                     async_wait_pinned.await;
                 }
@@ -955,7 +954,7 @@ where
                         let guard = Guard::new();
                         let bucket = current_array.bucket_mut(index);
                         if let Ok(locker) =
-                            Locker::try_lock_or_wait(bucket, &mut async_wait_pinned, &guard)
+                            Writer::try_lock_or_wait(bucket, &mut async_wait_pinned, &guard)
                         {
                             if let Some(mut locker) = locker {
                                 let data_block_mut = current_array.data_block_mut(index);
@@ -969,7 +968,7 @@ where
                                 }
                             }
                             break;
-                        };
+                        }
                     }
                     async_wait_pinned.await;
                 }
@@ -1539,7 +1538,7 @@ where
             &mut self.locked_entry.entry_ptr,
             self.hashcache.prolonged_guard_ref(&guard),
         );
-        if self.locked_entry.locker.num_entries() <= 1 || self.locked_entry.locker.need_rebuild() {
+        if self.locked_entry.locker.len() <= 1 || self.locked_entry.locker.need_rebuild() {
             let hashcache = self.hashcache;
             if let Some(current_array) = hashcache.bucket_array().load(Acquire, &guard).as_ref() {
                 if !current_array.has_old_array() {
@@ -1754,7 +1753,7 @@ where
     /// assert_eq!(*hashcache.get(&19).unwrap().get(), 29);
     /// ```
     #[inline]
-    pub fn put_entry(mut self, val: V) -> (EvictedEntry<K, V>, OccupiedEntry<'h, K, V, H>) {
+    pub fn put_entry(self, val: V) -> (EvictedEntry<K, V>, OccupiedEntry<'h, K, V, H>) {
         let evicted = self
             .locked_entry
             .locker

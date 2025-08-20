@@ -1,9 +1,10 @@
-use std::alloc::{alloc, alloc_zeroed, dealloc, Layout};
+use std::alloc::{Layout, alloc, alloc_zeroed, dealloc};
 use std::mem::{align_of, needs_drop, size_of};
+use std::panic::UnwindSafe;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 
-use super::bucket::{Bucket, DataBlock, LruList, BUCKET_LEN, OPTIMISTIC};
+use super::bucket::{BUCKET_LEN, Bucket, DataBlock, LruList, OPTIMISTIC};
 use crate::ebr::{AtomicShared, Guard, Ptr, Tag};
 
 /// [`BucketArray`] is a special purpose array to manage [`Bucket`] and [`DataBlock`].
@@ -218,8 +219,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     #[allow(clippy::cast_possible_truncation)]
     fn calculate_log2_array_size(capacity: usize) -> u8 {
         let adjusted_capacity = capacity.clamp(64, (usize::MAX / 2) - (BUCKET_LEN - 1));
-        let required_buckets =
-            ((adjusted_capacity + BUCKET_LEN - 1) / BUCKET_LEN).next_power_of_two();
+        let required_buckets = adjusted_capacity.div_ceil(BUCKET_LEN).next_power_of_two();
         let log2_capacity = usize::BITS as usize - (required_buckets.leading_zeros() as usize) - 1;
 
         // `2^log2_capacity * BUCKET_LEN >= capacity`.
@@ -281,6 +281,11 @@ unsafe impl<K: Send + Sync, V: Send + Sync, L: LruList, const TYPE: char> Sync
 {
 }
 
+impl<K: UnwindSafe, V: UnwindSafe, L: LruList, const TYPE: char> UnwindSafe
+    for BucketArray<K, V, L, TYPE>
+{
+}
+
 #[cfg(not(feature = "loom"))]
 #[cfg(test)]
 mod test {
@@ -308,7 +313,7 @@ mod test {
             let array: BucketArray<usize, usize, (), OPTIMISTIC> =
                 BucketArray::new(s, AtomicShared::default());
             assert!(
-                array.num_buckets() >= (s.max(1) + BUCKET_LEN - 1) / BUCKET_LEN,
+                array.num_buckets() >= s.max(1).div_ceil(BUCKET_LEN),
                 "{s} {}",
                 array.num_buckets()
             );

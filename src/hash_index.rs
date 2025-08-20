@@ -11,12 +11,12 @@ use std::ptr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
+use super::Equivalent;
 use super::ebr::{AtomicShared, Guard, Shared};
-use super::hash_table::bucket::{Bucket, EntryPtr, Locker, OPTIMISTIC};
+use super::hash_table::bucket::{Bucket, EntryPtr, OPTIMISTIC, Writer};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::{HashTable, LockedEntry};
 use super::wait_queue::AsyncWait;
-use super::Equivalent;
 
 /// Scalable concurrent hash index.
 ///
@@ -638,7 +638,7 @@ where
             &Guard::new(),
         )
         .ok()
-        .map_or(false, |r| r)
+        .is_some_and(|r| r)
     }
 
     /// Removes a key-value pair if the key exists and the given condition is met.
@@ -900,9 +900,9 @@ where
                         let guard = Guard::new();
                         let bucket = current_array.bucket_mut(index);
                         if let Ok(locker) =
-                            Locker::try_lock_or_wait(bucket, &mut async_wait_pinned, &guard)
+                            Writer::try_lock_or_wait(bucket, &mut async_wait_pinned, &guard)
                         {
-                            if let Some(mut locker) = locker {
+                            if let Some(locker) = locker {
                                 let data_block_mut = current_array.data_block_mut(index);
                                 let mut entry_ptr = EntryPtr::new(&guard);
                                 while entry_ptr.move_to_next(&locker, &guard) {
@@ -914,7 +914,7 @@ where
                                 }
                             }
                             break;
-                        };
+                        }
                     }
                     async_wait_pinned.await;
                 }
@@ -1422,12 +1422,14 @@ where
     where
         F: FnOnce(&mut V),
     {
-        match self {
-            Self::Occupied(mut o) => {
-                f(o.get_mut());
-                Self::Occupied(o)
+        unsafe {
+            match self {
+                Self::Occupied(mut o) => {
+                    f(o.get_mut());
+                    Self::Occupied(o)
+                }
+                Self::Vacant(_) => self,
             }
-            Self::Vacant(_) => self,
         }
     }
 }
@@ -1524,7 +1526,7 @@ where
             &mut self.locked_entry.entry_ptr,
             self.hashindex.prolonged_guard_ref(&guard),
         );
-        if self.locked_entry.locker.num_entries() <= 1 || self.locked_entry.locker.need_rebuild() {
+        if self.locked_entry.locker.len() <= 1 || self.locked_entry.locker.need_rebuild() {
             let hashindex = self.hashindex;
             if let Some(current_array) = hashindex.bucket_array().load(Acquire, &guard).as_ref() {
                 if !current_array.has_old_array() {
@@ -1801,7 +1803,7 @@ where
     /// assert_eq!(hashindex.peek_with(&19, |_, v| *v), Some(29));
     /// ```
     #[inline]
-    pub fn insert_entry(mut self, val: V) -> OccupiedEntry<'h, K, V, H> {
+    pub fn insert_entry(self, val: V) -> OccupiedEntry<'h, K, V, H> {
         let guard = Guard::new();
         let entry_ptr = self.locked_entry.locker.insert_with(
             self.locked_entry.data_block_mut,
@@ -1971,7 +1973,7 @@ where
                     .current_array
                     .as_ref()
                     .copied()
-                    .map_or(false, |a| ptr::eq(a, current_array))
+                    .is_some_and(|a| ptr::eq(a, current_array))
                 {
                     // Finished scanning the entire array.
                     break;
@@ -1981,7 +1983,7 @@ where
                     .current_array
                     .as_ref()
                     .copied()
-                    .map_or(false, |a| ptr::eq(a, old_array_ptr.as_ptr()))
+                    .is_some_and(|a| ptr::eq(a, old_array_ptr.as_ptr()))
                 {
                     // Start scanning the current array.
                     array = current_array;

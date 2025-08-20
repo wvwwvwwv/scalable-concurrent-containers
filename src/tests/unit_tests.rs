@@ -1,7 +1,7 @@
 mod hashmap {
     use std::collections::BTreeSet;
     use std::hash::{Hash, Hasher};
-    use std::panic::UnwindSafe;
+    use std::panic::{RefUnwindSafe, UnwindSafe};
     use std::rc::Rc;
     use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
     use std::sync::atomic::{AtomicU64, AtomicUsize};
@@ -19,14 +19,14 @@ mod hashmap {
 
     static_assertions::assert_not_impl_all!(HashMap<Rc<String>, Rc<String>>: Send, Sync);
     static_assertions::assert_not_impl_all!(hash_map::Entry<Rc<String>, Rc<String>>: Send, Sync);
-    static_assertions::assert_impl_all!(HashMap<String, String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_impl_all!(HashMap<String, String>: Send, Sync, RefUnwindSafe, UnwindSafe);
     static_assertions::assert_impl_all!(Reserve<String, String>: Send, Sync, UnwindSafe);
-    static_assertions::assert_not_impl_all!(HashMap<String, *const String>: Send, Sync, UnwindSafe);
-    static_assertions::assert_not_impl_all!(Reserve<String, *const String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_all!(HashMap<String, *const String>: Send, Sync, RefUnwindSafe, UnwindSafe);
+    static_assertions::assert_not_impl_all!(Reserve<String, *const String>: Send, Sync, RefUnwindSafe, UnwindSafe);
     static_assertions::assert_impl_all!(hash_map::OccupiedEntry<String, String>: Send, Sync);
-    static_assertions::assert_not_impl_all!(hash_map::OccupiedEntry<String, *const String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_all!(hash_map::OccupiedEntry<String, *const String>: Send, Sync, RefUnwindSafe, UnwindSafe);
     static_assertions::assert_impl_all!(hash_map::VacantEntry<String, String>: Send, Sync);
-    static_assertions::assert_not_impl_all!(hash_map::VacantEntry<String, *const String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_all!(hash_map::VacantEntry<String, *const String>: Send, Sync, RefUnwindSafe, UnwindSafe);
 
     struct R(&'static AtomicUsize);
     impl R {
@@ -401,7 +401,7 @@ mod hashmap {
     }
 
     #[cfg_attr(miri, ignore)]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn insert_read_remove() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
         for _ in 0..256 {
@@ -438,7 +438,7 @@ mod hashmap {
     }
 
     #[cfg_attr(miri, ignore)]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn entry_next_retain() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
         for _ in 0..256 {
@@ -519,7 +519,7 @@ mod hashmap {
     }
 
     #[cfg_attr(miri, ignore)]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn prune() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
         for _ in 0..256 {
@@ -576,7 +576,7 @@ mod hashmap {
     }
 
     #[cfg_attr(miri, ignore)]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn retain_any() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
         for _ in 0..256 {
@@ -777,7 +777,7 @@ mod hashmap {
     }
 
     #[cfg_attr(miri, ignore)]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn read() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
         let num_tasks = 4;
@@ -876,9 +876,9 @@ mod hashindex {
     use std::hash::{Hash, Hasher};
     use std::panic::UnwindSafe;
     use std::rc::Rc;
-    use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
-    use std::sync::atomic::{fence, AtomicU64, AtomicUsize};
     use std::sync::Arc;
+    use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, fence};
     use std::thread;
     use tokio::sync::Barrier as AsyncBarrier;
 
@@ -1105,7 +1105,7 @@ mod hashindex {
     }
 
     #[cfg_attr(miri, ignore)]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn read() {
         let hashindex: Arc<HashIndex<usize, usize>> = Arc::new(HashIndex::default());
         let num_tasks = 4;
@@ -1143,7 +1143,7 @@ mod hashindex {
     }
 
     #[cfg_attr(miri, ignore)]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn drop_entries() {
         let hashindex: Arc<HashIndex<usize, String>> = Arc::new(HashIndex::default());
         let num_tasks = 4;
@@ -1182,10 +1182,12 @@ mod hashindex {
                     for _ in 0..num_iter {
                         for id in range.clone() {
                             assert!(hashindex_clone.remove_async(&id).await);
-                            assert!(hashindex_clone
-                                .insert_async(id, str.to_string())
-                                .await
-                                .is_ok());
+                            assert!(
+                                hashindex_clone
+                                    .insert_async(id, str.to_string())
+                                    .await
+                                    .is_ok()
+                            );
                         }
                     }
                 }
@@ -1200,7 +1202,7 @@ mod hashindex {
     }
 
     #[cfg_attr(miri, ignore)]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn rebuild() {
         let hashindex: Arc<HashIndex<usize, usize>> = Arc::new(HashIndex::default());
         let num_tasks = 4;
@@ -1406,7 +1408,7 @@ mod hashindex {
     }
 
     #[cfg_attr(miri, ignore)]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn update() {
         let hashindex: Arc<HashIndex<usize, usize>> = Arc::new(HashIndex::default());
         for _ in 0..256 {
@@ -1464,7 +1466,7 @@ mod hashindex {
     }
 
     #[cfg_attr(miri, ignore)]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn retain() {
         let hashindex: Arc<HashIndex<usize, usize>> = Arc::new(HashIndex::default());
         for _ in 0..256 {
@@ -1493,9 +1495,11 @@ mod hashindex {
                         }
                     });
                     assert!(iterated >= workload_size);
-                    assert!(hashindex_clone
-                        .iter(&Guard::new())
-                        .any(|(k, _)| range.contains(k)));
+                    assert!(
+                        hashindex_clone
+                            .iter(&Guard::new())
+                            .any(|(k, _)| range.contains(k))
+                    );
 
                     let mut removed = 0;
                     if task_id % 4 == 0 {
@@ -1520,9 +1524,11 @@ mod hashindex {
                             .await;
                     }
                     assert_eq!(removed, workload_size);
-                    assert!(!hashindex_clone
-                        .iter(&Guard::new())
-                        .any(|(k, _)| range.contains(k)));
+                    assert!(
+                        !hashindex_clone
+                            .iter(&Guard::new())
+                            .any(|(k, _)| range.contains(k))
+                    );
                 }));
             }
 
@@ -1605,9 +1611,9 @@ mod hashcache {
     use std::hash::{Hash, Hasher};
     use std::panic::UnwindSafe;
     use std::rc::Rc;
+    use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
-    use std::sync::Arc;
     use tokio::sync::Barrier as AsyncBarrier;
 
     use proptest::prelude::*;
@@ -1820,7 +1826,7 @@ mod hashcache {
     }
 
     #[cfg_attr(miri, ignore)]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn put_get_remove() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         let hashcache: Arc<HashCache<usize, R>> = Arc::new(HashCache::default());
@@ -1844,10 +1850,12 @@ mod hashcache {
                                 .await
                                 .or_put(R::new(&INST_CNT));
                         } else {
-                            assert!(hashcache_clone
-                                .put_async(id, R::new(&INST_CNT))
-                                .await
-                                .is_ok());
+                            assert!(
+                                hashcache_clone
+                                    .put_async(id, R::new(&INST_CNT))
+                                    .await
+                                    .is_ok()
+                            );
                         }
                     }
                     let mut hit_count = 0;
@@ -1888,7 +1896,7 @@ mod hashcache {
     }
 
     #[cfg_attr(miri, ignore)]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn put_remove_maintain() {
         static INST_CNT: AtomicUsize = AtomicUsize::new(0);
         for _ in 0..64 {
@@ -2056,8 +2064,8 @@ mod treeindex {
 
         let guard = Guard::new();
         let mut range = tree.range("C".."Y", &guard);
-        assert_eq!(range.next().unwrap().0 .0, "C");
-        assert_eq!(range.next().unwrap().0 .0, "X");
+        assert_eq!(range.next().unwrap().0.0, "C");
+        assert_eq!(range.next().unwrap().0.0, "X");
         assert!(range.next().is_none());
 
         tree.remove_range("C".."Y");
@@ -2269,7 +2277,7 @@ mod treeindex {
     }
 
     #[cfg_attr(miri, ignore)]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn remove_range() {
         let num_tasks = 2;
         let workload_size = 4096;
@@ -2404,17 +2412,21 @@ mod treeindex {
                     assert!(tree_clone.insert(key, key).is_ok());
                 }
                 for key in first_key..(first_key + range / 2) {
-                    assert!(tree_clone
-                        .peek_with(&key, |key, val| assert_eq!(key, val))
-                        .is_some());
+                    assert!(
+                        tree_clone
+                            .peek_with(&key, |key, val| assert_eq!(key, val))
+                            .is_some()
+                    );
                 }
                 for key in (first_key + range / 2)..(first_key + range) {
                     assert!(tree_clone.insert(key, key).is_ok());
                 }
                 for key in (first_key + range / 2)..(first_key + range) {
-                    assert!(tree_clone
-                        .peek_with(&key, |key, val| assert_eq!(key, val))
-                        .is_some());
+                    assert!(
+                        tree_clone
+                            .peek_with(&key, |key, val| assert_eq!(key, val))
+                            .is_some()
+                    );
                 }
             }));
         }
@@ -2432,9 +2444,10 @@ mod treeindex {
         }
         assert_eq!(found, num_threads * range);
         for key in 0..num_threads * range {
-            assert!(tree
-                .peek_with(&key, |key, val| assert_eq!(key, val))
-                .is_some());
+            assert!(
+                tree.peek_with(&key, |key, val| assert_eq!(key, val))
+                    .is_some()
+            );
         }
 
         let guard = Guard::new();
@@ -2493,9 +2506,11 @@ mod treeindex {
                         assert!(tree_clone.insert(key, key).is_ok());
                     }
                     for key in (first_key + 1)..(first_key + range) {
-                        assert!(tree_clone
-                            .peek_with(&key, |key, val| assert_eq!(key, val))
-                            .is_some());
+                        assert!(
+                            tree_clone
+                                .peek_with(&key, |key, val| assert_eq!(key, val))
+                                .is_some()
+                        );
                     }
                     {
                         let guard = Guard::new();
@@ -2526,9 +2541,11 @@ mod treeindex {
                         assert!(tree_clone.peek_with(&key, |_, _| ()).is_none());
                     }
                     for key in (first_key + 1)..(first_key + range) {
-                        assert!(tree_clone
-                            .peek_with(&key, |key, val| assert_eq!(key, val))
-                            .is_none());
+                        assert!(
+                            tree_clone
+                                .peek_with(&key, |key, val| assert_eq!(key, val))
+                                .is_none()
+                        );
                     }
                 }
             }));
@@ -2590,7 +2607,7 @@ mod treeindex {
                         .filter(|i| {
                             tree_clone
                                 .peek_with(i, |_, v| *v == thread_id)
-                                .map_or(false, |t| t)
+                                .is_some_and(|t| t)
                         })
                         .count();
                     let removed = range
@@ -2822,14 +2839,14 @@ mod treeindex {
 mod bag {
     use std::panic::UnwindSafe;
     use std::rc::Rc;
+    use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
-    use std::sync::Arc;
     use tokio::sync::Barrier as AsyncBarrier;
     use tokio::task;
 
-    use crate::bag::IterMut;
     use crate::Bag;
+    use crate::bag::IterMut;
 
     static_assertions::assert_not_impl_all!(Bag<Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(Bag<String>: Send, Sync, UnwindSafe);
@@ -3025,8 +3042,8 @@ mod queue {
     use std::sync::{Arc, Barrier};
     use std::thread;
 
-    use crate::ebr::Guard;
     use crate::Queue;
+    use crate::ebr::Guard;
 
     static_assertions::assert_not_impl_all!(Queue<Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(Queue<String>: Send, Sync, UnwindSafe);
@@ -3236,8 +3253,8 @@ mod stack {
 
     use tokio::sync::Barrier as AsyncBarrier;
 
-    use crate::ebr::Guard;
     use crate::Stack;
+    use crate::ebr::Guard;
 
     static_assertions::assert_not_impl_all!(Stack<Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(Stack<String>: Send, Sync, UnwindSafe);
@@ -3521,9 +3538,11 @@ mod malfunction {
         let hashindex: HashIndex<usize, R> = HashIndex::default();
         for k in 0..workload_size {
             let result: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
-                assert!(hashindex
-                    .insert(k as usize, R::new_panic_free_drop(&INST_CNT, &NEVER_PANIC))
-                    .is_ok());
+                assert!(
+                    hashindex
+                        .insert(k as usize, R::new_panic_free_drop(&INST_CNT, &NEVER_PANIC))
+                        .is_ok()
+                );
             });
             NEVER_PANIC.store(true, Relaxed);
             assert_eq!(
@@ -3545,9 +3564,11 @@ mod malfunction {
         let hashcache: HashCache<usize, R> = HashCache::default();
         for k in 0..workload_size {
             let result: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
-                assert!(hashcache
-                    .put(k as usize, R::new(&INST_CNT, &NEVER_PANIC))
-                    .is_ok());
+                assert!(
+                    hashcache
+                        .put(k as usize, R::new(&INST_CNT, &NEVER_PANIC))
+                        .is_ok()
+                );
                 if let Some(mut o) = hashcache.get(&(k as usize)) {
                     o.get_mut().2 = true;
                 }
@@ -3567,9 +3588,11 @@ mod malfunction {
         let treeindex: TreeIndex<usize, R> = TreeIndex::default();
         for k in 0..14 * 14 * 14 {
             let result: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
-                assert!(treeindex
-                    .insert(k, R::new_panic_free_drop(&INST_CNT, &NEVER_PANIC))
-                    .is_ok());
+                assert!(
+                    treeindex
+                        .insert(k, R::new_panic_free_drop(&INST_CNT, &NEVER_PANIC))
+                        .is_ok()
+                );
                 assert!(treeindex.peek_with(&k, |_, _| ()).is_some());
             });
             assert_eq!(treeindex.peek_with(&k, |_, _| ()).is_some(), result.is_ok());
@@ -3587,7 +3610,7 @@ mod malfunction {
 
 #[cfg(feature = "serde")]
 mod serde {
-    use serde_test::{assert_tokens, Token};
+    use serde_test::{Token, assert_tokens};
 
     use crate::{HashCache, HashIndex, HashMap, HashSet, TreeIndex};
 

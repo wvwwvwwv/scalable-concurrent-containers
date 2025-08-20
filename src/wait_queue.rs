@@ -1,3 +1,6 @@
+#![allow(warnings)]
+#![allow(clippy::pedantic)]
+
 use crate::ebr::Guard;
 use crate::maybe_std::yield_now;
 use std::future::Future;
@@ -322,9 +325,9 @@ impl SyncWait {
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::sync::atomic::Ordering::Release;
     use std::sync::Arc;
     use std::sync::Barrier;
+    use std::sync::atomic::Ordering::Release;
     use std::thread::yield_now;
 
     #[cfg_attr(miri, ignore)]
@@ -435,11 +438,7 @@ mod test {
                     let mut async_wait_pinned = Pin::new(&mut async_wait);
                     if wait_queue_clone
                         .push_async_entry(&mut async_wait_pinned, || {
-                            if task_id % 2 == 0 {
-                                Ok(())
-                            } else {
-                                Err(())
-                            }
+                            if task_id % 2 == 0 { Ok(()) } else { Err(()) }
                         })
                         .is_ok()
                     {

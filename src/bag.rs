@@ -2,9 +2,9 @@
 
 use std::cell::UnsafeCell;
 use std::iter::FusedIterator;
-use std::mem::{needs_drop, MaybeUninit};
+use std::mem::{MaybeUninit, needs_drop};
 use std::panic::UnwindSafe;
-use std::ptr::drop_in_place;
+use std::ptr::{self, drop_in_place};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
@@ -351,14 +351,14 @@ impl<'b, T, const ARRAY_LEN: usize> Iterator for IterMut<'b, T, ARRAY_LEN> {
             if let Some(linked) = self.current_stack_entry.as_mut() {
                 let guard = Guard::new();
                 if let Some(next) = linked.next_ptr(Acquire, &guard).as_ref() {
-                    let entry_mut = (next as *const LinkedEntry<Storage<T, ARRAY_LEN>>).cast_mut();
+                    let entry_mut = ptr::from_ref(next).cast_mut();
                     self.current_stack_entry = unsafe { entry_mut.as_mut() };
                     self.current_index = 0;
                 }
             } else {
                 self.bag.stack.peek_with(|e| {
                     if let Some(e) = e {
-                        let entry_mut = (e as *const LinkedEntry<Storage<T, ARRAY_LEN>>).cast_mut();
+                        let entry_mut = ptr::from_ref(e).cast_mut();
                         self.current_stack_entry = unsafe { entry_mut.as_mut() };
                         self.current_index = 0;
                     }
@@ -556,19 +556,21 @@ impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
             ) {
                 Ok(_) => {
                     metadata = marked_for_removal;
-                    let _guard = ExitGuard::new((), |()| loop {
-                        let new_metadata =
-                            metadata & (!((instances_to_pop << ARRAY_LEN) | instances_to_pop));
-                        if let Err(actual) = self.metadata.compare_exchange_weak(
-                            metadata,
-                            new_metadata,
-                            Release,
-                            Relaxed,
-                        ) {
-                            metadata = actual;
-                            continue;
+                    let _guard = ExitGuard::new((), |()| {
+                        loop {
+                            let new_metadata =
+                                metadata & (!((instances_to_pop << ARRAY_LEN) | instances_to_pop));
+                            if let Err(actual) = self.metadata.compare_exchange_weak(
+                                metadata,
+                                new_metadata,
+                                Release,
+                                Relaxed,
+                            ) {
+                                metadata = actual;
+                                continue;
+                            }
+                            break;
                         }
-                        break;
                     });
 
                     // Now all the valid slots are locked for removal.

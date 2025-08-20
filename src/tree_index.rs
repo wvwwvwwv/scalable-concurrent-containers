@@ -14,9 +14,9 @@ use std::panic::UnwindSafe;
 use std::pin::Pin;
 use std::sync::atomic::Ordering::{AcqRel, Acquire};
 
+use crate::Comparable;
 use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::wait_queue::AsyncWait;
-use crate::Comparable;
 use leaf::{InsertResult, Leaf, RemoveResult, Scanner};
 use node::Node;
 
@@ -1023,10 +1023,10 @@ where
         self.check_upper_bound = match self.bounds.end_bound() {
             Excluded(key) => scanner
                 .max_key()
-                .map_or(false, |max_key| key.compare(max_key).is_le()),
+                .is_some_and(|max_key| key.compare(max_key).is_le()),
             Included(key) => scanner
                 .max_key()
-                .map_or(false, |max_key| key.compare(max_key).is_lt()),
+                .is_some_and(|max_key| key.compare(max_key).is_lt()),
             Unbounded => false,
         };
     }

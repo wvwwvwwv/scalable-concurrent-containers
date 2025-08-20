@@ -9,12 +9,12 @@ use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
+use super::Equivalent;
 use super::ebr::{AtomicShared, Guard, Shared, Tag};
-use super::hash_table::bucket::{EntryPtr, Locker, Reader, SEQUENTIAL};
+use super::hash_table::bucket::{EntryPtr, Reader, SEQUENTIAL, Writer};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::{HashTable, LockedEntry};
 use super::wait_queue::AsyncWait;
-use super::Equivalent;
 
 /// Scalable concurrent hash map.
 ///
@@ -1124,7 +1124,7 @@ where
                                 }
                             }
                             break;
-                        };
+                        }
                     }
                     async_wait_pinned.await;
                 }
@@ -1207,7 +1207,7 @@ where
                         let guard = Guard::new();
                         let bucket = current_array.bucket_mut(index);
                         if let Ok(locker) =
-                            Locker::try_lock_or_wait(bucket, &mut async_wait_pinned, &guard)
+                            Writer::try_lock_or_wait(bucket, &mut async_wait_pinned, &guard)
                         {
                             if let Some(mut locker) = locker {
                                 let data_block_mut = current_array.data_block_mut(index);
@@ -1221,7 +1221,7 @@ where
                                 }
                             }
                             break;
-                        };
+                        }
                     }
                     async_wait_pinned.await;
                 }
@@ -1305,9 +1305,9 @@ where
                         let guard = Guard::new();
                         let bucket = current_array.bucket_mut(index);
                         if let Ok(locker) =
-                            Locker::try_lock_or_wait(bucket, &mut async_wait_pinned, &guard)
+                            Writer::try_lock_or_wait(bucket, &mut async_wait_pinned, &guard)
                         {
-                            if let Some(mut locker) = locker {
+                            if let Some(locker) = locker {
                                 let data_block_mut = current_array.data_block_mut(index);
                                 let mut entry_ptr = EntryPtr::new(&guard);
                                 while entry_ptr.move_to_next(&locker, &guard) {
@@ -1322,7 +1322,7 @@ where
                                 }
                             }
                             break;
-                        };
+                        }
                     }
                     async_wait_pinned.await;
                 }
@@ -1919,7 +1919,7 @@ where
             &mut self.locked_entry.entry_ptr,
             self.hashmap.prolonged_guard_ref(&guard),
         );
-        if self.locked_entry.locker.num_entries() <= 1 || self.locked_entry.locker.need_rebuild() {
+        if self.locked_entry.locker.len() <= 1 || self.locked_entry.locker.need_rebuild() {
             let hashmap = self.hashmap;
             if let Some(current_array) = hashmap.bucket_array().load(Acquire, &guard).as_ref() {
                 if !current_array.has_old_array() {
@@ -2205,7 +2205,7 @@ where
     /// assert_eq!(hashmap.read(&19, |_, v| *v), Some(29));
     /// ```
     #[inline]
-    pub fn insert_entry(mut self, val: V) -> OccupiedEntry<'h, K, V, H> {
+    pub fn insert_entry(self, val: V) -> OccupiedEntry<'h, K, V, H> {
         let guard = Guard::new();
         let entry_ptr = self.locked_entry.locker.insert_with(
             self.locked_entry.data_block_mut,

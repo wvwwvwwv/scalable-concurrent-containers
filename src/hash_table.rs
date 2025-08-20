@@ -1,17 +1,17 @@
 pub mod bucket;
 pub mod bucket_array;
 
-use bucket::{DataBlock, EntryPtr, Locker, LruList, Reader, BUCKET_LEN, CACHE, OPTIMISTIC};
+use bucket::{BUCKET_LEN, CACHE, DataBlock, EntryPtr, LruList, OPTIMISTIC, Reader, Writer};
 use bucket_array::BucketArray;
-use std::hash::{BuildHasher, Hash, Hasher};
+use std::hash::{BuildHasher, Hash};
 use std::pin::Pin;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
-use std::sync::atomic::{fence, AtomicUsize};
+use std::sync::atomic::{AtomicUsize, fence};
 
+use super::Equivalent;
 use super::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use super::exit_guard::ExitGuard;
 use super::wait_queue::{AsyncWait, DeriveAsyncWait};
-use super::Equivalent;
 
 /// The maximum resize factor.
 const MAX_RESIZE_FACTOR: usize = (usize::BITS / 2) as usize;
@@ -23,15 +23,12 @@ where
     H: BuildHasher,
 {
     /// Returns the hash value of the key.
-    #[allow(clippy::manual_hash_one)] // Stabilized in Rust 1.71.0.
     #[inline]
     fn hash<Q>(&self, key: &Q) -> u64
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        let mut hasher = self.hasher().build_hasher();
-        key.hash(&mut hasher);
-        hasher.finish()
+        self.hasher().hash_one(key)
     }
 
     /// Returns a reference to its [`BuildHasher`].
@@ -132,11 +129,11 @@ where
             let old_array_ptr = current_array.old_array(guard);
             if let Some(old_array) = old_array_ptr.as_ref() {
                 for i in 0..old_array.num_buckets() {
-                    num_entries += old_array.bucket(i).num_entries();
+                    num_entries += old_array.bucket(i).len();
                 }
             }
             for i in 0..current_array.num_buckets() {
-                num_entries += current_array.bucket(i).num_entries();
+                num_entries += current_array.bucket(i).len();
             }
             if num_entries == 0 && self.minimum_capacity().load(Relaxed) == 0 {
                 self.try_resize(0, guard);
@@ -152,13 +149,13 @@ where
             let old_array_ptr = current_array.old_array(guard);
             if let Some(old_array) = old_array_ptr.as_ref() {
                 for i in 0..old_array.num_buckets() {
-                    if old_array.bucket(i).num_entries() != 0 {
+                    if old_array.bucket(i).len() != 0 {
                         return true;
                     }
                 }
             }
             for i in 0..current_array.num_buckets() {
-                if current_array.bucket(i).num_entries() != 0 {
+                if current_array.bucket(i).len() != 0 {
                     return true;
                 }
             }
@@ -188,9 +185,7 @@ where
     ) -> usize {
         let mut num_entries = 0;
         for i in sampling_index..(sampling_index + sample_size) {
-            num_entries += current_array
-                .bucket(i % current_array.num_buckets())
-                .num_entries();
+            num_entries += current_array.bucket(i % current_array.num_buckets()).len();
         }
         num_entries * (current_array.num_buckets() / sample_size)
     }
@@ -229,7 +224,7 @@ where
     ) -> Result<Option<(K, V)>, (K, V)> {
         match self.reserve_entry(&key, hash, async_wait, guard) {
             Ok(LockedEntry {
-                mut locker,
+                locker,
                 data_block_mut,
                 entry_ptr,
                 index: _,
@@ -257,7 +252,7 @@ where
             self.clear_old_array(current_array, guard);
             for index in 0..current_array.num_buckets() {
                 let bucket = current_array.bucket_mut(index);
-                let lock_result = Locker::lock(bucket, guard);
+                let lock_result = Writer::lock(bucket, guard);
                 if let Some(locker) = lock_result {
                     let data_block_mut = current_array.data_block_mut(index);
                     let mut entry_ptr = EntryPtr::new(guard);
@@ -411,9 +406,9 @@ where
             let index = current_array.calculate_bucket_index(hash);
             let bucket = current_array.bucket_mut(index);
             let lock_result = if let Some(async_wait) = async_wait.derive() {
-                Locker::try_lock_or_wait(bucket, async_wait, guard)?
+                Writer::try_lock_or_wait(bucket, async_wait, guard)?
             } else {
-                Locker::lock(bucket, guard)
+                Writer::lock(bucket, guard)
             };
             if let Some(locker) = lock_result {
                 let data_block_mut = current_array.data_block_mut(index);
@@ -477,12 +472,12 @@ where
             let index = current_array.calculate_bucket_index(hash);
             let bucket = current_array.bucket_mut(index);
             let lock_result = if let Some(async_wait) = async_wait.derive() {
-                match Locker::try_lock_or_wait(bucket, async_wait, guard) {
+                match Writer::try_lock_or_wait(bucket, async_wait, guard) {
                     Ok(l) => l,
                     Err(()) => return Err(condition),
                 }
             } else {
-                Locker::lock(bucket, guard)
+                Writer::lock(bucket, guard)
             };
             if let Some(mut locker) = lock_result {
                 let data_block_mut = current_array.data_block_mut(index);
@@ -502,7 +497,7 @@ where
                         Some(locker.remove(data_block_mut, &mut entry_ptr, guard))
                     };
                     if shrinkable
-                        && (locker.num_entries() <= 1 || locker.need_rebuild())
+                        && (locker.len() <= 1 || locker.need_rebuild())
                         && current_array.initiate_sampling(index)
                     {
                         drop(locker);
@@ -558,7 +553,7 @@ where
             self.clear_old_array(current_array, guard);
             for index in 0..current_array.num_buckets() {
                 let bucket = current_array.bucket_mut(index);
-                if let Some(locker) = Locker::lock(bucket, guard) {
+                if let Some(locker) = Writer::lock(bucket, guard) {
                     let data_block_mut = current_array.data_block_mut(index);
                     let mut entry_ptr = EntryPtr::new(guard);
                     while entry_ptr.move_to_next(&locker, guard) {
@@ -595,7 +590,7 @@ where
             self.clear_old_array(current_array, &guard);
             for index in 0..current_array.num_buckets() {
                 let bucket = current_array.bucket_mut(index);
-                if let Some(mut locker) = Locker::lock(bucket, &guard) {
+                if let Some(mut locker) = Writer::lock(bucket, &guard) {
                     let data_block_mut = current_array.data_block_mut(index);
                     let mut entry_ptr = EntryPtr::new(&guard);
                     while entry_ptr.move_to_next(&locker, &guard) {
@@ -634,7 +629,7 @@ where
             self.clear_old_array(current_array, &guard);
             for index in 0..current_array.num_buckets() {
                 let bucket = current_array.bucket_mut(index);
-                if let Some(mut locker) = Locker::lock(bucket, &guard) {
+                if let Some(locker) = Writer::lock(bucket, &guard) {
                     let data_block_mut = current_array.data_block_mut(index);
                     let mut entry_ptr = EntryPtr::new(&guard);
                     while entry_ptr.move_to_next(&locker, &guard) {
@@ -703,16 +698,16 @@ where
             if resizable
                 && (TYPE != CACHE || current_array.num_entries() < self.maximum_capacity())
                 && current_array.initiate_sampling(index)
-                && bucket.num_entries() >= BUCKET_LEN - 1
+                && bucket.len() >= BUCKET_LEN - 1
             {
-                self.try_enlarge(current_array, index, bucket.num_entries(), guard);
+                self.try_enlarge(current_array, index, bucket.len(), guard);
                 bucket = current_array.bucket_mut(index);
             }
 
             let lock_result = if let Some(async_wait) = async_wait.derive() {
-                Locker::try_lock_or_wait(bucket, async_wait, guard)?
+                Writer::try_lock_or_wait(bucket, async_wait, guard)?
             } else {
-                Locker::lock(bucket, guard)
+                Writer::lock(bucket, guard)
             };
             if let Some(locker) = lock_result {
                 let data_block_mut = current_array.data_block_mut(index);
@@ -769,13 +764,13 @@ where
             if resizable
                 && (TYPE != CACHE || current_array.num_entries() < self.maximum_capacity())
                 && current_array.initiate_sampling(index)
-                && bucket.num_entries() >= BUCKET_LEN - 1
+                && bucket.len() >= BUCKET_LEN - 1
             {
-                self.try_enlarge(current_array, index, bucket.num_entries(), guard);
+                self.try_enlarge(current_array, index, bucket.len(), guard);
                 bucket = current_array.bucket_mut(index);
             }
 
-            let lock_result = Locker::try_lock(bucket, guard).ok()?;
+            let lock_result = Writer::try_lock(bucket, guard).ok()?;
             if let Some(locker) = lock_result {
                 let data_block_mut = current_array.data_block_mut(index);
                 let entry_ptr = locker.get_entry_ptr(
@@ -817,9 +812,9 @@ where
             let index = old_array.calculate_bucket_index(hash);
             let bucket = old_array.bucket_mut(index);
             let lock_result = if let Some(async_wait) = async_wait.derive() {
-                Locker::try_lock_or_wait(bucket, async_wait, guard)?
+                Writer::try_lock_or_wait(bucket, async_wait, guard)?
             } else {
-                Locker::lock(bucket, guard)
+                Writer::lock(bucket, guard)
             };
             if let Some(mut locker) = lock_result {
                 self.relocate_bucket::<Q, _, false>(
@@ -845,7 +840,7 @@ where
         current_array: &BucketArray<K, V, L, TYPE>,
         old_array: &BucketArray<K, V, L, TYPE>,
         old_index: usize,
-        old_locker: &mut Locker<K, V, L, TYPE>,
+        old_locker: &mut Writer<K, V, L, TYPE>,
         async_wait: &mut D,
         guard: &Guard,
     ) -> Result<(), ()>
@@ -854,7 +849,7 @@ where
         D: DeriveAsyncWait,
     {
         debug_assert!(!old_locker.killed());
-        if old_locker.num_entries() != 0 {
+        if old_locker.len() != 0 {
             let target_index = if old_array.num_buckets() >= current_array.num_buckets() {
                 let ratio = old_array.num_buckets() / current_array.num_buckets();
                 old_index / ratio
@@ -864,7 +859,7 @@ where
                 old_index * ratio
             };
 
-            let mut target_buckets: [Option<Locker<K, V, L, TYPE>>; MAX_RESIZE_FACTOR] =
+            let mut target_buckets: [Option<Writer<K, V, L, TYPE>>; MAX_RESIZE_FACTOR] =
                 Default::default();
             let mut max_index = 0;
             let mut entry_ptr = EntryPtr::new(guard);
@@ -893,12 +888,12 @@ where
                     let target_bucket = current_array.bucket_mut(max_index + target_index);
                     let locker = unsafe {
                         if TRY_LOCK {
-                            Locker::try_lock(target_bucket, guard)?.unwrap_unchecked()
+                            Writer::try_lock(target_bucket, guard)?.unwrap_unchecked()
                         } else if let Some(async_wait) = async_wait.derive() {
-                            Locker::try_lock_or_wait(target_bucket, async_wait, guard)?
+                            Writer::try_lock_or_wait(target_bucket, async_wait, guard)?
                                 .unwrap_unchecked()
                         } else {
-                            Locker::lock(target_bucket, guard).unwrap_unchecked()
+                            Writer::lock(target_bucket, guard).unwrap_unchecked()
                         }
                     };
                     target_buckets[max_index].replace(locker);
@@ -1020,11 +1015,11 @@ where
             for index in current..(current + BUCKET_LEN).min(old_array.num_buckets()) {
                 let old_bucket = old_array.bucket_mut(index);
                 let lock_result = if TRY_LOCK {
-                    Locker::try_lock(old_bucket, guard)?
+                    Writer::try_lock(old_bucket, guard)?
                 } else if let Some(async_wait) = async_wait.derive() {
-                    Locker::try_lock_or_wait(old_bucket, async_wait, guard)?
+                    Writer::try_lock_or_wait(old_bucket, async_wait, guard)?
                 } else {
-                    Locker::lock(old_bucket, guard)
+                    Writer::lock(old_bucket, guard)
                 };
                 if let Some(mut locker) = lock_result {
                     self.relocate_bucket::<Q, D, TRY_LOCK>(
@@ -1059,7 +1054,7 @@ where
             || (1..sample_size).any(|i| {
                 num_entries += current_array
                     .bucket((index + i) % current_array.num_buckets())
-                    .num_entries();
+                    .len();
                 num_entries > threshold
             })
         {
@@ -1090,7 +1085,7 @@ where
             let mut num_buckets_to_rebuild = 0;
             for i in 0..sample_size {
                 let bucket = current_array.bucket((index + i) % current_array.num_buckets());
-                num_entries += bucket.num_entries();
+                num_entries += bucket.len();
                 if num_entries >= shrink_threshold
                     && (TYPE != OPTIMISTIC
                         || num_buckets_to_rebuild + (sample_size - i) < rebuild_threshold)
@@ -1197,7 +1192,7 @@ where
 
                     if !(0..current_array.num_buckets()).any(|i| {
                         if let Ok(Some(reader)) = Reader::try_lock(current_array.bucket(i), guard) {
-                            if reader.num_entries() == 0 {
+                            if reader.len() == 0 {
                                 // The bucket will be unlocked later.
                                 std::mem::forget(reader);
                                 return false;
@@ -1258,7 +1253,7 @@ where
 /// [`LockedEntry`] comprises pieces of data that are required for exclusive access to an entry.
 pub(super) struct LockedEntry<'h, K, V, L: LruList, const TYPE: char> {
     /// The [`Locker`] holding the exclusive lock on the bucket.
-    pub(super) locker: Locker<'h, K, V, L, TYPE>,
+    pub(super) locker: Writer<'h, K, V, L, TYPE>,
 
     /// The [`DataBlock`] that may contain desired entry data.
     pub(super) data_block_mut: &'h mut DataBlock<K, V, BUCKET_LEN>,
@@ -1273,7 +1268,7 @@ pub(super) struct LockedEntry<'h, K, V, L: LruList, const TYPE: char> {
 impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h, K, V, L, TYPE> {
     /// Creates a new [`LockedEntry`].
     pub(super) fn new(
-        mut locker: Locker<'h, K, V, L, TYPE>,
+        locker: Writer<'h, K, V, L, TYPE>,
         data_block_mut: &'h mut DataBlock<K, V, BUCKET_LEN>,
         entry_ptr: EntryPtr<'h, K, V, TYPE>,
         index: usize,
@@ -1319,7 +1314,7 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
                         let prolonged_current_array =
                             current_array.get_guarded_ref(prolonged_guard);
                         let bucket = prolonged_current_array.bucket_mut(index);
-                        if let Ok(locker) = Locker::try_lock_or_wait(
+                        if let Ok(locker) = Writer::try_lock_or_wait(
                             bucket,
                             &mut async_wait_pinned,
                             prolonged_guard,
@@ -1338,7 +1333,7 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
                                 }
                             }
                             break;
-                        };
+                        }
                     }
                     async_wait_pinned.await;
                 }
@@ -1382,8 +1377,7 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
             }
 
             let prev_index = self.index;
-            let try_shrink_or_rebuild = (self.locker.num_entries() <= 1
-                || self.locker.need_rebuild())
+            let try_shrink_or_rebuild = (self.locker.len() <= 1 || self.locker.need_rebuild())
                 && current_array.initiate_sampling(prev_index);
             drop(self);
 
@@ -1393,7 +1387,7 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
 
             for index in (prev_index + 1)..current_array.num_buckets() {
                 let bucket = current_array.bucket_mut(index);
-                if let Some(locker) = Locker::lock(bucket, prolonged_guard) {
+                if let Some(locker) = Writer::lock(bucket, prolonged_guard) {
                     let data_block_mut = current_array.data_block_mut(index);
                     let mut entry_ptr = EntryPtr::new(prolonged_guard);
                     if entry_ptr.move_to_next(&locker, prolonged_guard) {
@@ -1437,8 +1431,7 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
             }
 
             let prev_index = self.index;
-            let try_shrink_or_rebuild = (self.locker.num_entries() <= 1
-                || self.locker.need_rebuild())
+            let try_shrink_or_rebuild = (self.locker.len() <= 1 || self.locker.need_rebuild())
                 && current_array.initiate_sampling(prev_index);
             drop(self);
 
@@ -1456,7 +1449,7 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
                         let prolonged_current_array =
                             current_array.get_guarded_ref(prolonged_guard);
                         let bucket = prolonged_current_array.bucket_mut(index);
-                        if let Ok(locker) = Locker::try_lock_or_wait(
+                        if let Ok(locker) = Writer::try_lock_or_wait(
                             bucket,
                             &mut async_wait_pinned,
                             prolonged_guard,
@@ -1474,7 +1467,7 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
                                 }
                             }
                             break;
-                        };
+                        }
                     }
                     async_wait_pinned.await;
                 }
@@ -1493,6 +1486,12 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
 
 /// [`LockedEntry`] is safe to be sent across threads and awaits as long as the entry is.
 unsafe impl<K: Eq + Hash + Send, V: Send, L: LruList, const TYPE: char> Send
+    for LockedEntry<'_, K, V, L, TYPE>
+{
+}
+
+/// [`LockedEntry`] is safe to be shared with other threads.
+unsafe impl<K: Eq + Hash + Send + Sync, V: Send + Sync, L: LruList, const TYPE: char> Sync
     for LockedEntry<'_, K, V, L, TYPE>
 {
 }
