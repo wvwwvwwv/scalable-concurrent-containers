@@ -386,7 +386,7 @@ impl<T> Entry<T> {
     /// ```
     #[inline]
     pub unsafe fn take_inner(&mut self) -> T {
-        self.instance.take().unwrap_unchecked()
+        unsafe { self.instance.take().unwrap_unchecked() }
     }
 
     #[inline]

@@ -55,10 +55,10 @@ mod sync_benchmarks {
     }
 
     impl<
-            K: 'static + Clone + Eq + Hash + Ord + Send + Sync,
-            V: 'static + Clone + Send + Sync,
-            H: BuildHasher,
-        > BenchmarkOperation<K, V, H> for HashMap<K, V, H>
+        K: 'static + Clone + Eq + Hash + Ord + Send + Sync,
+        V: 'static + Clone + Send + Sync,
+        H: BuildHasher,
+    > BenchmarkOperation<K, V, H> for HashMap<K, V, H>
     {
         #[inline(always)]
         fn insert_test(&self, k: K, v: V) -> bool {
@@ -86,10 +86,10 @@ mod sync_benchmarks {
     }
 
     impl<
-            K: 'static + Clone + Eq + Hash + Ord + Send + Sync,
-            V: 'static + Clone + Send + Sync,
-            H: 'static + BuildHasher,
-        > BenchmarkOperation<K, V, H> for HashIndex<K, V, H>
+        K: 'static + Clone + Eq + Hash + Ord + Send + Sync,
+        V: 'static + Clone + Send + Sync,
+        H: 'static + BuildHasher,
+    > BenchmarkOperation<K, V, H> for HashIndex<K, V, H>
     {
         #[inline(always)]
         fn insert_test(&self, k: K, v: V) -> bool {
@@ -113,10 +113,10 @@ mod sync_benchmarks {
     }
 
     impl<
-            K: 'static + Clone + Eq + Hash + Ord + Send + Sync,
-            V: 'static + Clone + Send + Sync,
-            H: BuildHasher,
-        > BenchmarkOperation<K, V, H> for TreeIndex<K, V>
+        K: 'static + Clone + Eq + Hash + Ord + Send + Sync,
+        V: 'static + Clone + Send + Sync,
+        H: BuildHasher,
+    > BenchmarkOperation<K, V, H> for TreeIndex<K, V>
     {
         #[inline(always)]
         fn insert_test(&self, k: K, v: V) -> bool {
@@ -687,9 +687,9 @@ mod sync_benchmarks {
 
 mod async_benchmarks {
     use std::collections::hash_map::RandomState;
+    use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
-    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     use tokio::sync::Barrier;

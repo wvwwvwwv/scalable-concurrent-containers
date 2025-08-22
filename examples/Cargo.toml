@@ -2,7 +2,7 @@
 name = "examples"
 version = "0.0.1"
 authors = ["wvwwvwwv <wvwwvwwv@me.com>"]
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 scc = { path = ".."}
