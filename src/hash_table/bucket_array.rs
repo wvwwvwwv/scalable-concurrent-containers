@@ -9,8 +9,8 @@ use crate::ebr::{AtomicShared, Guard, Ptr, Tag};
 
 /// [`BucketArray`] is a special purpose array to manage [`Bucket`] and [`DataBlock`].
 pub struct BucketArray<K, V, L: LruList, const TYPE: char> {
-    bucket_ptr: *mut Bucket<K, V, L, TYPE>,
-    data_block_ptr: *mut DataBlock<K, V, BUCKET_LEN>,
+    bucket_ptr: *const Bucket<K, V, L, TYPE>,
+    data_block_ptr: *const DataBlock<K, V, BUCKET_LEN>,
     array_len: usize,
     hash_offset: u32,
     sample_size_mask: u16,
@@ -22,38 +22,22 @@ pub struct BucketArray<K, V, L: LruList, const TYPE: char> {
 impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     /// Returns the number of [`Bucket`] instances in the [`BucketArray`].
     #[inline]
-    pub(crate) const fn num_buckets(&self) -> usize {
+    pub(crate) const fn len(&self) -> usize {
         self.array_len
     }
 
     /// Returns a reference to a [`Bucket`] at the given position.
     #[inline]
     pub(crate) fn bucket(&self, index: usize) -> &Bucket<K, V, L, TYPE> {
-        debug_assert!(index < self.num_buckets());
+        debug_assert!(index < self.len());
         unsafe { &(*(self.bucket_ptr.add(index))) }
-    }
-
-    /// Returns a mutable reference to a [`Bucket`] at the given position.
-    #[allow(clippy::mut_from_ref)]
-    #[inline]
-    pub(crate) fn bucket_mut(&self, index: usize) -> &mut Bucket<K, V, L, TYPE> {
-        debug_assert!(index < self.num_buckets());
-        unsafe { &mut *self.bucket_ptr.add(index) }
     }
 
     /// Returns a mutable reference to a [`DataBlock`] at the given position.
     #[inline]
     pub(crate) fn data_block(&self, index: usize) -> &DataBlock<K, V, BUCKET_LEN> {
-        debug_assert!(index < self.num_buckets());
+        debug_assert!(index < self.len());
         unsafe { &*self.data_block_ptr.add(index) }
-    }
-
-    /// Returns a mutable reference to a [`DataBlock`] at the given position.
-    #[allow(clippy::mut_from_ref)]
-    #[inline]
-    pub(crate) fn data_block_mut(&self, index: usize) -> &mut DataBlock<K, V, BUCKET_LEN> {
-        debug_assert!(index < self.num_buckets());
-        unsafe { &mut *self.data_block_ptr.add(index) }
     }
 
     /// Calculates the layout of the memory block for an array of `T`.
@@ -185,7 +169,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     /// Returns the recommended sampling size.
     #[inline]
     pub(crate) fn full_sample_size(&self) -> usize {
-        (self.sample_size() * self.sample_size()).min(self.num_buckets())
+        (self.sample_size() * self.sample_size()).min(self.len())
     }
 
     /// Returns a [`Ptr`] to the old array.
@@ -251,8 +235,7 @@ impl<K, V, L: LruList, const TYPE: char> Drop for BucketArray<K, V, L, TYPE> {
 
         if num_cleared_buckets < self.array_len {
             for index in num_cleared_buckets..self.array_len {
-                self.bucket_mut(index)
-                    .drop_entries(self.data_block_mut(index));
+                self.bucket(index).drop_entries(self.data_block(index));
             }
         }
 
@@ -260,11 +243,12 @@ impl<K, V, L: LruList, const TYPE: char> Drop for BucketArray<K, V, L, TYPE> {
             dealloc(
                 self.bucket_ptr
                     .cast::<u8>()
+                    .cast_mut()
                     .sub(self.bucket_ptr_offset as usize),
                 Self::calculate_memory_layout::<Bucket<K, V, L, TYPE>>(self.array_len).2,
             );
             dealloc(
-                self.data_block_ptr.cast::<u8>(),
+                self.data_block_ptr.cast::<u8>().cast_mut(),
                 Layout::from_size_align(
                     size_of::<DataBlock<K, V, BUCKET_LEN>>() * self.array_len,
                     align_of::<[DataBlock<K, V, BUCKET_LEN>; 0]>(),
@@ -298,7 +282,7 @@ mod test {
         let start = Instant::now();
         let array: BucketArray<usize, usize, (), OPTIMISTIC> =
             BucketArray::new(1024 * 1024 * 32, AtomicShared::default());
-        assert_eq!(array.num_buckets(), 1024 * 1024);
+        assert_eq!(array.len(), 1024 * 1024);
         let after_alloc = Instant::now();
         println!("allocation took {:?}", after_alloc - start);
         array.num_cleared_buckets.store(array.array_len, Relaxed);
@@ -313,20 +297,20 @@ mod test {
             let array: BucketArray<usize, usize, (), OPTIMISTIC> =
                 BucketArray::new(s, AtomicShared::default());
             assert!(
-                array.num_buckets() >= s.max(1).div_ceil(BUCKET_LEN),
+                array.len() >= s.max(1).div_ceil(BUCKET_LEN),
                 "{s} {}",
-                array.num_buckets()
+                array.len()
             );
             assert!(
-                array.num_buckets() <= 2 * (s.max(1) + BUCKET_LEN - 1) / BUCKET_LEN,
+                array.len() <= 2 * (s.max(1) + BUCKET_LEN - 1) / BUCKET_LEN,
                 "{s} {}",
-                array.num_buckets()
+                array.len()
             );
             assert!(
-                array.full_sample_size() <= array.num_buckets(),
+                array.full_sample_size() <= array.len(),
                 "{} {}",
                 array.full_sample_size(),
-                array.num_buckets()
+                array.len()
             );
             assert!(array.num_entries() >= s, "{s} {}", array.num_entries());
             array.num_cleared_buckets.store(array.array_len, Relaxed);

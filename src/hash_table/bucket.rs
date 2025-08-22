@@ -106,7 +106,7 @@ pub(crate) struct Metadata<K, V, const LEN: usize> {
 
 /// [`LinkedBucket`] is a smaller [`Bucket`] that is attached to a [`Bucket`] as a linked list.
 pub(crate) struct LinkedBucket<K, V, const LEN: usize> {
-    /// [`LlinkedBucket`] metadata.
+    /// [`LinkedBucket`] metadata.
     metadata: Metadata<K, V, LEN>,
     /// Own data block.
     data_block: DataBlock<K, V, LEN>,
@@ -1112,8 +1112,7 @@ impl<K, V, const LEN: usize> Default for Metadata<K, V, LEN> {
             link: AtomicShared::default(),
             occupied_bitmap: AtomicU32::new(0),
             removed_bitmap_or_lru_tail: AtomicU32::new(0),
-            #[allow(clippy::uninit_assumed_init)]
-            partial_hash_array: unsafe { MaybeUninit::uninit().assume_init() },
+            partial_hash_array: UnsafeCell::new([0_u8; LEN]),
         }
     }
 }
@@ -1329,11 +1328,11 @@ mod test {
 
     use super::{
         BUCKET_LEN, Bucket, CACHE, DataBlock, DoublyLinkedList, EntryPtr, LruList, Metadata,
-        OPTIMISTIC, Reader, SEQUENTIAL, Writer,
+        Reader, SEQUENTIAL, Writer,
     };
 
     #[cfg(not(miri))]
-    static_assertions::assert_eq_size!(Bucket<String, String, (), OPTIMISTIC>, [u8; BUCKET_LEN * 2]);
+    static_assertions::assert_eq_size!(Bucket<String, String, (), SEQUENTIAL>, [u8; BUCKET_LEN * 2]);
     #[cfg(not(miri))]
     static_assertions::assert_eq_size!(Bucket<String, String, DoublyLinkedList, CACHE>, [u8; BUCKET_LEN * 4]);
 
