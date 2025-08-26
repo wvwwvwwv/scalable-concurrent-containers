@@ -14,8 +14,9 @@ use std::panic::UnwindSafe;
 use std::pin::Pin;
 use std::sync::atomic::Ordering::{AcqRel, Acquire};
 
+use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
+
 use crate::Comparable;
-use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::wait_queue::AsyncWait;
 use leaf::{InsertResult, Leaf, RemoveResult, Scanner};
 use node::Node;
@@ -605,9 +606,9 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::Guard;
     /// use std::sync::Arc;
-    /// use scc::TreeIndex;
+    ///
+    /// use scc::{Guard, TreeIndex};
     ///
     /// let treeindex: TreeIndex<Arc<str>, u32> = TreeIndex::new();
     ///
@@ -664,9 +665,9 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::Guard;
     /// use std::sync::Arc;
-    /// use scc::TreeIndex;
+    ///
+    /// use scc::{Guard, TreeIndex};
     ///
     /// let treeindex: TreeIndex<Arc<str>, u32> = TreeIndex::new();
     ///
@@ -757,8 +758,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::TreeIndex;
-    /// use scc::ebr::Guard;
+    /// use scc::{Guard, TreeIndex};
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
@@ -780,8 +780,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::TreeIndex;
-    /// use scc::ebr::Guard;
+    /// use scc::{Guard, TreeIndex};
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///

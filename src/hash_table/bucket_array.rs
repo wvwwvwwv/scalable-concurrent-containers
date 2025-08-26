@@ -4,8 +4,9 @@ use std::panic::UnwindSafe;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 
+use sdd::{AtomicShared, Guard, Ptr, Tag};
+
 use super::bucket::{BUCKET_LEN, Bucket, DataBlock, LruList, OPTIMISTIC};
-use crate::ebr::{AtomicShared, Guard, Ptr, Tag};
 
 /// [`BucketArray`] is a special purpose array to manage [`Bucket`] and [`DataBlock`].
 pub struct BucketArray<K, V, L: LruList, const TYPE: char> {

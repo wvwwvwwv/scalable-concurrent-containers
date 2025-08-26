@@ -5,8 +5,9 @@ use std::mem::{MaybeUninit, needs_drop};
 use std::ops::RangeBounds;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
+use sdd::{AtomicShared, Guard, Shared};
+
 use crate::LinkedList;
-use crate::ebr::{AtomicShared, Guard, Shared};
 use crate::maybe_std::AtomicUsize;
 use crate::{Comparable, range_helper};
 

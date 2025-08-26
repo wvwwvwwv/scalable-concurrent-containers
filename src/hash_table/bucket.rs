@@ -7,9 +7,9 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32};
 
 use saa::Lock;
+use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
 
 use crate::Equivalent;
-use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::wait_queue::AsyncWait;
 
 /// [`Bucket`] is a lock-protected fixed-size entry array.

@@ -4,11 +4,12 @@ use std::ptr;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
+use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
+
 use super::Leaf;
 use super::leaf::{DIMENSION, InsertResult, RemoveResult, Scanner};
 use super::node::Node;
 use crate::LinkedList;
-use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::exit_guard::ExitGuard;
 use crate::maybe_std::AtomicU8;
 use crate::wait_queue::{DeriveAsyncWait, WaitQueue};

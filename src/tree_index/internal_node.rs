@@ -5,12 +5,13 @@ use std::ptr;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
+use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
+
 use super::leaf::{DIMENSION, InsertResult, Leaf, RemoveResult, Scanner};
 use super::leaf_node::RemoveRangeState;
 use super::leaf_node::{LOCKED, RETIRED};
 use super::node::Node;
 use crate::Comparable;
-use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::exit_guard::ExitGuard;
 use crate::maybe_std::AtomicU8;
 use crate::wait_queue::{DeriveAsyncWait, WaitQueue};

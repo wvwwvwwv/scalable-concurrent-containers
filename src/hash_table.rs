@@ -8,8 +8,9 @@ use std::pin::Pin;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicUsize, fence};
 
+use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
+
 use super::Equivalent;
-use super::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use super::exit_guard::ExitGuard;
 use super::wait_queue::{AsyncWait, DeriveAsyncWait};
 

@@ -884,8 +884,8 @@ mod hashindex {
 
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
+    use sdd::Guard;
 
-    use crate::ebr::Guard;
     use crate::hash_index::{self, Iter};
     use crate::{Equivalent, HashIndex};
 
@@ -1997,8 +1997,8 @@ mod treeindex {
     use proptest::prelude::*;
     use proptest::strategy::ValueTree;
     use proptest::test_runner::TestRunner;
+    use sdd::Guard;
 
-    use crate::ebr::Guard;
     use crate::tree_index::{Iter, Range};
     use crate::{Comparable, Equivalent, TreeIndex};
 
@@ -2842,6 +2842,7 @@ mod bag {
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
+
     use tokio::sync::Barrier as AsyncBarrier;
     use tokio::task;
 
@@ -2958,11 +2959,11 @@ mod bag {
                             }
                             for _ in 0..workload_size {
                                 while bag32_clone.pop().is_none() {
-                                    crate::ebr::Guard::new().accelerate();
+                                    crate::Guard::new().accelerate();
                                     task::yield_now().await;
                                 }
                                 while bag_half_clone.pop().is_none() {
-                                    crate::ebr::Guard::new().accelerate();
+                                    crate::Guard::new().accelerate();
                                     task::yield_now().await;
                                 }
                             }
@@ -3042,8 +3043,9 @@ mod queue {
     use std::sync::{Arc, Barrier};
     use std::thread;
 
+    use sdd::Guard;
+
     use crate::Queue;
-    use crate::ebr::Guard;
 
     static_assertions::assert_not_impl_all!(Queue<Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(Queue<String>: Send, Sync, UnwindSafe);
@@ -3251,10 +3253,10 @@ mod queue {
 mod stack {
     use std::{panic::UnwindSafe, rc::Rc, sync::Arc};
 
+    use sdd::Guard;
     use tokio::sync::Barrier as AsyncBarrier;
 
     use crate::Stack;
-    use crate::ebr::Guard;
 
     static_assertions::assert_not_impl_all!(Stack<Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(Stack<String>: Send, Sync, UnwindSafe);
@@ -3435,7 +3437,8 @@ mod malfunction {
     use std::sync::atomic::Ordering::{AcqRel, Relaxed};
     use std::sync::atomic::{AtomicBool, AtomicUsize};
 
-    use crate::ebr::{Guard, Shared};
+    use sdd::{Guard, Shared};
+
     use crate::hash_map::Entry;
     use crate::{HashCache, HashIndex, HashMap, TreeIndex};
 

@@ -11,7 +11,8 @@ mod sync_benchmarks {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use crate::ebr::Guard;
+    use sdd::Guard;
+
     use crate::{HashIndex, HashMap, TreeIndex};
 
     #[derive(Clone)]
@@ -692,9 +693,9 @@ mod async_benchmarks {
     use std::sync::atomic::Ordering::Relaxed;
     use std::time::{Duration, Instant};
 
+    use sdd::Guard;
     use tokio::sync::Barrier;
 
-    use crate::ebr::Guard;
     use crate::{HashIndex, HashMap, TreeIndex};
 
     #[derive(Clone)]

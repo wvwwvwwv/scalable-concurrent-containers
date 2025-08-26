@@ -11,8 +11,9 @@ use std::ptr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
+use sdd::{AtomicShared, Guard, Shared};
+
 use super::Equivalent;
-use super::ebr::{AtomicShared, Guard, Shared};
 use super::hash_table::bucket::{Bucket, EntryPtr, OPTIMISTIC, Writer};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::{HashTable, LockedEntry};
@@ -775,8 +776,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::Guard;
-    /// use scc::HashIndex;
+    /// use scc::{Guard, HashIndex};
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
@@ -1084,8 +1084,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::Guard;
-    /// use scc::HashIndex;
+    /// use scc::{Guard, HashIndex};
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///

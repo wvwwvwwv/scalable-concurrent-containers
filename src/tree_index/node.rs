@@ -2,11 +2,12 @@ use std::fmt::{self, Debug};
 use std::ops::RangeBounds;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 
+use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
+
 use super::internal_node::{self, InternalNode};
 use super::leaf::{InsertResult, Leaf, RemoveResult, Scanner};
 use super::leaf_node::{self, LeafNode};
 use crate::Comparable;
-use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
 use crate::wait_queue::DeriveAsyncWait;
 
 /// [`Node`] is either [`Self::Internal`] or [`Self::Leaf`].

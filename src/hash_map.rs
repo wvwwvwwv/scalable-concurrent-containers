@@ -9,8 +9,9 @@ use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
+use sdd::{AtomicShared, Guard, Shared, Tag};
+
 use super::Equivalent;
-use super::ebr::{AtomicShared, Guard, Shared, Tag};
 use super::hash_table::bucket::{EntryPtr, Reader, SEQUENTIAL, Writer};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::{HashTable, LockedEntry};

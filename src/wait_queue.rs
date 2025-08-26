@@ -7,7 +7,7 @@ use saa::gate::Pager;
 
 /// [`WaitQueue`] implements an unfair wait queue.
 ///
-/// The sole purpose of the data structure is to avoid busy-waiting. [`WaitQueue`] should always
+/// The sole purpose of the data structure is to avoid busy-waiting. [`WaitQueue`] should always be
 /// protected by [`sdd`].
 #[derive(Debug, Default)]
 pub(crate) struct WaitQueue {

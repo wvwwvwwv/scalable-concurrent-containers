@@ -63,8 +63,7 @@ mod range_helper {
     }
 }
 
-/// Re-exports the [`sdd`](https://crates.io/crates/sdd) crate for backward compatibility.
-pub use sdd as ebr;
+pub use sdd::{AtomicShared, Guard, Shared, Tag};
 
 #[cfg(feature = "serde")]
 mod serde;

@@ -8,7 +8,8 @@ use std::ptr::{self, drop_in_place};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-use super::ebr::Guard;
+use sdd::Guard;
+
 use super::exit_guard::ExitGuard;
 use super::{LinkedEntry, LinkedList, Stack};
 
