@@ -1498,11 +1498,9 @@ mod test {
             task_handles.push(tokio::spawn(async move {
                 barrier_clone.wait().await;
                 let partial_hash = (task_id % BUCKET_LEN).try_into().unwrap();
-                let bucket_mut = unsafe { &mut *bucket_clone.as_ptr().cast_mut() };
-                let data_block_mut = unsafe { &mut *data_block_clone.as_ptr().cast_mut() };
                 let guard = Guard::new();
                 for i in 0..2048 {
-                    let writer = Writer::lock(bucket_mut, &guard).unwrap();
+                    let writer = Writer::lock(&bucket_clone, &guard).unwrap();
                     let mut sum: u64 = 0;
                     for j in 0..128 {
                         unsafe {
@@ -1512,7 +1510,12 @@ mod test {
                     }
                     assert_eq!(sum % 256, 0);
                     if i == 0 {
-                        writer.insert_with(data_block_mut, partial_hash, || (task_id, 0), &guard);
+                        writer.insert_with(
+                            &data_block_clone,
+                            partial_hash,
+                            || (task_id, 0),
+                            &guard,
+                        );
                     } else {
                         assert_eq!(
                             writer
@@ -1562,10 +1565,9 @@ mod test {
         assert_eq!(bucket.len(), count);
 
         entry_ptr = EntryPtr::new(&epoch_guard);
-        let writer = Writer::lock(unsafe { bucket.get_mut().unwrap() }, &epoch_guard).unwrap();
-        let data_block_mut = unsafe { &mut *data_block.as_ptr().cast_mut() };
+        let writer = Writer::lock(&bucket, &epoch_guard).unwrap();
         while entry_ptr.move_to_next(&writer, &epoch_guard) {
-            writer.remove(data_block_mut, &mut entry_ptr, &epoch_guard);
+            writer.remove(&data_block, &mut entry_ptr, &epoch_guard);
         }
         assert_eq!(writer.len(), 0);
         writer.kill();

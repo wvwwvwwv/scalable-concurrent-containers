@@ -31,13 +31,11 @@ pub use linked_list::LinkedList;
 #[cfg(feature = "loom")]
 mod maybe_std {
     pub(crate) use loom::sync::atomic::{AtomicU8, AtomicUsize};
-    pub(crate) use loom::thread::yield_now;
 }
 
 #[cfg(not(feature = "loom"))]
 mod maybe_std {
     pub(crate) use std::sync::atomic::{AtomicU8, AtomicUsize};
-    pub(crate) use std::thread::yield_now;
 }
 
 pub mod queue;
