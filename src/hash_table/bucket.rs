@@ -1,10 +1,10 @@
 use std::cell::UnsafeCell;
 use std::fmt::{self, Debug};
-use std::mem::{MaybeUninit, needs_drop};
+use std::mem::{MaybeUninit, forget, needs_drop};
 use std::ops::Deref;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32};
+use std::sync::atomic::{AtomicPtr, AtomicU32};
 
 use saa::Lock;
 use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
@@ -20,8 +20,6 @@ use crate::wait_queue::AsyncWait;
 pub struct Bucket<K, V, L: LruList, const TYPE: char> {
     /// Number of entries in the [`Bucket`].
     len: AtomicU32,
-    /// Indicates whether the [`Bucket`] is killed.
-    killed: AtomicBool,
     /// The epoch value when the [`Bucket`] was last updated.
     ///
     /// The field is only used when `TYPE == OPTIMISTIC`.
@@ -450,24 +448,10 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         }
     }
 
-    /// Marks the [`Bucket`] killed in order to prevent others from using it any further.
-    #[inline]
-    pub(super) fn kill(&self) {
-        debug_assert_eq!(self.len(), 0);
-        debug_assert!(self.metadata.link.is_null(Relaxed));
-        debug_assert!(
-            TYPE != OPTIMISTIC
-                || self.metadata.removed_bitmap_or_lru_tail.load(Relaxed)
-                    == self.metadata.occupied_bitmap.load(Relaxed)
-        );
-
-        self.killed.store(true, Release);
-    }
-
     /// Returns `true` if the [`Bucket`] has been killed.
     #[inline]
     pub(super) fn killed(&self) -> bool {
-        self.killed.load(Relaxed)
+        self.rw_lock.is_poisoned(Relaxed)
     }
 
     /// Drops entries in the [`DataBlock`] based on the metadata of the [`Bucket`].
@@ -1020,6 +1004,28 @@ impl<'g, K, V, L: LruList, const TYPE: char> Writer<'g, K, V, L, TYPE> {
         // TODO: async.
         Ok(Self::lock(bucket, guard))
     }
+
+    /// Creates a new [`Writer`] from a [`Bucket`].
+    #[inline]
+    pub(crate) fn from_bucket(bucket: &'g Bucket<K, V, L, TYPE>) -> Writer<'g, K, V, L, TYPE> {
+        Writer { bucket }
+    }
+
+    /// Marks the [`Bucket`] killed by poisoning the lock.
+    #[inline]
+    pub(super) fn kill(self) {
+        debug_assert_eq!(self.len(), 0);
+        debug_assert!(self.metadata.link.is_null(Relaxed));
+        debug_assert!(
+            TYPE != OPTIMISTIC
+                || self.metadata.removed_bitmap_or_lru_tail.load(Relaxed)
+                    == self.metadata.occupied_bitmap.load(Relaxed)
+        );
+
+        let poisoned = self.rw_lock.poison_lock();
+        debug_assert!(poisoned);
+        forget(self);
+    }
 }
 
 impl<K, V, L: LruList, const TYPE: char> Deref for Writer<'_, K, V, L, TYPE> {
@@ -1065,21 +1071,6 @@ impl<'g, K, V, L: LruList, const TYPE: char> Reader<'g, K, V, L, TYPE> {
     ) -> Result<Option<Reader<'g, K, V, L, TYPE>>, ()> {
         // TODO: async.
         Ok(Self::lock(bucket, guard))
-    }
-
-    /// Tries to lock the [`Bucket`].
-    pub(crate) fn try_lock(
-        bucket: &'g Bucket<K, V, L, TYPE>,
-        _guard: &'g Guard,
-    ) -> Result<Option<Reader<'g, K, V, L, TYPE>>, ()> {
-        if bucket.rw_lock.try_share() {
-            if bucket.killed() {
-                bucket.rw_lock.release_share();
-                return Ok(None);
-            }
-            return Ok(Some(Reader { bucket }));
-        }
-        Err(())
     }
 
     /// Releases the lock.
@@ -1319,7 +1310,7 @@ impl<K, V, const LEN: usize> Drop for LinkedBucket<K, V, LEN> {
 mod test {
     use std::mem::MaybeUninit;
     use std::sync::atomic::Ordering::Relaxed;
-    use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32};
+    use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32};
 
     use proptest::prelude::*;
     use saa::Lock;
@@ -1339,7 +1330,6 @@ mod test {
     fn default_bucket<K: Eq, V, L: LruList, const TYPE: char>() -> Bucket<K, V, L, TYPE> {
         Bucket {
             len: AtomicU32::new(0),
-            killed: AtomicBool::new(false),
             epoch: AtomicU8::new(0),
             metadata: Metadata::default(),
             rw_lock: Lock::default(),
@@ -1571,7 +1561,6 @@ mod test {
         }
         assert_eq!(writer.len(), 0);
         writer.kill();
-        drop(writer);
 
         assert!(bucket.killed());
         assert_eq!(bucket.len(), 0);

@@ -788,17 +788,17 @@ where
         if !self.incremental_rehash::<Q, D, false>(current_array, async_wait, guard)? {
             let index = old_array.calculate_bucket_index(hash);
             let bucket = old_array.bucket(index);
-            let lock_result = if let Some(async_wait) = async_wait.derive() {
+            let writer = if let Some(async_wait) = async_wait.derive() {
                 Writer::try_lock_or_wait(bucket, async_wait, guard)?
             } else {
                 Writer::lock(bucket, guard)
             };
-            if let Some(mut locker) = lock_result {
+            if let Some(writer) = writer {
                 self.relocate_bucket::<Q, _, false>(
                     current_array,
                     old_array,
                     index,
-                    &mut locker,
+                    writer,
                     async_wait,
                     guard,
                 )?;
@@ -817,7 +817,7 @@ where
         current_array: &BucketArray<K, V, L, TYPE>,
         old_array: &BucketArray<K, V, L, TYPE>,
         old_index: usize,
-        old_locker: &mut Writer<K, V, L, TYPE>,
+        old_writer: Writer<K, V, L, TYPE>,
         async_wait: &mut D,
         guard: &Guard,
     ) -> Result<(), ()>
@@ -825,8 +825,8 @@ where
         Q: Equivalent<K> + Hash + ?Sized,
         D: DeriveAsyncWait,
     {
-        debug_assert!(!old_locker.killed());
-        if old_locker.len() != 0 {
+        debug_assert!(!old_writer.killed());
+        if old_writer.len() != 0 {
             let target_index = if old_array.len() >= current_array.len() {
                 let ratio = old_array.len() / current_array.len();
                 old_index / ratio
@@ -841,14 +841,14 @@ where
             let mut max_index = 0;
             let mut entry_ptr = EntryPtr::new(guard);
             let old_data_block = old_array.data_block(old_index);
-            while entry_ptr.move_to_next(old_locker, guard) {
+            while entry_ptr.move_to_next(&old_writer, guard) {
                 let old_entry = entry_ptr.get(old_data_block);
                 let (new_index, partial_hash) = if old_array.len() >= current_array.len() {
                     debug_assert_eq!(
                         current_array.calculate_bucket_index(self.hash(&old_entry.0)),
                         target_index
                     );
-                    (target_index, entry_ptr.partial_hash(&*old_locker))
+                    (target_index, entry_ptr.partial_hash(&*old_writer))
                 } else {
                     let hash = self.hash(&old_entry.0);
                     let new_index = current_array.calculate_bucket_index(hash);
@@ -890,7 +890,7 @@ where
                         // removed from the map, any map entry modification should take place after all
                         // the memory is reserved.
                         entry_clone.unwrap_or_else(|| {
-                            old_locker.extract(old_data_block, &mut entry_ptr, guard)
+                            old_writer.extract(old_data_block, &mut entry_ptr, guard)
                         })
                     },
                     guard,
@@ -900,11 +900,11 @@ where
                     // In order for readers that have observed the following erasure to see the above
                     // insertion, a `Release` fence is needed.
                     fence(Release);
-                    old_locker.mark_removed(&mut entry_ptr, guard);
+                    old_writer.mark_removed(&mut entry_ptr, guard);
                 }
             }
         }
-        old_locker.kill();
+        old_writer.kill();
         Ok(())
     }
 
@@ -987,19 +987,19 @@ where
 
             for index in current..(current + BUCKET_LEN).min(old_array.len()) {
                 let old_bucket = old_array.bucket(index);
-                let lock_result = if TRY_LOCK {
+                let writer = if TRY_LOCK {
                     Writer::try_lock(old_bucket, guard)?
                 } else if let Some(async_wait) = async_wait.derive() {
                     Writer::try_lock_or_wait(old_bucket, async_wait, guard)?
                 } else {
                     Writer::lock(old_bucket, guard)
                 };
-                if let Some(mut locker) = lock_result {
+                if let Some(writer) = writer {
                     self.relocate_bucket::<Q, D, TRY_LOCK>(
                         current_array,
                         old_array,
                         index,
-                        &mut locker,
+                        writer,
                         async_wait,
                         guard,
                     )?;
@@ -1150,29 +1150,28 @@ where
 
                 if try_drop_table {
                     // Try to drop the hash table with all the buckets read-locked if empty.
-                    let mut reader_guard = ExitGuard::new(
+                    let mut writer_guard = ExitGuard::new(
                         (current_array.len(), true),
                         |(num_locked_buckets, success): (usize, bool)| {
                             for i in 0..num_locked_buckets {
-                                let bucket = current_array.bucket(i);
+                                let writer = Writer::from_bucket(current_array.bucket(i));
                                 if success {
-                                    bucket.kill();
+                                    writer.kill();
                                 }
-                                Reader::release(bucket);
                             }
                         },
                     );
 
                     if !(0..current_array.len()).any(|i| {
-                        if let Ok(Some(reader)) = Reader::try_lock(current_array.bucket(i), guard) {
-                            if reader.len() == 0 {
+                        if let Ok(Some(writer)) = Writer::try_lock(current_array.bucket(i), guard) {
+                            if writer.len() == 0 {
                                 // The bucket will be unlocked later.
-                                std::mem::forget(reader);
+                                std::mem::forget(writer);
                                 return false;
                             }
                         }
-                        reader_guard.0 = i;
-                        reader_guard.1 = false;
+                        writer_guard.0 = i;
+                        writer_guard.1 = false;
                         true
                     }) {
                         // All the buckets are empty and locked.
