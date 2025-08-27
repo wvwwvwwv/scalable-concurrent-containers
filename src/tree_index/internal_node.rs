@@ -12,9 +12,9 @@ use super::leaf_node::RemoveRangeState;
 use super::leaf_node::{LOCKED, RETIRED};
 use super::node::Node;
 use crate::Comparable;
+use crate::async_helper::{DeriveAsyncWait, WaitQueue};
 use crate::exit_guard::ExitGuard;
 use crate::maybe_std::AtomicU8;
-use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
 
 /// Internal node.
 ///

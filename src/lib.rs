@@ -77,4 +77,4 @@ mod tests;
 pub mod tree_index;
 pub use tree_index::TreeIndex;
 
-mod wait_queue;
+mod async_helper;

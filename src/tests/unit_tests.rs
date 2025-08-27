@@ -14,19 +14,21 @@ mod hashmap {
     use proptest::test_runner::TestRunner;
     use tokio::sync::Barrier as AsyncBarrier;
 
+    use crate::async_helper::SendableGuard;
     use crate::hash_map::{self, Entry, Reserve};
     use crate::{Equivalent, HashMap};
 
-    static_assertions::assert_not_impl_all!(HashMap<Rc<String>, Rc<String>>: Send, Sync);
-    static_assertions::assert_not_impl_all!(hash_map::Entry<Rc<String>, Rc<String>>: Send, Sync);
+    static_assertions::assert_impl_all!(SendableGuard: Send, Sync);
+    static_assertions::assert_not_impl_any!(HashMap<Rc<String>, Rc<String>>: Send, Sync);
+    static_assertions::assert_not_impl_any!(hash_map::Entry<Rc<String>, Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(HashMap<String, String>: Send, Sync, RefUnwindSafe, UnwindSafe);
     static_assertions::assert_impl_all!(Reserve<String, String>: Send, Sync, UnwindSafe);
-    static_assertions::assert_not_impl_all!(HashMap<String, *const String>: Send, Sync, RefUnwindSafe, UnwindSafe);
-    static_assertions::assert_not_impl_all!(Reserve<String, *const String>: Send, Sync, RefUnwindSafe, UnwindSafe);
+    static_assertions::assert_not_impl_any!(HashMap<String, *const String>: Send, Sync);
+    static_assertions::assert_not_impl_any!(Reserve<String, *const String>: Send, Sync);
     static_assertions::assert_impl_all!(hash_map::OccupiedEntry<String, String>: Send, Sync);
-    static_assertions::assert_not_impl_all!(hash_map::OccupiedEntry<String, *const String>: Send, Sync, RefUnwindSafe, UnwindSafe);
+    static_assertions::assert_not_impl_any!(hash_map::OccupiedEntry<String, *const String>: Send, Sync, RefUnwindSafe, UnwindSafe);
     static_assertions::assert_impl_all!(hash_map::VacantEntry<String, String>: Send, Sync);
-    static_assertions::assert_not_impl_all!(hash_map::VacantEntry<String, *const String>: Send, Sync, RefUnwindSafe, UnwindSafe);
+    static_assertions::assert_not_impl_any!(hash_map::VacantEntry<String, *const String>: Send, Sync, RefUnwindSafe, UnwindSafe);
 
     struct R(&'static AtomicUsize);
     impl R {
@@ -320,17 +322,8 @@ mod hashmap {
                 for id in range.clone() {
                     if id % 10 == 0 {
                         hashmap_clone.entry_async(id).await.or_insert(id);
-                    } else if id % 5 == 0 {
-                        hashmap_clone.entry(id).or_insert(id);
-                    } else if id % 2 == 0 {
-                        let result = hashmap_clone.insert_async(id, id).await;
-                        assert!(result.is_ok());
                     } else if id % 3 == 0 {
-                        let entry = if id % 6 == 0 {
-                            hashmap_clone.entry(id)
-                        } else {
-                            hashmap_clone.entry_async(id).await
-                        };
+                        let entry = hashmap_clone.entry_async(id).await;
                         let o = match entry {
                             Entry::Occupied(mut o) => {
                                 *o.get_mut() = id;
@@ -340,13 +333,13 @@ mod hashmap {
                         };
                         assert_eq!(*o.get(), id);
                     } else {
-                        let result = hashmap_clone.insert(id, id);
+                        let result = hashmap_clone.insert_async(id, id).await;
                         assert!(result.is_ok());
                     }
                 }
                 for id in range.clone() {
                     if id % 7 == 4 {
-                        let entry = hashmap_clone.entry(id);
+                        let entry = hashmap_clone.entry_async(id).await;
                         match entry {
                             Entry::Occupied(mut o) => {
                                 *o.get_mut() += 1;
@@ -368,22 +361,12 @@ mod hashmap {
                 for id in range.clone() {
                     let result = hashmap_clone.read_async(&id, |_, v| *v).await;
                     assert_eq!(result, Some(id + 1));
-                    let result = hashmap_clone.read(&id, |_, v| *v);
-                    assert_eq!(result, Some(id + 1));
-                    assert_eq!(*hashmap_clone.get(&id).unwrap().get(), id + 1);
                     assert_eq!(*hashmap_clone.get_async(&id).await.unwrap().get(), id + 1);
                 }
                 for id in range.clone() {
-                    if id % 2 == 0 {
-                        let result = hashmap_clone.remove_if_async(&id, |v| *v == id + 1).await;
-                        assert_eq!(result, Some((id, id + 1)));
-                    } else {
-                        let result = hashmap_clone.remove_if(&id, |v| *v == id + 1);
-                        assert_eq!(result, Some((id, id + 1)));
-                    }
+                    let result = hashmap_clone.remove_if_async(&id, |v| *v == id + 1).await;
+                    assert_eq!(result, Some((id, id + 1)));
                     assert!(hashmap_clone.read_async(&id, |_, v| *v).await.is_none());
-                    assert!(hashmap_clone.read(&id, |_, v| *v).is_none());
-                    assert!(hashmap_clone.get(&id).is_none());
                     assert!(hashmap_clone.get_async(&id).await.is_none());
                 }
                 for id in range {
@@ -460,23 +443,13 @@ mod hashmap {
                         assert!(hashmap_clone.read_async(&id, |_, _| ()).await.is_some());
                     }
 
-                    let mut call_async = false;
                     let mut in_range = 0;
-                    let mut entry = if task_id % 2 == 0 {
-                        hashmap_clone.first_entry()
-                    } else {
-                        hashmap_clone.first_entry_async().await
-                    };
+                    let mut entry = hashmap_clone.first_entry_async().await;
                     while let Some(current_entry) = entry.take() {
                         if range.contains(current_entry.key()) {
                             in_range += 1;
                         }
-                        if call_async {
-                            entry = current_entry.next_async().await;
-                        } else {
-                            entry = current_entry.next();
-                        }
-                        call_async = !call_async;
+                        entry = current_entry.next_async().await;
                     }
                     assert!(in_range >= workload_size, "{in_range} {workload_size}");
 
@@ -493,19 +466,10 @@ mod hashmap {
                         .await;
                     assert_eq!(removed, workload_size);
 
-                    let mut entry = if task_id % 2 == 0 {
-                        hashmap_clone.first_entry()
-                    } else {
-                        hashmap_clone.first_entry_async().await
-                    };
+                    let mut entry = hashmap_clone.first_entry_async().await;
                     while let Some(current_entry) = entry.take() {
                         assert!(!range.contains(current_entry.key()));
-                        if call_async {
-                            entry = current_entry.next_async().await;
-                        } else {
-                            entry = current_entry.next();
-                        }
-                        call_async = !call_async;
+                        entry = current_entry.next_async().await;
                     }
                 }));
             }
@@ -537,10 +501,10 @@ mod hashmap {
                         let result = hashmap_clone.insert_async(id, id).await;
                         assert!(result.is_ok());
                     }
-                    assert!(hashmap_clone.any(|k, _| range.contains(k)));
+                    assert!(hashmap_clone.any_async(|k, _| range.contains(k)).await);
                     let mut removed = 0;
-                    if task_id % 3 == 0 {
-                        hashmap_clone.prune(|k, v| {
+                    hashmap_clone
+                        .prune_async(|k, v| {
                             if range.contains(k) {
                                 assert_eq!(*k, v);
                                 removed += 1;
@@ -548,20 +512,8 @@ mod hashmap {
                             } else {
                                 Some(v)
                             }
-                        });
-                    } else {
-                        hashmap_clone
-                            .prune_async(|k, v| {
-                                if range.contains(k) {
-                                    assert_eq!(*k, v);
-                                    removed += 1;
-                                    None
-                                } else {
-                                    Some(v)
-                                }
-                            })
-                            .await;
-                    }
+                        })
+                        .await;
                     assert_eq!(removed, workload_size);
                     assert!(!hashmap_clone.any_async(|k, _| range.contains(k)).await);
                 }));
@@ -608,34 +560,20 @@ mod hashmap {
                         })
                         .await;
                     assert!(iterated >= workload_size);
-                    assert!(hashmap_clone.any(|k, _| range.contains(k)));
                     assert!(hashmap_clone.any_async(|k, _| range.contains(k)).await);
 
                     let mut removed = 0;
-                    if task_id % 3 == 0 {
-                        hashmap_clone.retain(|k, _| {
+                    hashmap_clone
+                        .retain_async(|k, _| {
                             if range.contains(k) {
                                 removed += 1;
                                 false
                             } else {
                                 true
                             }
-                        });
-                    } else {
-                        hashmap_clone
-                            .retain_async(|k, _| {
-                                if range.contains(k) {
-                                    removed += 1;
-                                    false
-                                } else {
-                                    true
-                                }
-                            })
-                            .await;
-                    }
+                        })
+                        .await;
                     assert_eq!(removed, workload_size);
-
-                    assert!(!hashmap_clone.any(|k, _| range.contains(k)));
                     assert!(!hashmap_clone.any_async(|k, _| range.contains(k)).await);
                 }));
             }
@@ -889,12 +827,12 @@ mod hashindex {
     use crate::hash_index::{self, Iter};
     use crate::{Equivalent, HashIndex};
 
-    static_assertions::assert_not_impl_all!(HashIndex<Rc<String>, Rc<String>>: Send, Sync);
-    static_assertions::assert_not_impl_all!(hash_index::Entry<Rc<String>, Rc<String>>: Send, Sync);
+    static_assertions::assert_not_impl_any!(HashIndex<Rc<String>, Rc<String>>: Send, Sync);
+    static_assertions::assert_not_impl_any!(hash_index::Entry<Rc<String>, Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(HashIndex<String, String>: Send, Sync, UnwindSafe);
     static_assertions::assert_impl_all!(Iter<'static, 'static, String, String>: UnwindSafe);
-    static_assertions::assert_not_impl_all!(HashIndex<String, *const String>: Send, Sync, UnwindSafe);
-    static_assertions::assert_not_impl_all!(Iter<'static, 'static, String, *const String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_any!(HashIndex<String, *const String>: Send, Sync);
+    static_assertions::assert_not_impl_any!(Iter<'static, 'static, String, *const String>: Send, Sync);
 
     struct R(&'static AtomicUsize);
     impl R {
@@ -1165,15 +1103,23 @@ mod hashindex {
                 let range = (task_id * workload_size)..((task_id + 1) * workload_size);
                 if task_id == 0 {
                     for _ in 0..num_iter {
-                        let guard = Guard::new();
-                        let v = hashindex_clone
-                            .peek(&(task_id * workload_size), &guard)
-                            .unwrap();
-                        assert_eq!(str, v);
+                        let v = {
+                            let guard = Guard::new();
+                            let v = hashindex_clone
+                                .peek(&(task_id * workload_size), &guard)
+                                .unwrap();
+                            assert_eq!(str, v);
+                            v.to_owned()
+                        };
                         fence(Acquire);
                         for id in range.clone() {
-                            assert!(hashindex_clone.remove(&id));
-                            assert!(hashindex_clone.insert(id, str.to_string()).is_ok());
+                            assert!(hashindex_clone.remove_async(&id).await);
+                            assert!(
+                                hashindex_clone
+                                    .insert_async(id, str.to_string())
+                                    .await
+                                    .is_ok()
+                            );
                         }
                         fence(Acquire);
                         assert_eq!(str, v);
@@ -1260,23 +1206,13 @@ mod hashindex {
                         assert!(hashindex_clone.peek_with(&id, |_, _| ()).is_some());
                     }
 
-                    let mut call_async = false;
                     let mut in_range = 0;
-                    let mut entry = if task_id % 2 == 0 {
-                        hashindex_clone.first_entry()
-                    } else {
-                        hashindex_clone.first_entry_async().await
-                    };
+                    let mut entry = hashindex_clone.first_entry_async().await;
                     while let Some(current_entry) = entry.take() {
                         if range.contains(current_entry.key()) {
                             in_range += 1;
                         }
-                        if call_async {
-                            entry = current_entry.next_async().await;
-                        } else {
-                            entry = current_entry.next();
-                        }
-                        call_async = !call_async;
+                        entry = current_entry.next_async().await;
                     }
                     assert!(in_range >= workload_size, "{in_range} {workload_size}");
 
@@ -1293,19 +1229,10 @@ mod hashindex {
                         .await;
                     assert_eq!(removed, workload_size);
 
-                    let mut entry = if task_id % 2 == 0 {
-                        hashindex_clone.first_entry()
-                    } else {
-                        hashindex_clone.first_entry_async().await
-                    };
+                    let mut entry = hashindex_clone.first_entry_async().await;
                     while let Some(current_entry) = entry.take() {
                         assert!(!range.contains(current_entry.key()));
-                        if call_async {
-                            entry = current_entry.next_async().await;
-                        } else {
-                            entry = current_entry.next();
-                        }
-                        call_async = !call_async;
+                        entry = current_entry.next_async().await;
                     }
                 }));
             }
@@ -1425,33 +1352,21 @@ mod hashindex {
                     for id in range.clone() {
                         let result = hashindex_clone.insert_async(id, id).await;
                         assert!(result.is_ok());
-                        let entry = if id % 4 == 0 {
-                            hashindex_clone.get(&id).unwrap()
-                        } else {
-                            hashindex_clone.get_async(&id).await.unwrap()
-                        };
+                        let entry = hashindex_clone.get_async(&id).await.unwrap();
                         if *entry.get() != id {
                             entry.update(0);
                         }
                     }
                     for id in range.clone() {
                         hashindex_clone.peek_with(&id, |k, v| assert_eq!(k, v));
-                        let entry = if id % 4 == 0 {
-                            hashindex_clone.get(&id).unwrap()
-                        } else {
-                            hashindex_clone.get_async(&id).await.unwrap()
-                        };
+                        let entry = hashindex_clone.get_async(&id).await.unwrap();
                         if *entry.get() == id {
                             entry.update(usize::MAX);
                         }
                     }
                     for id in range.clone() {
                         hashindex_clone.peek_with(&id, |_, v| assert_eq!(*v, usize::MAX));
-                        let entry = if id % 4 == 0 {
-                            hashindex_clone.get(&id).unwrap()
-                        } else {
-                            hashindex_clone.get_async(&id).await.unwrap()
-                        };
+                        let entry = hashindex_clone.get_async(&id).await.unwrap();
                         entry.remove_entry();
                     }
                 }));
@@ -1502,27 +1417,16 @@ mod hashindex {
                     );
 
                     let mut removed = 0;
-                    if task_id % 4 == 0 {
-                        hashindex_clone.retain(|k, _| {
+                    hashindex_clone
+                        .retain_async(|k, _| {
                             if range.contains(k) {
                                 removed += 1;
                                 false
                             } else {
                                 true
                             }
-                        });
-                    } else {
-                        hashindex_clone
-                            .retain_async(|k, _| {
-                                if range.contains(k) {
-                                    removed += 1;
-                                    false
-                                } else {
-                                    true
-                                }
-                            })
-                            .await;
-                    }
+                        })
+                        .await;
                     assert_eq!(removed, workload_size);
                     assert!(
                         !hashindex_clone
@@ -1548,9 +1452,9 @@ mod hashset {
 
     use crate::{Equivalent, HashSet};
 
-    static_assertions::assert_not_impl_all!(HashSet<Rc<String>>: Send, Sync);
+    static_assertions::assert_not_impl_any!(HashSet<Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(HashSet<String>: Send, Sync, UnwindSafe);
-    static_assertions::assert_not_impl_all!(HashSet<*const String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_any!(HashSet<*const String>: Send, Sync);
 
     #[derive(Debug, Eq, PartialEq)]
     struct EqTest(String, usize);
@@ -1621,14 +1525,14 @@ mod hashcache {
     use crate::hash_cache;
     use crate::{Equivalent, HashCache};
 
-    static_assertions::assert_not_impl_all!(HashCache<Rc<String>, Rc<String>>: Send, Sync);
-    static_assertions::assert_not_impl_all!(hash_cache::Entry<Rc<String>, Rc<String>>: Send, Sync);
+    static_assertions::assert_not_impl_any!(HashCache<Rc<String>, Rc<String>>: Send, Sync);
+    static_assertions::assert_not_impl_any!(hash_cache::Entry<Rc<String>, Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(HashCache<String, String>: Send, Sync, UnwindSafe);
-    static_assertions::assert_not_impl_all!(HashCache<String, *const String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_any!(HashCache<String, *const String>: Send, Sync);
     static_assertions::assert_impl_all!(hash_cache::OccupiedEntry<String, String>: Send, Sync);
-    static_assertions::assert_not_impl_all!(hash_cache::OccupiedEntry<String, *const String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_any!(hash_cache::OccupiedEntry<String, *const String>: Send, Sync, UnwindSafe);
     static_assertions::assert_impl_all!(hash_cache::VacantEntry<String, String>: Send, Sync);
-    static_assertions::assert_not_impl_all!(hash_cache::VacantEntry<String, *const String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_any!(hash_cache::VacantEntry<String, *const String>: Send, Sync, UnwindSafe);
 
     struct R(&'static AtomicUsize);
     impl R {
@@ -1842,9 +1746,7 @@ mod hashcache {
                     barrier_clone.wait().await;
                     let range = (task_id * workload_size)..((task_id + 1) * workload_size);
                     for id in range.clone() {
-                        if id % 8 == 0 {
-                            assert!(hashcache_clone.put(id, R::new(&INST_CNT)).is_ok());
-                        } else if id % 4 == 0 {
+                        if id % 4 == 0 {
                             hashcache_clone
                                 .entry_async(id)
                                 .await
@@ -1860,11 +1762,7 @@ mod hashcache {
                     }
                     let mut hit_count = 0;
                     for id in range.clone() {
-                        let hit = if id % 8 == 0 {
-                            hashcache_clone.get(&id).is_some()
-                        } else {
-                            hashcache_clone.get_async(&id).await.is_some()
-                        };
+                        let hit = hashcache_clone.get_async(&id).await.is_some();
                         if hit {
                             hit_count += 1;
                         }
@@ -1872,11 +1770,7 @@ mod hashcache {
                     assert!(hit_count <= *hashcache_clone.capacity_range().end());
                     let mut remove_count = 0;
                     for id in range.clone() {
-                        let removed = if id % 8 == 0 {
-                            hashcache_clone.remove(&id).is_some()
-                        } else {
-                            hashcache_clone.remove_async(&id).await.is_some()
-                        };
+                        let removed = hashcache_clone.remove_async(&id).await.is_some();
                         if removed {
                             remove_count += 1;
                         }
@@ -1917,11 +1811,7 @@ mod hashcache {
                     let range = (task_id * workload_size)..((task_id + 1) * workload_size);
                     let mut evicted = 0;
                     for key in range.clone() {
-                        let result = if key % 2 == 0 {
-                            hashcache_clone.put(key, R::new(&INST_CNT))
-                        } else {
-                            hashcache_clone.put_async(key, R::new(&INST_CNT)).await
-                        };
+                        let result = hashcache_clone.put_async(key, R::new(&INST_CNT)).await;
                         match result {
                             Ok(Some(_)) => evicted += 1,
                             Ok(_) => (),
@@ -1931,11 +1821,7 @@ mod hashcache {
                     evicted_clone.fetch_add(evicted, Relaxed);
                     let mut removed = 0;
                     for key in range.clone() {
-                        let result = if key % 2 == 0 {
-                            hashcache_clone.remove(&key)
-                        } else {
-                            hashcache_clone.remove_async(&key).await
-                        };
+                        let result = hashcache_clone.remove_async(&key).await;
                         if result.is_some() {
                             removed += 1;
                         }
@@ -2002,13 +1888,13 @@ mod treeindex {
     use crate::tree_index::{Iter, Range};
     use crate::{Comparable, Equivalent, TreeIndex};
 
-    static_assertions::assert_not_impl_all!(TreeIndex<Rc<String>, Rc<String>>: Send, Sync);
+    static_assertions::assert_not_impl_any!(TreeIndex<Rc<String>, Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(TreeIndex<String, String>: Send, Sync, UnwindSafe);
     static_assertions::assert_impl_all!(Iter<'static, 'static, String, String>: UnwindSafe);
     static_assertions::assert_impl_all!(Range<'static, 'static, String, String, String, RangeInclusive<String>>: UnwindSafe);
-    static_assertions::assert_not_impl_all!(TreeIndex<String, *const String>: Send, Sync, UnwindSafe);
-    static_assertions::assert_not_impl_all!(Iter<'static, 'static, String, *const String>: Send, Sync, UnwindSafe);
-    static_assertions::assert_not_impl_all!(Range<'static, 'static, String, *const String, String, RangeInclusive<String>>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_any!(TreeIndex<String, *const String>: Send, Sync);
+    static_assertions::assert_not_impl_any!(Iter<'static, 'static, String, *const String>: Send, Sync);
+    static_assertions::assert_not_impl_any!(Range<'static, 'static, String, *const String, String, RangeInclusive<String>>: Send, Sync);
 
     struct R(&'static AtomicUsize);
     impl R {
@@ -2849,11 +2735,11 @@ mod bag {
     use crate::Bag;
     use crate::bag::IterMut;
 
-    static_assertions::assert_not_impl_all!(Bag<Rc<String>>: Send, Sync);
+    static_assertions::assert_not_impl_any!(Bag<Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(Bag<String>: Send, Sync, UnwindSafe);
     static_assertions::assert_impl_all!(IterMut<'static, String>: Send, Sync, UnwindSafe);
-    static_assertions::assert_not_impl_all!(Bag<*const String>: Send, Sync, UnwindSafe);
-    static_assertions::assert_not_impl_all!(IterMut<'static, *const String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_any!(Bag<*const String>: Send, Sync);
+    static_assertions::assert_not_impl_any!(IterMut<'static, *const String>: Send, Sync);
 
     struct R(&'static AtomicUsize);
     impl R {
@@ -3047,9 +2933,9 @@ mod queue {
 
     use crate::Queue;
 
-    static_assertions::assert_not_impl_all!(Queue<Rc<String>>: Send, Sync);
+    static_assertions::assert_not_impl_any!(Queue<Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(Queue<String>: Send, Sync, UnwindSafe);
-    static_assertions::assert_not_impl_all!(Queue<*const String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_any!(Queue<*const String>: Send, Sync);
 
     struct R(&'static AtomicUsize, usize, usize);
     impl R {
@@ -3258,9 +3144,9 @@ mod stack {
 
     use crate::Stack;
 
-    static_assertions::assert_not_impl_all!(Stack<Rc<String>>: Send, Sync);
+    static_assertions::assert_not_impl_any!(Stack<Rc<String>>: Send, Sync);
     static_assertions::assert_impl_all!(Stack<String>: Send, Sync, UnwindSafe);
-    static_assertions::assert_not_impl_all!(Stack<*const String>: Send, Sync, UnwindSafe);
+    static_assertions::assert_not_impl_any!(Stack<*const String>: Send, Sync);
 
     #[derive(Debug)]
     struct R(usize, usize);

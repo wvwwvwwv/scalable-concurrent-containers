@@ -8,7 +8,7 @@ use super::internal_node::{self, InternalNode};
 use super::leaf::{InsertResult, Leaf, RemoveResult, Scanner};
 use super::leaf_node::{self, LeafNode};
 use crate::Comparable;
-use crate::wait_queue::DeriveAsyncWait;
+use crate::async_helper::DeriveAsyncWait;
 
 /// [`Node`] is either [`Self::Internal`] or [`Self::Leaf`].
 pub enum Node<K, V> {

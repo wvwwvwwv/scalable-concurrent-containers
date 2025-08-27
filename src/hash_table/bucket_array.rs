@@ -2,7 +2,7 @@ use std::alloc::{Layout, alloc, alloc_zeroed, dealloc};
 use std::mem::{align_of, needs_drop, size_of};
 use std::panic::UnwindSafe;
 use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
 use sdd::{AtomicShared, Guard, Ptr, Tag};
 
@@ -176,13 +176,19 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     /// Returns a [`Ptr`] to the old array.
     #[inline]
     pub(crate) fn has_old_array(&self) -> bool {
-        !self.old_array.is_null(Relaxed)
+        !self.old_array.is_null(Acquire)
+    }
+
+    /// Returns a reference to the old array pointer.
+    #[inline]
+    pub(crate) fn old_array_ptr(&self) -> &AtomicShared<BucketArray<K, V, L, TYPE>> {
+        &self.old_array
     }
 
     /// Returns a [`Ptr`] to the old array.
     #[inline]
     pub(crate) fn old_array<'g>(&self, guard: &'g Guard) -> Ptr<'g, BucketArray<K, V, L, TYPE>> {
-        self.old_array.load(Relaxed, guard)
+        self.old_array.load(Acquire, guard)
     }
 
     /// Drops the old array.

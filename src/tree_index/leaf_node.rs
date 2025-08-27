@@ -10,9 +10,9 @@ use super::Leaf;
 use super::leaf::{DIMENSION, InsertResult, RemoveResult, Scanner};
 use super::node::Node;
 use crate::LinkedList;
+use crate::async_helper::{DeriveAsyncWait, WaitQueue};
 use crate::exit_guard::ExitGuard;
 use crate::maybe_std::AtomicU8;
-use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
 use crate::{Comparable, range_helper};
 
 /// [`Tag::First`] indicates the corresponding node has retired.

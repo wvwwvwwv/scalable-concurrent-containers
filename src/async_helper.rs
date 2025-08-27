@@ -1,9 +1,22 @@
+use std::cell::UnsafeCell;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::Ordering;
 use std::task::{Context, Poll};
 
 use saa::Gate;
 use saa::gate::Pager;
+use sdd::{AtomicShared, Guard};
+
+/// [`SendableGuard`] is used when an asynchronous task needs to be suspended without invalidating
+/// any references.
+///
+/// The validity of those references should be checked and verified by the user.
+#[derive(Debug, Default)]
+pub(crate) struct SendableGuard {
+    /// [`Guard`] that can be dropped without invalidating any references.
+    guard: UnsafeCell<Option<Guard>>,
+}
 
 /// [`WaitQueue`] implements an unfair wait queue.
 ///
@@ -27,10 +40,43 @@ pub(crate) trait DeriveAsyncWait {
     fn derive(&mut self) -> Option<&mut AsyncWait>;
 }
 
+impl SendableGuard {
+    /// Returns or creates a new [`Guard`].
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that any references derived from the returned [`Guard`] does not
+    /// outlive the underlying instance.
+    pub(crate) fn guard(&self) -> &Guard {
+        unsafe { (*self.guard.get()).get_or_insert_with(Guard::new) }
+    }
+
+    /// Resets the [`SendableGuard`] to its initial state.
+    pub(crate) fn reset(&self) {
+        unsafe {
+            *self.guard.get() = None;
+        }
+    }
+
+    /// Loads the content of the [`AtomicShared`] without exposing the [`Guard`].
+    pub(crate) fn load<T>(&self, atomic_ptr: &AtomicShared<T>, mo: Ordering) -> Option<&T> {
+        atomic_ptr.load(mo, self.guard()).as_ref()
+    }
+}
+
+/// SAFETY: this is the sole purpose of `SendableGuard`; the Send-safety should be ensured by the
+/// user, e.g., the `SendableGuard` should always be reset before the task is suspended.
+unsafe impl Send for SendableGuard {}
+unsafe impl Sync for SendableGuard {}
+
 impl WaitQueue {
     /// Waits for the condition to be met or signaled.
     #[inline]
     pub(crate) fn wait_sync<T, F: FnOnce() -> Result<T, ()>>(&self, f: F) -> Result<T, ()> {
+        if cfg!(miri) {
+            return f();
+        }
+
         let mut pager = Pager::default();
         let mut pinned_pager = Pin::new(&mut pager);
         self.gate.register_sync(&mut pinned_pager);

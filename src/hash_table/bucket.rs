@@ -1,7 +1,7 @@
 use std::cell::UnsafeCell;
 use std::fmt::{self, Debug};
 use std::mem::{MaybeUninit, forget, needs_drop};
-use std::ops::Deref;
+use std::ops::{Deref, Index};
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicPtr, AtomicU32};
@@ -10,7 +10,7 @@ use saa::Lock;
 use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
 
 use crate::Equivalent;
-use crate::wait_queue::AsyncWait;
+use crate::async_helper::SendableGuard;
 
 /// [`Bucket`] is a lock-protected fixed-size entry array.
 ///
@@ -69,7 +69,7 @@ pub const CACHE: char = 'C';
 pub const BUCKET_LEN: usize = u32::BITS as usize;
 
 /// [`DataBlock`] is a type alias of a raw memory chunk of entries.
-pub type DataBlock<K, V, const LEN: usize> = [UnsafeCell<MaybeUninit<(K, V)>>; LEN];
+pub struct DataBlock<K, V, const LEN: usize>([UnsafeCell<MaybeUninit<(K, V)>>; LEN]);
 
 /// [`Writer`] holds an exclusive lock on a [`Bucket`].
 pub struct Writer<'g, K, V, L: LruList, const TYPE: char> {
@@ -570,7 +570,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     /// Reads the data at the given index.
     #[allow(clippy::inline_always)] // Very trivial function.
     #[inline(always)]
-    const fn read_data_block<const LEN: usize>(
+    fn read_data_block<const LEN: usize>(
         data_block: &DataBlock<K, V, LEN>,
         index: usize,
     ) -> (K, V) {
@@ -580,7 +580,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     /// Writes the data on the slot in the [`DataBlock`].
     #[allow(clippy::inline_always)] // Very trivial function.
     #[inline(always)]
-    const fn write_data_block<const LEN: usize>(
+    fn write_data_block<const LEN: usize>(
         data_block: &DataBlock<K, V, LEN>,
         entry: (K, V),
         index: usize,
@@ -602,7 +602,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     /// Returns a pointer to the slot in the [`DataBlock`].
     #[allow(clippy::inline_always)] // Very trivial function.
     #[inline(always)]
-    const fn entry_ptr<const LEN: usize>(
+    fn entry_ptr<const LEN: usize>(
         data_block: &DataBlock<K, V, LEN>,
         index: usize,
     ) -> *const (K, V) {
@@ -612,7 +612,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     /// Returns a mutable pointer to the slot in the [`DataBlock`].
     #[allow(clippy::inline_always)] // Very trivial function.
     #[inline(always)]
-    const fn entry_mut_ptr<const LEN: usize>(
+    fn entry_mut_ptr<const LEN: usize>(
         data_block: &DataBlock<K, V, LEN>,
         index: usize,
     ) -> *mut (K, V) {
@@ -685,7 +685,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     ///
     /// Returns an invalid [`EntryPtr`] if the key is not present.
     #[inline]
-    pub(super) fn get_entry_ptr<'g, Q>(
+    pub(crate) fn get_entry_ptr<'g, Q>(
         &self,
         data_block: &DataBlock<K, V, BUCKET_LEN>,
         key: &Q,
@@ -830,7 +830,7 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
     pub(crate) fn get_mut<L: LruList>(
         &mut self,
         data_block: &DataBlock<K, V, BUCKET_LEN>,
-        _writer: &mut Writer<K, V, L, TYPE>,
+        _writer: &Writer<K, V, L, TYPE>,
     ) -> &mut (K, V) {
         debug_assert_ne!(self.current_index, usize::MAX);
 
@@ -950,6 +950,16 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
     }
 }
 
+impl<K, V, const TYPE: char> Clone for EntryPtr<'_, K, V, TYPE> {
+    #[inline]
+    fn clone(&self) -> Self {
+        Self {
+            current_link_ptr: self.current_link_ptr,
+            current_index: self.current_index,
+        }
+    }
+}
+
 impl<K, V, const TYPE: char> Debug for EntryPtr<'_, K, V, TYPE> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -960,12 +970,46 @@ impl<K, V, const TYPE: char> Debug for EntryPtr<'_, K, V, TYPE> {
     }
 }
 
-unsafe impl<K: Sync, V: Sync, const TYPE: char> Sync for EntryPtr<'_, K, V, TYPE> {}
+unsafe impl<K: Send, V: Send, const TYPE: char> Send for EntryPtr<'_, K, V, TYPE> {}
+unsafe impl<K: Send + Sync, V: Send + Sync, const TYPE: char> Sync for EntryPtr<'_, K, V, TYPE> {}
+
+impl<K, V, const LEN: usize> Index<usize> for DataBlock<K, V, LEN> {
+    type Output = UnsafeCell<MaybeUninit<(K, V)>>;
+
+    #[inline]
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.0[index]
+    }
+}
+
+unsafe impl<K: Send, V: Send, const LEN: usize> Send for DataBlock<K, V, LEN> {}
+unsafe impl<K: Send + Sync, V: Send + Sync, const LEN: usize> Sync for DataBlock<K, V, LEN> {}
 
 impl<'g, K, V, L: LruList, const TYPE: char> Writer<'g, K, V, L, TYPE> {
-    /// Locks the [`Bucket`].
+    /// Locks the [`Bucket`] asynchronously.
     #[inline]
-    pub(crate) fn lock(
+    pub(crate) async fn lock_async(
+        bucket: &'g Bucket<K, V, L, TYPE>,
+        sendable_guard: &'g SendableGuard,
+    ) -> Option<Writer<'g, K, V, L, TYPE>> {
+        // `sendable_guard` should be reset when there is a chance that the task may suspend, since
+        // `Guard` cannot survive across awaits.
+        if bucket
+            .rw_lock
+            .lock_async_with(|| sendable_guard.reset())
+            .await
+        {
+            // The `bucket` was not killed, and will not be killed until the `Reader` is dropped.
+            // This guarantees that the `BucketArray` will survive as long as the `Reader` is alive.
+            Some(Writer { bucket })
+        } else {
+            None
+        }
+    }
+
+    /// Locks the [`Bucket`] synchronously.
+    #[inline]
+    pub(crate) fn lock_sync(
         bucket: &'g Bucket<K, V, L, TYPE>,
         _guard: &'g Guard,
     ) -> Option<Writer<'g, K, V, L, TYPE>> {
@@ -978,31 +1022,20 @@ impl<'g, K, V, L: LruList, const TYPE: char> Writer<'g, K, V, L, TYPE> {
     }
 
     /// Tries to lock the [`Bucket`].
+    #[allow(clippy::option_option)]
     #[inline]
     pub(crate) fn try_lock(
         bucket: &'g Bucket<K, V, L, TYPE>,
         _guard: &'g Guard,
-    ) -> Result<Option<Writer<'g, K, V, L, TYPE>>, ()> {
+    ) -> Option<Option<Writer<'g, K, V, L, TYPE>>> {
         if bucket.rw_lock.try_lock() {
             if bucket.killed() {
                 bucket.rw_lock.release_lock();
-                return Ok(None);
+                return Some(None);
             }
-            return Ok(Some(Writer { bucket }));
+            return Some(Some(Writer { bucket }));
         }
-        Err(())
-    }
-
-    /// Tries to lock the [`Bucket`], and if it fails, pushes an [`AsyncWait`] to the wait queue.
-    #[allow(clippy::unnecessary_wraps)]
-    #[inline]
-    pub(crate) fn try_lock_or_wait(
-        bucket: &'g Bucket<K, V, L, TYPE>,
-        _async_wait: &mut AsyncWait,
-        guard: &'g Guard,
-    ) -> Result<Option<Writer<'g, K, V, L, TYPE>>, ()> {
-        // TODO: async.
-        Ok(Self::lock(bucket, guard))
+        None
     }
 
     /// Creates a new [`Writer`] from a [`Bucket`].
@@ -1045,11 +1078,32 @@ impl<K, V, L: LruList, const TYPE: char> Drop for Writer<'_, K, V, L, TYPE> {
 }
 
 impl<'g, K, V, L: LruList, const TYPE: char> Reader<'g, K, V, L, TYPE> {
-    /// Locks the given [`Bucket`].
+    /// Locks the [`Bucket`] asynchronously.
+    #[inline]
+    pub(crate) async fn lock_async(
+        bucket: &'g Bucket<K, V, L, TYPE>,
+        sendable_guard: &'g SendableGuard,
+    ) -> Option<Reader<'g, K, V, L, TYPE>> {
+        // `sendable_guard` should be reset when there is a chance that the task may suspend, since
+        // `Guard` cannot survive across awaits.
+        if bucket
+            .rw_lock
+            .share_async_with(|| sendable_guard.reset())
+            .await
+        {
+            // The `bucket` was not killed, and will not be killed until the `Reader` is dropped.
+            // This guarantees that the `BucketArray` will survive as long as the `Reader` is alive.
+            Some(Reader { bucket })
+        } else {
+            None
+        }
+    }
+
+    /// Locks the [`Bucket`] synchronously.
     ///
     /// Returns `None` if the [`Bucket`] has been killed or empty.
     #[inline]
-    pub(crate) fn lock(
+    pub(crate) fn lock_sync(
         bucket: &'g Bucket<K, V, L, TYPE>,
         _guard: &'g Guard,
     ) -> Option<Reader<'g, K, V, L, TYPE>> {
@@ -1059,18 +1113,6 @@ impl<'g, K, V, L: LruList, const TYPE: char> Reader<'g, K, V, L, TYPE> {
             return None;
         }
         Some(Reader { bucket })
-    }
-
-    /// Tries to lock the [`Bucket`], and if it fails, pushes an [`AsyncWait`].
-    #[allow(clippy::unnecessary_wraps)]
-    #[inline]
-    pub(crate) fn try_lock_or_wait(
-        bucket: &'g Bucket<K, V, L, TYPE>,
-        _async_wait: &mut AsyncWait,
-        guard: &'g Guard,
-    ) -> Result<Option<Reader<'g, K, V, L, TYPE>>, ()> {
-        // TODO: async.
-        Ok(Self::lock(bucket, guard))
     }
 
     /// Releases the lock.
@@ -1265,6 +1307,9 @@ impl LruList for DoublyLinkedList {
     }
 }
 
+unsafe impl<K: Send, V: Send, const LEN: usize> Send for Metadata<K, V, LEN> {}
+unsafe impl<K: Send + Sync, V: Send + Sync, const LEN: usize> Sync for Metadata<K, V, LEN> {}
+
 impl<K, V, const LEN: usize> LinkedBucket<K, V, LEN> {
     /// Creates an empty [`LinkedBucket`].
     fn new(next: Option<Shared<LinkedBucket<K, V, LINKED_BUCKET_LEN>>>) -> Self {
@@ -1346,7 +1391,7 @@ mod test {
             let bucket: Bucket<usize, usize, DoublyLinkedList, CACHE> = default_bucket();
             for v in 0..xs {
                 let guard = Guard::new();
-                let writer = Writer::lock(&bucket, &guard).unwrap();
+                let writer = Writer::lock_sync(&bucket, &guard).unwrap();
                 let evicted = writer.evict_lru_head(&data_block);
                 assert_eq!(v >= BUCKET_LEN, evicted.is_some());
                 writer.insert_with(&data_block, 0, || (v, v), &guard);
@@ -1361,7 +1406,7 @@ mod test {
                 unsafe { MaybeUninit::uninit().assume_init() };
             let bucket: Bucket<usize, usize, DoublyLinkedList, CACHE> = default_bucket();
             let guard = Guard::new();
-            let writer = Writer::lock(&bucket, &guard).unwrap();
+            let writer = Writer::lock_sync(&bucket, &guard).unwrap();
             for _ in 0..3 {
                 for v in 0..xs {
                     let entry_ptr = writer.insert_with(&data_block, 0, || (v, v), &guard);
@@ -1404,7 +1449,7 @@ mod test {
             let bucket: Bucket<usize, usize, DoublyLinkedList, CACHE> = default_bucket();
             for v in 0..xs {
                 let guard = Guard::new();
-                let writer = Writer::lock(&bucket, &guard).unwrap();
+                let writer = Writer::lock_sync(&bucket, &guard).unwrap();
                 let evicted = writer.evict_lru_head(&data_block);
                 assert_eq!(v >= BUCKET_LEN, evicted.is_some());
                 let mut entry_ptr = writer.insert_with(&data_block, 0, || (v, v), &guard);
@@ -1440,7 +1485,7 @@ mod test {
             let bucket: Bucket<usize, usize, DoublyLinkedList, CACHE> = default_bucket();
             for v in 0..xs {
                 let guard = Guard::new();
-                let writer = Writer::lock(&bucket, &guard).unwrap();
+                let writer = Writer::lock_sync(&bucket, &guard).unwrap();
                 let entry_ptr = writer.insert_with(&data_block, 0, || (v, v), &guard);
                 writer.update_lru_tail(&entry_ptr);
                 let mut iterated = 1;
@@ -1453,7 +1498,7 @@ mod test {
             }
             for v in 0..xs {
                 let guard = Guard::new();
-                let writer = Writer::lock(&bucket, &guard).unwrap();
+                let writer = Writer::lock_sync(&bucket, &guard).unwrap();
                 let entry_ptr = writer.get_entry_ptr(&data_block, &v, 0, &guard);
                 let mut iterated = 1;
                 let mut i = writer.lru_list.0[entry_ptr.current_index].1.load(Relaxed) as usize;
@@ -1490,7 +1535,7 @@ mod test {
                 let partial_hash = (task_id % BUCKET_LEN).try_into().unwrap();
                 let guard = Guard::new();
                 for i in 0..2048 {
-                    let writer = Writer::lock(&bucket_clone, &guard).unwrap();
+                    let writer = Writer::lock_sync(&bucket_clone, &guard).unwrap();
                     let mut sum: u64 = 0;
                     for j in 0..128 {
                         unsafe {
@@ -1516,7 +1561,7 @@ mod test {
                     }
                     drop(writer);
 
-                    let reader = Reader::lock(&*bucket_clone, &guard).unwrap();
+                    let reader = Reader::lock_sync(&*bucket_clone, &guard).unwrap();
                     assert_eq!(
                         reader
                             .search_entry(&data_block_clone, &task_id, partial_hash, &guard)
@@ -1555,7 +1600,7 @@ mod test {
         assert_eq!(bucket.len(), count);
 
         entry_ptr = EntryPtr::new(&epoch_guard);
-        let writer = Writer::lock(&bucket, &epoch_guard).unwrap();
+        let writer = Writer::lock_sync(&bucket, &epoch_guard).unwrap();
         while entry_ptr.move_to_next(&writer, &epoch_guard) {
             writer.remove(&data_block, &mut entry_ptr, &epoch_guard);
         }
@@ -1564,6 +1609,6 @@ mod test {
 
         assert!(bucket.killed());
         assert_eq!(bucket.len(), 0);
-        assert!(Writer::lock(unsafe { bucket.get_mut().unwrap() }, &epoch_guard).is_none());
+        assert!(Writer::lock_sync(unsafe { bucket.get_mut().unwrap() }, &epoch_guard).is_none());
     }
 }

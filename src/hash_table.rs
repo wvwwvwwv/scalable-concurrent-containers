@@ -4,7 +4,7 @@ pub mod bucket_array;
 use bucket::{BUCKET_LEN, CACHE, DataBlock, EntryPtr, LruList, OPTIMISTIC, Reader, Writer};
 use bucket_array::BucketArray;
 use std::hash::{BuildHasher, Hash};
-use std::pin::Pin;
+use std::ptr;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicUsize, fence};
 
@@ -12,7 +12,7 @@ use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
 
 use super::Equivalent;
 use super::exit_guard::ExitGuard;
-use super::wait_queue::{AsyncWait, DeriveAsyncWait};
+use crate::async_helper::SendableGuard;
 
 /// The maximum resize factor.
 const MAX_RESIZE_FACTOR: usize = (usize::BITS / 2) as usize;
@@ -143,6 +143,25 @@ where
         num_entries
     }
 
+    /// For the given index in the current array, calculate the respective range in the old array.
+    fn calculate_respective_range(
+        current_array: &BucketArray<K, V, L, TYPE>,
+        old_array: &BucketArray<K, V, L, TYPE>,
+        index: usize,
+    ) -> (usize, usize) {
+        let current_array_len = current_array.len();
+        let old_array_len = old_array.len();
+        if current_array_len < old_array_len {
+            let ratio = old_array_len / current_array_len;
+            let start_index = index * ratio;
+            (start_index, start_index + ratio)
+        } else {
+            let ratio = current_array_len / old_array_len;
+            let start_index = index / ratio;
+            (start_index, start_index + 1)
+        }
+    }
+
     /// Returns `true` if the number of entries is non-zero.
     #[inline]
     fn has_entry(&self, guard: &Guard) -> bool {
@@ -210,65 +229,16 @@ where
         false
     }
 
-    /// Inserts an entry into the [`HashTable`].
+    /// Returns `true` if the current array has stayed the same.
     #[inline]
-    fn insert_entry<D: DeriveAsyncWait>(
+    fn check_current_array(
         &self,
-        key: K,
-        val: V,
-        hash: u64,
-        async_wait: &mut D,
-        guard: &Guard,
-    ) -> Result<Option<(K, V)>, (K, V)> {
-        match self.reserve_entry(&key, hash, async_wait, guard) {
-            Ok(LockedEntry {
-                writer: locker,
-                data_block: data_block_mut,
-                entry_ptr,
-                index: _,
-            }) => {
-                if entry_ptr.is_valid() {
-                    return Ok(Some((key, val)));
-                }
-                locker.insert_with(
-                    data_block_mut,
-                    BucketArray::<K, V, L, TYPE>::partial_hash(hash),
-                    || (key, val),
-                    guard,
-                );
-                Ok(None)
-            }
-            Err(()) => Err((key, val)),
-        }
-    }
-
-    /// Returns a [`LockedEntry`] pointing to the first occupied entry.
-    #[inline]
-    fn lock_first_entry<'g>(&self, guard: &'g Guard) -> Option<LockedEntry<'g, K, V, L, TYPE>> {
-        let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
-        while let Some(current_array) = current_array_ptr.as_ref() {
-            self.clear_old_array(current_array, guard);
-            for index in 0..current_array.len() {
-                let bucket = current_array.bucket(index);
-                let writer = Writer::lock(bucket, guard);
-                if let Some(writer) = writer {
-                    let data_block = current_array.data_block(index);
-                    let mut entry_ptr = EntryPtr::new(guard);
-                    if entry_ptr.move_to_next(&writer, guard) {
-                        return Some(LockedEntry::new(
-                            writer, data_block, entry_ptr, index, guard,
-                        ));
-                    }
-                }
-            }
-
-            let new_current_array_ptr = self.bucket_array().load(Acquire, guard);
-            if current_array_ptr.without_tag() == new_current_array_ptr.without_tag() {
-                break;
-            }
-            current_array_ptr = new_current_array_ptr;
-        }
-        None
+        current_array: &BucketArray<K, V, L, TYPE>,
+        sendable_guard: &SendableGuard,
+    ) -> bool {
+        sendable_guard
+            .load(self.bucket_array(), Acquire)
+            .is_some_and(|r| ptr::eq(r, current_array))
     }
 
     /// Peeks an entry from the [`HashTable`].
@@ -280,9 +250,9 @@ where
         debug_assert_eq!(TYPE, OPTIMISTIC);
         let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
         while let Some(current_array) = current_array_ptr.as_ref() {
+            let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                if self.incremental_rehash::<Q, (), true>(current_array, &mut (), guard) != Ok(true)
-                {
+                if !self.move_entry_sync::<true>(current_array, old_array, index, guard) {
                     let index = old_array.calculate_bucket_index(hash);
                     if let Some(entry) = old_array.bucket(index).search_entry(
                         old_array.data_block(index),
@@ -295,7 +265,6 @@ where
                 }
             }
 
-            let index = current_array.calculate_bucket_index(hash);
             let bucket = current_array.bucket(index);
             if let Some(entry) = bucket.search_entry(
                 current_array.data_block(index),
@@ -311,254 +280,87 @@ where
                 break;
             }
 
-            // A new array has been allocated.
             current_array_ptr = new_current_array_ptr;
         }
-
         None
     }
 
-    /// Reads an entry from the [`HashTable`].
+    /// Reads an entry asynchronously from the [`HashTable`] with a shared lock acquired on the
+    /// bucket.
     #[inline]
-    fn read_entry<Q, D, R, F: FnOnce(&K, &V) -> R>(
+    async fn reader_async_with<Q, R, F: FnOnce(&K, &V) -> R>(
         &self,
         key: &Q,
         hash: u64,
         f: F,
-        async_wait: &mut D,
-        guard: &Guard,
-    ) -> Result<Option<R>, F>
+        sendable_guard: &SendableGuard,
+    ) -> Option<R>
     where
         Q: Equivalent<K> + Hash + ?Sized,
-        D: DeriveAsyncWait,
     {
-        let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
-        while let Some(current_array) = current_array_ptr.as_ref() {
-            if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                if self
-                    .move_entry::<Q, D>(current_array, old_array, hash, async_wait, guard)
-                    .is_err()
-                {
-                    return Err(f);
+        while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
+            let index = current_array.calculate_bucket_index(hash);
+            if current_array.has_old_array()
+                && !self
+                    .move_entry_async(current_array, index, sendable_guard)
+                    .await
+            {
+                continue;
+            }
+
+            let bucket = current_array.bucket(index);
+            if let Some(reader) = Reader::lock_async(bucket, sendable_guard).await {
+                if let Some(entry) = reader.search_entry(
+                    current_array.data_block(index),
+                    key,
+                    BucketArray::<K, V, L, TYPE>::partial_hash(hash),
+                    sendable_guard.guard(),
+                ) {
+                    return Some(f(&entry.0, &entry.1));
                 }
             }
 
+            if self.check_current_array(current_array, sendable_guard) {
+                break;
+            }
+        }
+        None
+    }
+
+    /// Reads an entry synchronously from the [`HashTable`] with a shared lock acquired on the
+    /// bucket.
+    #[inline]
+    fn reader_sync_with<Q, R, F: FnOnce(&K, &V) -> R>(
+        &self,
+        key: &Q,
+        hash: u64,
+        f: F,
+        guard: &Guard,
+    ) -> Option<R>
+    where
+        Q: Equivalent<K> + Hash + ?Sized,
+    {
+        let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
+        while let Some(current_array) = current_array_ptr.as_ref() {
             let index = current_array.calculate_bucket_index(hash);
+            if let Some(old_array) = current_array.old_array(guard).as_ref() {
+                self.move_entry_sync::<false>(current_array, old_array, index, guard);
+            }
+
             let bucket = current_array.bucket(index);
-            let lock_result = if let Some(async_wait) = async_wait.derive() {
-                match Reader::try_lock_or_wait(bucket, async_wait, guard) {
-                    Ok(result) => result,
-                    Err(()) => return Err(f),
-                }
-            } else {
-                Reader::lock(bucket, guard)
-            };
-            if let Some(reader) = lock_result {
+            if let Some(reader) = Reader::lock_sync(bucket, guard) {
                 if let Some(entry) = reader.search_entry(
                     current_array.data_block(index),
                     key,
                     BucketArray::<K, V, L, TYPE>::partial_hash(hash),
                     guard,
                 ) {
-                    return Ok(Some(f(&entry.0, &entry.1)));
+                    return Some(f(&entry.0, &entry.1));
                 }
             }
 
             let new_current_array_ptr = self.bucket_array().load(Acquire, guard);
             if current_array_ptr == new_current_array_ptr {
-                break;
-            }
-
-            // A new array has been allocated.
-            current_array_ptr = new_current_array_ptr;
-        }
-
-        Ok(None)
-    }
-
-    /// Gets the occupied entry corresponding to the key.
-    ///
-    /// Returns an error if locking failed.
-    #[inline]
-    fn get_entry<'g, Q, D>(
-        &self,
-        key: &Q,
-        hash: u64,
-        async_wait: &mut D,
-        guard: &'g Guard,
-    ) -> Result<Option<LockedEntry<'g, K, V, L, TYPE>>, ()>
-    where
-        Q: Equivalent<K> + Hash + ?Sized,
-        D: DeriveAsyncWait,
-    {
-        let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
-        while let Some(current_array) = current_array_ptr.as_ref() {
-            if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                self.move_entry::<Q, D>(current_array, old_array, hash, async_wait, guard)?;
-            }
-
-            let index = current_array.calculate_bucket_index(hash);
-            let bucket = current_array.bucket(index);
-            let writer = if let Some(async_wait) = async_wait.derive() {
-                Writer::try_lock_or_wait(bucket, async_wait, guard)?
-            } else {
-                Writer::lock(bucket, guard)
-            };
-            if let Some(writer) = writer {
-                let data_block = current_array.data_block(index);
-                let entry_ptr = writer.get_entry_ptr(
-                    data_block,
-                    key,
-                    BucketArray::<K, V, L, TYPE>::partial_hash(hash),
-                    guard,
-                );
-                if entry_ptr.is_valid() {
-                    return Ok(Some(LockedEntry::new(
-                        writer, data_block, entry_ptr, index, guard,
-                    )));
-                }
-            }
-
-            let new_current_array_ptr = self.bucket_array().load(Acquire, guard);
-            if current_array_ptr == new_current_array_ptr {
-                break;
-            }
-
-            // A new array has been allocated.
-            current_array_ptr = new_current_array_ptr;
-        }
-
-        Ok(None)
-    }
-
-    /// Removes the entry containing the key if the condition is met.
-    ///
-    /// Returns an error if locking failed.
-    #[inline]
-    fn remove_entry<Q, F: FnOnce(&mut V) -> bool, D, R, P: FnOnce(Option<Option<(K, V)>>) -> R>(
-        &self,
-        key: &Q,
-        hash: u64,
-        condition: F,
-        post_processor: P,
-        async_wait: &mut D,
-        guard: &Guard,
-    ) -> Result<R, F>
-    where
-        Q: Equivalent<K> + Hash + ?Sized,
-        D: DeriveAsyncWait,
-    {
-        while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
-            // The reasoning behind this loop can be found in `acquire_entry`.
-            let shrinkable = if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                match self.move_entry::<Q, D>(current_array, old_array, hash, async_wait, guard) {
-                    Ok(r) => r,
-                    Err(()) => return Err(condition),
-                }
-            } else {
-                true
-            };
-
-            let index = current_array.calculate_bucket_index(hash);
-            let bucket = current_array.bucket(index);
-            let writer = if let Some(async_wait) = async_wait.derive() {
-                match Writer::try_lock_or_wait(bucket, async_wait, guard) {
-                    Ok(l) => l,
-                    Err(()) => return Err(condition),
-                }
-            } else {
-                Writer::lock(bucket, guard)
-            };
-            if let Some(mut writer) = writer {
-                let data_block = current_array.data_block(index);
-                let mut entry_ptr = writer.get_entry_ptr(
-                    data_block,
-                    key,
-                    BucketArray::<K, V, L, TYPE>::partial_hash(hash),
-                    guard,
-                );
-                if entry_ptr.is_valid()
-                    && condition(&mut entry_ptr.get_mut(data_block, &mut writer).1)
-                {
-                    let result = if TYPE == OPTIMISTIC {
-                        writer.mark_removed(&mut entry_ptr, guard);
-                        None
-                    } else {
-                        Some(writer.remove(data_block, &mut entry_ptr, guard))
-                    };
-                    if shrinkable
-                        && (writer.len() <= 1 || writer.need_rebuild())
-                        && current_array.initiate_sampling(index)
-                    {
-                        drop(writer);
-                        self.try_shrink_or_rebuild(current_array, index, guard);
-                    }
-                    return Ok(post_processor(Some(result)));
-                }
-                break;
-            }
-        }
-        Ok(post_processor(None))
-    }
-
-    /// Checks if there is any entry that satisfies the specified predicate.
-    #[inline]
-    fn contains_entry<P: FnMut(&K, &V) -> bool>(&self, mut pred: P) -> bool {
-        let guard = Guard::new();
-        let mut current_array_ptr = self.bucket_array().load(Acquire, &guard);
-        while let Some(current_array) = current_array_ptr.as_ref() {
-            self.clear_old_array(current_array, &guard);
-            for index in 0..current_array.len() {
-                let bucket = current_array.bucket(index);
-                if let Some(locker) = Reader::lock(bucket, &guard) {
-                    let data_block = current_array.data_block(index);
-                    let mut entry_ptr = EntryPtr::new(&guard);
-                    while entry_ptr.move_to_next(*locker, &guard) {
-                        let (k, v) = entry_ptr.get(data_block);
-                        if pred(k, v) {
-                            return true;
-                        }
-                    }
-                }
-            }
-
-            let new_current_array_ptr = self.bucket_array().load(Acquire, &guard);
-            if current_array_ptr.without_tag() == new_current_array_ptr.without_tag() {
-                break;
-            }
-            current_array_ptr = new_current_array_ptr;
-        }
-        false
-    }
-
-    /// Finds the first entry that satisfies the specified predicate.
-    #[inline]
-    fn find_entry<'g, P: FnMut(&K, &V) -> bool>(
-        &self,
-        mut pred: P,
-        guard: &'g Guard,
-    ) -> Option<LockedEntry<'g, K, V, L, TYPE>> {
-        let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
-        while let Some(current_array) = current_array_ptr.as_ref() {
-            self.clear_old_array(current_array, guard);
-            for index in 0..current_array.len() {
-                let bucket = current_array.bucket(index);
-                if let Some(writer) = Writer::lock(bucket, guard) {
-                    let data_block = current_array.data_block(index);
-                    let mut entry_ptr = EntryPtr::new(guard);
-                    while entry_ptr.move_to_next(&writer, guard) {
-                        let (k, v) = entry_ptr.get(data_block);
-                        if pred(k, v) {
-                            return Some(LockedEntry::new(
-                                writer, data_block, entry_ptr, index, guard,
-                            ));
-                        }
-                    }
-                }
-            }
-
-            let new_current_array_ptr = self.bucket_array().load(Acquire, guard);
-            if current_array_ptr.without_tag() == new_current_array_ptr.without_tag() {
                 break;
             }
             current_array_ptr = new_current_array_ptr;
@@ -566,122 +368,74 @@ where
         None
     }
 
-    /// Retains entries that satisfy the specified predicate.
-    #[inline]
-    fn retain_entries<F: FnMut(&K, &mut V) -> bool>(&self, mut pred: F) {
-        let guard = Guard::new();
-        let mut removed = false;
-        let mut current_array_ptr = self.bucket_array().load(Acquire, &guard);
-        while let Some(current_array) = current_array_ptr.as_ref() {
-            self.clear_old_array(current_array, &guard);
-            for index in 0..current_array.len() {
-                let bucket = current_array.bucket(index);
-                if let Some(mut writer) = Writer::lock(bucket, &guard) {
-                    let data_block = current_array.data_block(index);
-                    let mut entry_ptr = EntryPtr::new(&guard);
-                    while entry_ptr.move_to_next(&writer, &guard) {
-                        let (k, v) = entry_ptr.get_mut(data_block, &mut writer);
-                        if !pred(k, v) {
-                            if TYPE == OPTIMISTIC {
-                                writer.mark_removed(&mut entry_ptr, &guard);
-                            } else {
-                                writer.remove(data_block, &mut entry_ptr, &guard);
-                            }
-                            removed = true;
-                        }
-                    }
-                }
-            }
-
-            let new_current_array_ptr = self.bucket_array().load(Acquire, &guard);
-            if current_array_ptr.without_tag() == new_current_array_ptr.without_tag() {
-                break;
-            }
-            current_array_ptr = new_current_array_ptr;
-        }
-
-        if removed {
-            self.try_resize(0, &guard);
-        }
-    }
-
-    /// Prunes entries satisfying the predicate.
-    #[inline]
-    fn prune_entries<F: FnMut(&K, V) -> Option<V>>(&self, mut pred: F) {
-        let guard = Guard::new();
-        let mut removed = false;
-        let mut current_array_ptr = self.bucket_array().load(Acquire, &guard);
-        while let Some(current_array) = current_array_ptr.as_ref() {
-            self.clear_old_array(current_array, &guard);
-            for index in 0..current_array.len() {
-                let bucket = current_array.bucket(index);
-                if let Some(writer) = Writer::lock(bucket, &guard) {
-                    let data_block = current_array.data_block(index);
-                    let mut entry_ptr = EntryPtr::new(&guard);
-                    while entry_ptr.move_to_next(&writer, &guard) {
-                        if writer.keep_or_consume(data_block, &mut entry_ptr, &mut pred, &guard) {
-                            removed = true;
-                        }
-                    }
-                }
-            }
-
-            let new_current_array_ptr = self.bucket_array().load(Acquire, &guard);
-            if current_array_ptr.without_tag() == new_current_array_ptr.without_tag() {
-                break;
-            }
-            current_array_ptr = new_current_array_ptr;
-        }
-
-        if removed {
-            self.try_resize(0, &guard);
-        }
-    }
-
-    /// Reserves an entry and returns a [`Writer`] and [`EntryPtr`] corresponding to the key.
+    /// Writes an entry asynchronously from the [`HashTable`] with an exclusive lock acquired on the
+    /// bucket.
     ///
-    /// The returned [`EntryPtr`] may point to an occupied entry if the key exists.
-    ///
-    /// Returns an error if locking failed.
+    /// If the corresponding bucket does not exist, a new one is created.
     #[inline]
-    fn reserve_entry<'g, Q, D>(
+    async fn writer_async_with<
+        R,
+        F: FnOnce(Writer<K, V, L, TYPE>, &DataBlock<K, V, BUCKET_LEN>, usize, usize) -> R,
+    >(
         &self,
-        key: &Q,
         hash: u64,
-        async_wait: &mut D,
-        guard: &'g Guard,
-    ) -> Result<LockedEntry<'g, K, V, L, TYPE>, ()>
-    where
-        Q: Equivalent<K> + Hash + ?Sized,
-        D: DeriveAsyncWait,
-    {
-        // It is guaranteed that the thread reads a consistent snapshot of the current and old
-        // array pair by a release memory guard in the resize function, hence the following
-        // procedure is correct.
-        //  - The thread reads `self.array`, and it kills the target bucket in the old array if
-        //    there is one attached to it, and inserts the key into `self.array`.
-        // There are two cases.
-        //  1. The thread reads an old version of `self.array`.
-        //    If there is another thread having read the latest version of `self.array`,
-        //    trying to insert the same key, it will try to kill the bucket in the old version
-        //    of `self.array`, thus competing with each other.
-        //  2. The thread reads the latest version of `self.array`.
-        //    If the array is deprecated while inserting the key, it falls into case 1.
+        sendable_guard: &SendableGuard,
+        f: F,
+    ) -> R {
+        loop {
+            let current_array = self.get_current_array(sendable_guard.guard());
+            let index = current_array.calculate_bucket_index(hash);
+            if current_array.has_old_array()
+                && !self
+                    .move_entry_async(current_array, index, sendable_guard)
+                    .await
+            {
+                continue;
+            }
+
+            let mut bucket = current_array.bucket(index);
+            if (TYPE != CACHE || current_array.num_entries() < self.maximum_capacity())
+                && current_array.initiate_sampling(index)
+                && bucket.len() >= BUCKET_LEN - 1
+            {
+                self.try_enlarge(current_array, index, bucket.len(), sendable_guard.guard());
+                bucket = current_array.bucket(index);
+            }
+
+            if let Some(writer) = Writer::lock_async(bucket, sendable_guard).await {
+                return f(
+                    writer,
+                    current_array.data_block(index),
+                    index,
+                    current_array.len(),
+                );
+            }
+        }
+    }
+
+    /// Writes an entry synchronously from the [`HashTable`] with an exclusive lock acquired on the
+    /// bucket.
+    ///
+    /// If the corresponding bucket does not exist, a new one is created.
+    #[inline]
+    fn writer_sync_with<
+        R,
+        F: FnOnce(Writer<K, V, L, TYPE>, &DataBlock<K, V, BUCKET_LEN>, usize, usize) -> R,
+    >(
+        &self,
+        hash: u64,
+        guard: &Guard,
+        f: F,
+    ) -> R {
         loop {
             let current_array = self.get_current_array(guard);
-            let resizable = if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                self.move_entry::<Q, D>(current_array, old_array, hash, async_wait, guard)?;
-                false
-            } else {
-                true
-            };
-
             let index = current_array.calculate_bucket_index(hash);
-            let mut bucket = current_array.bucket(index);
+            if let Some(old_array) = current_array.old_array(guard).as_ref() {
+                self.move_entry_sync::<false>(current_array, old_array, index, guard);
+            }
 
-            // Try to resize the array.
-            if resizable
-                && (TYPE != CACHE || current_array.num_entries() < self.maximum_capacity())
+            let mut bucket = current_array.bucket(index);
+            if (TYPE != CACHE || current_array.num_entries() < self.maximum_capacity())
                 && current_array.initiate_sampling(index)
                 && bucket.len() >= BUCKET_LEN - 1
             {
@@ -689,25 +443,250 @@ where
                 bucket = current_array.bucket(index);
             }
 
-            let writer = if let Some(async_wait) = async_wait.derive() {
-                Writer::try_lock_or_wait(bucket, async_wait, guard)?
-            } else {
-                Writer::lock(bucket, guard)
-            };
-            if let Some(writer) = writer {
-                let data_block = current_array.data_block(index);
-                let entry_ptr = writer.get_entry_ptr(
-                    data_block,
-                    key,
-                    BucketArray::<K, V, L, TYPE>::partial_hash(hash),
-                    guard,
+            if let Some(writer) = Writer::lock_sync(bucket, guard) {
+                return f(
+                    writer,
+                    current_array.data_block(index),
+                    index,
+                    current_array.len(),
                 );
-                return Ok(LockedEntry::new(
-                    writer, data_block, entry_ptr, index, guard,
-                ));
+            }
+        }
+    }
+
+    /// Writes an entry asynchronously from the [`HashTable`] with an exclusive lock acquired on the
+    /// bucket if the key exists.
+    ///
+    /// The [`Writer`] passed to the closure may not contain the desired entry. The supplied closure
+    /// is only invoked if the bucket corresponding to the key exists. The closure returning
+    /// `(_, true)` indicates that entries were removed from the bucket.
+    #[inline]
+    async fn optional_writer_async_with<
+        R,
+        F: FnOnce(Writer<K, V, L, TYPE>, &DataBlock<K, V, BUCKET_LEN>, usize, usize) -> (R, bool),
+    >(
+        &self,
+        hash: u64,
+        sendable_guard: &SendableGuard,
+        f: F,
+    ) -> Result<R, F> {
+        while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
+            let index = current_array.calculate_bucket_index(hash);
+            if current_array.has_old_array()
+                && !self
+                    .move_entry_async(current_array, index, sendable_guard)
+                    .await
+            {
+                continue;
             }
 
-            // Reaching here means that `self.bucket_array()` has been updated.
+            let bucket = current_array.bucket(index);
+            if let Some(writer) = Writer::lock_async(bucket, sendable_guard).await {
+                let (result, try_shrink) = f(
+                    writer,
+                    current_array.data_block(index),
+                    index,
+                    current_array.len(),
+                );
+                // `try_shrink = writer.len() <= 1 || writer.need_rebuild()`.
+                if try_shrink {
+                    if let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
+                        if current_array.initiate_sampling(index) {
+                            self.try_shrink_or_rebuild(
+                                current_array,
+                                index,
+                                sendable_guard.guard(),
+                            );
+                        }
+                    }
+                }
+                return Ok(result);
+            }
+
+            if self.check_current_array(current_array, sendable_guard) {
+                break;
+            }
+        }
+        Err(f)
+    }
+
+    /// Writes an entry synchronously from the [`HashTable`] with an exclusive lock acquired on the
+    /// bucket if the key exists.
+    ///
+    /// The [`Writer`] passed to the closure may not contain the desired entry. The supplied closure
+    /// is only invoked if the bucket corresponding to the key exists. The closure returning
+    /// `(_, true)` indicates that entries were removed from the bucket.
+    #[inline]
+    fn optional_writer_sync_with<
+        R,
+        F: FnOnce(Writer<K, V, L, TYPE>, &DataBlock<K, V, BUCKET_LEN>, usize, usize) -> (R, bool),
+    >(
+        &self,
+        hash: u64,
+        guard: &Guard,
+        f: F,
+    ) -> Result<R, F> {
+        let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
+        while let Some(current_array) = current_array_ptr.as_ref() {
+            let index = current_array.calculate_bucket_index(hash);
+            if let Some(old_array) = current_array.old_array(guard).as_ref() {
+                self.move_entry_sync::<false>(current_array, old_array, index, guard);
+            }
+
+            let bucket = current_array.bucket(index);
+            if let Some(writer) = Writer::lock_sync(bucket, guard) {
+                let (result, try_shrink) = f(
+                    writer,
+                    current_array.data_block(index),
+                    index,
+                    current_array.len(),
+                );
+                // `try_shrink = writer.len() <= 1 || writer.need_rebuild()`.
+                if try_shrink && current_array.initiate_sampling(index) {
+                    self.try_shrink_or_rebuild(current_array, index, guard);
+                }
+                return Ok(result);
+            }
+
+            let new_current_array_ptr = self.bucket_array().load(Acquire, guard);
+            if current_array_ptr == new_current_array_ptr {
+                break;
+            }
+            current_array_ptr = new_current_array_ptr;
+        }
+        Err(f)
+    }
+
+    /// Iterates over all the bucket in the [`HashTable`].
+    ///
+    /// This methods stops iterating when the closure returns `(true, _)`. The closure returning
+    /// `(_, true)` means that entries were removed from the bucket.
+    #[inline]
+    async fn for_each_writer_async_with<
+        F: FnMut(Writer<K, V, L, TYPE>, &DataBlock<K, V, BUCKET_LEN>, usize, usize) -> (bool, bool),
+    >(
+        &self,
+        mut start_index: usize,
+        expected_array_len: usize,
+        sendable_guard: &SendableGuard,
+        mut f: F,
+    ) {
+        let mut try_shrink = false;
+        let mut prev_len = expected_array_len;
+        while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
+            // In case the method is repeating the routine, iterate over entries from the middle of
+            // the array.
+            let current_array_len = current_array.len();
+            start_index = if prev_len == 0 || prev_len == current_array_len {
+                start_index
+            } else if prev_len < current_array_len {
+                start_index * (current_array_len / prev_len)
+            } else {
+                start_index / (prev_len / current_array_len)
+            };
+            prev_len = current_array_len;
+
+            while start_index < current_array_len {
+                let index = start_index;
+                if current_array.has_old_array()
+                    && !self
+                        .move_entry_async(current_array, index, sendable_guard)
+                        .await
+                {
+                    break;
+                }
+
+                let bucket = current_array.bucket(index);
+                if let Some(writer) = Writer::lock_async(bucket, sendable_guard).await {
+                    let data_block = current_array.data_block(index);
+                    let (found, removed) = f(writer, data_block, index, current_array_len);
+                    try_shrink |= removed;
+                    if found {
+                        // Stop iterating over buckets.
+                        return;
+                    }
+
+                    if !self.check_current_array(current_array, sendable_guard) {
+                        break;
+                    }
+                } else {
+                    // `current_array` is no longer the current one.
+                    break;
+                }
+                start_index += 1;
+            }
+
+            if self.check_current_array(current_array, sendable_guard) {
+                break;
+            }
+        }
+
+        if try_shrink {
+            self.try_resize(0, sendable_guard.guard());
+        }
+    }
+
+    /// Iterates over all the bucket in the [`HashTable`].
+    ///
+    /// This methods stops iterating when the closure returns `(true, _)`. The closure returning
+    /// `(_, true)` means that entries were removed from the bucket.
+    #[inline]
+    fn for_each_writer_sync_with<
+        F: FnMut(Writer<K, V, L, TYPE>, &DataBlock<K, V, BUCKET_LEN>, usize, usize) -> (bool, bool),
+    >(
+        &self,
+        mut start_index: usize,
+        expected_array_len: usize,
+        guard: &Guard,
+        mut f: F,
+    ) {
+        let mut try_shrink = false;
+        let mut prev_len = expected_array_len;
+        let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
+        while let Some(current_array) = current_array_ptr.as_ref() {
+            // In case the method is repeating the routine, iterate over entries from the middle of
+            // the array.
+            let current_array_len = current_array.len();
+            start_index = if prev_len == 0 || prev_len == current_array_len {
+                start_index
+            } else if prev_len < current_array_len {
+                start_index * (current_array_len / prev_len)
+            } else {
+                start_index / (prev_len / current_array_len)
+            };
+            prev_len = current_array_len;
+
+            while start_index < current_array_len {
+                let index = start_index;
+                if let Some(old_array) = current_array.old_array(guard).as_ref() {
+                    self.move_entry_sync::<false>(current_array, old_array, index, guard);
+                }
+
+                let bucket = current_array.bucket(index);
+                if let Some(writer) = Writer::lock_sync(bucket, guard) {
+                    let data_block = current_array.data_block(index);
+                    let (found, removed) = f(writer, data_block, index, current_array_len);
+                    try_shrink |= removed;
+                    if found {
+                        // Stop iterating over buckets.
+                        return;
+                    }
+                } else {
+                    // `current_array` is no longer the current one.
+                    break;
+                }
+                start_index += 1;
+            }
+
+            let new_current_array_ptr = self.bucket_array().load(Acquire, guard);
+            if current_array_ptr == new_current_array_ptr {
+                break;
+            }
+            current_array_ptr = new_current_array_ptr;
+        }
+
+        if try_shrink {
+            self.try_resize(0, guard);
         }
     }
 
@@ -730,20 +709,15 @@ where
         // See `Self::reserve_entry`.
         loop {
             let current_array = self.get_current_array(guard);
-            let resizable = if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                self.move_entry::<Q, _>(current_array, old_array, hash, &mut (), guard)
-                    .ok()?;
-                false
-            } else {
-                true
-            };
-
             let index = current_array.calculate_bucket_index(hash);
-            let mut bucket = current_array.bucket(index);
+            if let Some(old_array) = current_array.old_array(guard).as_ref() {
+                if !self.move_entry_sync::<true>(current_array, old_array, index, guard) {
+                    return None;
+                }
+            }
 
-            // Try to resize the array.
-            if resizable
-                && (TYPE != CACHE || current_array.num_entries() < self.maximum_capacity())
+            let mut bucket = current_array.bucket(index);
+            if (TYPE != CACHE || current_array.num_entries() < self.maximum_capacity())
                 && current_array.initiate_sampling(index)
                 && bucket.len() >= BUCKET_LEN - 1
             {
@@ -751,7 +725,7 @@ where
                 bucket = current_array.bucket(index);
             }
 
-            let writer = Writer::try_lock(bucket, guard).ok()?;
+            let writer = Writer::try_lock(bucket, guard)?;
             if let Some(writer) = writer {
                 let data_block = current_array.data_block(index);
                 let entry_ptr = writer.get_entry_ptr(
@@ -761,70 +735,203 @@ where
                     guard,
                 );
                 return Some(LockedEntry::new(
-                    writer, data_block, entry_ptr, index, guard,
+                    writer,
+                    data_block,
+                    entry_ptr,
+                    index,
+                    current_array.len(),
+                    guard,
                 ));
             }
-
-            // Reaching here means that `self.bucket_array()` has been updated.
         }
     }
 
-    /// Moves an entry in the old array to the current one.
+    /// Moves an entry in the old array to the current one asnchronously.
     ///
-    /// Returns `true` if no old array is attached to the current one.
+    /// Returns `true` if the corresponding entries were successfully moved.
     #[inline]
-    fn move_entry<Q, D>(
+    async fn move_entry_async<'g>(
         &self,
-        current_array: &BucketArray<K, V, L, TYPE>,
-        old_array: &BucketArray<K, V, L, TYPE>,
-        hash: u64,
-        async_wait: &mut D,
-        guard: &Guard,
-    ) -> Result<bool, ()>
-    where
-        Q: Equivalent<K> + Hash + ?Sized,
-        D: DeriveAsyncWait,
-    {
-        if !self.incremental_rehash::<Q, D, false>(current_array, async_wait, guard)? {
-            let index = old_array.calculate_bucket_index(hash);
+        current_array: &'g BucketArray<K, V, L, TYPE>,
+        index: usize,
+        sendable_guard: &'g SendableGuard,
+    ) -> bool {
+        self.incremental_rehash_async(current_array, sendable_guard)
+            .await;
+        if !self.check_current_array(current_array, sendable_guard) {
+            return false;
+        }
+        if let Some(old_array) = sendable_guard.load(current_array.old_array_ptr(), Acquire) {
+            let range = Self::calculate_respective_range(current_array, old_array, index);
+            for index in range.0..range.1 {
+                let bucket = old_array.bucket(index);
+                let writer = Writer::lock_async(bucket, sendable_guard).await;
+                if let Some(writer) = writer {
+                    self.relocate_bucket_async(
+                        current_array,
+                        old_array,
+                        index,
+                        writer,
+                        sendable_guard,
+                    )
+                    .await;
+                }
+                if !self.check_current_array(current_array, sendable_guard) {
+                    return false;
+                }
+                if !current_array.has_old_array() {
+                    break;
+                }
+            }
+        }
+        true
+    }
+
+    /// Moves entries in the old array to the current one asnchronously.
+    ///
+    /// Returns `true` if the corresponding entries were successfully moved.
+    #[inline]
+    fn move_entry_sync<'g, const TRY_LOCK: bool>(
+        &self,
+        current_array: &'g BucketArray<K, V, L, TYPE>,
+        old_array: &'g BucketArray<K, V, L, TYPE>,
+        index: usize,
+        guard: &'g Guard,
+    ) -> bool {
+        if self.incremental_rehash_sync::<TRY_LOCK>(current_array, guard) {
+            return true;
+        }
+        let range = Self::calculate_respective_range(current_array, old_array, index);
+        for index in range.0..range.1 {
             let bucket = old_array.bucket(index);
-            let writer = if let Some(async_wait) = async_wait.derive() {
-                Writer::try_lock_or_wait(bucket, async_wait, guard)?
+            let writer = if TRY_LOCK {
+                let Some(writer) = Writer::try_lock(bucket, guard) else {
+                    return false;
+                };
+                writer
             } else {
-                Writer::lock(bucket, guard)
+                Writer::lock_sync(bucket, guard)
             };
             if let Some(writer) = writer {
-                self.relocate_bucket::<Q, _, false>(
+                if !self.relocate_bucket_sync::<TRY_LOCK>(
                     current_array,
                     old_array,
                     index,
                     writer,
-                    async_wait,
                     guard,
-                )?;
+                ) {
+                    return false;
+                }
             }
-            return Ok(false);
         }
-        Ok(true)
+        true
     }
 
     /// Relocates the bucket to the current bucket array.
     ///
     /// Returns an error if locking failed.
     #[inline]
-    fn relocate_bucket<Q, D, const TRY_LOCK: bool>(
+    async fn relocate_bucket_async<'g>(
         &self,
-        current_array: &BucketArray<K, V, L, TYPE>,
-        old_array: &BucketArray<K, V, L, TYPE>,
+        current_array: &'g BucketArray<K, V, L, TYPE>,
+        old_array: &'g BucketArray<K, V, L, TYPE>,
         old_index: usize,
-        old_writer: Writer<K, V, L, TYPE>,
-        async_wait: &mut D,
-        guard: &Guard,
-    ) -> Result<(), ()>
-    where
-        Q: Equivalent<K> + Hash + ?Sized,
-        D: DeriveAsyncWait,
-    {
+        old_writer: Writer<'g, K, V, L, TYPE>,
+        sendable_guard: &'g SendableGuard,
+    ) {
+        debug_assert!(!old_writer.killed());
+        if old_writer.len() != 0 {
+            let target_index = if old_array.len() >= current_array.len() {
+                let ratio = old_array.len() / current_array.len();
+                old_index / ratio
+            } else {
+                let ratio = current_array.len() / old_array.len();
+                debug_assert!(ratio <= BUCKET_LEN);
+                old_index * ratio
+            };
+
+            let mut target_buckets: [Option<Writer<K, V, L, TYPE>>; MAX_RESIZE_FACTOR] =
+                Default::default();
+            let mut max_index = 0;
+            let mut entry_ptr = EntryPtr::new(sendable_guard.guard());
+            let old_data_block = old_array.data_block(old_index);
+            while entry_ptr.move_to_next(&old_writer, sendable_guard.guard()) {
+                let old_entry = entry_ptr.get(old_data_block);
+                let (new_index, partial_hash) = if old_array.len() >= current_array.len() {
+                    debug_assert_eq!(
+                        current_array.calculate_bucket_index(self.hash(&old_entry.0)),
+                        target_index
+                    );
+                    (target_index, entry_ptr.partial_hash(&*old_writer))
+                } else {
+                    let hash = self.hash(&old_entry.0);
+                    let new_index = current_array.calculate_bucket_index(hash);
+                    debug_assert!(
+                        new_index - target_index < (current_array.len() / old_array.len())
+                    );
+                    let partial_hash = BucketArray::<K, V, L, TYPE>::partial_hash(hash);
+                    (new_index, partial_hash)
+                };
+
+                while max_index <= new_index - target_index {
+                    let target_bucket = current_array.bucket(max_index + target_index);
+                    let writer = unsafe {
+                        Writer::lock_async(target_bucket, sendable_guard)
+                            .await
+                            .unwrap_unchecked()
+                    };
+                    target_buckets[max_index].replace(writer);
+                    max_index += 1;
+                }
+
+                let target_bucket = unsafe {
+                    target_buckets[new_index - target_index]
+                        .as_mut()
+                        .unwrap_unchecked()
+                };
+
+                let entry_clone = Self::try_clone(old_entry);
+                target_bucket.insert_with(
+                    current_array.data_block(new_index),
+                    partial_hash,
+                    || {
+                        // Stack unwinding during a call to `insert` will result in the entry being
+                        // removed from the map, any map entry modification should take place after all
+                        // the memory is reserved.
+                        entry_clone.unwrap_or_else(|| {
+                            old_writer.extract(
+                                old_data_block,
+                                &mut entry_ptr,
+                                sendable_guard.guard(),
+                            )
+                        })
+                    },
+                    sendable_guard.guard(),
+                );
+
+                if TYPE == OPTIMISTIC {
+                    // In order for readers that have observed the following erasure to see the above
+                    // insertion, a `Release` fence is needed.
+                    fence(Release);
+                    old_writer.mark_removed(&mut entry_ptr, sendable_guard.guard());
+                }
+            }
+        }
+        old_writer.kill();
+    }
+
+    /// Relocates the bucket to the current bucket array.
+    ///
+    /// Returns `false` if locking failed.
+    #[inline]
+    fn relocate_bucket_sync<'g, const TRY_LOCK: bool>(
+        &self,
+        current_array: &'g BucketArray<K, V, L, TYPE>,
+        old_array: &'g BucketArray<K, V, L, TYPE>,
+        old_index: usize,
+        old_writer: Writer<'g, K, V, L, TYPE>,
+        guard: &'g Guard,
+    ) -> bool {
         debug_assert!(!old_writer.killed());
         if old_writer.len() != 0 {
             let target_index = if old_array.len() >= current_array.len() {
@@ -861,17 +968,15 @@ where
 
                 while max_index <= new_index - target_index {
                     let target_bucket = current_array.bucket(max_index + target_index);
-                    let locker = unsafe {
-                        if TRY_LOCK {
-                            Writer::try_lock(target_bucket, guard)?.unwrap_unchecked()
-                        } else if let Some(async_wait) = async_wait.derive() {
-                            Writer::try_lock_or_wait(target_bucket, async_wait, guard)?
-                                .unwrap_unchecked()
-                        } else {
-                            Writer::lock(target_bucket, guard).unwrap_unchecked()
-                        }
+                    let writer = if TRY_LOCK {
+                        let Some(writer) = Writer::try_lock(target_bucket, guard) else {
+                            return false;
+                        };
+                        writer
+                    } else {
+                        Writer::lock_sync(target_bucket, guard)
                     };
-                    target_buckets[max_index].replace(locker);
+                    target_buckets[max_index].replace(unsafe { writer.unwrap_unchecked() });
                     max_index += 1;
                 }
 
@@ -905,31 +1010,105 @@ where
             }
         }
         old_writer.kill();
-        Ok(())
+        true
     }
 
-    /// Clears the old array.
-    fn clear_old_array(&self, current_array: &BucketArray<K, V, L, TYPE>, guard: &Guard) {
-        while current_array.has_old_array() {
-            if self.incremental_rehash::<K, _, false>(current_array, &mut (), guard) == Ok(true) {
-                break;
-            }
-        }
-    }
-
-    /// Relocates a fixed number of buckets from the old array to the current array.
+    /// Relocates a fixed number of buckets from the old array to the current array, asynchronously.
     ///
     /// Returns `true` if `old_array` is null.
-    fn incremental_rehash<Q, D, const TRY_LOCK: bool>(
+    async fn incremental_rehash_async<'g>(
         &self,
-        current_array: &BucketArray<K, V, L, TYPE>,
-        async_wait: &mut D,
-        guard: &Guard,
-    ) -> Result<bool, ()>
-    where
-        Q: Equivalent<K> + Hash + ?Sized,
-        D: DeriveAsyncWait,
-    {
+        current_array: &'g BucketArray<K, V, L, TYPE>,
+        sendable_guard: &'g SendableGuard,
+    ) -> bool {
+        if let Some(old_array) = sendable_guard.load(current_array.old_array_ptr(), Acquire) {
+            // Assign itself a range of `Bucket` instances to rehash.
+            //
+            // Aside from the range, it increments the implicit reference counting field in
+            // `old_array.rehashing`.
+            let rehashing_metadata = old_array.rehashing_metadata();
+            let mut current = rehashing_metadata.load(Relaxed);
+            loop {
+                if current >= old_array.len() || (current & (BUCKET_LEN - 1)) == BUCKET_LEN - 1 {
+                    // Only `BUCKET_LEN - 1` threads are allowed to rehash a `Bucket` at a moment.
+                    return !current_array.has_old_array();
+                }
+                match rehashing_metadata.compare_exchange_weak(
+                    current,
+                    current + BUCKET_LEN + 1,
+                    Relaxed,
+                    Relaxed,
+                ) {
+                    Ok(_) => {
+                        current &= !(BUCKET_LEN - 1);
+                        break;
+                    }
+                    Err(result) => current = result,
+                }
+            }
+
+            // The guard ensures dropping one reference in `old_array.rehashing`.
+            let mut rehashing_guard = ExitGuard::new((current, false), |(prev, success)| {
+                if success {
+                    // Keep the index as it is.
+                    let current = rehashing_metadata.fetch_sub(1, Relaxed) - 1;
+                    if (current & (BUCKET_LEN - 1) == 0) && current >= old_array.len() {
+                        // The last one trying to relocate old entries gets rid of the old array.
+                        current_array.drop_old_array();
+                    }
+                } else {
+                    // On failure, `rehashing` reverts to its previous state.
+                    let mut current = rehashing_metadata.load(Relaxed);
+                    loop {
+                        let new = if current <= prev {
+                            current - 1
+                        } else {
+                            let ref_cnt = current & (BUCKET_LEN - 1);
+                            prev | (ref_cnt - 1)
+                        };
+                        match rehashing_metadata
+                            .compare_exchange_weak(current, new, Relaxed, Relaxed)
+                        {
+                            Ok(_) => break,
+                            Err(actual) => current = actual,
+                        }
+                    }
+                }
+            });
+
+            for index in current..(current + BUCKET_LEN).min(old_array.len()) {
+                let old_bucket = old_array.bucket(index);
+                let writer = Writer::lock_async(old_bucket, sendable_guard).await;
+                if let Some(writer) = writer {
+                    self.relocate_bucket_async(
+                        current_array,
+                        old_array,
+                        index,
+                        writer,
+                        sendable_guard,
+                    )
+                    .await;
+                }
+                if !self.check_current_array(current_array, sendable_guard) {
+                    // The current array has been updated: must not access `current_array`.
+                    return false;
+                }
+            }
+
+            // Successfully rehashed all the assigned buckets.
+            rehashing_guard.1 = true;
+        }
+        !current_array.has_old_array()
+    }
+
+    /// Relocates a fixed number of buckets from the old array to the current array, synchronously.
+    ///
+    /// Returns `true` if `old_array` is null.
+    fn incremental_rehash_sync<'g, const TRY_LOCK: bool>(
+        &self,
+        current_array: &'g BucketArray<K, V, L, TYPE>,
+        guard: &'g Guard,
+    ) -> bool {
         if let Some(old_array) = current_array.old_array(guard).as_ref() {
             // Assign itself a range of `Bucket` instances to rehash.
             //
@@ -940,7 +1119,7 @@ where
             loop {
                 if current >= old_array.len() || (current & (BUCKET_LEN - 1)) == BUCKET_LEN - 1 {
                     // Only `BUCKET_LEN - 1` threads are allowed to rehash a `Bucket` at a moment.
-                    return Ok(!current_array.has_old_array());
+                    return !current_array.has_old_array();
                 }
                 match rehashing_metadata.compare_exchange_weak(
                     current,
@@ -988,28 +1167,30 @@ where
             for index in current..(current + BUCKET_LEN).min(old_array.len()) {
                 let old_bucket = old_array.bucket(index);
                 let writer = if TRY_LOCK {
-                    Writer::try_lock(old_bucket, guard)?
-                } else if let Some(async_wait) = async_wait.derive() {
-                    Writer::try_lock_or_wait(old_bucket, async_wait, guard)?
+                    let Some(writer) = Writer::try_lock(old_bucket, guard) else {
+                        return false;
+                    };
+                    writer
                 } else {
-                    Writer::lock(old_bucket, guard)
+                    Writer::lock_sync(old_bucket, guard)
                 };
                 if let Some(writer) = writer {
-                    self.relocate_bucket::<Q, D, TRY_LOCK>(
+                    if !self.relocate_bucket_sync::<TRY_LOCK>(
                         current_array,
                         old_array,
                         index,
                         writer,
-                        async_wait,
                         guard,
-                    )?;
+                    ) {
+                        return false;
+                    }
                 }
             }
 
             // Successfully rehashed all the assigned buckets.
             rehashing_guard.1 = true;
         }
-        Ok(!current_array.has_old_array())
+        !current_array.has_old_array()
     }
 
     /// Tries to enlarge the array if the estimated load factor is greater than `7/8`.
@@ -1044,7 +1225,9 @@ where
         index: usize,
         guard: &Guard,
     ) {
-        debug_assert!(!current_array.has_old_array());
+        if current_array.has_old_array() {
+            return;
+        }
 
         if !cfg!(miri)
             && (current_array.num_entries()
@@ -1163,7 +1346,8 @@ where
                     );
 
                     if !(0..current_array.len()).any(|i| {
-                        if let Ok(Some(writer)) = Writer::try_lock(current_array.bucket(i), guard) {
+                        if let Some(Some(writer)) = Writer::try_lock(current_array.bucket(i), guard)
+                        {
                             if writer.len() == 0 {
                                 // The bucket will be unlocked later.
                                 std::mem::forget(writer);
@@ -1232,6 +1416,8 @@ pub(super) struct LockedEntry<'h, K, V, L: LruList, const TYPE: char> {
     pub(super) entry_ptr: EntryPtr<'h, K, V, TYPE>,
     /// The index in the bucket array.
     pub(super) index: usize,
+    /// The length of the bucket array.
+    pub(super) len: usize,
 }
 
 impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h, K, V, L, TYPE> {
@@ -1241,6 +1427,7 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
         data_block: &'h DataBlock<K, V, BUCKET_LEN>,
         entry_ptr: EntryPtr<'h, K, V, TYPE>,
         index: usize,
+        len: usize,
         guard: &Guard,
     ) -> LockedEntry<'h, K, V, L, TYPE> {
         if TYPE == OPTIMISTIC {
@@ -1251,125 +1438,53 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
             data_block,
             entry_ptr,
             index,
+            len,
         }
     }
 
-    /// Gets the first occupied entry.
-    pub(super) async fn first_entry_async<H: BuildHasher, T: HashTable<K, V, H, L, TYPE>>(
-        hash_table: &'h T,
-    ) -> Option<LockedEntry<'h, K, V, L, TYPE>> {
-        let mut current_array_holder = hash_table.bucket_array().get_shared(Acquire, &Guard::new());
-        while let Some(current_array) = current_array_holder.take() {
-            while current_array.has_old_array() {
-                let mut async_wait = AsyncWait::default();
-                let mut async_wait_pinned = Pin::new(&mut async_wait);
-                if hash_table.incremental_rehash::<K, _, false>(
-                    current_array.as_ref(),
-                    &mut async_wait_pinned,
-                    &Guard::new(),
-                ) == Ok(true)
-                {
-                    break;
-                }
-                async_wait_pinned.await;
-            }
-            for index in 0..current_array.len() {
-                loop {
-                    let mut async_wait = AsyncWait::default();
-                    let mut async_wait_pinned = Pin::new(&mut async_wait);
-                    {
-                        let guard = Guard::new();
-                        let prolonged_guard = hash_table.prolonged_guard_ref(&guard);
-                        let prolonged_current_array =
-                            current_array.get_guarded_ref(prolonged_guard);
-                        let bucket = prolonged_current_array.bucket(index);
-                        if let Ok(writer) = Writer::try_lock_or_wait(
-                            bucket,
-                            &mut async_wait_pinned,
-                            prolonged_guard,
-                        ) {
-                            if let Some(writer) = writer {
-                                let data_block = prolonged_current_array.data_block(index);
-                                let mut entry_ptr = EntryPtr::new(prolonged_guard);
-                                if entry_ptr.move_to_next(&writer, prolonged_guard) {
-                                    return Some(LockedEntry::new(
-                                        writer, data_block, entry_ptr, index, &guard,
-                                    ));
-                                }
-                            }
-                            break;
-                        }
-                    }
-                    async_wait_pinned.await;
-                }
-            }
-
-            if let Some(new_current_array) =
-                hash_table.bucket_array().get_shared(Acquire, &Guard::new())
-            {
-                if new_current_array.as_ptr() == current_array.as_ptr() {
-                    break;
-                }
-                current_array_holder.replace(new_current_array);
-                continue;
-            }
-            break;
-        }
-
-        None
+    /// Prolongs its lifetime.
+    pub(super) fn prolong_lifetime<T>(self, _ref: &T) -> LockedEntry<'_, K, V, L, TYPE> {
+        unsafe { std::mem::transmute::<_, _>(self) }
     }
 
     /// Returns a [`LockedEntry`] owning the next entry.
-    pub(super) fn next<H: BuildHasher, T: HashTable<K, V, H, L, TYPE>>(
+    pub(super) fn next_sync<H: BuildHasher, T: HashTable<K, V, H, L, TYPE>>(
         mut self,
         hash_table: &'h T,
     ) -> Option<Self> {
-        let guard = Guard::new();
-        let prolonged_guard = hash_table.prolonged_guard_ref(&guard);
-
-        if self.entry_ptr.move_to_next(
-            &self.writer,
-            hash_table.prolonged_guard_ref(prolonged_guard),
-        ) {
+        if self
+            .entry_ptr
+            .move_to_next(&self.writer, hash_table.prolonged_guard_ref(&Guard::new()))
+        {
             return Some(self);
         }
 
-        let current_array_ptr = hash_table.bucket_array().load(Acquire, prolonged_guard);
-        if let Some(current_array) = current_array_ptr.as_ref() {
-            if current_array.has_old_array() {
-                drop(self);
-                return hash_table.lock_first_entry(prolonged_guard);
-            }
+        let guard = Guard::new();
+        let next_index = self.index + 1;
+        let len = self.len;
+        drop(self);
 
-            let prev_index = self.index;
-            let try_shrink_or_rebuild = (self.writer.len() <= 1 || self.writer.need_rebuild())
-                && current_array.initiate_sampling(prev_index);
-            drop(self);
+        // TODO: removed == true / removed something.
 
-            if try_shrink_or_rebuild {
-                hash_table.try_shrink_or_rebuild(current_array, prev_index, &guard);
-            }
-
-            for index in (prev_index + 1)..current_array.len() {
-                let bucket = current_array.bucket(index);
-                if let Some(writer) = Writer::lock(bucket, prolonged_guard) {
-                    let data_block = current_array.data_block(index);
-                    let mut entry_ptr = EntryPtr::new(prolonged_guard);
-                    if entry_ptr.move_to_next(&writer, prolonged_guard) {
-                        return Some(LockedEntry::new(
-                            writer, data_block, entry_ptr, index, &guard,
-                        ));
-                    }
+        let mut next_entry = None;
+        hash_table.for_each_writer_sync_with(
+            next_index,
+            len,
+            &guard,
+            |writer, data_block, index, len| {
+                let mut entry_ptr = EntryPtr::new(&guard);
+                if entry_ptr.move_to_next(&writer, &guard) {
+                    let locked_entry =
+                        LockedEntry::new(writer, data_block, entry_ptr, index, len, &guard)
+                            .prolong_lifetime(hash_table);
+                    next_entry = Some(locked_entry);
+                    return (true, false);
                 }
-            }
+                (false, false)
+            },
+        );
 
-            let new_current_array_ptr = hash_table.bucket_array().load(Relaxed, prolonged_guard);
-            if current_array_ptr.without_tag() != new_current_array_ptr.without_tag() {
-                return hash_table.lock_first_entry(prolonged_guard);
-            }
-        }
-
-        None
+        next_entry
     }
 
     /// Returns a [`LockedEntry`] owning the next entry.
@@ -1384,64 +1499,35 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
             return Some(self);
         }
 
-        let mut current_array_holder = hash_table.bucket_array().get_shared(Acquire, &Guard::new());
-        if let Some(current_array) = current_array_holder {
-            if current_array.has_old_array() {
-                drop(self);
-                return Self::first_entry_async(hash_table).await;
-            }
+        let sendable_guard = SendableGuard::default();
+        let next_index = self.index + 1;
+        let len = self.len;
+        drop(self);
 
-            let prev_index = self.index;
-            let try_shrink_or_rebuild = (self.writer.len() <= 1 || self.writer.need_rebuild())
-                && current_array.initiate_sampling(prev_index);
-            drop(self);
+        // TODO: removed == true / removed something.
 
-            if try_shrink_or_rebuild {
-                hash_table.try_shrink_or_rebuild(&current_array, prev_index, &Guard::new());
-            }
-
-            for index in (prev_index + 1)..current_array.len() {
-                loop {
-                    let mut async_wait = AsyncWait::default();
-                    let mut async_wait_pinned = Pin::new(&mut async_wait);
-                    {
-                        let guard = Guard::new();
-                        let prolonged_guard = hash_table.prolonged_guard_ref(&guard);
-                        let prolonged_current_array =
-                            current_array.get_guarded_ref(prolonged_guard);
-                        let bucket = prolonged_current_array.bucket(index);
-                        if let Ok(writer) = Writer::try_lock_or_wait(
-                            bucket,
-                            &mut async_wait_pinned,
-                            prolonged_guard,
-                        ) {
-                            if let Some(writer) = writer {
-                                let data_block = prolonged_current_array.data_block(index);
-                                let mut entry_ptr = EntryPtr::new(prolonged_guard);
-                                if entry_ptr.move_to_next(&writer, prolonged_guard) {
-                                    return Some(Self {
-                                        writer,
-                                        data_block,
-                                        entry_ptr,
-                                        index,
-                                    });
-                                }
-                            }
-                            break;
-                        }
+        let mut next_entry = None;
+        hash_table
+            .for_each_writer_async_with(
+                next_index,
+                len,
+                &sendable_guard,
+                |writer, data_block, index, len| {
+                    let guard = sendable_guard.guard();
+                    let mut entry_ptr = EntryPtr::new(guard);
+                    if entry_ptr.move_to_next(&writer, guard) {
+                        let locked_entry =
+                            LockedEntry::new(writer, data_block, entry_ptr, index, len, guard)
+                                .prolong_lifetime(hash_table);
+                        next_entry = Some(locked_entry);
+                        return (true, false);
                     }
-                    async_wait_pinned.await;
-                }
-            }
+                    (false, false)
+                },
+            )
+            .await;
 
-            current_array_holder = hash_table.bucket_array().get_shared(Relaxed, &Guard::new());
-            if let Some(new_current_array) = current_array_holder {
-                if new_current_array.as_ptr() != current_array.as_ptr() {
-                    return Self::first_entry_async(hash_table).await;
-                }
-            }
-        }
-        None
+        next_entry
     }
 }
 

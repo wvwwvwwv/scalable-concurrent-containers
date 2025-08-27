@@ -17,7 +17,7 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire};
 use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
 
 use crate::Comparable;
-use crate::wait_queue::AsyncWait;
+use crate::async_helper::AsyncWait;
 use leaf::{InsertResult, Leaf, RemoveResult, Scanner};
 use node::Node;
 
