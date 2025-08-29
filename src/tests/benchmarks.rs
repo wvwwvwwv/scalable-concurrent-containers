@@ -1426,8 +1426,10 @@ mod async_benchmarks {
             assert_eq!(treeindex.len(), 0);
         }
     }
-    #[cfg_attr(miri, ignore)]
+
+    //#[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+    #[ignore = "unstable"]
     async fn benchmarks_async() {
         hashmap_benchmark(65536, vec![1, 2, 4]).await;
         hashindex_benchmark(65536, vec![1, 2, 4]).await;

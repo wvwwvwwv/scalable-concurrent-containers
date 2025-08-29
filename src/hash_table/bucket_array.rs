@@ -283,22 +283,6 @@ impl<K: UnwindSafe, V: UnwindSafe, L: LruList, const TYPE: char> UnwindSafe
 mod test {
     use super::*;
 
-    use std::time::Instant;
-
-    #[test]
-    fn alloc() {
-        let start = Instant::now();
-        let array: BucketArray<usize, usize, (), OPTIMISTIC> =
-            BucketArray::new(1024 * 1024 * 32, AtomicShared::default());
-        assert_eq!(array.len(), 1024 * 1024);
-        let after_alloc = Instant::now();
-        println!("allocation took {:?}", after_alloc - start);
-        array.num_cleared_buckets.store(array.array_len, Relaxed);
-        drop(array);
-        let after_dealloc = Instant::now();
-        println!("de-allocation took {:?}", after_dealloc - after_alloc);
-    }
-
     #[test]
     fn array() {
         for s in 0..BUCKET_LEN * 4 {

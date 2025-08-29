@@ -448,12 +448,6 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         }
     }
 
-    /// Returns `true` if the [`Bucket`] has been killed.
-    #[inline]
-    pub(super) fn killed(&self) -> bool {
-        self.rw_lock.is_poisoned(Relaxed)
-    }
-
     /// Drops entries in the [`DataBlock`] based on the metadata of the [`Bucket`].
     ///
     /// The [`Bucket`] and the [`DataBlock`] should never be used afterwards.
@@ -1011,7 +1005,6 @@ impl<'g, K, V, L: LruList, const TYPE: char> Writer<'g, K, V, L, TYPE> {
     #[inline]
     pub(crate) fn lock_sync(
         bucket: &'g Bucket<K, V, L, TYPE>,
-        _guard: &'g Guard,
     ) -> Option<Writer<'g, K, V, L, TYPE>> {
         if bucket.rw_lock.lock_sync() {
             Some(Writer { bucket })
@@ -1024,7 +1017,6 @@ impl<'g, K, V, L: LruList, const TYPE: char> Writer<'g, K, V, L, TYPE> {
     #[inline]
     pub(crate) fn try_lock(
         bucket: &'g Bucket<K, V, L, TYPE>,
-        _guard: &'g Guard,
     ) -> Result<Option<Writer<'g, K, V, L, TYPE>>, ()> {
         if bucket.rw_lock.try_lock() {
             Ok(Some(Writer { bucket }))
@@ -1045,6 +1037,7 @@ impl<'g, K, V, L: LruList, const TYPE: char> Writer<'g, K, V, L, TYPE> {
     #[inline]
     pub(super) fn kill(self) {
         debug_assert_eq!(self.len(), 0);
+        debug_assert!(self.rw_lock.is_locked(Relaxed));
         debug_assert!(self.metadata.link.is_null(Relaxed));
         debug_assert!(
             TYPE != OPTIMISTIC
@@ -1102,7 +1095,6 @@ impl<'g, K, V, L: LruList, const TYPE: char> Reader<'g, K, V, L, TYPE> {
     #[inline]
     pub(crate) fn lock_sync(
         bucket: &'g Bucket<K, V, L, TYPE>,
-        _guard: &'g Guard,
     ) -> Option<Reader<'g, K, V, L, TYPE>> {
         if bucket.rw_lock.share_sync() {
             Some(Reader { bucket })
@@ -1349,6 +1341,8 @@ impl<K, V, const LEN: usize> Drop for LinkedBucket<K, V, LEN> {
 #[cfg(not(feature = "loom"))]
 #[cfg(test)]
 mod test {
+    use super::*;
+
     use std::mem::MaybeUninit;
     use std::sync::atomic::Ordering::Relaxed;
     use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32};
@@ -1357,11 +1351,6 @@ mod test {
     use saa::Lock;
     use sdd::{Guard, Shared};
     use tokio::sync::Barrier;
-
-    use super::{
-        BUCKET_LEN, Bucket, CACHE, DataBlock, DoublyLinkedList, EntryPtr, LruList, Metadata,
-        Reader, SEQUENTIAL, Writer,
-    };
 
     #[cfg(not(miri))]
     static_assertions::assert_eq_size!(Bucket<String, String, (), SEQUENTIAL>, [u8; BUCKET_LEN * 2]);
@@ -1387,7 +1376,7 @@ mod test {
             let bucket: Bucket<usize, usize, DoublyLinkedList, CACHE> = default_bucket();
             for v in 0..xs {
                 let guard = Guard::new();
-                let writer = Writer::lock_sync(&bucket, &guard).unwrap();
+                let writer = Writer::lock_sync(&bucket).unwrap();
                 let evicted = writer.evict_lru_head(&data_block);
                 assert_eq!(v >= BUCKET_LEN, evicted.is_some());
                 writer.insert_with(&data_block, 0, || (v, v), &guard);
@@ -1402,7 +1391,7 @@ mod test {
                 unsafe { MaybeUninit::uninit().assume_init() };
             let bucket: Bucket<usize, usize, DoublyLinkedList, CACHE> = default_bucket();
             let guard = Guard::new();
-            let writer = Writer::lock_sync(&bucket, &guard).unwrap();
+            let writer = Writer::lock_sync(&bucket).unwrap();
             for _ in 0..3 {
                 for v in 0..xs {
                     let entry_ptr = writer.insert_with(&data_block, 0, || (v, v), &guard);
@@ -1450,7 +1439,7 @@ mod test {
             let bucket: Bucket<usize, usize, DoublyLinkedList, CACHE> = default_bucket();
             for v in 0..xs {
                 let guard = Guard::new();
-                let writer = Writer::lock_sync(&bucket, &guard).unwrap();
+                let writer = Writer::lock_sync(&bucket).unwrap();
                 let evicted = writer.evict_lru_head(&data_block);
                 assert_eq!(v >= BUCKET_LEN, evicted.is_some());
                 let mut entry_ptr = writer.insert_with(&data_block, 0, || (v, v), &guard);
@@ -1492,7 +1481,7 @@ mod test {
             let bucket: Bucket<usize, usize, DoublyLinkedList, CACHE> = default_bucket();
             for v in 0..xs {
                 let guard = Guard::new();
-                let writer = Writer::lock_sync(&bucket, &guard).unwrap();
+                let writer = Writer::lock_sync(&bucket).unwrap();
                 let entry_ptr = writer.insert_with(&data_block, 0, || (v, v), &guard);
                 writer.update_lru_tail(&entry_ptr);
                 let mut iterated = 1;
@@ -1505,7 +1494,7 @@ mod test {
             }
             for v in 0..xs {
                 let guard = Guard::new();
-                let writer = Writer::lock_sync(&bucket, &guard).unwrap();
+                let writer = Writer::lock_sync(&bucket).unwrap();
                 let entry_ptr = writer.get_entry_ptr(&data_block, &v, 0, &guard);
                 let mut iterated = 1;
                 let mut i = writer.lru_list.0[entry_ptr.current_index].1.load(Relaxed) as usize;
@@ -1541,7 +1530,7 @@ mod test {
                 let partial_hash = (task_id % BUCKET_LEN).try_into().unwrap();
                 let guard = Guard::new();
                 for i in 0..2048 {
-                    let writer = Writer::lock_sync(&bucket_clone, &guard).unwrap();
+                    let writer = Writer::lock_sync(&bucket_clone).unwrap();
                     let mut sum: u64 = 0;
                     for j in 0..128 {
                         unsafe {
@@ -1567,7 +1556,7 @@ mod test {
                     }
                     drop(writer);
 
-                    let reader = Reader::lock_sync(&*bucket_clone, &guard).unwrap();
+                    let reader = Reader::lock_sync(&*bucket_clone).unwrap();
                     assert_eq!(
                         reader
                             .search_entry(&data_block_clone, &task_id, partial_hash, &guard)
@@ -1606,15 +1595,14 @@ mod test {
         assert_eq!(bucket.len(), count);
 
         entry_ptr = EntryPtr::new(&epoch_guard);
-        let writer = Writer::lock_sync(&bucket, &epoch_guard).unwrap();
+        let writer = Writer::lock_sync(&bucket).unwrap();
         while entry_ptr.move_to_next(&writer, &epoch_guard) {
             writer.remove(&data_block, &mut entry_ptr, &epoch_guard);
         }
         assert_eq!(writer.len(), 0);
         writer.kill();
 
-        assert!(bucket.killed());
         assert_eq!(bucket.len(), 0);
-        assert!(Writer::lock_sync(unsafe { bucket.get_mut().unwrap() }, &epoch_guard).is_none());
+        assert!(Writer::lock_sync(unsafe { bucket.get_mut().unwrap() }).is_none());
     }
 }

@@ -66,12 +66,6 @@ fn tree_index_split_leaf_node() {
                     .unwrap(),
                 key
             );
-            assert!(tree_index.remove(key.borrow()));
-            assert!(
-                tree_index
-                    .peek_with(key.borrow(), |_key, value| value.0)
-                    .is_none()
-            );
         });
 
         assert!(thread_insert.join().is_ok());

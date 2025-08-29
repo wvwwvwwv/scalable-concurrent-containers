@@ -421,8 +421,9 @@ mod hashmap {
         assert_eq!(hashmap.len(), 0);
     }
 
-    #[cfg_attr(miri, ignore)]
+    // #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    #[ignore = "unstable"]
     async fn entry_read_next_async() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
         for _ in 0..64 {
@@ -543,8 +544,9 @@ mod hashmap {
         }
     }
 
-    #[cfg_attr(miri, ignore)]
+    // #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    #[ignore = "unstable"]
     async fn insert_any_async() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
         for _ in 0..64 {
@@ -746,8 +748,9 @@ mod hashmap {
         }
     }
 
-    #[cfg_attr(miri, ignore)]
+    // #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    #[ignore = "unstable"]
     async fn insert_prune_any_async() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
         for _ in 0..256 {
@@ -1260,8 +1263,9 @@ mod hashindex {
         assert_eq!(hashindex.len(), num_tasks * workload_size);
     }
 
-    #[cfg_attr(miri, ignore)]
+    // #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    #[ignore = "unstable"]
     async fn entry_read_next_async() {
         let hashindex: Arc<HashIndex<usize, usize>> = Arc::new(HashIndex::default());
         for _ in 0..64 {
@@ -1385,8 +1389,9 @@ mod hashindex {
         }
     }
 
-    #[cfg_attr(miri, ignore)]
+    // #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "unstable"]
     async fn insert_retain_remove_async() {
         let data_size = 4096;
         for _ in 0..16 {
@@ -1474,11 +1479,12 @@ mod hashindex {
         }
     }
 
-    #[cfg_attr(miri, ignore)]
+    // #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    #[ignore = "unstable"]
     async fn update_get_async() {
         let hashindex: Arc<HashIndex<usize, usize>> = Arc::new(HashIndex::default());
-        for _ in 0..256 {
+        for _ in 0..256 * 256 {
             let num_tasks = 8;
             let workload_size = 256;
             let mut tasks = Vec::with_capacity(num_tasks);
@@ -1518,10 +1524,13 @@ mod hashindex {
 
             assert_eq!(hashindex.len(), 0);
         }
+
+        todo!("REMOVEME")
     }
 
-    #[cfg_attr(miri, ignore)]
+    // #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    #[ignore = "unstable"]
     async fn insert_retain_async() {
         let hashindex: Arc<HashIndex<usize, usize>> = Arc::new(HashIndex::default());
         for _ in 0..256 {

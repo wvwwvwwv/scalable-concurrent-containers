@@ -350,7 +350,7 @@ where
             }
 
             let bucket = current_array.bucket(index);
-            if let Some(reader) = Reader::lock_sync(bucket, guard) {
+            if let Some(reader) = Reader::lock_sync(bucket) {
                 if let Some(entry) = reader.search_entry(
                     current_array.data_block(index),
                     key,
@@ -445,7 +445,7 @@ where
                 bucket = current_array.bucket(index);
             }
 
-            if let Some(writer) = Writer::lock_sync(bucket, guard) {
+            if let Some(writer) = Writer::lock_sync(bucket) {
                 return f(
                     writer,
                     current_array.data_block(index),
@@ -535,7 +535,7 @@ where
             }
 
             let bucket = current_array.bucket(index);
-            if let Some(writer) = Writer::lock_sync(bucket, guard) {
+            if let Some(writer) = Writer::lock_sync(bucket) {
                 let (result, try_shrink) = f(
                     writer,
                     current_array.data_block(index),
@@ -663,7 +663,7 @@ where
                 }
 
                 let bucket = current_array.bucket(index);
-                if let Some(writer) = Writer::lock_sync(bucket, guard) {
+                if let Some(writer) = Writer::lock_sync(bucket) {
                     let data_block = current_array.data_block(index);
                     let (found, removed) = f(writer, data_block, index, current_array_len);
                     try_shrink |= removed;
@@ -725,7 +725,7 @@ where
                 bucket = current_array.bucket(index);
             }
 
-            let Ok(writer) = Writer::try_lock(bucket, guard) else {
+            let Ok(writer) = Writer::try_lock(bucket) else {
                 return None;
             };
             if let Some(writer) = writer {
@@ -807,12 +807,12 @@ where
         for old_index in range.0..range.1 {
             let bucket = old_array.bucket(old_index);
             let writer = if TRY_LOCK {
-                let Ok(writer) = Writer::try_lock(bucket, guard) else {
+                let Ok(writer) = Writer::try_lock(bucket) else {
                     return false;
                 };
                 writer
             } else {
-                Writer::lock_sync(bucket, guard)
+                Writer::lock_sync(bucket)
             };
             if let Some(writer) = writer {
                 if !self.relocate_bucket_sync::<TRY_LOCK>(
@@ -841,73 +841,69 @@ where
         old_writer: Writer<'g, K, V, L, TYPE>,
         sendable_guard: &'g SendableGuard,
     ) {
-        debug_assert!(!old_writer.killed());
-        if old_writer.len() != 0 {
-            let target_index = Self::from_index_to_range(old_array, current_array, old_index).0;
-            let mut target_buckets: [Option<Writer<K, V, L, TYPE>>; MAX_RESIZE_FACTOR] =
-                Default::default();
-            let mut max_index = 0;
-            let mut entry_ptr = EntryPtr::new(sendable_guard.guard());
-            let old_data_block = old_array.data_block(old_index);
-            while entry_ptr.move_to_next(&old_writer, sendable_guard.guard()) {
-                let old_entry = entry_ptr.get(old_data_block);
-                let (new_index, partial_hash) = if old_array.len() >= current_array.len() {
-                    debug_assert_eq!(
-                        current_array.calculate_bucket_index(self.hash(&old_entry.0)),
-                        target_index
-                    );
-                    (target_index, entry_ptr.partial_hash(&*old_writer))
-                } else {
-                    let hash = self.hash(&old_entry.0);
-                    let new_index = current_array.calculate_bucket_index(hash);
-                    debug_assert!(
-                        new_index - target_index < (current_array.len() / old_array.len())
-                    );
-                    let partial_hash = BucketArray::<K, V, L, TYPE>::partial_hash(hash);
-                    (new_index, partial_hash)
-                };
+        if old_writer.len() == 0 {
+            old_writer.kill();
+            return;
+        }
 
-                while max_index <= new_index - target_index {
-                    let target_bucket = current_array.bucket(max_index + target_index);
-                    let writer = unsafe {
-                        Writer::lock_async(target_bucket, sendable_guard)
-                            .await
-                            .unwrap_unchecked()
-                    };
-                    debug_assert!(self.validate_ref(current_array, sendable_guard));
-                    target_buckets[max_index].replace(writer);
-                    max_index += 1;
-                }
+        let target_index = Self::from_index_to_range(old_array, current_array, old_index).0;
+        let mut target_buckets: [Option<Writer<K, V, L, TYPE>>; MAX_RESIZE_FACTOR] =
+            Default::default();
+        let mut max_index = 0;
+        let mut entry_ptr = EntryPtr::new(sendable_guard.guard());
+        let old_data_block = old_array.data_block(old_index);
+        while entry_ptr.move_to_next(&old_writer, sendable_guard.guard()) {
+            let old_entry = entry_ptr.get(old_data_block);
+            let (new_index, partial_hash) = if old_array.len() >= current_array.len() {
+                debug_assert_eq!(
+                    current_array.calculate_bucket_index(self.hash(&old_entry.0)),
+                    target_index
+                );
+                (target_index, entry_ptr.partial_hash(&*old_writer))
+            } else {
+                let hash = self.hash(&old_entry.0);
+                let new_index = current_array.calculate_bucket_index(hash);
+                debug_assert!(new_index - target_index < (current_array.len() / old_array.len()));
+                let partial_hash = BucketArray::<K, V, L, TYPE>::partial_hash(hash);
+                (new_index, partial_hash)
+            };
 
-                let target_bucket = unsafe {
-                    target_buckets[new_index - target_index]
-                        .as_mut()
+            while max_index <= new_index - target_index {
+                let target_bucket = current_array.bucket(max_index + target_index);
+                let writer = unsafe {
+                    Writer::lock_async(target_bucket, sendable_guard)
+                        .await
                         .unwrap_unchecked()
                 };
-
-                let entry_clone = Self::try_clone(old_entry);
-                target_bucket.insert_with(
-                    current_array.data_block(new_index),
-                    partial_hash,
-                    || {
-                        // Stack unwinding during a call to `insert` will result in the entry being
-                        // removed from the map, any map entry modification should take place after all
-                        // the memory is reserved.
-                        entry_clone.unwrap_or_else(|| {
-                            old_writer.extract(
-                                old_data_block,
-                                &mut entry_ptr,
-                                sendable_guard.guard(),
-                            )
-                        })
-                    },
-                    sendable_guard.guard(),
-                );
                 debug_assert!(self.validate_ref(current_array, sendable_guard));
+                target_buckets[max_index].replace(writer);
+                max_index += 1;
+            }
 
-                if TYPE == OPTIMISTIC {
-                    old_writer.mark_removed(&mut entry_ptr, sendable_guard.guard());
-                }
+            let target_bucket = unsafe {
+                target_buckets[new_index - target_index]
+                    .as_mut()
+                    .unwrap_unchecked()
+            };
+
+            let entry_clone = Self::try_clone(old_entry);
+            target_bucket.insert_with(
+                current_array.data_block(new_index),
+                partial_hash,
+                || {
+                    // Stack unwinding during a call to `insert` will result in the entry being
+                    // removed from the map, any map entry modification should take place after all
+                    // the memory is reserved.
+                    entry_clone.unwrap_or_else(|| {
+                        old_writer.extract(old_data_block, &mut entry_ptr, sendable_guard.guard())
+                    })
+                },
+                sendable_guard.guard(),
+            );
+            debug_assert!(self.validate_ref(current_array, sendable_guard));
+
+            if TYPE == OPTIMISTIC {
+                old_writer.mark_removed(&mut entry_ptr, sendable_guard.guard());
             }
         }
         old_writer.kill();
@@ -925,70 +921,70 @@ where
         old_writer: Writer<'g, K, V, L, TYPE>,
         guard: &'g Guard,
     ) -> bool {
-        debug_assert!(!old_writer.killed());
-        if old_writer.len() != 0 {
-            let target_index = Self::from_index_to_range(old_array, current_array, old_index).0;
-            let mut target_buckets: [Option<Writer<K, V, L, TYPE>>; MAX_RESIZE_FACTOR] =
-                Default::default();
-            let mut max_index = 0;
-            let mut entry_ptr = EntryPtr::new(guard);
-            let old_data_block = old_array.data_block(old_index);
-            while entry_ptr.move_to_next(&old_writer, guard) {
-                let old_entry = entry_ptr.get(old_data_block);
-                let (new_index, partial_hash) = if old_array.len() >= current_array.len() {
-                    debug_assert_eq!(
-                        current_array.calculate_bucket_index(self.hash(&old_entry.0)),
-                        target_index
-                    );
-                    (target_index, entry_ptr.partial_hash(&*old_writer))
-                } else {
-                    let hash = self.hash(&old_entry.0);
-                    let new_index = current_array.calculate_bucket_index(hash);
-                    debug_assert!(
-                        new_index - target_index < (current_array.len() / old_array.len())
-                    );
-                    let partial_hash = BucketArray::<K, V, L, TYPE>::partial_hash(hash);
-                    (new_index, partial_hash)
-                };
+        if old_writer.len() == 0 {
+            old_writer.kill();
+            return true;
+        }
 
-                while max_index <= new_index - target_index {
-                    let target_bucket = current_array.bucket(max_index + target_index);
-                    let writer = if TRY_LOCK {
-                        let Ok(writer) = Writer::try_lock(target_bucket, guard) else {
-                            return false;
-                        };
-                        writer
-                    } else {
-                        Writer::lock_sync(target_bucket, guard)
-                    };
-                    target_buckets[max_index].replace(unsafe { writer.unwrap_unchecked() });
-                    max_index += 1;
-                }
-
-                let target_bucket = unsafe {
-                    target_buckets[new_index - target_index]
-                        .as_mut()
-                        .unwrap_unchecked()
-                };
-
-                let entry_clone = Self::try_clone(old_entry);
-                target_bucket.insert_with(
-                    current_array.data_block(new_index),
-                    partial_hash,
-                    || {
-                        // Stack unwinding during a call to `insert` will result in the entry being
-                        // removed from the map, any map entry modification should take place after all
-                        // the memory is reserved.
-                        entry_clone.unwrap_or_else(|| {
-                            old_writer.extract(old_data_block, &mut entry_ptr, guard)
-                        })
-                    },
-                    guard,
+        let target_index = Self::from_index_to_range(old_array, current_array, old_index).0;
+        let mut target_buckets: [Option<Writer<K, V, L, TYPE>>; MAX_RESIZE_FACTOR] =
+            Default::default();
+        let mut max_index = 0;
+        let mut entry_ptr = EntryPtr::new(guard);
+        let old_data_block = old_array.data_block(old_index);
+        while entry_ptr.move_to_next(&old_writer, guard) {
+            let old_entry = entry_ptr.get(old_data_block);
+            let (new_index, partial_hash) = if old_array.len() >= current_array.len() {
+                debug_assert_eq!(
+                    current_array.calculate_bucket_index(self.hash(&old_entry.0)),
+                    target_index
                 );
+                (target_index, entry_ptr.partial_hash(&*old_writer))
+            } else {
+                let hash = self.hash(&old_entry.0);
+                let new_index = current_array.calculate_bucket_index(hash);
+                debug_assert!(new_index - target_index < (current_array.len() / old_array.len()));
+                let partial_hash = BucketArray::<K, V, L, TYPE>::partial_hash(hash);
+                (new_index, partial_hash)
+            };
 
-                if TYPE == OPTIMISTIC {
-                    old_writer.mark_removed(&mut entry_ptr, guard);
-                }
+            while max_index <= new_index - target_index {
+                let target_bucket = current_array.bucket(max_index + target_index);
+                let writer = if TRY_LOCK {
+                    let Ok(writer) = Writer::try_lock(target_bucket) else {
+                        return false;
+                    };
+                    writer
+                } else {
+                    Writer::lock_sync(target_bucket)
+                };
+                target_buckets[max_index].replace(unsafe { writer.unwrap_unchecked() });
+                max_index += 1;
+            }
+
+            let target_bucket = unsafe {
+                target_buckets[new_index - target_index]
+                    .as_mut()
+                    .unwrap_unchecked()
+            };
+
+            let entry_clone = Self::try_clone(old_entry);
+            target_bucket.insert_with(
+                current_array.data_block(new_index),
+                partial_hash,
+                || {
+                    // Stack unwinding during a call to `insert` will result in the entry being
+                    // removed from the map, any map entry modification should take place after all
+                    // the memory is reserved.
+                    entry_clone.unwrap_or_else(|| {
+                        old_writer.extract(old_data_block, &mut entry_ptr, guard)
+                    })
+                },
+                guard,
+            );
+
+            if TYPE == OPTIMISTIC {
+                old_writer.mark_removed(&mut entry_ptr, guard);
             }
         }
         old_writer.kill();
@@ -1114,12 +1110,12 @@ where
             for index in current..(current + BUCKET_LEN).min(old_array.len()) {
                 let old_bucket = old_array.bucket(index);
                 let writer = if TRY_LOCK {
-                    let Ok(writer) = Writer::try_lock(old_bucket, guard) else {
+                    let Ok(writer) = Writer::try_lock(old_bucket) else {
                         return false;
                     };
                     writer
                 } else {
-                    Writer::lock_sync(old_bucket, guard)
+                    Writer::lock_sync(old_bucket)
                 };
                 if let Some(writer) = writer {
                     if !self.relocate_bucket_sync::<TRY_LOCK>(
@@ -1292,7 +1288,7 @@ where
                     );
 
                     if !(0..current_array.len()).any(|i| {
-                        if let Ok(Some(writer)) = Writer::try_lock(current_array.bucket(i), guard) {
+                        if let Ok(Some(writer)) = Writer::try_lock(current_array.bucket(i)) {
                             if writer.len() == 0 {
                                 // The bucket will be unlocked later.
                                 std::mem::forget(writer);
