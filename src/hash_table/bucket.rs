@@ -54,7 +54,7 @@ pub trait LruList: 'static + Default {
 }
 
 /// [`DoublyLinkedList`] is an array of `(AtomicU8, AtomicU8)` implementing [`LruList`].
-pub struct DoublyLinkedList([(AtomicU8, AtomicU8); BUCKET_LEN]);
+pub struct DoublyLinkedList([(AtomicU8, AtomicU8); BUCKET_LEN]); // TODO UnsafeCell<[(u8, u8); BUCKET_LEN]>.
 
 /// The type of [`Bucket`] only allows sequential access to it.
 pub const SEQUENTIAL: char = 'S';
@@ -499,7 +499,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             let mut index = removed_bitmap.trailing_zeros();
             while index != 32 {
                 let bit = 1_u32 << index;
-                debug_assert_ne!(occupied_bitmap | bit, 0);
+                debug_assert_eq!(occupied_bitmap & bit, bit);
                 occupied_bitmap -= bit;
                 removed_bitmap -= bit;
                 Self::drop_entry(data_block, index as usize);
@@ -893,10 +893,10 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
             prev_link
                 .metadata
                 .link
-                .swap((next_link, Tag::None), Relaxed)
+                .swap((next_link, Tag::None), Release)
                 .0
         } else {
-            bucket.metadata.link.swap((next_link, Tag::None), Relaxed).0
+            bucket.metadata.link.swap((next_link, Tag::None), Release).0
         };
         let released = old_link.is_none_or(|l| {
             if TYPE == OPTIMISTIC {
@@ -1114,12 +1114,6 @@ impl<'g, K, V, L: LruList, const TYPE: char> Reader<'g, K, V, L, TYPE> {
             None
         }
     }
-
-    /// Releases the lock.
-    #[inline]
-    pub(super) fn release(bucket: &Bucket<K, V, L, TYPE>) {
-        bucket.rw_lock.release_share();
-    }
 }
 
 impl<'g, K, V, L: LruList, const TYPE: char> Deref for Reader<'g, K, V, L, TYPE> {
@@ -1134,7 +1128,7 @@ impl<'g, K, V, L: LruList, const TYPE: char> Deref for Reader<'g, K, V, L, TYPE>
 impl<K, V, L: LruList, const TYPE: char> Drop for Reader<'_, K, V, L, TYPE> {
     #[inline]
     fn drop(&mut self) {
-        Self::release(self.bucket);
+        self.bucket.rw_lock.release_share();
     }
 }
 

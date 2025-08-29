@@ -1389,7 +1389,7 @@ mod hashindex {
                         assert!(result.is_ok());
                     }
                     for id in range.clone() {
-                        assert!(hashindex.peek_with(&id, |_, _| ()).is_some());
+                        assert!(hashindex.peek_with(&id, |_, _| ()).is_some()); // TODO: MIRI ASSERTION FAILURE
                     }
 
                     let mut in_range = 0;
@@ -1519,9 +1519,8 @@ mod hashindex {
         }
     }
 
-    // #[cfg_attr(miri, ignore)]
+    #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
-    #[ignore = "unstable"]
     async fn update_get_async() {
         let hashindex: Arc<HashIndex<usize, usize>> = Arc::new(HashIndex::default());
         for _ in 0..256 * 256 {
@@ -1543,7 +1542,7 @@ mod hashindex {
                     }
                     for id in range.clone() {
                         hashindex.peek_with(&id, |k, v| assert_eq!(k, v));
-                        let entry = hashindex.get_async(&id).await.unwrap(); // HERE.
+                        let entry = hashindex.get_async(&id).await.unwrap(); // TODO.
                         assert_eq!(*entry.get(), id);
                         entry.update(usize::MAX);
                     }
