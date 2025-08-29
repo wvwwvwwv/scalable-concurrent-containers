@@ -14,9 +14,10 @@ use std::panic::UnwindSafe;
 use std::pin::Pin;
 use std::sync::atomic::Ordering::{AcqRel, Acquire};
 
-use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
-use crate::wait_queue::AsyncWait;
+use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
+
 use crate::Comparable;
+use crate::async_helper::AsyncWait;
 use leaf::{InsertResult, Leaf, RemoveResult, Scanner};
 use node::Node;
 
@@ -605,9 +606,9 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::Guard;
     /// use std::sync::Arc;
-    /// use scc::TreeIndex;
+    ///
+    /// use scc::{Guard, TreeIndex};
     ///
     /// let treeindex: TreeIndex<Arc<str>, u32> = TreeIndex::new();
     ///
@@ -664,9 +665,9 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::Guard;
     /// use std::sync::Arc;
-    /// use scc::TreeIndex;
+    ///
+    /// use scc::{Guard, TreeIndex};
     ///
     /// let treeindex: TreeIndex<Arc<str>, u32> = TreeIndex::new();
     ///
@@ -757,8 +758,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::TreeIndex;
-    /// use scc::ebr::Guard;
+    /// use scc::{Guard, TreeIndex};
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
@@ -780,8 +780,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use scc::TreeIndex;
-    /// use scc::ebr::Guard;
+    /// use scc::{Guard, TreeIndex};
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
@@ -1023,10 +1022,10 @@ where
         self.check_upper_bound = match self.bounds.end_bound() {
             Excluded(key) => scanner
                 .max_key()
-                .map_or(false, |max_key| key.compare(max_key).is_le()),
+                .is_some_and(|max_key| key.compare(max_key).is_le()),
             Included(key) => scanner
                 .max_key()
-                .map_or(false, |max_key| key.compare(max_key).is_lt()),
+                .is_some_and(|max_key| key.compare(max_key).is_lt()),
             Unbounded => false,
         };
     }

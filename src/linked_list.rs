@@ -2,7 +2,7 @@ use std::fmt::{self, Debug, Display};
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::Ordering::{self, AcqRel, Acquire, Relaxed};
 
-use super::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
+use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
 
 /// [`LinkedList`] is a type trait implementing a lock-free singly linked list.
 pub trait LinkedList: Sized {
@@ -18,9 +18,9 @@ pub trait LinkedList: Sized {
     /// # Examples
     ///
     /// ```
-    /// use scc::LinkedList;
-    /// use scc::ebr::{AtomicShared, Tag};
     /// use std::sync::atomic::Ordering::Relaxed;
+    ///
+    /// use scc::{AtomicShared, LinkedList, Tag};
     ///
     /// #[derive(Default)]
     /// struct L(AtomicShared<L>, usize);
@@ -49,9 +49,9 @@ pub trait LinkedList: Sized {
     /// # Examples
     ///
     /// ```
-    /// use scc::LinkedList;
-    /// use scc::ebr::AtomicShared;
     /// use std::sync::atomic::Ordering::Relaxed;
+    ///
+    /// use scc::{AtomicShared, LinkedList};
     ///
     /// #[derive(Default)]
     /// struct L(AtomicShared<L>, usize);
@@ -77,9 +77,9 @@ pub trait LinkedList: Sized {
     /// # Examples
     ///
     /// ```
-    /// use scc::LinkedList;
-    /// use scc::ebr::AtomicShared;
     /// use std::sync::atomic::Ordering::Relaxed;
+    ///
+    /// use scc::{AtomicShared, LinkedList};
     ///
     /// #[derive(Default)]
     /// struct L(AtomicShared<L>, usize);
@@ -106,9 +106,9 @@ pub trait LinkedList: Sized {
     /// # Examples
     ///
     /// ```
-    /// use scc::LinkedList;
-    /// use scc::ebr::AtomicShared;
     /// use std::sync::atomic::Ordering::Relaxed;
+    ///
+    /// use scc::{AtomicShared, LinkedList};
     ///
     /// #[derive(Default)]
     /// struct L(AtomicShared<L>, usize);
@@ -135,9 +135,9 @@ pub trait LinkedList: Sized {
     /// # Examples
     ///
     /// ```
-    /// use scc::LinkedList;
-    /// use scc::ebr::{AtomicShared, Guard, Shared};
     /// use std::sync::atomic::Ordering::Relaxed;
+    ///
+    /// use scc::{AtomicShared, Guard, LinkedList, Shared};
     ///
     /// #[derive(Default)]
     /// struct L(AtomicShared<L>, usize);
@@ -174,9 +174,9 @@ pub trait LinkedList: Sized {
     /// # Examples
     ///
     /// ```
-    /// use scc::LinkedList;
-    /// use scc::ebr::AtomicShared;
     /// use std::sync::atomic::Ordering::Relaxed;
+    ///
+    /// use scc::{AtomicShared, LinkedList};
     ///
     /// #[derive(Default)]
     /// struct L(AtomicShared<L>, usize);
@@ -209,9 +209,9 @@ pub trait LinkedList: Sized {
     /// # Examples
     ///
     /// ```
-    /// use scc::LinkedList;
-    /// use scc::ebr::{AtomicShared, Guard, Shared};
     /// use std::sync::atomic::Ordering::{Relaxed, Release};
+    ///
+    /// use scc::{AtomicShared, Guard, LinkedList, Shared};
     ///
     /// #[derive(Default)]
     /// struct L(AtomicShared<L>, usize);
@@ -281,9 +281,9 @@ pub trait LinkedList: Sized {
     /// # Examples
     ///
     /// ```
-    /// use scc::LinkedList;
-    /// use scc::ebr::{AtomicShared, Guard, Shared};
     /// use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+    ///
+    /// use scc::{AtomicShared, Guard, LinkedList, Shared};
     ///
     /// #[derive(Default)]
     /// struct L(AtomicShared<L>, usize);
@@ -316,9 +316,9 @@ pub trait LinkedList: Sized {
     /// # Examples
     ///
     /// ```
-    /// use scc::LinkedList;
-    /// use scc::ebr::{AtomicShared, Guard, Shared};
     /// use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+    ///
+    /// use scc::{AtomicShared, Guard, LinkedList, Shared};
     ///
     /// #[derive(Default)]
     /// struct L(AtomicShared<L>, usize);
@@ -386,7 +386,7 @@ impl<T> Entry<T> {
     /// ```
     #[inline]
     pub unsafe fn take_inner(&mut self) -> T {
-        self.instance.take().unwrap_unchecked()
+        unsafe { self.instance.take().unwrap_unchecked() }
     }
 
     #[inline]

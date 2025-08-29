@@ -6,16 +6,16 @@ use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
 use std::mem::replace;
 use std::ops::{Deref, DerefMut, RangeInclusive};
-use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
-use super::ebr::{AtomicShared, Guard, Shared, Tag};
-use super::hash_table::bucket::{DoublyLinkedList, EntryPtr, Locker, Reader, CACHE};
+use sdd::{AtomicShared, Guard, Shared, Tag};
+
+use super::Equivalent;
+use super::hash_table::bucket::{CACHE, DoublyLinkedList, EntryPtr};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::{HashTable, LockedEntry};
-use super::wait_queue::AsyncWait;
-use super::Equivalent;
+use crate::async_helper::SendableGuard;
 
 /// Scalable concurrent 32-way associative cache backed by [`HashMap`](super::HashMap).
 ///
@@ -196,27 +196,33 @@ where
     /// ```
     #[inline]
     pub fn entry(&self, key: K) -> Entry<'_, K, V, H> {
-        let guard = Guard::new();
         let hash = self.hash(&key);
-        let mut locked_entry = unsafe {
-            self.reserve_entry(&key, hash, &mut (), self.prolonged_guard_ref(&guard))
-                .ok()
-                .unwrap_unchecked()
-        };
-        if locked_entry.entry_ptr.is_valid() {
-            locked_entry.locker.update_lru_tail(&locked_entry.entry_ptr);
-            Entry::Occupied(OccupiedEntry {
-                hashcache: self,
-                locked_entry,
-            })
-        } else {
-            Entry::Vacant(VacantEntry {
-                hashcache: self,
-                key,
-                hash,
-                locked_entry,
-            })
-        }
+        let guard = Guard::new();
+        self.writer_sync_with(hash, &guard, |writer, data_block, index, len| {
+            let entry_ptr = writer.get_entry_ptr(
+                data_block,
+                &key,
+                BucketArray::<K, V, DoublyLinkedList, CACHE>::partial_hash(hash),
+                &guard,
+            );
+            let locked_entry =
+                LockedEntry::new(writer, data_block, entry_ptr.clone(), index, len, &guard)
+                    .prolong_lifetime(self);
+            if entry_ptr.is_valid() {
+                Entry::Occupied(OccupiedEntry {
+                    hashcache: self,
+                    locked_entry,
+                })
+            } else {
+                let vacant_entry = VacantEntry {
+                    hashcache: self,
+                    key,
+                    hash,
+                    locked_entry,
+                };
+                Entry::Vacant(vacant_entry)
+            }
+        })
     }
 
     /// Gets the entry associated with the given key in the map for in-place manipulation.
@@ -235,34 +241,34 @@ where
     #[inline]
     pub async fn entry_async(&self, key: K) -> Entry<'_, K, V, H> {
         let hash = self.hash(&key);
-        loop {
-            let mut async_wait = AsyncWait::default();
-            let mut async_wait_pinned = Pin::new(&mut async_wait);
-            {
-                let guard = Guard::new();
-                if let Ok(mut locked_entry) = self.reserve_entry(
-                    &key,
+        let sendable_guard = SendableGuard::default();
+        self.writer_async_with(hash, &sendable_guard, |writer, data_block, index, len| {
+            let guard = sendable_guard.guard();
+            let entry_ptr = writer.get_entry_ptr(
+                data_block,
+                &key,
+                BucketArray::<K, V, DoublyLinkedList, CACHE>::partial_hash(hash),
+                guard,
+            );
+            let locked_entry =
+                LockedEntry::new(writer, data_block, entry_ptr.clone(), index, len, guard)
+                    .prolong_lifetime(self);
+            if entry_ptr.is_valid() {
+                Entry::Occupied(OccupiedEntry {
+                    hashcache: self,
+                    locked_entry,
+                })
+            } else {
+                let vacant_entry = VacantEntry {
+                    hashcache: self,
+                    key,
                     hash,
-                    &mut async_wait_pinned,
-                    self.prolonged_guard_ref(&guard),
-                ) {
-                    if locked_entry.entry_ptr.is_valid() {
-                        locked_entry.locker.update_lru_tail(&locked_entry.entry_ptr);
-                        return Entry::Occupied(OccupiedEntry {
-                            hashcache: self,
-                            locked_entry,
-                        });
-                    }
-                    return Entry::Vacant(VacantEntry {
-                        hashcache: self,
-                        key,
-                        hash,
-                        locked_entry,
-                    });
-                }
+                    locked_entry,
+                };
+                Entry::Vacant(vacant_entry)
             }
-            async_wait_pinned.await;
-        }
+        })
+        .await
     }
 
     /// Tries to get the entry associated with the given key in the map for in-place manipulation.
@@ -319,31 +325,22 @@ where
     /// ```
     #[inline]
     pub fn put(&self, key: K, val: V) -> Result<EvictedEntry<K, V>, (K, V)> {
-        let guard = Guard::new();
         let hash = self.hash(&key);
-        let result = match self.reserve_entry(&key, hash, &mut (), &guard) {
-            Ok(LockedEntry {
-                mut locker,
-                data_block_mut,
-                entry_ptr,
-                index: _,
-            }) => {
-                if entry_ptr.is_valid() {
-                    return Err((key, val));
-                }
-                let evicted = locker.evict_lru_head(data_block_mut);
-                let entry_ptr = locker.insert_with(
-                    data_block_mut,
-                    BucketArray::<K, V, DoublyLinkedList, CACHE>::partial_hash(hash),
-                    || (key, val),
-                    &guard,
-                );
-                locker.update_lru_tail(&entry_ptr);
+        let guard = Guard::new();
+        self.writer_sync_with(hash, &guard, |writer, data_block, _, _| {
+            let partial_hash = BucketArray::<K, V, DoublyLinkedList, CACHE>::partial_hash(hash);
+            if writer
+                .get_entry_ptr(data_block, &key, partial_hash, &guard)
+                .is_valid()
+            {
+                Err((key, val))
+            } else {
+                let evicted = writer.evict_lru_head(data_block);
+                let entry_ptr = writer.insert_with(data_block, partial_hash, || (key, val), &guard);
+                writer.update_lru_tail(&entry_ptr);
                 Ok(evicted)
             }
-            Err(()) => Err((key, val)),
-        };
-        result
+        })
     }
 
     /// Puts a key-value pair into the [`HashCache`].
@@ -366,34 +363,23 @@ where
     #[inline]
     pub async fn put_async(&self, key: K, val: V) -> Result<EvictedEntry<K, V>, (K, V)> {
         let hash = self.hash(&key);
-        loop {
-            let mut async_wait = AsyncWait::default();
-            let mut async_wait_pinned = Pin::new(&mut async_wait);
+        let sendable_guard = SendableGuard::default();
+        self.writer_async_with(hash, &sendable_guard, |writer, data_block, _, _| {
+            let guard = sendable_guard.guard();
+            let partial_hash = BucketArray::<K, V, DoublyLinkedList, CACHE>::partial_hash(hash);
+            if writer
+                .get_entry_ptr(data_block, &key, partial_hash, guard)
+                .is_valid()
             {
-                let guard = Guard::new();
-                if let Ok(LockedEntry {
-                    mut locker,
-                    data_block_mut,
-                    entry_ptr,
-                    index: _,
-                }) = self.reserve_entry(&key, hash, &mut async_wait_pinned, &guard)
-                {
-                    if entry_ptr.is_valid() {
-                        return Err((key, val));
-                    }
-                    let evicted = locker.evict_lru_head(data_block_mut);
-                    let entry_ptr = locker.insert_with(
-                        data_block_mut,
-                        BucketArray::<K, V, DoublyLinkedList, CACHE>::partial_hash(hash),
-                        || (key, val),
-                        &guard,
-                    );
-                    locker.update_lru_tail(&entry_ptr);
-                    return Ok(evicted);
-                };
+                Err((key, val))
+            } else {
+                let evicted = writer.evict_lru_head(data_block);
+                let entry_ptr = writer.insert_with(data_block, partial_hash, || (key, val), guard);
+                writer.update_lru_tail(&entry_ptr);
+                Ok(evicted)
             }
-            async_wait_pinned.await;
-        }
+        })
+        .await
     }
 
     /// Gets an [`OccupiedEntry`] corresponding to the key for in-place modification.
@@ -422,21 +408,32 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        let guard = Guard::new();
-        let mut locked_entry = self
-            .get_entry(
+        let hash = self.hash(key);
+        let guard = Guard::default();
+        self.optional_writer_sync_with(hash, &guard, |writer, data_block, index, len| {
+            let entry_ptr = writer.get_entry_ptr(
+                data_block,
                 key,
-                self.hash(key),
-                &mut (),
-                self.prolonged_guard_ref(&guard),
-            )
-            .ok()
-            .flatten()?;
-        locked_entry.locker.update_lru_tail(&locked_entry.entry_ptr);
-        Some(OccupiedEntry {
-            hashcache: self,
-            locked_entry,
+                BucketArray::<K, V, DoublyLinkedList, CACHE>::partial_hash(hash),
+                &guard,
+            );
+            if entry_ptr.is_valid() {
+                let locked_entry =
+                    LockedEntry::new(writer, data_block, entry_ptr, index, len, &guard)
+                        .prolong_lifetime(self);
+                locked_entry.writer.update_lru_tail(&locked_entry.entry_ptr);
+                return (
+                    Some(OccupiedEntry {
+                        hashcache: self,
+                        locked_entry,
+                    }),
+                    false,
+                );
+            }
+            (None, false)
         })
+        .ok()
+        .flatten()
     }
 
     /// Gets an [`OccupiedEntry`] corresponding to the key for in-place modification.
@@ -462,26 +459,33 @@ where
         Q: Equivalent<K> + Hash + ?Sized,
     {
         let hash = self.hash(key);
-        loop {
-            let mut async_wait = AsyncWait::default();
-            let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if let Ok(result) = self.get_entry(
+        let sendable_guard = SendableGuard::default();
+        self.optional_writer_async_with(hash, &sendable_guard, |writer, data_block, index, len| {
+            let guard = sendable_guard.guard();
+            let entry_ptr = writer.get_entry_ptr(
+                data_block,
                 key,
-                hash,
-                &mut async_wait_pinned,
-                self.prolonged_guard_ref(&Guard::new()),
-            ) {
-                if let Some(mut locked_entry) = result {
-                    locked_entry.locker.update_lru_tail(&locked_entry.entry_ptr);
-                    return Some(OccupiedEntry {
+                BucketArray::<K, V, DoublyLinkedList, CACHE>::partial_hash(hash),
+                guard,
+            );
+            if entry_ptr.is_valid() {
+                let locked_entry =
+                    LockedEntry::new(writer, data_block, entry_ptr, index, len, guard)
+                        .prolong_lifetime(self);
+                locked_entry.writer.update_lru_tail(&locked_entry.entry_ptr);
+                return (
+                    Some(OccupiedEntry {
                         hashcache: self,
                         locked_entry,
-                    });
-                }
-                return None;
+                    }),
+                    false,
+                );
             }
-            async_wait_pinned.await;
-        }
+            (None, false)
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     /// Reads a key-value pair.
@@ -504,9 +508,9 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        self.read_entry(key, self.hash(key), reader, &mut (), &Guard::new())
-            .ok()
-            .flatten()
+        let hash = self.hash(key);
+        let guard = Guard::new();
+        self.reader_sync_with(key, hash, reader, &guard)
     }
 
     /// Reads a key-value pair.
@@ -524,24 +528,14 @@ where
     /// let future_read = hashcache.read_async(&11, |_, v| *v);
     /// ```
     #[inline]
-    pub async fn read_async<Q, R, F: FnOnce(&K, &V) -> R>(
-        &self,
-        key: &Q,
-        mut reader: F,
-    ) -> Option<R>
+    pub async fn read_async<Q, R, F: FnOnce(&K, &V) -> R>(&self, key: &Q, reader: F) -> Option<R>
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
         let hash = self.hash(key);
-        loop {
-            let mut async_wait = AsyncWait::default();
-            let mut async_wait_pinned = Pin::new(&mut async_wait);
-            match self.read_entry(key, hash, reader, &mut async_wait_pinned, &Guard::new()) {
-                Ok(result) => return result,
-                Err(f) => reader = f,
-            }
-            async_wait_pinned.await;
-        }
+        let sendable_guard = SendableGuard::default();
+        self.reader_async_with(key, hash, reader, &sendable_guard)
+            .await
     }
 
     /// Returns `true` if the [`HashCache`] contains a value for the specified key.
@@ -651,13 +645,26 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        self.get(key).and_then(|mut o| {
-            if condition(o.get_mut()) {
-                Some(o.remove_entry())
+        let hash = self.hash(key);
+        let guard = Guard::default();
+        self.optional_writer_sync_with(hash, &guard, |writer, data_block, _, _| {
+            let mut entry_ptr = writer.get_entry_ptr(
+                data_block,
+                key,
+                BucketArray::<K, V, DoublyLinkedList, CACHE>::partial_hash(hash),
+                &guard,
+            );
+            if entry_ptr.is_valid() && condition(&mut entry_ptr.get_mut(data_block, &writer).1) {
+                (
+                    Some(writer.remove(data_block, &mut entry_ptr, &guard)),
+                    writer.len() <= 1,
+                )
             } else {
-                None
+                (None, false)
             }
         })
+        .ok()
+        .flatten()
     }
 
     /// Removes a key-value pair if the key exists and the given condition is met.
@@ -683,12 +690,27 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        if let Some(mut occupied_entry) = self.get_async(key).await {
-            if condition(occupied_entry.get_mut()) {
-                return Some(occupied_entry.remove_entry());
+        let hash = self.hash(key);
+        let sendable_guard = SendableGuard::default();
+        self.optional_writer_async_with(hash, &sendable_guard, |writer, data_block, _, _| {
+            let mut entry_ptr = writer.get_entry_ptr(
+                data_block,
+                key,
+                BucketArray::<K, V, DoublyLinkedList, CACHE>::partial_hash(hash),
+                sendable_guard.guard(),
+            );
+            if entry_ptr.is_valid() && condition(&mut entry_ptr.get_mut(data_block, &writer).1) {
+                (
+                    Some(writer.remove(data_block, &mut entry_ptr, sendable_guard.guard())),
+                    writer.len() <= 1,
+                )
+            } else {
+                (None, false)
             }
-        }
-        None
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     /// Scans all the entries.
@@ -715,27 +737,10 @@ where
     /// ```
     #[inline]
     pub fn scan<F: FnMut(&K, &V)>(&self, mut scanner: F) {
-        let guard = Guard::new();
-        let mut current_array_ptr = self.array.load(Acquire, &guard);
-        while let Some(current_array) = current_array_ptr.as_ref() {
-            self.clear_old_array(current_array, &guard);
-            for index in 0..current_array.num_buckets() {
-                let bucket = current_array.bucket(index);
-                if let Some(locker) = Reader::lock(bucket, &guard) {
-                    let data_block = current_array.data_block(index);
-                    let mut entry_ptr = EntryPtr::new(&guard);
-                    while entry_ptr.move_to_next(*locker, &guard) {
-                        let (k, v) = entry_ptr.get(data_block);
-                        scanner(k, v);
-                    }
-                }
-            }
-            let new_current_array_ptr = self.array.load(Acquire, &guard);
-            if current_array_ptr.without_tag() == new_current_array_ptr.without_tag() {
-                break;
-            }
-            current_array_ptr = new_current_array_ptr;
-        }
+        self.any(|k, v| {
+            scanner(k, v);
+            false
+        });
     }
 
     /// Scans all the entries.
@@ -758,43 +763,11 @@ where
     /// ```
     #[inline]
     pub async fn scan_async<F: FnMut(&K, &V)>(&self, mut scanner: F) {
-        let mut current_array_holder = self.array.get_shared(Acquire, &Guard::new());
-        while let Some(current_array) = current_array_holder.take() {
-            self.cleanse_old_array_async(&current_array).await;
-            for index in 0..current_array.num_buckets() {
-                loop {
-                    let mut async_wait = AsyncWait::default();
-                    let mut async_wait_pinned = Pin::new(&mut async_wait);
-                    {
-                        let guard = Guard::new();
-                        let bucket = current_array.bucket(index);
-                        if let Ok(reader) =
-                            Reader::try_lock_or_wait(bucket, &mut async_wait_pinned, &guard)
-                        {
-                            if let Some(reader) = reader {
-                                let data_block = current_array.data_block(index);
-                                let mut entry_ptr = EntryPtr::new(&guard);
-                                while entry_ptr.move_to_next(*reader, &guard) {
-                                    let (k, v) = entry_ptr.get(data_block);
-                                    scanner(k, v);
-                                }
-                            }
-                            break;
-                        };
-                    }
-                    async_wait_pinned.await;
-                }
-            }
-
-            if let Some(new_current_array) = self.array.get_shared(Acquire, &Guard::new()) {
-                if new_current_array.as_ptr() == current_array.as_ptr() {
-                    break;
-                }
-                current_array_holder.replace(new_current_array);
-                continue;
-            }
-            break;
-        }
+        self.any_async(|k, v| {
+            scanner(k, v);
+            false
+        })
+        .await;
     }
 
     /// Searches for any entry that satisfies the given predicate.
@@ -821,7 +794,21 @@ where
     /// ```
     #[inline]
     pub fn any<P: FnMut(&K, &V) -> bool>(&self, mut pred: P) -> bool {
-        self.contains_entry(|k, v| pred(k, v))
+        let mut found = false;
+        let guard = Guard::new();
+        self.for_each_writer_sync_with(0, 0, &guard, |writer, data_block, _, _| {
+            let mut entry_ptr = EntryPtr::new(&guard);
+            while entry_ptr.move_to_next(&writer, &guard) {
+                let (k, v) = entry_ptr.get(data_block);
+                if pred(k, v) {
+                    // Found one entry satisfying the predicate.
+                    found = true;
+                    return (true, false);
+                }
+            }
+            (false, false)
+        });
+        found
     }
 
     /// Searches for any entry that satisfies the given predicate.
@@ -846,48 +833,23 @@ where
     /// ```
     #[inline]
     pub async fn any_async<P: FnMut(&K, &V) -> bool>(&self, mut pred: P) -> bool {
-        let mut current_array_holder = self.array.get_shared(Acquire, &Guard::new());
-        while let Some(current_array) = current_array_holder.take() {
-            self.cleanse_old_array_async(&current_array).await;
-            for index in 0..current_array.num_buckets() {
-                loop {
-                    let mut async_wait = AsyncWait::default();
-                    let mut async_wait_pinned = Pin::new(&mut async_wait);
-                    {
-                        let guard = Guard::new();
-                        let bucket = current_array.bucket(index);
-                        if let Ok(reader) =
-                            Reader::try_lock_or_wait(bucket, &mut async_wait_pinned, &guard)
-                        {
-                            if let Some(reader) = reader {
-                                let data_block = current_array.data_block(index);
-                                let mut entry_ptr = EntryPtr::new(&guard);
-                                while entry_ptr.move_to_next(*reader, &guard) {
-                                    let (k, v) = entry_ptr.get(data_block);
-                                    if pred(k, v) {
-                                        // Found one entry satisfying the predicate.
-                                        return true;
-                                    }
-                                }
-                            }
-                            break;
-                        };
-                    }
-                    async_wait_pinned.await;
+        let mut found = false;
+        let sendable_guard = SendableGuard::default();
+        self.for_each_writer_async_with(0, 0, &sendable_guard, |writer, data_block, _, _| {
+            let guard = sendable_guard.guard();
+            let mut entry_ptr = EntryPtr::new(guard);
+            while entry_ptr.move_to_next(&writer, guard) {
+                let (k, v) = entry_ptr.get(data_block);
+                if pred(k, v) {
+                    // Found one entry satisfying the predicate.
+                    found = true;
+                    return (true, false);
                 }
             }
-
-            if let Some(new_current_array) = self.array.get_shared(Acquire, &Guard::new()) {
-                if new_current_array.as_ptr() == current_array.as_ptr() {
-                    break;
-                }
-                current_array_holder.replace(new_current_array);
-                continue;
-            }
-            break;
-        }
-
-        false
+            (false, false)
+        })
+        .await;
+        found
     }
 
     /// Retains the entries specified by the predicate.
@@ -917,8 +879,19 @@ where
     /// ```
     #[inline]
     pub fn retain<F: FnMut(&K, &mut V) -> bool>(&self, mut pred: F) {
-        #[allow(clippy::redundant_closure_for_method_calls)]
-        self.retain_entries(|k, v| pred(k, v));
+        let guard = Guard::new();
+        self.for_each_writer_sync_with(0, 0, &guard, |writer, data_block, _, _| {
+            let mut removed = false;
+            let mut entry_ptr = EntryPtr::new(&guard);
+            while entry_ptr.move_to_next(&writer, &guard) {
+                let (k, v) = entry_ptr.get_mut(data_block, &writer);
+                if !pred(k, v) {
+                    writer.remove(data_block, &mut entry_ptr, &guard);
+                    removed = true;
+                }
+            }
+            (false, removed)
+        });
     }
 
     /// Retains the entries specified by the predicate.
@@ -942,52 +915,22 @@ where
     /// let future_retain = hashcache.retain_async(|k, v| *k == 1);
     /// ```
     #[inline]
-    pub async fn retain_async<F: FnMut(&K, &mut V) -> bool>(&self, mut filter: F) {
-        let mut removed = false;
-        let mut current_array_holder = self.array.get_shared(Acquire, &Guard::new());
-        while let Some(current_array) = current_array_holder.take() {
-            self.cleanse_old_array_async(&current_array).await;
-            for index in 0..current_array.num_buckets() {
-                loop {
-                    let mut async_wait = AsyncWait::default();
-                    let mut async_wait_pinned = Pin::new(&mut async_wait);
-                    {
-                        let guard = Guard::new();
-                        let bucket = current_array.bucket_mut(index);
-                        if let Ok(locker) =
-                            Locker::try_lock_or_wait(bucket, &mut async_wait_pinned, &guard)
-                        {
-                            if let Some(mut locker) = locker {
-                                let data_block_mut = current_array.data_block_mut(index);
-                                let mut entry_ptr = EntryPtr::new(&guard);
-                                while entry_ptr.move_to_next(&locker, &guard) {
-                                    let (k, v) = entry_ptr.get_mut(data_block_mut, &mut locker);
-                                    if !filter(k, v) {
-                                        locker.remove(data_block_mut, &mut entry_ptr, &guard);
-                                        removed = true;
-                                    }
-                                }
-                            }
-                            break;
-                        };
-                    }
-                    async_wait_pinned.await;
+    pub async fn retain_async<F: FnMut(&K, &mut V) -> bool>(&self, mut pred: F) {
+        let sendable_guard = SendableGuard::default();
+        self.for_each_writer_async_with(0, 0, &sendable_guard, |writer, data_block, _, _| {
+            let mut removed = false;
+            let guard = sendable_guard.guard();
+            let mut entry_ptr = EntryPtr::new(guard);
+            while entry_ptr.move_to_next(&writer, guard) {
+                let (k, v) = entry_ptr.get_mut(data_block, &writer);
+                if !pred(k, v) {
+                    writer.remove(data_block, &mut entry_ptr, guard);
+                    removed = true;
                 }
             }
-
-            if let Some(new_current_array) = self.array.get_shared(Acquire, &Guard::new()) {
-                if new_current_array.as_ptr() == current_array.as_ptr() {
-                    break;
-                }
-                current_array_holder.replace(new_current_array);
-                continue;
-            }
-            break;
-        }
-
-        if removed {
-            self.try_resize(0, &Guard::new());
-        }
+            (false, removed)
+        })
+        .await;
     }
 
     /// Clears the [`HashCache`] by removing all key-value pairs.
@@ -1099,26 +1042,6 @@ where
     #[inline]
     pub fn capacity_range(&self) -> RangeInclusive<usize> {
         self.minimum_capacity.load(Relaxed)..=self.maximum_capacity()
-    }
-
-    /// Clears the old array asynchronously.
-    async fn cleanse_old_array_async(
-        &self,
-        current_array: &BucketArray<K, V, DoublyLinkedList, CACHE>,
-    ) {
-        while current_array.has_old_array() {
-            let mut async_wait = AsyncWait::default();
-            let mut async_wait_pinned = Pin::new(&mut async_wait);
-            if self.incremental_rehash::<K, _, false>(
-                current_array,
-                &mut async_wait_pinned,
-                &Guard::new(),
-            ) == Ok(true)
-            {
-                break;
-            }
-            async_wait_pinned.await;
-        }
     }
 }
 
@@ -1510,7 +1433,7 @@ where
         &self
             .locked_entry
             .entry_ptr
-            .get(self.locked_entry.data_block_mut)
+            .get(self.locked_entry.data_block)
             .0
     }
 
@@ -1534,12 +1457,12 @@ where
     #[must_use]
     pub fn remove_entry(mut self) -> (K, V) {
         let guard = Guard::new();
-        let (k, v) = self.locked_entry.locker.remove(
-            self.locked_entry.data_block_mut,
+        let (k, v) = self.locked_entry.writer.remove(
+            self.locked_entry.data_block,
             &mut self.locked_entry.entry_ptr,
             self.hashcache.prolonged_guard_ref(&guard),
         );
-        if self.locked_entry.locker.num_entries() <= 1 || self.locked_entry.locker.need_rebuild() {
+        if self.locked_entry.writer.len() <= 1 || self.locked_entry.writer.need_rebuild() {
             let hashcache = self.hashcache;
             if let Some(current_array) = hashcache.bucket_array().load(Acquire, &guard).as_ref() {
                 if !current_array.has_old_array() {
@@ -1576,7 +1499,7 @@ where
         &self
             .locked_entry
             .entry_ptr
-            .get(self.locked_entry.data_block_mut)
+            .get(self.locked_entry.data_block)
             .1
     }
 
@@ -1604,10 +1527,7 @@ where
         &mut self
             .locked_entry
             .entry_ptr
-            .get_mut(
-                self.locked_entry.data_block_mut,
-                &mut self.locked_entry.locker,
-            )
+            .get_mut(self.locked_entry.data_block, &self.locked_entry.writer)
             .1
     }
 
@@ -1754,25 +1674,26 @@ where
     /// assert_eq!(*hashcache.get(&19).unwrap().get(), 29);
     /// ```
     #[inline]
-    pub fn put_entry(mut self, val: V) -> (EvictedEntry<K, V>, OccupiedEntry<'h, K, V, H>) {
+    pub fn put_entry(self, val: V) -> (EvictedEntry<K, V>, OccupiedEntry<'h, K, V, H>) {
         let evicted = self
             .locked_entry
-            .locker
-            .evict_lru_head(self.locked_entry.data_block_mut);
-        let entry_ptr = self.locked_entry.locker.insert_with(
-            self.locked_entry.data_block_mut,
+            .writer
+            .evict_lru_head(self.locked_entry.data_block);
+        let entry_ptr = self.locked_entry.writer.insert_with(
+            self.locked_entry.data_block,
             BucketArray::<K, V, DoublyLinkedList, CACHE>::partial_hash(self.hash),
             || (self.key, val),
             self.hashcache.prolonged_guard_ref(&Guard::new()),
         );
-        self.locked_entry.locker.update_lru_tail(&entry_ptr);
+        self.locked_entry.writer.update_lru_tail(&entry_ptr);
         let occupied = OccupiedEntry {
             hashcache: self.hashcache,
             locked_entry: LockedEntry {
                 index: self.locked_entry.index,
-                data_block_mut: self.locked_entry.data_block_mut,
-                locker: self.locked_entry.locker,
+                data_block: self.locked_entry.data_block,
+                writer: self.locked_entry.writer,
                 entry_ptr,
+                len: 0,
             },
         };
 

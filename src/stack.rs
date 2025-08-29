@@ -4,7 +4,8 @@ use std::fmt::{self, Debug};
 use std::iter::FusedIterator;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 
-use super::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
+use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
+
 use super::linked_list::{Entry, LinkedList};
 
 /// [`Stack`] is a lock-free concurrent last-in-first-out container.
@@ -80,8 +81,7 @@ impl<T: 'static> Stack<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::Guard;
-    /// use scc::Stack;
+    /// use scc::{Guard, Stack};
     ///
     /// let stack: Stack<usize> = Stack::default();
     ///
@@ -344,8 +344,7 @@ impl<T> Stack<T> {
     /// # Examples
     ///
     /// ```
-    /// use scc::ebr::Guard;
-    /// use scc::Stack;
+    /// use scc::{Guard, Stack};
     ///
     /// let stack: Stack<usize> = Stack::default();
     /// assert_eq!(stack.iter(&Guard::new()).count(), 0);

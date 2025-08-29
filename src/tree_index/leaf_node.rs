@@ -4,15 +4,16 @@ use std::ptr;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
-use super::leaf::{InsertResult, RemoveResult, Scanner, DIMENSION};
-use super::node::Node;
+use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
+
 use super::Leaf;
-use crate::ebr::{AtomicShared, Guard, Ptr, Shared, Tag};
+use super::leaf::{DIMENSION, InsertResult, RemoveResult, Scanner};
+use super::node::Node;
+use crate::LinkedList;
+use crate::async_helper::{DeriveAsyncWait, WaitQueue};
 use crate::exit_guard::ExitGuard;
 use crate::maybe_std::AtomicU8;
-use crate::wait_queue::{DeriveAsyncWait, WaitQueue};
-use crate::LinkedList;
-use crate::{range_helper, Comparable};
+use crate::{Comparable, range_helper};
 
 /// [`Tag::First`] indicates the corresponding node has retired.
 pub const RETIRED: Tag = Tag::First;
@@ -583,14 +584,12 @@ where
         // It is safe to keep the pointers to the new leaf nodes in this full leaf node since the
         // whole split operation is protected under a single `ebr::Guard`, and the pointers are
         // only dereferenced during the operation.
-        self.split_op.low_key_leaf_node.swap(
-            (low_key_leaf_node as *const LeafNode<K, V>).cast_mut(),
-            Relaxed,
-        );
-        self.split_op.high_key_leaf_node.swap(
-            (high_key_leaf_node as *const LeafNode<K, V>).cast_mut(),
-            Relaxed,
-        );
+        self.split_op
+            .low_key_leaf_node
+            .swap(ptr::from_ref(low_key_leaf_node).cast_mut(), Relaxed);
+        self.split_op
+            .high_key_leaf_node
+            .swap(ptr::from_ref(high_key_leaf_node).cast_mut(), Relaxed);
 
         // Builds a list of valid leaves
         #[allow(clippy::type_complexity)]
@@ -855,7 +854,7 @@ where
         if let Some(full_leaf_key) = full_leaf_key {
             self.split_op
                 .origin_leaf_key
-                .store((full_leaf_key as *const K).cast_mut(), Relaxed);
+                .store(ptr::from_ref(full_leaf_key).cast_mut(), Relaxed);
         }
 
         let target = full_leaf_ptr.as_ref().unwrap();
@@ -1255,9 +1254,11 @@ mod test {
                     leaf_node.rollback(&guard);
                     for r in 0..(k - 1) {
                         assert_eq!(leaf_node.search_entry(&r, &guard), Some((&r, &r)));
-                        assert!(leaf_node
-                            .remove_if::<_, _, _>(&r, &mut |_| true, &mut (), &guard)
-                            .is_ok());
+                        assert!(
+                            leaf_node
+                                .remove_if::<_, _, _>(&r, &mut |_| true, &mut (), &guard)
+                                .is_ok()
+                        );
                         assert_eq!(leaf_node.search_entry(&r, &guard), None);
                     }
                     assert_eq!(
@@ -1286,9 +1287,11 @@ mod test {
         let barrier = Shared::new(Barrier::new(num_tasks));
         for _ in 0..16 {
             let leaf_node = Shared::new(LeafNode::new());
-            assert!(leaf_node
-                .insert(usize::MAX, usize::MAX, &mut (), &Guard::new())
-                .is_ok());
+            assert!(
+                leaf_node
+                    .insert(usize::MAX, usize::MAX, &mut (), &Guard::new())
+                    .is_ok()
+            );
             let mut task_handles = Vec::with_capacity(num_tasks);
             for task_id in 0..num_tasks {
                 let barrier_clone = barrier.clone();
@@ -1368,9 +1371,11 @@ mod test {
             for r in futures::future::join_all(task_handles).await {
                 assert!(r.is_ok());
             }
-            assert!(leaf_node
-                .remove_if::<_, _, _>(&usize::MAX, &mut |_| true, &mut (), &Guard::new())
-                .is_ok());
+            assert!(
+                leaf_node
+                    .remove_if::<_, _, _>(&usize::MAX, &mut |_| true, &mut (), &Guard::new())
+                    .is_ok()
+            );
         }
     }
 

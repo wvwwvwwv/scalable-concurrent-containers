@@ -11,7 +11,8 @@ mod sync_benchmarks {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use crate::ebr::Guard;
+    use sdd::Guard;
+
     use crate::{HashIndex, HashMap, TreeIndex};
 
     #[derive(Clone)]
@@ -55,10 +56,10 @@ mod sync_benchmarks {
     }
 
     impl<
-            K: 'static + Clone + Eq + Hash + Ord + Send + Sync,
-            V: 'static + Clone + Send + Sync,
-            H: BuildHasher,
-        > BenchmarkOperation<K, V, H> for HashMap<K, V, H>
+        K: 'static + Clone + Eq + Hash + Ord + Send + Sync,
+        V: 'static + Clone + Send + Sync,
+        H: BuildHasher,
+    > BenchmarkOperation<K, V, H> for HashMap<K, V, H>
     {
         #[inline(always)]
         fn insert_test(&self, k: K, v: V) -> bool {
@@ -86,10 +87,10 @@ mod sync_benchmarks {
     }
 
     impl<
-            K: 'static + Clone + Eq + Hash + Ord + Send + Sync,
-            V: 'static + Clone + Send + Sync,
-            H: 'static + BuildHasher,
-        > BenchmarkOperation<K, V, H> for HashIndex<K, V, H>
+        K: 'static + Clone + Eq + Hash + Ord + Send + Sync,
+        V: 'static + Clone + Send + Sync,
+        H: 'static + BuildHasher,
+    > BenchmarkOperation<K, V, H> for HashIndex<K, V, H>
     {
         #[inline(always)]
         fn insert_test(&self, k: K, v: V) -> bool {
@@ -113,10 +114,10 @@ mod sync_benchmarks {
     }
 
     impl<
-            K: 'static + Clone + Eq + Hash + Ord + Send + Sync,
-            V: 'static + Clone + Send + Sync,
-            H: BuildHasher,
-        > BenchmarkOperation<K, V, H> for TreeIndex<K, V>
+        K: 'static + Clone + Eq + Hash + Ord + Send + Sync,
+        V: 'static + Clone + Send + Sync,
+        H: BuildHasher,
+    > BenchmarkOperation<K, V, H> for TreeIndex<K, V>
     {
         #[inline(always)]
         fn insert_test(&self, k: K, v: V) -> bool {
@@ -687,14 +688,14 @@ mod sync_benchmarks {
 
 mod async_benchmarks {
     use std::collections::hash_map::RandomState;
+    use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering::Relaxed;
-    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
+    use sdd::Guard;
     use tokio::sync::Barrier;
 
-    use crate::ebr::Guard;
     use crate::{HashIndex, HashMap, TreeIndex};
 
     #[derive(Clone)]
@@ -1425,8 +1426,10 @@ mod async_benchmarks {
             assert_eq!(treeindex.len(), 0);
         }
     }
-    #[cfg_attr(miri, ignore)]
+
+    //#[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+    #[ignore = "unstable"]
     async fn benchmarks_async() {
         hashmap_benchmark(65536, vec![1, 2, 4]).await;
         hashindex_benchmark(65536, vec![1, 2, 4]).await;

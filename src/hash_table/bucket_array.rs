@@ -1,15 +1,17 @@
-use std::alloc::{alloc, alloc_zeroed, dealloc, Layout};
+use std::alloc::{Layout, alloc, alloc_zeroed, dealloc};
 use std::mem::{align_of, needs_drop, size_of};
+use std::panic::UnwindSafe;
 use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-use super::bucket::{Bucket, DataBlock, LruList, BUCKET_LEN, OPTIMISTIC};
-use crate::ebr::{AtomicShared, Guard, Ptr, Tag};
+use sdd::{AtomicShared, Guard, Ptr, Tag};
+
+use super::bucket::{BUCKET_LEN, Bucket, DataBlock, LruList, OPTIMISTIC};
 
 /// [`BucketArray`] is a special purpose array to manage [`Bucket`] and [`DataBlock`].
 pub struct BucketArray<K, V, L: LruList, const TYPE: char> {
-    bucket_ptr: *mut Bucket<K, V, L, TYPE>,
-    data_block_ptr: *mut DataBlock<K, V, BUCKET_LEN>,
+    bucket_ptr: *const Bucket<K, V, L, TYPE>,
+    data_block_ptr: *const DataBlock<K, V, BUCKET_LEN>,
     array_len: usize,
     hash_offset: u32,
     sample_size_mask: u16,
@@ -21,38 +23,22 @@ pub struct BucketArray<K, V, L: LruList, const TYPE: char> {
 impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     /// Returns the number of [`Bucket`] instances in the [`BucketArray`].
     #[inline]
-    pub(crate) const fn num_buckets(&self) -> usize {
+    pub(crate) const fn len(&self) -> usize {
         self.array_len
     }
 
     /// Returns a reference to a [`Bucket`] at the given position.
     #[inline]
     pub(crate) fn bucket(&self, index: usize) -> &Bucket<K, V, L, TYPE> {
-        debug_assert!(index < self.num_buckets());
+        debug_assert!(index < self.len());
         unsafe { &(*(self.bucket_ptr.add(index))) }
-    }
-
-    /// Returns a mutable reference to a [`Bucket`] at the given position.
-    #[allow(clippy::mut_from_ref)]
-    #[inline]
-    pub(crate) fn bucket_mut(&self, index: usize) -> &mut Bucket<K, V, L, TYPE> {
-        debug_assert!(index < self.num_buckets());
-        unsafe { &mut *self.bucket_ptr.add(index) }
     }
 
     /// Returns a mutable reference to a [`DataBlock`] at the given position.
     #[inline]
     pub(crate) fn data_block(&self, index: usize) -> &DataBlock<K, V, BUCKET_LEN> {
-        debug_assert!(index < self.num_buckets());
+        debug_assert!(index < self.len());
         unsafe { &*self.data_block_ptr.add(index) }
-    }
-
-    /// Returns a mutable reference to a [`DataBlock`] at the given position.
-    #[allow(clippy::mut_from_ref)]
-    #[inline]
-    pub(crate) fn data_block_mut(&self, index: usize) -> &mut DataBlock<K, V, BUCKET_LEN> {
-        debug_assert!(index < self.num_buckets());
-        unsafe { &mut *self.data_block_ptr.add(index) }
     }
 
     /// Calculates the layout of the memory block for an array of `T`.
@@ -184,25 +170,32 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     /// Returns the recommended sampling size.
     #[inline]
     pub(crate) fn full_sample_size(&self) -> usize {
-        (self.sample_size() * self.sample_size()).min(self.num_buckets())
+        (self.sample_size() * self.sample_size()).min(self.len())
     }
 
     /// Returns a [`Ptr`] to the old array.
     #[inline]
     pub(crate) fn has_old_array(&self) -> bool {
-        !self.old_array.is_null(Relaxed)
+        !self.old_array.is_null(Acquire)
+    }
+
+    /// Returns a reference to the old array pointer.
+    #[inline]
+    pub(crate) fn old_array_ptr(&self) -> &AtomicShared<BucketArray<K, V, L, TYPE>> {
+        &self.old_array
     }
 
     /// Returns a [`Ptr`] to the old array.
     #[inline]
     pub(crate) fn old_array<'g>(&self, guard: &'g Guard) -> Ptr<'g, BucketArray<K, V, L, TYPE>> {
-        self.old_array.load(Relaxed, guard)
+        self.old_array.load(Acquire, guard)
     }
 
     /// Drops the old array.
     #[inline]
     pub(crate) fn drop_old_array(&self) {
-        self.old_array.swap((None, Tag::None), Relaxed).0.map(|a| {
+        debug_assert!(!self.old_array.is_null(Relaxed));
+        self.old_array.swap((None, Tag::None), Release).0.map(|a| {
             // It is OK to pass the old array instance to the garbage collector, deferring destruction.
             debug_assert_eq!(
                 a.num_cleared_buckets.load(Relaxed),
@@ -218,8 +211,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     #[allow(clippy::cast_possible_truncation)]
     fn calculate_log2_array_size(capacity: usize) -> u8 {
         let adjusted_capacity = capacity.clamp(64, (usize::MAX / 2) - (BUCKET_LEN - 1));
-        let required_buckets =
-            ((adjusted_capacity + BUCKET_LEN - 1) / BUCKET_LEN).next_power_of_two();
+        let required_buckets = adjusted_capacity.div_ceil(BUCKET_LEN).next_power_of_two();
         let log2_capacity = usize::BITS as usize - (required_buckets.leading_zeros() as usize) - 1;
 
         // `2^log2_capacity * BUCKET_LEN >= capacity`.
@@ -251,8 +243,7 @@ impl<K, V, L: LruList, const TYPE: char> Drop for BucketArray<K, V, L, TYPE> {
 
         if num_cleared_buckets < self.array_len {
             for index in num_cleared_buckets..self.array_len {
-                self.bucket_mut(index)
-                    .drop_entries(self.data_block_mut(index));
+                self.bucket(index).drop_entries(self.data_block(index));
             }
         }
 
@@ -260,11 +251,12 @@ impl<K, V, L: LruList, const TYPE: char> Drop for BucketArray<K, V, L, TYPE> {
             dealloc(
                 self.bucket_ptr
                     .cast::<u8>()
+                    .cast_mut()
                     .sub(self.bucket_ptr_offset as usize),
                 Self::calculate_memory_layout::<Bucket<K, V, L, TYPE>>(self.array_len).2,
             );
             dealloc(
-                self.data_block_ptr.cast::<u8>(),
+                self.data_block_ptr.cast::<u8>().cast_mut(),
                 Layout::from_size_align(
                     size_of::<DataBlock<K, V, BUCKET_LEN>>() * self.array_len,
                     align_of::<[DataBlock<K, V, BUCKET_LEN>; 0]>(),
@@ -281,26 +273,15 @@ unsafe impl<K: Send + Sync, V: Send + Sync, L: LruList, const TYPE: char> Sync
 {
 }
 
+impl<K: UnwindSafe, V: UnwindSafe, L: LruList, const TYPE: char> UnwindSafe
+    for BucketArray<K, V, L, TYPE>
+{
+}
+
 #[cfg(not(feature = "loom"))]
 #[cfg(test)]
 mod test {
     use super::*;
-
-    use std::time::Instant;
-
-    #[test]
-    fn alloc() {
-        let start = Instant::now();
-        let array: BucketArray<usize, usize, (), OPTIMISTIC> =
-            BucketArray::new(1024 * 1024 * 32, AtomicShared::default());
-        assert_eq!(array.num_buckets(), 1024 * 1024);
-        let after_alloc = Instant::now();
-        println!("allocation took {:?}", after_alloc - start);
-        array.num_cleared_buckets.store(array.array_len, Relaxed);
-        drop(array);
-        let after_dealloc = Instant::now();
-        println!("de-allocation took {:?}", after_dealloc - after_alloc);
-    }
 
     #[test]
     fn array() {
@@ -308,20 +289,20 @@ mod test {
             let array: BucketArray<usize, usize, (), OPTIMISTIC> =
                 BucketArray::new(s, AtomicShared::default());
             assert!(
-                array.num_buckets() >= (s.max(1) + BUCKET_LEN - 1) / BUCKET_LEN,
+                array.len() >= s.max(1).div_ceil(BUCKET_LEN),
                 "{s} {}",
-                array.num_buckets()
+                array.len()
             );
             assert!(
-                array.num_buckets() <= 2 * (s.max(1) + BUCKET_LEN - 1) / BUCKET_LEN,
+                array.len() <= 2 * (s.max(1) + BUCKET_LEN - 1) / BUCKET_LEN,
                 "{s} {}",
-                array.num_buckets()
+                array.len()
             );
             assert!(
-                array.full_sample_size() <= array.num_buckets(),
+                array.full_sample_size() <= array.len(),
                 "{} {}",
                 array.full_sample_size(),
-                array.num_buckets()
+                array.len()
             );
             assert!(array.num_entries() >= s, "{s} {}", array.num_entries());
             array.num_cleared_buckets.store(array.array_len, Relaxed);
