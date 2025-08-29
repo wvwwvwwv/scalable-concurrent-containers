@@ -154,10 +154,12 @@ where
         if current_array_len < old_array_len {
             let ratio = old_array_len / current_array_len;
             let start_index = index * ratio;
+            debug_assert!(start_index + ratio <= old_array_len);
             (start_index, start_index + ratio)
         } else {
             let ratio = current_array_len / old_array_len;
             let start_index = index / ratio;
+            debug_assert!(start_index < old_array_len);
             (start_index, start_index + 1)
         }
     }
@@ -229,9 +231,9 @@ where
         false
     }
 
-    /// Returns `true` if the current array has stayed the same.
+    /// Returns `true` if the reference derived from the [`SendableGuard`] is still valid.
     #[inline]
-    fn check_current_array(
+    fn validate_ref(
         &self,
         current_array: &BucketArray<K, V, L, TYPE>,
         sendable_guard: &SendableGuard,
@@ -320,7 +322,7 @@ where
                 }
             }
 
-            if self.check_current_array(current_array, sendable_guard) {
+            if self.validate_ref(current_array, sendable_guard) {
                 break;
             }
         }
@@ -503,7 +505,7 @@ where
                 return Ok(result);
             }
 
-            if self.check_current_array(current_array, sendable_guard) {
+            if self.validate_ref(current_array, sendable_guard) {
                 break;
             }
         }
@@ -606,7 +608,7 @@ where
                         return;
                     }
 
-                    if !self.check_current_array(current_array, sendable_guard) {
+                    if !self.validate_ref(current_array, sendable_guard) {
                         break;
                     }
                 } else {
@@ -616,7 +618,7 @@ where
                 start_index += 1;
             }
 
-            if self.check_current_array(current_array, sendable_guard) {
+            if self.validate_ref(current_array, sendable_guard) {
                 break;
             }
         }
@@ -725,7 +727,9 @@ where
                 bucket = current_array.bucket(index);
             }
 
-            let writer = Writer::try_lock(bucket, guard)?;
+            let Ok(writer) = Writer::try_lock(bucket, guard) else {
+                return None;
+            };
             if let Some(writer) = writer {
                 let data_block = current_array.data_block(index);
                 let entry_ptr = writer.get_entry_ptr(
@@ -758,7 +762,7 @@ where
     ) -> bool {
         self.incremental_rehash_async(current_array, sendable_guard)
             .await;
-        if !self.check_current_array(current_array, sendable_guard) {
+        if !self.validate_ref(current_array, sendable_guard) {
             return false;
         }
         if let Some(old_array) = sendable_guard.load(current_array.old_array_ptr(), Acquire) {
@@ -776,7 +780,7 @@ where
                     )
                     .await;
                 }
-                if !self.check_current_array(current_array, sendable_guard) {
+                if !self.validate_ref(current_array, sendable_guard) {
                     return false;
                 }
                 if !current_array.has_old_array() {
@@ -805,7 +809,7 @@ where
         for index in range.0..range.1 {
             let bucket = old_array.bucket(index);
             let writer = if TRY_LOCK {
-                let Some(writer) = Writer::try_lock(bucket, guard) else {
+                let Ok(writer) = Writer::try_lock(bucket, guard) else {
                     return false;
                 };
                 writer
@@ -841,7 +845,7 @@ where
     ) {
         debug_assert!(!old_writer.killed());
         if old_writer.len() != 0 {
-            let target_index = if old_array.len() >= current_array.len() {
+            let target_index = if old_array.len() > current_array.len() {
                 let ratio = old_array.len() / current_array.len();
                 old_index / ratio
             } else {
@@ -880,6 +884,7 @@ where
                             .await
                             .unwrap_unchecked()
                     };
+                    debug_assert!(self.validate_ref(current_array, sendable_guard));
                     target_buckets[max_index].replace(writer);
                     max_index += 1;
                 }
@@ -934,7 +939,7 @@ where
     ) -> bool {
         debug_assert!(!old_writer.killed());
         if old_writer.len() != 0 {
-            let target_index = if old_array.len() >= current_array.len() {
+            let target_index = if old_array.len() > current_array.len() {
                 let ratio = old_array.len() / current_array.len();
                 old_index / ratio
             } else {
@@ -969,7 +974,7 @@ where
                 while max_index <= new_index - target_index {
                     let target_bucket = current_array.bucket(max_index + target_index);
                     let writer = if TRY_LOCK {
-                        let Some(writer) = Writer::try_lock(target_bucket, guard) else {
+                        let Ok(writer) = Writer::try_lock(target_bucket, guard) else {
                             return false;
                         };
                         writer
@@ -1089,10 +1094,11 @@ where
                     )
                     .await;
                 }
-                if !self.check_current_array(current_array, sendable_guard) {
+                if !self.validate_ref(current_array, sendable_guard) {
                     // The current array has been updated: must not access `current_array`.
                     return false;
                 }
+                debug_assert!(current_array.has_old_array());
             }
 
             // Successfully rehashed all the assigned buckets.
@@ -1167,7 +1173,7 @@ where
             for index in current..(current + BUCKET_LEN).min(old_array.len()) {
                 let old_bucket = old_array.bucket(index);
                 let writer = if TRY_LOCK {
-                    let Some(writer) = Writer::try_lock(old_bucket, guard) else {
+                    let Ok(writer) = Writer::try_lock(old_bucket, guard) else {
                         return false;
                     };
                     writer
@@ -1346,8 +1352,7 @@ where
                     );
 
                     if !(0..current_array.len()).any(|i| {
-                        if let Some(Some(writer)) = Writer::try_lock(current_array.bucket(i), guard)
-                        {
+                        if let Ok(Some(writer)) = Writer::try_lock(current_array.bucket(i), guard) {
                             if writer.len() == 0 {
                                 // The bucket will be unlocked later.
                                 std::mem::forget(writer);

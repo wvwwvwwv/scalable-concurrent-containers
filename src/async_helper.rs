@@ -47,11 +47,13 @@ impl SendableGuard {
     ///
     /// The caller must ensure that any references derived from the returned [`Guard`] does not
     /// outlive the underlying instance.
+    #[inline]
     pub(crate) fn guard(&self) -> &Guard {
         unsafe { (*self.guard.get()).get_or_insert_with(Guard::new) }
     }
 
     /// Resets the [`SendableGuard`] to its initial state.
+    #[inline]
     pub(crate) fn reset(&self) {
         unsafe {
             *self.guard.get() = None;
@@ -59,6 +61,7 @@ impl SendableGuard {
     }
 
     /// Loads the content of the [`AtomicShared`] without exposing the [`Guard`].
+    #[inline]
     pub(crate) fn load<T>(&self, atomic_ptr: &AtomicShared<T>, mo: Ordering) -> Option<&T> {
         atomic_ptr.load(mo, self.guard()).as_ref()
     }

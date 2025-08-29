@@ -1013,29 +1013,26 @@ impl<'g, K, V, L: LruList, const TYPE: char> Writer<'g, K, V, L, TYPE> {
         bucket: &'g Bucket<K, V, L, TYPE>,
         _guard: &'g Guard,
     ) -> Option<Writer<'g, K, V, L, TYPE>> {
-        bucket.rw_lock.lock_sync();
-        if bucket.killed() {
-            bucket.rw_lock.release_lock();
-            return None;
+        if bucket.rw_lock.lock_sync() {
+            Some(Writer { bucket })
+        } else {
+            None
         }
-        Some(Writer { bucket })
     }
 
     /// Tries to lock the [`Bucket`].
-    #[allow(clippy::option_option)]
     #[inline]
     pub(crate) fn try_lock(
         bucket: &'g Bucket<K, V, L, TYPE>,
         _guard: &'g Guard,
-    ) -> Option<Option<Writer<'g, K, V, L, TYPE>>> {
+    ) -> Result<Option<Writer<'g, K, V, L, TYPE>>, ()> {
         if bucket.rw_lock.try_lock() {
-            if bucket.killed() {
-                bucket.rw_lock.release_lock();
-                return Some(None);
-            }
-            return Some(Some(Writer { bucket }));
+            Ok(Some(Writer { bucket }))
+        } else if bucket.rw_lock.is_poisoned(Relaxed) {
+            Ok(None)
+        } else {
+            Err(())
         }
-        None
     }
 
     /// Creates a new [`Writer`] from a [`Bucket`].
@@ -1107,12 +1104,11 @@ impl<'g, K, V, L: LruList, const TYPE: char> Reader<'g, K, V, L, TYPE> {
         bucket: &'g Bucket<K, V, L, TYPE>,
         _guard: &'g Guard,
     ) -> Option<Reader<'g, K, V, L, TYPE>> {
-        bucket.rw_lock.share_sync();
-        if bucket.killed() {
-            bucket.rw_lock.release_share();
-            return None;
+        if bucket.rw_lock.share_sync() {
+            Some(Reader { bucket })
+        } else {
+            None
         }
-        Some(Reader { bucket })
     }
 
     /// Releases the lock.
