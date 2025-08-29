@@ -1239,15 +1239,15 @@ mod hashindex {
         let mut tasks = Vec::with_capacity(num_tasks);
         let barrier = Arc::new(AsyncBarrier::new(num_tasks));
         for task_id in 0..num_tasks {
-            let barrier_clone = barrier.clone();
-            let hashindex_clone = hashindex.clone();
+            let barrier = barrier.clone();
+            let hashindex = hashindex.clone();
             tasks.push(tokio::task::spawn(async move {
-                barrier_clone.wait().await;
+                barrier.wait().await;
                 let range = (task_id * workload_size)..((task_id + 1) * workload_size);
                 for _ in 0..num_iter {
                     for id in range.clone() {
-                        assert!(hashindex_clone.remove_async(&id).await);
-                        assert!(hashindex_clone.insert_async(id, id).await.is_ok());
+                        assert!(hashindex.remove_async(&id).await);
+                        assert!(hashindex.insert_async(id, id).await.is_ok());
                     }
                 }
             }));
@@ -1484,29 +1484,29 @@ mod hashindex {
             let mut tasks = Vec::with_capacity(num_tasks);
             let barrier = Arc::new(AsyncBarrier::new(num_tasks));
             for task_id in 0..num_tasks {
-                let barrier_clone = barrier.clone();
-                let hashindex_clone = hashindex.clone();
+                let barrier = barrier.clone();
+                let hashindex = hashindex.clone();
                 tasks.push(tokio::task::spawn(async move {
-                    barrier_clone.wait().await;
+                    barrier.wait().await;
                     let range = (task_id * workload_size)..((task_id + 1) * workload_size);
                     for id in range.clone() {
-                        let result = hashindex_clone.insert_async(id, id).await;
+                        let result = hashindex.insert_async(id, id).await;
                         assert!(result.is_ok());
-                        let entry = hashindex_clone.get_async(&id).await.unwrap();
+                        let entry = hashindex.get_async(&id).await.unwrap();
                         if *entry.get() != id {
                             entry.update(0);
                         }
                     }
                     for id in range.clone() {
-                        hashindex_clone.peek_with(&id, |k, v| assert_eq!(k, v));
-                        let entry = hashindex_clone.get_async(&id).await.unwrap();
+                        hashindex.peek_with(&id, |k, v| assert_eq!(k, v));
+                        let entry = hashindex.get_async(&id).await.unwrap();
                         if *entry.get() == id {
                             entry.update(usize::MAX);
                         }
                     }
                     for id in range.clone() {
-                        hashindex_clone.peek_with(&id, |_, v| assert_eq!(*v, usize::MAX));
-                        let entry = hashindex_clone.get_async(&id).await.unwrap();
+                        hashindex.peek_with(&id, |_, v| assert_eq!(*v, usize::MAX));
+                        let entry = hashindex.get_async(&id).await.unwrap();
                         entry.remove_entry();
                     }
                 }));
@@ -1530,34 +1530,34 @@ mod hashindex {
             let mut tasks = Vec::with_capacity(num_tasks);
             let barrier = Arc::new(AsyncBarrier::new(num_tasks));
             for task_id in 0..num_tasks {
-                let barrier_clone = barrier.clone();
-                let hashindex_clone = hashindex.clone();
+                let barrier = barrier.clone();
+                let hashindex = hashindex.clone();
                 tasks.push(tokio::task::spawn(async move {
-                    barrier_clone.wait().await;
+                    barrier.wait().await;
                     let range = (task_id * workload_size)..((task_id + 1) * workload_size);
                     for id in range.clone() {
-                        let result = hashindex_clone.insert_async(id, id).await;
+                        let result = hashindex.insert_async(id, id).await;
                         assert!(result.is_ok());
                     }
                     for id in range.clone() {
-                        let result = hashindex_clone.insert_async(id, id).await;
+                        let result = hashindex.insert_async(id, id).await;
                         assert_eq!(result, Err((id, id)));
                     }
                     let mut iterated = 0;
-                    hashindex_clone.iter(&Guard::new()).for_each(|(k, _)| {
+                    hashindex.iter(&Guard::new()).for_each(|(k, _)| {
                         if range.contains(k) {
                             iterated += 1;
                         }
                     });
                     assert!(iterated >= workload_size);
                     assert!(
-                        hashindex_clone
+                        hashindex
                             .iter(&Guard::new())
                             .any(|(k, _)| range.contains(k))
                     );
 
                     let mut removed = 0;
-                    hashindex_clone
+                    hashindex
                         .retain_async(|k, _| {
                             if range.contains(k) {
                                 removed += 1;
@@ -1569,7 +1569,7 @@ mod hashindex {
                         .await;
                     assert_eq!(removed, workload_size);
                     assert!(
-                        !hashindex_clone
+                        !hashindex
                             .iter(&Guard::new())
                             .any(|(k, _)| range.contains(k))
                     );
@@ -1881,37 +1881,29 @@ mod hashcache {
             let mut tasks = Vec::with_capacity(num_tasks);
             let barrier = Arc::new(AsyncBarrier::new(num_tasks));
             for task_id in 0..num_tasks {
-                let barrier_clone = barrier.clone();
-                let hashcache_clone = hashcache.clone();
+                let barrier = barrier.clone();
+                let hashcache = hashcache.clone();
                 tasks.push(tokio::task::spawn(async move {
-                    barrier_clone.wait().await;
+                    barrier.wait().await;
                     let range = (task_id * workload_size)..((task_id + 1) * workload_size);
                     for id in range.clone() {
                         if id % 4 == 0 {
-                            hashcache_clone
-                                .entry_async(id)
-                                .await
-                                .or_put(R::new(&INST_CNT));
+                            hashcache.entry_async(id).await.or_put(R::new(&INST_CNT));
                         } else {
-                            assert!(
-                                hashcache_clone
-                                    .put_async(id, R::new(&INST_CNT))
-                                    .await
-                                    .is_ok()
-                            );
+                            assert!(hashcache.put_async(id, R::new(&INST_CNT)).await.is_ok());
                         }
                     }
                     let mut hit_count = 0;
                     for id in range.clone() {
-                        let hit = hashcache_clone.get_async(&id).await.is_some();
+                        let hit = hashcache.get_async(&id).await.is_some();
                         if hit {
                             hit_count += 1;
                         }
                     }
-                    assert!(hit_count <= *hashcache_clone.capacity_range().end());
+                    assert!(hit_count <= *hashcache.capacity_range().end());
                     let mut remove_count = 0;
                     for id in range.clone() {
-                        let removed = hashcache_clone.remove_async(&id).await.is_some();
+                        let removed = hashcache.remove_async(&id).await.is_some();
                         if removed {
                             remove_count += 1;
                         }
@@ -1943,31 +1935,31 @@ mod hashcache {
             let evicted = Arc::new(AtomicUsize::new(0));
             let removed = Arc::new(AtomicUsize::new(0));
             for task_id in 0..num_tasks {
-                let barrier_clone = barrier.clone();
-                let evicted_clone = evicted.clone();
-                let removed_clone = removed.clone();
-                let hashcache_clone = hashcache.clone();
+                let barrier = barrier.clone();
+                let evicted = evicted.clone();
+                let removed = removed.clone();
+                let hashcache = hashcache.clone();
                 tasks.push(tokio::task::spawn(async move {
-                    barrier_clone.wait().await;
+                    barrier.wait().await;
                     let range = (task_id * workload_size)..((task_id + 1) * workload_size);
-                    let mut evicted = 0;
+                    let mut cnt = 0;
                     for key in range.clone() {
-                        let result = hashcache_clone.put_async(key, R::new(&INST_CNT)).await;
+                        let result = hashcache.put_async(key, R::new(&INST_CNT)).await;
                         match result {
-                            Ok(Some(_)) => evicted += 1,
+                            Ok(Some(_)) => cnt += 1,
                             Ok(_) => (),
                             Err(_) => unreachable!(),
                         }
                     }
-                    evicted_clone.fetch_add(evicted, Relaxed);
-                    let mut removed = 0;
+                    evicted.fetch_add(cnt, Relaxed);
+                    cnt = 0;
                     for key in range.clone() {
-                        let result = hashcache_clone.remove_async(&key).await;
+                        let result = hashcache.remove_async(&key).await;
                         if result.is_some() {
-                            removed += 1;
+                            cnt += 1;
                         }
                     }
-                    removed_clone.fetch_add(removed, Relaxed);
+                    removed.fetch_add(cnt, Relaxed);
                 }));
             }
 
@@ -2178,34 +2170,34 @@ mod treeindex {
         let mut threads = Vec::with_capacity(num_threads);
         let barrier = Arc::new(Barrier::new(num_threads));
         for task_id in 0..num_threads {
-            let barrier_clone = barrier.clone();
-            let tree_clone = tree.clone();
+            let barrier = barrier.clone();
+            let tree = tree.clone();
             threads.push(thread::spawn(move || {
                 for _ in 0..num_iter {
-                    barrier_clone.wait();
+                    barrier.wait();
                     match task_id {
                         0 => {
                             for k in 0..workload_size {
-                                assert!(tree_clone.insert(k, R::new(&INST_CNT)).is_ok());
+                                assert!(tree.insert(k, R::new(&INST_CNT)).is_ok());
                             }
                         }
                         1 => {
                             for k in 0..workload_size / 8 {
-                                tree_clone.remove(&(k * 4));
+                                tree.remove(&(k * 4));
                             }
                         }
                         _ => {
                             for _ in 0..workload_size / 64 {
-                                if tree_clone.len() >= workload_size / 4 {
-                                    tree_clone.clear();
+                                if tree.len() >= workload_size / 4 {
+                                    tree.clear();
                                 }
                             }
                         }
                     }
-                    tree_clone.clear();
+                    tree.clear();
                     assert!(suspend());
                 }
-                drop(tree_clone);
+                drop(tree);
             }));
         }
 
@@ -2430,24 +2422,24 @@ mod treeindex {
             let mut tasks = Vec::with_capacity(num_tasks);
             let barrier = Arc::new(AsyncBarrier::new(num_tasks));
             for task_id in 0..num_tasks {
-                let barrier_clone = barrier.clone();
-                let tree_clone = tree.clone();
+                let barrier = barrier.clone();
+                let tree = tree.clone();
                 tasks.push(tokio::task::spawn(async move {
-                    barrier_clone.wait().await;
+                    barrier.wait().await;
                     let range = (task_id * workload_size)..((task_id + 1) * workload_size);
                     for id in range.clone() {
-                        assert!(tree_clone.insert_async(id, id).await.is_ok());
-                        assert!(tree_clone.insert_async(id, id).await.is_err());
+                        assert!(tree.insert_async(id, id).await.is_ok());
+                        assert!(tree.insert_async(id, id).await.is_err());
                     }
                     for id in range.clone() {
-                        let result = tree_clone.peek_with(&id, |_, v| *v);
+                        let result = tree.peek_with(&id, |_, v| *v);
                         assert_eq!(result, Some(id));
                     }
                     for id in range.clone() {
-                        assert!(tree_clone.remove_if_async(&id, |v| *v == id).await);
+                        assert!(tree.remove_if_async(&id, |v| *v == id).await);
                     }
                     for id in range {
-                        assert!(!tree_clone.remove_if_async(&id, |v| *v == id).await);
+                        assert!(!tree.remove_if_async(&id, |v| *v == id).await);
                     }
                 }));
             }
@@ -2470,20 +2462,20 @@ mod treeindex {
             let barrier = Arc::new(AsyncBarrier::new(num_tasks));
             let data = Arc::new(AtomicUsize::default());
             for task_id in 0..num_tasks {
-                let barrier_clone = barrier.clone();
-                let data_clone = data.clone();
-                let tree_clone = tree.clone();
+                let barrier = barrier.clone();
+                let data = data.clone();
+                let tree = tree.clone();
                 tasks.push(tokio::task::spawn(async move {
-                    barrier_clone.wait().await;
+                    barrier.wait().await;
                     if task_id == 0 {
                         for k in 1..=workload_size {
-                            assert!(tree_clone.insert(k, k).is_ok());
-                            assert!(tree_clone.peek(&k, &Guard::new()).is_some());
-                            data_clone.store(k, Release);
+                            assert!(tree.insert(k, k).is_ok());
+                            assert!(tree.peek(&k, &Guard::new()).is_some());
+                            data.store(k, Release);
                         }
                     } else {
                         loop {
-                            let end_bound = data_clone.load(Acquire);
+                            let end_bound = data.load(Acquire);
                             if end_bound == workload_size {
                                 break;
                             } else if end_bound <= 1 {
@@ -2491,26 +2483,26 @@ mod treeindex {
                                 continue;
                             }
                             if end_bound % 2 == 0 {
-                                for (k, _) in tree_clone.range(..end_bound, &Guard::new()) {
-                                    tree_clone.remove(k);
+                                for (k, _) in tree.range(..end_bound, &Guard::new()) {
+                                    tree.remove(k);
                                 }
                             } else if end_bound % 3 == 0 {
-                                tree_clone.remove_range(..end_bound);
+                                tree.remove_range(..end_bound);
                             } else {
-                                tree_clone.remove_range_async(..end_bound).await;
+                                tree.remove_range_async(..end_bound).await;
                             }
                             if end_bound % 5 == 0 {
-                                for (k, v) in tree_clone.iter(&Guard::new()) {
+                                for (k, v) in tree.iter(&Guard::new()) {
                                     assert_eq!(k, v);
                                     assert!(!(..end_bound).contains(k), "{k}");
                                 }
                             } else {
                                 assert!(
-                                    tree_clone.peek(&(end_bound - 1), &Guard::new()).is_none(),
+                                    tree.peek(&(end_bound - 1), &Guard::new()).is_none(),
                                     "{end_bound} {}",
-                                    data_clone.load(Relaxed)
+                                    data.load(Relaxed)
                                 );
-                                assert!(tree_clone.peek(&end_bound, &Guard::new()).is_some());
+                                assert!(tree.peek(&end_bound, &Guard::new()).is_some());
                             }
                         }
                     }
@@ -2537,28 +2529,26 @@ mod treeindex {
         let barrier = Arc::new(Barrier::new(num_threads));
         let mut threads = Vec::with_capacity(num_threads);
         for thread_id in 0..num_threads {
-            let tree_clone = tree.clone();
-            let barrier_clone = barrier.clone();
+            let tree = tree.clone();
+            let barrier = barrier.clone();
             threads.push(thread::spawn(move || {
                 let first_key = thread_id * range;
-                barrier_clone.wait();
+                barrier.wait();
                 for key in first_key..(first_key + range / 2) {
-                    assert!(tree_clone.insert(key, key).is_ok());
+                    assert!(tree.insert(key, key).is_ok());
                 }
                 for key in first_key..(first_key + range / 2) {
                     assert!(
-                        tree_clone
-                            .peek_with(&key, |key, val| assert_eq!(key, val))
+                        tree.peek_with(&key, |key, val| assert_eq!(key, val))
                             .is_some()
                     );
                 }
                 for key in (first_key + range / 2)..(first_key + range) {
-                    assert!(tree_clone.insert(key, key).is_ok());
+                    assert!(tree.insert(key, key).is_ok());
                 }
                 for key in (first_key + range / 2)..(first_key + range) {
                     assert!(
-                        tree_clone
-                            .peek_with(&key, |key, val| assert_eq!(key, val))
+                        tree.peek_with(&key, |key, val| assert_eq!(key, val))
                             .is_some()
                     );
                 }
@@ -2597,7 +2587,7 @@ mod treeindex {
 
     #[test]
     fn insert_peek_remove_range_sync() {
-        let range = if cfg!(miri) { 2 } else { 4096 };
+        let range = if cfg!(miri) { 8 } else { 4096 };
         let num_threads = if cfg!(miri) { 2 } else { 16 };
         let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::new());
         for t in 0..num_threads {
@@ -2747,21 +2737,21 @@ mod treeindex {
             let barrier = Arc::new(Barrier::new(3));
             let inserted = Arc::new(AtomicUsize::new(0));
             let removed = Arc::new(AtomicUsize::new(data_size));
-            let mut thread_handles = Vec::new();
+            let mut threads = Vec::new();
             for _ in 0..2 {
-                let tree_clone = tree.clone();
-                let barrier_clone = barrier.clone();
-                let inserted_clone = inserted.clone();
-                let removed_clone = removed.clone();
-                let thread_handle = thread::spawn(move || {
+                let tree = tree.clone();
+                let barrier = barrier.clone();
+                let inserted = inserted.clone();
+                let removed = removed.clone();
+                let thread = thread::spawn(move || {
                     // test insert
                     for _ in 0..2 {
-                        barrier_clone.wait();
-                        let max = inserted_clone.load(Acquire);
+                        barrier.wait();
+                        let max = inserted.load(Acquire);
                         let mut prev = 0;
                         let mut iterated = 0;
                         let guard = Guard::new();
-                        for iter in tree_clone.iter(&guard) {
+                        for iter in tree.iter(&guard) {
                             assert!(
                                 prev == 0
                                     || (*iter.0 <= max && prev + 1 == *iter.0)
@@ -2774,11 +2764,11 @@ mod treeindex {
                     }
                     // test remove
                     for _ in 0..2 {
-                        barrier_clone.wait();
+                        barrier.wait();
                         let mut prev = 0;
-                        let max = removed_clone.load(Acquire);
+                        let max = removed.load(Acquire);
                         let guard = Guard::new();
-                        for iter in tree_clone.iter(&guard) {
+                        for iter in tree.iter(&guard) {
                             let current = *iter.0;
                             assert!(current < max);
                             assert!(prev + 1 == current || prev == 0);
@@ -2786,7 +2776,7 @@ mod treeindex {
                         }
                     }
                 });
-                thread_handles.push(thread_handle);
+                threads.push(thread);
             }
             // insert
             barrier.wait();
@@ -2806,8 +2796,8 @@ mod treeindex {
                 assert!(tree.remove(&i));
                 removed.store(i, Release);
             }
-            for t in thread_handles {
-                t.join().unwrap();
+            for thread in threads {
+                assert!(thread.join().is_ok());
             }
         }
     }
@@ -3213,25 +3203,25 @@ mod queue {
             let mut threads = Vec::with_capacity(NUM_TASKS);
             let barrier = Arc::new(Barrier::new(NUM_TASKS));
             for thread_id in 0..NUM_TASKS {
-                let barrier_clone = barrier.clone();
-                let queue_clone = queue.clone();
-                let num_popped_clone = num_popped.clone();
+                let barrier = barrier.clone();
+                let queue = queue.clone();
+                let num_popped = num_popped.clone();
                 threads.push(thread::spawn(move || {
-                    barrier_clone.wait();
+                    barrier.wait();
                     if thread_id < NUM_PRODUCERS {
                         for seq in 1..=workload_size {
-                            assert_eq!(queue_clone.push(R::new(&INST_CNT, thread_id, seq)).2, seq);
+                            assert_eq!(queue.push(R::new(&INST_CNT, thread_id, seq)).2, seq);
                         }
                     } else {
                         let mut popped_acc: [usize; NUM_PRODUCERS] = Default::default();
                         loop {
                             let mut cnt = 0;
-                            while let Some(popped) = queue_clone.pop() {
+                            while let Some(popped) = queue.pop() {
                                 cnt += 1;
                                 assert!(popped_acc[popped.1] < popped.2);
                                 popped_acc[popped.1] = popped.2;
                             }
-                            if num_popped_clone.fetch_add(cnt, Relaxed) + cnt
+                            if num_popped.fetch_add(cnt, Relaxed) + cnt
                                 == workload_size * NUM_PRODUCERS
                             {
                                 break;

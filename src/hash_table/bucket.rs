@@ -280,7 +280,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             removed_bitmap |= 1_u32 << entry_ptr.current_index;
             link.metadata
                 .removed_bitmap_or_lru_tail
-                .store(removed_bitmap, Relaxed);
+                .store(removed_bitmap, Release);
             if link.metadata.occupied_bitmap.load(Relaxed) == removed_bitmap {
                 entry_ptr.unlink(self, link, guard);
             }
@@ -291,7 +291,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             removed_bitmap |= 1_u32 << entry_ptr.current_index;
             self.metadata
                 .removed_bitmap_or_lru_tail
-                .store(removed_bitmap, Relaxed);
+                .store(removed_bitmap, Release);
             self.update_target_epoch(guard);
         }
     }
@@ -736,7 +736,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     {
         let mut bitmap = if TYPE == OPTIMISTIC {
             metadata.occupied_bitmap.load(Acquire)
-                & (!metadata.removed_bitmap_or_lru_tail.load(Relaxed))
+                & (!metadata.removed_bitmap_or_lru_tail.load(Acquire))
         } else {
             metadata.occupied_bitmap.load(Relaxed)
         };
@@ -930,7 +930,7 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
         if current_index < LEN {
             let bitmap = if TYPE == OPTIMISTIC {
                 (metadata.occupied_bitmap.load(Acquire)
-                    & (!metadata.removed_bitmap_or_lru_tail.load(Relaxed)))
+                    & (!metadata.removed_bitmap_or_lru_tail.load(Acquire)))
                     & (!((1_u32 << current_index) - 1))
             } else {
                 metadata.occupied_bitmap.load(Relaxed) & (!((1_u32 << current_index) - 1))
@@ -1408,13 +1408,18 @@ mod test {
                     let entry_ptr = writer.insert_with(&data_block, 0, || (v, v), &guard);
                     writer.update_lru_tail(&entry_ptr);
                     if v < BUCKET_LEN {
-                        assert_eq!(writer.metadata.removed_bitmap_or_lru_tail.load(Relaxed) as usize, v + 1);
+                        assert_eq!(
+                            writer.metadata.removed_bitmap_or_lru_tail.load(Relaxed) as usize,
+                            v + 1
+                        );
                     }
                     assert_eq!(
-                        writer
-                            .lru_list.0[writer.metadata.removed_bitmap_or_lru_tail.load(Relaxed) as usize - 1]
+                        writer.lru_list.0
+                            [writer.metadata.removed_bitmap_or_lru_tail.load(Relaxed) as usize - 1]
                             .0
-                            .load(Relaxed), 0);
+                            .load(Relaxed),
+                        0
+                    );
                 }
 
                 let mut evicted_key = None;
@@ -1450,11 +1455,17 @@ mod test {
                 assert_eq!(v >= BUCKET_LEN, evicted.is_some());
                 let mut entry_ptr = writer.insert_with(&data_block, 0, || (v, v), &guard);
                 writer.update_lru_tail(&entry_ptr);
-                assert_eq!(writer.metadata.removed_bitmap_or_lru_tail.load(Relaxed) as usize, entry_ptr.current_index + 1);
+                assert_eq!(
+                    writer.metadata.removed_bitmap_or_lru_tail.load(Relaxed) as usize,
+                    entry_ptr.current_index + 1
+                );
                 if v >= BUCKET_LEN {
                     entry_ptr.current_index = xs % BUCKET_LEN;
                     writer.update_lru_tail(&entry_ptr);
-                    assert_eq!(writer.metadata.removed_bitmap_or_lru_tail.load(Relaxed) as usize, entry_ptr.current_index + 1);
+                    assert_eq!(
+                        writer.metadata.removed_bitmap_or_lru_tail.load(Relaxed) as usize,
+                        entry_ptr.current_index + 1
+                    );
                     let mut iterated = 1;
                     let mut i = writer.lru_list.0[entry_ptr.current_index].1.load(Relaxed) as usize;
                     while i != entry_ptr.current_index {
@@ -1507,7 +1518,6 @@ mod test {
             }
             assert_eq!(bucket.metadata.removed_bitmap_or_lru_tail.load(Relaxed), 0);
         }
-
     }
 
     #[cfg_attr(miri, ignore)]

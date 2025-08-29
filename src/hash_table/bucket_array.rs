@@ -2,7 +2,7 @@ use std::alloc::{Layout, alloc, alloc_zeroed, dealloc};
 use std::mem::{align_of, needs_drop, size_of};
 use std::panic::UnwindSafe;
 use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::{Acquire, Relaxed};
+use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 use sdd::{AtomicShared, Guard, Ptr, Tag};
 
@@ -194,7 +194,8 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     /// Drops the old array.
     #[inline]
     pub(crate) fn drop_old_array(&self) {
-        self.old_array.swap((None, Tag::None), Relaxed).0.map(|a| {
+        debug_assert!(!self.old_array.is_null(Relaxed));
+        self.old_array.swap((None, Tag::None), Release).0.map(|a| {
             // It is OK to pass the old array instance to the garbage collector, deferring destruction.
             debug_assert_eq!(
                 a.num_cleared_buckets.load(Relaxed),

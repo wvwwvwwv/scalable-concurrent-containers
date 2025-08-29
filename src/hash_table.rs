@@ -5,8 +5,8 @@ use bucket::{BUCKET_LEN, CACHE, DataBlock, EntryPtr, LruList, OPTIMISTIC, Reader
 use bucket_array::BucketArray;
 use std::hash::{BuildHasher, Hash};
 use std::ptr;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
-use std::sync::atomic::{AtomicUsize, fence};
 
 use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
 
@@ -144,22 +144,22 @@ where
     }
 
     /// For the given index in the current array, calculate the respective range in the old array.
-    fn calculate_respective_range(
-        current_array: &BucketArray<K, V, L, TYPE>,
-        old_array: &BucketArray<K, V, L, TYPE>,
-        index: usize,
+    fn from_index_to_range(
+        from_array: &BucketArray<K, V, L, TYPE>,
+        to_array: &BucketArray<K, V, L, TYPE>,
+        from_index: usize,
     ) -> (usize, usize) {
-        let current_array_len = current_array.len();
-        let old_array_len = old_array.len();
-        if current_array_len < old_array_len {
-            let ratio = old_array_len / current_array_len;
-            let start_index = index * ratio;
-            debug_assert!(start_index + ratio <= old_array_len);
+        let from_len = from_array.len();
+        let to_len = to_array.len();
+        if from_len < to_len {
+            let ratio = to_len / from_len;
+            let start_index = from_index * ratio;
+            debug_assert!(start_index + ratio <= to_len);
             (start_index, start_index + ratio)
         } else {
-            let ratio = current_array_len / old_array_len;
-            let start_index = index / ratio;
-            debug_assert!(start_index < old_array_len);
+            let ratio = from_len / to_len;
+            let start_index = from_index / ratio;
+            debug_assert!(start_index < to_len);
             (start_index, start_index + 1)
         }
     }
@@ -490,7 +490,6 @@ where
                     index,
                     current_array.len(),
                 );
-                // `try_shrink = writer.len() <= 1 || writer.need_rebuild()`.
                 if try_shrink {
                     if let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
                         if current_array.initiate_sampling(index) {
@@ -543,7 +542,6 @@ where
                     index,
                     current_array.len(),
                 );
-                // `try_shrink = writer.len() <= 1 || writer.need_rebuild()`.
                 if try_shrink && current_array.initiate_sampling(index) {
                     self.try_shrink_or_rebuild(current_array, index, guard);
                 }
@@ -766,15 +764,15 @@ where
             return false;
         }
         if let Some(old_array) = sendable_guard.load(current_array.old_array_ptr(), Acquire) {
-            let range = Self::calculate_respective_range(current_array, old_array, index);
-            for index in range.0..range.1 {
-                let bucket = old_array.bucket(index);
+            let range = Self::from_index_to_range(current_array, old_array, index);
+            for old_index in range.0..range.1 {
+                let bucket = old_array.bucket(old_index);
                 let writer = Writer::lock_async(bucket, sendable_guard).await;
                 if let Some(writer) = writer {
                     self.relocate_bucket_async(
                         current_array,
                         old_array,
-                        index,
+                        old_index,
                         writer,
                         sendable_guard,
                     )
@@ -805,9 +803,9 @@ where
         if self.incremental_rehash_sync::<TRY_LOCK>(current_array, guard) {
             return true;
         }
-        let range = Self::calculate_respective_range(current_array, old_array, index);
-        for index in range.0..range.1 {
-            let bucket = old_array.bucket(index);
+        let range = Self::from_index_to_range(current_array, old_array, index);
+        for old_index in range.0..range.1 {
+            let bucket = old_array.bucket(old_index);
             let writer = if TRY_LOCK {
                 let Ok(writer) = Writer::try_lock(bucket, guard) else {
                     return false;
@@ -820,7 +818,7 @@ where
                 if !self.relocate_bucket_sync::<TRY_LOCK>(
                     current_array,
                     old_array,
-                    index,
+                    old_index,
                     writer,
                     guard,
                 ) {
@@ -845,15 +843,7 @@ where
     ) {
         debug_assert!(!old_writer.killed());
         if old_writer.len() != 0 {
-            let target_index = if old_array.len() > current_array.len() {
-                let ratio = old_array.len() / current_array.len();
-                old_index / ratio
-            } else {
-                let ratio = current_array.len() / old_array.len();
-                debug_assert!(ratio <= BUCKET_LEN);
-                old_index * ratio
-            };
-
+            let target_index = Self::from_index_to_range(old_array, current_array, old_index).0;
             let mut target_buckets: [Option<Writer<K, V, L, TYPE>>; MAX_RESIZE_FACTOR] =
                 Default::default();
             let mut max_index = 0;
@@ -913,11 +903,9 @@ where
                     },
                     sendable_guard.guard(),
                 );
+                debug_assert!(self.validate_ref(current_array, sendable_guard));
 
                 if TYPE == OPTIMISTIC {
-                    // In order for readers that have observed the following erasure to see the above
-                    // insertion, a `Release` fence is needed.
-                    fence(Release);
                     old_writer.mark_removed(&mut entry_ptr, sendable_guard.guard());
                 }
             }
@@ -939,15 +927,7 @@ where
     ) -> bool {
         debug_assert!(!old_writer.killed());
         if old_writer.len() != 0 {
-            let target_index = if old_array.len() > current_array.len() {
-                let ratio = old_array.len() / current_array.len();
-                old_index / ratio
-            } else {
-                let ratio = current_array.len() / old_array.len();
-                debug_assert!(ratio <= BUCKET_LEN);
-                old_index * ratio
-            };
-
+            let target_index = Self::from_index_to_range(old_array, current_array, old_index).0;
             let mut target_buckets: [Option<Writer<K, V, L, TYPE>>; MAX_RESIZE_FACTOR] =
                 Default::default();
             let mut max_index = 0;
@@ -1007,9 +987,6 @@ where
                 );
 
                 if TYPE == OPTIMISTIC {
-                    // In order for readers that have observed the following erasure to see the above
-                    // insertion, a `Release` fence is needed.
-                    fence(Release);
                     old_writer.mark_removed(&mut entry_ptr, guard);
                 }
             }
@@ -1018,67 +995,82 @@ where
         true
     }
 
+    /// Starts incremental rehashing.
+    fn start_incremental_rehash(&self, old_array: &BucketArray<K, V, L, TYPE>) -> Option<usize> {
+        // Assign itself a range of `Bucket` instances to rehash.
+        //
+        // Aside from the range, it increments the implicit reference counting field in
+        // `old_array.rehashing`.
+        let rehashing_metadata = old_array.rehashing_metadata();
+        let mut current = rehashing_metadata.load(Relaxed);
+        loop {
+            if current >= old_array.len() || (current & (BUCKET_LEN - 1)) == BUCKET_LEN - 1 {
+                // Only `BUCKET_LEN` threads are allowed to rehash a `Bucket` at a moment.
+                return None;
+            }
+            match rehashing_metadata.compare_exchange_weak(
+                current,
+                current + BUCKET_LEN + 1,
+                Acquire,
+                Relaxed,
+            ) {
+                Ok(_) => {
+                    current &= !(BUCKET_LEN - 1);
+                    return Some(current);
+                }
+                Err(result) => current = result,
+            }
+        }
+    }
+
+    /// Ends incremental rehashing.
+    fn end_incremental_rehash(
+        &self,
+        current_array: &BucketArray<K, V, L, TYPE>,
+        old_array: &BucketArray<K, V, L, TYPE>,
+        prev: usize,
+        success: bool,
+    ) {
+        let rehashing_metadata = old_array.rehashing_metadata();
+        if success {
+            // Keep the index as it is.
+            let old_array_len = old_array.len();
+            let current = rehashing_metadata.fetch_sub(1, Release) - 1;
+            if (current & (BUCKET_LEN - 1) == 0) && current >= old_array_len {
+                // The last one trying to relocate old entries gets rid of the old array.
+                current_array.drop_old_array();
+            }
+        } else {
+            // On failure, `rehashing` reverts to its previous state.
+            let mut current = rehashing_metadata.load(Relaxed);
+            loop {
+                let new = if current <= prev {
+                    current - 1
+                } else {
+                    let ref_cnt = current & (BUCKET_LEN - 1);
+                    prev | (ref_cnt - 1)
+                };
+                match rehashing_metadata.compare_exchange_weak(current, new, Release, Relaxed) {
+                    Ok(_) => break,
+                    Err(actual) => current = actual,
+                }
+            }
+        }
+    }
+
     /// Relocates a fixed number of buckets from the old array to the current array, asynchronously.
-    ///
-    /// Returns `true` if `old_array` is null.
     async fn incremental_rehash_async<'g>(
         &self,
         current_array: &'g BucketArray<K, V, L, TYPE>,
         sendable_guard: &'g SendableGuard,
-    ) -> bool {
+    ) {
         if let Some(old_array) = sendable_guard.load(current_array.old_array_ptr(), Acquire) {
-            // Assign itself a range of `Bucket` instances to rehash.
-            //
-            // Aside from the range, it increments the implicit reference counting field in
-            // `old_array.rehashing`.
-            let rehashing_metadata = old_array.rehashing_metadata();
-            let mut current = rehashing_metadata.load(Relaxed);
-            loop {
-                if current >= old_array.len() || (current & (BUCKET_LEN - 1)) == BUCKET_LEN - 1 {
-                    // Only `BUCKET_LEN - 1` threads are allowed to rehash a `Bucket` at a moment.
-                    return !current_array.has_old_array();
-                }
-                match rehashing_metadata.compare_exchange_weak(
-                    current,
-                    current + BUCKET_LEN + 1,
-                    Relaxed,
-                    Relaxed,
-                ) {
-                    Ok(_) => {
-                        current &= !(BUCKET_LEN - 1);
-                        break;
-                    }
-                    Err(result) => current = result,
-                }
-            }
+            let Some(current) = self.start_incremental_rehash(old_array) else {
+                return;
+            };
 
-            // The guard ensures dropping one reference in `old_array.rehashing`.
             let mut rehashing_guard = ExitGuard::new((current, false), |(prev, success)| {
-                if success {
-                    // Keep the index as it is.
-                    let current = rehashing_metadata.fetch_sub(1, Relaxed) - 1;
-                    if (current & (BUCKET_LEN - 1) == 0) && current >= old_array.len() {
-                        // The last one trying to relocate old entries gets rid of the old array.
-                        current_array.drop_old_array();
-                    }
-                } else {
-                    // On failure, `rehashing` reverts to its previous state.
-                    let mut current = rehashing_metadata.load(Relaxed);
-                    loop {
-                        let new = if current <= prev {
-                            current - 1
-                        } else {
-                            let ref_cnt = current & (BUCKET_LEN - 1);
-                            prev | (ref_cnt - 1)
-                        };
-                        match rehashing_metadata
-                            .compare_exchange_weak(current, new, Relaxed, Relaxed)
-                        {
-                            Ok(_) => break,
-                            Err(actual) => current = actual,
-                        }
-                    }
-                }
+                self.end_incremental_rehash(current_array, old_array, prev, success);
             });
 
             for index in current..(current + BUCKET_LEN).min(old_array.len()) {
@@ -1094,17 +1086,12 @@ where
                     )
                     .await;
                 }
-                if !self.validate_ref(current_array, sendable_guard) {
-                    // The current array has been updated: must not access `current_array`.
-                    return false;
-                }
+                debug_assert!(self.validate_ref(current_array, sendable_guard));
                 debug_assert!(current_array.has_old_array());
             }
 
-            // Successfully rehashed all the assigned buckets.
             rehashing_guard.1 = true;
         }
-        !current_array.has_old_array()
     }
 
     /// Relocates a fixed number of buckets from the old array to the current array, synchronously.
@@ -1116,58 +1103,12 @@ where
         guard: &'g Guard,
     ) -> bool {
         if let Some(old_array) = current_array.old_array(guard).as_ref() {
-            // Assign itself a range of `Bucket` instances to rehash.
-            //
-            // Aside from the range, it increments the implicit reference counting field in
-            // `old_array.rehashing`.
-            let rehashing_metadata = old_array.rehashing_metadata();
-            let mut current = rehashing_metadata.load(Relaxed);
-            loop {
-                if current >= old_array.len() || (current & (BUCKET_LEN - 1)) == BUCKET_LEN - 1 {
-                    // Only `BUCKET_LEN - 1` threads are allowed to rehash a `Bucket` at a moment.
-                    return !current_array.has_old_array();
-                }
-                match rehashing_metadata.compare_exchange_weak(
-                    current,
-                    current + BUCKET_LEN + 1,
-                    Relaxed,
-                    Relaxed,
-                ) {
-                    Ok(_) => {
-                        current &= !(BUCKET_LEN - 1);
-                        break;
-                    }
-                    Err(result) => current = result,
-                }
-            }
+            let Some(current) = self.start_incremental_rehash(old_array) else {
+                return !current_array.has_old_array();
+            };
 
-            // The guard ensures dropping one reference in `old_array.rehashing`.
             let mut rehashing_guard = ExitGuard::new((current, false), |(prev, success)| {
-                if success {
-                    // Keep the index as it is.
-                    let current = rehashing_metadata.fetch_sub(1, Relaxed) - 1;
-                    if (current & (BUCKET_LEN - 1) == 0) && current >= old_array.len() {
-                        // The last one trying to relocate old entries gets rid of the old array.
-                        current_array.drop_old_array();
-                    }
-                } else {
-                    // On failure, `rehashing` reverts to its previous state.
-                    let mut current = rehashing_metadata.load(Relaxed);
-                    loop {
-                        let new = if current <= prev {
-                            current - 1
-                        } else {
-                            let ref_cnt = current & (BUCKET_LEN - 1);
-                            prev | (ref_cnt - 1)
-                        };
-                        match rehashing_metadata
-                            .compare_exchange_weak(current, new, Relaxed, Relaxed)
-                        {
-                            Ok(_) => break,
-                            Err(actual) => current = actual,
-                        }
-                    }
-                }
+                self.end_incremental_rehash(current_array, old_array, prev, success);
             });
 
             for index in current..(current + BUCKET_LEN).min(old_array.len()) {
@@ -1193,7 +1134,6 @@ where
                 }
             }
 
-            // Successfully rehashed all the assigned buckets.
             rehashing_guard.1 = true;
         }
         !current_array.has_old_array()
@@ -1453,46 +1393,6 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
     }
 
     /// Returns a [`LockedEntry`] owning the next entry.
-    pub(super) fn next_sync<H: BuildHasher, T: HashTable<K, V, H, L, TYPE>>(
-        mut self,
-        hash_table: &'h T,
-    ) -> Option<Self> {
-        if self
-            .entry_ptr
-            .move_to_next(&self.writer, hash_table.prolonged_guard_ref(&Guard::new()))
-        {
-            return Some(self);
-        }
-
-        let guard = Guard::new();
-        let next_index = self.index + 1;
-        let len = self.len;
-        drop(self);
-
-        // TODO: removed == true / removed something.
-
-        let mut next_entry = None;
-        hash_table.for_each_writer_sync_with(
-            next_index,
-            len,
-            &guard,
-            |writer, data_block, index, len| {
-                let mut entry_ptr = EntryPtr::new(&guard);
-                if entry_ptr.move_to_next(&writer, &guard) {
-                    let locked_entry =
-                        LockedEntry::new(writer, data_block, entry_ptr, index, len, &guard)
-                            .prolong_lifetime(hash_table);
-                    next_entry = Some(locked_entry);
-                    return (true, false);
-                }
-                (false, false)
-            },
-        );
-
-        next_entry
-    }
-
-    /// Returns a [`LockedEntry`] owning the next entry.
     pub(super) async fn next_async<H: BuildHasher, T: HashTable<K, V, H, L, TYPE>>(
         mut self,
         hash_table: &'h T,
@@ -1531,6 +1431,46 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
                 },
             )
             .await;
+
+        next_entry
+    }
+
+    /// Returns a [`LockedEntry`] owning the next entry.
+    pub(super) fn next_sync<H: BuildHasher, T: HashTable<K, V, H, L, TYPE>>(
+        mut self,
+        hash_table: &'h T,
+    ) -> Option<Self> {
+        if self
+            .entry_ptr
+            .move_to_next(&self.writer, hash_table.prolonged_guard_ref(&Guard::new()))
+        {
+            return Some(self);
+        }
+
+        let guard = Guard::new();
+        let next_index = self.index + 1;
+        let len = self.len;
+        drop(self);
+
+        // TODO: removed == true / removed something.
+
+        let mut next_entry = None;
+        hash_table.for_each_writer_sync_with(
+            next_index,
+            len,
+            &guard,
+            |writer, data_block, index, len| {
+                let mut entry_ptr = EntryPtr::new(&guard);
+                if entry_ptr.move_to_next(&writer, &guard) {
+                    let locked_entry =
+                        LockedEntry::new(writer, data_block, entry_ptr, index, len, &guard)
+                            .prolong_lifetime(hash_table);
+                    next_entry = Some(locked_entry);
+                    return (true, false);
+                }
+                (false, false)
+            },
+        );
 
         next_entry
     }
