@@ -507,10 +507,10 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             }
             self.metadata
                 .occupied_bitmap
-                .store(occupied_bitmap, Relaxed);
+                .store(occupied_bitmap, Release);
             self.metadata
                 .removed_bitmap_or_lru_tail
-                .store(removed_bitmap, Relaxed);
+                .store(removed_bitmap, Release);
         }
     }
 
@@ -735,11 +735,16 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             metadata.occupied_bitmap.load(Relaxed)
         };
 
-        // Expect that the loop is vectorized by the compiler.
         let mut matching: u32 = 0;
-        for i in 0..LEN {
-            if Self::partial_hash(&metadata.partial_hash_array, i) == partial_hash {
-                matching |= 1_u32 << i;
+        if cfg!(miri) && TYPE == OPTIMISTIC {
+            // `Miri` does not allow concurrent access to `UnsafeCell<[u8]>`.
+            matching = bitmap;
+        } else {
+            // Expect that the loop is vectorized by the compiler.
+            for i in 0..LEN {
+                if Self::partial_hash(&metadata.partial_hash_array, i) == partial_hash {
+                    matching |= 1_u32 << i;
+                }
             }
         }
         bitmap &= matching;

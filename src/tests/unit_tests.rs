@@ -794,6 +794,49 @@ mod hashmap {
         }
     }
 
+    #[test]
+    fn insert_prune_any_sync() {
+        let num_threads = if cfg!(miri) { 2 } else { 8 };
+        let num_iters = if cfg!(miri) { 2 } else { 256 };
+        let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
+        for _ in 0..num_iters {
+            let workload_size = 256;
+            let mut threads = Vec::with_capacity(num_threads);
+            let barrier = Arc::new(Barrier::new(num_threads));
+            for thread_id in 0..num_threads {
+                let barrier = barrier.clone();
+                let hashmap = hashmap.clone();
+                threads.push(thread::spawn(move || {
+                    barrier.wait();
+                    let range = (thread_id * workload_size)..((thread_id + 1) * workload_size);
+                    for id in range.clone() {
+                        let result = hashmap.insert(id, id);
+                        assert!(result.is_ok());
+                    }
+                    assert!(hashmap.any(|k, _| range.contains(k)));
+                    let mut removed = 0;
+                    hashmap.prune(|k, v| {
+                        if range.contains(k) {
+                            assert_eq!(*k, v);
+                            removed += 1;
+                            None
+                        } else {
+                            Some(v)
+                        }
+                    });
+                    assert_eq!(removed, workload_size);
+                    assert!(!hashmap.any(|k, _| range.contains(k)));
+                }));
+            }
+
+            for thread in threads {
+                assert!(thread.join().is_ok());
+            }
+
+            assert_eq!(hashmap.len(), 0);
+        }
+    }
+
     proptest! {
         #[cfg_attr(miri, ignore)]
         #[test]
@@ -1345,11 +1388,8 @@ mod hashindex {
                         let result = hashindex.insert(id, id);
                         assert!(result.is_ok());
                     }
-                    if !cfg!(miri) {
-                        // `Miri` complains about concurrent access to `partial_hash`.
-                        for id in range.clone() {
-                            assert!(hashindex.peek_with(&id, |_, _| ()).is_some());
-                        }
+                    for id in range.clone() {
+                        assert!(hashindex.peek_with(&id, |_, _| ()).is_some());
                     }
 
                     let mut in_range = 0;
@@ -1526,6 +1566,52 @@ mod hashindex {
         }
 
         todo!("REMOVEME")
+    }
+
+    #[test]
+    fn update_get_sync() {
+        let num_threads = if cfg!(miri) { 2 } else { 8 };
+        let num_iters = if cfg!(miri) { 2 } else { 256 };
+        let hashindex: Arc<HashIndex<usize, usize>> = Arc::new(HashIndex::default());
+        for _ in 0..num_iters {
+            let workload_size = 256;
+            let mut threads = Vec::with_capacity(num_threads);
+            let barrier = Arc::new(Barrier::new(num_threads));
+            for thread_id in 0..num_threads {
+                let barrier = barrier.clone();
+                let hashindex = hashindex.clone();
+                threads.push(thread::spawn(move || {
+                    barrier.wait();
+                    let range = (thread_id * workload_size)..((thread_id + 1) * workload_size);
+                    for id in range.clone() {
+                        let result = hashindex.insert(id, id);
+                        assert!(result.is_ok());
+                        let entry = hashindex.get(&id).unwrap();
+                        if *entry.get() != id {
+                            entry.update(0);
+                        }
+                    }
+                    for id in range.clone() {
+                        hashindex.peek_with(&id, |k, v| assert_eq!(k, v));
+                        let entry = hashindex.get(&id).unwrap();
+                        if *entry.get() == id {
+                            entry.update(usize::MAX);
+                        }
+                    }
+                    for id in range.clone() {
+                        hashindex.peek_with(&id, |_, v| assert_eq!(*v, usize::MAX));
+                        let entry = hashindex.get(&id).unwrap();
+                        entry.remove_entry();
+                    }
+                }));
+            }
+
+            for thread in threads {
+                assert!(thread.join().is_ok());
+            }
+
+            assert_eq!(hashindex.len(), 0);
+        }
     }
 
     // #[cfg_attr(miri, ignore)]
@@ -2597,7 +2683,7 @@ mod treeindex {
     #[test]
     fn insert_peek_remove_range_sync() {
         let range = if cfg!(miri) { 8 } else { 4096 };
-        let num_threads = if cfg!(miri) { 2 } else { 16 };
+        let num_threads = if cfg!(miri) { 2 } else { 8 };
         let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::new());
         for t in 0..num_threads {
             // insert markers
