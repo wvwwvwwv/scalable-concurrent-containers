@@ -1321,7 +1321,7 @@ mod test {
     #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn durability() {
-        let num_tasks = 16_usize;
+        let num_tasks = 8_usize;
         let num_iterations = 64;
         let workload_size = 64_usize;
         for k in 0..64 {

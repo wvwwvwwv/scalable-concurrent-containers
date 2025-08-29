@@ -281,7 +281,6 @@ where
             if current_array_ptr == new_current_array_ptr {
                 break;
             }
-
             current_array_ptr = new_current_array_ptr;
         }
         None
@@ -1171,10 +1170,8 @@ where
             return;
         }
 
-        if !cfg!(miri)
-            && (current_array.num_entries()
-                > self.minimum_capacity().load(Relaxed).next_power_of_two()
-                || TYPE == OPTIMISTIC)
+        if current_array.num_entries() > self.minimum_capacity().load(Relaxed).next_power_of_two()
+            || TYPE == OPTIMISTIC
         {
             let sample_size = current_array.sample_size();
             let shrink_threshold = sample_size * BUCKET_LEN / 16;
@@ -1212,120 +1209,121 @@ where
             // Another thread is currently allocating a new bucket array.
             return;
         }
+        let Some(current_array) = current_array_ptr.as_ref() else {
+            // The hash table is empty.
+            return;
+        };
+        if current_array.has_old_array() {
+            // The hash table cannot be resized with an old array attached to it.
+            return;
+        }
 
-        if let Some(current_array) = current_array_ptr.as_ref() {
-            if current_array.has_old_array() {
-                // The hash table cannot be resized with an old array attached to it.
+        // The resizing policies are as follows.
+        //  - `The estimated load factor >= 7/8`, then the hash table grows up to `32x`.
+        //  - `The estimated load factor <= 1/16`, then the hash table shrinks to fit.
+        let minimum_capacity = self.minimum_capacity().load(Relaxed);
+        let capacity = current_array.num_entries();
+        let sample_size = current_array.full_sample_size();
+        let estimated_num_entries = Self::sample(current_array, sampling_index, sample_size);
+        let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
+            if capacity == self.maximum_capacity() {
+                // Do not resize if the capacity cannot be increased.
+                capacity
+            } else {
+                let mut new_capacity = capacity;
+                while new_capacity <= (estimated_num_entries / 8) * 15 {
+                    // Double `new_capacity` until the expected load factor is below 0.5.
+                    if new_capacity == self.maximum_capacity() {
+                        break;
+                    }
+                    if new_capacity / capacity == MAX_RESIZE_FACTOR {
+                        break;
+                    }
+                    new_capacity *= 2;
+                }
+                new_capacity
+            }
+        } else if estimated_num_entries <= capacity / 16 {
+            // Shrink to fit.
+            estimated_num_entries
+                .max(minimum_capacity)
+                .max(BucketArray::<K, V, L, TYPE>::minimum_capacity())
+                .next_power_of_two()
+        } else {
+            capacity
+        };
+
+        let try_resize = new_capacity != capacity;
+        let try_drop_table = estimated_num_entries == 0 && minimum_capacity == 0;
+        let try_rebuild = TYPE == OPTIMISTIC
+            && !try_resize
+            && Self::check_rebuild(current_array, sampling_index, sample_size);
+
+        if !try_resize && !try_drop_table && !try_rebuild {
+            // Nothing to do.
+            return;
+        }
+
+        // Mark that the thread may allocate a new array to prevent multiple threads from
+        // allocating bucket arrays at the same time.
+        if !self.bucket_array().update_tag_if(
+            Tag::First,
+            |ptr| ptr == current_array_ptr,
+            Relaxed,
+            Relaxed,
+        ) {
+            // The bucket array is being replaced with a new one.
+            return;
+        }
+
+        if try_drop_table {
+            // Try to drop the hash table with all the buckets locked.
+            let mut writer_guard = ExitGuard::new((0, false), |(len, success): (usize, bool)| {
+                for i in 0..len {
+                    let writer = Writer::from_bucket(current_array.bucket(i));
+                    if success {
+                        writer.kill();
+                    }
+                }
+            });
+
+            if !(0..current_array.len()).any(|i| {
+                if let Ok(Some(writer)) = Writer::try_lock(current_array.bucket(i)) {
+                    if writer.len() == 0 {
+                        // The bucket will be unlocked later.
+                        writer_guard.0 = i + 1;
+                        std::mem::forget(writer);
+                        return false;
+                    }
+                }
+                true
+            }) {
+                // All the buckets are empty and locked.
+                writer_guard.1 = true;
+                self.bucket_array().swap((None, Tag::None), Release);
                 return;
             }
+        }
 
-            // The resizing policies are as follows.
-            //  - `The estimated load factor >= 7/8`, then the hash table grows up to `32x`.
-            //  - `The estimated load factor <= 1/16`, then the hash table shrinks to fit.
-            let minimum_capacity = self.minimum_capacity().load(Relaxed);
-            let capacity = current_array.num_entries();
-            let sample_size = current_array.full_sample_size();
-            let estimated_num_entries = Self::sample(current_array, sampling_index, sample_size);
-            let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
-                if capacity == self.maximum_capacity() {
-                    // Do not resize if the capacity cannot be increased.
-                    capacity
-                } else {
-                    let mut new_capacity = capacity;
-                    while new_capacity <= (estimated_num_entries / 8) * 15 {
-                        // Double `new_capacity` until the expected load factor is below 0.5.
-                        if new_capacity == self.maximum_capacity() {
-                            break;
-                        }
-                        if new_capacity / capacity == MAX_RESIZE_FACTOR {
-                            break;
-                        }
-                        new_capacity *= 2;
-                    }
-                    new_capacity
-                }
-            } else if estimated_num_entries <= capacity / 16 {
-                // Shrink to fit.
-                estimated_num_entries
-                    .max(minimum_capacity)
-                    .max(BucketArray::<K, V, L, TYPE>::minimum_capacity())
-                    .next_power_of_two()
+        let allocated_array: Option<Shared<BucketArray<K, V, L, TYPE>>> = None;
+        let mut mutex_guard = ExitGuard::new(allocated_array, |allocated_array| {
+            if let Some(allocated_array) = allocated_array {
+                // A new array was allocated.
+                self.bucket_array()
+                    .swap((Some(allocated_array), Tag::None), Release);
             } else {
-                capacity
-            };
-
-            let try_resize = new_capacity != capacity;
-            let try_drop_table = estimated_num_entries == 0 && minimum_capacity == 0;
-            let try_rebuild = TYPE == OPTIMISTIC
-                && !try_resize
-                && Self::check_rebuild(current_array, sampling_index, sample_size);
-
-            if try_resize || try_drop_table || try_rebuild {
-                // Mark that the thread may allocate a new array to prevent multiple threads from
-                // allocating bucket arrays at the same time.
-                if !self.bucket_array().update_tag_if(
-                    Tag::First,
-                    |ptr| ptr == current_array_ptr,
-                    Relaxed,
-                    Relaxed,
-                ) {
-                    // The bucket array is being replaced with a new one.
-                    return;
-                }
-
-                if try_drop_table {
-                    // Try to drop the hash table with all the buckets read-locked if empty.
-                    let mut writer_guard = ExitGuard::new(
-                        (current_array.len(), true),
-                        |(num_locked_buckets, success): (usize, bool)| {
-                            for i in 0..num_locked_buckets {
-                                let writer = Writer::from_bucket(current_array.bucket(i));
-                                if success {
-                                    writer.kill();
-                                }
-                            }
-                        },
-                    );
-
-                    if !(0..current_array.len()).any(|i| {
-                        if let Ok(Some(writer)) = Writer::try_lock(current_array.bucket(i)) {
-                            if writer.len() == 0 {
-                                // The bucket will be unlocked later.
-                                std::mem::forget(writer);
-                                return false;
-                            }
-                        }
-                        writer_guard.0 = i;
-                        writer_guard.1 = false;
-                        true
-                    }) {
-                        // All the buckets are empty and locked.
-                        self.bucket_array().swap((None, Tag::None), Relaxed);
-                        return;
-                    }
-                }
-
-                let allocated_array: Option<Shared<BucketArray<K, V, L, TYPE>>> = None;
-                let mut mutex_guard = ExitGuard::new(allocated_array, |allocated_array| {
-                    if let Some(allocated_array) = allocated_array {
-                        // A new array was allocated.
-                        self.bucket_array()
-                            .swap((Some(allocated_array), Tag::None), Release);
-                    } else {
-                        // Release the lock.
-                        self.bucket_array()
-                            .update_tag_if(Tag::None, |_| true, Relaxed, Relaxed);
-                    }
-                });
-                if try_resize || try_rebuild {
-                    mutex_guard.replace(unsafe {
-                        Shared::new_unchecked(BucketArray::<K, V, L, TYPE>::new(
-                            new_capacity,
-                            self.bucket_array().clone(Relaxed, guard),
-                        ))
-                    });
-                }
+                // Release the lock.
+                self.bucket_array()
+                    .update_tag_if(Tag::None, |_| true, Release, Relaxed);
             }
+        });
+        if try_resize || try_rebuild {
+            mutex_guard.replace(unsafe {
+                Shared::new_unchecked(BucketArray::<K, V, L, TYPE>::new(
+                    new_capacity,
+                    self.bucket_array().clone(Relaxed, guard),
+                ))
+            });
         }
     }
 
