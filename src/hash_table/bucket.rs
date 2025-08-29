@@ -505,6 +505,11 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
                 Self::drop_entry(data_block, index as usize);
                 index = removed_bitmap.trailing_zeros();
             }
+
+            // The store order is important.
+            //
+            // Peek: `removed_bitmap` -> `acquire` -> `occupied_bitmap`.
+            // Drop: `occupied_bitmap` -> `release` -> `removed_bitmap`.
             self.metadata
                 .occupied_bitmap
                 .store(occupied_bitmap, Release);
@@ -729,8 +734,9 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         Q: Equivalent<K> + ?Sized,
     {
         let mut bitmap = if TYPE == OPTIMISTIC {
-            metadata.occupied_bitmap.load(Acquire)
-                & (!metadata.removed_bitmap_or_lru_tail.load(Acquire))
+            // Load order: `removed_bitmap` -> `acquire` -> `occupied_bitmap`.
+            (!metadata.removed_bitmap_or_lru_tail.load(Acquire))
+                & metadata.occupied_bitmap.load(Acquire)
         } else {
             metadata.occupied_bitmap.load(Relaxed)
         };
@@ -928,8 +934,9 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
 
         if current_index < LEN {
             let bitmap = if TYPE == OPTIMISTIC {
-                (metadata.occupied_bitmap.load(Acquire)
-                    & (!metadata.removed_bitmap_or_lru_tail.load(Acquire)))
+                // Load order: `removed_bitmap` -> `acquire` -> `occupied_bitmap`.
+                (!metadata.removed_bitmap_or_lru_tail.load(Acquire)
+                    & metadata.occupied_bitmap.load(Acquire))
                     & (!((1_u32 << current_index) - 1))
             } else {
                 metadata.occupied_bitmap.load(Relaxed) & (!((1_u32 << current_index) - 1))

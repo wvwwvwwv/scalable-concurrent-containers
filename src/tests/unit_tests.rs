@@ -1539,20 +1539,18 @@ mod hashindex {
                         let result = hashindex.insert_async(id, id).await;
                         assert!(result.is_ok());
                         let entry = hashindex.get_async(&id).await.unwrap();
-                        if *entry.get() != id {
-                            entry.update(0);
-                        }
+                        assert_eq!(*entry.get(), id);
                     }
                     for id in range.clone() {
                         hashindex.peek_with(&id, |k, v| assert_eq!(k, v));
-                        let entry = hashindex.get_async(&id).await.unwrap();
-                        if *entry.get() == id {
-                            entry.update(usize::MAX);
-                        }
+                        let entry = hashindex.get_async(&id).await.unwrap(); // HERE.
+                        assert_eq!(*entry.get(), id);
+                        entry.update(usize::MAX);
                     }
                     for id in range.clone() {
                         hashindex.peek_with(&id, |_, v| assert_eq!(*v, usize::MAX));
                         let entry = hashindex.get_async(&id).await.unwrap();
+                        assert_eq!(*entry.get(), usize::MAX);
                         entry.remove_entry();
                     }
                 }));
@@ -1564,8 +1562,6 @@ mod hashindex {
 
             assert_eq!(hashindex.len(), 0);
         }
-
-        todo!("REMOVEME")
     }
 
     #[test]
@@ -1587,20 +1583,18 @@ mod hashindex {
                         let result = hashindex.insert(id, id);
                         assert!(result.is_ok());
                         let entry = hashindex.get(&id).unwrap();
-                        if *entry.get() != id {
-                            entry.update(0);
-                        }
+                        assert_eq!(*entry.get(), id);
                     }
                     for id in range.clone() {
                         hashindex.peek_with(&id, |k, v| assert_eq!(k, v));
                         let entry = hashindex.get(&id).unwrap();
-                        if *entry.get() == id {
-                            entry.update(usize::MAX);
-                        }
+                        assert_eq!(*entry.get(), id);
+                        entry.update(usize::MAX);
                     }
                     for id in range.clone() {
                         hashindex.peek_with(&id, |_, v| assert_eq!(*v, usize::MAX));
                         let entry = hashindex.get(&id).unwrap();
+                        assert_eq!(*entry.get(), usize::MAX);
                         entry.remove_entry();
                     }
                 }));
