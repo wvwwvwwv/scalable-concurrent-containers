@@ -31,31 +31,6 @@ pub struct Bucket<K, V, L: LruList, const TYPE: char> {
     lru_list: L,
 }
 
-/// Doubly-linked-list interfaces to efficiently manage least-recently-used entries.
-pub trait LruList: 'static + Default {
-    /// Evicts an entry.
-    #[inline]
-    fn evict(&self, _tail: u32) -> Option<(u8, u32)> {
-        None
-    }
-
-    /// Removes an entry.
-    #[inline]
-    fn remove(&self, _tail: u32, _entry: u8) -> Option<u32> {
-        None
-    }
-
-    /// Promotes the entry.
-    #[inline]
-    fn promote(&self, _tail: u32, _entry: u8) -> Option<u32> {
-        None
-    }
-}
-
-/// [`DoublyLinkedList`] is an array of `(AtomicU8, AtomicU8)` implementing [`LruList`].
-#[derive(Debug, Default)]
-pub struct DoublyLinkedList([UnsafeCell<(u8, u8)>; BUCKET_LEN]);
-
 /// The type of [`Bucket`] only allows sequential access to it.
 pub const SEQUENTIAL: char = 'S';
 
@@ -83,14 +58,39 @@ pub struct Reader<'g, K, V, L: LruList, const TYPE: char> {
 
 /// [`EntryPtr`] points to an entry slot in a [`Bucket`].
 pub struct EntryPtr<'g, K, V, const TYPE: char> {
-    /// Points to a [`LinkedBucket`].
+    /// Pointer to a [`LinkedBucket`].
     current_link_ptr: Ptr<'g, LinkedBucket<K, V>>,
     /// Index of the entry.
     current_index: usize,
 }
 
+/// Doubly-linked-list interfaces to efficiently manage least-recently-used entries.
+pub trait LruList: 'static + Default {
+    /// Evicts an entry.
+    #[inline]
+    fn evict(&self, _tail: u32) -> Option<(u8, u32)> {
+        None
+    }
+
+    /// Removes an entry.
+    #[inline]
+    fn remove(&self, _tail: u32, _entry: u8) -> Option<u32> {
+        None
+    }
+
+    /// Promotes the entry.
+    #[inline]
+    fn promote(&self, _tail: u32, _entry: u8) -> Option<u32> {
+        None
+    }
+}
+
+/// [`DoublyLinkedList`] is an array of `(u8, u8)` implementing [`LruList`].
+#[derive(Debug, Default)]
+pub struct DoublyLinkedList([UnsafeCell<(u8, u8)>; BUCKET_LEN]);
+
 /// [`Metadata`] is a collection of metadata fields of [`Bucket`] and [`LinkedBucket`].
-pub(crate) struct Metadata<K, V, const LEN: usize> {
+struct Metadata<K, V, const LEN: usize> {
     /// Linked list of entries.
     link: AtomicShared<LinkedBucket<K, V>>,
     /// Occupied slot bitmap.
@@ -102,8 +102,11 @@ pub(crate) struct Metadata<K, V, const LEN: usize> {
     partial_hash_array: [UnsafeCell<u8>; LEN],
 }
 
+/// The size of the linked data block.
+const LINKED_BUCKET_LEN: usize = BUCKET_LEN / 4;
+
 /// [`LinkedBucket`] is a smaller [`Bucket`] that is attached to a [`Bucket`] as a linked list.
-pub(crate) struct LinkedBucket<K, V> {
+struct LinkedBucket<K, V> {
     /// [`LinkedBucket`] metadata.
     metadata: Metadata<K, V, LINKED_BUCKET_LEN>,
     /// Own data block.
@@ -111,9 +114,6 @@ pub(crate) struct LinkedBucket<K, V> {
     /// Previous [`LinkedBucket`].
     prev_link: AtomicPtr<LinkedBucket<K, V>>,
 }
-
-/// The size of the linked data block.
-const LINKED_BUCKET_LEN: usize = BUCKET_LEN / 4;
 
 impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     /// Returns the number of occupied and reachable slots in the [`Bucket`].
@@ -124,9 +124,8 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
 
     /// Returns `true` if the [`Bucket`] needs to be rebuilt.
     ///
-    /// If `TYPE == OPTIMISTIC`, removed entries are not dropped, still occupying the slots,
-    /// therefore rebuilding the [`Bucket`] might be needed to keep the [`Bucket`] as small as
-    /// possible.
+    /// If `TYPE == OPTIMISTIC`, removed entries are rarely dropped, therefore rebuilding the
+    /// [`Bucket`] might be needed to keep the [`Bucket`] as small as possible.
     #[inline]
     pub(crate) fn need_rebuild(&self) -> bool {
         TYPE == OPTIMISTIC
@@ -508,7 +507,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
                 index = removed_bitmap.trailing_zeros();
             }
 
-            // The store order is important.
+            // The store ordering is important.
             //
             // Peek: `removed_bitmap` -> `acquire` -> `occupied_bitmap`.
             // Drop: `occupied_bitmap` -> `release` -> `removed_bitmap`.
@@ -735,7 +734,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         Q: Equivalent<K> + ?Sized,
     {
         let mut bitmap = if TYPE == OPTIMISTIC {
-            // Load order: `removed_bitmap` -> `acquire` -> `occupied_bitmap`.
+            // Load ordering: `removed_bitmap` -> `acquire` -> `occupied_bitmap`.
             (!metadata.removed_bitmap_or_lru_tail.load(Acquire))
                 & metadata.occupied_bitmap.load(Acquire)
         } else {
@@ -744,7 +743,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
 
         let mut matching: u32 = 0;
         if cfg!(miri) && TYPE == OPTIMISTIC {
-            // `Miri` does not allow concurrent access to `UnsafeCell<u8>`.
+            // `Miri` does not allow concurrent read/write access to `UnsafeCell<u8>`.
             matching = bitmap;
         } else {
             // Expect that the loop is vectorized by the compiler.
@@ -771,9 +770,162 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
 }
 
 unsafe impl<K: Eq + Send, V: Send, L: LruList, const TYPE: char> Send for Bucket<K, V, L, TYPE> {}
-unsafe impl<K: Eq + Send + Sync, V: Sync, L: LruList, const TYPE: char> Sync
+unsafe impl<K: Eq + Send + Sync, V: Send + Sync, L: LruList, const TYPE: char> Sync
     for Bucket<K, V, L, TYPE>
 {
+}
+
+impl<K, V, const LEN: usize> Index<usize> for DataBlock<K, V, LEN> {
+    type Output = UnsafeCell<MaybeUninit<(K, V)>>;
+
+    #[inline]
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.0[index]
+    }
+}
+
+unsafe impl<K: Send, V: Send, const LEN: usize> Send for DataBlock<K, V, LEN> {}
+unsafe impl<K: Send + Sync, V: Send + Sync, const LEN: usize> Sync for DataBlock<K, V, LEN> {}
+
+impl<'g, K, V, L: LruList, const TYPE: char> Writer<'g, K, V, L, TYPE> {
+    /// Locks the [`Bucket`] asynchronously.
+    #[inline]
+    pub(crate) async fn lock_async(
+        bucket: &'g Bucket<K, V, L, TYPE>,
+        sendable_guard: &'g SendableGuard,
+    ) -> Option<Writer<'g, K, V, L, TYPE>> {
+        // `sendable_guard` should be reset when there is a chance that the task may suspend, since
+        // `Guard` cannot survive across awaits.
+        if bucket
+            .rw_lock
+            .lock_async_with(|| sendable_guard.reset())
+            .await
+        {
+            // The `bucket` was not killed, and will not be killed until the `Writer` is dropped.
+            // This guarantees that the `BucketArray` will survive as long as the `Writer` is alive.
+            Some(Writer { bucket })
+        } else {
+            None
+        }
+    }
+
+    /// Locks the [`Bucket`] synchronously.
+    #[inline]
+    pub(crate) fn lock_sync(
+        bucket: &'g Bucket<K, V, L, TYPE>,
+    ) -> Option<Writer<'g, K, V, L, TYPE>> {
+        if bucket.rw_lock.lock_sync() {
+            Some(Writer { bucket })
+        } else {
+            None
+        }
+    }
+
+    /// Tries to lock the [`Bucket`].
+    #[inline]
+    pub(crate) fn try_lock(
+        bucket: &'g Bucket<K, V, L, TYPE>,
+    ) -> Result<Option<Writer<'g, K, V, L, TYPE>>, ()> {
+        if bucket.rw_lock.try_lock() {
+            Ok(Some(Writer { bucket }))
+        } else if bucket.rw_lock.is_poisoned(Relaxed) {
+            Ok(None)
+        } else {
+            Err(())
+        }
+    }
+
+    /// Creates a new [`Writer`] from a [`Bucket`].
+    #[inline]
+    pub(crate) fn from_bucket(bucket: &'g Bucket<K, V, L, TYPE>) -> Writer<'g, K, V, L, TYPE> {
+        Writer { bucket }
+    }
+
+    /// Marks the [`Bucket`] killed by poisoning the lock.
+    #[inline]
+    pub(super) fn kill(self) {
+        debug_assert_eq!(self.len(), 0);
+        debug_assert!(self.rw_lock.is_locked(Relaxed));
+        debug_assert!(self.metadata.link.is_null(Relaxed));
+        debug_assert!(
+            TYPE != OPTIMISTIC
+                || self.metadata.removed_bitmap_or_lru_tail.load(Relaxed)
+                    == self.metadata.occupied_bitmap.load(Relaxed)
+        );
+
+        let poisoned = self.rw_lock.poison_lock();
+        debug_assert!(poisoned);
+        forget(self);
+    }
+}
+
+impl<K, V, L: LruList, const TYPE: char> Deref for Writer<'_, K, V, L, TYPE> {
+    type Target = Bucket<K, V, L, TYPE>;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.bucket
+    }
+}
+
+impl<K, V, L: LruList, const TYPE: char> Drop for Writer<'_, K, V, L, TYPE> {
+    #[inline]
+    fn drop(&mut self) {
+        self.bucket.rw_lock.release_lock();
+    }
+}
+
+impl<'g, K, V, L: LruList, const TYPE: char> Reader<'g, K, V, L, TYPE> {
+    /// Locks the [`Bucket`] asynchronously.
+    #[inline]
+    pub(crate) async fn lock_async(
+        bucket: &'g Bucket<K, V, L, TYPE>,
+        sendable_guard: &'g SendableGuard,
+    ) -> Option<Reader<'g, K, V, L, TYPE>> {
+        // `sendable_guard` should be reset when there is a chance that the task may suspend, since
+        // `Guard` cannot survive across awaits.
+        if bucket
+            .rw_lock
+            .share_async_with(|| sendable_guard.reset())
+            .await
+        {
+            // The `bucket` was not killed, and will not be killed until the `Reader` is dropped.
+            // This guarantees that the `BucketArray` will survive as long as the `Reader` is alive.
+            Some(Reader { bucket })
+        } else {
+            None
+        }
+    }
+
+    /// Locks the [`Bucket`] synchronously.
+    ///
+    /// Returns `None` if the [`Bucket`] has been killed or empty.
+    #[inline]
+    pub(crate) fn lock_sync(
+        bucket: &'g Bucket<K, V, L, TYPE>,
+    ) -> Option<Reader<'g, K, V, L, TYPE>> {
+        if bucket.rw_lock.share_sync() {
+            Some(Reader { bucket })
+        } else {
+            None
+        }
+    }
+}
+
+impl<'g, K, V, L: LruList, const TYPE: char> Deref for Reader<'g, K, V, L, TYPE> {
+    type Target = &'g Bucket<K, V, L, TYPE>;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.bucket
+    }
+}
+
+impl<K, V, L: LruList, const TYPE: char> Drop for Reader<'_, K, V, L, TYPE> {
+    #[inline]
+    fn drop(&mut self) {
+        self.bucket.rw_lock.release_share();
+    }
 }
 
 impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
@@ -985,159 +1137,6 @@ impl<K, V, const TYPE: char> Debug for EntryPtr<'_, K, V, TYPE> {
 
 unsafe impl<K: Send, V: Send, const TYPE: char> Send for EntryPtr<'_, K, V, TYPE> {}
 unsafe impl<K: Send + Sync, V: Send + Sync, const TYPE: char> Sync for EntryPtr<'_, K, V, TYPE> {}
-
-impl<K, V, const LEN: usize> Index<usize> for DataBlock<K, V, LEN> {
-    type Output = UnsafeCell<MaybeUninit<(K, V)>>;
-
-    #[inline]
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.0[index]
-    }
-}
-
-unsafe impl<K: Send, V: Send, const LEN: usize> Send for DataBlock<K, V, LEN> {}
-unsafe impl<K: Send + Sync, V: Send + Sync, const LEN: usize> Sync for DataBlock<K, V, LEN> {}
-
-impl<'g, K, V, L: LruList, const TYPE: char> Writer<'g, K, V, L, TYPE> {
-    /// Locks the [`Bucket`] asynchronously.
-    #[inline]
-    pub(crate) async fn lock_async(
-        bucket: &'g Bucket<K, V, L, TYPE>,
-        sendable_guard: &'g SendableGuard,
-    ) -> Option<Writer<'g, K, V, L, TYPE>> {
-        // `sendable_guard` should be reset when there is a chance that the task may suspend, since
-        // `Guard` cannot survive across awaits.
-        if bucket
-            .rw_lock
-            .lock_async_with(|| sendable_guard.reset())
-            .await
-        {
-            // The `bucket` was not killed, and will not be killed until the `Reader` is dropped.
-            // This guarantees that the `BucketArray` will survive as long as the `Reader` is alive.
-            Some(Writer { bucket })
-        } else {
-            None
-        }
-    }
-
-    /// Locks the [`Bucket`] synchronously.
-    #[inline]
-    pub(crate) fn lock_sync(
-        bucket: &'g Bucket<K, V, L, TYPE>,
-    ) -> Option<Writer<'g, K, V, L, TYPE>> {
-        if bucket.rw_lock.lock_sync() {
-            Some(Writer { bucket })
-        } else {
-            None
-        }
-    }
-
-    /// Tries to lock the [`Bucket`].
-    #[inline]
-    pub(crate) fn try_lock(
-        bucket: &'g Bucket<K, V, L, TYPE>,
-    ) -> Result<Option<Writer<'g, K, V, L, TYPE>>, ()> {
-        if bucket.rw_lock.try_lock() {
-            Ok(Some(Writer { bucket }))
-        } else if bucket.rw_lock.is_poisoned(Relaxed) {
-            Ok(None)
-        } else {
-            Err(())
-        }
-    }
-
-    /// Creates a new [`Writer`] from a [`Bucket`].
-    #[inline]
-    pub(crate) fn from_bucket(bucket: &'g Bucket<K, V, L, TYPE>) -> Writer<'g, K, V, L, TYPE> {
-        Writer { bucket }
-    }
-
-    /// Marks the [`Bucket`] killed by poisoning the lock.
-    #[inline]
-    pub(super) fn kill(self) {
-        debug_assert_eq!(self.len(), 0);
-        debug_assert!(self.rw_lock.is_locked(Relaxed));
-        debug_assert!(self.metadata.link.is_null(Relaxed));
-        debug_assert!(
-            TYPE != OPTIMISTIC
-                || self.metadata.removed_bitmap_or_lru_tail.load(Relaxed)
-                    == self.metadata.occupied_bitmap.load(Relaxed)
-        );
-
-        let poisoned = self.rw_lock.poison_lock();
-        debug_assert!(poisoned);
-        forget(self);
-    }
-}
-
-impl<K, V, L: LruList, const TYPE: char> Deref for Writer<'_, K, V, L, TYPE> {
-    type Target = Bucket<K, V, L, TYPE>;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        self.bucket
-    }
-}
-
-impl<K, V, L: LruList, const TYPE: char> Drop for Writer<'_, K, V, L, TYPE> {
-    #[inline]
-    fn drop(&mut self) {
-        self.bucket.rw_lock.release_lock();
-    }
-}
-
-impl<'g, K, V, L: LruList, const TYPE: char> Reader<'g, K, V, L, TYPE> {
-    /// Locks the [`Bucket`] asynchronously.
-    #[inline]
-    pub(crate) async fn lock_async(
-        bucket: &'g Bucket<K, V, L, TYPE>,
-        sendable_guard: &'g SendableGuard,
-    ) -> Option<Reader<'g, K, V, L, TYPE>> {
-        // `sendable_guard` should be reset when there is a chance that the task may suspend, since
-        // `Guard` cannot survive across awaits.
-        if bucket
-            .rw_lock
-            .share_async_with(|| sendable_guard.reset())
-            .await
-        {
-            // The `bucket` was not killed, and will not be killed until the `Reader` is dropped.
-            // This guarantees that the `BucketArray` will survive as long as the `Reader` is alive.
-            Some(Reader { bucket })
-        } else {
-            None
-        }
-    }
-
-    /// Locks the [`Bucket`] synchronously.
-    ///
-    /// Returns `None` if the [`Bucket`] has been killed or empty.
-    #[inline]
-    pub(crate) fn lock_sync(
-        bucket: &'g Bucket<K, V, L, TYPE>,
-    ) -> Option<Reader<'g, K, V, L, TYPE>> {
-        if bucket.rw_lock.share_sync() {
-            Some(Reader { bucket })
-        } else {
-            None
-        }
-    }
-}
-
-impl<'g, K, V, L: LruList, const TYPE: char> Deref for Reader<'g, K, V, L, TYPE> {
-    type Target = &'g Bucket<K, V, L, TYPE>;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        &self.bucket
-    }
-}
-
-impl<K, V, L: LruList, const TYPE: char> Drop for Reader<'_, K, V, L, TYPE> {
-    #[inline]
-    fn drop(&mut self) {
-        self.bucket.rw_lock.release_share();
-    }
-}
 
 impl LruList for () {}
 

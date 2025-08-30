@@ -341,6 +341,73 @@ mod hashmap {
 
     #[cfg_attr(miri, ignore)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    async fn insert_async() {
+        for _ in 0..64 * 32 {
+            let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
+            let num_tasks = 8;
+            let workload_size = 256;
+            let mut tasks = Vec::with_capacity(num_tasks);
+            let barrier = Arc::new(AsyncBarrier::new(num_tasks));
+            for task_id in 0..num_tasks {
+                let barrier = barrier.clone();
+                let hashmap = hashmap.clone();
+                tasks.push(tokio::task::spawn(async move {
+                    barrier.wait().await;
+                    let range = (task_id * workload_size)..((task_id + 1) * workload_size);
+                    for id in range.clone() {
+                        let result = hashmap.insert_async(id, id).await;
+                        assert!(result.is_ok());
+                    }
+                    for id in range.clone() {
+                        let result = hashmap.insert_async(id, id).await;
+                        assert_eq!(result, Err((id, id)));
+                    }
+                }));
+            }
+
+            for task in join_all(tasks).await {
+                assert!(task.is_ok());
+            }
+
+            assert_eq!(hashmap.len(), num_tasks * workload_size);
+        }
+    }
+
+    #[test]
+    fn insert_sync() {
+        for _ in 0..64 {
+            let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
+            let num_threads = 8;
+            let workload_size = 256;
+            let mut threads = Vec::with_capacity(num_threads);
+            let barrier = Arc::new(Barrier::new(num_threads));
+            for thread_id in 0..num_threads {
+                let barrier = barrier.clone();
+                let hashmap = hashmap.clone();
+                threads.push(thread::spawn(move || {
+                    barrier.wait();
+                    let range = (thread_id * workload_size)..((thread_id + 1) * workload_size);
+                    for id in range.clone() {
+                        let result = hashmap.insert(id, id);
+                        assert!(result.is_ok());
+                    }
+                    for id in range.clone() {
+                        let result = hashmap.insert(id, id);
+                        assert_eq!(result, Err((id, id)));
+                    }
+                }));
+            }
+
+            for thread in threads {
+                assert!(thread.join().is_ok());
+            }
+
+            assert_eq!(hashmap.len(), num_threads * workload_size);
+        }
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn insert_update_read_remove_async() {
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
         let num_tasks = 8;

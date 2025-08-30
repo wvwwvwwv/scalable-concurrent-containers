@@ -577,9 +577,6 @@ where
             // In case the method is repeating the routine, iterate over entries from the middle of
             // the array.
             let current_array_len = current_array.len();
-            if start_index == current_array_len {
-                break;
-            }
             start_index = if prev_len == 0 || prev_len == current_array_len {
                 start_index
             } else {
