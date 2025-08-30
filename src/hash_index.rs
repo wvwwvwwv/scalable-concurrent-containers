@@ -1942,6 +1942,7 @@ where
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
+        // TODO :REFACDTOR.
         let mut array = if let Some(array) = self.current_array.as_ref().copied() {
             array
         } else {

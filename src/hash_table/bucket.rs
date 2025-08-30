@@ -2,7 +2,6 @@ use std::cell::UnsafeCell;
 use std::fmt::{self, Debug};
 use std::mem::{MaybeUninit, forget, needs_drop};
 use std::ops::{Deref, Index};
-use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicPtr, AtomicU32};
 
@@ -23,7 +22,7 @@ pub struct Bucket<K, V, L: LruList, const TYPE: char> {
     /// The epoch value when the [`Bucket`] was last updated.
     ///
     /// The field is only used when `TYPE == OPTIMISTIC`.
-    epoch: AtomicU8,
+    epoch: UnsafeCell<u8>,
     /// [`Bucket`] metadata.
     metadata: Metadata<K, V, BUCKET_LEN>,
     /// Reader-writer lock.
@@ -54,7 +53,8 @@ pub trait LruList: 'static + Default {
 }
 
 /// [`DoublyLinkedList`] is an array of `(AtomicU8, AtomicU8)` implementing [`LruList`].
-pub struct DoublyLinkedList([(AtomicU8, AtomicU8); BUCKET_LEN]); // TODO UnsafeCell<[(u8, u8); BUCKET_LEN]>.
+#[derive(Debug, Default)]
+pub struct DoublyLinkedList([UnsafeCell<(u8, u8)>; BUCKET_LEN]);
 
 /// The type of [`Bucket`] only allows sequential access to it.
 pub const SEQUENTIAL: char = 'S';
@@ -84,7 +84,7 @@ pub struct Reader<'g, K, V, L: LruList, const TYPE: char> {
 /// [`EntryPtr`] points to an entry slot in a [`Bucket`].
 pub struct EntryPtr<'g, K, V, const TYPE: char> {
     /// Points to a [`LinkedBucket`].
-    current_link_ptr: Ptr<'g, LinkedBucket<K, V, LINKED_BUCKET_LEN>>,
+    current_link_ptr: Ptr<'g, LinkedBucket<K, V>>,
     /// Index of the entry.
     current_index: usize,
 }
@@ -92,24 +92,24 @@ pub struct EntryPtr<'g, K, V, const TYPE: char> {
 /// [`Metadata`] is a collection of metadata fields of [`Bucket`] and [`LinkedBucket`].
 pub(crate) struct Metadata<K, V, const LEN: usize> {
     /// Linked list of entries.
-    link: AtomicShared<LinkedBucket<K, V, LINKED_BUCKET_LEN>>,
+    link: AtomicShared<LinkedBucket<K, V>>,
     /// Occupied slot bitmap.
     occupied_bitmap: AtomicU32,
     /// Removed slot bitmap, or the `1-based` index of the most recently used entry if
     /// `TYPE = CACHE` where `0` represents `nil`.
     removed_bitmap_or_lru_tail: AtomicU32,
     /// Partial hash array for fast hash lookup.
-    partial_hash_array: UnsafeCell<[u8; LEN]>,
+    partial_hash_array: [UnsafeCell<u8>; LEN],
 }
 
 /// [`LinkedBucket`] is a smaller [`Bucket`] that is attached to a [`Bucket`] as a linked list.
-pub(crate) struct LinkedBucket<K, V, const LEN: usize> {
+pub(crate) struct LinkedBucket<K, V> {
     /// [`LinkedBucket`] metadata.
-    metadata: Metadata<K, V, LEN>,
+    metadata: Metadata<K, V, LINKED_BUCKET_LEN>,
     /// Own data block.
-    data_block: DataBlock<K, V, LEN>,
+    data_block: DataBlock<K, V, LINKED_BUCKET_LEN>,
     /// Previous [`LinkedBucket`].
-    prev_link: AtomicPtr<LinkedBucket<K, V, LEN>>,
+    prev_link: AtomicPtr<LinkedBucket<K, V>>,
 }
 
 /// The size of the linked data block.
@@ -151,7 +151,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         if free_index == BUCKET_LEN {
             self.insert_overflow_with(len, partial_hash, constructor, guard)
         } else {
-            Self::insert_entry_with(
+            self.insert_entry_with(
                 &self.metadata,
                 data_block,
                 free_index,
@@ -180,7 +180,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             let occupied_bitmap = link.metadata.occupied_bitmap.load(Relaxed);
             let free_index = occupied_bitmap.trailing_ones() as usize;
             if free_index != LINKED_BUCKET_LEN {
-                Self::insert_entry_with(
+                self.insert_entry_with(
                     &link.metadata,
                     &link.data_block,
                     free_index,
@@ -202,8 +202,10 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         let link = unsafe { Shared::new_unchecked(LinkedBucket::new(head)) };
         let link_ptr = link.get_guarded_ptr(guard);
         if let Some(link) = link_ptr.as_ref() {
-            Self::write_data_block(&link.data_block, constructor(), 0);
-            Self::update_partial_hash(&link.metadata.partial_hash_array, 0, partial_hash);
+            self.write_data_block(&link.data_block, constructor(), 0);
+            self.write_cell(&link.metadata.partial_hash_array[0], |h| {
+                *h = partial_hash;
+            });
             link.metadata.occupied_bitmap.store(1, Relaxed);
         }
         if let Some(head) = link.metadata.link.load(Relaxed, guard).as_ref() {
@@ -325,7 +327,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             let (k, v) = Self::read_data_block(&link.data_block, entry_ptr.current_index);
             if let Some(v) = pred(&k, v) {
                 // The instances returned: revive the entry.
-                Self::write_data_block(&link.data_block, (k, v), entry_ptr.current_index);
+                self.write_data_block(&link.data_block, (k, v), entry_ptr.current_index);
                 self.len.store(self.len.load(Relaxed) + 1, Relaxed);
                 link.metadata.occupied_bitmap.store(
                     occupied_bitmap | (1_u32 << entry_ptr.current_index),
@@ -349,7 +351,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             let (k, v) = Self::read_data_block(data_block, entry_ptr.current_index);
             if let Some(v) = pred(&k, v) {
                 // The instances returned: revive the entry.
-                Self::write_data_block(data_block, (k, v), entry_ptr.current_index);
+                self.write_data_block(data_block, (k, v), entry_ptr.current_index);
                 self.len.store(self.len.load(Relaxed) + 1, Relaxed);
                 self.metadata.occupied_bitmap.store(
                     occupied_bitmap | (1_u32 << entry_ptr.current_index),
@@ -493,7 +495,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         }
 
         let current_epoch = u8::from(guard.epoch());
-        let target_epoch = self.epoch.load(Acquire);
+        let target_epoch = Self::read_cell(&self.epoch, |e| *e);
         if current_epoch == target_epoch {
             let mut occupied_bitmap = self.metadata.occupied_bitmap.load(Relaxed);
             let mut index = removed_bitmap.trailing_zeros();
@@ -521,6 +523,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
 
     /// Inserts a key-value pair in the slot.
     fn insert_entry_with<C: FnOnce() -> (K, V), const LEN: usize>(
+        &self,
         metadata: &Metadata<K, V, LEN>,
         data_block: &DataBlock<K, V, LEN>,
         index: usize,
@@ -531,8 +534,10 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         debug_assert!(index < LEN);
         debug_assert_eq!(metadata.occupied_bitmap.load(Relaxed) & (1_u32 << index), 0);
 
-        Self::write_data_block(data_block, constructor(), index);
-        Self::update_partial_hash(&metadata.partial_hash_array, index, partial_hash);
+        self.write_data_block(data_block, constructor(), index);
+        self.write_cell(&metadata.partial_hash_array[index], |h| {
+            *h = partial_hash;
+        });
         metadata.occupied_bitmap.store(
             occupied_bitmap | (1_u32 << index),
             if TYPE == OPTIMISTIC { Release } else { Relaxed },
@@ -563,7 +568,9 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         debug_assert_ne!(self.metadata.removed_bitmap_or_lru_tail.load(Relaxed), 0);
 
         let target_epoch = guard.epoch().next_generation();
-        self.epoch.store(u8::from(target_epoch), Release);
+        self.write_cell(&self.epoch, |e| {
+            *e = u8::from(target_epoch);
+        });
     }
 
     /// Reads the data at the given index.
@@ -580,13 +587,15 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     #[allow(clippy::inline_always)] // Very trivial function.
     #[inline(always)]
     fn write_data_block<const LEN: usize>(
+        &self,
         data_block: &DataBlock<K, V, LEN>,
-        entry: (K, V),
+        value: (K, V),
         index: usize,
     ) {
-        unsafe {
-            (*data_block[index].get()).as_mut_ptr().write(entry);
-        }
+        self.write_cell(&data_block[index], |entry| unsafe {
+            let ptr = entry.as_mut_ptr();
+            ptr.write(value);
+        });
     }
 
     /// Drops the data in-place.
@@ -605,7 +614,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         data_block: &DataBlock<K, V, LEN>,
         index: usize,
     ) -> *const (K, V) {
-        unsafe { (*data_block[index].get()).as_ptr() }
+        Self::read_cell(&data_block[index], MaybeUninit::as_ptr)
     }
 
     /// Returns a mutable pointer to the slot in the [`DataBlock`].
@@ -618,27 +627,19 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         unsafe { (*data_block[index].get()).as_mut_ptr() }
     }
 
-    /// Gets the partial hash value.
-    #[allow(clippy::inline_always)] // This must be inlined for vectorization.
-    #[inline(always)]
-    const fn partial_hash<const LEN: usize>(
-        partial_hash_array: &UnsafeCell<[u8; LEN]>,
-        index: usize,
-    ) -> u8 {
-        unsafe { (*partial_hash_array.get())[index] }
-    }
-
-    /// Updates the partial hash array.
+    /// Reads the cell.
     #[allow(clippy::inline_always)] // Very trivial function.
     #[inline(always)]
-    const fn update_partial_hash<const LEN: usize>(
-        partial_hash_array: &UnsafeCell<[u8; LEN]>,
-        index: usize,
-        partial_hash: u8,
-    ) {
-        unsafe {
-            (*partial_hash_array.get())[index] = partial_hash;
-        }
+    fn read_cell<T, R, F: FnOnce(&T) -> R>(cell: &UnsafeCell<T>, f: F) -> R {
+        unsafe { f(&*cell.get()) }
+    }
+
+    /// Updates the cell.
+    #[allow(clippy::inline_always)] // Very trivial function.
+    #[inline(always)]
+    fn write_cell<T, R, F: FnOnce(&mut T) -> R>(&self, cell: &UnsafeCell<T>, f: F) -> R {
+        debug_assert!(self.rw_lock.is_locked(Relaxed));
+        unsafe { f(&mut *cell.get()) }
     }
 }
 
@@ -743,12 +744,12 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
 
         let mut matching: u32 = 0;
         if cfg!(miri) && TYPE == OPTIMISTIC {
-            // `Miri` does not allow concurrent access to `UnsafeCell<[u8]>`.
+            // `Miri` does not allow concurrent access to `UnsafeCell<u8>`.
             matching = bitmap;
         } else {
             // Expect that the loop is vectorized by the compiler.
             for i in 0..LEN {
-                if Self::partial_hash(&metadata.partial_hash_array, i) == partial_hash {
+                if Self::read_cell(&metadata.partial_hash_array[i], |h| *h == partial_hash) {
                     matching |= 1_u32 << i;
                 }
             }
@@ -767,6 +768,12 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
 
         None
     }
+}
+
+unsafe impl<K: Eq + Send, V: Send, L: LruList, const TYPE: char> Send for Bucket<K, V, L, TYPE> {}
+unsafe impl<K: Eq + Send + Sync, V: Sync, L: LruList, const TYPE: char> Sync
+    for Bucket<K, V, L, TYPE>
+{
 }
 
 impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
@@ -855,14 +862,14 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
         debug_assert_ne!(self.current_index, usize::MAX);
 
         if let Some(link) = self.current_link_ptr.as_ref() {
-            Bucket::<K, V, L, TYPE>::partial_hash(
-                &link.metadata.partial_hash_array,
-                self.current_index,
+            Bucket::<K, V, L, TYPE>::read_cell(
+                &link.metadata.partial_hash_array[self.current_index],
+                |h| *h,
             )
         } else {
-            Bucket::<K, V, L, TYPE>::partial_hash(
-                &bucket.metadata.partial_hash_array,
-                self.current_index,
+            Bucket::<K, V, L, TYPE>::read_cell(
+                &bucket.metadata.partial_hash_array[self.current_index],
+                |h| *h,
             )
         }
     }
@@ -873,7 +880,7 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
     fn unlink<L: LruList>(
         &mut self,
         bucket: &Bucket<K, V, L, TYPE>,
-        link: &LinkedBucket<K, V, LINKED_BUCKET_LEN>,
+        link: &LinkedBucket<K, V>,
         guard: &'g Guard,
     ) {
         let prev_link_ptr = link.prev_link.load(Relaxed);
@@ -1132,70 +1139,19 @@ impl<K, V, L: LruList, const TYPE: char> Drop for Reader<'_, K, V, L, TYPE> {
     }
 }
 
-impl<K, V, const LEN: usize> Default for Metadata<K, V, LEN> {
-    #[inline]
-    fn default() -> Self {
-        Self {
-            link: AtomicShared::default(),
-            occupied_bitmap: AtomicU32::new(0),
-            removed_bitmap_or_lru_tail: AtomicU32::new(0),
-            partial_hash_array: UnsafeCell::new([0_u8; LEN]),
-        }
-    }
-}
-
 impl LruList for () {}
 
 impl DoublyLinkedList {
-    /// Loads the slot.
-    fn load(&self, index: usize) -> (u8, u8) {
-        (self.0[index].0.load(Relaxed), self.0[index].1.load(Relaxed))
-    }
-
-    /// Stores the value in the slot.
-    fn store(&self, index: usize, value: (u8, u8)) {
-        self.0[index].0.store(value.0, Relaxed);
-        self.0[index].1.store(value.1, Relaxed);
-    }
-}
-
-impl Default for DoublyLinkedList {
+    /// Reads the slot.
     #[inline]
-    fn default() -> Self {
-        Self([
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-            (AtomicU8::default(), AtomicU8::default()),
-        ])
+    fn read(&self, index: usize) -> (u8, u8) {
+        unsafe { *self.0[index].get() }
+    }
+
+    /// Writes the slot.
+    #[inline]
+    fn write<R, F: FnOnce(&mut (u8, u8)) -> R>(&self, index: usize, f: F) -> R {
+        unsafe { f(&mut *self.0[index].get()) }
     }
 }
 
@@ -1205,20 +1161,26 @@ impl LruList for DoublyLinkedList {
         if tail == 0 {
             None
         } else {
-            let lru = self.0[tail as usize - 1].0.load(Relaxed);
+            let lru = self.read(tail as usize - 1).0;
             let new_tail = if tail - 1 == u32::from(lru) {
                 // Reset the linked list.
                 0
             } else {
-                let new_lru = self.0[lru as usize].0.load(Relaxed);
+                let new_lru = self.read(lru as usize).0;
                 {
                     #![allow(clippy::cast_possible_truncation)]
-                    self.0[new_lru as usize].1.store(tail as u8 - 1, Relaxed);
+                    self.write(new_lru as usize, |v| {
+                        v.1 = tail as u8 - 1;
+                    });
                 }
-                self.0[tail as usize - 1].0.store(new_lru, Relaxed);
+                self.write(tail as usize - 1, |v| {
+                    v.0 = new_lru;
+                });
                 tail
             };
-            self.store(lru as usize, (0, 0));
+            self.write(lru as usize, |v| {
+                *v = (0, 0);
+            });
             Some((lru, new_tail))
         }
     }
@@ -1226,28 +1188,34 @@ impl LruList for DoublyLinkedList {
     #[inline]
     fn remove(&self, tail: u32, entry: u8) -> Option<u32> {
         if tail == 0
-            || (self.load(entry as usize) == (0, 0)
-                && (self.load(0) != (entry, entry) || (tail != 1 && tail != u32::from(entry) + 1)))
+            || (self.read(entry as usize) == (0, 0)
+                && (self.read(0) != (entry, entry) || (tail != 1 && tail != u32::from(entry) + 1)))
         {
             // The linked list is empty, or the entry is not a part of the linked list.
             return None;
         }
 
-        if self.0[entry as usize].0.load(Relaxed) == entry {
+        if self.read(entry as usize).0 == entry {
             // It is the head and the only entry of the linked list.
             debug_assert_eq!(tail, u32::from(entry) + 1);
-            self.store(entry as usize, (0, 0));
+            self.write(entry as usize, |v| {
+                *v = (0, 0);
+            });
             return Some(0);
         }
 
         // Adjust `prev -> current`.
-        let (prev, next) = self.load(entry as usize);
-        debug_assert_eq!(self.0[prev as usize].1.load(Relaxed), entry);
-        self.0[prev as usize].1.store(next, Relaxed);
+        let (prev, next) = self.read(entry as usize);
+        debug_assert_eq!(self.read(prev as usize).1, entry);
+        self.write(prev as usize, |v| {
+            v.1 = next;
+        });
 
         // Adjust `next -> current`.
-        debug_assert_eq!(self.0[next as usize].0.load(Relaxed), entry);
-        self.0[next as usize].0.store(prev, Relaxed);
+        debug_assert_eq!(self.read(next as usize).0, entry);
+        self.write(next as usize, |v| {
+            v.0 = prev;
+        });
 
         let new_tail = if tail == u32::from(entry) + 1 {
             // Update `head`.
@@ -1255,7 +1223,9 @@ impl LruList for DoublyLinkedList {
         } else {
             None
         };
-        self.store(entry as usize, (0, 0));
+        self.write(entry as usize, |v| {
+            *v = (0, 0);
+        });
 
         new_tail
     }
@@ -1267,33 +1237,47 @@ impl LruList for DoublyLinkedList {
             return None;
         } else if tail == 0 {
             // The linked list is empty.
-            self.store(entry as usize, (entry, entry));
+            self.write(entry as usize, |v| {
+                *v = (entry, entry);
+            });
             return Some(u32::from(entry) + 1);
         }
 
         // Remove the entry from the linked list only if it is a part of it.
-        if self.load(entry as usize) != (0, 0) || (self.load(0) == (entry, entry) && tail == 1) {
+        if self.read(entry as usize) != (0, 0) || (self.read(0) == (entry, entry) && tail == 1) {
             // Adjust `prev -> current`.
-            let (prev, next) = self.load(entry as usize);
-            debug_assert_eq!(self.0[prev as usize].1.load(Relaxed), entry);
-            self.0[prev as usize].1.store(next, Relaxed);
+            let (prev, next) = self.read(entry as usize);
+            debug_assert_eq!(self.read(prev as usize).1, entry);
+            self.write(prev as usize, |v| {
+                v.1 = next;
+            });
 
             // Adjust `next -> current`.
-            debug_assert_eq!(self.0[next as usize].0.load(Relaxed), entry);
-            self.0[next as usize].0.store(prev, Relaxed);
+            debug_assert_eq!(self.read(next as usize).0, entry);
+            self.write(next as usize, |v| {
+                v.0 = prev;
+            });
         }
 
         // Adjust `oldest -> head`.
-        let oldest = self.0[tail as usize - 1].0.load(Relaxed);
-        debug_assert_eq!(u32::from(self.0[oldest as usize].1.load(Relaxed)) + 1, tail);
-        self.0[oldest as usize].1.store(entry, Relaxed);
-        self.0[entry as usize].0.store(oldest, Relaxed);
+        let oldest = self.read(tail as usize - 1).0;
+        debug_assert_eq!(u32::from(self.read(oldest as usize).1) + 1, tail);
+        self.write(oldest as usize, |v| {
+            v.1 = entry;
+        });
+        self.write(entry as usize, |v| {
+            v.0 = oldest;
+        });
 
         // Adjust `head -> new head`
-        self.0[tail as usize - 1].0.store(entry, Relaxed);
+        self.write(tail as usize - 1, |v| {
+            v.0 = entry;
+        });
         {
             #![allow(clippy::cast_possible_truncation)]
-            self.0[entry as usize].1.store(tail as u8 - 1, Relaxed);
+            self.write(entry as usize, |v| {
+                v.1 = tail as u8 - 1;
+            });
         }
 
         // Update `head`.
@@ -1301,14 +1285,22 @@ impl LruList for DoublyLinkedList {
     }
 }
 
+unsafe impl Send for DoublyLinkedList {}
+unsafe impl Sync for DoublyLinkedList {}
+
 unsafe impl<K: Send, V: Send, const LEN: usize> Send for Metadata<K, V, LEN> {}
 unsafe impl<K: Send + Sync, V: Send + Sync, const LEN: usize> Sync for Metadata<K, V, LEN> {}
 
-impl<K, V, const LEN: usize> LinkedBucket<K, V, LEN> {
+impl<K, V> LinkedBucket<K, V> {
     /// Creates an empty [`LinkedBucket`].
-    fn new(next: Option<Shared<LinkedBucket<K, V, LINKED_BUCKET_LEN>>>) -> Self {
+    fn new(next: Option<Shared<LinkedBucket<K, V>>>) -> Self {
         let mut bucket = Self {
-            metadata: Metadata::default(),
+            metadata: Metadata {
+                link: AtomicShared::default(),
+                occupied_bitmap: AtomicU32::default(),
+                removed_bitmap_or_lru_tail: AtomicU32::default(),
+                partial_hash_array: Default::default(),
+            },
             data_block: unsafe {
                 #[allow(clippy::uninit_assumed_init)]
                 MaybeUninit::uninit().assume_init()
@@ -1322,14 +1314,14 @@ impl<K, V, const LEN: usize> LinkedBucket<K, V, LEN> {
     }
 }
 
-impl<K, V, const LEN: usize> Debug for LinkedBucket<K, V, LEN> {
+impl<K, V> Debug for LinkedBucket<K, V> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LinkedBucket").finish()
     }
 }
 
-impl<K, V, const LEN: usize> Drop for LinkedBucket<K, V, LEN> {
+impl<K, V> Drop for LinkedBucket<K, V> {
     #[inline]
     fn drop(&mut self) {
         if needs_drop::<(K, V)>() {
@@ -1351,7 +1343,7 @@ mod test {
 
     use std::mem::MaybeUninit;
     use std::sync::atomic::Ordering::Relaxed;
-    use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32};
+    use std::sync::atomic::{AtomicPtr, AtomicU32};
 
     use proptest::prelude::*;
     use saa::Lock;
@@ -1366,8 +1358,13 @@ mod test {
     fn default_bucket<K: Eq, V, L: LruList, const TYPE: char>() -> Bucket<K, V, L, TYPE> {
         Bucket {
             len: AtomicU32::new(0),
-            epoch: AtomicU8::new(0),
-            metadata: Metadata::default(),
+            epoch: UnsafeCell::default(),
+            metadata: Metadata {
+                link: AtomicShared::default(),
+                occupied_bitmap: AtomicU32::default(),
+                removed_bitmap_or_lru_tail: AtomicU32::default(),
+                partial_hash_array: Default::default(),
+            },
             rw_lock: Lock::default(),
             lru_list: L::default(),
         }
@@ -1409,10 +1406,9 @@ mod test {
                         );
                     }
                     assert_eq!(
-                        writer.lru_list.0
-                            [writer.metadata.removed_bitmap_or_lru_tail.load(Relaxed) as usize - 1]
-                            .0
-                            .load(Relaxed),
+                        writer.lru_list.read
+                            (writer.metadata.removed_bitmap_or_lru_tail.load(Relaxed) as usize - 1)
+                            .0,
                         0
                     );
                 }
@@ -1462,17 +1458,17 @@ mod test {
                         entry_ptr.current_index + 1
                     );
                     let mut iterated = 1;
-                    let mut i = writer.lru_list.0[entry_ptr.current_index].1.load(Relaxed) as usize;
+                    let mut i = writer.lru_list.read(entry_ptr.current_index).1 as usize;
                     while i != entry_ptr.current_index {
                         iterated += 1;
-                        i = writer.lru_list.0[i].1.load(Relaxed) as usize;
+                        i = writer.lru_list.read(i).1 as usize;
                     }
                     assert_eq!(iterated, BUCKET_LEN);
                     iterated = 1;
-                    i = writer.lru_list.0[entry_ptr.current_index].0.load(Relaxed) as usize;
+                    i = writer.lru_list.read(entry_ptr.current_index).0 as usize;
                     while i != entry_ptr.current_index {
                         iterated += 1;
-                        i = writer.lru_list.0[i].0.load(Relaxed) as usize;
+                        i = writer.lru_list.read(i).0 as usize;
                     }
                     assert_eq!(iterated, BUCKET_LEN);
                 }
@@ -1491,10 +1487,10 @@ mod test {
                 let entry_ptr = writer.insert_with(&data_block, 0, || (v, v), &guard);
                 writer.update_lru_tail(&entry_ptr);
                 let mut iterated = 1;
-                let mut i = writer.lru_list.0[entry_ptr.current_index].1.load(Relaxed) as usize;
+                let mut i = writer.lru_list.read(entry_ptr.current_index).1 as usize;
                 while i != entry_ptr.current_index {
                     iterated += 1;
-                    i = writer.lru_list.0[i].1.load(Relaxed) as usize;
+                    i = writer.lru_list.read(i).1 as usize;
                 }
                 assert_eq!(iterated, v + 1);
             }
@@ -1503,10 +1499,10 @@ mod test {
                 let writer = Writer::lock_sync(&bucket).unwrap();
                 let entry_ptr = writer.get_entry_ptr(&data_block, &v, 0, &guard);
                 let mut iterated = 1;
-                let mut i = writer.lru_list.0[entry_ptr.current_index].1.load(Relaxed) as usize;
+                let mut i = writer.lru_list.read(entry_ptr.current_index).1 as usize;
                 while i != entry_ptr.current_index {
                     iterated += 1;
-                    i = writer.lru_list.0[i].1.load(Relaxed) as usize;
+                    i = writer.lru_list.read(i).1 as usize;
                 }
                 assert_eq!(iterated, xs - v);
                 writer.remove_from_lru_list(&entry_ptr);
