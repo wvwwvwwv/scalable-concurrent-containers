@@ -41,6 +41,12 @@ pub(crate) trait DeriveAsyncWait {
 }
 
 impl SendableGuard {
+    /// Returns `true` if the [`SendableGuard`] contains a valid [`Guard`].
+    #[inline]
+    pub(crate) fn is_valid(&self) -> bool {
+        unsafe { (*self.guard.get()).is_some() }
+    }
+
     /// Returns or creates a new [`Guard`].
     ///
     /// # Safety

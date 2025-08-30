@@ -232,9 +232,9 @@ where
         false
     }
 
-    /// Returns `true` if the reference derived from the [`SendableGuard`] is still valid.
+    /// Returns `true` if the reference derived from the [`SendableGuard`] is still the same.
     #[inline]
-    fn validate_ref(
+    fn check_ref(
         &self,
         current_array: &BucketArray<K, V, L, TYPE>,
         sendable_guard: &SendableGuard,
@@ -320,9 +320,6 @@ where
                 ) {
                     return Some(f(&entry.0, &entry.1));
                 }
-            }
-
-            if self.validate_ref(current_array, sendable_guard) {
                 break;
             }
         }
@@ -342,8 +339,7 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
-        while let Some(current_array) = current_array_ptr.as_ref() {
+        while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
                 self.move_entry_sync::<false>(current_array, old_array, index, guard);
@@ -359,13 +355,8 @@ where
                 ) {
                     return Some(f(&entry.0, &entry.1));
                 }
-            }
-
-            let new_current_array_ptr = self.bucket_array().load(Acquire, guard);
-            if current_array_ptr == new_current_array_ptr {
                 break;
             }
-            current_array_ptr = new_current_array_ptr;
         }
         None
     }
@@ -395,13 +386,12 @@ where
                 continue;
             }
 
-            let mut bucket = current_array.bucket(index);
+            let bucket = current_array.bucket(index);
             if (TYPE != CACHE || current_array.num_entries() < self.maximum_capacity())
                 && current_array.initiate_sampling(index)
                 && bucket.len() >= BUCKET_LEN - 1
             {
                 self.try_enlarge(current_array, index, bucket.len(), sendable_guard.guard());
-                bucket = current_array.bucket(index);
             }
 
             if let Some(writer) = Writer::lock_async(bucket, sendable_guard).await {
@@ -436,13 +426,12 @@ where
                 self.move_entry_sync::<false>(current_array, old_array, index, guard);
             }
 
-            let mut bucket = current_array.bucket(index);
+            let bucket = current_array.bucket(index);
             if (TYPE != CACHE || current_array.num_entries() < self.maximum_capacity())
                 && current_array.initiate_sampling(index)
                 && bucket.len() >= BUCKET_LEN - 1
             {
                 self.try_enlarge(current_array, index, bucket.len(), guard);
-                bucket = current_array.bucket(index);
             }
 
             if let Some(writer) = Writer::lock_sync(bucket) {
@@ -503,10 +492,6 @@ where
                 }
                 return Ok(result);
             }
-
-            if self.validate_ref(current_array, sendable_guard) {
-                break;
-            }
         }
         Err(f)
     }
@@ -527,8 +512,7 @@ where
         guard: &Guard,
         f: F,
     ) -> Result<R, F> {
-        let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
-        while let Some(current_array) = current_array_ptr.as_ref() {
+        while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
                 self.move_entry_sync::<false>(current_array, old_array, index, guard);
@@ -547,12 +531,6 @@ where
                 }
                 return Ok(result);
             }
-
-            let new_current_array_ptr = self.bucket_array().load(Acquire, guard);
-            if current_array_ptr == new_current_array_ptr {
-                break;
-            }
-            current_array_ptr = new_current_array_ptr;
         }
         Err(f)
     }
@@ -591,6 +569,8 @@ where
                         .move_entry_async(current_array, index, sendable_guard)
                         .await
                 {
+                    // Retry the operation since there is a possibility that the current bucket
+                    // array was replaced by a new one.
                     break;
                 }
 
@@ -603,21 +583,14 @@ where
                         // Stop iterating over buckets.
                         return;
                     }
-
-                    if !self.validate_ref(current_array, sendable_guard) {
-                        break;
-                    }
                 } else {
-                    // `current_array` is no longer the current one.
+                    // Retry the operation for the same reason above.
                     break;
                 }
                 start_index += 1;
             }
 
             if start_index == current_array_len {
-                break;
-            }
-            if self.validate_ref(current_array, sendable_guard) {
                 break;
             }
         }
@@ -643,8 +616,7 @@ where
     ) {
         let mut try_shrink = false;
         let mut prev_len = expected_array_len;
-        let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
-        while let Some(current_array) = current_array_ptr.as_ref() {
+        while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             // In case the method is repeating the routine, iterate over entries from the middle of
             // the array.
             let current_array_len = current_array.len();
@@ -680,11 +652,6 @@ where
             if start_index == current_array_len {
                 break;
             }
-            let new_current_array_ptr = self.bucket_array().load(Acquire, guard);
-            if current_array_ptr == new_current_array_ptr {
-                break;
-            }
-            current_array_ptr = new_current_array_ptr;
         }
 
         if try_shrink {
@@ -752,7 +719,15 @@ where
 
     /// Moves an entry in the old array to the current one asnchronously.
     ///
-    /// Returns `true` if the corresponding entries were successfully moved.
+    /// Returns `false` if the corresponding entries may remain in the old array or the whole
+    /// operation has to be retried due to an ABA problem.
+    ///
+    /// # Note
+    ///
+    /// There is a possibility of an ABA problem where the bucket array was deallocated and a new
+    /// bucket array of a different size has been allocated in the same memory location. In order
+    /// to avoid this problem, if it finds a killed bucket and the task was suspended, returns
+    /// `false`.
     #[inline]
     async fn move_entry_async<'g>(
         &self,
@@ -762,9 +737,10 @@ where
     ) -> bool {
         self.incremental_rehash_async(current_array, sendable_guard)
             .await;
-        if !self.validate_ref(current_array, sendable_guard) {
+        if !self.check_ref(current_array, sendable_guard) {
             return false;
         }
+
         if let Some(old_array) = sendable_guard.load(current_array.old_array_ptr(), Acquire) {
             let range = Self::from_index_to_range(current_array.len(), old_array.len(), index);
             for old_index in range.0..range.1 {
@@ -779,15 +755,23 @@ where
                         sendable_guard,
                     )
                     .await;
-                }
-                if !self.validate_ref(current_array, sendable_guard) {
+                } else if !sendable_guard.is_valid() {
+                    // The bucket was killed and the guard has been invalidated. Validating the
+                    // reference is not sufficient in this case since the current bucket array could
+                    // have been replaced with a new one.
+                    return false;
+                } else if !self.check_ref(current_array, sendable_guard) {
+                    // A new bucket array was created in the meantime.
                     return false;
                 }
+
+                // The old bucket array was removed, no point in trying to move entries from it.
                 if !current_array.has_old_array() {
                     break;
                 }
             }
         }
+
         true
     }
 
@@ -878,7 +862,6 @@ where
                         .await
                         .unwrap_unchecked()
                 };
-                debug_assert!(self.validate_ref(current_array, sendable_guard));
                 target_buckets[max_index].replace(writer);
                 max_index += 1;
             }
@@ -903,7 +886,6 @@ where
                 },
                 sendable_guard.guard(),
             );
-            debug_assert!(self.validate_ref(current_array, sendable_guard));
 
             if TYPE == OPTIMISTIC {
                 old_writer.mark_removed(&mut entry_ptr, sendable_guard.guard());
@@ -1059,6 +1041,9 @@ where
     }
 
     /// Relocates a fixed number of buckets from the old array to the current array, asynchronously.
+    ///
+    /// Once this methods successfully started rehashing, there is no possibility that the bucket
+    /// array is deallocated.
     async fn incremental_rehash_async<'g>(
         &self,
         current_array: &'g BucketArray<K, V, L, TYPE>,
@@ -1086,7 +1071,6 @@ where
                     )
                     .await;
                 }
-                debug_assert!(self.validate_ref(current_array, sendable_guard));
                 debug_assert!(current_array.has_old_array());
             }
 
