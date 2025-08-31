@@ -824,6 +824,12 @@ where
     /// Returns `None` if the key does not exist. The returned reference can survive as long as the
     /// associated [`Guard`] is alive.
     ///
+    /// # Note
+    ///
+    /// The returned reference may point to an old snapshot of the value if the entry has recently
+    /// been relocated due to resizing. This means that side effects of use of interior mutability,
+    /// e.g., `Mutex<T>` or `UnsafeCell<T>` may not be observable.
+    ///
     /// # Examples
     ///
     /// ```
@@ -848,6 +854,12 @@ where
     /// Peeks a key-value pair without acquiring locks.
     ///
     /// Returns `None` if the key does not exist.
+    ///
+    /// # Note
+    ///
+    /// The closure may see an old snapshot of the value if the entry has recently been relocated
+    /// due to resizing. This means that side effects of use of interior mutability, e.g.,
+    /// `Mutex<T>` or `UnsafeCell<T>` may not be observable in the closure.
     ///
     /// # Examples
     ///
