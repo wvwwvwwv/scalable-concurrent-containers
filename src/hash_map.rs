@@ -1632,10 +1632,6 @@ where
         &self.build_hasher
     }
     #[inline]
-    fn try_clone(_: &(K, V)) -> Option<(K, V)> {
-        None
-    }
-    #[inline]
     fn bucket_array(&self) -> &AtomicShared<BucketArray<K, V, (), SEQUENTIAL>> {
         &self.array
     }
