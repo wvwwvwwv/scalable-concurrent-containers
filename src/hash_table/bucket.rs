@@ -742,15 +742,10 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         };
 
         let mut matching: u32 = 0;
-        if cfg!(miri) && TYPE == OPTIMISTIC {
-            // `Miri` does not allow concurrent read/write access to `UnsafeCell<u8>`.
-            matching = bitmap;
-        } else {
-            // Expect that the loop is vectorized by the compiler.
-            for i in 0..LEN {
-                if Self::read_cell(&metadata.partial_hash_array[i], |h| *h == partial_hash) {
-                    matching |= 1_u32 << i;
-                }
+        // Expect that the loop is vectorized by the compiler.
+        for i in 0..LEN {
+            if Self::read_cell(&metadata.partial_hash_array[i], |h| *h == partial_hash) {
+                matching |= 1_u32 << i;
             }
         }
         bitmap &= matching;

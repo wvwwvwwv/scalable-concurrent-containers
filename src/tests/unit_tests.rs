@@ -1186,7 +1186,10 @@ mod hashindex {
                 checker1.insert((str_val.clone(), i));
             }
             let str_borrowed = str_val.as_str();
-            assert!(hashindex1.peek_with(str_borrowed, |_, _| ()).is_some());
+            if !cfg!(miri) {
+                // `Miri` complains about concurrent access to `partial_hash`.
+                assert!(hashindex1.peek_with(str_borrowed, |_, _| ()).is_some());
+            }
 
             if hashindex2.insert(i, str_val.clone()).is_ok() {
                 checker2.insert((i, str_val.clone()));
@@ -1267,7 +1270,7 @@ mod hashindex {
                         assert!(hashindex.remove(&k));
                     }
                 } else if !cfg!(miri) {
-                    // `Miri` complains about concurrent access to `partial_hash`.
+                    // See notes about `Miri` in `peek*`.
                     for k in 0..num_threads {
                         assert!(hashindex.peek_with(&k, |_, _| ()).is_some());
                     }
@@ -1453,8 +1456,10 @@ mod hashindex {
                         assert!(result.is_ok());
                     }
                     for id in range.clone() {
-                        // `Miri` does not allow peeking into the hash index.
-                        assert!(cfg!(miri) || hashindex.peek_with(&id, |_, _| ()).is_some());
+                        if !cfg!(miri) {
+                            // See notes about `Miri` in `peek*`.
+                            assert!(hashindex.peek_with(&id, |_, _| ()).is_some());
+                        }
                     }
 
                     let mut in_range = 0;
@@ -1649,13 +1654,19 @@ mod hashindex {
                         assert_eq!(*entry.get(), id);
                     }
                     for id in range.clone() {
-                        hashindex.peek_with(&id, |k, v| assert_eq!(k, v));
+                        if !cfg!(miri) {
+                            // See notes about `Miri` in `peek*`.
+                            hashindex.peek_with(&id, |k, v| assert_eq!(k, v));
+                        }
                         let entry = hashindex.get(&id).unwrap();
                         assert_eq!(*entry.get(), id);
                         entry.update(usize::MAX);
                     }
                     for id in range.clone() {
-                        hashindex.peek_with(&id, |_, v| assert_eq!(*v, usize::MAX));
+                        if !cfg!(miri) {
+                            // See notes about `Miri` in `peek*`.
+                            hashindex.peek_with(&id, |_, v| assert_eq!(*v, usize::MAX));
+                        }
                         let entry = hashindex.get(&id).unwrap();
                         assert_eq!(*entry.get(), usize::MAX);
                         entry.remove_entry();
