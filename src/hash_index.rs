@@ -104,10 +104,10 @@ where
     H: BuildHasher,
 {
     hashindex: &'h HashIndex<K, V, H>,
-    current_array: Option<&'g BucketArray<K, V, (), OPTIMISTIC>>,
-    current_index: usize,
-    current_bucket: Option<&'g Bucket<K, V, (), OPTIMISTIC>>,
-    current_entry_ptr: EntryPtr<'g, K, V, OPTIMISTIC>,
+    bucket_array: Option<&'g BucketArray<K, V, (), OPTIMISTIC>>,
+    index: usize,
+    bucket: Option<&'g Bucket<K, V, (), OPTIMISTIC>>,
+    entry_ptr: EntryPtr<'g, K, V, OPTIMISTIC>,
     guard: &'g Guard,
 }
 
@@ -174,7 +174,7 @@ where
                     AtomicShared::null(),
                 ))
             };
-            let minimum_capacity = array.num_entries();
+            let minimum_capacity = array.num_slots();
             (
                 AtomicShared::from(array),
                 AtomicUsize::new(minimum_capacity),
@@ -827,8 +827,8 @@ where
     /// # Note
     ///
     /// The returned reference may point to an old snapshot of the value if the entry has recently
-    /// been relocated due to resizing. This means that side effects of use of interior mutability,
-    /// e.g., `Mutex<T>` or `UnsafeCell<T>` may not be observable.
+    /// been relocated due to resizing. This means that the effect of use of interior mutability,
+    /// e.g., `Mutex<T>` or `UnsafeCell<T>` may not be observable through the reference.
     ///
     /// # Examples
     ///
@@ -858,8 +858,8 @@ where
     /// # Note
     ///
     /// The closure may see an old snapshot of the value if the entry has recently been relocated
-    /// due to resizing. This means that side effects of use of interior mutability, e.g.,
-    /// `Mutex<T>` or `UnsafeCell<T>` may not be observable in the closure.
+    /// due to resizing. This means that the effect of use of interior mutability, e.g., `Mutex<T>`
+    /// or `UnsafeCell<T>` may not be observable in the closure.
     ///
     /// # Examples
     ///
@@ -1153,10 +1153,10 @@ where
     pub fn iter<'h, 'g>(&'h self, guard: &'g Guard) -> Iter<'h, 'g, K, V, H> {
         Iter {
             hashindex: self,
-            current_array: None,
-            current_index: 0,
-            current_bucket: None,
-            current_entry_ptr: EntryPtr::new(guard),
+            bucket_array: None,
+            index: 0,
+            bucket: None,
+            entry_ptr: EntryPtr::new(guard),
             guard,
         }
     }
@@ -1941,8 +1941,8 @@ where
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Iter")
-            .field("current_index", &self.current_index)
-            .field("current_entry_ptr", &self.current_entry_ptr)
+            .field("current_index", &self.index)
+            .field("current_entry_ptr", &self.entry_ptr)
             .finish()
     }
 }
@@ -1957,8 +1957,7 @@ where
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        // TODO :REFACDTOR.
-        let mut array = if let Some(array) = self.current_array.as_ref().copied() {
+        let mut array = if let Some(&array) = self.bucket_array.as_ref() {
             array
         } else {
             // Start scanning.
@@ -1973,71 +1972,63 @@ where
             } else {
                 current_array
             };
-            self.current_array.replace(array);
-            self.current_bucket.replace(array.bucket(0));
-            self.current_entry_ptr = EntryPtr::new(self.guard);
+            self.bucket_array.replace(array);
+            self.bucket.replace(array.bucket(0));
             array
         };
 
-        // Go to the next bucket.
+        // Move to the next entry.
         loop {
-            if let Some(bucket) = self.current_bucket.take() {
-                // Go to the next entry in the bucket.
-                if self.current_entry_ptr.move_to_next(bucket, self.guard) {
-                    let (k, v) = self
-                        .current_entry_ptr
-                        .get(array.data_block(self.current_index));
-                    self.current_bucket.replace(bucket);
+            if let Some(bucket) = self.bucket.take() {
+                // Move to the next entry in the bucket.
+                if bucket.len() != 0 && self.entry_ptr.move_to_next(bucket, self.guard) {
+                    let (k, v) = self.entry_ptr.get(array.data_block(self.index));
+                    self.bucket.replace(bucket);
                     return Some((k, v));
                 }
             }
-            self.current_index += 1;
-            if self.current_index == array.len() {
+            self.entry_ptr = EntryPtr::new(self.guard);
+
+            if self.index + 1 == array.len() {
+                // Move to a newer bucket array.
+                self.index = 0;
                 let current_array = self
                     .hashindex
                     .bucket_array()
                     .load(Acquire, self.guard)
                     .as_ref()?;
                 if self
-                    .current_array
+                    .bucket_array
                     .as_ref()
-                    .copied()
-                    .is_some_and(|a| ptr::eq(a, current_array))
+                    .is_some_and(|&a| ptr::eq(a, current_array))
                 {
-                    // Finished scanning the entire array.
+                    // Finished scanning.
                     break;
                 }
-                let old_array_ptr = current_array.old_array(self.guard);
-                if self
-                    .current_array
-                    .as_ref()
-                    .copied()
-                    .is_some_and(|a| ptr::eq(a, old_array_ptr.as_ptr()))
-                {
-                    // Start scanning the current array.
-                    array = current_array;
-                    self.current_array.replace(array);
-                    self.current_index = 0;
-                    self.current_bucket.replace(array.bucket(0));
-                    self.current_entry_ptr = EntryPtr::new(self.guard);
-                    continue;
-                }
 
-                // Start from the very beginning.
-                array = if let Some(old_array) = old_array_ptr.as_ref() {
+                array = if let Some(old_array) = current_array.old_array(self.guard).as_ref() {
+                    if self
+                        .bucket_array
+                        .as_ref()
+                        .is_some_and(|&a| ptr::eq(a, old_array))
+                    {
+                        // Start scanning the current array.
+                        array = current_array;
+                        self.bucket_array.replace(current_array);
+                        self.bucket.replace(current_array.bucket(0));
+                        continue;
+                    }
                     old_array
                 } else {
                     current_array
                 };
-                self.current_array.replace(array);
-                self.current_index = 0;
-                self.current_bucket.replace(array.bucket(0));
-                self.current_entry_ptr = EntryPtr::new(self.guard);
-                continue;
+
+                self.bucket_array.replace(array);
+                self.bucket.replace(array.bucket(0));
+            } else {
+                self.index += 1;
+                self.bucket.replace(array.bucket(self.index));
             }
-            self.current_bucket
-                .replace(array.bucket(self.current_index));
-            self.current_entry_ptr = EntryPtr::new(self.guard);
         }
         None
     }

@@ -121,9 +121,9 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         }
     }
 
-    /// Returns the number of total entries.
+    /// Returns the number of entry slots in the bucket array.
     #[inline]
-    pub(crate) const fn num_entries(&self) -> usize {
+    pub(crate) const fn num_slots(&self) -> usize {
         self.array_len * BUCKET_LEN
     }
 
@@ -299,7 +299,7 @@ mod test {
                 array.full_sample_size(),
                 array.len()
             );
-            assert!(array.num_entries() >= s, "{s} {}", array.num_entries());
+            assert!(array.num_slots() >= s, "{s} {}", array.num_slots());
             array.num_cleared_buckets.store(array.array_len, Relaxed);
         }
     }

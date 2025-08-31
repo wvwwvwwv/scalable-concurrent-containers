@@ -1,13 +1,13 @@
 pub mod bucket;
 pub mod bucket_array;
 
-use bucket::{BUCKET_LEN, CACHE, DataBlock, EntryPtr, LruList, OPTIMISTIC, Reader, Writer};
-use bucket_array::BucketArray;
 use std::hash::{BuildHasher, Hash};
 use std::ptr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
+use bucket::{BUCKET_LEN, CACHE, DataBlock, EntryPtr, LruList, OPTIMISTIC, Reader, Writer};
+use bucket_array::BucketArray;
 use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
 
 use super::Equivalent;
@@ -86,34 +86,41 @@ where
         }
     }
 
-    /// Returns a reference to the current array.
+    /// Returns a reference to the bucket array.
     ///
-    /// If no array has been allocated, it allocates a new one and returns it.
+    /// Allocates a new one if If no bucket array has been allocated.
     #[inline]
-    fn get_current_array<'g>(&self, guard: &'g Guard) -> &'g BucketArray<K, V, L, TYPE> {
-        // An acquire fence is required to correctly load the contents of the array.
-        let current_array_ptr = self.bucket_array().load(Acquire, guard);
-        if let Some(current_array) = current_array_ptr.as_ref() {
-            return current_array;
+    fn get_or_create_bucket_array<'g>(&self, guard: &'g Guard) -> &'g BucketArray<K, V, L, TYPE> {
+        if let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
+            current_array
+        } else {
+            unsafe {
+                match self.bucket_array().compare_exchange(
+                    Ptr::null(),
+                    (
+                        Some(Shared::new_unchecked(BucketArray::<K, V, L, TYPE>::new(
+                            self.minimum_capacity().load(Relaxed),
+                            AtomicShared::null(),
+                        ))),
+                        Tag::None,
+                    ),
+                    AcqRel,
+                    Acquire,
+                    guard,
+                ) {
+                    Ok((_, ptr)) | Err((_, ptr)) => ptr.as_ref().unwrap_unchecked(),
+                }
+            }
         }
+    }
 
-        unsafe {
-            let current_array_ptr = match self.bucket_array().compare_exchange(
-                Ptr::null(),
-                (
-                    Some(Shared::new_unchecked(BucketArray::<K, V, L, TYPE>::new(
-                        self.minimum_capacity().load(Relaxed),
-                        AtomicShared::null(),
-                    ))),
-                    Tag::None,
-                ),
-                AcqRel,
-                Acquire,
-                guard,
-            ) {
-                Ok((_, ptr)) | Err((_, ptr)) => ptr,
-            };
-            current_array_ptr.as_ref().unwrap_unchecked()
+    /// Returns the number of entry slots.
+    #[inline]
+    fn num_slots(&self, guard: &Guard) -> usize {
+        if let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
+            current_array.num_slots()
+        } else {
+            0
         }
     }
 
@@ -139,6 +146,7 @@ where
     }
 
     /// For the given index in the current array, calculate the respective range in the old array.
+    #[inline]
     fn from_index_to_range(from_len: usize, to_len: usize, from_index: usize) -> (usize, usize) {
         debug_assert!(from_len.is_power_of_two() && to_len.is_power_of_two());
         if from_len < to_len {
@@ -184,16 +192,6 @@ where
         false
     }
 
-    /// Returns the number of slots.
-    #[inline]
-    fn num_slots(&self, guard: &Guard) -> usize {
-        if let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
-            current_array.num_entries()
-        } else {
-            0
-        }
-    }
-
     /// Estimates the number of entries by sampling the specified number of buckets.
     #[inline]
     fn sample(
@@ -234,11 +232,12 @@ where
         Q: Equivalent<K> + Hash + ?Sized,
     {
         debug_assert_eq!(TYPE, OPTIMISTIC);
+
         let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
         while let Some(current_array) = current_array_ptr.as_ref() {
             let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                if !self.move_entry_sync::<true>(current_array, old_array, index, guard) {
+                if !self.dedup_bucket_sync::<true>(current_array, old_array, index, guard) {
                     let index = old_array.calculate_bucket_index(hash);
                     if let Some(entry) = old_array.bucket(index).search_entry(
                         old_array.data_block(index),
@@ -287,7 +286,7 @@ where
             let index = current_array.calculate_bucket_index(hash);
             if current_array.has_old_array()
                 && !self
-                    .move_entry_async(current_array, index, sendable_guard)
+                    .dedup_bucket_async(current_array, index, sendable_guard)
                     .await
             {
                 continue;
@@ -325,7 +324,7 @@ where
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                self.move_entry_sync::<false>(current_array, old_array, index, guard);
+                self.dedup_bucket_sync::<false>(current_array, old_array, index, guard);
             }
 
             let bucket = current_array.bucket(index);
@@ -344,8 +343,7 @@ where
         None
     }
 
-    /// Writes an entry asynchronously from the [`HashTable`] with an exclusive lock acquired on the
-    /// bucket.
+    /// Writes an entry asynchronously with an exclusive lock acquired on the bucket.
     ///
     /// If the corresponding bucket does not exist, a new one is created.
     #[inline]
@@ -359,18 +357,18 @@ where
         f: F,
     ) -> R {
         loop {
-            let current_array = self.get_current_array(sendable_guard.guard());
+            let current_array = self.get_or_create_bucket_array(sendable_guard.guard());
             let index = current_array.calculate_bucket_index(hash);
             if current_array.has_old_array()
                 && !self
-                    .move_entry_async(current_array, index, sendable_guard)
+                    .dedup_bucket_async(current_array, index, sendable_guard)
                     .await
             {
                 continue;
             }
 
             let bucket = current_array.bucket(index);
-            if (TYPE != CACHE || current_array.num_entries() < self.maximum_capacity())
+            if (TYPE != CACHE || current_array.num_slots() < self.maximum_capacity())
                 && current_array.initiate_sampling(index)
                 && bucket.len() >= BUCKET_LEN - 1
             {
@@ -388,8 +386,7 @@ where
         }
     }
 
-    /// Writes an entry synchronously from the [`HashTable`] with an exclusive lock acquired on the
-    /// bucket.
+    /// Writes an entry synchronously with an exclusive lock acquired on the bucket.
     ///
     /// If the corresponding bucket does not exist, a new one is created.
     #[inline]
@@ -403,14 +400,14 @@ where
         f: F,
     ) -> R {
         loop {
-            let current_array = self.get_current_array(guard);
+            let current_array = self.get_or_create_bucket_array(guard);
             let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                self.move_entry_sync::<false>(current_array, old_array, index, guard);
+                self.dedup_bucket_sync::<false>(current_array, old_array, index, guard);
             }
 
             let bucket = current_array.bucket(index);
-            if (TYPE != CACHE || current_array.num_entries() < self.maximum_capacity())
+            if (TYPE != CACHE || current_array.num_slots() < self.maximum_capacity())
                 && current_array.initiate_sampling(index)
                 && bucket.len() >= BUCKET_LEN - 1
             {
@@ -428,11 +425,10 @@ where
         }
     }
 
-    /// Writes an entry asynchronously from the [`HashTable`] with an exclusive lock acquired on the
-    /// bucket if the key exists.
+    /// Writes an entry asynchronously with an exclusive lock acquired on the bucket.
     ///
     /// The [`Writer`] passed to the closure may not contain the desired entry. The supplied closure
-    /// is only invoked if the bucket corresponding to the key exists. The closure returning
+    /// is only invoked if the bucket possibly containing the key exists. The closure returning
     /// `(_, true)` indicates that entries were removed from the bucket.
     #[inline]
     async fn optional_writer_async_with<
@@ -448,7 +444,7 @@ where
             let index = current_array.calculate_bucket_index(hash);
             if current_array.has_old_array()
                 && !self
-                    .move_entry_async(current_array, index, sendable_guard)
+                    .dedup_bucket_async(current_array, index, sendable_guard)
                     .await
             {
                 continue;
@@ -479,11 +475,10 @@ where
         Err(f)
     }
 
-    /// Writes an entry synchronously from the [`HashTable`] with an exclusive lock acquired on the
-    /// bucket if the key exists.
+    /// Writes an entry synchronously with an exclusive lock acquired on the bucket.
     ///
     /// The [`Writer`] passed to the closure may not contain the desired entry. The supplied closure
-    /// is only invoked if the bucket corresponding to the key exists. The closure returning
+    /// is only invoked if the bucket possibly containing the key exists. The closure returning
     /// `(_, true)` indicates that entries were removed from the bucket.
     #[inline]
     fn optional_writer_sync_with<
@@ -498,7 +493,7 @@ where
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                self.move_entry_sync::<false>(current_array, old_array, index, guard);
+                self.dedup_bucket_sync::<false>(current_array, old_array, index, guard);
             }
 
             let bucket = current_array.bucket(index);
@@ -518,7 +513,7 @@ where
         Err(f)
     }
 
-    /// Iterates over all the bucket in the [`HashTable`].
+    /// Iterates over all the buckets in the [`HashTable`].
     ///
     /// This methods stops iterating when the closure returns `(true, _)`. The closure returning
     /// `(_, true)` means that entries were removed from the bucket.
@@ -549,7 +544,7 @@ where
                 let index = start_index;
                 if current_array.has_old_array()
                     && !self
-                        .move_entry_async(current_array, index, sendable_guard)
+                        .dedup_bucket_async(current_array, index, sendable_guard)
                         .await
                 {
                     // Retry the operation since there is a possibility that the current bucket
@@ -583,7 +578,7 @@ where
         }
     }
 
-    /// Iterates over all the bucket in the [`HashTable`].
+    /// Iterates over all the buckets in the [`HashTable`].
     ///
     /// This methods stops iterating when the closure returns `(true, _)`. The closure returning
     /// `(_, true)` means that entries were removed from the bucket.
@@ -613,7 +608,7 @@ where
             while start_index < current_array_len {
                 let index = start_index;
                 if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                    self.move_entry_sync::<false>(current_array, old_array, index, guard);
+                    self.dedup_bucket_sync::<false>(current_array, old_array, index, guard);
                 }
 
                 let bucket = current_array.bucket(index);
@@ -645,9 +640,8 @@ where
     /// Tries to reserve an entry and returns a [`Writer`] and [`EntryPtr`] corresponding to the
     /// key.
     ///
-    /// The returned [`EntryPtr`] may point to an occupied entry if the key exists.
-    ///
-    /// Returns `None` if locking failed.
+    /// The returned [`EntryPtr`] points to an occupied entry if the key exists. Returns `None` if
+    /// locking failed.
     #[inline]
     fn try_reserve_entry<'g, Q>(
         &self,
@@ -658,18 +652,17 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        // See `Self::reserve_entry`.
         loop {
-            let current_array = self.get_current_array(guard);
+            let current_array = self.get_or_create_bucket_array(guard);
             let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                if !self.move_entry_sync::<true>(current_array, old_array, index, guard) {
+                if !self.dedup_bucket_sync::<true>(current_array, old_array, index, guard) {
                     return None;
                 }
             }
 
             let mut bucket = current_array.bucket(index);
-            if (TYPE != CACHE || current_array.num_entries() < self.maximum_capacity())
+            if (TYPE != CACHE || current_array.num_slots() < self.maximum_capacity())
                 && current_array.initiate_sampling(index)
                 && bucket.len() >= BUCKET_LEN - 1
             {
@@ -700,19 +693,19 @@ where
         }
     }
 
-    /// Moves an entry in the old array to the current one asnchronously.
+    /// Deduplicates buckets that may share the same hash values asynchronously.
     ///
-    /// Returns `false` if the corresponding entries may remain in the old array or the whole
+    /// Returns `false` if the old buckets may remain in the old bucket array, or the whole
     /// operation has to be retried due to an ABA problem.
     ///
     /// # Note
     ///
     /// There is a possibility of an ABA problem where the bucket array was deallocated and a new
-    /// bucket array of a different size has been allocated in the same memory location. In order
+    /// bucket array of a different size has been allocated in the same memory region. In order
     /// to avoid this problem, if it finds a killed bucket and the task was suspended, returns
     /// `false`.
     #[inline]
-    async fn move_entry_async<'g>(
+    async fn dedup_bucket_async<'g>(
         &self,
         current_array: &'g BucketArray<K, V, L, TYPE>,
         index: usize,
@@ -749,7 +742,7 @@ where
                     return false;
                 } else if !sendable_guard
                     .load(self.bucket_array(), Acquire)
-                    .is_some_and(|r| ptr::eq(r, current_array))
+                    .is_some_and(|a| ptr::eq(a, current_array))
                 {
                     // A new bucket array was created in the meantime.
                     return false;
@@ -765,11 +758,11 @@ where
         true
     }
 
-    /// Moves entries in the old array to the current one asnchronously.
+    /// Deduplicates buckets that may share the same hash values synchronously.
     ///
     /// Returns `true` if the corresponding entries were successfully moved.
     #[inline]
-    fn move_entry_sync<'g, const TRY_LOCK: bool>(
+    fn dedup_bucket_sync<'g, const TRY_LOCK: bool>(
         &self,
         current_array: &'g BucketArray<K, V, L, TYPE>,
         old_array: &'g BucketArray<K, V, L, TYPE>,
@@ -806,8 +799,6 @@ where
     }
 
     /// Relocates the bucket to the current bucket array.
-    ///
-    /// Returns an error if locking failed.
     #[inline]
     async fn relocate_bucket_async<'g>(
         &self,
@@ -1010,7 +1001,8 @@ where
         }
     }
 
-    /// Relocates a fixed number of buckets from the old array to the current array, asynchronously.
+    /// Relocates a fixed number of buckets from the old bucket array to the current array
+    /// asynchronously.
     ///
     /// Once this methods successfully started rehashing, there is no possibility that the bucket
     /// array is deallocated.
@@ -1048,7 +1040,7 @@ where
         }
     }
 
-    /// Relocates a fixed number of buckets from the old array to the current array, synchronously.
+    /// Relocates a fixed number of buckets from the old array to the current array synchronously.
     ///
     /// Returns `true` if `old_array` is null.
     fn incremental_rehash_sync<'g, const TRY_LOCK: bool>(
@@ -1093,7 +1085,7 @@ where
         !current_array.has_old_array()
     }
 
-    /// Tries to enlarge the array if the estimated load factor is greater than `7/8`.
+    /// Tries to enlarge [`HashTable`] if the estimated load factor is greater than `7/8`.
     #[inline]
     fn try_enlarge(
         &self,
@@ -1116,7 +1108,7 @@ where
         }
     }
 
-    /// Tries to shrink the hash table to fit the estimated number of entries, or rebuild it to
+    /// Tries to shrink the [`HashTable`] to fit the estimated number of entries, or rebuild it to
     /// optimize the storage.
     #[inline]
     fn try_shrink_or_rebuild(
@@ -1129,7 +1121,7 @@ where
             return;
         }
 
-        if current_array.num_entries() > self.minimum_capacity().load(Relaxed).next_power_of_two()
+        if current_array.num_slots() > self.minimum_capacity().load(Relaxed).next_power_of_two()
             || TYPE == OPTIMISTIC
         {
             let sample_size = current_array.sample_size();
@@ -1181,7 +1173,7 @@ where
         //  - `The estimated load factor >= 7/8`, then the hash table grows up to `32x`.
         //  - `The estimated load factor <= 1/16`, then the hash table shrinks to fit.
         let minimum_capacity = self.minimum_capacity().load(Relaxed);
-        let capacity = current_array.num_entries();
+        let capacity = current_array.num_slots();
         let sample_size = current_array.full_sample_size();
         let estimated_num_entries = Self::sample(current_array, sampling_index, sample_size);
         let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {

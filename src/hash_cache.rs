@@ -152,7 +152,7 @@ where
                     AtomicShared::null(),
                 ))
             };
-            let minimum_capacity = array.num_entries();
+            let minimum_capacity = array.num_slots();
             (
                 AtomicShared::from(array),
                 AtomicUsize::new(minimum_capacity),
