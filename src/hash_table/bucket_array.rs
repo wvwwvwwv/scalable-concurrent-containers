@@ -1,5 +1,5 @@
 use std::alloc::{Layout, alloc, alloc_zeroed, dealloc};
-use std::mem::{align_of, needs_drop, size_of};
+use std::mem::{align_of, size_of};
 use std::panic::UnwindSafe;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -224,7 +224,8 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
 impl<K, V, L: LruList, const TYPE: char> Drop for BucketArray<K, V, L, TYPE> {
     fn drop(&mut self) {
         if TYPE != OPTIMISTIC && !self.old_array.is_null(Relaxed) {
-            // The `BucketArray` should be dropped immediately.
+            // The `BucketArray` cannot be dropped immediately if `TYPE == OPTIMISTIC`, because
+            // entry references can be held as long as the associated guard is alive.
             unsafe {
                 self.old_array
                     .swap((None, Tag::None), Relaxed)
@@ -233,14 +234,8 @@ impl<K, V, L: LruList, const TYPE: char> Drop for BucketArray<K, V, L, TYPE> {
             }
         }
 
-        let num_cleared_buckets = if TYPE == OPTIMISTIC && needs_drop::<(K, V)>() {
-            // No instances are dropped when the array is reachable.
-            0
-        } else {
-            // `LinkedBucket` instances should be cleaned up.
-            self.num_cleared_buckets.load(Relaxed)
-        };
-
+        // `LinkedBucket` instances should be cleaned up.
+        let num_cleared_buckets = self.num_cleared_buckets.load(Relaxed);
         if num_cleared_buckets < self.array_len {
             for index in num_cleared_buckets..self.array_len {
                 self.bucket(index).drop_entries(self.data_block(index));

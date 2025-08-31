@@ -88,8 +88,8 @@ where
 /// The [`HashIndex`] does not shrink the capacity below the reserved capacity.
 pub struct Reserve<'h, K, V, H = RandomState>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static + Clone,
+    K: 'static + Eq + Hash,
+    V: 'static,
     H: BuildHasher,
 {
     hashindex: &'h HashIndex<K, V, H>,
@@ -190,8 +190,8 @@ where
 
 impl<K, V, H> HashIndex<K, V, H>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static + Clone,
+    K: 'static + Eq + Hash,
+    V: 'static,
     H: BuildHasher,
 {
     /// Temporarily increases the minimum capacity of the [`HashIndex`].
@@ -824,6 +824,12 @@ where
     /// Returns `None` if the key does not exist. The returned reference can survive as long as the
     /// associated [`Guard`] is alive.
     ///
+    /// # Note
+    ///
+    /// The returned reference may point to an old snapshot of the value if the entry has recently
+    /// been relocated due to resizing. This means that side effects of use of interior mutability,
+    /// e.g., `Mutex<T>` or `UnsafeCell<T>` may not be observable.
+    ///
     /// # Examples
     ///
     /// ```
@@ -848,6 +854,12 @@ where
     /// Peeks a key-value pair without acquiring locks.
     ///
     /// Returns `None` if the key does not exist.
+    ///
+    /// # Note
+    ///
+    /// The closure may see an old snapshot of the value if the entry has recently been relocated
+    /// due to resizing. This means that side effects of use of interior mutability, e.g.,
+    /// `Mutex<T>` or `UnsafeCell<T>` may not be observable in the closure.
     ///
     /// # Examples
     ///
@@ -1168,8 +1180,8 @@ where
 
 impl<K, V, H> Debug for HashIndex<K, V, H>
 where
-    K: 'static + Clone + Debug + Eq + Hash,
-    V: 'static + Clone + Debug,
+    K: 'static + Debug + Eq + Hash,
+    V: 'static + Debug,
     H: BuildHasher,
 {
     #[inline]
@@ -1181,8 +1193,8 @@ where
 
 impl<K, V> HashIndex<K, V, RandomState>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static + Clone,
+    K: 'static + Eq + Hash,
+    V: 'static,
 {
     /// Creates an empty default [`HashIndex`].
     ///
@@ -1251,8 +1263,8 @@ where
 
 impl<K, V, H> FromIterator<(K, V)> for HashIndex<K, V, H>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static + Clone,
+    K: 'static + Eq + Hash,
+    V: 'static,
     H: BuildHasher + Default,
 {
     #[inline]
@@ -1271,17 +1283,13 @@ where
 
 impl<K, V, H> HashTable<K, V, H, (), OPTIMISTIC> for HashIndex<K, V, H>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static + Clone,
+    K: 'static + Eq + Hash,
+    V: 'static,
     H: BuildHasher,
 {
     #[inline]
     fn hasher(&self) -> &H {
         &self.build_hasher
-    }
-    #[inline]
-    fn try_clone(entry: &(K, V)) -> Option<(K, V)> {
-        Some((entry.0.clone(), entry.1.clone()))
     }
     #[inline]
     fn bucket_array(&self) -> &AtomicShared<BucketArray<K, V, (), OPTIMISTIC>> {
@@ -1299,8 +1307,8 @@ where
 
 impl<K, V, H> PartialEq for HashIndex<K, V, H>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static + Clone + PartialEq,
+    K: 'static + Eq + Hash,
+    V: 'static + PartialEq,
     H: BuildHasher,
 {
     #[inline]
@@ -1320,8 +1328,8 @@ where
 
 impl<'h, K, V, H> Entry<'h, K, V, H>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static + Clone,
+    K: 'static + Eq + Hash,
+    V: 'static,
     H: BuildHasher,
 {
     /// Ensures a value is in the entry by inserting the supplied instance if empty.
@@ -1451,8 +1459,8 @@ where
 
 impl<'h, K, V, H> Entry<'h, K, V, H>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static + Clone + Default,
+    K: 'static + Eq + Hash,
+    V: 'static + Default,
     H: BuildHasher,
 {
     /// Ensures a value is in the entry by inserting the default value if empty.
@@ -1477,8 +1485,8 @@ where
 
 impl<K, V, H> Debug for Entry<'_, K, V, H>
 where
-    K: 'static + Clone + Debug + Eq + Hash,
-    V: 'static + Clone + Debug,
+    K: 'static + Debug + Eq + Hash,
+    V: 'static + Debug,
     H: BuildHasher,
 {
     #[inline]
@@ -1492,8 +1500,8 @@ where
 
 impl<'h, K, V, H> OccupiedEntry<'h, K, V, H>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static + Clone,
+    K: 'static + Eq + Hash,
+    V: 'static,
     H: BuildHasher,
 {
     /// Gets a reference to the key in the entry.
@@ -1617,44 +1625,6 @@ where
             .1
     }
 
-    /// Updates the entry by inserting a new entry and marking the existing entry removed.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashIndex;
-    /// use scc::hash_index::Entry;
-    ///
-    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
-    ///
-    /// hashindex.entry(37).or_insert(11);
-    ///
-    /// if let Entry::Occupied(mut o) = hashindex.entry(37) {
-    ///     o.update(29);
-    /// }
-    ///
-    /// assert_eq!(hashindex.peek_with(&37, |_, v| *v), Some(29));
-    /// ```
-    #[inline]
-    pub fn update(mut self, val: V) {
-        let key = self.key().clone();
-        let partial_hash = self
-            .locked_entry
-            .entry_ptr
-            .partial_hash(&self.locked_entry.writer);
-        let guard = Guard::new();
-        self.locked_entry.writer.insert_with(
-            self.locked_entry.data_block,
-            partial_hash,
-            || (key, val),
-            self.hashindex.prolonged_guard_ref(&guard),
-        );
-        self.locked_entry.writer.mark_removed(
-            &mut self.locked_entry.entry_ptr,
-            self.hashindex.prolonged_guard_ref(&guard),
-        );
-    }
-
     /// Gets the next closest occupied entry.
     ///
     /// [`HashIndex::first_entry`], [`HashIndex::first_entry_async`], and this method together
@@ -1729,10 +1699,55 @@ where
     }
 }
 
+impl<K, V, H> OccupiedEntry<'_, K, V, H>
+where
+    K: 'static + Clone + Eq + Hash,
+    V: 'static,
+    H: BuildHasher,
+{
+    /// Updates the entry by inserting a new entry and marking the existing entry removed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    /// use scc::hash_index::Entry;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// hashindex.entry(37).or_insert(11);
+    ///
+    /// if let Entry::Occupied(mut o) = hashindex.entry(37) {
+    ///     o.update(29);
+    /// }
+    ///
+    /// assert_eq!(hashindex.peek_with(&37, |_, v| *v), Some(29));
+    /// ```
+    #[inline]
+    pub fn update(mut self, val: V) {
+        let key = self.key().clone();
+        let partial_hash = self
+            .locked_entry
+            .entry_ptr
+            .partial_hash(&self.locked_entry.writer);
+        let guard = Guard::new();
+        self.locked_entry.writer.insert_with(
+            self.locked_entry.data_block,
+            partial_hash,
+            || (key, val),
+            self.hashindex.prolonged_guard_ref(&guard),
+        );
+        self.locked_entry.writer.mark_removed(
+            &mut self.locked_entry.entry_ptr,
+            self.hashindex.prolonged_guard_ref(&guard),
+        );
+    }
+}
+
 impl<K, V, H> Debug for OccupiedEntry<'_, K, V, H>
 where
-    K: 'static + Clone + Debug + Eq + Hash,
-    V: 'static + Clone + Debug,
+    K: 'static + Debug + Eq + Hash,
+    V: 'static + Debug,
     H: BuildHasher,
 {
     #[inline]
@@ -1746,8 +1761,8 @@ where
 
 impl<K, V, H> Deref for OccupiedEntry<'_, K, V, H>
 where
-    K: 'static + Clone + Debug + Eq + Hash,
-    V: 'static + Clone + Debug,
+    K: 'static + Debug + Eq + Hash,
+    V: 'static + Debug,
     H: BuildHasher,
 {
     type Target = V;
@@ -1760,8 +1775,8 @@ where
 
 impl<'h, K, V, H> VacantEntry<'h, K, V, H>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static + Clone,
+    K: 'static + Eq + Hash,
+    V: 'static,
     H: BuildHasher,
 {
     /// Gets a reference to the key.
@@ -1838,8 +1853,8 @@ where
 
 impl<K, V, H> Debug for VacantEntry<'_, K, V, H>
 where
-    K: 'static + Clone + Debug + Eq + Hash,
-    V: 'static + Clone + Debug,
+    K: 'static + Debug + Eq + Hash,
+    V: 'static + Debug,
     H: BuildHasher,
 {
     #[inline]
@@ -1850,8 +1865,8 @@ where
 
 impl<K, V, H> Reserve<'_, K, V, H>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static + Clone,
+    K: 'static + Eq + Hash,
+    V: 'static,
     H: BuildHasher,
 {
     /// Returns the number of reserved slots.
@@ -1864,8 +1879,8 @@ where
 
 impl<K, V, H> AsRef<HashIndex<K, V, H>> for Reserve<'_, K, V, H>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static + Clone,
+    K: 'static + Eq + Hash,
+    V: 'static,
     H: BuildHasher,
 {
     #[inline]
@@ -1876,8 +1891,8 @@ where
 
 impl<K, V, H> Debug for Reserve<'_, K, V, H>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static + Clone,
+    K: 'static + Eq + Hash,
+    V: 'static,
     H: BuildHasher,
 {
     #[inline]
@@ -1888,8 +1903,8 @@ where
 
 impl<K, V, H> Deref for Reserve<'_, K, V, H>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static + Clone,
+    K: 'static + Eq + Hash,
+    V: 'static,
     H: BuildHasher,
 {
     type Target = HashIndex<K, V, H>;
@@ -1902,8 +1917,8 @@ where
 
 impl<K, V, H> Drop for Reserve<'_, K, V, H>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static + Clone,
+    K: 'static + Eq + Hash,
+    V: 'static,
     H: BuildHasher,
 {
     #[inline]
@@ -1919,8 +1934,8 @@ where
 
 impl<K, V, H> Debug for Iter<'_, '_, K, V, H>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static + Clone,
+    K: 'static + Eq + Hash,
+    V: 'static,
     H: BuildHasher,
 {
     #[inline]
@@ -1934,8 +1949,8 @@ where
 
 impl<'g, K, V, H> Iterator for Iter<'_, 'g, K, V, H>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static + Clone,
+    K: 'static + Eq + Hash,
+    V: 'static,
     H: BuildHasher,
 {
     type Item = (&'g K, &'g V);
@@ -2030,16 +2045,16 @@ where
 
 impl<K, V, H> FusedIterator for Iter<'_, '_, K, V, H>
 where
-    K: 'static + Clone + Eq + Hash,
-    V: 'static + Clone,
+    K: 'static + Eq + Hash,
+    V: 'static,
     H: BuildHasher,
 {
 }
 
 impl<K, V, H> UnwindSafe for Iter<'_, '_, K, V, H>
 where
-    K: 'static + Clone + Eq + Hash + UnwindSafe,
-    V: 'static + Clone + UnwindSafe,
+    K: 'static + Eq + Hash + UnwindSafe,
+    V: 'static + UnwindSafe,
     H: BuildHasher + UnwindSafe,
 {
 }
