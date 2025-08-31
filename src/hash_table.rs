@@ -131,8 +131,10 @@ where
         if let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let old_array_ptr = current_array.old_array(guard);
             if let Some(old_array) = old_array_ptr.as_ref() {
-                for i in 0..old_array.len() {
-                    num_entries += old_array.bucket(i).len();
+                if !self.incremental_rehash_sync::<true>(current_array, guard) {
+                    for i in 0..old_array.len() {
+                        num_entries += old_array.bucket(i).len();
+                    }
                 }
             }
             for i in 0..current_array.len() {
@@ -174,9 +176,11 @@ where
         if let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let old_array_ptr = current_array.old_array(guard);
             if let Some(old_array) = old_array_ptr.as_ref() {
-                for i in 0..old_array.len() {
-                    if old_array.bucket(i).len() != 0 {
-                        return true;
+                if !self.incremental_rehash_sync::<true>(current_array, guard) {
+                    for i in 0..old_array.len() {
+                        if old_array.bucket(i).len() != 0 {
+                            return true;
+                        }
                     }
                 }
             }
