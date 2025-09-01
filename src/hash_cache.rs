@@ -38,7 +38,7 @@ pub struct HashCache<K, V, H = RandomState>
 where
     H: BuildHasher,
 {
-    array: AtomicShared<BucketArray<K, V, DoublyLinkedList, CACHE>>,
+    bucket_array: AtomicShared<BucketArray<K, V, DoublyLinkedList, CACHE>>,
     minimum_capacity: AtomicUsize,
     maximum_capacity: usize,
     build_hasher: H,
@@ -102,7 +102,7 @@ where
     #[inline]
     pub const fn with_hasher(build_hasher: H) -> Self {
         HashCache {
-            array: AtomicShared::null(),
+            bucket_array: AtomicShared::null(),
             minimum_capacity: AtomicUsize::new(0),
             maximum_capacity: DEFAULT_MAXIMUM_CAPACITY,
             build_hasher,
@@ -164,7 +164,7 @@ where
             .min(1_usize << (usize::BITS - 1))
             .next_power_of_two();
         HashCache {
-            array,
+            bucket_array: array,
             minimum_capacity,
             maximum_capacity,
             build_hasher,
@@ -1148,7 +1148,7 @@ where
 {
     #[inline]
     fn drop(&mut self) {
-        self.array
+        self.bucket_array
             .swap((None, Tag::None), Relaxed)
             .0
             .map(|a| unsafe {
@@ -1191,7 +1191,7 @@ where
     }
     #[inline]
     fn bucket_array(&self) -> &AtomicShared<BucketArray<K, V, DoublyLinkedList, CACHE>> {
-        &self.array
+        &self.bucket_array
     }
     #[inline]
     fn minimum_capacity(&self) -> &AtomicUsize {

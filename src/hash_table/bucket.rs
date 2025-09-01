@@ -825,7 +825,8 @@ unsafe impl<K: Send + Sync, V: Send + Sync, const LEN: usize> Sync for DataBlock
 
 impl<'g, K, V, L: LruList, const TYPE: char> Writer<'g, K, V, L, TYPE> {
     /// Locks the [`Bucket`] asynchronously.
-    #[inline]
+    #[allow(clippy::inline_always)] // Very trivial method.
+    #[inline(always)]
     pub(crate) async fn lock_async(
         bucket: &'g Bucket<K, V, L, TYPE>,
         sendable_guard: &'g SendableGuard,
@@ -846,7 +847,8 @@ impl<'g, K, V, L: LruList, const TYPE: char> Writer<'g, K, V, L, TYPE> {
     }
 
     /// Locks the [`Bucket`] synchronously.
-    #[inline]
+    #[allow(clippy::inline_always)] // Very trivial method.
+    #[inline(always)]
     pub(crate) fn lock_sync(
         bucket: &'g Bucket<K, V, L, TYPE>,
     ) -> Option<Writer<'g, K, V, L, TYPE>> {
@@ -858,7 +860,8 @@ impl<'g, K, V, L: LruList, const TYPE: char> Writer<'g, K, V, L, TYPE> {
     }
 
     /// Tries to lock the [`Bucket`].
-    #[inline]
+    #[allow(clippy::inline_always)] // Very trivial method.
+    #[inline(always)]
     pub(crate) fn try_lock(
         bucket: &'g Bucket<K, V, L, TYPE>,
     ) -> Result<Option<Writer<'g, K, V, L, TYPE>>, ()> {
@@ -921,7 +924,8 @@ impl<K, V, L: LruList, const TYPE: char> Drop for Writer<'_, K, V, L, TYPE> {
 
 impl<'g, K, V, L: LruList, const TYPE: char> Reader<'g, K, V, L, TYPE> {
     /// Locks the [`Bucket`] asynchronously.
-    #[inline]
+    #[allow(clippy::inline_always)] // Very trivial method.
+    #[inline(always)]
     pub(crate) async fn lock_async(
         bucket: &'g Bucket<K, V, L, TYPE>,
         sendable_guard: &'g SendableGuard,
@@ -944,7 +948,8 @@ impl<'g, K, V, L: LruList, const TYPE: char> Reader<'g, K, V, L, TYPE> {
     /// Locks the [`Bucket`] synchronously.
     ///
     /// Returns `None` if the [`Bucket`] has been killed or empty.
-    #[inline]
+    #[allow(clippy::inline_always)] // Very trivial method.
+    #[inline(always)]
     pub(crate) fn lock_sync(
         bucket: &'g Bucket<K, V, L, TYPE>,
     ) -> Option<Reader<'g, K, V, L, TYPE>> {

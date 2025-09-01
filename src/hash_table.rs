@@ -78,7 +78,13 @@ where
                 Relaxed,
             ) {
                 Ok(_) => {
-                    self.try_resize(0, &Guard::new());
+                    let guard = Guard::new();
+                    if let Some(current_array) = self.bucket_array().load(Acquire, &guard).as_ref()
+                    {
+                        if !current_array.has_old_array() {
+                            self.try_resize(current_array, 0, &guard);
+                        }
+                    }
                     return additional_capacity;
                 }
                 Err(actual) => current_minimum_capacity = actual,
@@ -140,8 +146,11 @@ where
             for i in 0..current_array.len() {
                 num_entries += current_array.bucket(i).len();
             }
-            if num_entries == 0 && self.minimum_capacity().load(Relaxed) == 0 {
-                self.try_resize(0, guard);
+            if num_entries == 0
+                && self.minimum_capacity().load(Relaxed) == 0
+                && !current_array.has_old_array()
+            {
+                self.try_resize(current_array, 0, guard);
             }
         }
         num_entries
@@ -189,8 +198,8 @@ where
                     return true;
                 }
             }
-            if self.minimum_capacity().load(Relaxed) == 0 {
-                self.try_resize(0, guard);
+            if self.minimum_capacity().load(Relaxed) == 0 && !current_array.has_old_array() {
+                self.try_resize(current_array, 0, guard);
             }
         }
         false
@@ -563,6 +572,9 @@ where
                     try_shrink |= removed;
                     if found {
                         // Stop iterating over buckets.
+                        if try_shrink {
+                            self.try_shrink_or_rebuild(current_array, 0, sendable_guard.guard());
+                        }
                         return;
                     }
                 } else {
@@ -573,12 +585,11 @@ where
             }
 
             if start_index == current_array_len {
+                if try_shrink {
+                    self.try_shrink_or_rebuild(current_array, 0, sendable_guard.guard());
+                }
                 break;
             }
-        }
-
-        if try_shrink {
-            self.try_resize(0, sendable_guard.guard());
         }
     }
 
@@ -622,6 +633,9 @@ where
                     try_shrink |= removed;
                     if found {
                         // Stop iterating over buckets.
+                        if try_shrink {
+                            self.try_shrink_or_rebuild(current_array, 0, guard);
+                        }
                         return;
                     }
                 } else {
@@ -632,12 +646,11 @@ where
             }
 
             if start_index == current_array_len {
+                if try_shrink {
+                    self.try_shrink_or_rebuild(current_array, 0, guard);
+                }
                 break;
             }
-        }
-
-        if try_shrink {
-            self.try_resize(0, guard);
         }
     }
 
@@ -765,7 +778,6 @@ where
     /// Deduplicates buckets that may share the same hash values synchronously.
     ///
     /// Returns `true` if the corresponding entries were successfully moved.
-    #[inline]
     fn dedup_bucket_sync<'g, const TRY_LOCK: bool>(
         &self,
         current_array: &'g BucketArray<K, V, L, TYPE>,
@@ -803,7 +815,6 @@ where
     }
 
     /// Relocates the bucket to the current bucket array.
-    #[inline]
     async fn relocate_bucket_async<'g>(
         &self,
         current_array: &'g BucketArray<K, V, L, TYPE>,
@@ -872,7 +883,6 @@ where
     /// Relocates the bucket to the current bucket array.
     ///
     /// Returns `false` if locking failed.
-    #[inline]
     fn relocate_bucket_sync<'g, const TRY_LOCK: bool>(
         &self,
         current_array: &'g BucketArray<K, V, L, TYPE>,
@@ -1090,7 +1100,6 @@ where
     }
 
     /// Tries to enlarge [`HashTable`] if the estimated load factor is greater than `7/8`.
-    #[inline]
     fn try_enlarge(
         &self,
         current_array: &BucketArray<K, V, L, TYPE>,
@@ -1098,6 +1107,10 @@ where
         mut num_entries: usize,
         guard: &Guard,
     ) {
+        if current_array.has_old_array() {
+            return;
+        }
+
         let sample_size = current_array.sample_size();
         let threshold = sample_size * (BUCKET_LEN / 8) * 7;
         if num_entries > threshold
@@ -1108,13 +1121,12 @@ where
                 num_entries > threshold
             })
         {
-            self.try_resize(index, guard);
+            self.try_resize(current_array, index, guard);
         }
     }
 
     /// Tries to shrink the [`HashTable`] to fit the estimated number of entries, or rebuild it to
     /// optimize the storage.
-    #[inline]
     fn try_shrink_or_rebuild(
         &self,
         current_array: &BucketArray<K, V, L, TYPE>,
@@ -1145,20 +1157,25 @@ where
                 }
                 if TYPE == OPTIMISTIC && bucket.need_rebuild() {
                     if num_buckets_to_rebuild >= rebuild_threshold {
-                        self.try_resize(index, guard);
+                        self.try_resize(current_array, index, guard);
                         return;
                     }
                     num_buckets_to_rebuild += 1;
                 }
             }
             if TYPE != OPTIMISTIC || num_entries < shrink_threshold {
-                self.try_resize(index, guard);
+                self.try_resize(current_array, index, guard);
             }
         }
     }
 
     /// Tries to resize the array.
-    fn try_resize(&self, sampling_index: usize, guard: &Guard) {
+    fn try_resize(
+        &self,
+        sampled_array: &BucketArray<K, V, L, TYPE>,
+        sampling_index: usize,
+        guard: &Guard,
+    ) {
         let current_array_ptr = self.bucket_array().load(Acquire, guard);
         if current_array_ptr.tag() != Tag::None {
             // Another thread is currently allocating a new bucket array.
@@ -1168,19 +1185,20 @@ where
             // The hash table is empty.
             return;
         };
-        if current_array.has_old_array() {
-            // The hash table cannot be resized with an old array attached to it.
+        if !ptr::eq(current_array, sampled_array) {
+            // The preliminary sampling result cannot be trusted anymore.
             return;
         }
+        debug_assert!(!current_array.has_old_array());
 
         // The resizing policies are as follows.
-        //  - `The estimated load factor >= 7/8`, then the hash table grows up to `32x`.
+        //  - `The estimated load factor >= 13/16`, then the hash table grows up to `32x`.
         //  - `The estimated load factor <= 1/16`, then the hash table shrinks to fit.
         let minimum_capacity = self.minimum_capacity().load(Relaxed);
         let capacity = current_array.num_slots();
         let sample_size = current_array.full_sample_size();
         let estimated_num_entries = Self::sample(current_array, sampling_index, sample_size);
-        let new_capacity = if estimated_num_entries >= (capacity / 8) * 7 {
+        let new_capacity = if estimated_num_entries >= (capacity / 16) * 13 {
             if capacity == self.maximum_capacity() {
                 // Do not resize if the capacity cannot be increased.
                 capacity
@@ -1282,6 +1300,14 @@ where
         }
     }
 
+    /// Entries may have been removed during iteration.
+    fn entry_removed(&self, index: usize, guard: &Guard) {
+        if let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
+            if current_array.len() > index && current_array.bucket(index).len() == 0 {
+                self.try_shrink_or_rebuild(current_array, index, guard);
+            }
+        }
+    }
     // Returns an estimated required size of the container based on the size hint.
     fn capacity_from_size_hint(size_hint: (usize, Option<usize>)) -> usize {
         // A resize can be triggered when the load factor reaches ~80%.
@@ -1294,6 +1320,8 @@ where
     }
 
     /// Returns a reference to the specified [`Guard`] whose lifetime matches that of `self`.
+    #[allow(clippy::inline_always)] // Very trivial method.
+    #[inline(always)]
     fn prolonged_guard_ref<'h>(&'h self, guard: &Guard) -> &'h Guard {
         let _: &Self = self;
         unsafe { std::mem::transmute::<&Guard, &'h Guard>(guard) }
@@ -1337,6 +1365,8 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
     }
 
     /// Prolongs its lifetime.
+    #[allow(clippy::inline_always)] // Very trivial method.
+    #[inline(always)]
     pub(super) fn prolong_lifetime<T>(self, _ref: &T) -> LockedEntry<'_, K, V, L, TYPE> {
         unsafe { std::mem::transmute::<_, _>(self) }
     }
@@ -1353,13 +1383,17 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
             return Some(self);
         }
 
+        let try_shrink = self.writer.len() == 0;
         let sendable_guard = SendableGuard::default();
         let next_index = self.index + 1;
         let len = self.len;
         drop(self);
 
+        if try_shrink {
+            hash_table.entry_removed(next_index - 1, sendable_guard.guard());
+        }
+
         if next_index == len {
-            // TODO: removed == true / removed something.
             return None;
         }
 
@@ -1399,13 +1433,17 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
             return Some(self);
         }
 
+        let try_shrink = self.writer.len() == 0;
         let guard = Guard::new();
         let next_index = self.index + 1;
         let len = self.len;
         drop(self);
 
+        if try_shrink {
+            hash_table.entry_removed(next_index - 1, &guard);
+        }
+
         if next_index == len {
-            // TODO: removed == true / removed something.
             return None;
         }
 

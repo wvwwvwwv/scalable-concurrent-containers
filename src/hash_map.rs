@@ -74,7 +74,7 @@ pub struct HashMap<K, V, H = RandomState>
 where
     H: BuildHasher,
 {
-    array: AtomicShared<BucketArray<K, V, (), SEQUENTIAL>>,
+    bucket_array: AtomicShared<BucketArray<K, V, (), SEQUENTIAL>>,
     minimum_capacity: AtomicUsize,
     build_hasher: H,
 }
@@ -141,7 +141,7 @@ where
     #[inline]
     pub const fn with_hasher(build_hasher: H) -> Self {
         Self {
-            array: AtomicShared::null(),
+            bucket_array: AtomicShared::null(),
             minimum_capacity: AtomicUsize::new(0),
             build_hasher,
         }
@@ -192,7 +192,7 @@ where
             )
         };
         Self {
-            array,
+            bucket_array: array,
             minimum_capacity,
             build_hasher,
         }
@@ -1592,7 +1592,7 @@ where
 {
     #[inline]
     fn drop(&mut self) {
-        self.array
+        self.bucket_array
             .swap((None, Tag::None), Relaxed)
             .0
             .map(|a| unsafe {
@@ -1633,7 +1633,7 @@ where
     }
     #[inline]
     fn bucket_array(&self) -> &AtomicShared<BucketArray<K, V, (), SEQUENTIAL>> {
-        &self.array
+        &self.bucket_array
     }
     #[inline]
     fn minimum_capacity(&self) -> &AtomicUsize {
@@ -1897,18 +1897,10 @@ where
             &mut self.locked_entry.entry_ptr,
             self.hashmap.prolonged_guard_ref(&guard),
         );
-        if self.locked_entry.writer.len() <= 1 || self.locked_entry.writer.need_rebuild() {
-            let hashmap = self.hashmap;
-            if let Some(current_array) = hashmap.bucket_array().load(Acquire, &guard).as_ref() {
-                if !current_array.has_old_array() {
-                    let index = self.locked_entry.index;
-                    if current_array.initiate_sampling(index) {
-                        drop(self);
-                        hashmap.try_shrink_or_rebuild(current_array, index, &guard);
-                    }
-                }
-            }
-        }
+        let hashmap = self.hashmap;
+        let index = self.locked_entry.index;
+        drop(self);
+        hashmap.entry_removed(index, &guard);
         entry
     }
 
@@ -2082,6 +2074,100 @@ where
             });
         }
         None
+    }
+
+    /// Gets the next closest occupied entry after removing the entry.
+    ///
+    /// [`HashMap::first_entry`], [`HashMap::first_entry_async`], and this method together enables
+    /// the [`OccupiedEntry`] to effectively act as a mutable iterator over entries. The method
+    /// never acquires more than one lock even when it searches other buckets for the next closest
+    /// occupied entry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    /// use scc::hash_map::Entry;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// assert!(hashmap.insert(2, 0).is_ok());
+    ///
+    /// let first_entry = hashmap.first_entry().unwrap();
+    /// let first_key = *first_entry.key();
+    /// let (removed, second_entry) = first_entry.remove_next();
+    /// assert_eq!(removed, (1, 0));
+    ///
+    /// let second_entry = second_entry.unwrap();
+    /// let second_key = *second_entry.key();
+    ///
+    /// assert!(second_entry.remove_next().1.is_none());
+    /// assert_eq!(first_key + second_key, 3);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn remove_next(mut self) -> ((K, V), Option<Self>) {
+        let guard = Guard::new();
+        let entry = self.locked_entry.writer.remove(
+            self.locked_entry.data_block,
+            &mut self.locked_entry.entry_ptr,
+            self.hashmap.prolonged_guard_ref(&guard),
+        );
+        let hashmap = self.hashmap;
+        if let Some(locked_entry) = self.locked_entry.next_sync(hashmap) {
+            return (
+                entry,
+                Some(OccupiedEntry {
+                    hashmap,
+                    locked_entry,
+                }),
+            );
+        }
+        (entry, None)
+    }
+
+    /// Gets the next closest occupied entry after removing the entry.
+    ///
+    /// [`HashMap::first_entry`], [`HashMap::first_entry_async`], and this method together enables
+    /// the [`OccupiedEntry`] to effectively act as a mutable iterator over entries. The method
+    /// never acquires more than one lock even when it searches other buckets for the next closest
+    /// occupied entry.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    /// use scc::hash_map::Entry;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// assert!(hashmap.insert(2, 0).is_ok());
+    ///
+    /// let second_entry_future = hashmap.first_entry().unwrap().remove_next_async();
+    /// ```
+    #[inline]
+    pub async fn remove_next_async(mut self) -> ((K, V), Option<OccupiedEntry<'h, K, V, H>>) {
+        let guard = Guard::new();
+        let entry = self.locked_entry.writer.remove(
+            self.locked_entry.data_block,
+            &mut self.locked_entry.entry_ptr,
+            self.hashmap.prolonged_guard_ref(&guard),
+        );
+        let hashmap = self.hashmap;
+        if let Some(locked_entry) = self.locked_entry.next_async(hashmap).await {
+            return (
+                entry,
+                Some(OccupiedEntry {
+                    hashmap,
+                    locked_entry,
+                }),
+            );
+        }
+        (entry, None)
     }
 }
 
@@ -2272,7 +2358,11 @@ where
             .hashmap
             .minimum_capacity
             .fetch_sub(self.additional, Relaxed);
-        self.hashmap.try_resize(0, &Guard::new());
         debug_assert!(result >= self.additional);
+
+        let guard = Guard::new();
+        if let Some(current_array) = self.hashmap.bucket_array.load(Acquire, &guard).as_ref() {
+            self.try_shrink_or_rebuild(current_array, 0, &guard);
+        }
     }
 }
