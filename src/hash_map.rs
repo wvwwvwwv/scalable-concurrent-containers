@@ -152,7 +152,7 @@ where
     #[inline]
     pub fn with_hasher(build_hasher: H) -> Self {
         Self {
-            array: AtomicShared::null(),
+            bucket_array: AtomicShared::null(),
             minimum_capacity: AtomicUsize::new(0),
             build_hasher,
         }
