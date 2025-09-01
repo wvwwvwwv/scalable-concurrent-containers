@@ -246,6 +246,7 @@ where
     {
         debug_assert_eq!(TYPE, OPTIMISTIC);
 
+        let partial_hash = BucketArray::<K, V, L, TYPE>::partial_hash(hash);
         let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
         while let Some(current_array) = current_array_ptr.as_ref() {
             let index = current_array.calculate_bucket_index(hash);
@@ -255,7 +256,7 @@ where
                     if let Some(entry) = old_array.bucket(index).search_entry(
                         old_array.data_block(index),
                         key,
-                        BucketArray::<K, V, L, TYPE>::partial_hash(hash),
+                        partial_hash,
                         guard,
                     ) {
                         return Some(entry);
@@ -263,11 +264,10 @@ where
                 }
             }
 
-            let bucket = current_array.bucket(index);
-            if let Some(entry) = bucket.search_entry(
+            if let Some(entry) = current_array.bucket(index).search_entry(
                 current_array.data_block(index),
                 key,
-                BucketArray::<K, V, L, TYPE>::partial_hash(hash),
+                partial_hash,
                 guard,
             ) {
                 return Some(entry);
@@ -295,6 +295,7 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
+        let partial_hash = BucketArray::<K, V, L, TYPE>::partial_hash(hash);
         while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
             let index = current_array.calculate_bucket_index(hash);
             if current_array.has_old_array()
@@ -310,7 +311,7 @@ where
                 if let Some(entry) = reader.search_entry(
                     current_array.data_block(index),
                     key,
-                    BucketArray::<K, V, L, TYPE>::partial_hash(hash),
+                    partial_hash,
                     sendable_guard.guard(),
                 ) {
                     return Some(f(&entry.0, &entry.1));
@@ -334,6 +335,7 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
+        let partial_hash = BucketArray::<K, V, L, TYPE>::partial_hash(hash);
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
@@ -342,12 +344,9 @@ where
 
             let bucket = current_array.bucket(index);
             if let Some(reader) = Reader::lock_sync(bucket) {
-                if let Some(entry) = reader.search_entry(
-                    current_array.data_block(index),
-                    key,
-                    BucketArray::<K, V, L, TYPE>::partial_hash(hash),
-                    guard,
-                ) {
+                if let Some(entry) =
+                    reader.search_entry(current_array.data_block(index), key, partial_hash, guard)
+                {
                     return Some(f(&entry.0, &entry.1));
                 }
                 break;

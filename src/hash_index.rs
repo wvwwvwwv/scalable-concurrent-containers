@@ -1713,11 +1713,11 @@ where
     /// let second_entry = first_entry.remove_next().unwrap();
     /// assert_eq!(hashindex.len(),  1);
     ///
-    /// let second_entry = second_entry.unwrap();
     /// let second_key = *second_entry.key();
     ///
-    /// assert!(second_entry.remove_next().1.is_none());
+    /// assert!(second_entry.remove_next().is_none());
     /// assert_eq!(first_key + second_key, 3);
+    /// assert_eq!(hashindex.len(),  0);
     /// ```
     #[inline]
     #[must_use]

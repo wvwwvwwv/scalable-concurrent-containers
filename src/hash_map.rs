@@ -2098,6 +2098,7 @@ where
     /// let first_key = *first_entry.key();
     /// let (removed, second_entry) = first_entry.remove_next();
     /// assert_eq!(removed.1, 0);
+    /// assert_eq!(hashmap.len(), 1);
     ///
     /// let second_entry = second_entry.unwrap();
     /// let second_key = *second_entry.key();
