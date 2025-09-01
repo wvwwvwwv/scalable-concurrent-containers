@@ -1708,10 +1708,10 @@ where
     /// assert!(hashindex.insert(1, 0).is_ok());
     /// assert!(hashindex.insert(2, 0).is_ok());
     ///
-    /// let first_entry = hashmap.first_entry().unwrap();
+    /// let first_entry = hashindex.first_entry().unwrap();
     /// let first_key = *first_entry.key();
-    /// let (removed, second_entry) = first_entry.remove_next();
-    /// assert_eq!(removed, (1, 0));
+    /// let second_entry = first_entry.remove_next().unwrap();
+    /// assert_eq!(hashindex.len(),  1);
     ///
     /// let second_entry = second_entry.unwrap();
     /// let second_key = *second_entry.key();
@@ -1721,24 +1721,20 @@ where
     /// ```
     #[inline]
     #[must_use]
-    pub fn remove_next(mut self) -> ((K, V), Option<Self>) {
+    pub fn remove_next(mut self) -> Option<Self> {
         let guard = Guard::new();
-        let entry = self.locked_entry.writer.remove(
-            self.locked_entry.data_block,
+        self.locked_entry.writer.mark_removed(
             &mut self.locked_entry.entry_ptr,
             self.hashindex.prolonged_guard_ref(&guard),
         );
         let hashindex = self.hashindex;
         if let Some(locked_entry) = self.locked_entry.next_sync(hashindex) {
-            return (
-                entry,
-                Some(OccupiedEntry {
-                    hashindex,
-                    locked_entry,
-                }),
-            );
+            return Some(OccupiedEntry {
+                hashindex,
+                locked_entry,
+            });
         }
-        (entry, None)
+        None
     }
 
     /// Gets the next closest occupied entry after removing the entry.
@@ -1764,24 +1760,20 @@ where
     /// let second_entry_future = hashindex.first_entry().unwrap().remove_next_async();
     /// ```
     #[inline]
-    pub async fn remove_next_async(mut self) -> ((K, V), Option<OccupiedEntry<'h, K, V, H>>) {
+    pub async fn remove_next_async(mut self) -> Option<OccupiedEntry<'h, K, V, H>> {
         let guard = Guard::new();
-        let entry = self.locked_entry.writer.remove(
-            self.locked_entry.data_block,
+        self.locked_entry.writer.mark_removed(
             &mut self.locked_entry.entry_ptr,
             self.hashindex.prolonged_guard_ref(&guard),
         );
         let hashindex = self.hashindex;
         if let Some(locked_entry) = self.locked_entry.next_async(hashindex).await {
-            return (
-                entry,
-                Some(OccupiedEntry {
-                    hashindex,
-                    locked_entry,
-                }),
-            );
+            return Some(OccupiedEntry {
+                hashindex,
+                locked_entry,
+            });
         }
-        (entry, None)
+        None
     }
 }
 

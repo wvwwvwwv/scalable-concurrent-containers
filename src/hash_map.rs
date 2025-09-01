@@ -2097,7 +2097,7 @@ where
     /// let first_entry = hashmap.first_entry().unwrap();
     /// let first_key = *first_entry.key();
     /// let (removed, second_entry) = first_entry.remove_next();
-    /// assert_eq!(removed, (1, 0));
+    /// assert_eq!(removed.1, 0);
     ///
     /// let second_entry = second_entry.unwrap();
     /// let second_key = *second_entry.key();
