@@ -385,15 +385,15 @@ where
     /// assert!(hashset.insert(1).is_ok());
     ///
     /// async {
-    ///     let result = hashset.iter_async(|k| {
+    ///     let result = hashset.iter_async_with(|k| {
     ///         true
     ///     }).await;
     ///     assert!(result);
     /// };
     /// ```
     #[inline]
-    pub async fn iter_async<F: FnMut(&K) -> bool>(&self, mut f: F) -> bool {
-        self.map.iter_async(|k, ()| f(k)).await
+    pub async fn iter_async_with<F: FnMut(&K) -> bool>(&self, mut f: F) -> bool {
+        self.map.iter_async_with(|k, ()| f(k)).await
     }
 
     /// Iterates over entries synchronously for reading entries.
@@ -411,7 +411,7 @@ where
     /// assert!(hashset.insert(2).is_ok());
     ///
     /// let mut acc = 0;
-    /// let result = hashset.iter_sync(|k| {
+    /// let result = hashset.iter_sync_with(|k| {
     ///     acc += *k;
     ///     true
     /// });
@@ -420,8 +420,8 @@ where
     /// assert_eq!(acc, 3);
     /// ```
     #[inline]
-    pub fn iter_sync<F: FnMut(&K) -> bool>(&self, mut f: F) -> bool {
-        self.map.iter_sync(|k, ()| f(k))
+    pub fn iter_sync_with<F: FnMut(&K) -> bool>(&self, mut f: F) -> bool {
+        self.map.iter_sync_with(|k, ()| f(k))
     }
 
     /// Iterates over entries synchronously for updating entries.
@@ -439,7 +439,7 @@ where
     /// assert!(hashset.insert(2).is_ok());
     /// assert!(hashset.insert(3).is_ok());
     ///
-    /// let result = hashset.iter_mut_sync(|entry| {
+    /// let result = hashset.iter_mut_sync_with(|entry| {
     ///     if *entry == 1 {
     ///         entry.consume();
     ///         return false;
@@ -452,7 +452,7 @@ where
     /// assert_eq!(hashset.len(), 2);
     /// ```
     #[inline]
-    pub fn iter_mut_sync<F: FnMut(ConsumableEntry<'_, K>) -> bool>(&self, mut f: F) -> bool {
+    pub fn iter_mut_sync_with<F: FnMut(ConsumableEntry<'_, K>) -> bool>(&self, mut f: F) -> bool {
         let mut result = true;
         let guard = Guard::new();
         self.map
@@ -492,7 +492,7 @@ where
     /// assert!(hashset.insert(2).is_ok());
     ///
     /// async {
-    ///     let result = hashset.iter_mut_async(|entry| {
+    ///     let result = hashset.iter_mut_async_with(|entry| {
     ///         if *entry == 1 {
     ///             entry.consume();
     ///             return false;
@@ -505,7 +505,10 @@ where
     /// };
     /// ```
     #[inline]
-    pub async fn iter_mut_async<F: FnMut(ConsumableEntry<'_, K>) -> bool>(&self, mut f: F) -> bool {
+    pub async fn iter_mut_async_with<F: FnMut(ConsumableEntry<'_, K>) -> bool>(
+        &self,
+        mut f: F,
+    ) -> bool {
         let mut result = true;
         let sendable_guard = SendableGuard::default();
         self.map
@@ -763,7 +766,7 @@ where
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut d = f.debug_set();
-        self.iter_sync(|k| {
+        self.iter_sync_with(|k| {
             d.entry(k);
             true
         });
@@ -871,8 +874,8 @@ where
     /// it may lead to a deadlock if the instances are being modified by another thread.
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        if self.iter_sync(|k| other.contains(k)) {
-            return other.iter_sync(|k| self.contains(k));
+        if self.iter_sync_with(|k| other.contains(k)) {
+            return other.iter_sync_with(|k| self.contains(k));
         }
         false
     }
@@ -894,7 +897,7 @@ impl<K> ConsumableEntry<'_, K> {
     ///
     /// let mut consumed = None;
     ///
-    /// hashset.iter_mut_sync(|entry| {
+    /// hashset.iter_mut_sync_with(|entry| {
     ///     if *entry == 1 {
     ///         consumed.replace(entry.consume());
     ///     }

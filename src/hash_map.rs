@@ -1173,14 +1173,14 @@ where
     /// assert!(hashmap.insert(1, 0).is_ok());
     ///
     /// async {
-    ///     let result = hashmap.iter_async(|k, v| {
+    ///     let result = hashmap.iter_async_with(|k, v| {
     ///         false
     ///     }).await;
     ///     assert!(!result);
     /// };
     /// ```
     #[inline]
-    pub async fn iter_async<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
+    pub async fn iter_async_with<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
         let mut result = true;
         let sendable_guard = SendableGuard::default();
         self.for_each_reader_async_with(&sendable_guard, |reader, data_block| {
@@ -1213,7 +1213,7 @@ where
     /// assert!(hashmap.insert(2, 1).is_ok());
     ///
     /// let mut acc = 0_u64;
-    /// let result = hashmap.iter_sync(|k, v| {
+    /// let result = hashmap.iter_sync_with(|k, v| {
     ///     acc += *k;
     ///     acc += *v;
     ///     true
@@ -1223,7 +1223,7 @@ where
     /// assert_eq!(acc, 4);
     /// ```
     #[inline]
-    pub fn iter_sync<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
+    pub fn iter_sync_with<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
         let mut result = true;
         let guard = Guard::new();
         self.for_each_reader_sync_with(&guard, |reader, data_block| {
@@ -1255,7 +1255,7 @@ where
     /// assert!(hashmap.insert(2, 1).is_ok());
     ///
     /// async {
-    ///     let result = hashmap.iter_mut_async(|entry| {
+    ///     let result = hashmap.iter_mut_async_with(|entry| {
     ///         if entry.0 == 1 {
     ///             entry.consume();
     ///             return false;
@@ -1268,7 +1268,7 @@ where
     /// };
     /// ```
     #[inline]
-    pub async fn iter_mut_async<F: FnMut(ConsumableEntry<'_, K, V>) -> bool>(
+    pub async fn iter_mut_async_with<F: FnMut(ConsumableEntry<'_, K, V>) -> bool>(
         &self,
         mut f: F,
     ) -> bool {
@@ -1312,7 +1312,7 @@ where
     /// assert!(hashmap.insert(2, 1).is_ok());
     /// assert!(hashmap.insert(3, 2).is_ok());
     ///
-    /// let result = hashmap.iter_mut_sync(|entry| {
+    /// let result = hashmap.iter_mut_sync_with(|entry| {
     ///     if entry.0 == 1 {
     ///         entry.consume();
     ///         return false;
@@ -1325,7 +1325,10 @@ where
     /// assert_eq!(hashmap.len(), 2);
     /// ```
     #[inline]
-    pub fn iter_mut_sync<F: FnMut(ConsumableEntry<'_, K, V>) -> bool>(&self, mut f: F) -> bool {
+    pub fn iter_mut_sync_with<F: FnMut(ConsumableEntry<'_, K, V>) -> bool>(
+        &self,
+        mut f: F,
+    ) -> bool {
         let mut result = true;
         let guard = Guard::new();
         self.for_each_writer_sync_with(0, 0, &guard, |writer, data_block, _, _| {
@@ -2480,7 +2483,7 @@ impl<K, V> ConsumableEntry<'_, K, V> {
     ///
     /// let mut consumed = None;
     ///
-    /// hashmap.iter_mut_sync(|entry| {
+    /// hashmap.iter_mut_sync_with(|entry| {
     ///     if entry.0 == 1 {
     ///         consumed.replace(entry.consume().1);
     ///     }

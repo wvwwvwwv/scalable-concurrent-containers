@@ -14,6 +14,12 @@ A collection of high-performance containers and utilities for concurrent and asy
 - No spin-locks and no busy loops.
 - SIMD lookup to scan multiple entries in parallel: require `RUSTFLAGS='-C target_feature=+avx2'` on `x86_64`.
 
+#### (WIP - 3.0) API naming conventions
+
+- Methods that receive a closure are suffixed with `_with`, e.g., `peek_with`.
+- Asynchronous methods are suffixed with `_async` before the `_with` suffix, e.g., `iter_async_with`.
+- Synchronous methods are suffixed with `_sync` before the `_with` suffix, e.g., `insert_sync`.
+
 #### Concurrent and Asynchronous Containers
 
 - [`HashMap`](#hashmap) is a concurrent and asynchronous hash map.
