@@ -266,12 +266,8 @@ where
         let hash = self.hash(&key);
         let guard = Guard::new();
         self.writer_sync_with(hash, &guard, |writer, data_block, index, len| {
-            let entry_ptr = writer.get_entry_ptr(
-                data_block,
-                &key,
-                BucketArray::<K, V, (), OPTIMISTIC>::partial_hash(hash),
-                &guard,
-            );
+            let entry_ptr =
+                writer.get_entry_ptr(data_block, &key, Self::partial_hash(hash), &guard);
             let locked_entry =
                 LockedEntry::new(writer, data_block, entry_ptr.clone(), index, len, &guard)
                     .prolong_lifetime(self);
@@ -311,12 +307,7 @@ where
         let sendable_guard = SendableGuard::default();
         self.writer_async_with(hash, &sendable_guard, |writer, data_block, index, len| {
             let guard = sendable_guard.guard();
-            let entry_ptr = writer.get_entry_ptr(
-                data_block,
-                &key,
-                BucketArray::<K, V, (), OPTIMISTIC>::partial_hash(hash),
-                guard,
-            );
+            let entry_ptr = writer.get_entry_ptr(data_block, &key, Self::partial_hash(hash), guard);
             let locked_entry =
                 LockedEntry::new(writer, data_block, entry_ptr.clone(), index, len, guard)
                     .prolong_lifetime(self);
@@ -531,7 +522,7 @@ where
         let hash = self.hash(&key);
         let guard = Guard::new();
         self.writer_sync_with(hash, &guard, |writer, data_block, _, _| {
-            let partial_hash = BucketArray::<K, V, (), OPTIMISTIC>::partial_hash(hash);
+            let partial_hash = Self::partial_hash(hash);
             if writer
                 .get_entry_ptr(data_block, &key, partial_hash, &guard)
                 .is_valid()
@@ -566,7 +557,7 @@ where
         let sendable_guard = SendableGuard::default();
         self.writer_async_with(hash, &sendable_guard, |writer, data_block, _, _| {
             let guard = sendable_guard.guard();
-            let partial_hash = BucketArray::<K, V, (), OPTIMISTIC>::partial_hash(hash);
+            let partial_hash = Self::partial_hash(hash);
             if writer
                 .get_entry_ptr(data_block, &key, partial_hash, guard)
                 .is_valid()
@@ -657,12 +648,8 @@ where
         let hash = self.hash(key);
         let guard = Guard::default();
         self.optional_writer_sync_with(hash, &guard, |writer, data_block, _, _| {
-            let mut entry_ptr = writer.get_entry_ptr(
-                data_block,
-                key,
-                BucketArray::<K, V, (), OPTIMISTIC>::partial_hash(hash),
-                &guard,
-            );
+            let mut entry_ptr =
+                writer.get_entry_ptr(data_block, key, Self::partial_hash(hash), &guard);
             if entry_ptr.is_valid() && condition(&mut entry_ptr.get_mut(data_block, &writer).1) {
                 writer.mark_removed(&mut entry_ptr, &guard);
                 (true, writer.need_rebuild())
@@ -702,7 +689,7 @@ where
             let mut entry_ptr = writer.get_entry_ptr(
                 data_block,
                 key,
-                BucketArray::<K, V, (), OPTIMISTIC>::partial_hash(hash),
+                Self::partial_hash(hash),
                 sendable_guard.guard(),
             );
             if entry_ptr.is_valid() && condition(&mut entry_ptr.get_mut(data_block, &writer).1) {
@@ -744,12 +731,7 @@ where
         let hash = self.hash(key);
         let guard = Guard::default();
         self.optional_writer_sync_with(hash, &guard, |writer, data_block, index, len| {
-            let entry_ptr = writer.get_entry_ptr(
-                data_block,
-                key,
-                BucketArray::<K, V, (), OPTIMISTIC>::partial_hash(hash),
-                &guard,
-            );
+            let entry_ptr = writer.get_entry_ptr(data_block, key, Self::partial_hash(hash), &guard);
             if entry_ptr.is_valid() {
                 let locked_entry =
                     LockedEntry::new(writer, data_block, entry_ptr, index, len, &guard)
@@ -794,12 +776,7 @@ where
         let sendable_guard = SendableGuard::default();
         self.optional_writer_async_with(hash, &sendable_guard, |writer, data_block, index, len| {
             let guard = sendable_guard.guard();
-            let entry_ptr = writer.get_entry_ptr(
-                data_block,
-                key,
-                BucketArray::<K, V, (), OPTIMISTIC>::partial_hash(hash),
-                guard,
-            );
+            let entry_ptr = writer.get_entry_ptr(data_block, key, Self::partial_hash(hash), guard);
             if entry_ptr.is_valid() {
                 let locked_entry =
                     LockedEntry::new(writer, data_block, entry_ptr, index, len, guard)
@@ -1912,7 +1889,7 @@ where
         let guard = Guard::new();
         let entry_ptr = self.locked_entry.writer.insert_with(
             self.locked_entry.data_block,
-            BucketArray::<K, V, (), OPTIMISTIC>::partial_hash(self.hash),
+            HashIndex::<K, V, H>::partial_hash(self.hash),
             || (self.key, val),
             self.hashindex.prolonged_guard_ref(&guard),
         );

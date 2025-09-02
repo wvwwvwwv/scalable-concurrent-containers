@@ -32,6 +32,13 @@ where
         self.hasher().hash_one(key)
     }
 
+    /// Returns the partial hash value of the given hash.
+    #[allow(clippy::cast_possible_truncation)]
+    #[inline]
+    fn partial_hash(hash: u64) -> u8 {
+        (hash & (u64::from(u8::MAX))) as u8
+    }
+
     /// Returns a reference to its [`BuildHasher`].
     fn hasher(&self) -> &H;
 
@@ -61,7 +68,6 @@ where
     /// Reserves the specified capacity.
     ///
     /// Returns the actually allocated capacity.
-    #[inline]
     fn reserve_capacity(&self, additional_capacity: usize) -> usize {
         let mut current_minimum_capacity = self.minimum_capacity().load(Relaxed);
         loop {
@@ -180,7 +186,6 @@ where
     }
 
     /// Returns `true` if the number of entries is non-zero.
-    #[inline]
     fn has_entry(&self, guard: &Guard) -> bool {
         if let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let old_array_ptr = current_array.old_array(guard);
@@ -246,7 +251,7 @@ where
     {
         debug_assert_eq!(TYPE, OPTIMISTIC);
 
-        let partial_hash = BucketArray::<K, V, L, TYPE>::partial_hash(hash);
+        let partial_hash = Self::partial_hash(hash);
         let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
         while let Some(current_array) = current_array_ptr.as_ref() {
             let index = current_array.calculate_bucket_index(hash);
@@ -295,7 +300,7 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        let partial_hash = BucketArray::<K, V, L, TYPE>::partial_hash(hash);
+        let partial_hash = Self::partial_hash(hash);
         while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
             let index = current_array.calculate_bucket_index(hash);
             if current_array.has_old_array()
@@ -335,7 +340,7 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        let partial_hash = BucketArray::<K, V, L, TYPE>::partial_hash(hash);
+        let partial_hash = Self::partial_hash(hash);
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
@@ -691,12 +696,8 @@ where
             };
             if let Some(writer) = writer {
                 let data_block = current_array.data_block(index);
-                let entry_ptr = writer.get_entry_ptr(
-                    data_block,
-                    key,
-                    BucketArray::<K, V, L, TYPE>::partial_hash(hash),
-                    guard,
-                );
+                let entry_ptr =
+                    writer.get_entry_ptr(data_block, key, Self::partial_hash(hash), guard);
                 return Some(LockedEntry::new(
                     writer,
                     data_block,
@@ -720,7 +721,6 @@ where
     /// bucket array of a different size has been allocated in the same memory region. In order
     /// to avoid this problem, if it finds a killed bucket and the task was suspended, returns
     /// `false`.
-    #[inline]
     async fn dedup_bucket_async<'g>(
         &self,
         current_array: &'g BucketArray<K, V, L, TYPE>,
@@ -846,7 +846,7 @@ where
                 let hash = self.hash(&old_entry.0);
                 let new_index = current_array.calculate_bucket_index(hash);
                 debug_assert!(new_index - target_index < (current_array.len() / old_array.len()));
-                let partial_hash = BucketArray::<K, V, L, TYPE>::partial_hash(hash);
+                let partial_hash = Self::partial_hash(hash);
                 (new_index, partial_hash)
             };
 
@@ -914,7 +914,7 @@ where
                 let hash = self.hash(&old_entry.0);
                 let new_index = current_array.calculate_bucket_index(hash);
                 debug_assert!(new_index - target_index < (current_array.len() / old_array.len()));
-                let partial_hash = BucketArray::<K, V, L, TYPE>::partial_hash(hash);
+                let partial_hash = Self::partial_hash(hash);
                 (new_index, partial_hash)
             };
 
@@ -952,6 +952,7 @@ where
     }
 
     /// Starts incremental rehashing.
+    #[inline]
     fn start_incremental_rehash(&self, old_array: &BucketArray<K, V, L, TYPE>) -> Option<usize> {
         // Assign itself a range of `Bucket` instances to rehash.
         //
@@ -980,6 +981,7 @@ where
     }
 
     /// Ends incremental rehashing.
+    #[inline]
     fn end_incremental_rehash(
         &self,
         current_array: &BucketArray<K, V, L, TYPE>,
@@ -1147,7 +1149,7 @@ where
             for i in 0..sample_size {
                 let bucket = current_array.bucket((index + i) % current_array.len());
                 num_entries += bucket.len();
-                if num_entries >= shrink_threshold
+                if num_entries > shrink_threshold
                     && (TYPE != OPTIMISTIC
                         || num_buckets_to_rebuild + (sample_size - i) < rebuild_threshold)
                 {
@@ -1162,7 +1164,7 @@ where
                     num_buckets_to_rebuild += 1;
                 }
             }
-            if TYPE != OPTIMISTIC || num_entries < shrink_threshold {
+            if TYPE != OPTIMISTIC || num_entries <= shrink_threshold {
                 self.try_resize(current_array, index, guard);
             }
         }
@@ -1190,14 +1192,14 @@ where
         }
         debug_assert!(!current_array.has_old_array());
 
-        // The resizing policies are as follows.
-        //  - `The estimated load factor >= 13/16`, then the hash table grows up to `32x`.
-        //  - `The estimated load factor <= 1/16`, then the hash table shrinks to fit.
+        // If the estimated load factor is greater than `13/16`, then the hash table grows up to
+        // `usize::BITS / 2` times larger. Oh the other hand, if The estimated load factor is less
+        // than `1/8`, then the hash table shrinks to fit.
         let minimum_capacity = self.minimum_capacity().load(Relaxed);
         let capacity = current_array.num_slots();
         let sample_size = current_array.full_sample_size();
         let estimated_num_entries = Self::sample(current_array, sampling_index, sample_size);
-        let new_capacity = if estimated_num_entries >= (capacity / 16) * 13 {
+        let new_capacity = if estimated_num_entries > (capacity / 16) * 13 {
             if capacity == self.maximum_capacity() {
                 // Do not resize if the capacity cannot be increased.
                 capacity
@@ -1215,7 +1217,7 @@ where
                 }
                 new_capacity
             }
-        } else if estimated_num_entries <= capacity / 16 {
+        } else if estimated_num_entries < capacity / 8 {
             // Shrink to fit.
             estimated_num_entries
                 .max(minimum_capacity)
@@ -1300,6 +1302,7 @@ where
     }
 
     /// Entries may have been removed during iteration.
+    #[inline]
     fn entry_removed(&self, index: usize, guard: &Guard) {
         if let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             if current_array.len() > index && current_array.bucket(index).len() == 0 {
@@ -1308,6 +1311,7 @@ where
         }
     }
     // Returns an estimated required size of the container based on the size hint.
+    #[inline]
     fn capacity_from_size_hint(size_hint: (usize, Option<usize>)) -> usize {
         // A resize can be triggered when the load factor reaches ~80%.
         (size_hint
@@ -1319,8 +1323,7 @@ where
     }
 
     /// Returns a reference to the specified [`Guard`] whose lifetime matches that of `self`.
-    #[allow(clippy::inline_always)] // Very trivial method.
-    #[inline(always)]
+    #[inline]
     fn prolonged_guard_ref<'h>(&'h self, guard: &Guard) -> &'h Guard {
         let _: &Self = self;
         unsafe { std::mem::transmute::<&Guard, &'h Guard>(guard) }
@@ -1343,6 +1346,7 @@ pub(super) struct LockedEntry<'h, K, V, L: LruList, const TYPE: char> {
 
 impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h, K, V, L, TYPE> {
     /// Creates a new [`LockedEntry`].
+    #[inline]
     pub(super) fn new(
         writer: Writer<'h, K, V, L, TYPE>,
         data_block: &'h DataBlock<K, V, BUCKET_LEN>,
@@ -1364,13 +1368,13 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
     }
 
     /// Prolongs its lifetime.
-    #[allow(clippy::inline_always)] // Very trivial method.
-    #[inline(always)]
+    #[inline]
     pub(super) fn prolong_lifetime<T>(self, _ref: &T) -> LockedEntry<'_, K, V, L, TYPE> {
         unsafe { std::mem::transmute::<_, _>(self) }
     }
 
     /// Returns a [`LockedEntry`] owning the next entry.
+    #[inline]
     pub(super) async fn next_async<H: BuildHasher, T: HashTable<K, V, H, L, TYPE>>(
         mut self,
         hash_table: &'h T,
@@ -1421,6 +1425,7 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
     }
 
     /// Returns a [`LockedEntry`] owning the next entry.
+    #[inline]
     pub(super) fn next_sync<H: BuildHasher, T: HashTable<K, V, H, L, TYPE>>(
         mut self,
         hash_table: &'h T,
