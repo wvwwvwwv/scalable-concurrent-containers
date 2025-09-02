@@ -166,12 +166,13 @@ where
     {
         let mut seq = serializer.serialize_seq(Some(self.len()))?;
         let mut error = None;
-        self.scan(|k| {
+        self.iter_sync(|k| {
             if error.is_none() {
                 if let Err(e) = seq.serialize_element(k) {
                     error.replace(e);
                 }
             }
+            true
         });
         if let Some(e) = error {
             return Err(e);
