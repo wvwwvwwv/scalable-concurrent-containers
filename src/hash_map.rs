@@ -1159,6 +1159,45 @@ where
         found
     }
 
+    /// Iterates over entries asynchronously for reading entries.
+    ///
+    /// Stops iterating when the closure returns `false`, and this method also returns `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u64> = HashMap::default();
+    ///
+    /// assert!(hashmap.insert(1, 0).is_ok());
+    ///
+    /// async {
+    ///     let result = hashmap.iter_async(|k, v| {
+    ///         false
+    ///     }).await;
+    ///     assert!(!result);
+    /// };
+    /// ```
+    #[inline]
+    pub async fn iter_async<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
+        let mut result = true;
+        let sendable_guard = SendableGuard::default();
+        self.for_each_reader_async_with(&sendable_guard, |reader, data_block| {
+            let mut entry_ptr = EntryPtr::new(sendable_guard.guard());
+            while entry_ptr.move_to_next(&reader, sendable_guard.guard()) {
+                let (k, v) = entry_ptr.get(data_block);
+                if !f(k, v) {
+                    result = false;
+                    return false;
+                }
+            }
+            true
+        })
+        .await;
+        result
+    }
+
     /// Iterates over entries synchronously for reading entries.
     ///
     /// Stops iterating when the closure returns `false`, and this method also returns `false`.
@@ -1187,7 +1226,7 @@ where
     pub fn iter_sync<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
         let mut result = true;
         let guard = Guard::new();
-        self.for_each_reader_sync_with(0, 0, &guard, |reader, data_block, _, _| {
+        self.for_each_reader_sync_with(&guard, |reader, data_block| {
             let mut entry_ptr = EntryPtr::new(&guard);
             while entry_ptr.move_to_next(&reader, &guard) {
                 let (k, v) = entry_ptr.get(data_block);
@@ -1198,6 +1237,63 @@ where
             }
             true
         });
+        result
+    }
+
+    /// Iterates over entries asynchronously for updating entries.
+    ///
+    /// Stops iterating when the closure returns `false`, and this method also returns `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// assert!(hashmap.insert(2, 1).is_ok());
+    ///
+    /// async {
+    ///     let result = hashmap.iter_mut_async(|entry| {
+    ///         if entry.0 == 1 {
+    ///             entry.consume();
+    ///             return false;
+    ///         }
+    ///         true
+    ///     }).await;
+    ///
+    ///     assert!(!result);
+    ///     assert_eq!(hashmap.len(), 1);
+    /// };
+    /// ```
+    #[inline]
+    pub async fn iter_mut_async<F: FnMut(ConsumableEntry<'_, K, V>) -> bool>(
+        &self,
+        mut f: F,
+    ) -> bool {
+        let mut result = true;
+        let sendable_guard = SendableGuard::default();
+        self.for_each_writer_async_with(0, 0, &sendable_guard, |writer, data_block, _, _| {
+            let mut removed = false;
+            let guard = sendable_guard.guard();
+            let mut entry_ptr = EntryPtr::new(guard);
+            while entry_ptr.move_to_next(&writer, guard) {
+                let consumable_entry = ConsumableEntry {
+                    writer: &writer,
+                    data_block,
+                    entry_ptr: entry_ptr.clone(),
+                    remove_probe: &mut removed,
+                    guard,
+                };
+                if !f(consumable_entry) {
+                    result = false;
+                    return (true, removed);
+                }
+            }
+            (false, removed)
+        })
+        .await;
         result
     }
 

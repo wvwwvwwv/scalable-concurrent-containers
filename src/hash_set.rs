@@ -9,6 +9,7 @@ use sdd::Guard;
 
 use super::hash_table::HashTable;
 use super::{Equivalent, HashMap};
+use crate::async_helper::SendableGuard;
 use crate::hash_table::bucket::{BUCKET_LEN, DataBlock, EntryPtr, SEQUENTIAL, Writer};
 
 /// Scalable concurrent hash set.
@@ -370,6 +371,31 @@ where
         self.map.contains_async(key).await
     }
 
+    /// Iterates over entries asynchronously for reading entries.
+    ///
+    /// Stops iterating when the closure returns `false`, and this method also returns `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    ///
+    /// let hashset: HashSet<u64> = HashSet::default();
+    ///
+    /// assert!(hashset.insert(1).is_ok());
+    ///
+    /// async {
+    ///     let result = hashset.iter_async(|k| {
+    ///         true
+    ///     }).await;
+    ///     assert!(result);
+    /// };
+    /// ```
+    #[inline]
+    pub async fn iter_async<F: FnMut(&K) -> bool>(&self, mut f: F) -> bool {
+        self.map.iter_async(|k, ()| f(k)).await
+    }
+
     /// Iterates over entries synchronously for reading entries.
     ///
     /// Stops iterating when the closure returns `false`, and this method also returns `false`.
@@ -448,6 +474,61 @@ where
                 }
                 (false, removed)
             });
+        result
+    }
+
+    /// Iterates over entries asynchronously for updating entries.
+    ///
+    /// Stops iterating when the closure returns `false`, and this method also returns `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    ///
+    /// let hashset: HashSet<u64> = HashSet::default();
+    ///
+    /// assert!(hashset.insert(1).is_ok());
+    /// assert!(hashset.insert(2).is_ok());
+    ///
+    /// async {
+    ///     let result = hashset.iter_mut_async(|entry| {
+    ///         if *entry == 1 {
+    ///             entry.consume();
+    ///             return false;
+    ///         }
+    ///         true
+    ///     }).await;
+    ///
+    ///     assert!(!result);
+    ///     assert_eq!(hashset.len(), 1);
+    /// };
+    /// ```
+    #[inline]
+    pub async fn iter_mut_async<F: FnMut(ConsumableEntry<'_, K>) -> bool>(&self, mut f: F) -> bool {
+        let mut result = true;
+        let sendable_guard = SendableGuard::default();
+        self.map
+            .for_each_writer_async_with(0, 0, &sendable_guard, |writer, data_block, _, _| {
+                let mut removed = false;
+                let guard = sendable_guard.guard();
+                let mut entry_ptr = EntryPtr::new(guard);
+                while entry_ptr.move_to_next(&writer, guard) {
+                    let consumable_entry = ConsumableEntry {
+                        writer: &writer,
+                        data_block,
+                        entry_ptr: entry_ptr.clone(),
+                        remove_probe: &mut removed,
+                        guard,
+                    };
+                    if !f(consumable_entry) {
+                        result = false;
+                        return (true, removed);
+                    }
+                }
+                (false, removed)
+            })
+            .await;
         result
     }
 

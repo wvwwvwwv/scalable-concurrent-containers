@@ -520,20 +520,120 @@ where
         Err(f)
     }
 
+    /// Iterates over all the buckets in the [`HashTable`] asynchronously.
+    ///
+    /// This methods stops iterating when the closure returns `false`.
+    #[inline]
+    async fn for_each_reader_async_with<F>(&self, sendable_guard: &SendableGuard, mut f: F)
+    where
+        F: FnMut(Reader<K, V, L, TYPE>, &DataBlock<K, V, BUCKET_LEN>) -> bool,
+    {
+        let mut start_index = 0;
+        let mut prev_len = 0;
+        while let Some(current_array) = self
+            .bucket_array()
+            .load(Acquire, sendable_guard.guard())
+            .as_ref()
+        {
+            // In case the method is repeating the routine, iterate over entries from the middle of
+            // the array.
+            start_index = if prev_len == 0 || prev_len == current_array.len() {
+                start_index
+            } else {
+                Self::from_index_to_range(prev_len, current_array.len(), start_index).0
+            };
+            prev_len = current_array.len();
+
+            while start_index < current_array.len() {
+                let index = start_index;
+                if current_array.has_old_array()
+                    && !self
+                        .dedup_bucket_async(current_array, index, sendable_guard)
+                        .await
+                {
+                    // Retry the operation since there is a possibility that the current bucket
+                    // array was replaced by a new one.
+                    break;
+                }
+
+                let bucket = current_array.bucket(index);
+                if let Some(reader) = Reader::lock_sync(bucket) {
+                    let data_block = current_array.data_block(index);
+                    if !f(reader, data_block) {
+                        return;
+                    }
+                } else {
+                    // `current_array` is no longer the current one.
+                    break;
+                }
+                start_index += 1;
+            }
+
+            if start_index == current_array.len() {
+                break;
+            }
+        }
+    }
+
+    /// Iterates over all the buckets in the [`HashTable`] synchronously.
+    ///
+    /// This methods stops iterating when the closure returns `false`.
+    #[inline]
+    fn for_each_reader_sync_with<F>(&self, guard: &Guard, mut f: F)
+    where
+        F: FnMut(Reader<K, V, L, TYPE>, &DataBlock<K, V, BUCKET_LEN>) -> bool,
+    {
+        let mut start_index = 0;
+        let mut prev_len = 0;
+        while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
+            // In case the method is repeating the routine, iterate over entries from the middle of
+            // the array.
+            start_index = if prev_len == 0 || prev_len == current_array.len() {
+                start_index
+            } else {
+                Self::from_index_to_range(prev_len, current_array.len(), start_index).0
+            };
+            prev_len = current_array.len();
+
+            while start_index < current_array.len() {
+                let index = start_index;
+                if let Some(old_array) = current_array.old_array(guard).as_ref() {
+                    self.dedup_bucket_sync::<false>(current_array, old_array, index, guard);
+                }
+
+                let bucket = current_array.bucket(index);
+                if let Some(reader) = Reader::lock_sync(bucket) {
+                    let data_block = current_array.data_block(index);
+                    if !f(reader, data_block) {
+                        return;
+                    }
+                } else {
+                    // `current_array` is no longer the current one.
+                    break;
+                }
+                start_index += 1;
+            }
+
+            if start_index == current_array.len() {
+                break;
+            }
+        }
+    }
+
     /// Iterates over all the buckets in the [`HashTable`].
     ///
     /// This methods stops iterating when the closure returns `(true, _)`. The closure returning
     /// `(_, true)` means that entries were removed from the bucket.
     #[inline]
-    async fn for_each_writer_async_with<
-        F: FnMut(Writer<K, V, L, TYPE>, &DataBlock<K, V, BUCKET_LEN>, usize, usize) -> (bool, bool),
-    >(
+    async fn for_each_writer_async_with<F>(
         &self,
         mut start_index: usize,
         expected_array_len: usize,
         sendable_guard: &SendableGuard,
         mut f: F,
-    ) {
+    ) where
+        F: FnMut(Writer<K, V, L, TYPE>, &DataBlock<K, V, BUCKET_LEN>, usize, usize) -> (bool, bool),
+    {
         let mut try_shrink = false;
         let mut prev_len = expected_array_len;
         while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
@@ -587,70 +687,20 @@ where
         }
     }
 
-    /// Iterates over all the buckets in the [`HashTable`] synchronously.
-    ///
-    /// This methods stops iterating when the closure returns `false`.
-    #[inline]
-    fn for_each_reader_sync_with<
-        F: FnMut(Reader<K, V, L, TYPE>, &DataBlock<K, V, BUCKET_LEN>, usize, usize) -> bool,
-    >(
-        &self,
-        mut start_index: usize,
-        expected_array_len: usize,
-        guard: &Guard,
-        mut f: F,
-    ) {
-        let mut prev_len = expected_array_len;
-        while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
-            // In case the method is repeating the routine, iterate over entries from the middle of
-            // the array.
-            let current_array_len = current_array.len();
-            start_index = if prev_len == 0 || prev_len == current_array_len {
-                start_index
-            } else {
-                Self::from_index_to_range(prev_len, current_array_len, start_index).0
-            };
-            prev_len = current_array_len;
-
-            while start_index < current_array_len {
-                let index = start_index;
-                if let Some(old_array) = current_array.old_array(guard).as_ref() {
-                    self.dedup_bucket_sync::<false>(current_array, old_array, index, guard);
-                }
-
-                let bucket = current_array.bucket(index);
-                if let Some(reader) = Reader::lock_sync(bucket) {
-                    let data_block = current_array.data_block(index);
-                    if !f(reader, data_block, index, current_array_len) {
-                        return;
-                    }
-                } else {
-                    // `current_array` is no longer the current one.
-                    break;
-                }
-                start_index += 1;
-            }
-
-            if start_index == current_array_len {
-                break;
-            }
-        }
-    }
-
     /// Iterates over all the buckets in the [`HashTable`].
     ///
     /// This methods stops iterating when the closure returns `(true, _)`. The closure returning
     /// `(_, true)` means that entries were removed from the bucket.
     #[inline]
-    fn for_each_writer_sync_with<
-        F: FnMut(Writer<K, V, L, TYPE>, &DataBlock<K, V, BUCKET_LEN>, usize, usize) -> (bool, bool),
-    >(
+    fn for_each_writer_sync_with<F>(
         &self,
         mut start_index: usize,
         expected_array_len: usize,
         guard: &Guard,
         mut f: F,
-    ) {
+    ) where
+        F: FnMut(Writer<K, V, L, TYPE>, &DataBlock<K, V, BUCKET_LEN>, usize, usize) -> (bool, bool),
+    {
         let mut try_shrink = false;
         let mut prev_len = expected_array_len;
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
