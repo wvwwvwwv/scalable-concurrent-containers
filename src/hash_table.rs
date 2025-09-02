@@ -61,7 +61,6 @@ where
     /// Reserves the specified capacity.
     ///
     /// Returns the actually allocated capacity.
-    #[inline]
     fn reserve_capacity(&self, additional_capacity: usize) -> usize {
         let mut current_minimum_capacity = self.minimum_capacity().load(Relaxed);
         loop {
@@ -180,7 +179,6 @@ where
     }
 
     /// Returns `true` if the number of entries is non-zero.
-    #[inline]
     fn has_entry(&self, guard: &Guard) -> bool {
         if let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let old_array_ptr = current_array.old_array(guard);
@@ -246,7 +244,6 @@ where
     {
         debug_assert_eq!(TYPE, OPTIMISTIC);
 
-        let partial_hash = BucketArray::<K, V, L, TYPE>::partial_hash(hash);
         let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
         while let Some(current_array) = current_array_ptr.as_ref() {
             let index = current_array.calculate_bucket_index(hash);
@@ -256,7 +253,7 @@ where
                     if let Some(entry) = old_array.bucket(index).search_entry(
                         old_array.data_block(index),
                         key,
-                        partial_hash,
+                        hash,
                         guard,
                     ) {
                         return Some(entry);
@@ -267,7 +264,7 @@ where
             if let Some(entry) = current_array.bucket(index).search_entry(
                 current_array.data_block(index),
                 key,
-                partial_hash,
+                hash,
                 guard,
             ) {
                 return Some(entry);
@@ -295,7 +292,6 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        let partial_hash = BucketArray::<K, V, L, TYPE>::partial_hash(hash);
         while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
             let index = current_array.calculate_bucket_index(hash);
             if current_array.has_old_array()
@@ -311,7 +307,7 @@ where
                 if let Some(entry) = reader.search_entry(
                     current_array.data_block(index),
                     key,
-                    partial_hash,
+                    hash,
                     sendable_guard.guard(),
                 ) {
                     return Some(f(&entry.0, &entry.1));
@@ -335,7 +331,6 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        let partial_hash = BucketArray::<K, V, L, TYPE>::partial_hash(hash);
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
@@ -345,7 +340,7 @@ where
             let bucket = current_array.bucket(index);
             if let Some(reader) = Reader::lock_sync(bucket) {
                 if let Some(entry) =
-                    reader.search_entry(current_array.data_block(index), key, partial_hash, guard)
+                    reader.search_entry(current_array.data_block(index), key, hash, guard)
                 {
                     return Some(f(&entry.0, &entry.1));
                 }
@@ -525,20 +520,120 @@ where
         Err(f)
     }
 
+    /// Iterates over all the buckets in the [`HashTable`] asynchronously.
+    ///
+    /// This methods stops iterating when the closure returns `false`.
+    #[inline]
+    async fn for_each_reader_async_with<F>(&self, sendable_guard: &SendableGuard, mut f: F)
+    where
+        F: FnMut(Reader<K, V, L, TYPE>, &DataBlock<K, V, BUCKET_LEN>) -> bool,
+    {
+        let mut start_index = 0;
+        let mut prev_len = 0;
+        while let Some(current_array) = self
+            .bucket_array()
+            .load(Acquire, sendable_guard.guard())
+            .as_ref()
+        {
+            // In case the method is repeating the routine, iterate over entries from the middle of
+            // the array.
+            start_index = if prev_len == 0 || prev_len == current_array.len() {
+                start_index
+            } else {
+                Self::from_index_to_range(prev_len, current_array.len(), start_index).0
+            };
+            prev_len = current_array.len();
+
+            while start_index < current_array.len() {
+                let index = start_index;
+                if current_array.has_old_array()
+                    && !self
+                        .dedup_bucket_async(current_array, index, sendable_guard)
+                        .await
+                {
+                    // Retry the operation since there is a possibility that the current bucket
+                    // array was replaced by a new one.
+                    break;
+                }
+
+                let bucket = current_array.bucket(index);
+                if let Some(reader) = Reader::lock_sync(bucket) {
+                    let data_block = current_array.data_block(index);
+                    if !f(reader, data_block) {
+                        return;
+                    }
+                } else {
+                    // `current_array` is no longer the current one.
+                    break;
+                }
+                start_index += 1;
+            }
+
+            if start_index == current_array.len() {
+                break;
+            }
+        }
+    }
+
+    /// Iterates over all the buckets in the [`HashTable`] synchronously.
+    ///
+    /// This methods stops iterating when the closure returns `false`.
+    #[inline]
+    fn for_each_reader_sync_with<F>(&self, guard: &Guard, mut f: F)
+    where
+        F: FnMut(Reader<K, V, L, TYPE>, &DataBlock<K, V, BUCKET_LEN>) -> bool,
+    {
+        let mut start_index = 0;
+        let mut prev_len = 0;
+        while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
+            // In case the method is repeating the routine, iterate over entries from the middle of
+            // the array.
+            start_index = if prev_len == 0 || prev_len == current_array.len() {
+                start_index
+            } else {
+                Self::from_index_to_range(prev_len, current_array.len(), start_index).0
+            };
+            prev_len = current_array.len();
+
+            while start_index < current_array.len() {
+                let index = start_index;
+                if let Some(old_array) = current_array.old_array(guard).as_ref() {
+                    self.dedup_bucket_sync::<false>(current_array, old_array, index, guard);
+                }
+
+                let bucket = current_array.bucket(index);
+                if let Some(reader) = Reader::lock_sync(bucket) {
+                    let data_block = current_array.data_block(index);
+                    if !f(reader, data_block) {
+                        return;
+                    }
+                } else {
+                    // `current_array` is no longer the current one.
+                    break;
+                }
+                start_index += 1;
+            }
+
+            if start_index == current_array.len() {
+                break;
+            }
+        }
+    }
+
     /// Iterates over all the buckets in the [`HashTable`].
     ///
     /// This methods stops iterating when the closure returns `(true, _)`. The closure returning
     /// `(_, true)` means that entries were removed from the bucket.
     #[inline]
-    async fn for_each_writer_async_with<
-        F: FnMut(Writer<K, V, L, TYPE>, &DataBlock<K, V, BUCKET_LEN>, usize, usize) -> (bool, bool),
-    >(
+    async fn for_each_writer_async_with<F>(
         &self,
         mut start_index: usize,
         expected_array_len: usize,
         sendable_guard: &SendableGuard,
         mut f: F,
-    ) {
+    ) where
+        F: FnMut(Writer<K, V, L, TYPE>, &DataBlock<K, V, BUCKET_LEN>, usize, usize) -> (bool, bool),
+    {
         let mut try_shrink = false;
         let mut prev_len = expected_array_len;
         while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
@@ -597,15 +692,15 @@ where
     /// This methods stops iterating when the closure returns `(true, _)`. The closure returning
     /// `(_, true)` means that entries were removed from the bucket.
     #[inline]
-    fn for_each_writer_sync_with<
-        F: FnMut(Writer<K, V, L, TYPE>, &DataBlock<K, V, BUCKET_LEN>, usize, usize) -> (bool, bool),
-    >(
+    fn for_each_writer_sync_with<F>(
         &self,
         mut start_index: usize,
         expected_array_len: usize,
         guard: &Guard,
         mut f: F,
-    ) {
+    ) where
+        F: FnMut(Writer<K, V, L, TYPE>, &DataBlock<K, V, BUCKET_LEN>, usize, usize) -> (bool, bool),
+    {
         let mut try_shrink = false;
         let mut prev_len = expected_array_len;
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
@@ -691,12 +786,7 @@ where
             };
             if let Some(writer) = writer {
                 let data_block = current_array.data_block(index);
-                let entry_ptr = writer.get_entry_ptr(
-                    data_block,
-                    key,
-                    BucketArray::<K, V, L, TYPE>::partial_hash(hash),
-                    guard,
-                );
+                let entry_ptr = writer.get_entry_ptr(data_block, key, hash, guard);
                 return Some(LockedEntry::new(
                     writer,
                     data_block,
@@ -720,7 +810,6 @@ where
     /// bucket array of a different size has been allocated in the same memory region. In order
     /// to avoid this problem, if it finds a killed bucket and the task was suspended, returns
     /// `false`.
-    #[inline]
     async fn dedup_bucket_async<'g>(
         &self,
         current_array: &'g BucketArray<K, V, L, TYPE>,
@@ -836,18 +925,20 @@ where
         let old_data_block = old_array.data_block(old_index);
         while entry_ptr.move_to_next(&old_writer, sendable_guard.guard()) {
             let old_entry = entry_ptr.get(old_data_block);
-            let (new_index, partial_hash) = if old_array.len() >= current_array.len() {
+            let (new_index, hash) = if old_array.len() >= current_array.len() {
                 debug_assert_eq!(
                     current_array.calculate_bucket_index(self.hash(&old_entry.0)),
                     target_index
                 );
-                (target_index, entry_ptr.partial_hash(&*old_writer))
+                (
+                    target_index,
+                    u64::from(entry_ptr.partial_hash(&*old_writer)),
+                )
             } else {
                 let hash = self.hash(&old_entry.0);
                 let new_index = current_array.calculate_bucket_index(hash);
                 debug_assert!(new_index - target_index < (current_array.len() / old_array.len()));
-                let partial_hash = BucketArray::<K, V, L, TYPE>::partial_hash(hash);
-                (new_index, partial_hash)
+                (new_index, hash)
             };
 
             while max_index <= new_index - target_index {
@@ -869,7 +960,7 @@ where
 
             target_bucket.extract_from(
                 current_array.data_block(new_index),
-                partial_hash,
+                hash,
                 &old_writer,
                 old_data_block,
                 &mut entry_ptr,
@@ -904,18 +995,20 @@ where
         let old_data_block = old_array.data_block(old_index);
         while entry_ptr.move_to_next(&old_writer, guard) {
             let old_entry = entry_ptr.get(old_data_block);
-            let (new_index, partial_hash) = if old_array.len() >= current_array.len() {
+            let (new_index, hash) = if old_array.len() >= current_array.len() {
                 debug_assert_eq!(
                     current_array.calculate_bucket_index(self.hash(&old_entry.0)),
                     target_index
                 );
-                (target_index, entry_ptr.partial_hash(&*old_writer))
+                (
+                    target_index,
+                    u64::from(entry_ptr.partial_hash(&*old_writer)),
+                )
             } else {
                 let hash = self.hash(&old_entry.0);
                 let new_index = current_array.calculate_bucket_index(hash);
                 debug_assert!(new_index - target_index < (current_array.len() / old_array.len()));
-                let partial_hash = BucketArray::<K, V, L, TYPE>::partial_hash(hash);
-                (new_index, partial_hash)
+                (new_index, hash)
             };
 
             while max_index <= new_index - target_index {
@@ -940,7 +1033,7 @@ where
 
             target_bucket.extract_from(
                 current_array.data_block(new_index),
-                partial_hash,
+                hash,
                 &old_writer,
                 old_data_block,
                 &mut entry_ptr,
@@ -952,6 +1045,7 @@ where
     }
 
     /// Starts incremental rehashing.
+    #[inline]
     fn start_incremental_rehash(&self, old_array: &BucketArray<K, V, L, TYPE>) -> Option<usize> {
         // Assign itself a range of `Bucket` instances to rehash.
         //
@@ -980,6 +1074,7 @@ where
     }
 
     /// Ends incremental rehashing.
+    #[inline]
     fn end_incremental_rehash(
         &self,
         current_array: &BucketArray<K, V, L, TYPE>,
@@ -1147,7 +1242,7 @@ where
             for i in 0..sample_size {
                 let bucket = current_array.bucket((index + i) % current_array.len());
                 num_entries += bucket.len();
-                if num_entries >= shrink_threshold
+                if num_entries > shrink_threshold
                     && (TYPE != OPTIMISTIC
                         || num_buckets_to_rebuild + (sample_size - i) < rebuild_threshold)
                 {
@@ -1162,7 +1257,7 @@ where
                     num_buckets_to_rebuild += 1;
                 }
             }
-            if TYPE != OPTIMISTIC || num_entries < shrink_threshold {
+            if TYPE != OPTIMISTIC || num_entries <= shrink_threshold {
                 self.try_resize(current_array, index, guard);
             }
         }
@@ -1190,14 +1285,14 @@ where
         }
         debug_assert!(!current_array.has_old_array());
 
-        // The resizing policies are as follows.
-        //  - `The estimated load factor >= 13/16`, then the hash table grows up to `32x`.
-        //  - `The estimated load factor <= 1/16`, then the hash table shrinks to fit.
+        // If the estimated load factor is greater than `13/16`, then the hash table grows up to
+        // `usize::BITS / 2` times larger. Oh the other hand, if The estimated load factor is less
+        // than `1/8`, then the hash table shrinks to fit.
         let minimum_capacity = self.minimum_capacity().load(Relaxed);
         let capacity = current_array.num_slots();
         let sample_size = current_array.full_sample_size();
         let estimated_num_entries = Self::sample(current_array, sampling_index, sample_size);
-        let new_capacity = if estimated_num_entries >= (capacity / 16) * 13 {
+        let new_capacity = if estimated_num_entries > (capacity / 16) * 13 {
             if capacity == self.maximum_capacity() {
                 // Do not resize if the capacity cannot be increased.
                 capacity
@@ -1215,7 +1310,7 @@ where
                 }
                 new_capacity
             }
-        } else if estimated_num_entries <= capacity / 16 {
+        } else if estimated_num_entries < capacity / 8 {
             // Shrink to fit.
             estimated_num_entries
                 .max(minimum_capacity)
@@ -1300,6 +1395,7 @@ where
     }
 
     /// Entries may have been removed during iteration.
+    #[inline]
     fn entry_removed(&self, index: usize, guard: &Guard) {
         if let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             if current_array.len() > index && current_array.bucket(index).len() == 0 {
@@ -1308,6 +1404,7 @@ where
         }
     }
     // Returns an estimated required size of the container based on the size hint.
+    #[inline]
     fn capacity_from_size_hint(size_hint: (usize, Option<usize>)) -> usize {
         // A resize can be triggered when the load factor reaches ~80%.
         (size_hint
@@ -1319,8 +1416,7 @@ where
     }
 
     /// Returns a reference to the specified [`Guard`] whose lifetime matches that of `self`.
-    #[allow(clippy::inline_always)] // Very trivial method.
-    #[inline(always)]
+    #[inline]
     fn prolonged_guard_ref<'h>(&'h self, guard: &Guard) -> &'h Guard {
         let _: &Self = self;
         unsafe { std::mem::transmute::<&Guard, &'h Guard>(guard) }
@@ -1343,6 +1439,7 @@ pub(super) struct LockedEntry<'h, K, V, L: LruList, const TYPE: char> {
 
 impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h, K, V, L, TYPE> {
     /// Creates a new [`LockedEntry`].
+    #[inline]
     pub(super) fn new(
         writer: Writer<'h, K, V, L, TYPE>,
         data_block: &'h DataBlock<K, V, BUCKET_LEN>,
@@ -1364,13 +1461,13 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
     }
 
     /// Prolongs its lifetime.
-    #[allow(clippy::inline_always)] // Very trivial method.
-    #[inline(always)]
+    #[inline]
     pub(super) fn prolong_lifetime<T>(self, _ref: &T) -> LockedEntry<'_, K, V, L, TYPE> {
         unsafe { std::mem::transmute::<_, _>(self) }
     }
 
     /// Returns a [`LockedEntry`] owning the next entry.
+    #[inline]
     pub(super) async fn next_async<H: BuildHasher, T: HashTable<K, V, H, L, TYPE>>(
         mut self,
         hash_table: &'h T,
@@ -1421,6 +1518,7 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
     }
 
     /// Returns a [`LockedEntry`] owning the next entry.
+    #[inline]
     pub(super) fn next_sync<H: BuildHasher, T: HashTable<K, V, H, L, TYPE>>(
         mut self,
         hash_table: &'h T,

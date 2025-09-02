@@ -15,6 +15,7 @@ use super::hash_table::bucket::{EntryPtr, SEQUENTIAL};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::{HashTable, LockedEntry};
 use crate::async_helper::SendableGuard;
+use crate::hash_table::bucket::{BUCKET_LEN, DataBlock, Writer};
 
 /// Scalable concurrent hash map.
 ///
@@ -109,6 +110,21 @@ where
     key: K,
     hash: u64,
     locked_entry: LockedEntry<'h, K, V, (), SEQUENTIAL>,
+}
+
+/// [`ConsumableEntry`] is a view into an occupied entry in a [`HashMap`] when iterating over
+/// entries in it.
+pub struct ConsumableEntry<'g, K, V> {
+    /// Holds an exclusive lock on the entry bucket.
+    writer: &'g Writer<'g, K, V, (), SEQUENTIAL>,
+    /// Reference to the entry data.
+    data_block: &'g DataBlock<K, V, BUCKET_LEN>,
+    /// Pointer to the entry.
+    entry_ptr: EntryPtr<'g, K, V, SEQUENTIAL>,
+    /// Probes removal.
+    remove_probe: &'g mut bool,
+    /// Associated [`Guard`].
+    guard: &'g Guard,
 }
 
 /// [`Reserve`] keeps the capacity of the associated [`HashMap`] higher than a certain level.
@@ -274,12 +290,7 @@ where
         let hash = self.hash(&key);
         let guard = Guard::new();
         self.writer_sync_with(hash, &guard, |writer, data_block, index, len| {
-            let entry_ptr = writer.get_entry_ptr(
-                data_block,
-                &key,
-                BucketArray::<K, V, (), SEQUENTIAL>::partial_hash(hash),
-                &guard,
-            );
+            let entry_ptr = writer.get_entry_ptr(data_block, &key, hash, &guard);
             let locked_entry =
                 LockedEntry::new(writer, data_block, entry_ptr.clone(), index, len, &guard)
                     .prolong_lifetime(self);
@@ -319,12 +330,7 @@ where
         let sendable_guard = SendableGuard::default();
         self.writer_async_with(hash, &sendable_guard, |writer, data_block, index, len| {
             let guard = sendable_guard.guard();
-            let entry_ptr = writer.get_entry_ptr(
-                data_block,
-                &key,
-                BucketArray::<K, V, (), SEQUENTIAL>::partial_hash(hash),
-                guard,
-            );
+            let entry_ptr = writer.get_entry_ptr(data_block, &key, hash, guard);
             let locked_entry =
                 LockedEntry::new(writer, data_block, entry_ptr.clone(), index, len, guard)
                     .prolong_lifetime(self);
@@ -537,14 +543,13 @@ where
         let hash = self.hash(&key);
         let guard = Guard::new();
         self.writer_sync_with(hash, &guard, |writer, data_block, _, _| {
-            let partial_hash = BucketArray::<K, V, (), SEQUENTIAL>::partial_hash(hash);
             if writer
-                .get_entry_ptr(data_block, &key, partial_hash, &guard)
+                .get_entry_ptr(data_block, &key, hash, &guard)
                 .is_valid()
             {
                 Err((key, val))
             } else {
-                writer.insert_with(data_block, partial_hash, || (key, val), &guard);
+                writer.insert_with(data_block, hash, || (key, val), &guard);
                 Ok(())
             }
         })
@@ -572,14 +577,13 @@ where
         let sendable_guard = SendableGuard::default();
         self.writer_async_with(hash, &sendable_guard, |writer, data_block, _, _| {
             let guard = sendable_guard.guard();
-            let partial_hash = BucketArray::<K, V, (), SEQUENTIAL>::partial_hash(hash);
             if writer
-                .get_entry_ptr(data_block, &key, partial_hash, guard)
+                .get_entry_ptr(data_block, &key, hash, guard)
                 .is_valid()
             {
                 Err((key, val))
             } else {
-                writer.insert_with(data_block, partial_hash, || (key, val), guard);
+                writer.insert_with(data_block, hash, || (key, val), guard);
                 Ok(())
             }
         })
@@ -661,12 +665,7 @@ where
         let hash = self.hash(key);
         let guard = Guard::default();
         self.optional_writer_sync_with(hash, &guard, |writer, data_block, _, _| {
-            let mut entry_ptr = writer.get_entry_ptr(
-                data_block,
-                key,
-                BucketArray::<K, V, (), SEQUENTIAL>::partial_hash(hash),
-                &guard,
-            );
+            let mut entry_ptr = writer.get_entry_ptr(data_block, key, hash, &guard);
             if entry_ptr.is_valid() {
                 let (k, v) = entry_ptr.get_mut(data_block, &writer);
                 (Some(updater(k, v)), false)
@@ -703,12 +702,7 @@ where
         let sendable_guard = SendableGuard::default();
         self.optional_writer_async_with(hash, &sendable_guard, |writer, data_block, _, _| {
             let guard = sendable_guard.guard();
-            let mut entry_ptr = writer.get_entry_ptr(
-                data_block,
-                key,
-                BucketArray::<K, V, (), SEQUENTIAL>::partial_hash(hash),
-                guard,
-            );
+            let mut entry_ptr = writer.get_entry_ptr(data_block, key, hash, guard);
             if entry_ptr.is_valid() {
                 let (k, v) = entry_ptr.get_mut(data_block, &writer);
                 (Some(updater(k, v)), false)
@@ -789,12 +783,7 @@ where
         let hash = self.hash(key);
         let guard = Guard::default();
         self.optional_writer_sync_with(hash, &guard, |writer, data_block, _, _| {
-            let mut entry_ptr = writer.get_entry_ptr(
-                data_block,
-                key,
-                BucketArray::<K, V, (), SEQUENTIAL>::partial_hash(hash),
-                &guard,
-            );
+            let mut entry_ptr = writer.get_entry_ptr(data_block, key, hash, &guard);
             if entry_ptr.is_valid() && condition(&mut entry_ptr.get_mut(data_block, &writer).1) {
                 (
                     Some(writer.remove(data_block, &mut entry_ptr, &guard)),
@@ -834,12 +823,7 @@ where
         let hash = self.hash(key);
         let sendable_guard = SendableGuard::default();
         self.optional_writer_async_with(hash, &sendable_guard, |writer, data_block, _, _| {
-            let mut entry_ptr = writer.get_entry_ptr(
-                data_block,
-                key,
-                BucketArray::<K, V, (), SEQUENTIAL>::partial_hash(hash),
-                sendable_guard.guard(),
-            );
+            let mut entry_ptr = writer.get_entry_ptr(data_block, key, hash, sendable_guard.guard());
             if entry_ptr.is_valid() && condition(&mut entry_ptr.get_mut(data_block, &writer).1) {
                 (
                     Some(writer.remove(data_block, &mut entry_ptr, sendable_guard.guard())),
@@ -883,12 +867,7 @@ where
         let hash = self.hash(key);
         let guard = Guard::default();
         self.optional_writer_sync_with(hash, &guard, |writer, data_block, index, len| {
-            let entry_ptr = writer.get_entry_ptr(
-                data_block,
-                key,
-                BucketArray::<K, V, (), SEQUENTIAL>::partial_hash(hash),
-                &guard,
-            );
+            let entry_ptr = writer.get_entry_ptr(data_block, key, hash, &guard);
             if entry_ptr.is_valid() {
                 let locked_entry =
                     LockedEntry::new(writer, data_block, entry_ptr, index, len, &guard)
@@ -933,12 +912,7 @@ where
         let sendable_guard = SendableGuard::default();
         self.optional_writer_async_with(hash, &sendable_guard, |writer, data_block, index, len| {
             let guard = sendable_guard.guard();
-            let entry_ptr = writer.get_entry_ptr(
-                data_block,
-                key,
-                BucketArray::<K, V, (), SEQUENTIAL>::partial_hash(hash),
-                guard,
-            );
+            let entry_ptr = writer.get_entry_ptr(data_block, key, hash, guard);
             if entry_ptr.is_valid() {
                 let locked_entry =
                     LockedEntry::new(writer, data_block, entry_ptr, index, len, guard)
@@ -1183,6 +1157,199 @@ where
         })
         .await;
         found
+    }
+
+    /// Iterates over entries asynchronously for reading entries.
+    ///
+    /// Stops iterating when the closure returns `false`, and this method also returns `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u64> = HashMap::default();
+    ///
+    /// assert!(hashmap.insert(1, 0).is_ok());
+    ///
+    /// async {
+    ///     let result = hashmap.iter_async_with(|k, v| {
+    ///         false
+    ///     }).await;
+    ///     assert!(!result);
+    /// };
+    /// ```
+    #[inline]
+    pub async fn iter_async_with<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
+        let mut result = true;
+        let sendable_guard = SendableGuard::default();
+        self.for_each_reader_async_with(&sendable_guard, |reader, data_block| {
+            let mut entry_ptr = EntryPtr::new(sendable_guard.guard());
+            while entry_ptr.move_to_next(&reader, sendable_guard.guard()) {
+                let (k, v) = entry_ptr.get(data_block);
+                if !f(k, v) {
+                    result = false;
+                    return false;
+                }
+            }
+            true
+        })
+        .await;
+        result
+    }
+
+    /// Iterates over entries synchronously for reading entries.
+    ///
+    /// Stops iterating when the closure returns `false`, and this method also returns `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u64> = HashMap::default();
+    ///
+    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// assert!(hashmap.insert(2, 1).is_ok());
+    ///
+    /// let mut acc = 0_u64;
+    /// let result = hashmap.iter_sync_with(|k, v| {
+    ///     acc += *k;
+    ///     acc += *v;
+    ///     true
+    /// });
+    ///
+    /// assert!(result);
+    /// assert_eq!(acc, 4);
+    /// ```
+    #[inline]
+    pub fn iter_sync_with<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
+        let mut result = true;
+        let guard = Guard::new();
+        self.for_each_reader_sync_with(&guard, |reader, data_block| {
+            let mut entry_ptr = EntryPtr::new(&guard);
+            while entry_ptr.move_to_next(&reader, &guard) {
+                let (k, v) = entry_ptr.get(data_block);
+                if !f(k, v) {
+                    result = false;
+                    return false;
+                }
+            }
+            true
+        });
+        result
+    }
+
+    /// Iterates over entries asynchronously for updating entries.
+    ///
+    /// Stops iterating when the closure returns `false`, and this method also returns `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// assert!(hashmap.insert(2, 1).is_ok());
+    ///
+    /// async {
+    ///     let result = hashmap.iter_mut_async_with(|entry| {
+    ///         if entry.0 == 1 {
+    ///             entry.consume();
+    ///             return false;
+    ///         }
+    ///         true
+    ///     }).await;
+    ///
+    ///     assert!(!result);
+    ///     assert_eq!(hashmap.len(), 1);
+    /// };
+    /// ```
+    #[inline]
+    pub async fn iter_mut_async_with<F: FnMut(ConsumableEntry<'_, K, V>) -> bool>(
+        &self,
+        mut f: F,
+    ) -> bool {
+        let mut result = true;
+        let sendable_guard = SendableGuard::default();
+        self.for_each_writer_async_with(0, 0, &sendable_guard, |writer, data_block, _, _| {
+            let mut removed = false;
+            let guard = sendable_guard.guard();
+            let mut entry_ptr = EntryPtr::new(guard);
+            while entry_ptr.move_to_next(&writer, guard) {
+                let consumable_entry = ConsumableEntry {
+                    writer: &writer,
+                    data_block,
+                    entry_ptr: entry_ptr.clone(),
+                    remove_probe: &mut removed,
+                    guard,
+                };
+                if !f(consumable_entry) {
+                    result = false;
+                    return (true, removed);
+                }
+            }
+            (false, removed)
+        })
+        .await;
+        result
+    }
+
+    /// Iterates over entries synchronously for updating entries.
+    ///
+    /// Stops iterating when the closure returns `false`, and this method also returns `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// assert!(hashmap.insert(2, 1).is_ok());
+    /// assert!(hashmap.insert(3, 2).is_ok());
+    ///
+    /// let result = hashmap.iter_mut_sync_with(|entry| {
+    ///     if entry.0 == 1 {
+    ///         entry.consume();
+    ///         return false;
+    ///     }
+    ///     true
+    /// });
+    ///
+    /// assert!(!result);
+    /// assert!(!hashmap.contains(&1));
+    /// assert_eq!(hashmap.len(), 2);
+    /// ```
+    #[inline]
+    pub fn iter_mut_sync_with<F: FnMut(ConsumableEntry<'_, K, V>) -> bool>(
+        &self,
+        mut f: F,
+    ) -> bool {
+        let mut result = true;
+        let guard = Guard::new();
+        self.for_each_writer_sync_with(0, 0, &guard, |writer, data_block, _, _| {
+            let mut removed = false;
+            let mut entry_ptr = EntryPtr::new(&guard);
+            while entry_ptr.move_to_next(&writer, &guard) {
+                let consumable_entry = ConsumableEntry {
+                    writer: &writer,
+                    data_block,
+                    entry_ptr: entry_ptr.clone(),
+                    remove_probe: &mut removed,
+                    guard: &guard,
+                };
+                if !f(consumable_entry) {
+                    result = false;
+                    return (true, removed);
+                }
+            }
+            (false, removed)
+        });
+        result
     }
 
     /// Retains the entries specified by the predicate.
@@ -2271,7 +2438,7 @@ where
         let guard = Guard::new();
         let entry_ptr = self.locked_entry.writer.insert_with(
             self.locked_entry.data_block,
-            BucketArray::<K, V, (), SEQUENTIAL>::partial_hash(self.hash),
+            self.hash,
             || (self.key, val),
             self.hashmap.prolonged_guard_ref(&guard),
         );
@@ -2297,6 +2464,57 @@ where
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("VacantEntry").field(self.key()).finish()
+    }
+}
+
+impl<K, V> ConsumableEntry<'_, K, V> {
+    /// Consumes the entry by moving out the key and value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// assert!(hashmap.insert(2, 1).is_ok());
+    /// assert!(hashmap.insert(3, 2).is_ok());
+    ///
+    /// let mut consumed = None;
+    ///
+    /// hashmap.iter_mut_sync_with(|entry| {
+    ///     if entry.0 == 1 {
+    ///         consumed.replace(entry.consume().1);
+    ///     }
+    ///     true
+    /// });
+    ///
+    /// assert!(!hashmap.contains(&1));
+    /// assert_eq!(consumed, Some(0));
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn consume(mut self) -> (K, V) {
+        *self.remove_probe |= true;
+        self.writer
+            .remove(self.data_block, &mut self.entry_ptr, self.guard)
+    }
+}
+
+impl<K, V> Deref for ConsumableEntry<'_, K, V> {
+    type Target = (K, V);
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.entry_ptr.get(self.data_block)
+    }
+}
+
+impl<K, V> DerefMut for ConsumableEntry<'_, K, V> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.entry_ptr.get_mut(self.data_block, self.writer)
     }
 }
 

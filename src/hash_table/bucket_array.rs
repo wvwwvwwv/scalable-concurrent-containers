@@ -42,6 +42,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     }
 
     /// Calculates the layout of the memory block for an array of `T`.
+    #[inline]
     const fn calculate_memory_layout<T: Sized>(array_len: usize) -> (usize, usize, Layout) {
         let size_of_t = size_of::<T>();
         let aligned_size = size_of_t.next_power_of_two();
@@ -142,13 +143,6 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         BUCKET_LEN << 1
     }
 
-    /// Returns the partial hash value of the given hash.
-    #[allow(clippy::cast_possible_truncation)]
-    #[inline]
-    pub(crate) const fn partial_hash(hash: u64) -> u8 {
-        (hash & (u8::MAX as u64)) as u8
-    }
-
     /// Returns a reference to its rehashing metadata.
     #[inline]
     pub(crate) const fn rehashing_metadata(&self) -> &AtomicUsize {
@@ -209,6 +203,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     ///
     /// Returns a non-zero `u8`, even when `capacity < 2 * BUCKET_LEN`.
     #[allow(clippy::cast_possible_truncation)]
+    #[inline]
     fn calculate_log2_array_size(capacity: usize) -> u8 {
         let adjusted_capacity = capacity.clamp(64, (usize::MAX / 2) - (BUCKET_LEN - 1));
         let required_buckets = adjusted_capacity.div_ceil(BUCKET_LEN).next_power_of_two();
@@ -234,7 +229,6 @@ impl<K, V, L: LruList, const TYPE: char> Drop for BucketArray<K, V, L, TYPE> {
             }
         }
 
-        // `LinkedBucket` instances should be cleaned up.
         let num_cleared_buckets = self.num_cleared_buckets.load(Relaxed);
         if num_cleared_buckets < self.array_len {
             for index in num_cleared_buckets..self.array_len {
