@@ -5,12 +5,9 @@ use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
 use std::ops::{Deref, RangeInclusive};
 
-use sdd::Guard;
-
 use super::hash_table::HashTable;
 use super::{Equivalent, HashMap};
-use crate::async_helper::SendableGuard;
-use crate::hash_table::bucket::{BUCKET_LEN, DataBlock, EntryPtr, SEQUENTIAL, Writer};
+use crate::hash_map;
 
 /// Scalable concurrent hash set.
 ///
@@ -25,16 +22,7 @@ where
 /// [`ConsumableEntry`] is a view into an occupied entry in a [`HashMap`] when iterating over
 /// entries in it.
 pub struct ConsumableEntry<'g, K> {
-    /// Holds an exclusive lock on the entry bucket.
-    writer: &'g Writer<'g, K, (), (), SEQUENTIAL>,
-    /// Reference to the entry data.
-    data_block: &'g DataBlock<K, (), BUCKET_LEN>,
-    /// Pointer to the entry.
-    entry_ptr: EntryPtr<'g, K, (), SEQUENTIAL>,
-    /// Probes removal.
-    remove_probe: &'g mut bool,
-    /// Associated [`Guard`].
-    guard: &'g Guard,
+    consumable: hash_map::ConsumableEntry<'g, K, ()>,
 }
 
 /// [`Reserve`] keeps the capacity of the associated [`HashSet`] higher than a certain level.
@@ -453,28 +441,8 @@ where
     /// ```
     #[inline]
     pub fn iter_mut_sync_with<F: FnMut(ConsumableEntry<'_, K>) -> bool>(&self, mut f: F) -> bool {
-        let mut result = true;
-        let guard = Guard::new();
         self.map
-            .for_each_writer_sync_with(0, 0, &guard, |writer, data_block, _, _| {
-                let mut removed = false;
-                let mut entry_ptr = EntryPtr::new(&guard);
-                while entry_ptr.move_to_next(&writer, &guard) {
-                    let consumable_entry = ConsumableEntry {
-                        writer: &writer,
-                        data_block,
-                        entry_ptr: entry_ptr.clone(),
-                        remove_probe: &mut removed,
-                        guard: &guard,
-                    };
-                    if !f(consumable_entry) {
-                        result = false;
-                        return (true, removed);
-                    }
-                }
-                (false, removed)
-            });
-        result
+            .iter_mut_sync_with(|consumable| f(ConsumableEntry { consumable }))
     }
 
     /// Iterates over entries asynchronously for updating entries.
@@ -509,30 +477,9 @@ where
         &self,
         mut f: F,
     ) -> bool {
-        let mut result = true;
-        let sendable_guard = SendableGuard::default();
         self.map
-            .for_each_writer_async_with(0, 0, &sendable_guard, |writer, data_block, _, _| {
-                let mut removed = false;
-                let guard = sendable_guard.guard();
-                let mut entry_ptr = EntryPtr::new(guard);
-                while entry_ptr.move_to_next(&writer, guard) {
-                    let consumable_entry = ConsumableEntry {
-                        writer: &writer,
-                        data_block,
-                        entry_ptr: entry_ptr.clone(),
-                        remove_probe: &mut removed,
-                        guard,
-                    };
-                    if !f(consumable_entry) {
-                        result = false;
-                        return (true, removed);
-                    }
-                }
-                (false, removed)
-            })
-            .await;
-        result
+            .iter_mut_async_with(|consumable| f(ConsumableEntry { consumable }))
+            .await
     }
 
     /// Scans all the keys.
@@ -909,11 +856,8 @@ impl<K> ConsumableEntry<'_, K> {
     /// ```
     #[inline]
     #[must_use]
-    pub fn consume(mut self) -> K {
-        *self.remove_probe |= true;
-        self.writer
-            .remove(self.data_block, &mut self.entry_ptr, self.guard)
-            .0
+    pub fn consume(self) -> K {
+        self.consumable.consume().0
     }
 }
 
@@ -922,6 +866,6 @@ impl<K> Deref for ConsumableEntry<'_, K> {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        &self.entry_ptr.get(self.data_block).0
+        &self.consumable.0
     }
 }

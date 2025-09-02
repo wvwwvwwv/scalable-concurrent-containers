@@ -166,7 +166,7 @@ where
     {
         let mut seq = serializer.serialize_seq(Some(self.len()))?;
         let mut error = None;
-        self.iter_sync(|k| {
+        self.iter_sync_with(|k| {
             if error.is_none() {
                 if let Err(e) = seq.serialize_element(k) {
                     error.replace(e);
