@@ -32,13 +32,6 @@ where
         self.hasher().hash_one(key)
     }
 
-    /// Returns the partial hash value of the given hash.
-    #[allow(clippy::cast_possible_truncation)]
-    #[inline]
-    fn partial_hash(hash: u64) -> u8 {
-        (hash & (u64::from(u8::MAX))) as u8
-    }
-
     /// Returns a reference to its [`BuildHasher`].
     fn hasher(&self) -> &H;
 
@@ -251,7 +244,6 @@ where
     {
         debug_assert_eq!(TYPE, OPTIMISTIC);
 
-        let partial_hash = Self::partial_hash(hash);
         let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
         while let Some(current_array) = current_array_ptr.as_ref() {
             let index = current_array.calculate_bucket_index(hash);
@@ -261,7 +253,7 @@ where
                     if let Some(entry) = old_array.bucket(index).search_entry(
                         old_array.data_block(index),
                         key,
-                        partial_hash,
+                        hash,
                         guard,
                     ) {
                         return Some(entry);
@@ -272,7 +264,7 @@ where
             if let Some(entry) = current_array.bucket(index).search_entry(
                 current_array.data_block(index),
                 key,
-                partial_hash,
+                hash,
                 guard,
             ) {
                 return Some(entry);
@@ -300,7 +292,6 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        let partial_hash = Self::partial_hash(hash);
         while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
             let index = current_array.calculate_bucket_index(hash);
             if current_array.has_old_array()
@@ -316,7 +307,7 @@ where
                 if let Some(entry) = reader.search_entry(
                     current_array.data_block(index),
                     key,
-                    partial_hash,
+                    hash,
                     sendable_guard.guard(),
                 ) {
                     return Some(f(&entry.0, &entry.1));
@@ -340,7 +331,6 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        let partial_hash = Self::partial_hash(hash);
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
@@ -350,7 +340,7 @@ where
             let bucket = current_array.bucket(index);
             if let Some(reader) = Reader::lock_sync(bucket) {
                 if let Some(entry) =
-                    reader.search_entry(current_array.data_block(index), key, partial_hash, guard)
+                    reader.search_entry(current_array.data_block(index), key, hash, guard)
                 {
                     return Some(f(&entry.0, &entry.1));
                 }
@@ -696,8 +686,7 @@ where
             };
             if let Some(writer) = writer {
                 let data_block = current_array.data_block(index);
-                let entry_ptr =
-                    writer.get_entry_ptr(data_block, key, Self::partial_hash(hash), guard);
+                let entry_ptr = writer.get_entry_ptr(data_block, key, hash, guard);
                 return Some(LockedEntry::new(
                     writer,
                     data_block,
@@ -836,18 +825,20 @@ where
         let old_data_block = old_array.data_block(old_index);
         while entry_ptr.move_to_next(&old_writer, sendable_guard.guard()) {
             let old_entry = entry_ptr.get(old_data_block);
-            let (new_index, partial_hash) = if old_array.len() >= current_array.len() {
+            let (new_index, hash) = if old_array.len() >= current_array.len() {
                 debug_assert_eq!(
                     current_array.calculate_bucket_index(self.hash(&old_entry.0)),
                     target_index
                 );
-                (target_index, entry_ptr.partial_hash(&*old_writer))
+                (
+                    target_index,
+                    u64::from(entry_ptr.partial_hash(&*old_writer)),
+                )
             } else {
                 let hash = self.hash(&old_entry.0);
                 let new_index = current_array.calculate_bucket_index(hash);
                 debug_assert!(new_index - target_index < (current_array.len() / old_array.len()));
-                let partial_hash = Self::partial_hash(hash);
-                (new_index, partial_hash)
+                (new_index, hash)
             };
 
             while max_index <= new_index - target_index {
@@ -869,7 +860,7 @@ where
 
             target_bucket.extract_from(
                 current_array.data_block(new_index),
-                partial_hash,
+                hash,
                 &old_writer,
                 old_data_block,
                 &mut entry_ptr,
@@ -904,18 +895,20 @@ where
         let old_data_block = old_array.data_block(old_index);
         while entry_ptr.move_to_next(&old_writer, guard) {
             let old_entry = entry_ptr.get(old_data_block);
-            let (new_index, partial_hash) = if old_array.len() >= current_array.len() {
+            let (new_index, hash) = if old_array.len() >= current_array.len() {
                 debug_assert_eq!(
                     current_array.calculate_bucket_index(self.hash(&old_entry.0)),
                     target_index
                 );
-                (target_index, entry_ptr.partial_hash(&*old_writer))
+                (
+                    target_index,
+                    u64::from(entry_ptr.partial_hash(&*old_writer)),
+                )
             } else {
                 let hash = self.hash(&old_entry.0);
                 let new_index = current_array.calculate_bucket_index(hash);
                 debug_assert!(new_index - target_index < (current_array.len() / old_array.len()));
-                let partial_hash = Self::partial_hash(hash);
-                (new_index, partial_hash)
+                (new_index, hash)
             };
 
             while max_index <= new_index - target_index {
@@ -940,7 +933,7 @@ where
 
             target_bucket.extract_from(
                 current_array.data_block(new_index),
-                partial_hash,
+                hash,
                 &old_writer,
                 old_data_block,
                 &mut entry_ptr,

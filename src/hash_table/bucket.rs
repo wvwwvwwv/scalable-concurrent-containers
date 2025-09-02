@@ -138,7 +138,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     pub(crate) fn insert_with<'g, C: FnOnce() -> (K, V)>(
         &self,
         data_block: &DataBlock<K, V, BUCKET_LEN>,
-        partial_hash: u8,
+        hash: u64,
         constructor: C,
         guard: &'g Guard,
     ) -> EntryPtr<'g, K, V, TYPE> {
@@ -148,14 +148,14 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         let occupied_bitmap = self.metadata.occupied_bitmap.load(Relaxed);
         let free_index = occupied_bitmap.trailing_ones() as usize;
         if free_index == BUCKET_LEN {
-            self.insert_overflow_with(len, partial_hash, constructor, guard)
+            self.insert_overflow_with(len, hash, constructor, guard)
         } else {
             self.insert_entry_with(
                 &self.metadata,
                 data_block,
                 free_index,
                 occupied_bitmap,
-                partial_hash,
+                hash,
                 constructor,
             );
             self.len.store(len + 1, Relaxed);
@@ -170,7 +170,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     pub(crate) fn insert_overflow_with<'g, C: FnOnce() -> (K, V)>(
         &self,
         len: u32,
-        partial_hash: u8,
+        hash: u64,
         constructor: C,
         guard: &'g Guard,
     ) -> EntryPtr<'g, K, V, TYPE> {
@@ -184,7 +184,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
                     &link.data_block,
                     free_index,
                     occupied_bitmap,
-                    partial_hash,
+                    hash,
                     constructor,
                 );
                 self.len.store(len + 1, Relaxed);
@@ -203,7 +203,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         if let Some(link) = link_ptr.as_ref() {
             self.write_data_block(&link.data_block, constructor(), 0);
             self.write_cell(&link.metadata.partial_hash_array[0], |h| {
-                *h = partial_hash;
+                *h = Self::partial_hash(hash);
             });
             link.metadata.occupied_bitmap.store(1, Relaxed);
         }
@@ -417,7 +417,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     pub(crate) fn extract_from<'g>(
         &self,
         data_block: &DataBlock<K, V, BUCKET_LEN>,
-        partial_hash: u8,
+        hash: u64,
         from_writer: &Writer<K, V, L, TYPE>,
         from_data_block: &DataBlock<K, V, BUCKET_LEN>,
         from_entry_ptr: &mut EntryPtr<'g, K, V, TYPE>,
@@ -425,7 +425,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     ) {
         self.insert_with(
             data_block,
-            partial_hash,
+            hash,
             || {
                 // Stack unwinding during a call to `insert` will result in the entry being
                 // removed from the map, any map entry modification should take place after all
@@ -568,7 +568,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         data_block: &DataBlock<K, V, LEN>,
         index: usize,
         occupied_bitmap: u32,
-        partial_hash: u8,
+        hash: u64,
         constructor: C,
     ) {
         debug_assert!(index < LEN);
@@ -576,7 +576,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
 
         self.write_data_block(data_block, constructor(), index);
         self.write_cell(&metadata.partial_hash_array[index], |h| {
-            *h = partial_hash;
+            *h = Self::partial_hash(hash);
         });
         metadata.occupied_bitmap.store(
             occupied_bitmap | (1_u32 << index),
@@ -621,6 +621,13 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         self.write_cell(&self.epoch, |e| {
             *e = u8::from(target_epoch);
         });
+    }
+
+    /// Returns the partial hash value of the given hash.
+    #[allow(clippy::cast_possible_truncation)]
+    #[inline]
+    const fn partial_hash(hash: u64) -> u8 {
+        hash as u8
     }
 
     /// Reads the data at the given index.
@@ -687,7 +694,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         &self,
         data_block: &'g DataBlock<K, V, BUCKET_LEN>,
         key: &Q,
-        partial_hash: u8,
+        hash: u64,
         guard: &'g Guard,
     ) -> Option<&'g (K, V)>
     where
@@ -697,16 +704,14 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             return None;
         }
 
-        if let Some((entry, _)) =
-            Self::search_data_block(&self.metadata, data_block, key, partial_hash)
-        {
+        if let Some((entry, _)) = Self::search_data_block(&self.metadata, data_block, key, hash) {
             return Some(entry);
         }
 
         let mut link_ptr = self.metadata.link.load(Acquire, guard);
         while let Some(link) = link_ptr.as_ref() {
             if let Some((entry, _)) =
-                Self::search_data_block(&link.metadata, &link.data_block, key, partial_hash)
+                Self::search_data_block(&link.metadata, &link.data_block, key, hash)
             {
                 return Some(entry);
             }
@@ -724,7 +729,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         &self,
         data_block: &DataBlock<K, V, BUCKET_LEN>,
         key: &Q,
-        partial_hash: u8,
+        hash: u64,
         guard: &'g Guard,
     ) -> EntryPtr<'g, K, V, TYPE>
     where
@@ -734,9 +739,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             return EntryPtr::new(guard);
         }
 
-        if let Some((_, index)) =
-            Self::search_data_block(&self.metadata, data_block, key, partial_hash)
-        {
+        if let Some((_, index)) = Self::search_data_block(&self.metadata, data_block, key, hash) {
             return EntryPtr {
                 current_link_ptr: Ptr::null(),
                 current_index: index,
@@ -746,7 +749,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         let mut current_link_ptr = self.metadata.link.load(Acquire, guard);
         while let Some(link) = current_link_ptr.as_ref() {
             if let Some((_, index)) =
-                Self::search_data_block(&link.metadata, &link.data_block, key, partial_hash)
+                Self::search_data_block(&link.metadata, &link.data_block, key, hash)
             {
                 return EntryPtr {
                     current_link_ptr,
@@ -766,7 +769,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         metadata: &Metadata<K, V, LEN>,
         data_block: &'g DataBlock<K, V, LEN>,
         key: &Q,
-        partial_hash: u8,
+        hash: u64,
     ) -> Option<(&'g (K, V), usize)>
     where
         Q: Equivalent<K> + ?Sized,
@@ -782,7 +785,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         let mut matching: u32 = 0;
         // Expect that the loop is vectorized by the compiler.
         for i in 0..LEN {
-            if *Self::read_cell(&metadata.partial_hash_array[i]) == partial_hash {
+            if *Self::read_cell(&metadata.partial_hash_array[i]) == Self::partial_hash(hash) {
                 matching |= 1_u32 << i;
             }
         }
