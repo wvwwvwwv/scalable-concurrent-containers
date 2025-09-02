@@ -587,6 +587,56 @@ where
         }
     }
 
+    /// Iterates over all the buckets in the [`HashTable`] synchronously.
+    ///
+    /// This methods stops iterating when the closure returns `false`.
+    #[inline]
+    fn for_each_reader_sync_with<
+        F: FnMut(Reader<K, V, L, TYPE>, &DataBlock<K, V, BUCKET_LEN>, usize, usize) -> bool,
+    >(
+        &self,
+        mut start_index: usize,
+        expected_array_len: usize,
+        guard: &Guard,
+        mut f: F,
+    ) {
+        let mut prev_len = expected_array_len;
+        while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
+            // In case the method is repeating the routine, iterate over entries from the middle of
+            // the array.
+            let current_array_len = current_array.len();
+            start_index = if prev_len == 0 || prev_len == current_array_len {
+                start_index
+            } else {
+                Self::from_index_to_range(prev_len, current_array_len, start_index).0
+            };
+            prev_len = current_array_len;
+
+            while start_index < current_array_len {
+                let index = start_index;
+                if let Some(old_array) = current_array.old_array(guard).as_ref() {
+                    self.dedup_bucket_sync::<false>(current_array, old_array, index, guard);
+                }
+
+                let bucket = current_array.bucket(index);
+                if let Some(reader) = Reader::lock_sync(bucket) {
+                    let data_block = current_array.data_block(index);
+                    if !f(reader, data_block, index, current_array_len) {
+                        return;
+                    }
+                } else {
+                    // `current_array` is no longer the current one.
+                    break;
+                }
+                start_index += 1;
+            }
+
+            if start_index == current_array_len {
+                break;
+            }
+        }
+    }
+
     /// Iterates over all the buckets in the [`HashTable`].
     ///
     /// This methods stops iterating when the closure returns `(true, _)`. The closure returning

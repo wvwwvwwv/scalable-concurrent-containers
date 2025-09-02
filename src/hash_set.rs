@@ -3,10 +3,13 @@
 use std::collections::hash_map::RandomState;
 use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
-use std::ops::RangeInclusive;
+use std::ops::{Deref, RangeInclusive};
+
+use sdd::Guard;
 
 use super::hash_table::HashTable;
 use super::{Equivalent, HashMap};
+use crate::hash_table::bucket::{BUCKET_LEN, DataBlock, EntryPtr, SEQUENTIAL, Writer};
 
 /// Scalable concurrent hash set.
 ///
@@ -16,6 +19,21 @@ where
     H: BuildHasher,
 {
     map: HashMap<K, (), H>,
+}
+
+/// [`ConsumableEntry`] is a view into an occupied entry in a [`HashMap`] when iterating over
+/// entries in it.
+pub struct ConsumableEntry<'g, K> {
+    /// Holds an exclusive lock on the entry bucket.
+    writer: &'g Writer<'g, K, (), (), SEQUENTIAL>,
+    /// Reference to the entry data.
+    data_block: &'g DataBlock<K, (), BUCKET_LEN>,
+    /// Pointer to the entry.
+    entry_ptr: EntryPtr<'g, K, (), SEQUENTIAL>,
+    /// Probes removal.
+    remove_probe: &'g mut bool,
+    /// Associated [`Guard`].
+    guard: &'g Guard,
 }
 
 /// [`Reserve`] keeps the capacity of the associated [`HashSet`] higher than a certain level.
@@ -352,29 +370,85 @@ where
         self.map.contains_async(key).await
     }
 
-    /// Scans all the keys.
+    /// Iterates over entries synchronously for reading entries.
     ///
-    /// Keys that have existed since the invocation of the method are guaranteed to be visited if
-    /// they are not removed, however the same key can be visited more than once if the [`HashSet`]
-    /// gets resized by another thread.
+    /// Stops iterating when the closure returns `false`, and this method also returns `false`.
     ///
     /// # Examples
     ///
     /// ```
     /// use scc::HashSet;
     ///
-    /// let hashset: HashSet<usize> = HashSet::default();
+    /// let hashset: HashSet<u64> = HashSet::default();
     ///
     /// assert!(hashset.insert(1).is_ok());
     /// assert!(hashset.insert(2).is_ok());
     ///
-    /// let mut sum = 0;
-    /// hashset.scan(|k| { sum += *k; });
-    /// assert_eq!(sum, 3);
+    /// let mut acc = 0;
+    /// let result = hashset.iter_sync(|k| {
+    ///     acc += *k;
+    ///     true
+    /// });
+    ///
+    /// assert!(result);
+    /// assert_eq!(acc, 3);
     /// ```
     #[inline]
-    pub fn scan<F: FnMut(&K)>(&self, mut scanner: F) {
-        self.map.scan(|k, ()| scanner(k));
+    pub fn iter_sync<F: FnMut(&K) -> bool>(&self, mut f: F) -> bool {
+        self.map.iter_sync(|k, ()| f(k))
+    }
+
+    /// Iterates over entries synchronously for updating entries.
+    ///
+    /// Stops iterating when the closure returns `false`, and this method also returns `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    ///
+    /// let hashset: HashSet<u64> = HashSet::default();
+    ///
+    /// assert!(hashset.insert(1).is_ok());
+    /// assert!(hashset.insert(2).is_ok());
+    /// assert!(hashset.insert(3).is_ok());
+    ///
+    /// let result = hashset.iter_mut_sync(|entry| {
+    ///     if *entry == 1 {
+    ///         entry.consume();
+    ///         return false;
+    ///     }
+    ///     true
+    /// });
+    ///
+    /// assert!(!result);
+    /// assert!(!hashset.contains(&1));
+    /// assert_eq!(hashset.len(), 2);
+    /// ```
+    #[inline]
+    pub fn iter_mut_sync<F: FnMut(ConsumableEntry<'_, K>) -> bool>(&self, mut f: F) -> bool {
+        let mut result = true;
+        let guard = Guard::new();
+        self.map
+            .for_each_writer_sync_with(0, 0, &guard, |writer, data_block, _, _| {
+                let mut removed = false;
+                let mut entry_ptr = EntryPtr::new(&guard);
+                while entry_ptr.move_to_next(&writer, &guard) {
+                    let consumable_entry = ConsumableEntry {
+                        writer: &writer,
+                        data_block,
+                        entry_ptr: entry_ptr.clone(),
+                        remove_probe: &mut removed,
+                        guard: &guard,
+                    };
+                    if !f(consumable_entry) {
+                        result = false;
+                        return (true, removed);
+                    }
+                }
+                (false, removed)
+            });
+        result
     }
 
     /// Scans all the keys.
@@ -404,33 +478,6 @@ where
     /// they are not removed, however the same key can be visited more than once if the [`HashSet`]
     /// gets resized by another task.
     ///
-    /// Returns `true` if a key satisfying the predicate is found.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashSet;
-    ///
-    /// let hashset: HashSet<u64> = HashSet::default();
-    ///
-    /// assert!(hashset.insert(1).is_ok());
-    /// assert!(hashset.insert(2).is_ok());
-    /// assert!(hashset.insert(3).is_ok());
-    ///
-    /// assert!(hashset.any(|k| *k == 1));
-    /// assert!(!hashset.any(|k| *k == 4));
-    /// ```
-    #[inline]
-    pub fn any<P: FnMut(&K) -> bool>(&self, mut pred: P) -> bool {
-        self.map.any(|k, ()| pred(k))
-    }
-
-    /// Searches for any key that satisfies the given predicate.
-    ///
-    /// Keys that have existed since the invocation of the method are guaranteed to be visited if
-    /// they are not removed, however the same key can be visited more than once if the [`HashSet`]
-    /// gets resized by another task.
-    ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// Returns `true` if a key satisfying the predicate is found.
@@ -448,34 +495,6 @@ where
     #[inline]
     pub async fn any_async<P: FnMut(&K) -> bool>(&self, mut pred: P) -> bool {
         self.map.any_async(|k, ()| pred(k)).await
-    }
-
-    /// Retains keys that satisfy the given predicate.
-    ///
-    /// Keys that have existed since the invocation of the method are guaranteed to be visited if
-    /// they are not removed, however the same key can be visited more than once if the [`HashSet`]
-    /// gets resized by another thread.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashSet;
-    ///
-    /// let hashset: HashSet<u64> = HashSet::default();
-    ///
-    /// assert!(hashset.insert(1).is_ok());
-    /// assert!(hashset.insert(2).is_ok());
-    /// assert!(hashset.insert(3).is_ok());
-    ///
-    /// hashset.retain(|k| *k == 1);
-    ///
-    /// assert!(hashset.contains(&1));
-    /// assert!(!hashset.contains(&2));
-    /// assert!(!hashset.contains(&3));
-    /// ```
-    #[inline]
-    pub fn retain<F: FnMut(&K) -> bool>(&self, mut filter: F) {
-        self.map.retain(|k, ()| filter(k));
     }
 
     /// Retains keys that satisfy the given predicate.
@@ -663,8 +682,9 @@ where
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut d = f.debug_set();
-        self.scan(|k| {
+        self.iter_sync(|k| {
             d.entry(k);
+            true
         });
         d.finish()
     }
@@ -770,9 +790,54 @@ where
     /// it may lead to a deadlock if the instances are being modified by another thread.
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        if !self.any(|k| !other.contains(k)) {
-            return !other.any(|k| !self.contains(k));
+        if self.iter_sync(|k| other.contains(k)) {
+            return other.iter_sync(|k| self.contains(k));
         }
         false
+    }
+}
+
+impl<K> ConsumableEntry<'_, K> {
+    /// Consumes the entry by moving out the key and value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    ///
+    /// let hashset: HashSet<u64> = HashSet::default();
+    ///
+    /// assert!(hashset.insert(1).is_ok());
+    /// assert!(hashset.insert(2).is_ok());
+    /// assert!(hashset.insert(3).is_ok());
+    ///
+    /// let mut consumed = None;
+    ///
+    /// hashset.iter_mut_sync(|entry| {
+    ///     if *entry == 1 {
+    ///         consumed.replace(entry.consume());
+    ///     }
+    ///     true
+    /// });
+    ///
+    /// assert!(!hashset.contains(&1));
+    /// assert_eq!(consumed, Some(1));
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn consume(mut self) -> K {
+        *self.remove_probe |= true;
+        self.writer
+            .remove(self.data_block, &mut self.entry_ptr, self.guard)
+            .0
+    }
+}
+
+impl<K> Deref for ConsumableEntry<'_, K> {
+    type Target = K;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.entry_ptr.get(self.data_block).0
     }
 }
