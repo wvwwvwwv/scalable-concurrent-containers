@@ -8,11 +8,11 @@ A collection of high-performance containers and utilities for concurrent and asy
 
 #### Features
 
-- Asynchronous counterparts of synchronous methods where asynchronous methods are suffixed with `_async` and synchronous methods are suffixed with `_sync`.
+- Asynchronous counterparts of synchronous methods, with asynchronous methods suffixed with `_async` and synchronous methods suffixed with `_sync`.
 - [`Equivalent`](https://github.com/indexmap-rs/equivalent), [`Loom`](https://github.com/tokio-rs/loom) and [`Serde`](https://github.com/serde-rs/serde) support: `features = ["equivalent", "loom", "serde"]`.
 - Near-linear scalability.
-- No spin-locks and no busy loops.
-- SIMD lookup to scan multiple entries in parallel: require `RUSTFLAGS='-C target_feature=+avx2'` on `x86_64`.
+- No spin locks and no busy loops.
+- SIMD lookup to scan multiple entries in parallel: requires `RUSTFLAGS='-C target_feature=+avx2'` on `x86_64`.
 
 #### Concurrent and Asynchronous Containers
 
@@ -24,7 +24,7 @@ A collection of high-performance containers and utilities for concurrent and asy
 
 #### Utilities for Concurrent Programming
 
-- [`LinkedList`](#linkedlist) is a type trait implementing a lock-free concurrent singly linked list.
+- [`LinkedList`](#linkedlist) is a trait that implements a lock-free concurrent singly linked list.
 - [`Queue`](#queue) is a concurrent lock-free first-in-first-out container.
 - [`Stack`](#stack) is a concurrent lock-free last-in-first-out container.
 - [`Bag`](#bag) is a concurrent lock-free unordered opaque container.
@@ -137,7 +137,7 @@ assert!(is_send(&future_iter));
 
 ### Examples
 
-Most [`HashSet`](#hashset) methods are identical to that of [`HashMap`](#hashmap) except that they do not receive a value argument, and some [`HashMap`](#hashmap) methods for value modification are not implemented for [`HashSet`](#hashset).
+Most [`HashSet`](#hashset) methods are identical to those of [`HashMap`](#hashmap) except that they do not receive a value argument, and some [`HashMap`](#hashmap) methods for value modification are not implemented for [`HashSet`](#hashset).
 
 ```rust
 use scc::HashSet;
@@ -154,14 +154,14 @@ let future_remove = hashset.remove_async(&1);
 
 ## `HashIndex`
 
-[`HashIndex`](#hashindex) is a read-optimized version of [`HashMap`](#hashmap). In a [`HashIndex`](#hashindex), not only is the memory of the bucket array managed by [`sdd`](https://crates.io/crates/sdd), but also that of entry buckets is protected by [`sdd`](https://crates.io/crates/sdd), enabling lock-free-read access to individual entries.
+[`HashIndex`](#hashindex) is a read-optimized version of [`HashMap`](#hashmap). In a [`HashIndex`](#hashindex), not only is the memory of the bucket array managed by [`sdd`](https://crates.io/crates/sdd), but also that of entry buckets is protected by [`sdd`](https://crates.io/crates/sdd), enabling lock-free read access to individual entries.
 
 ### Entry lifetime
 
 `HashIndex` does not drop removed entries immediately; instead, they are dropped when one of the following conditions is met.
 
-1. [`Epoch`](https://docs.rs/sdd/latest/sdd/struct.Epoch.html) reaches the next generation since the last entry was removed in a bucket, and the bucket is write-accessed.
-2. `HashIndex` is cleared, or resized.
+1. [`Epoch`](https://docs.rs/sdd/latest/sdd/struct.Epoch.html) reaches the next generation since the last entry was removed in a bucket, and the bucket is accessed for writing.
+2. `HashIndex` is cleared or resized.
 3. Buckets full of removed entries occupy 50% of the capacity.
 
 Those conditions do not guarantee that the removed entry will be dropped within a definite period of time; therefore, `HashIndex` would not be an optimal choice if the workload is write-heavy and the entry size is large.
@@ -347,7 +347,7 @@ assert!(bag.is_empty());
 
 ## `Queue`
 
-[Queue](#queue) is a concurrent lock-free first-in-first-out container backed by [`sdd`](https://crates.io/crates/sdd).
+[`Queue`](#queue) is a concurrent lock-free first-in-first-out container backed by [`sdd`](https://crates.io/crates/sdd).
 
 ### Examples
 
@@ -384,7 +384,7 @@ assert!(stack.pop().is_none());
 
 ## `LinkedList`
 
-[`LinkedList`](#linkedlist) is a type trait that implements lock-free concurrent singly linked list operations backed by [`sdd`](https://crates.io/crates/sdd). It additionally provides a method for marking a linked list entry to denote a user-defined state.
+[`LinkedList`](#linkedlist) is a trait that implements lock-free concurrent singly linked list operations backed by [`sdd`](https://crates.io/crates/sdd). It additionally provides a method for marking a linked list entry to denote a user-defined state.
 
 ### Examples
 

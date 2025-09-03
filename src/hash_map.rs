@@ -63,7 +63,7 @@ use crate::hash_table::bucket::{BUCKET_LEN, DataBlock, Writer};
 ///
 /// ### Blocking methods in an asynchronous code block
 ///
-/// It is generally not recommended to use blocking methods, such as [`HashMap::insert`], in an
+/// It is generally not recommended to use blocking methods, such as [`HashMap::insert_sync`], in an
 /// asynchronous code block or [`poll`](std::future::Future::poll), since it may lead to deadlocks
 /// or performance degradation.
 ///
