@@ -157,75 +157,6 @@ where
 {
     /// Inserts a key-value pair.
     ///
-    /// # Errors
-    ///
-    /// Returns an error along with the supplied key-value pair if the key exists.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::TreeIndex;
-    ///
-    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
-    ///
-    /// assert!(treeindex.insert(1, 10).is_ok());
-    /// assert_eq!(treeindex.insert(1, 11).err().unwrap(), (1, 11));
-    /// assert_eq!(treeindex.peek_with(&1, |k, v| *v).unwrap(), 10);
-    /// ```
-    #[inline]
-    pub fn insert(&self, mut key: K, mut val: V) -> Result<(), (K, V)> {
-        let mut new_root = None;
-        loop {
-            let guard = Guard::new();
-            let root_ptr = self.root.load(Acquire, &guard);
-            if let Some(root_ref) = root_ptr.as_ref() {
-                match root_ref.insert(key, val, &mut (), &guard) {
-                    Ok(r) => match r {
-                        InsertResult::Success => return Ok(()),
-                        InsertResult::Frozen(k, v) | InsertResult::Retry(k, v) => {
-                            key = k;
-                            val = v;
-                            root_ref.cleanup_link(&key, false, &guard);
-                        }
-                        InsertResult::Duplicate(k, v) => return Err((k, v)),
-                        InsertResult::Full(k, v) => {
-                            let (k, v) = Node::split_root(root_ptr, &self.root, k, v, &guard);
-                            key = k;
-                            val = v;
-                            continue;
-                        }
-                        InsertResult::Retired(k, v) => {
-                            key = k;
-                            val = v;
-                            let _result = Node::cleanup_root(&self.root, &mut (), &guard);
-                        }
-                    },
-                    Err((k, v)) => {
-                        key = k;
-                        val = v;
-                    }
-                }
-            }
-
-            let node = if let Some(new_root) = new_root.take() {
-                new_root
-            } else {
-                Shared::new(Node::new_leaf_node())
-            };
-            if let Err((node, _)) = self.root.compare_exchange(
-                Ptr::null(),
-                (Some(node), Tag::None),
-                AcqRel,
-                Acquire,
-                &guard,
-            ) {
-                new_root = node;
-            }
-        }
-    }
-
-    /// Inserts a key-value pair.
-    ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Errors
@@ -305,12 +236,11 @@ where
         }
     }
 
-    /// Removes a key-value pair.
+    /// Inserts a key-value pair.
     ///
-    /// Returns `false` if the key does not exist.
+    /// # Errors
     ///
-    /// Returns `true` if the key existed and the condition was met after marking the entry
-    /// unreachable; the memory will be reclaimed later.
+    /// Returns an error along with the supplied key-value pair if the key exists.
     ///
     /// # Examples
     ///
@@ -319,16 +249,60 @@ where
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
-    /// assert!(!treeindex.remove(&1));
-    /// assert!(treeindex.insert(1, 10).is_ok());
-    /// assert!(treeindex.remove(&1));
+    /// assert!(treeindex.insert_sync(1, 10).is_ok());
+    /// assert_eq!(treeindex.insert_sync(1, 11).err().unwrap(), (1, 11));
+    /// assert_eq!(treeindex.peek_with(&1, |k, v| *v).unwrap(), 10);
     /// ```
     #[inline]
-    pub fn remove<Q>(&self, key: &Q) -> bool
-    where
-        Q: Comparable<K> + ?Sized,
-    {
-        self.remove_if(key, |_| true)
+    pub fn insert_sync(&self, mut key: K, mut val: V) -> Result<(), (K, V)> {
+        let mut new_root = None;
+        loop {
+            let guard = Guard::new();
+            let root_ptr = self.root.load(Acquire, &guard);
+            if let Some(root_ref) = root_ptr.as_ref() {
+                match root_ref.insert(key, val, &mut (), &guard) {
+                    Ok(r) => match r {
+                        InsertResult::Success => return Ok(()),
+                        InsertResult::Frozen(k, v) | InsertResult::Retry(k, v) => {
+                            key = k;
+                            val = v;
+                            root_ref.cleanup_link(&key, false, &guard);
+                        }
+                        InsertResult::Duplicate(k, v) => return Err((k, v)),
+                        InsertResult::Full(k, v) => {
+                            let (k, v) = Node::split_root(root_ptr, &self.root, k, v, &guard);
+                            key = k;
+                            val = v;
+                            continue;
+                        }
+                        InsertResult::Retired(k, v) => {
+                            key = k;
+                            val = v;
+                            let _result = Node::cleanup_root(&self.root, &mut (), &guard);
+                        }
+                    },
+                    Err((k, v)) => {
+                        key = k;
+                        val = v;
+                    }
+                }
+            }
+
+            let node = if let Some(new_root) = new_root.take() {
+                new_root
+            } else {
+                Shared::new(Node::new_leaf_node())
+            };
+            if let Err((node, _)) = self.root.compare_exchange(
+                Ptr::null(),
+                (Some(node), Tag::None),
+                AcqRel,
+                Acquire,
+                &guard,
+            ) {
+                new_root = node;
+            }
+        }
     }
 
     /// Removes a key-value pair.
@@ -355,9 +329,9 @@ where
         self.remove_if_async(key, |_| true).await
     }
 
-    /// Removes a key-value pair if the given condition is met.
+    /// Removes a key-value pair.
     ///
-    /// Returns `false` if the key does not exist or the condition was not met.
+    /// Returns `false` if the key does not exist.
     ///
     /// Returns `true` if the key existed and the condition was met after marking the entry
     /// unreachable; the memory will be reclaimed later.
@@ -369,49 +343,16 @@ where
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
-    /// assert!(treeindex.insert(1, 10).is_ok());
-    /// assert!(!treeindex.remove_if(&1, |v| *v == 0));
-    /// assert!(treeindex.remove_if(&1, |v| *v == 10));
+    /// assert!(!treeindex.remove_sync(&1));
+    /// assert!(treeindex.insert_sync(1, 10).is_ok());
+    /// assert!(treeindex.remove_sync(&1));
     /// ```
     #[inline]
-    pub fn remove_if<Q, F: FnMut(&V) -> bool>(&self, key: &Q, mut condition: F) -> bool
+    pub fn remove_sync<Q>(&self, key: &Q) -> bool
     where
         Q: Comparable<K> + ?Sized,
     {
-        let mut removed = false;
-        loop {
-            let guard = Guard::new();
-            if let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
-                if let Ok(result) =
-                    root_ref.remove_if::<_, _, _>(key, &mut condition, &mut (), &guard)
-                {
-                    if matches!(result, RemoveResult::Cleanup) {
-                        root_ref.cleanup_link(key, false, &guard);
-                    }
-                    match result {
-                        RemoveResult::Success => return true,
-                        RemoveResult::Cleanup | RemoveResult::Retired => {
-                            if Node::cleanup_root(&self.root, &mut (), &guard) {
-                                return true;
-                            }
-                            removed = true;
-                        }
-                        RemoveResult::Fail => {
-                            if removed {
-                                if Node::cleanup_root(&self.root, &mut (), &guard) {
-                                    return true;
-                                }
-                            } else {
-                                return false;
-                            }
-                        }
-                        RemoveResult::Frozen => (),
-                    }
-                }
-            } else {
-                return removed;
-            }
-        }
+        self.remove_if_sync(key, |_| true)
     }
 
     /// Removes a key-value pair if the given condition is met.
@@ -483,15 +424,12 @@ where
         }
     }
 
-    /// Removes keys in the specified range.
+    /// Removes a key-value pair if the given condition is met.
     ///
-    /// This method removes internal nodes that are definitely contained in the specified range
-    /// first, and then removes remaining entries individually.
+    /// Returns `false` if the key does not exist or the condition was not met.
     ///
-    /// # Notes
-    ///
-    /// Internally, multiple internal node locks need to be acquired, thus making this method
-    /// susceptible to lock starvation.
+    /// Returns `true` if the key existed and the condition was met after marking the entry
+    /// unreachable; the memory will be reclaimed later.
     ///
     /// # Examples
     ///
@@ -500,34 +438,47 @@ where
     ///
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
-    /// for k in 2..8 {
-    ///     assert!(treeindex.insert(k, 1).is_ok());
-    /// }
-    ///
-    /// treeindex.remove_range(3..8);
-    ///
-    /// assert!(treeindex.contains(&2));
-    /// assert!(!treeindex.contains(&3));
+    /// assert!(treeindex.insert_sync(1, 10).is_ok());
+    /// assert!(!treeindex.remove_if_sync(&1, |v| *v == 0));
+    /// assert!(treeindex.remove_if_sync(&1, |v| *v == 10));
     /// ```
     #[inline]
-    pub fn remove_range<Q, R: RangeBounds<Q>>(&self, range: R)
+    pub fn remove_if_sync<Q, F: FnMut(&V) -> bool>(&self, key: &Q, mut condition: F) -> bool
     where
         Q: Comparable<K> + ?Sized,
     {
-        let start_unbounded = matches!(range.start_bound(), Unbounded);
-        let guard = Guard::new();
-
-        // Remove internal nodes, and individual entries in affected leaves.
-        //
-        // It takes O(N) to traverse sub-trees on the range border.
-        while let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
-            if let Ok(num_children) =
-                root_ref.remove_range(&range, start_unbounded, None, None, &mut (), &guard)
-            {
-                if num_children < 2 && !Node::cleanup_root(&self.root, &mut (), &guard) {
-                    continue;
+        let mut removed = false;
+        loop {
+            let guard = Guard::new();
+            if let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
+                if let Ok(result) =
+                    root_ref.remove_if::<_, _, _>(key, &mut condition, &mut (), &guard)
+                {
+                    if matches!(result, RemoveResult::Cleanup) {
+                        root_ref.cleanup_link(key, false, &guard);
+                    }
+                    match result {
+                        RemoveResult::Success => return true,
+                        RemoveResult::Cleanup | RemoveResult::Retired => {
+                            if Node::cleanup_root(&self.root, &mut (), &guard) {
+                                return true;
+                            }
+                            removed = true;
+                        }
+                        RemoveResult::Fail => {
+                            if removed {
+                                if Node::cleanup_root(&self.root, &mut (), &guard) {
+                                    return true;
+                                }
+                            } else {
+                                return false;
+                            }
+                        }
+                        RemoveResult::Frozen => (),
+                    }
                 }
-                break;
+            } else {
+                return removed;
             }
         }
     }
@@ -552,7 +503,7 @@ where
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
     ///
     /// for k in 2..8 {
-    ///     assert!(treeindex.insert(k, 1).is_ok());
+    ///     assert!(treeindex.insert_sync(k, 1).is_ok());
     /// }
     ///
     /// let future_remove_range = treeindex.remove_range_async(3..8);
@@ -598,6 +549,55 @@ where
         }
     }
 
+    /// Removes keys in the specified range.
+    ///
+    /// This method removes internal nodes that are definitely contained in the specified range
+    /// first, and then removes remaining entries individually.
+    ///
+    /// # Notes
+    ///
+    /// Internally, multiple internal node locks need to be acquired, thus making this method
+    /// susceptible to lock starvation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::TreeIndex;
+    ///
+    /// let treeindex: TreeIndex<u64, u32> = TreeIndex::new();
+    ///
+    /// for k in 2..8 {
+    ///     assert!(treeindex.insert_sync(k, 1).is_ok());
+    /// }
+    ///
+    /// treeindex.remove_range_sync(3..8);
+    ///
+    /// assert!(treeindex.contains(&2));
+    /// assert!(!treeindex.contains(&3));
+    /// ```
+    #[inline]
+    pub fn remove_range_sync<Q, R: RangeBounds<Q>>(&self, range: R)
+    where
+        Q: Comparable<K> + ?Sized,
+    {
+        let start_unbounded = matches!(range.start_bound(), Unbounded);
+        let guard = Guard::new();
+
+        // Remove internal nodes, and individual entries in affected leaves.
+        //
+        // It takes O(N) to traverse sub-trees on the range border.
+        while let Some(root_ref) = self.root.load(Acquire, &guard).as_ref() {
+            if let Ok(num_children) =
+                root_ref.remove_range(&range, start_unbounded, None, None, &mut (), &guard)
+            {
+                if num_children < 2 && !Node::cleanup_root(&self.root, &mut (), &guard) {
+                    continue;
+                }
+                break;
+            }
+        }
+    }
+
     /// Returns a guarded reference to the value for the specified key without acquiring locks.
     ///
     /// Returns `None` if the key does not exist. The returned reference can survive as long as the
@@ -615,7 +615,7 @@ where
     /// let guard = Guard::new();
     /// assert!(treeindex.peek("foo", &guard).is_none());
     ///
-    /// treeindex.insert("foo".into(), 1).expect("insert in empty TreeIndex");
+    /// treeindex.insert_sync("foo".into(), 1).expect("insert in empty TreeIndex");
     /// ```
     #[inline]
     pub fn peek<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<&'g V>
@@ -642,7 +642,7 @@ where
     ///
     /// assert!(treeindex.peek_with("foo", |k, v| *v).is_none());
     ///
-    /// treeindex.insert("foo".into(), 1).expect("insert in empty TreeIndex");
+    /// treeindex.insert_sync("foo".into(), 1).expect("insert in empty TreeIndex");
     ///
     /// let key: Arc<str> = treeindex
     ///     .peek_with("foo", |k, _v| Arc::clone(k))
@@ -674,7 +674,7 @@ where
     /// let guard = Guard::new();
     /// assert!(treeindex.peek_entry("foo", &guard).is_none());
     ///
-    /// treeindex.insert("foo".into(), 1).expect("insert in empty TreeIndex");
+    /// treeindex.insert_sync("foo".into(), 1).expect("insert in empty TreeIndex");
     ///
     /// let key: Arc<str> = treeindex
     ///     .peek_entry("foo", &guard)
@@ -702,7 +702,7 @@ where
     /// let treeindex: TreeIndex<u64, u32> = TreeIndex::default();
     ///
     /// assert!(!treeindex.contains(&1));
-    /// assert!(treeindex.insert(1, 0).is_ok());
+    /// assert!(treeindex.insert_sync(1, 0).is_ok());
     /// assert!(treeindex.contains(&1));
     /// ```
     #[inline]
@@ -809,7 +809,7 @@ where
     fn clone(&self) -> Self {
         let self_clone = Self::default();
         for (k, v) in self.iter(&Guard::new()) {
-            let _result: Result<(), (K, V)> = self_clone.insert(k.clone(), v.clone());
+            let _result: Result<(), (K, V)> = self_clone.insert_sync(k.clone(), v.clone());
         }
         self_clone
     }

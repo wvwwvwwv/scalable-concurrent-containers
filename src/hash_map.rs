@@ -388,8 +388,8 @@ where
 
     /// Begins iterating over entries by getting the first occupied entry.
     ///
-    /// The returned [`OccupiedEntry`] in combination with [`OccupiedEntry::next`] or
-    /// [`OccupiedEntry::next_async`] can act as a mutable iterator over entries.
+    /// The returned [`OccupiedEntry`] in combination with [`OccupiedEntry::next_async`] can act as
+    /// a mutable iterator over entries.
     ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
@@ -404,13 +404,13 @@ where
     /// ```
     #[inline]
     pub async fn begin_async(&self) -> Option<OccupiedEntry<'_, K, V, H>> {
-        self.any_entry_async(|_, _| true).await
+        self.any_async(|_, _| true).await
     }
 
     /// Begins iterating over entries by getting the first occupied entry.
     ///
-    /// The returned [`OccupiedEntry`] in combination with [`OccupiedEntry::next`] or
-    /// [`OccupiedEntry::next_async`] can act as a mutable iterator over entries.
+    /// The returned [`OccupiedEntry`] in combination with [`OccupiedEntry::next_sync`] can act as a
+    /// mutable iterator over entries.
     ///
     /// # Examples
     ///
@@ -429,58 +429,10 @@ where
     /// ```
     #[inline]
     pub fn begin_sync(&self) -> Option<OccupiedEntry<'_, K, V, H>> {
-        self.any_entry(|_, _| true)
+        self.any_sync(|_, _| true)
     }
 
     /// Finds any entry satisfying the supplied predicate for in-place manipulation.
-    ///
-    /// The returned [`OccupiedEntry`] in combination with [`OccupiedEntry::next`] or
-    /// [`OccupiedEntry::next_async`] can act as a mutable iterator over entries.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashMap;
-    ///
-    /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.insert(2, 3).is_ok());
-    ///
-    /// let mut entry = hashmap.any_entry(|k, _| *k == 2).unwrap();
-    /// assert_eq!(*entry.get(), 3);
-    /// ```
-    #[inline]
-    pub fn any_entry<P: FnMut(&K, &V) -> bool>(
-        &self,
-        mut pred: P,
-    ) -> Option<OccupiedEntry<'_, K, V, H>> {
-        let mut entry = None;
-        let guard = Guard::new();
-        self.for_each_writer_sync(0, 0, &guard, |writer, data_block, index, len| {
-            let mut entry_ptr = EntryPtr::new(&guard);
-            while entry_ptr.move_to_next(&writer, &guard) {
-                let (k, v) = entry_ptr.get(data_block);
-                if pred(k, v) {
-                    let locked_entry =
-                        LockedEntry::new(writer, data_block, entry_ptr, index, len, &guard)
-                            .prolong_lifetime(self);
-                    entry = Some(OccupiedEntry {
-                        hashmap: self,
-                        locked_entry,
-                    });
-                    return (true, false);
-                }
-            }
-            (false, false)
-        });
-        entry
-    }
-
-    /// Finds any entry satisfying the supplied predicate for in-place manipulation.
-    ///
-    /// The returned [`OccupiedEntry`] in combination with [`OccupiedEntry::next`] or
-    /// [`OccupiedEntry::next_async`] can act as a mutable iterator over entries.
     ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
@@ -491,10 +443,10 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// let future_entry = hashmap.any_entry_async(|k, _| *k == 2);
+    /// let future_entry = hashmap.any_async(|k, _| *k == 2);
     /// ```
     #[inline]
-    pub async fn any_entry_async<P: FnMut(&K, &V) -> bool>(
+    pub async fn any_async<P: FnMut(&K, &V) -> bool>(
         &self,
         mut pred: P,
     ) -> Option<OccupiedEntry<'_, K, V, H>> {
@@ -519,6 +471,48 @@ where
             (false, false)
         })
         .await;
+        entry
+    }
+
+    /// Finds any entry satisfying the supplied predicate for in-place manipulation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// assert!(hashmap.insert(2, 3).is_ok());
+    ///
+    /// let mut entry = hashmap.any_sync(|k, _| *k == 2).unwrap();
+    /// assert_eq!(*entry.get(), 3);
+    /// ```
+    #[inline]
+    pub fn any_sync<P: FnMut(&K, &V) -> bool>(
+        &self,
+        mut pred: P,
+    ) -> Option<OccupiedEntry<'_, K, V, H>> {
+        let mut entry = None;
+        let guard = Guard::new();
+        self.for_each_writer_sync(0, 0, &guard, |writer, data_block, index, len| {
+            let mut entry_ptr = EntryPtr::new(&guard);
+            while entry_ptr.move_to_next(&writer, &guard) {
+                let (k, v) = entry_ptr.get(data_block);
+                if pred(k, v) {
+                    let locked_entry =
+                        LockedEntry::new(writer, data_block, entry_ptr, index, len, &guard)
+                            .prolong_lifetime(self);
+                    entry = Some(OccupiedEntry {
+                        hashmap: self,
+                        locked_entry,
+                    });
+                    return (true, false);
+                }
+            }
+            (false, false)
+        });
         entry
     }
 
@@ -1222,42 +1216,6 @@ where
     /// if they are not removed, however the same entry can be visited more than once if the
     /// [`HashMap`] gets resized by another thread.
     ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashMap;
-    ///
-    /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.insert(2, 1).is_ok());
-    /// assert!(hashmap.insert(3, 2).is_ok());
-    ///
-    /// hashmap.retain(|k, v| *k == 1 && *v == 0);
-    ///
-    /// assert!(hashmap.contains(&1));
-    /// assert!(!hashmap.contains(&2));
-    /// assert!(!hashmap.contains(&3));
-    /// ```
-    #[inline]
-    pub fn retain<F: FnMut(&K, &mut V) -> bool>(&self, mut pred: F) {
-        self.iter_mut_sync(|mut e| {
-            let (k, v) = &mut *e;
-            if !pred(k, v) {
-                drop(e.consume());
-            }
-            true
-        });
-    }
-
-    /// Retains the entries specified by the predicate.
-    ///
-    /// This method allows the predicate closure to modify the value field.
-    ///
-    /// Entries that have existed since the invocation of the method are guaranteed to be visited
-    /// if they are not removed, however the same entry can be visited more than once if the
-    /// [`HashMap`] gets resized by another thread.
-    ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
@@ -1282,6 +1240,42 @@ where
         .await;
     }
 
+    /// Retains the entries specified by the predicate.
+    ///
+    /// This method allows the predicate closure to modify the value field.
+    ///
+    /// Entries that have existed since the invocation of the method are guaranteed to be visited
+    /// if they are not removed, however the same entry can be visited more than once if the
+    /// [`HashMap`] gets resized by another thread.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// assert!(hashmap.insert(2, 1).is_ok());
+    /// assert!(hashmap.insert(3, 2).is_ok());
+    ///
+    /// hashmap.retain_sync(|k, v| *k == 1 && *v == 0);
+    ///
+    /// assert!(hashmap.contains(&1));
+    /// assert!(!hashmap.contains(&2));
+    /// assert!(!hashmap.contains(&3));
+    /// ```
+    #[inline]
+    pub fn retain_sync<F: FnMut(&K, &mut V) -> bool>(&self, mut pred: F) {
+        self.iter_mut_sync(|mut e| {
+            let (k, v) = &mut *e;
+            if !pred(k, v) {
+                drop(e.consume());
+            }
+            true
+        });
+    }
+
     /// Clears the [`HashMap`] by removing all key-value pairs.
     ///
     /// # Examples
@@ -1298,7 +1292,7 @@ where
     /// ```
     #[inline]
     pub fn clear(&self) {
-        self.retain(|_, _| false);
+        self.retain_sync(|_, _| false);
     }
 
     /// Clears the [`HashMap`] by removing all key-value pairs.

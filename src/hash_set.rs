@@ -505,6 +505,41 @@ where
         self.map.retain_async(|k, ()| filter(k)).await;
     }
 
+    /// Retains the entries specified by the predicate.
+    ///
+    /// This method allows the predicate closure to modify the value field.
+    ///
+    /// Entries that have existed since the invocation of the method are guaranteed to be visited
+    /// if they are not removed, however the same entry can be visited more than once if the
+    /// [`HashCache`] gets resized by another thread.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    ///
+    /// let hashset: HashSet<u64> = HashSet::default();
+    ///
+    /// assert!(hashset.insert(1).is_ok());
+    /// assert!(hashset.insert(2).is_ok());
+    /// assert!(hashset.insert(3).is_ok());
+    ///
+    /// hashset.retain_sync(|k| *k == 1);
+    ///
+    /// assert!(hashset.contains(&1));
+    /// assert!(!hashset.contains(&2));
+    /// assert!(!hashset.contains(&3));
+    /// ```
+    #[inline]
+    pub fn retain_sync<F: FnMut(&K) -> bool>(&self, mut pred: F) {
+        self.iter_mut_sync(|e| {
+            if !pred(&e) {
+                drop(e.consume());
+            }
+            true
+        });
+    }
+
     /// Clears the [`HashSet`] by removing all keys.
     ///
     /// # Examples

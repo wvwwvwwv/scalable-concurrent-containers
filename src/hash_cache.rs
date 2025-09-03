@@ -895,42 +895,6 @@ where
     /// if they are not removed, however the same entry can be visited more than once if the
     /// [`HashCache`] gets resized by another thread.
     ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashCache;
-    ///
-    /// let hashcache: HashCache<u64, u32> = HashCache::default();
-    ///
-    /// assert!(hashcache.put(1, 0).is_ok());
-    /// assert!(hashcache.put(2, 1).is_ok());
-    /// assert!(hashcache.put(3, 2).is_ok());
-    ///
-    /// hashcache.retain(|k, v| *k == 1 && *v == 0);
-    ///
-    /// assert!(hashcache.contains(&1));
-    /// assert!(!hashcache.contains(&2));
-    /// assert!(!hashcache.contains(&3));
-    /// ```
-    #[inline]
-    pub fn retain<F: FnMut(&K, &mut V) -> bool>(&self, mut pred: F) {
-        self.iter_mut_sync(|mut e| {
-            let (k, v) = &mut *e;
-            if !pred(k, v) {
-                drop(e.consume());
-            }
-            true
-        });
-    }
-
-    /// Retains the entries specified by the predicate.
-    ///
-    /// This method allows the predicate closure to modify the value field.
-    ///
-    /// Entries that have existed since the invocation of the method are guaranteed to be visited
-    /// if they are not removed, however the same entry can be visited more than once if the
-    /// [`HashCache`] gets resized by another thread.
-    ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
@@ -955,6 +919,42 @@ where
         .await;
     }
 
+    /// Retains the entries specified by the predicate.
+    ///
+    /// This method allows the predicate closure to modify the value field.
+    ///
+    /// Entries that have existed since the invocation of the method are guaranteed to be visited
+    /// if they are not removed, however the same entry can be visited more than once if the
+    /// [`HashCache`] gets resized by another thread.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    ///
+    /// assert!(hashcache.put(1, 0).is_ok());
+    /// assert!(hashcache.put(2, 1).is_ok());
+    /// assert!(hashcache.put(3, 2).is_ok());
+    ///
+    /// hashcache.retain_sync(|k, v| *k == 1 && *v == 0);
+    ///
+    /// assert!(hashcache.contains(&1));
+    /// assert!(!hashcache.contains(&2));
+    /// assert!(!hashcache.contains(&3));
+    /// ```
+    #[inline]
+    pub fn retain_sync<F: FnMut(&K, &mut V) -> bool>(&self, mut pred: F) {
+        self.iter_mut_sync(|mut e| {
+            let (k, v) = &mut *e;
+            if !pred(k, v) {
+                drop(e.consume());
+            }
+            true
+        });
+    }
+
     /// Clears the [`HashCache`] by removing all key-value pairs.
     ///
     /// # Examples
@@ -971,7 +971,7 @@ where
     /// ```
     #[inline]
     pub fn clear(&self) {
-        self.retain(|_, _| false);
+        self.retain_sync(|_, _| false);
     }
 
     /// Clears the [`HashCache`] by removing all key-value pairs.

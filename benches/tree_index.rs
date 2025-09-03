@@ -9,7 +9,7 @@ fn insert(c: &mut Criterion) {
             let treeindex: TreeIndex<u64, u64> = TreeIndex::default();
             let start = Instant::now();
             for i in 0..iters {
-                assert!(treeindex.insert(i, i).is_ok());
+                assert!(treeindex.insert_sync(i, i).is_ok());
             }
             start.elapsed()
         })
@@ -22,7 +22,7 @@ fn insert_rev(c: &mut Criterion) {
             let treeindex: TreeIndex<u64, u64> = TreeIndex::default();
             let start = Instant::now();
             for i in (0..iters).rev() {
-                assert!(treeindex.insert(i, i).is_ok());
+                assert!(treeindex.insert_sync(i, i).is_ok());
             }
             start.elapsed()
         })
@@ -34,7 +34,7 @@ fn iter_with(c: &mut Criterion) {
         b.iter_custom(|iters| {
             let treeindex: TreeIndex<u64, u64> = TreeIndex::default();
             for i in 0..iters {
-                assert!(treeindex.insert(i, i).is_ok());
+                assert!(treeindex.insert_sync(i, i).is_ok());
             }
             let start = Instant::now();
             let guard = Guard::new();
@@ -52,7 +52,7 @@ fn peek(c: &mut Criterion) {
         b.iter_custom(|iters| {
             let treeindex: TreeIndex<u64, u64> = TreeIndex::default();
             for i in 0..iters {
-                assert!(treeindex.insert(i, i).is_ok());
+                assert!(treeindex.insert_sync(i, i).is_ok());
             }
             let start = Instant::now();
             let guard = Guard::new();

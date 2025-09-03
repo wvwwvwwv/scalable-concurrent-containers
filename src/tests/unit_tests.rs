@@ -320,7 +320,7 @@ mod hashmap {
         for k in 0..workload_size {
             assert!(hashmap.insert(k, L::new(&cnt)).is_ok());
         }
-        hashmap.retain(|k, _| {
+        hashmap.retain_sync(|k, _| {
             assert!(*k < workload_size);
             true
         });
@@ -329,7 +329,7 @@ mod hashmap {
         for k in 0..workload_size / 2 {
             assert!(hashmap.remove(&k).is_some());
         }
-        hashmap.retain(|k, _| {
+        hashmap.retain_sync(|k, _| {
             assert!(*k >= workload_size / 2);
             true
         });
@@ -585,7 +585,7 @@ mod hashmap {
                     assert!(in_range >= workload_size, "{in_range} {workload_size}");
 
                     let mut removed = 0;
-                    hashmap.retain(|k, _| {
+                    hashmap.retain_sync(|k, _| {
                         if range.contains(k) {
                             removed += 1;
                             false
@@ -693,7 +693,7 @@ mod hashmap {
                         assert_eq!(result, Err((id, id)));
                     }
                     let mut iterated = 0;
-                    hashmap.retain(|k, _| {
+                    hashmap.retain_sync(|k, _| {
                         if range.contains(k) {
                             iterated += 1;
                         }
@@ -702,7 +702,7 @@ mod hashmap {
                     assert!(iterated >= workload_size);
 
                     let mut removed = 0;
-                    hashmap.retain(|k, _| {
+                    hashmap.retain_sync(|k, _| {
                         if range.contains(k) {
                             removed += 1;
                             false
@@ -742,7 +742,7 @@ mod hashmap {
                 let mut scanned = 0;
                 let mut checker = BTreeSet::new();
                 let mut max = inserted_clone.load(Acquire);
-                hashmap_clone.retain(|k, _| {
+                hashmap_clone.retain_sync(|k, _| {
                     scanned += 1;
                     checker.insert(*k);
                     true
@@ -770,7 +770,7 @@ mod hashmap {
                 barrier_clone.wait().await;
                 scanned = 0;
                 max = removed_clone.load(Acquire);
-                hashmap_clone.retain(|k, _| {
+                hashmap_clone.retain_sync(|k, _| {
                     scanned += 1;
                     assert!(*k < max);
                     true
@@ -928,7 +928,7 @@ mod hashmap {
             }
 
             let mut removed = 0;
-            hashmap.retain(|k, _| {
+            hashmap.retain_sync(|k, _| {
                 if k.data >= key + range {
                     removed += 1;
                     false
@@ -940,7 +940,7 @@ mod hashmap {
 
             assert_eq!(hashmap.len(), range);
             let mut found_keys = 0;
-            hashmap.retain(|k, v| {
+            hashmap.retain_sync(|k, v| {
                 assert!(k.data < key + range);
                 assert!(v.data >= key);
                 found_keys += 1;
@@ -1467,7 +1467,7 @@ mod hashindex {
                     assert!(in_range >= workload_size, "{in_range} {workload_size}");
 
                     let mut removed = 0;
-                    hashindex.retain(|k, _| {
+                    hashindex.retain_sync(|k, _| {
                         if range.contains(k) {
                             removed += 1;
                             false
@@ -1512,7 +1512,7 @@ mod hashindex {
                 let mut scanned = 0;
                 let mut checker = BTreeSet::new();
                 let mut max = inserted_clone.load(Acquire);
-                hashindex_clone.retain(|k, _| {
+                hashindex_clone.retain_sync(|k, _| {
                     scanned += 1;
                     checker.insert(*k);
                     true
@@ -1540,7 +1540,7 @@ mod hashindex {
                 barrier_clone.wait().await;
                 scanned = 0;
                 max = removed_clone.load(Acquire);
-                hashindex_clone.retain(|k, _| {
+                hashindex_clone.retain_sync(|k, _| {
                     scanned += 1;
                     assert!(*k < max);
                     true
@@ -1974,7 +1974,7 @@ mod hashcache {
             assert!(hashcache.put(k, R::new(&INST_CNT)).is_ok());
         }
 
-        hashcache.retain(|k, _| *k <= retain_limit);
+        hashcache.retain_sync(|k, _| *k <= retain_limit);
         for k in 0..workload_size {
             if hashcache.get(&k).is_some() {
                 assert!(k <= retain_limit);
@@ -1986,7 +1986,7 @@ mod hashcache {
             }
         }
 
-        hashcache.retain(|k, _| *k > retain_limit);
+        hashcache.retain_sync(|k, _| *k > retain_limit);
         for k in 0..workload_size {
             if hashcache.get(&k).is_some() {
                 assert!(k > retain_limit);
@@ -2012,7 +2012,7 @@ mod hashcache {
             for k in s * 4..s * 4 + 4 {
                 assert!(hashcache.put(k, R::new(&INST_CNT)).is_ok());
             }
-            hashcache.retain(|k, _| *k % 2 == 0);
+            hashcache.retain_sync(|k, _| *k % 2 == 0);
             for k in s * 4..s * 4 + 4 {
                 if hashcache.put(k, R::new(&INST_CNT)).is_err() {
                     assert!(k % 2 == 0);
@@ -2224,18 +2224,18 @@ mod treeindex {
     fn comparable() {
         let tree: TreeIndex<CmpTest, usize> = TreeIndex::default();
 
-        assert!(tree.insert(CmpTest("A".to_owned(), 0), 0).is_ok());
+        assert!(tree.insert_sync(CmpTest("A".to_owned(), 0), 0).is_ok());
         assert!(tree.peek_with(&"A", |_, _| true).unwrap());
-        assert!(tree.insert(CmpTest("B".to_owned(), 0), 0).is_ok());
+        assert!(tree.insert_sync(CmpTest("B".to_owned(), 0), 0).is_ok());
         assert!(tree.peek_with(&"B", |_, _| true).unwrap());
-        assert!(tree.insert(CmpTest("C".to_owned(), 0), 0).is_ok());
+        assert!(tree.insert_sync(CmpTest("C".to_owned(), 0), 0).is_ok());
         assert!(tree.peek_with(&"C", |_, _| true).unwrap());
 
-        assert!(tree.insert(CmpTest("Z".to_owned(), 0), 0).is_ok());
+        assert!(tree.insert_sync(CmpTest("Z".to_owned(), 0), 0).is_ok());
         assert!(tree.peek_with(&"Z", |_, _| true).unwrap());
-        assert!(tree.insert(CmpTest("Y".to_owned(), 0), 0).is_ok());
+        assert!(tree.insert_sync(CmpTest("Y".to_owned(), 0), 0).is_ok());
         assert!(tree.peek_with(&"Y", |_, _| true).unwrap());
-        assert!(tree.insert(CmpTest("X".to_owned(), 0), 0).is_ok());
+        assert!(tree.insert_sync(CmpTest("X".to_owned(), 0), 0).is_ok());
         assert!(tree.peek_with(&"X", |_, _| true).unwrap());
 
         let guard = Guard::new();
@@ -2244,7 +2244,7 @@ mod treeindex {
         assert_eq!(range.next().unwrap().0.0, "X");
         assert!(range.next().is_none());
 
-        tree.remove_range("C".."Y");
+        tree.remove_range_sync("C".."Y");
 
         assert!(tree.peek_with(&"A", |_, _| true).unwrap());
         assert!(tree.peek_with(&"B", |_, _| true).unwrap());
@@ -2261,7 +2261,7 @@ mod treeindex {
 
         let workload_size = 256;
         for k in 0..workload_size {
-            assert!(tree.insert(k, R::new(&INST_CNT)).is_ok());
+            assert!(tree.insert_sync(k, R::new(&INST_CNT)).is_ok());
         }
         assert!(INST_CNT.load(Relaxed) >= workload_size);
         assert_eq!(tree.len(), workload_size);
@@ -2300,12 +2300,12 @@ mod treeindex {
 
         let workload_size = 256;
         for k in 0..workload_size {
-            assert!(tree.insert(k, R::new(&INST_CNT)).is_ok());
+            assert!(tree.insert_sync(k, R::new(&INST_CNT)).is_ok());
         }
         assert!(INST_CNT.load(Relaxed) >= workload_size);
         assert_eq!(tree.len(), workload_size);
         for k in 0..workload_size {
-            assert!(tree.remove(&k));
+            assert!(tree.remove_sync(&k));
         }
         assert_eq!(tree.len(), 0);
 
@@ -2334,12 +2334,12 @@ mod treeindex {
                     match task_id {
                         0 => {
                             for k in 0..workload_size {
-                                assert!(tree.insert(k, R::new(&INST_CNT)).is_ok());
+                                assert!(tree.insert_sync(k, R::new(&INST_CNT)).is_ok());
                             }
                         }
                         1 => {
                             for k in 0..workload_size / 8 {
-                                tree.remove(&(k * 4));
+                                tree.remove_sync(&(k * 4));
                             }
                         }
                         _ => {
@@ -2376,7 +2376,7 @@ mod treeindex {
 
         let workload_size = if cfg!(miri) { 256 } else { 1024 * 1024 };
         for k in 0..workload_size {
-            assert!(tree.insert(k, R::new(&INST_CNT)).is_ok());
+            assert!(tree.insert_sync(k, R::new(&INST_CNT)).is_ok());
         }
         assert!(INST_CNT.load(Relaxed) >= workload_size);
         assert_eq!(tree.len(), workload_size);
@@ -2412,10 +2412,10 @@ mod treeindex {
         let data_size = 256;
         let tree: TreeIndex<usize, R> = TreeIndex::new();
         for k in 0..data_size {
-            assert!(tree.insert(k, R::new()).is_ok());
+            assert!(tree.insert_sync(k, R::new()).is_ok());
         }
         for k in (0..data_size).rev() {
-            assert!(tree.remove(&k));
+            assert!(tree.remove_sync(&k));
         }
 
         let mut cnt = 0;
@@ -2427,7 +2427,7 @@ mod treeindex {
 
         let tree: TreeIndex<usize, R> = TreeIndex::new();
         for k in 0..(data_size / 16) {
-            assert!(tree.insert(k, R::new()).is_ok());
+            assert!(tree.insert_sync(k, R::new()).is_ok());
         }
         tree.clear();
 
@@ -2443,7 +2443,7 @@ mod treeindex {
 
         let workload_size = 256;
         for k in 0..workload_size {
-            assert!(tree.insert(k, R::new(&INST_CNT)).is_ok());
+            assert!(tree.insert_sync(k, R::new(&INST_CNT)).is_ok());
         }
         let tree_clone = tree.clone();
         tree.clear();
@@ -2464,19 +2464,19 @@ mod treeindex {
         let tree2: TreeIndex<String, usize> = TreeIndex::new();
         assert_eq!(tree1, tree2);
 
-        assert!(tree1.insert("Hi".to_string(), 1).is_ok());
+        assert!(tree1.insert_sync("Hi".to_string(), 1).is_ok());
         assert_ne!(tree1, tree2);
 
-        assert!(tree2.insert("Hello".to_string(), 2).is_ok());
+        assert!(tree2.insert_sync("Hello".to_string(), 2).is_ok());
         assert_ne!(tree1, tree2);
 
-        assert!(tree1.insert("Hello".to_string(), 2).is_ok());
+        assert!(tree1.insert_sync("Hello".to_string(), 2).is_ok());
         assert_ne!(tree1, tree2);
 
-        assert!(tree2.insert("Hi".to_string(), 1).is_ok());
+        assert!(tree2.insert_sync("Hi".to_string(), 1).is_ok());
         assert_eq!(tree1, tree2);
 
-        assert!(tree1.remove("Hi"));
+        assert!(tree1.remove_sync("Hi"));
         assert_ne!(tree1, tree2);
     }
 
@@ -2491,13 +2491,13 @@ mod treeindex {
         for i in 0..num_iter {
             let prop_str = "[a-z]{1,16}".new_tree(&mut runner).unwrap();
             let str_val = prop_str.current();
-            if tree1.insert(str_val.clone(), i).is_ok() {
+            if tree1.insert_sync(str_val.clone(), i).is_ok() {
                 checker1.insert((str_val.clone(), i));
             }
             let str_borrowed = str_val.as_str();
             assert!(tree1.peek_with(str_borrowed, |_, _| ()).is_some());
 
-            if tree2.insert(i, str_val.clone()).is_ok() {
+            if tree2.insert_sync(i, str_val.clone()).is_ok() {
                 checker2.insert((i, str_val.clone()));
             }
         }
@@ -2514,10 +2514,10 @@ mod treeindex {
     #[test]
     fn range() {
         let tree: TreeIndex<String, usize> = TreeIndex::default();
-        assert!(tree.insert("Ape".to_owned(), 0).is_ok());
-        assert!(tree.insert("Apple".to_owned(), 1).is_ok());
-        assert!(tree.insert("Banana".to_owned(), 3).is_ok());
-        assert!(tree.insert("Badezimmer".to_owned(), 2).is_ok());
+        assert!(tree.insert_sync("Ape".to_owned(), 0).is_ok());
+        assert!(tree.insert_sync("Apple".to_owned(), 1).is_ok());
+        assert!(tree.insert_sync("Banana".to_owned(), 3).is_ok());
+        assert!(tree.insert_sync("Badezimmer".to_owned(), 2).is_ok());
         assert_eq!(tree.range(..="Ball".to_owned(), &Guard::new()).count(), 3);
         assert_eq!(
             tree.range("Ape".to_owned()..="Ball".to_owned(), &Guard::new())
@@ -2671,7 +2671,7 @@ mod treeindex {
                 assert!(task.is_ok());
             }
 
-            tree.remove_range(..workload_size);
+            tree.remove_range_sync(..workload_size);
             assert!(tree.peek(&(workload_size - 1), &Guard::new()).is_none());
             assert!(tree.peek(&workload_size, &Guard::new()).is_some());
             assert_eq!(tree.len(), 1);
@@ -2693,7 +2693,7 @@ mod treeindex {
                 let first_key = thread_id * range;
                 barrier.wait();
                 for key in first_key..(first_key + range / 2) {
-                    assert!(tree.insert(key, key).is_ok());
+                    assert!(tree.insert_sync(key, key).is_ok());
                 }
                 for key in first_key..(first_key + range / 2) {
                     assert!(
@@ -2702,7 +2702,7 @@ mod treeindex {
                     );
                 }
                 for key in (first_key + range / 2)..(first_key + range) {
-                    assert!(tree.insert(key, key).is_ok());
+                    assert!(tree.insert_sync(key, key).is_ok());
                 }
                 for key in (first_key + range / 2)..(first_key + range) {
                     assert!(
@@ -2750,7 +2750,7 @@ mod treeindex {
         let tree: Arc<TreeIndex<usize, usize>> = Arc::new(TreeIndex::new());
         for t in 0..num_threads {
             // insert markers
-            assert!(tree.insert(t * range, t * range).is_ok());
+            assert!(tree.insert_sync(t * range, t * range).is_ok());
         }
         let stopped: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
         let barrier = Arc::new(Barrier::new(num_threads + 1));
@@ -2764,7 +2764,7 @@ mod treeindex {
                 barrier.wait();
                 while !stopped.load(Relaxed) {
                     for key in (first_key + 1)..(first_key + range) {
-                        assert!(tree.insert(key, key).is_ok());
+                        assert!(tree.insert_sync(key, key).is_ok());
                     }
                     for key in (first_key + 1)..(first_key + range) {
                         assert!(
@@ -2795,8 +2795,8 @@ mod treeindex {
                             let entry = range_scanner.next().unwrap();
                             assert_eq!(entry, (&(key_at_halfway + 1), &(key_at_halfway + 1)));
                         }
-                        assert!(tree.remove(&key));
-                        assert!(!tree.remove(&key));
+                        assert!(tree.remove_sync(&key));
+                        assert!(!tree.remove_sync(&key));
                         assert!(tree.peek_with(&(first_key + 1), |_, _| ()).is_none());
                         assert!(tree.peek_with(&key, |_, _| ()).is_none());
                     }
@@ -2859,7 +2859,7 @@ mod treeindex {
                     let range = 0..32;
                     let inserted = range
                         .clone()
-                        .filter(|i| tree.insert(*i, thread_id).is_ok())
+                        .filter(|i| tree.insert_sync(*i, thread_id).is_ok())
                         .count();
                     let found = range
                         .clone()
@@ -2867,11 +2867,11 @@ mod treeindex {
                         .count();
                     let removed = range
                         .clone()
-                        .filter(|i| tree.remove_if(i, |v| *v == thread_id))
+                        .filter(|i| tree.remove_if_sync(i, |v| *v == thread_id))
                         .count();
                     let removed_again = range
                         .clone()
-                        .filter(|i| tree.remove_if(i, |v| *v == thread_id))
+                        .filter(|i| tree.remove_if_sync(i, |v| *v == thread_id))
                         .count();
                     assert_eq!(removed_again, 0);
                     assert_eq!(found, removed, "{inserted} {found} {removed}");
@@ -2942,7 +2942,7 @@ mod treeindex {
                 if i == data_size / 2 {
                     barrier.wait();
                 }
-                assert!(tree.insert(i, 0).is_ok());
+                assert!(tree.insert_sync(i, 0).is_ok());
                 inserted.store(i, Release);
             }
             // remove
@@ -2951,7 +2951,7 @@ mod treeindex {
                 if i == data_size / 2 {
                     barrier.wait();
                 }
-                assert!(tree.remove(&i));
+                assert!(tree.remove_sync(&i));
                 removed.store(i, Release);
             }
             for thread in threads {
@@ -2968,14 +2968,14 @@ mod treeindex {
             let insert_range = (256_usize, 4095_usize);
             let tree = TreeIndex::default();
             for k in insert_range.0..=insert_range.1 {
-                prop_assert!(tree.insert(k, k).is_ok());
+                prop_assert!(tree.insert_sync(k, k).is_ok());
             }
             if usize::BITS == 32 {
                 prop_assert_eq!(tree.depth(), 4);
             } else {
                 prop_assert_eq!(tree.depth(), 3);
             }
-            tree.remove_range(remove_range.clone());
+            tree.remove_range_sync(remove_range.clone());
             if remove_range.contains(&insert_range.0) && remove_range.contains(&insert_range.1) {
                 prop_assert!(tree.is_empty());
             }
@@ -2989,7 +2989,7 @@ mod treeindex {
                 }
             }
             for k in remove_range.clone() {
-                prop_assert!(tree.insert(k, k).is_ok());
+                prop_assert!(tree.insert_sync(k, k).is_ok());
             }
             let mut cnt = 0;
             for (k, v) in tree.iter(&Guard::new()) {
@@ -3749,7 +3749,7 @@ mod malfunction {
             let result: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
                 assert!(
                     treeindex
-                        .insert(k, R::new_panic_free_drop(&INST_CNT, &NEVER_PANIC))
+                        .insert_sync(k, R::new_panic_free_drop(&INST_CNT, &NEVER_PANIC))
                         .is_ok()
                 );
                 assert!(treeindex.peek_with(&k, |_, _| ()).is_some());

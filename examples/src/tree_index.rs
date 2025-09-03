@@ -9,9 +9,9 @@ fn single_threaded() {
     let treeindex: TreeIndex<isize, isize> = TreeIndex::new();
     for i in 1..workload_size {
         if i % 2 == 0 {
-            assert!(treeindex.insert(-i, i).is_ok());
+            assert!(treeindex.insert_sync(-i, i).is_ok());
         } else {
-            assert!(treeindex.insert(i, i).is_ok());
+            assert!(treeindex.insert_sync(i, i).is_ok());
         }
     }
     for i in 1..workload_size {
@@ -25,13 +25,13 @@ fn single_threaded() {
     }
     for i in 1..workload_size {
         if i % 2 == 0 {
-            assert!(!treeindex.remove(&i));
-            assert!(treeindex.remove(&-i));
-            assert!(!treeindex.remove(&-i));
+            assert!(!treeindex.remove_sync(&i));
+            assert!(treeindex.remove_sync(&-i));
+            assert!(!treeindex.remove_sync(&-i));
         } else {
-            assert!(!treeindex.remove(&-i));
-            assert!(treeindex.remove(&i));
-            assert!(!treeindex.remove(&i));
+            assert!(!treeindex.remove_sync(&-i));
+            assert!(treeindex.remove_sync(&i));
+            assert!(!treeindex.remove_sync(&i));
         }
     }
     assert!(treeindex.is_empty());
@@ -45,26 +45,26 @@ fn multi_threaded() {
     thread::scope(|s| {
         s.spawn(|| {
             for i in 1..workload_size {
-                assert!(treeindex.insert(i, i).is_ok());
+                assert!(treeindex.insert_sync(i, i).is_ok());
             }
             assert!(treeindex.peek_with(&0, |_, _| ()).is_none());
             for i in 1..workload_size {
                 assert!(treeindex.peek_with(&i, |_, _| ()).is_some());
             }
             for i in 1..workload_size {
-                assert!(treeindex.remove(&i));
+                assert!(treeindex.remove_sync(&i));
             }
         });
         s.spawn(|| {
             for i in 1..workload_size {
-                assert!(treeindex.insert(-i, i).is_ok());
+                assert!(treeindex.insert_sync(-i, i).is_ok());
             }
             assert!(treeindex.peek_with(&0, |_, _| ()).is_none());
             for i in 1..workload_size {
                 assert!(treeindex.peek_with(&-i, |_, _| ()).is_some());
             }
             for i in 1..workload_size {
-                assert!(treeindex.remove(&-i));
+                assert!(treeindex.remove_sync(&-i));
             }
         });
     });

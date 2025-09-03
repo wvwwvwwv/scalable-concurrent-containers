@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Debug
         run: RUST_BACKTRACE=1 cargo test;
           RUST_BACKTRACE=1 cargo test -p examples
@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Prepare
         run: sudo apt-get install gcc-multilib;
           rustup target add i686-unknown-linux-gnu
@@ -33,13 +33,14 @@ jobs:
         run: RUST_BACKTRACE=1 cargo test --target i686-unknown-linux-gnu;
           RUST_BACKTRACE=1 cargo test --target i686-unknown-linux-gnu -p examples
       - name: Release
-        run: RUST_BACKTRACE=1 cargo test --target i686-unknown-linux-gnu --release;
+        run:
+          RUST_BACKTRACE=1 cargo test --target i686-unknown-linux-gnu --release;
           RUST_BACKTRACE=1 cargo test --target i686-unknown-linux-gnu --release -p examples
   check-basic-aarch64:
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Debug
         run: RUST_BACKTRACE=1 cargo test;
           RUST_BACKTRACE=1 cargo test -p examples
@@ -50,7 +51,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Prepare
         run: rustup toolchain add nightly;
           rustup component add rust-src --toolchain nightly;
@@ -63,7 +64,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Prepare
         run: rustup toolchain add nightly;
           rustup component add rust-src --toolchain nightly;
@@ -95,6 +96,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Benchmark
         run: cargo bench
