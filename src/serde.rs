@@ -52,7 +52,7 @@ where
             H::default(),
         );
         while let Some((key, val)) = access.next_entry()? {
-            hashmap.upsert(key, val);
+            hashmap.upsert_sync(key, val);
         }
         Ok(hashmap)
     }
@@ -84,7 +84,7 @@ where
     {
         let mut map = serializer.serialize_map(Some(self.len()))?;
         let mut error = None;
-        self.retain(|k, v| {
+        self.iter_sync(|k, v| {
             if error.is_none() {
                 if let Err(e) = map.serialize_entry(k, v) {
                     error.replace(e);
@@ -136,7 +136,7 @@ where
             H::default(),
         );
         while let Some(key) = access.next_element()? {
-            let _result = hashset.insert(key);
+            let _result = hashset.insert_sync(key);
         }
         Ok(hashset)
     }
@@ -221,7 +221,7 @@ where
             H::default(),
         );
         while let Some((key, val)) = access.next_entry()? {
-            let _result = hashindex.insert(key, val);
+            let _result = hashindex.insert_sync(key, val);
         }
         Ok(hashindex)
     }
@@ -305,7 +305,7 @@ where
         let capacity = access.size_hint().unwrap_or(0).min(MAX_CAPACITY);
         let hashcache = HashCache::with_capacity_and_hasher(0, capacity, H::default());
         while let Some((key, val)) = access.next_entry()? {
-            let _result = hashcache.put(key, val);
+            let _result = hashcache.put_sync(key, val);
         }
         Ok(hashcache)
     }
@@ -388,7 +388,7 @@ where
     {
         let treeindex = TreeIndex::default();
         while let Some((key, val)) = access.next_entry()? {
-            let _result = treeindex.insert(key, val);
+            let _result = treeindex.insert_sync(key, val);
         }
         Ok(treeindex)
     }

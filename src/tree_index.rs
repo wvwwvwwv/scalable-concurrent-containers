@@ -52,10 +52,11 @@ use node::Node;
 /// non-blocking as long as no structural changes are required. However, when nodes are split or
 /// merged by a write operation, other write operations on keys in the affected range are blocked.
 ///
-/// ### Asynchronous and synchronous methods
+/// ### Synchronous methods in an asynchronous code block
 ///
-/// It is generally not recommended to use synchronous methods in an asynchronous code block or
-/// [`poll`](std::future::Future::poll), since it may lead to deadlocks or performance degradation.
+/// It is generally not recommended to use blocking methods, such as [`TreeIndex::insert_sync`], in
+/// an asynchronous code block or [`poll`](std::future::Future::poll), since it may lead to
+/// deadlocks or performance degradation.
 ///
 /// ### Unwind safety
 ///

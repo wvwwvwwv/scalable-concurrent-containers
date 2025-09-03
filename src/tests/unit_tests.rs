@@ -3784,7 +3784,7 @@ mod serde {
     #[test]
     fn hashmap() {
         let hashmap: HashMap<u64, i16> = HashMap::new();
-        assert!(hashmap.insert(2, -6).is_ok());
+        assert!(hashmap.insert_sync(2, -6).is_ok());
         assert_tokens(
             &hashmap,
             &[
@@ -3799,7 +3799,7 @@ mod serde {
     #[test]
     fn hashset() {
         let hashset: HashSet<u64> = HashSet::new();
-        assert!(hashset.insert(2).is_ok());
+        assert!(hashset.insert_sync(2).is_ok());
         assert_tokens(
             &hashset,
             &[Token::Seq { len: Some(1) }, Token::U64(2), Token::SeqEnd],
@@ -3809,7 +3809,7 @@ mod serde {
     #[test]
     fn hashindex() {
         let hashindex: HashIndex<u64, i16> = HashIndex::new();
-        assert!(hashindex.insert(2, -6).is_ok());
+        assert!(hashindex.insert_sync(2, -6).is_ok());
         assert_tokens(
             &hashindex,
             &[
@@ -3825,7 +3825,7 @@ mod serde {
     fn hashcache() {
         let hashcache: HashCache<u64, i16> = HashCache::new();
         let capacity_range = hashcache.capacity_range();
-        assert!(hashcache.put(2, -6).is_ok());
+        assert!(hashcache.put_sync(2, -6).is_ok());
         assert_tokens(
             &hashcache,
             &[
@@ -3842,9 +3842,9 @@ mod serde {
     #[test]
     fn treeindex() {
         let treeindex: TreeIndex<u64, i16> = TreeIndex::new();
-        assert!(treeindex.insert(4, -4).is_ok());
-        assert!(treeindex.insert(2, -6).is_ok());
-        assert!(treeindex.insert(3, -5).is_ok());
+        assert!(treeindex.insert_sync(4, -4).is_ok());
+        assert!(treeindex.insert_sync(2, -6).is_ok());
+        assert!(treeindex.insert_sync(3, -5).is_ok());
         assert_tokens(
             &treeindex,
             &[

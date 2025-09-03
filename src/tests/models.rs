@@ -45,7 +45,7 @@ fn tree_index_split_leaf_node() {
         let tree_index = Arc::new(TreeIndex::<usize, A>::default());
 
         for k in 0..keys {
-            assert!(tree_index.insert(k, A::new(k, cnt.clone())).is_ok());
+            assert!(tree_index.insert_sync(k, A::new(k, cnt.clone())).is_ok());
         }
 
         let cnt_clone = cnt.clone();
@@ -53,7 +53,7 @@ fn tree_index_split_leaf_node() {
         let thread_insert = spawn(move || {
             assert!(
                 tree_index_clone
-                    .insert(keys, A::new(keys, cnt_clone))
+                    .insert_sync(keys, A::new(keys, cnt_clone))
                     .is_ok()
             );
         });
@@ -92,7 +92,7 @@ fn tree_index_split_internal_node() {
         let tree_index = Arc::new(TreeIndex::<usize, A>::default());
 
         for k in 0..keys {
-            assert!(tree_index.insert(k, A::new(k, cnt.clone())).is_ok());
+            assert!(tree_index.insert_sync(k, A::new(k, cnt.clone())).is_ok());
         }
 
         let cnt_clone = cnt.clone();
@@ -100,7 +100,7 @@ fn tree_index_split_internal_node() {
         let thread_insert = spawn(move || {
             assert!(
                 tree_index_clone
-                    .insert(keys, A::new(keys, cnt_clone))
+                    .insert_sync(keys, A::new(keys, cnt_clone))
                     .is_ok()
             );
         });
@@ -113,7 +113,7 @@ fn tree_index_split_internal_node() {
                     .unwrap(),
                 key
             );
-            assert!(tree_index.remove(key.borrow()));
+            assert!(tree_index.remove_sync(key.borrow()));
         });
 
         assert!(thread_insert.join().is_ok());
@@ -140,17 +140,17 @@ fn tree_index_remove_leaf_node() {
         let tree_index = Arc::new(TreeIndex::<usize, A>::default());
 
         for k in 0..keys {
-            assert!(tree_index.insert(k, A::new(k, cnt.clone())).is_ok());
+            assert!(tree_index.insert_sync(k, A::new(k, cnt.clone())).is_ok());
         }
 
         for k in 0..keys - 3 {
-            assert!(tree_index.remove(k.borrow()));
+            assert!(tree_index.remove_sync(k.borrow()));
         }
 
         let tree_index_clone = tree_index.clone();
         let thread_remove = spawn(move || {
             let key_to_remove = keys - 2;
-            assert!(tree_index_clone.remove(key_to_remove.borrow()));
+            assert!(tree_index_clone.remove_sync(key_to_remove.borrow()));
         });
 
         let thread_read = spawn(move || {
@@ -185,11 +185,11 @@ fn tree_index_remove_internal_node() {
         let tree_index = Arc::new(TreeIndex::<usize, A>::default());
 
         for k in 0..keys {
-            assert!(tree_index.insert(k, A::new(k, cnt.clone())).is_ok());
+            assert!(tree_index.insert_sync(k, A::new(k, cnt.clone())).is_ok());
         }
 
         for k in key_to_remove + 1..keys {
-            assert!(tree_index.remove(&k));
+            assert!(tree_index.remove_sync(&k));
         }
 
         let tree_index_clone = tree_index.clone();
@@ -203,7 +203,7 @@ fn tree_index_remove_internal_node() {
         });
 
         let thread_remove = spawn(move || {
-            assert!(tree_index.remove(key_to_remove.borrow()));
+            assert!(tree_index.remove_sync(key_to_remove.borrow()));
         });
 
         assert!(thread_read.join().is_ok());

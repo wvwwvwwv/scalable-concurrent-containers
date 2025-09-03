@@ -26,16 +26,16 @@ use crate::hash_table::bucket::{BUCKET_LEN, DataBlock, Writer};
 ///
 /// ## The key features of [`HashMap`]
 ///
-/// * Non-sharded: the data is stored in a single array of entry buckets.
+/// * Non-sharded: data is stored in a single array of entry buckets.
 /// * Non-blocking resizing: resizing does not block other threads or tasks.
-/// * Automatic resizing: it automatically grows or shrinks.
+/// * Automatic resizing: grows or shrinks as needed.
 /// * Incremental resizing: entries in the old bucket array are incrementally relocated.
-/// * No busy waiting: no spin-locks or hot loops to wait for desired resources.
+/// * No busy waiting: no spin locks or hot loops to wait for desired resources.
 /// * Linearizability: [`HashMap`] manipulation methods are linearizable.
 ///
 /// ## The key statistics for [`HashMap`]
 ///
-/// * The expected size of metadata for a single entry: 2-byte.
+/// * The expected size of metadata for a single entry: 2 bytes.
 /// * The expected number of atomic write operations required for an operation on a single key: 2.
 /// * The expected number of atomic variables accessed during a single key operation: 2.
 /// * The number of entries managed by a single bucket without a linked list: 32.
@@ -51,31 +51,26 @@ use crate::hash_table::bucket::{BUCKET_LEN, DataBlock, Writer};
 ///
 /// Each read/write access to an entry is serialized by the read-write lock in the bucket containing
 /// the entry. There are no container-level locks, therefore, the larger the [`HashMap`] gets, the
-/// lower the chance that the bucket-level lock is being contended.
+/// lower the chance that the bucket-level lock will be contended.
 ///
 /// ### Resize
 ///
 /// Resizing of the [`HashMap`] is non-blocking and lock-free; resizing does not block any other
 /// read/write access to the [`HashMap`] or resizing attempts. Resizing is analogous to pushing a
 /// new bucket array into a lock-free stack. Each entry in the old bucket array will be
-/// incrementally relocated to the new bucket array on future access to the [`HashMap`], and the old
-/// bucket array gets dropped when it becomes empty and unreachable.
+/// incrementally relocated to the new bucket array upon future access to the [`HashMap`], and the old
+/// bucket array is dropped when it becomes empty and unreachable.
 ///
-/// ### Blocking methods in an asynchronous code block
+/// ### Synchronous methods in an asynchronous code block
 ///
 /// It is generally not recommended to use blocking methods, such as [`HashMap::insert_sync`], in an
 /// asynchronous code block or [`poll`](std::future::Future::poll), since it may lead to deadlocks
 /// or performance degradation.
 ///
-/// ### Asynchronous and synchronous methods
-///
-/// It is generally not recommended to use synchronous methods in an asynchronous code block or
-/// [`poll`](std::future::Future::poll), since it may lead to deadlocks or performance degradation.
-///
 /// ## Unwind safety
 ///
-/// [`HashMap`] is impervious to out-of-memory errors and panics in user-specified code on one
-/// condition; `H::Hasher::hash`, `K::drop` and `V::drop` must not panic.
+/// [`HashMap`] is impervious to out-of-memory errors and panics in user-specified code under one
+/// condition: `H::Hasher::hash`, `K::drop` and `V::drop` must not panic.
 pub struct HashMap<K, V, H = RandomState>
 where
     H: BuildHasher,
@@ -225,13 +220,13 @@ where
     K: Eq + Hash,
     H: BuildHasher,
 {
-    /// Temporarily increases the minimum capacity of the [`HashMap`].
+    /// Temporarily increases the minimum capacity of the [`HashMap`] to prevent shrinking.
     ///
-    /// A [`Reserve`] is returned if the [`HashMap`] could increase the minimum capacity while the
+    /// A [`Reserve`] is returned if the [`HashMap`] can increase the minimum capacity. The
     /// increased capacity is not exclusively owned by the returned [`Reserve`], allowing others to
     /// benefit from it. The memory for the additional space may not be immediately allocated if
-    /// the [`HashMap`] is empty or currently being resized, however once the memory is reserved
-    /// eventually, the capacity will not shrink below the additional capacity until the returned
+    /// the [`HashMap`] is empty or currently being resized; however, once the memory is eventually reserved,
+    /// the capacity will not shrink below the additional capacity until the returned
     /// [`Reserve`] is dropped.
     ///
     /// # Errors
@@ -1307,7 +1302,7 @@ where
     ///
     /// It reads the entire metadata area of the bucket array to calculate the number of valid
     /// entries, making its time complexity `O(N)`. Furthermore, it may overcount entries if an old
-    /// bucket array has yet to be dropped.
+    /// bucket array has not yet been dropped.
     ///
     /// # Examples
     ///
@@ -1385,7 +1380,7 @@ where
     /// Returns the index of the bucket that may contain the key.
     ///
     /// The method returns the index of the bucket associated with the key. The number of buckets
-    /// can be calculated by dividing `32` into the capacity.
+    /// can be calculated by dividing the capacity by `32`.
     ///
     /// # Examples
     ///
@@ -1476,8 +1471,8 @@ where
     ///
     /// ## Locking behavior
     ///
-    /// Shared locks on buckets are acquired during iteration, therefore any [`Entry`],
-    /// [`OccupiedEntry`] or [`VacantEntry`] owned by the current thread will lead to a deadlock.
+    /// Shared locks on buckets are acquired during iteration; therefore, any [`Entry`],
+    /// [`OccupiedEntry`], or [`VacantEntry`] owned by the current thread will lead to deadlocks.
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut d = f.debug_map();
@@ -1580,8 +1575,8 @@ where
     ///
     /// ## Locking behavior
     ///
-    /// Shared locks on buckets are acquired when comparing two instances of [`HashMap`], therefore
-    /// it may lead to a deadlock if the instances are being modified by another thread.
+    /// Shared locks on buckets are acquired when comparing two instances of [`HashMap`]; therefore,
+    /// this may lead to deadlocks if the instances are being modified by another thread.
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         if self.iter_sync(|k, v| other.read_sync(k, |_, ov| v == ov) == Some(true)) {
@@ -1930,9 +1925,9 @@ where
 
     /// Removes the entry and gets the next closest occupied entry.
     ///
-    /// [`HashMap::begin_async`] and this method together enable the [`OccupiedEntry`] to
-    /// effectively act as a mutable iterator over entries. The method never acquires more than one
-    /// lock even when it searches other buckets for the next closest occupied entry.
+    /// [`HashMap::begin_async`] and this method together allow the [`OccupiedEntry`] to
+    /// effectively act as a mutable iterator over entries. This method never acquires more than one
+    /// lock, even when it searches other buckets for the next closest occupied entry.
     ///
     /// # Examples
     ///
@@ -1970,8 +1965,8 @@ where
 
     /// Removes the entry and gets the next closest occupied entry.
     ///
-    /// [`HashMap::begin_sync`] and this method together enable the [`OccupiedEntry`] to effectively
-    /// act as a mutable iterator over entries. The method never acquires more than one lock even
+    /// [`HashMap::begin_sync`] and this method together allow the [`OccupiedEntry`] to effectively
+    /// act as a mutable iterator over entries. This method never acquires more than one lock, even
     /// when it searches other buckets for the next closest occupied entry.
     ///
     /// # Examples
@@ -2021,9 +2016,9 @@ where
 
     /// Gets the next closest occupied entry.
     ///
-    /// [`HashMap::begin_async`] and this method together enable the [`OccupiedEntry`] to
-    /// effectively act as a mutable iterator over entries. The method never acquires more than one
-    /// lock even when it searches other buckets for the next closest occupied entry.
+    /// [`HashMap::begin_async`] and this method together allow the [`OccupiedEntry`] to
+    /// effectively act as a mutable iterator over entries. This method never acquires more than one
+    /// lock, even when it searches other buckets for the next closest occupied entry.
     ///
     /// # Examples
     ///
@@ -2052,8 +2047,8 @@ where
 
     /// Gets the next closest occupied entry.
     ///
-    /// [`HashMap::begin_sync`] and this method together enable the [`OccupiedEntry`] to effectively
-    /// act as a mutable iterator over entries. The method never acquires more than one lock even
+    /// [`HashMap::begin_sync`] and this method together allow the [`OccupiedEntry`] to effectively
+    /// act as a mutable iterator over entries. This method never acquires more than one lock, even
     /// when it searches other buckets for the next closest occupied entry.
     ///
     /// # Examples
