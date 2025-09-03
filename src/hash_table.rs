@@ -6,7 +6,7 @@ use std::ptr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
-use bucket::{BUCKET_LEN, CACHE, DataBlock, EntryPtr, LruList, OPTIMISTIC, Reader, Writer};
+use bucket::{BUCKET_LEN, CACHE, DataBlock, EntryPtr, INDEX, LruList, Reader, Writer};
 use bucket_array::BucketArray;
 use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
 
@@ -242,7 +242,7 @@ where
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        debug_assert_eq!(TYPE, OPTIMISTIC);
+        debug_assert_eq!(TYPE, INDEX);
 
         let mut current_array_ptr = self.bucket_array().load(Acquire, guard);
         while let Some(current_array) = current_array_ptr.as_ref() {
@@ -282,7 +282,7 @@ where
     /// Reads an entry asynchronously from the [`HashTable`] with a shared lock acquired on the
     /// bucket.
     #[inline]
-    async fn reader_async_with<Q, R, F: FnOnce(&K, &V) -> R>(
+    async fn reader_async<Q, R, F: FnOnce(&K, &V) -> R>(
         &self,
         key: &Q,
         hash: u64,
@@ -321,7 +321,7 @@ where
     /// Reads an entry synchronously from the [`HashTable`] with a shared lock acquired on the
     /// bucket.
     #[inline]
-    fn reader_sync_with<Q, R, F: FnOnce(&K, &V) -> R>(
+    fn reader_sync<Q, R, F: FnOnce(&K, &V) -> R>(
         &self,
         key: &Q,
         hash: u64,
@@ -354,15 +354,10 @@ where
     ///
     /// If the corresponding bucket does not exist, a new one is created.
     #[inline]
-    async fn writer_async_with<
-        R,
+    async fn writer_async<R, F>(&self, hash: u64, sendable_guard: &SendableGuard, f: F) -> R
+    where
         F: FnOnce(Writer<K, V, L, TYPE>, &DataBlock<K, V, BUCKET_LEN>, usize, usize) -> R,
-    >(
-        &self,
-        hash: u64,
-        sendable_guard: &SendableGuard,
-        f: F,
-    ) -> R {
+    {
         loop {
             let current_array = self.get_or_create_bucket_array(sendable_guard.guard());
             let index = current_array.calculate_bucket_index(hash);
@@ -397,15 +392,10 @@ where
     ///
     /// If the corresponding bucket does not exist, a new one is created.
     #[inline]
-    fn writer_sync_with<
-        R,
+    fn writer_sync<R, F>(&self, hash: u64, guard: &Guard, f: F) -> R
+    where
         F: FnOnce(Writer<K, V, L, TYPE>, &DataBlock<K, V, BUCKET_LEN>, usize, usize) -> R,
-    >(
-        &self,
-        hash: u64,
-        guard: &Guard,
-        f: F,
-    ) -> R {
+    {
         loop {
             let current_array = self.get_or_create_bucket_array(guard);
             let index = current_array.calculate_bucket_index(hash);
@@ -438,15 +428,15 @@ where
     /// is only invoked if the bucket possibly containing the key exists. The closure returning
     /// `(_, true)` indicates that entries were removed from the bucket.
     #[inline]
-    async fn optional_writer_async_with<
-        R,
-        F: FnOnce(Writer<K, V, L, TYPE>, &DataBlock<K, V, BUCKET_LEN>, usize, usize) -> (R, bool),
-    >(
+    async fn optional_writer_async<R, F>(
         &self,
         hash: u64,
         sendable_guard: &SendableGuard,
         f: F,
-    ) -> Result<R, F> {
+    ) -> Result<R, F>
+    where
+        F: FnOnce(Writer<K, V, L, TYPE>, &DataBlock<K, V, BUCKET_LEN>, usize, usize) -> (R, bool),
+    {
         while let Some(current_array) = sendable_guard.load(self.bucket_array(), Acquire) {
             let index = current_array.calculate_bucket_index(hash);
             if current_array.has_old_array()
@@ -488,15 +478,10 @@ where
     /// is only invoked if the bucket possibly containing the key exists. The closure returning
     /// `(_, true)` indicates that entries were removed from the bucket.
     #[inline]
-    fn optional_writer_sync_with<
-        R,
+    fn optional_writer_sync<R, F>(&self, hash: u64, guard: &Guard, f: F) -> Result<R, F>
+    where
         F: FnOnce(Writer<K, V, L, TYPE>, &DataBlock<K, V, BUCKET_LEN>, usize, usize) -> (R, bool),
-    >(
-        &self,
-        hash: u64,
-        guard: &Guard,
-        f: F,
-    ) -> Result<R, F> {
+    {
         while let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
             let index = current_array.calculate_bucket_index(hash);
             if let Some(old_array) = current_array.old_array(guard).as_ref() {
@@ -524,7 +509,7 @@ where
     ///
     /// This methods stops iterating when the closure returns `false`.
     #[inline]
-    async fn for_each_reader_async_with<F>(&self, sendable_guard: &SendableGuard, mut f: F)
+    async fn for_each_reader_async<F>(&self, sendable_guard: &SendableGuard, mut f: F)
     where
         F: FnMut(Reader<K, V, L, TYPE>, &DataBlock<K, V, BUCKET_LEN>) -> bool,
     {
@@ -575,7 +560,7 @@ where
     ///
     /// This methods stops iterating when the closure returns `false`.
     #[inline]
-    fn for_each_reader_sync_with<F>(&self, guard: &Guard, mut f: F)
+    fn for_each_reader_sync<F>(&self, guard: &Guard, mut f: F)
     where
         F: FnMut(Reader<K, V, L, TYPE>, &DataBlock<K, V, BUCKET_LEN>) -> bool,
     {
@@ -621,7 +606,7 @@ where
     /// This methods stops iterating when the closure returns `(true, _)`. The closure returning
     /// `(_, true)` means that entries were removed from the bucket.
     #[inline]
-    async fn for_each_writer_async_with<F>(
+    async fn for_each_writer_async<F>(
         &self,
         mut start_index: usize,
         expected_array_len: usize,
@@ -688,7 +673,7 @@ where
     /// This methods stops iterating when the closure returns `(true, _)`. The closure returning
     /// `(_, true)` means that entries were removed from the bucket.
     #[inline]
-    fn for_each_writer_sync_with<F>(
+    fn for_each_writer_sync<F>(
         &self,
         mut start_index: usize,
         expected_array_len: usize,
@@ -1228,7 +1213,7 @@ where
         }
 
         if current_array.num_slots() > self.minimum_capacity().load(Relaxed).next_power_of_two()
-            || TYPE == OPTIMISTIC
+            || TYPE == INDEX
         {
             let sample_size = current_array.sample_size();
             let shrink_threshold = sample_size * BUCKET_LEN / 16;
@@ -1239,13 +1224,13 @@ where
                 let bucket = current_array.bucket((index + i) % current_array.len());
                 num_entries += bucket.len();
                 if num_entries > shrink_threshold
-                    && (TYPE != OPTIMISTIC
+                    && (TYPE != INDEX
                         || num_buckets_to_rebuild + (sample_size - i) < rebuild_threshold)
                 {
                     // Early exit.
                     return;
                 }
-                if TYPE == OPTIMISTIC && bucket.need_rebuild() {
+                if TYPE == INDEX && bucket.need_rebuild() {
                     if num_buckets_to_rebuild >= rebuild_threshold {
                         self.try_resize(current_array, index, guard);
                         return;
@@ -1253,7 +1238,7 @@ where
                     num_buckets_to_rebuild += 1;
                 }
             }
-            if TYPE != OPTIMISTIC || num_entries <= shrink_threshold {
+            if TYPE != INDEX || num_entries <= shrink_threshold {
                 self.try_resize(current_array, index, guard);
             }
         }
@@ -1318,7 +1303,7 @@ where
 
         let try_resize = new_capacity != capacity;
         let try_drop_table = estimated_num_entries == 0 && minimum_capacity == 0;
-        let try_rebuild = TYPE == OPTIMISTIC
+        let try_rebuild = TYPE == INDEX
             && !try_resize
             && Self::check_rebuild(current_array, sampling_index, sample_size);
 
@@ -1399,7 +1384,8 @@ where
             }
         }
     }
-    // Returns an estimated required size of the container based on the size hint.
+
+    /// Returns an estimated required size of the container based on the size hint.
     #[inline]
     fn capacity_from_size_hint(size_hint: (usize, Option<usize>)) -> usize {
         // A resize can be triggered when the load factor reaches ~80%.
@@ -1444,7 +1430,7 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
         len: usize,
         guard: &Guard,
     ) -> LockedEntry<'h, K, V, L, TYPE> {
-        if TYPE == OPTIMISTIC {
+        if TYPE == INDEX {
             writer.drop_removed_unreachable_entries(data_block, guard);
         }
         LockedEntry {
@@ -1491,7 +1477,7 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
 
         let mut next_entry = None;
         hash_table
-            .for_each_writer_async_with(
+            .for_each_writer_async(
                 next_index,
                 len,
                 &sendable_guard,
@@ -1541,7 +1527,7 @@ impl<'h, K: Eq + Hash + 'h, V: 'h, L: LruList, const TYPE: char> LockedEntry<'h,
         }
 
         let mut next_entry = None;
-        hash_table.for_each_writer_sync_with(
+        hash_table.for_each_writer_sync(
             next_index,
             len,
             &guard,

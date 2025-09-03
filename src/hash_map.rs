@@ -11,7 +11,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 use sdd::{AtomicShared, Guard, Shared, Tag};
 
 use super::Equivalent;
-use super::hash_table::bucket::{EntryPtr, SEQUENTIAL};
+use super::hash_table::bucket::{EntryPtr, MAP};
 use super::hash_table::bucket_array::BucketArray;
 use super::hash_table::{HashTable, LockedEntry};
 use crate::async_helper::SendableGuard;
@@ -75,7 +75,7 @@ pub struct HashMap<K, V, H = RandomState>
 where
     H: BuildHasher,
 {
-    bucket_array: AtomicShared<BucketArray<K, V, (), SEQUENTIAL>>,
+    bucket_array: AtomicShared<BucketArray<K, V, (), MAP>>,
     minimum_capacity: AtomicUsize,
     build_hasher: H,
 }
@@ -98,7 +98,7 @@ where
     H: BuildHasher,
 {
     hashmap: &'h HashMap<K, V, H>,
-    locked_entry: LockedEntry<'h, K, V, (), SEQUENTIAL>,
+    locked_entry: LockedEntry<'h, K, V, (), MAP>,
 }
 
 /// [`VacantEntry`] is a view into a vacant entry in a [`HashMap`].
@@ -109,18 +109,18 @@ where
     hashmap: &'h HashMap<K, V, H>,
     key: K,
     hash: u64,
-    locked_entry: LockedEntry<'h, K, V, (), SEQUENTIAL>,
+    locked_entry: LockedEntry<'h, K, V, (), MAP>,
 }
 
 /// [`ConsumableEntry`] is a view into an occupied entry in a [`HashMap`] when iterating over
 /// entries in it.
 pub struct ConsumableEntry<'w, 'g: 'w, K, V> {
     /// Holds an exclusive lock on the entry bucket.
-    writer: &'w Writer<'w, K, V, (), SEQUENTIAL>,
+    writer: &'w Writer<'w, K, V, (), MAP>,
     /// Reference to the entry data.
     data_block: &'w DataBlock<K, V, BUCKET_LEN>,
     /// Pointer to the entry.
-    entry_ptr: &'w mut EntryPtr<'g, K, V, SEQUENTIAL>,
+    entry_ptr: &'w mut EntryPtr<'g, K, V, MAP>,
     /// Probes removal.
     remove_probe: &'w mut bool,
     /// Associated [`Guard`].
@@ -196,7 +196,7 @@ where
             (AtomicShared::null(), AtomicUsize::new(0))
         } else {
             let array = unsafe {
-                Shared::new_unchecked(BucketArray::<K, V, (), SEQUENTIAL>::new(
+                Shared::new_unchecked(BucketArray::<K, V, (), MAP>::new(
                     capacity,
                     AtomicShared::null(),
                 ))
@@ -289,7 +289,7 @@ where
     pub fn entry(&self, key: K) -> Entry<'_, K, V, H> {
         let hash = self.hash(&key);
         let guard = Guard::new();
-        self.writer_sync_with(hash, &guard, |writer, data_block, index, len| {
+        self.writer_sync(hash, &guard, |writer, data_block, index, len| {
             let entry_ptr = writer.get_entry_ptr(data_block, &key, hash, &guard);
             let locked_entry =
                 LockedEntry::new(writer, data_block, entry_ptr.clone(), index, len, &guard)
@@ -328,7 +328,7 @@ where
     pub async fn entry_async(&self, key: K) -> Entry<'_, K, V, H> {
         let hash = self.hash(&key);
         let sendable_guard = SendableGuard::default();
-        self.writer_async_with(hash, &sendable_guard, |writer, data_block, index, len| {
+        self.writer_async(hash, &sendable_guard, |writer, data_block, index, len| {
             let guard = sendable_guard.guard();
             let entry_ptr = writer.get_entry_ptr(data_block, &key, hash, guard);
             let locked_entry =
@@ -457,7 +457,7 @@ where
     ) -> Option<OccupiedEntry<'_, K, V, H>> {
         let mut entry = None;
         let guard = Guard::new();
-        self.for_each_writer_sync_with(0, 0, &guard, |writer, data_block, index, len| {
+        self.for_each_writer_sync(0, 0, &guard, |writer, data_block, index, len| {
             let mut entry_ptr = EntryPtr::new(&guard);
             while entry_ptr.move_to_next(&writer, &guard) {
                 let (k, v) = entry_ptr.get(data_block);
@@ -500,7 +500,7 @@ where
     ) -> Option<OccupiedEntry<'_, K, V, H>> {
         let mut entry = None;
         let sendable_guard = SendableGuard::default();
-        self.for_each_writer_async_with(0, 0, &sendable_guard, |writer, data_block, index, len| {
+        self.for_each_writer_async(0, 0, &sendable_guard, |writer, data_block, index, len| {
             let guard = sendable_guard.guard();
             let mut entry_ptr = EntryPtr::new(guard);
             while entry_ptr.move_to_next(&writer, guard) {
@@ -542,7 +542,7 @@ where
     pub fn insert(&self, key: K, val: V) -> Result<(), (K, V)> {
         let hash = self.hash(&key);
         let guard = Guard::new();
-        self.writer_sync_with(hash, &guard, |writer, data_block, _, _| {
+        self.writer_sync(hash, &guard, |writer, data_block, _, _| {
             if writer
                 .get_entry_ptr(data_block, &key, hash, &guard)
                 .is_valid()
@@ -575,7 +575,7 @@ where
     pub async fn insert_async(&self, key: K, val: V) -> Result<(), (K, V)> {
         let hash = self.hash(&key);
         let sendable_guard = SendableGuard::default();
-        self.writer_async_with(hash, &sendable_guard, |writer, data_block, _, _| {
+        self.writer_async(hash, &sendable_guard, |writer, data_block, _, _| {
             let guard = sendable_guard.guard();
             if writer
                 .get_entry_ptr(data_block, &key, hash, guard)
@@ -664,7 +664,7 @@ where
     {
         let hash = self.hash(key);
         let guard = Guard::default();
-        self.optional_writer_sync_with(hash, &guard, |writer, data_block, _, _| {
+        self.optional_writer_sync(hash, &guard, |writer, data_block, _, _| {
             let mut entry_ptr = writer.get_entry_ptr(data_block, key, hash, &guard);
             if entry_ptr.is_valid() {
                 let (k, v) = entry_ptr.get_mut(data_block, &writer);
@@ -700,7 +700,7 @@ where
     {
         let hash = self.hash(key);
         let sendable_guard = SendableGuard::default();
-        self.optional_writer_async_with(hash, &sendable_guard, |writer, data_block, _, _| {
+        self.optional_writer_async(hash, &sendable_guard, |writer, data_block, _, _| {
             let guard = sendable_guard.guard();
             let mut entry_ptr = writer.get_entry_ptr(data_block, key, hash, guard);
             if entry_ptr.is_valid() {
@@ -782,7 +782,7 @@ where
     {
         let hash = self.hash(key);
         let guard = Guard::default();
-        self.optional_writer_sync_with(hash, &guard, |writer, data_block, _, _| {
+        self.optional_writer_sync(hash, &guard, |writer, data_block, _, _| {
             let mut entry_ptr = writer.get_entry_ptr(data_block, key, hash, &guard);
             if entry_ptr.is_valid() && condition(&mut entry_ptr.get_mut(data_block, &writer).1) {
                 (
@@ -822,7 +822,7 @@ where
     {
         let hash = self.hash(key);
         let sendable_guard = SendableGuard::default();
-        self.optional_writer_async_with(hash, &sendable_guard, |writer, data_block, _, _| {
+        self.optional_writer_async(hash, &sendable_guard, |writer, data_block, _, _| {
             let mut entry_ptr = writer.get_entry_ptr(data_block, key, hash, sendable_guard.guard());
             if entry_ptr.is_valid() && condition(&mut entry_ptr.get_mut(data_block, &writer).1) {
                 (
@@ -866,7 +866,7 @@ where
     {
         let hash = self.hash(key);
         let guard = Guard::default();
-        self.optional_writer_sync_with(hash, &guard, |writer, data_block, index, len| {
+        self.optional_writer_sync(hash, &guard, |writer, data_block, index, len| {
             let entry_ptr = writer.get_entry_ptr(data_block, key, hash, &guard);
             if entry_ptr.is_valid() {
                 let locked_entry =
@@ -910,7 +910,7 @@ where
     {
         let hash = self.hash(key);
         let sendable_guard = SendableGuard::default();
-        self.optional_writer_async_with(hash, &sendable_guard, |writer, data_block, index, len| {
+        self.optional_writer_async(hash, &sendable_guard, |writer, data_block, index, len| {
             let guard = sendable_guard.guard();
             let entry_ptr = writer.get_entry_ptr(data_block, key, hash, guard);
             if entry_ptr.is_valid() {
@@ -954,7 +954,7 @@ where
     {
         let hash = self.hash(key);
         let guard = Guard::new();
-        self.reader_sync_with(key, hash, reader, &guard)
+        self.reader_sync(key, hash, reader, &guard)
     }
 
     /// Reads a key-value pair.
@@ -978,8 +978,7 @@ where
     {
         let hash = self.hash(key);
         let sendable_guard = SendableGuard::default();
-        self.reader_async_with(key, hash, reader, &sendable_guard)
-            .await
+        self.reader_async(key, hash, reader, &sendable_guard).await
     }
 
     /// Returns `true` if the [`HashMap`] contains a value for the specified key.
@@ -1038,17 +1037,17 @@ where
     /// assert!(hashmap.insert(1, 0).is_ok());
     ///
     /// async {
-    ///     let result = hashmap.iter_async_with(|k, v| {
+    ///     let result = hashmap.iter_async(|k, v| {
     ///         false
     ///     }).await;
     ///     assert!(!result);
     /// };
     /// ```
     #[inline]
-    pub async fn iter_async_with<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
+    pub async fn iter_async<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
         let mut result = true;
         let sendable_guard = SendableGuard::default();
-        self.for_each_reader_async_with(&sendable_guard, |reader, data_block| {
+        self.for_each_reader_async(&sendable_guard, |reader, data_block| {
             let guard = sendable_guard.guard();
             let mut entry_ptr = EntryPtr::new(guard);
             while entry_ptr.move_to_next(&reader, guard) {
@@ -1079,7 +1078,7 @@ where
     /// assert!(hashmap.insert(2, 1).is_ok());
     ///
     /// let mut acc = 0_u64;
-    /// let result = hashmap.iter_sync_with(|k, v| {
+    /// let result = hashmap.iter_sync(|k, v| {
     ///     acc += *k;
     ///     acc += *v;
     ///     true
@@ -1089,10 +1088,10 @@ where
     /// assert_eq!(acc, 4);
     /// ```
     #[inline]
-    pub fn iter_sync_with<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
+    pub fn iter_sync<F: FnMut(&K, &V) -> bool>(&self, mut f: F) -> bool {
         let mut result = true;
         let guard = Guard::new();
-        self.for_each_reader_sync_with(&guard, |reader, data_block| {
+        self.for_each_reader_sync(&guard, |reader, data_block| {
             let mut entry_ptr = EntryPtr::new(&guard);
             while entry_ptr.move_to_next(&reader, &guard) {
                 let (k, v) = entry_ptr.get(data_block);
@@ -1121,7 +1120,7 @@ where
     /// assert!(hashmap.insert(2, 1).is_ok());
     ///
     /// async {
-    ///     let result = hashmap.iter_mut_async_with(|entry| {
+    ///     let result = hashmap.iter_mut_async(|entry| {
     ///         if entry.0 == 1 {
     ///             entry.consume();
     ///             return false;
@@ -1134,13 +1133,13 @@ where
     /// };
     /// ```
     #[inline]
-    pub async fn iter_mut_async_with<F: FnMut(ConsumableEntry<'_, '_, K, V>) -> bool>(
+    pub async fn iter_mut_async<F: FnMut(ConsumableEntry<'_, '_, K, V>) -> bool>(
         &self,
         mut f: F,
     ) -> bool {
         let mut result = true;
         let sendable_guard = SendableGuard::default();
-        self.for_each_writer_async_with(0, 0, &sendable_guard, |writer, data_block, _, _| {
+        self.for_each_writer_async(0, 0, &sendable_guard, |writer, data_block, _, _| {
             let mut removed = false;
             let guard = sendable_guard.guard();
             let mut entry_ptr = EntryPtr::new(guard);
@@ -1178,7 +1177,7 @@ where
     /// assert!(hashmap.insert(2, 1).is_ok());
     /// assert!(hashmap.insert(3, 2).is_ok());
     ///
-    /// let result = hashmap.iter_mut_sync_with(|entry| {
+    /// let result = hashmap.iter_mut_sync(|entry| {
     ///     if entry.0 == 1 {
     ///         entry.consume();
     ///         return false;
@@ -1191,13 +1190,10 @@ where
     /// assert_eq!(hashmap.len(), 2);
     /// ```
     #[inline]
-    pub fn iter_mut_sync_with<F: FnMut(ConsumableEntry<'_, '_, K, V>) -> bool>(
-        &self,
-        mut f: F,
-    ) -> bool {
+    pub fn iter_mut_sync<F: FnMut(ConsumableEntry<'_, '_, K, V>) -> bool>(&self, mut f: F) -> bool {
         let mut result = true;
         let guard = Guard::new();
-        self.for_each_writer_sync_with(0, 0, &guard, |writer, data_block, _, _| {
+        self.for_each_writer_sync(0, 0, &guard, |writer, data_block, _, _| {
             let mut removed = false;
             let mut entry_ptr = EntryPtr::new(&guard);
             while entry_ptr.move_to_next(&writer, &guard) {
@@ -1245,7 +1241,7 @@ where
     /// ```
     #[inline]
     pub fn retain<F: FnMut(&K, &mut V) -> bool>(&self, mut pred: F) {
-        self.iter_mut_sync_with(|mut e| {
+        self.iter_mut_sync(|mut e| {
             let (k, v) = &mut *e;
             if !pred(k, v) {
                 drop(e.consume());
@@ -1276,7 +1272,7 @@ where
     /// ```
     #[inline]
     pub async fn retain_async<F: FnMut(&K, &mut V) -> bool>(&self, mut pred: F) {
-        self.iter_mut_async_with(|mut e| {
+        self.iter_mut_async(|mut e| {
             let (k, v) = &mut *e;
             if !pred(k, v) {
                 drop(e.consume());
@@ -1479,7 +1475,7 @@ where
     #[inline]
     fn clone(&self) -> Self {
         let self_clone = Self::with_capacity_and_hasher(self.capacity(), self.hasher().clone());
-        self.iter_sync_with(|k, v| {
+        self.iter_sync(|k, v| {
             let _result = self_clone.insert(k.clone(), v.clone());
             true
         });
@@ -1502,7 +1498,7 @@ where
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut d = f.debug_map();
-        self.iter_sync_with(|k, v| {
+        self.iter_sync(|k, v| {
             d.entry(k, v);
             true
         });
@@ -1568,7 +1564,7 @@ where
     }
 }
 
-impl<K, V, H> HashTable<K, V, H, (), SEQUENTIAL> for HashMap<K, V, H>
+impl<K, V, H> HashTable<K, V, H, (), MAP> for HashMap<K, V, H>
 where
     K: Eq + Hash,
     H: BuildHasher,
@@ -1578,7 +1574,7 @@ where
         &self.build_hasher
     }
     #[inline]
-    fn bucket_array(&self) -> &AtomicShared<BucketArray<K, V, (), SEQUENTIAL>> {
+    fn bucket_array(&self) -> &AtomicShared<BucketArray<K, V, (), MAP>> {
         &self.bucket_array
     }
     #[inline]
@@ -1605,8 +1601,8 @@ where
     /// it may lead to a deadlock if the instances are being modified by another thread.
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        if self.iter_sync_with(|k, v| other.read(k, |_, ov| v == ov) == Some(true)) {
-            return other.iter_sync_with(|k, v| self.read(k, |_, sv| v == sv) == Some(true));
+        if self.iter_sync(|k, v| other.read(k, |_, ov| v == ov) == Some(true)) {
+            return other.iter_sync(|k, v| self.read(k, |_, sv| v == sv) == Some(true));
         }
         false
     }
@@ -2262,7 +2258,7 @@ impl<K, V> ConsumableEntry<'_, '_, K, V> {
     ///
     /// let mut consumed = None;
     ///
-    /// hashmap.iter_mut_sync_with(|entry| {
+    /// hashmap.iter_mut_sync(|entry| {
     ///     if entry.0 == 1 {
     ///         consumed.replace(entry.consume().1);
     ///     }

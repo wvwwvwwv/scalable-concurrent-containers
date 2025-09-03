@@ -32,10 +32,10 @@ pub struct Bucket<K, V, L: LruList, const TYPE: char> {
 }
 
 /// The type of [`Bucket`] only allows sequential access to it.
-pub const SEQUENTIAL: char = 'S';
+pub const MAP: char = 'S';
 
 /// The type of [`Bucket`] allows lock-free read.
-pub const OPTIMISTIC: char = 'O';
+pub const INDEX: char = 'O';
 
 /// The type of [`Bucket`] acts as an LRU cache.
 pub const CACHE: char = 'C';
@@ -128,7 +128,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     /// [`Bucket`] might be needed to keep the [`Bucket`] as small as possible.
     #[inline]
     pub(crate) fn need_rebuild(&self) -> bool {
-        TYPE == OPTIMISTIC
+        TYPE == INDEX
             && self.metadata.removed_bitmap_or_lru_tail.load(Relaxed)
                 == (u32::MAX >> (32 - BUCKET_LEN))
     }
@@ -226,7 +226,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         entry_ptr: &mut EntryPtr<'g, K, V, TYPE>,
         guard: &'g Guard,
     ) -> (K, V) {
-        debug_assert_ne!(TYPE, OPTIMISTIC);
+        debug_assert_ne!(TYPE, INDEX);
         debug_assert_ne!(entry_ptr.current_index, usize::MAX);
         debug_assert_ne!(entry_ptr.current_index, BUCKET_LEN);
 
@@ -268,7 +268,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         entry_ptr: &mut EntryPtr<'g, K, V, TYPE>,
         guard: &'g Guard,
     ) {
-        debug_assert_eq!(TYPE, OPTIMISTIC);
+        debug_assert_eq!(TYPE, INDEX);
         debug_assert_ne!(entry_ptr.current_index, usize::MAX);
         debug_assert_ne!(entry_ptr.current_index, BUCKET_LEN);
 
@@ -366,7 +366,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
                 // Stack unwinding during a call to `insert` will result in the entry being
                 // removed from the map, any map entry modification should take place after all
                 // the memory is reserved.
-                if TYPE == OPTIMISTIC {
+                if TYPE == INDEX {
                     // Copy the data without modifying the original entry.
                     if let Some(link) = from_entry_ptr.current_link_ptr.as_ref() {
                         Self::read_data_block(&link.data_block, from_entry_ptr.current_index)
@@ -401,7 +401,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             guard,
         );
 
-        if TYPE == OPTIMISTIC {
+        if TYPE == INDEX {
             // Post-processing to unmark the entry to prevent the entry from being dropped.
             if let Some(link) = from_entry_ptr.current_link_ptr.as_ref() {
                 let mut occupied_bitmap = link.metadata.occupied_bitmap.load(Relaxed);
@@ -434,12 +434,12 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
             let mut next = self.metadata.link.swap((None, Tag::None), Acquire);
             while let Some(current) = next.0 {
                 next = current.metadata.link.swap((None, Tag::None), Acquire);
-                let released = if TYPE == OPTIMISTIC {
+                let released = if TYPE == INDEX {
                     current.release()
                 } else {
                     unsafe { current.drop_in_place() }
                 };
-                debug_assert!(TYPE == OPTIMISTIC || released);
+                debug_assert!(TYPE == INDEX || released);
             }
         }
         if needs_drop::<(K, V)>() {
@@ -462,7 +462,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         data_block: &DataBlock<K, V, BUCKET_LEN>,
         guard: &Guard,
     ) {
-        debug_assert_eq!(TYPE, OPTIMISTIC);
+        debug_assert_eq!(TYPE, INDEX);
 
         let mut removed_bitmap = self.metadata.removed_bitmap_or_lru_tail.load(Relaxed);
         if removed_bitmap == 0 {
@@ -516,7 +516,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         });
         metadata.occupied_bitmap.store(
             occupied_bitmap | (1_u32 << index),
-            if TYPE == OPTIMISTIC { Release } else { Relaxed },
+            if TYPE == INDEX { Release } else { Relaxed },
         );
     }
 
@@ -550,7 +550,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     /// Updates the target epoch after removing an entry.
     #[inline]
     fn update_target_epoch(&self, guard: &Guard) {
-        debug_assert_eq!(TYPE, OPTIMISTIC);
+        debug_assert_eq!(TYPE, INDEX);
         debug_assert_ne!(self.metadata.removed_bitmap_or_lru_tail.load(Relaxed), 0);
 
         let target_epoch = guard.epoch().next_generation();
@@ -710,7 +710,7 @@ impl<K: Eq, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
     where
         Q: Equivalent<K> + ?Sized,
     {
-        let mut bitmap = if TYPE == OPTIMISTIC {
+        let mut bitmap = if TYPE == INDEX {
             // Load ordering: `removed_bitmap` -> `acquire` -> `occupied_bitmap`.
             (!metadata.removed_bitmap_or_lru_tail.load(Acquire))
                 & metadata.occupied_bitmap.load(Acquire)
@@ -820,14 +820,14 @@ impl<'g, K, V, L: LruList, const TYPE: char> Writer<'g, K, V, L, TYPE> {
     pub(super) fn kill(self) {
         debug_assert_eq!(self.len(), 0);
         debug_assert!(self.rw_lock.is_locked(Relaxed));
-        debug_assert!(TYPE == OPTIMISTIC || self.metadata.link.is_null(Relaxed));
+        debug_assert!(TYPE == INDEX || self.metadata.link.is_null(Relaxed));
         debug_assert!(
-            TYPE != OPTIMISTIC
+            TYPE != INDEX
                 || self.metadata.removed_bitmap_or_lru_tail.load(Relaxed)
                     == self.metadata.occupied_bitmap.load(Relaxed)
         );
 
-        if TYPE == OPTIMISTIC {
+        if TYPE == INDEX {
             let mut link = self.metadata.link.swap((None, Tag::None), Acquire).0;
             while let Some(current) = link {
                 link = current.metadata.link.swap((None, Tag::None), Acquire).0;
@@ -1016,7 +1016,7 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
         guard: &'g Guard,
     ) {
         let prev_link_ptr = link.prev_link.load(Relaxed);
-        let next_link = if TYPE == OPTIMISTIC {
+        let next_link = if TYPE == INDEX {
             link.metadata.link.get_shared(Relaxed, guard)
         } else {
             link.metadata.link.swap((None, Tag::None), Relaxed).0
@@ -1038,14 +1038,14 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
             bucket.metadata.link.swap((next_link, Tag::None), Release).0
         };
         let released = old_link.is_none_or(|l| {
-            if TYPE == OPTIMISTIC {
+            if TYPE == INDEX {
                 l.release()
             } else {
                 // The `LinkedBucket` should be dropped immediately.
                 unsafe { l.drop_in_place() }
             }
         });
-        debug_assert!(TYPE == OPTIMISTIC || released);
+        debug_assert!(TYPE == INDEX || released);
 
         if self.current_link_ptr.is_null() {
             // Fuse the `EntryPtr`.
@@ -1073,7 +1073,7 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
         };
 
         if current_index < LEN {
-            let bitmap = if TYPE == OPTIMISTIC {
+            let bitmap = if TYPE == INDEX {
                 // Load order: `removed_bitmap` -> `acquire` -> `occupied_bitmap`.
                 (!metadata.removed_bitmap_or_lru_tail.load(Acquire)
                     & metadata.occupied_bitmap.load(Acquire))
@@ -1309,7 +1309,7 @@ impl<K, V> Drop for LinkedBucket<K, V> {
             let mut occupied_bitmap = self.metadata.occupied_bitmap.load(Relaxed);
             let mut index = occupied_bitmap.trailing_zeros();
             while index != 32 {
-                Bucket::<K, V, (), SEQUENTIAL>::drop_entry(&self.data_block, index as usize);
+                Bucket::<K, V, (), MAP>::drop_entry(&self.data_block, index as usize);
                 occupied_bitmap -= 1_u32 << index;
                 index = occupied_bitmap.trailing_zeros();
             }
@@ -1332,7 +1332,7 @@ mod test {
     use tokio::sync::Barrier;
 
     #[cfg(not(miri))]
-    static_assertions::assert_eq_size!(Bucket<String, String, (), SEQUENTIAL>, [u8; BUCKET_LEN * 2]);
+    static_assertions::assert_eq_size!(Bucket<String, String, (), MAP>, [u8; BUCKET_LEN * 2]);
     #[cfg(not(miri))]
     static_assertions::assert_eq_size!(Bucket<String, String, DoublyLinkedList, CACHE>, [u8; BUCKET_LEN * 4]);
 
@@ -1499,8 +1499,7 @@ mod test {
         let barrier = Shared::new(Barrier::new(num_tasks));
         let data_block: Shared<DataBlock<usize, usize, BUCKET_LEN>> =
             Shared::new(unsafe { MaybeUninit::uninit().assume_init() });
-        let mut bucket: Shared<Bucket<usize, usize, (), SEQUENTIAL>> =
-            Shared::new(default_bucket());
+        let mut bucket: Shared<Bucket<usize, usize, (), MAP>> = Shared::new(default_bucket());
         let mut data: [u64; 128] = [0; 128];
         let mut task_handles = Vec::with_capacity(num_tasks);
         for task_id in 0..num_tasks {

@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 use sdd::{AtomicShared, Guard, Ptr, Tag};
 
-use super::bucket::{BUCKET_LEN, Bucket, DataBlock, LruList, OPTIMISTIC};
+use super::bucket::{BUCKET_LEN, Bucket, DataBlock, LruList, INDEX};
 
 /// [`BucketArray`] is a special purpose array to manage [`Bucket`] and [`DataBlock`].
 pub struct BucketArray<K, V, L: LruList, const TYPE: char> {
@@ -218,7 +218,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
 
 impl<K, V, L: LruList, const TYPE: char> Drop for BucketArray<K, V, L, TYPE> {
     fn drop(&mut self) {
-        if TYPE != OPTIMISTIC && !self.old_array.is_null(Relaxed) {
+        if TYPE != INDEX && !self.old_array.is_null(Relaxed) {
             // The `BucketArray` cannot be dropped immediately if `TYPE == OPTIMISTIC`, because
             // entry references can be held as long as the associated guard is alive.
             unsafe {
@@ -275,7 +275,7 @@ mod test {
     #[test]
     fn array() {
         for s in 0..BUCKET_LEN * 4 {
-            let array: BucketArray<usize, usize, (), OPTIMISTIC> =
+            let array: BucketArray<usize, usize, (), INDEX> =
                 BucketArray::new(s, AtomicShared::default());
             assert!(
                 array.len() >= s.max(1).div_ceil(BUCKET_LEN),

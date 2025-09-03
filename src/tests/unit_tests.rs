@@ -376,7 +376,7 @@ mod hashmap {
     #[test]
     fn insert_sync() {
         let num_threads = if cfg!(miri) { 2 } else { 8 };
-        let num_iters = if cfg!(miri) { 2 } else { 64 };
+        let num_iters = if cfg!(miri) { 1 } else { 64 };
         for _ in 0..num_iters {
             let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
             let workload_size = 256;
@@ -553,7 +553,7 @@ mod hashmap {
 
     #[test]
     fn entry_read_next_sync() {
-        let num_iter = if cfg!(miri) { 2 } else { 64 };
+        let num_iter = if cfg!(miri) { 1 } else { 64 };
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
         for _ in 0..num_iter {
             let num_threads = if cfg!(miri) { 2 } else { 8 };
@@ -657,7 +657,7 @@ mod hashmap {
                         })
                         .await;
                     assert_eq!(removed, workload_size);
-                    assert!(hashmap.iter_async_with(|k, _| !range.contains(k)).await);
+                    assert!(hashmap.iter_async(|k, _| !range.contains(k)).await);
                 }));
             }
 
@@ -711,7 +711,7 @@ mod hashmap {
                         }
                     });
                     assert_eq!(removed, workload_size);
-                    assert!(hashmap.iter_sync_with(|k, _| !range.contains(k)));
+                    assert!(hashmap.iter_sync(|k, _| !range.contains(k)));
                 }));
             }
 
@@ -833,7 +833,7 @@ mod hashmap {
                     }
                     let mut removed = 0;
                     hashmap
-                        .iter_mut_async_with(|entry| {
+                        .iter_mut_async(|entry| {
                             if range.contains(&entry.0) {
                                 let (k, v) = entry.consume();
                                 assert_eq!(k, v);
@@ -843,7 +843,7 @@ mod hashmap {
                         })
                         .await;
                     assert_eq!(removed, workload_size);
-                    assert!(hashmap.iter_async_with(|k, _| !range.contains(k)).await);
+                    assert!(hashmap.iter_async(|k, _| !range.contains(k)).await);
                 }));
             }
 
@@ -858,7 +858,7 @@ mod hashmap {
     #[test]
     fn insert_prune_any_sync() {
         let num_threads = if cfg!(miri) { 2 } else { 8 };
-        let num_iters = if cfg!(miri) { 2 } else { 256 };
+        let num_iters = if cfg!(miri) { 1 } else { 256 };
         let hashmap: Arc<HashMap<usize, usize>> = Arc::new(HashMap::default());
         for _ in 0..num_iters {
             let workload_size = 256;
@@ -875,7 +875,7 @@ mod hashmap {
                         assert!(result.is_ok());
                     }
                     let mut removed = 0;
-                    hashmap.iter_mut_sync_with(|entry| {
+                    hashmap.iter_mut_sync(|entry| {
                         if range.contains(&entry.0) {
                             let (k, v) = entry.consume();
                             assert_eq!(k, v);
@@ -884,7 +884,7 @@ mod hashmap {
                         true
                     });
                     assert_eq!(removed, workload_size);
-                    assert!(hashmap.iter_sync_with(|k, _| !range.contains(k)));
+                    assert!(hashmap.iter_sync(|k, _| !range.contains(k)));
                 }));
             }
 

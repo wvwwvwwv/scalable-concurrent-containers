@@ -166,7 +166,7 @@ where
     {
         let mut seq = serializer.serialize_seq(Some(self.len()))?;
         let mut error = None;
-        self.iter_sync_with(|k| {
+        self.iter_sync(|k| {
             if error.is_none() {
                 if let Err(e) = seq.serialize_element(k) {
                     error.replace(e);
@@ -338,12 +338,13 @@ where
         let capacity_range = self.capacity_range();
         let mut map = serializer.serialize_map(Some(*capacity_range.end()))?;
         let mut error = None;
-        self.scan(|k, v| {
+        self.iter_sync(|k, v| {
             if error.is_none() {
                 if let Err(e) = map.serialize_entry(k, v) {
                     error.replace(e);
                 }
             }
+            true
         });
         if let Some(e) = error {
             return Err(e);

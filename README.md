@@ -16,9 +16,9 @@ A collection of high-performance containers and utilities for concurrent and asy
 
 #### (WIP - 3.0) API naming conventions
 
-- Methods that receive a closure are suffixed with `_with`, e.g., `peek_with`.
-- Asynchronous methods are suffixed with `_async` before the `_with` suffix, e.g., `iter_async_with`.
-- Synchronous methods are suffixed with `_sync` before the `_with` suffix, e.g., `insert_sync`.
+- Asynchronous methods are suffixed with `_async`.
+- Synchronous methods are suffixed with `_sync`.
+- Methods without `_async` and `_sync` suffixes are non-blocking.
 
 #### Concurrent and Asynchronous Containers
 
@@ -86,7 +86,7 @@ hashmap.entry(4).and_modify(|v| { *v += 1 }).or_insert(5);
 assert_eq!(hashmap.read(&4, |_, v| *v), Some(5));
 ```
 
-[`HashMap`](#hashmap) does not provide an [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) since it is impossible to confine the lifetime of [`Iterator::Item`](https://doc.rust-lang.org/std/iter/trait.Iterator.html#associatedtype.Item) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html). The limitation can be circumvented by relying on interior mutability, e.g., letting the returned reference hold a lock. However, it may lead to a deadlock if not correctly used, and frequent acquisition of locks may impact performance. Therefore, [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented; instead, [`HashMap`](#hashmap) provides several methods to iterate over entries synchronously or asynchronously: `any`, `any_async`, `first_entry`, `first_entry_async`, `prune`, `prune_async`, `retain`, `retain_async`, `scan`, `scan_async`, `OccupiedEntry::next`, and `OccupiedEntry::next_async`.
+[`HashMap`](#hashmap) does not provide an [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) since it is impossible to confine the lifetime of [`Iterator::Item`](https://doc.rust-lang.org/std/iter/trait.Iterator.html#associatedtype.Item) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html). The limitation can be circumvented by relying on interior mutability, e.g., letting the returned reference hold a lock. However, it may lead to a deadlock if not correctly used, and frequent acquisition of locks may impact performance. Therefore, [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented; instead, [`HashMap`](#hashmap) provides several methods to iterate over entries synchronously or asynchronously: `iter_{async|sync}`, `iter_mut_{async|sync}`, `first_entry`, `first_entry_async`, `retain`, `retain_async`, `OccupiedEntry::next`, and `OccupiedEntry::next_async`.
 
 ```rust
 use scc::HashMap;
@@ -103,9 +103,9 @@ assert_eq!(acc, 3);
 assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
 assert_eq!(hashmap.read(&2, |_, v| *v).unwrap(), 2);
 
-// `iter_sync_with` returns `true` when all the entries satisfy the predicate.
+// `iter_sync` returns `true` when all the entries satisfy the predicate.
 assert!(hashmap.insert(3, 2).is_ok());
-assert!(!hashmap.iter_sync_with(|k, _| *k == 3));
+assert!(!hashmap.iter_sync(|k, _| *k == 3));
 
 // Multiple entries can be removed through `retain`.
 hashmap.retain(|k, v| *k == 1 && *v == 2);
@@ -120,8 +120,8 @@ fn is_send<T: Send>(f: &T) -> bool {
     true
 }
 
-// Asynchronous iteration over entries using `iter_async_with`.
-let future_scan = hashmap.iter_async_with(|k, v| { println!("{k} {v}"); true });
+// Asynchronous iteration over entries using `iter_async`.
+let future_scan = hashmap.iter_async(|k, v| { println!("{k} {v}"); true });
 assert!(is_send(&future_scan));
 
 // Asynchronous iteration over entries using the `Entry` API.
