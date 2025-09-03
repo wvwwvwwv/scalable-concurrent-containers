@@ -386,32 +386,7 @@ where
         }
     }
 
-    /// Gets the first occupied entry for in-place manipulation.
-    ///
-    /// The returned [`OccupiedEntry`] in combination with [`OccupiedEntry::next`] or
-    /// [`OccupiedEntry::next_async`] can act as a mutable iterator over entries.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashMap;
-    ///
-    /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    ///
-    /// let mut first_entry = hashmap.first_entry().unwrap();
-    /// *first_entry.get_mut() = 2;
-    ///
-    /// assert!(first_entry.next_sync().is_none());
-    /// assert_eq!(hashmap.read(&1, |_, v| *v), Some(2));
-    /// ```
-    #[inline]
-    pub fn first_entry(&self) -> Option<OccupiedEntry<'_, K, V, H>> {
-        self.any_entry(|_, _| true)
-    }
-
-    /// Gets the first occupied entry for in-place manipulation.
+    /// Begins iterating over entries by getting the first occupied entry.
     ///
     /// The returned [`OccupiedEntry`] in combination with [`OccupiedEntry::next`] or
     /// [`OccupiedEntry::next_async`] can act as a mutable iterator over entries.
@@ -425,11 +400,36 @@ where
     ///
     /// let hashmap: HashMap<char, u32> = HashMap::default();
     ///
-    /// let future_entry = hashmap.first_entry_async();
+    /// let future_entry = hashmap.begin_async();
     /// ```
     #[inline]
-    pub async fn first_entry_async(&self) -> Option<OccupiedEntry<'_, K, V, H>> {
+    pub async fn begin_async(&self) -> Option<OccupiedEntry<'_, K, V, H>> {
         self.any_entry_async(|_, _| true).await
+    }
+
+    /// Begins iterating over entries by getting the first occupied entry.
+    ///
+    /// The returned [`OccupiedEntry`] in combination with [`OccupiedEntry::next`] or
+    /// [`OccupiedEntry::next_async`] can act as a mutable iterator over entries.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// assert!(hashmap.insert(1, 0).is_ok());
+    ///
+    /// let mut first_entry = hashmap.begin_sync().unwrap();
+    /// *first_entry.get_mut() = 2;
+    ///
+    /// assert!(first_entry.next_sync().is_none());
+    /// assert_eq!(hashmap.read(&1, |_, v| *v), Some(2));
+    /// ```
+    #[inline]
+    pub fn begin_sync(&self) -> Option<OccupiedEntry<'_, K, V, H>> {
+        self.any_entry(|_, _| true)
     }
 
     /// Finds any entry satisfying the supplied predicate for in-place manipulation.
@@ -1945,12 +1945,11 @@ where
         self.remove_entry().1
     }
 
-    /// Gets the next closest occupied entry.
+    /// Removes the entry and gets the next closest occupied entry.
     ///
-    /// [`HashMap::first_entry`], [`HashMap::first_entry_async`], and this method together enables
-    /// the [`OccupiedEntry`] to effectively act as a mutable iterator over entries. The method
-    /// never acquires more than one lock even when it searches other buckets for the next closest
-    /// occupied entry.
+    /// [`HashMap::begin_async`] and this method together enable the [`OccupiedEntry`] to
+    /// effectively act as a mutable iterator over entries. The method never acquires more than one
+    /// lock even when it searches other buckets for the next closest occupied entry.
     ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
@@ -1965,7 +1964,100 @@ where
     /// assert!(hashmap.insert(1, 0).is_ok());
     /// assert!(hashmap.insert(2, 0).is_ok());
     ///
-    /// let second_entry_future = hashmap.first_entry().unwrap().next_async();
+    /// let second_entry_future = hashmap.begin_sync().unwrap().remove_and_async();
+    /// ```
+    #[inline]
+    pub async fn remove_and_async(mut self) -> ((K, V), Option<OccupiedEntry<'h, K, V, H>>) {
+        let guard = Guard::new();
+        let entry = self.locked_entry.writer.remove(
+            self.locked_entry.data_block,
+            &mut self.locked_entry.entry_ptr,
+            self.hashmap.prolonged_guard_ref(&guard),
+        );
+        let hashmap = self.hashmap;
+        if let Some(locked_entry) = self.locked_entry.next_async(hashmap).await {
+            return (
+                entry,
+                Some(OccupiedEntry {
+                    hashmap,
+                    locked_entry,
+                }),
+            );
+        }
+        (entry, None)
+    }
+
+    /// Removes the entry and gets the next closest occupied entry.
+    ///
+    /// [`HashMap::begin_sync`] and this method together enable the [`OccupiedEntry`] to effectively
+    /// act as a mutable iterator over entries. The method never acquires more than one lock even
+    /// when it searches other buckets for the next closest occupied entry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    /// use scc::hash_map::Entry;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// assert!(hashmap.insert(2, 0).is_ok());
+    ///
+    /// let first_entry = hashmap.begin_sync().unwrap();
+    /// let first_key = *first_entry.key();
+    /// let (removed, second_entry) = first_entry.remove_and_sync();
+    /// assert_eq!(removed.1, 0);
+    /// assert_eq!(hashmap.len(), 1);
+    ///
+    /// let second_entry = second_entry.unwrap();
+    /// let second_key = *second_entry.key();
+    ///
+    /// assert!(second_entry.remove_and_sync().1.is_none());
+    /// assert_eq!(first_key + second_key, 3);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn remove_and_sync(mut self) -> ((K, V), Option<Self>) {
+        let guard = Guard::new();
+        let entry = self.locked_entry.writer.remove(
+            self.locked_entry.data_block,
+            &mut self.locked_entry.entry_ptr,
+            self.hashmap.prolonged_guard_ref(&guard),
+        );
+        let hashmap = self.hashmap;
+        if let Some(locked_entry) = self.locked_entry.next_sync(hashmap) {
+            return (
+                entry,
+                Some(OccupiedEntry {
+                    hashmap,
+                    locked_entry,
+                }),
+            );
+        }
+        (entry, None)
+    }
+
+    /// Gets the next closest occupied entry.
+    ///
+    /// [`HashMap::begin_async`] and this method together enable the [`OccupiedEntry`] to
+    /// effectively act as a mutable iterator over entries. The method never acquires more than one
+    /// lock even when it searches other buckets for the next closest occupied entry.
+    ///
+    /// It is an asynchronous method returning an `impl Future` for the caller to await.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    /// use scc::hash_map::Entry;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// assert!(hashmap.insert(2, 0).is_ok());
+    ///
+    /// let second_entry_future = hashmap.begin_sync().unwrap().next_async();
     /// ```
     #[inline]
     pub async fn next_async(self) -> Option<OccupiedEntry<'h, K, V, H>> {
@@ -1981,10 +2073,9 @@ where
 
     /// Gets the next closest occupied entry.
     ///
-    /// [`HashMap::first_entry`], [`HashMap::first_entry_async`], and this method together enables
-    /// the [`OccupiedEntry`] to effectively act as a mutable iterator over entries. The method
-    /// never acquires more than one lock even when it searches other buckets for the next closest
-    /// occupied entry.
+    /// [`HashMap::begin_sync`] and this method together enable the [`OccupiedEntry`] to effectively
+    /// act as a mutable iterator over entries. The method never acquires more than one lock even
+    /// when it searches other buckets for the next closest occupied entry.
     ///
     /// # Examples
     ///
@@ -1997,7 +2088,7 @@ where
     /// assert!(hashmap.insert(1, 0).is_ok());
     /// assert!(hashmap.insert(2, 0).is_ok());
     ///
-    /// let first_entry = hashmap.first_entry().unwrap();
+    /// let first_entry = hashmap.begin_sync().unwrap();
     /// let first_key = *first_entry.key();
     /// let second_entry = first_entry.next_sync().unwrap();
     /// let second_key = *second_entry.key();
@@ -2016,101 +2107,6 @@ where
             });
         }
         None
-    }
-
-    /// Gets the next closest occupied entry after removing the entry.
-    ///
-    /// [`HashMap::first_entry`], [`HashMap::first_entry_async`], and this method together enables
-    /// the [`OccupiedEntry`] to effectively act as a mutable iterator over entries. The method
-    /// never acquires more than one lock even when it searches other buckets for the next closest
-    /// occupied entry.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashMap;
-    /// use scc::hash_map::Entry;
-    ///
-    /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.insert(2, 0).is_ok());
-    ///
-    /// let first_entry = hashmap.first_entry().unwrap();
-    /// let first_key = *first_entry.key();
-    /// let (removed, second_entry) = first_entry.remove_next();
-    /// assert_eq!(removed.1, 0);
-    /// assert_eq!(hashmap.len(), 1);
-    ///
-    /// let second_entry = second_entry.unwrap();
-    /// let second_key = *second_entry.key();
-    ///
-    /// assert!(second_entry.remove_next().1.is_none());
-    /// assert_eq!(first_key + second_key, 3);
-    /// ```
-    #[inline]
-    #[must_use]
-    pub fn remove_next(mut self) -> ((K, V), Option<Self>) {
-        let guard = Guard::new();
-        let entry = self.locked_entry.writer.remove(
-            self.locked_entry.data_block,
-            &mut self.locked_entry.entry_ptr,
-            self.hashmap.prolonged_guard_ref(&guard),
-        );
-        let hashmap = self.hashmap;
-        if let Some(locked_entry) = self.locked_entry.next_sync(hashmap) {
-            return (
-                entry,
-                Some(OccupiedEntry {
-                    hashmap,
-                    locked_entry,
-                }),
-            );
-        }
-        (entry, None)
-    }
-
-    /// Gets the next closest occupied entry after removing the entry.
-    ///
-    /// [`HashMap::first_entry`], [`HashMap::first_entry_async`], and this method together enables
-    /// the [`OccupiedEntry`] to effectively act as a mutable iterator over entries. The method
-    /// never acquires more than one lock even when it searches other buckets for the next closest
-    /// occupied entry.
-    ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashMap;
-    /// use scc::hash_map::Entry;
-    ///
-    /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.insert(2, 0).is_ok());
-    ///
-    /// let second_entry_future = hashmap.first_entry().unwrap().remove_next_async();
-    /// ```
-    #[inline]
-    pub async fn remove_next_async(mut self) -> ((K, V), Option<OccupiedEntry<'h, K, V, H>>) {
-        let guard = Guard::new();
-        let entry = self.locked_entry.writer.remove(
-            self.locked_entry.data_block,
-            &mut self.locked_entry.entry_ptr,
-            self.hashmap.prolonged_guard_ref(&guard),
-        );
-        let hashmap = self.hashmap;
-        if let Some(locked_entry) = self.locked_entry.next_async(hashmap).await {
-            return (
-                entry,
-                Some(OccupiedEntry {
-                    hashmap,
-                    locked_entry,
-                }),
-            );
-        }
-        (entry, None)
     }
 }
 

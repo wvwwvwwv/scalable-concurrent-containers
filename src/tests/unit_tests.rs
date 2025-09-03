@@ -513,7 +513,7 @@ mod hashmap {
                     }
 
                     let mut in_range = 0;
-                    let mut entry = hashmap.first_entry_async().await;
+                    let mut entry = hashmap.begin_async().await;
                     while let Some(current_entry) = entry.take() {
                         if range.contains(current_entry.key()) {
                             in_range += 1;
@@ -535,7 +535,7 @@ mod hashmap {
                         .await;
                     assert_eq!(removed, workload_size);
 
-                    let mut entry = hashmap.first_entry_async().await;
+                    let mut entry = hashmap.begin_async().await;
                     while let Some(current_entry) = entry.take() {
                         assert!(!range.contains(current_entry.key()));
                         entry = current_entry.next_async().await;
@@ -575,7 +575,7 @@ mod hashmap {
                     }
 
                     let mut in_range = 0;
-                    let mut entry = hashmap.first_entry();
+                    let mut entry = hashmap.begin_sync();
                     while let Some(current_entry) = entry.take() {
                         if range.contains(current_entry.key()) {
                             in_range += 1;
@@ -595,7 +595,7 @@ mod hashmap {
                     });
                     assert_eq!(removed, workload_size);
 
-                    let mut entry = hashmap.first_entry();
+                    let mut entry = hashmap.begin_sync();
                     while let Some(current_entry) = entry.take() {
                         assert!(!range.contains(current_entry.key()));
                         entry = current_entry.next_sync();
@@ -1392,7 +1392,7 @@ mod hashindex {
                     }
 
                     let mut in_range = 0;
-                    let mut entry = hashindex.first_entry_async().await;
+                    let mut entry = hashindex.begin_async().await;
                     while let Some(current_entry) = entry.take() {
                         if range.contains(current_entry.key()) {
                             in_range += 1;
@@ -1414,7 +1414,7 @@ mod hashindex {
                         .await;
                     assert_eq!(removed, workload_size);
 
-                    let mut entry = hashindex.first_entry_async().await;
+                    let mut entry = hashindex.begin_async().await;
                     while let Some(current_entry) = entry.take() {
                         assert!(!range.contains(current_entry.key()));
                         entry = current_entry.next_async().await;
@@ -1457,7 +1457,7 @@ mod hashindex {
                     }
 
                     let mut in_range = 0;
-                    let mut entry = hashindex.first_entry();
+                    let mut entry = hashindex.begin_sync();
                     while let Some(current_entry) = entry.take() {
                         if range.contains(current_entry.key()) {
                             in_range += 1;
@@ -1477,7 +1477,7 @@ mod hashindex {
                     });
                     assert_eq!(removed, workload_size);
 
-                    let mut entry = hashindex.first_entry();
+                    let mut entry = hashindex.begin_sync();
                     while let Some(current_entry) = entry.take() {
                         assert!(!range.contains(current_entry.key()));
                         entry = current_entry.next_sync();

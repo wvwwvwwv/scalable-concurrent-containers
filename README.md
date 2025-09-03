@@ -86,7 +86,7 @@ hashmap.entry_sync(4).and_modify(|v| { *v += 1 }).or_insert(5);
 assert_eq!(hashmap.read(&4, |_, v| *v), Some(5));
 ```
 
-[`HashMap`](#hashmap) does not provide an [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) since it is impossible to confine the lifetime of [`Iterator::Item`](https://doc.rust-lang.org/std/iter/trait.Iterator.html#associatedtype.Item) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html). The limitation can be circumvented by relying on interior mutability, e.g., letting the returned reference hold a lock. However, it may lead to a deadlock if not correctly used, and frequent acquisition of locks may impact performance. Therefore, [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented; instead, [`HashMap`](#hashmap) provides several methods to iterate over entries synchronously or asynchronously: `iter_{async|sync}`, `iter_mut_{async|sync}`, `first_entry`, `first_entry_async`, `retain`, `retain_async`, `OccupiedEntry::next_{async|sync}`, and `OccupiedEntry::remove_and_{async|sync}`
+[`HashMap`](#hashmap) does not provide an [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) since it is impossible to confine the lifetime of [`Iterator::Item`](https://doc.rust-lang.org/std/iter/trait.Iterator.html#associatedtype.Item) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html). The limitation can be circumvented by relying on interior mutability, e.g., letting the returned reference hold a lock. However, it may lead to a deadlock if not correctly used, and frequent acquisition of locks may impact performance. Therefore, [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented; instead, [`HashMap`](#hashmap) provides several methods to iterate over entries synchronously or asynchronously: `iter_{async|sync}`, `iter_mut_{async|sync}`, `begin_{async|sync}`, `retain`, `retain_async`, `OccupiedEntry::next_{async|sync}`, and `OccupiedEntry::remove_and_{async|sync}`
 
 ```rust
 use scc::HashMap;
@@ -111,7 +111,7 @@ assert!(!hashmap.iter_sync(|k, _| *k == 3));
 hashmap.retain(|k, v| *k == 1 && *v == 2);
 
 // `hash_map::OccupiedEntry` also can return the next closest occupied entry.
-let first_entry = hashmap.first_entry();
+let first_entry = hashmap.begin_sync();
 assert_eq!(*first_entry.as_ref().unwrap().key(), 1);
 let second_entry = first_entry.and_then(|e| e.next_sync());
 assert!(second_entry.is_none());
@@ -126,7 +126,7 @@ assert!(is_send(&future_scan));
 
 // Asynchronous iteration over entries using the `Entry` API.
 let future_iter = async {
-    let mut iter = hashmap.first_entry_async().await;
+    let mut iter = hashmap.begin_async().await;
     while let Some(entry) = iter {
         // `OccupiedEntry` can be sent across awaits and threads.
         assert!(is_send(&entry));
