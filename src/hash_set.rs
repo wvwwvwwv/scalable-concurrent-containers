@@ -119,7 +119,7 @@ where
     /// assert_eq!(hashset.capacity(), 16384);
     ///
     /// for i in 0..16 {
-    ///     assert!(hashset.insert(i).is_ok());
+    ///     assert!(hashset.insert_sync(i).is_ok());
     /// }
     /// drop(reserved);
     ///
@@ -128,30 +128,6 @@ where
     #[inline]
     pub fn reserve(&self, capacity: usize) -> Option<Reserve<'_, K, H>> {
         self.map.reserve(capacity)
-    }
-
-    /// Inserts a key into the [`HashSet`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error along with the supplied key if the key exists.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashSet;
-    ///
-    /// let hashset: HashSet<u64> = HashSet::default();
-    ///
-    /// assert!(hashset.insert(1).is_ok());
-    /// assert_eq!(hashset.insert(1).unwrap_err(), 1);
-    /// ```
-    #[inline]
-    pub fn insert(&self, key: K) -> Result<(), K> {
-        if let Err((k, ())) = self.map.insert(key, ()) {
-            return Err(k);
-        }
-        Ok(())
     }
 
     /// Inserts a key into the [`HashSet`].
@@ -176,9 +152,11 @@ where
         self.map.insert_async(key, ()).await.map_err(|(k, ())| k)
     }
 
-    /// Removes a key if the key exists.
+    /// Inserts a key into the [`HashSet`].
     ///
-    /// Returns `None` if the key does not exist.
+    /// # Errors
+    ///
+    /// Returns an error along with the supplied key if the key exists.
     ///
     /// # Examples
     ///
@@ -187,16 +165,15 @@ where
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
-    /// assert!(hashset.remove(&1).is_none());
-    /// assert!(hashset.insert(1).is_ok());
-    /// assert_eq!(hashset.remove(&1).unwrap(), 1);
+    /// assert!(hashset.insert_sync(1).is_ok());
+    /// assert_eq!(hashset.insert_sync(1).unwrap_err(), 1);
     /// ```
     #[inline]
-    pub fn remove<Q>(&self, key: &Q) -> Option<K>
-    where
-        Q: Equivalent<K> + Hash + ?Sized,
-    {
-        self.map.remove(key).map(|(k, ())| k)
+    pub fn insert_sync(&self, key: K) -> Result<(), K> {
+        if let Err((k, ())) = self.map.insert_sync(key, ()) {
+            return Err(k);
+        }
+        Ok(())
     }
 
     /// Removes a key if the key exists.
@@ -222,6 +199,29 @@ where
             .remove_if_async(key, |()| true)
             .await
             .map(|(k, ())| k)
+    }
+
+    /// Removes a key if the key exists.
+    ///
+    /// Returns `None` if the key does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    ///
+    /// let hashset: HashSet<u64> = HashSet::default();
+    ///
+    /// assert!(hashset.remove_sync(&1).is_none());
+    /// assert!(hashset.insert_sync(1).is_ok());
+    /// assert_eq!(hashset.remove_sync(&1).unwrap(), 1);
+    /// ```
+    #[inline]
+    pub fn remove_sync<Q>(&self, key: &Q) -> Option<K>
+    where
+        Q: Equivalent<K> + Hash + ?Sized,
+    {
+        self.map.remove_sync(key).map(|(k, ())| k)
     }
 
     /// Removes a key if the key exists and the given condition is met.
@@ -260,7 +260,7 @@ where
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
-    /// assert!(hashset.insert(1).is_ok());
+    /// assert!(hashset.insert_sync(1).is_ok());
     /// assert!(hashset.remove_if_sync(&1, || false).is_none());
     /// assert_eq!(hashset.remove_if_sync(&1, || true).unwrap(), 1);
     /// ```
@@ -308,7 +308,7 @@ where
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
     /// assert!(hashset.read_sync(&1, |_| true).is_none());
-    /// assert!(hashset.insert(1).is_ok());
+    /// assert!(hashset.insert_sync(1).is_ok());
     /// assert!(hashset.read_sync(&1, |_| true).unwrap());
     /// ```
     #[inline]
@@ -350,7 +350,7 @@ where
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
     /// assert!(!hashset.contains_sync(&1));
-    /// assert!(hashset.insert(1).is_ok());
+    /// assert!(hashset.insert_sync(1).is_ok());
     /// assert!(hashset.contains_sync(&1));
     /// ```
     #[inline]
@@ -372,7 +372,7 @@ where
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
-    /// assert!(hashset.insert(1).is_ok());
+    /// assert!(hashset.insert_sync(1).is_ok());
     ///
     /// async {
     ///     let result = hashset.iter_async(|k| {
@@ -397,8 +397,8 @@ where
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
-    /// assert!(hashset.insert(1).is_ok());
-    /// assert!(hashset.insert(2).is_ok());
+    /// assert!(hashset.insert_sync(1).is_ok());
+    /// assert!(hashset.insert_sync(2).is_ok());
     ///
     /// let mut acc = 0;
     /// let result = hashset.iter_sync(|k| {
@@ -414,39 +414,6 @@ where
         self.map.iter_sync(|k, ()| f(k))
     }
 
-    /// Iterates over entries synchronously for updating entries.
-    ///
-    /// Stops iterating when the closure returns `false`, and this method also returns `false`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashSet;
-    ///
-    /// let hashset: HashSet<u64> = HashSet::default();
-    ///
-    /// assert!(hashset.insert(1).is_ok());
-    /// assert!(hashset.insert(2).is_ok());
-    /// assert!(hashset.insert(3).is_ok());
-    ///
-    /// let result = hashset.iter_mut_sync(|entry| {
-    ///     if *entry == 1 {
-    ///         entry.consume();
-    ///         return false;
-    ///     }
-    ///     true
-    /// });
-    ///
-    /// assert!(!result);
-    /// assert!(!hashset.contains_sync(&1));
-    /// assert_eq!(hashset.len(), 2);
-    /// ```
-    #[inline]
-    pub fn iter_mut_sync<F: FnMut(ConsumableEntry<'_, '_, K>) -> bool>(&self, mut f: F) -> bool {
-        self.map
-            .iter_mut_sync(|consumable| f(ConsumableEntry { consumable }))
-    }
-
     /// Iterates over entries asynchronously for updating entries.
     ///
     /// Stops iterating when the closure returns `false`, and this method also returns `false`.
@@ -458,8 +425,8 @@ where
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
-    /// assert!(hashset.insert(1).is_ok());
-    /// assert!(hashset.insert(2).is_ok());
+    /// assert!(hashset.insert_sync(1).is_ok());
+    /// assert!(hashset.insert_sync(2).is_ok());
     ///
     /// async {
     ///     let result = hashset.iter_mut_async(|entry| {
@@ -482,6 +449,39 @@ where
         self.map
             .iter_mut_async(|consumable| f(ConsumableEntry { consumable }))
             .await
+    }
+
+    /// Iterates over entries synchronously for updating entries.
+    ///
+    /// Stops iterating when the closure returns `false`, and this method also returns `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    ///
+    /// let hashset: HashSet<u64> = HashSet::default();
+    ///
+    /// assert!(hashset.insert_sync(1).is_ok());
+    /// assert!(hashset.insert_sync(2).is_ok());
+    /// assert!(hashset.insert_sync(3).is_ok());
+    ///
+    /// let result = hashset.iter_mut_sync(|entry| {
+    ///     if *entry == 1 {
+    ///         entry.consume();
+    ///         return false;
+    ///     }
+    ///     true
+    /// });
+    ///
+    /// assert!(!result);
+    /// assert!(!hashset.contains_sync(&1));
+    /// assert_eq!(hashset.len(), 2);
+    /// ```
+    #[inline]
+    pub fn iter_mut_sync<F: FnMut(ConsumableEntry<'_, '_, K>) -> bool>(&self, mut f: F) -> bool {
+        self.map
+            .iter_mut_sync(|consumable| f(ConsumableEntry { consumable }))
     }
 
     /// Retains keys that satisfy the given predicate.
@@ -522,9 +522,9 @@ where
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
-    /// assert!(hashset.insert(1).is_ok());
-    /// assert!(hashset.insert(2).is_ok());
-    /// assert!(hashset.insert(3).is_ok());
+    /// assert!(hashset.insert_sync(1).is_ok());
+    /// assert!(hashset.insert_sync(2).is_ok());
+    /// assert!(hashset.insert_sync(3).is_ok());
     ///
     /// hashset.retain_sync(|k| *k == 1);
     ///
@@ -570,7 +570,7 @@ where
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
-    /// assert!(hashset.insert(1).is_ok());
+    /// assert!(hashset.insert_sync(1).is_ok());
     /// hashset.clear_sync();
     ///
     /// assert!(!hashset.contains_sync(&1));
@@ -593,7 +593,7 @@ where
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
-    /// assert!(hashset.insert(1).is_ok());
+    /// assert!(hashset.insert_sync(1).is_ok());
     /// assert_eq!(hashset.len(), 1);
     /// ```
     #[inline]
@@ -611,7 +611,7 @@ where
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
     /// assert!(hashset.is_empty());
-    /// assert!(hashset.insert(1).is_ok());
+    /// assert!(hashset.insert_sync(1).is_ok());
     /// assert!(!hashset.is_empty());
     /// ```
     #[inline]
@@ -629,7 +629,7 @@ where
     /// let hashset_default: HashSet<u64> = HashSet::default();
     /// assert_eq!(hashset_default.capacity(), 0);
     ///
-    /// assert!(hashset_default.insert(1).is_ok());
+    /// assert!(hashset_default.insert_sync(1).is_ok());
     /// assert_eq!(hashset_default.capacity(), 64);
     ///
     /// let hashset: HashSet<u64> = HashSet::with_capacity(1000);
@@ -793,7 +793,7 @@ where
             H::default(),
         );
         into_iter.for_each(|k| {
-            let _result = hashset.insert(k);
+            let _result = hashset.insert_sync(k);
         });
         hashset
     }
@@ -829,9 +829,9 @@ impl<K> ConsumableEntry<'_, '_, K> {
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
-    /// assert!(hashset.insert(1).is_ok());
-    /// assert!(hashset.insert(2).is_ok());
-    /// assert!(hashset.insert(3).is_ok());
+    /// assert!(hashset.insert_sync(1).is_ok());
+    /// assert!(hashset.insert_sync(2).is_ok());
+    /// assert!(hashset.insert_sync(3).is_ok());
     ///
     /// let mut consumed = None;
     ///

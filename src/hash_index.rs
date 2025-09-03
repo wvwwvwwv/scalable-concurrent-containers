@@ -223,7 +223,7 @@ where
     /// assert_eq!(hashindex.capacity(), 16384);
     ///
     /// for i in 0..16 {
-    ///     assert!(hashindex.insert(i, i).is_ok());
+    ///     assert!(hashindex.insert_sync(i, i).is_ok());
     /// }
     /// drop(reserved);
     ///
@@ -339,7 +339,7 @@ where
     ///
     /// let hashindex: HashIndex<usize, usize> = HashIndex::default();
     ///
-    /// assert!(hashindex.insert(0, 1).is_ok());
+    /// assert!(hashindex.insert_sync(0, 1).is_ok());
     /// assert!(hashindex.try_entry(0).is_some());
     /// ```
     #[inline]
@@ -395,7 +395,7 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// assert!(hashindex.insert(1, 0).is_ok());
+    /// assert!(hashindex.insert_sync(1, 0).is_ok());
     ///
     /// let mut first_entry = hashindex.begin_sync().unwrap();
     /// unsafe {
@@ -461,8 +461,8 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// assert!(hashindex.insert(1, 0).is_ok());
-    /// assert!(hashindex.insert(2, 3).is_ok());
+    /// assert!(hashindex.insert_sync(1, 0).is_ok());
+    /// assert!(hashindex.insert_sync(2, 3).is_ok());
     ///
     /// let mut entry = hashindex.any_sync(|k, _| *k == 2).unwrap();
     /// assert_eq!(*entry.get(), 3);
@@ -492,39 +492,6 @@ where
             (false, false)
         });
         entry
-    }
-    /// Inserts a key-value pair into the [`HashIndex`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error along with the supplied key-value pair if the key exists.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashIndex;
-    ///
-    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
-    ///
-    /// assert!(hashindex.insert(1, 0).is_ok());
-    /// assert_eq!(hashindex.insert(1, 1).unwrap_err(), (1, 1));
-    /// ```
-    #[inline]
-    pub fn insert(&self, key: K, val: V) -> Result<(), (K, V)> {
-        let hash = self.hash(&key);
-        let guard = Guard::new();
-        self.writer_sync(hash, &guard, |writer, data_block, _, _| {
-            let partial_hash = hash;
-            if writer
-                .get_entry_ptr(data_block, &key, partial_hash, &guard)
-                .is_valid()
-            {
-                Err((key, val))
-            } else {
-                writer.insert_with(data_block, partial_hash, || (key, val), &guard);
-                Ok(())
-            }
-        })
     }
 
     /// Inserts a key-value pair into the [`HashIndex`].
@@ -563,12 +530,11 @@ where
         .await
     }
 
-    /// Removes a key-value pair if the key exists.
+    /// Inserts a key-value pair into the [`HashIndex`].
     ///
-    /// Returns `false` if the key does not exist.
+    /// # Errors
     ///
-    /// Returns `true` if the key existed and the condition was met after marking the entry
-    /// unreachable; the memory will be reclaimed later.
+    /// Returns an error along with the supplied key-value pair if the key exists.
     ///
     /// # Examples
     ///
@@ -577,16 +543,25 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// assert!(!hashindex.remove(&1));
-    /// assert!(hashindex.insert(1, 0).is_ok());
-    /// assert!(hashindex.remove(&1));
+    /// assert!(hashindex.insert_sync(1, 0).is_ok());
+    /// assert_eq!(hashindex.insert_sync(1, 1).unwrap_err(), (1, 1));
     /// ```
     #[inline]
-    pub fn remove<Q>(&self, key: &Q) -> bool
-    where
-        Q: Equivalent<K> + Hash + ?Sized,
-    {
-        self.remove_if_sync(key, |_| true)
+    pub fn insert_sync(&self, key: K, val: V) -> Result<(), (K, V)> {
+        let hash = self.hash(&key);
+        let guard = Guard::new();
+        self.writer_sync(hash, &guard, |writer, data_block, _, _| {
+            let partial_hash = hash;
+            if writer
+                .get_entry_ptr(data_block, &key, partial_hash, &guard)
+                .is_valid()
+            {
+                Err((key, val))
+            } else {
+                writer.insert_with(data_block, partial_hash, || (key, val), &guard);
+                Ok(())
+            }
+        })
     }
 
     /// Removes a key-value pair if the key exists.
@@ -612,6 +587,32 @@ where
         Q: Equivalent<K> + Hash + ?Sized,
     {
         self.remove_if_async(key, |_| true).await
+    }
+
+    /// Removes a key-value pair if the key exists.
+    ///
+    /// Returns `false` if the key does not exist.
+    ///
+    /// Returns `true` if the key existed and the condition was met after marking the entry
+    /// unreachable; the memory will be reclaimed later.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// assert!(!hashindex.remove_sync(&1));
+    /// assert!(hashindex.insert_sync(1, 0).is_ok());
+    /// assert!(hashindex.remove_sync(&1));
+    /// ```
+    #[inline]
+    pub fn remove_sync<Q>(&self, key: &Q) -> bool
+    where
+        Q: Equivalent<K> + Hash + ?Sized,
+    {
+        self.remove_if_sync(key, |_| true)
     }
 
     /// Removes a key-value pair if the key exists and the given condition is met.
@@ -666,7 +667,7 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// assert!(hashindex.insert(1, 0).is_ok());
+    /// assert!(hashindex.insert_sync(1, 0).is_ok());
     /// assert!(!hashindex.remove_if_sync(&1, |v| *v == 1));
     /// assert!(hashindex.remove_if_sync(&1, |v| *v == 0));
     /// ```
@@ -751,7 +752,7 @@ where
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
     /// assert!(hashindex.get_sync(&1).is_none());
-    /// assert!(hashindex.insert(1, 10).is_ok());
+    /// assert!(hashindex.insert_sync(1, 10).is_ok());
     /// assert_eq!(*hashindex.get_sync(&1).unwrap().get(), 10);
     /// assert_eq!(*hashindex.get_sync(&1).unwrap(), 10);
     /// ```
@@ -800,7 +801,7 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// assert!(hashindex.insert(1, 10).is_ok());
+    /// assert!(hashindex.insert_sync(1, 10).is_ok());
     ///
     /// let guard = Guard::new();
     /// let value_ref = hashindex.peek(&1, &guard).unwrap();
@@ -832,7 +833,7 @@ where
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
     /// assert!(hashindex.peek_with(&1, |_, v| *v).is_none());
-    /// assert!(hashindex.insert(1, 10).is_ok());
+    /// assert!(hashindex.insert_sync(1, 10).is_ok());
     /// assert_eq!(hashindex.peek_with(&1, |_, v| *v).unwrap(), 10);
     /// ```
     #[inline]
@@ -855,7 +856,7 @@ where
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
     /// assert!(!hashindex.contains(&1));
-    /// assert!(hashindex.insert(1, 0).is_ok());
+    /// assert!(hashindex.insert_sync(1, 0).is_ok());
     /// assert!(hashindex.contains(&1));
     /// ```
     #[inline]
@@ -877,7 +878,7 @@ where
     ///
     /// let hashindex: HashIndex<u64, u64> = HashIndex::default();
     ///
-    /// assert!(hashindex.insert(1, 0).is_ok());
+    /// assert!(hashindex.insert_sync(1, 0).is_ok());
     ///
     /// async {
     ///     let result = hashindex.iter_async(|k, v| {
@@ -917,8 +918,8 @@ where
     ///
     /// let hashindex: HashIndex<u64, u64> = HashIndex::default();
     ///
-    /// assert!(hashindex.insert(1, 0).is_ok());
-    /// assert!(hashindex.insert(2, 1).is_ok());
+    /// assert!(hashindex.insert_sync(1, 0).is_ok());
+    /// assert!(hashindex.insert_sync(2, 1).is_ok());
     ///
     /// let mut acc = 0_u64;
     /// let result = hashindex.iter_sync(|k, v| {
@@ -998,9 +999,9 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// assert!(hashindex.insert(1, 0).is_ok());
-    /// assert!(hashindex.insert(2, 1).is_ok());
-    /// assert!(hashindex.insert(3, 2).is_ok());
+    /// assert!(hashindex.insert_sync(1, 0).is_ok());
+    /// assert!(hashindex.insert_sync(2, 1).is_ok());
+    /// assert!(hashindex.insert_sync(3, 2).is_ok());
     ///
     /// hashindex.retain_sync(|k, v| *k == 1 && *v == 0);
     ///
@@ -1052,7 +1053,7 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// assert!(hashindex.insert(1, 0).is_ok());
+    /// assert!(hashindex.insert_sync(1, 0).is_ok());
     /// hashindex.clear_sync();
     ///
     /// assert!(!hashindex.contains(&1));
@@ -1074,7 +1075,7 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// assert!(hashindex.insert(1, 0).is_ok());
+    /// assert!(hashindex.insert_sync(1, 0).is_ok());
     /// assert_eq!(hashindex.len(), 1);
     /// ```
     #[inline]
@@ -1092,7 +1093,7 @@ where
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
     /// assert!(hashindex.is_empty());
-    /// assert!(hashindex.insert(1, 0).is_ok());
+    /// assert!(hashindex.insert_sync(1, 0).is_ok());
     /// assert!(!hashindex.is_empty());
     /// ```
     #[inline]
@@ -1110,7 +1111,7 @@ where
     /// let hashindex_default: HashIndex<u64, u32> = HashIndex::default();
     /// assert_eq!(hashindex_default.capacity(), 0);
     ///
-    /// assert!(hashindex_default.insert(1, 0).is_ok());
+    /// assert!(hashindex_default.insert_sync(1, 0).is_ok());
     /// assert_eq!(hashindex_default.capacity(), 64);
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::with_capacity(1000);
@@ -1178,7 +1179,7 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// assert!(hashindex.insert(1, 0).is_ok());
+    /// assert!(hashindex.insert_sync(1, 0).is_ok());
     ///
     /// let guard = Guard::new();
     ///
@@ -1217,7 +1218,7 @@ where
     fn clone(&self) -> Self {
         let self_clone = Self::with_capacity_and_hasher(self.capacity(), self.hasher().clone());
         for (k, v) in self.iter(&Guard::new()) {
-            let _result = self_clone.insert(k.clone(), v.clone());
+            let _result = self_clone.insert_sync(k.clone(), v.clone());
         }
         self_clone
     }
@@ -1320,7 +1321,7 @@ where
             H::default(),
         );
         into_iter.for_each(|e| {
-            let _result = hashindex.insert(e.0, e.1);
+            let _result = hashindex.insert_sync(e.0, e.1);
         });
         hashindex
     }
@@ -1678,8 +1679,8 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// assert!(hashindex.insert(1, 0).is_ok());
-    /// assert!(hashindex.insert(2, 0).is_ok());
+    /// assert!(hashindex.insert_sync(1, 0).is_ok());
+    /// assert!(hashindex.insert_sync(2, 0).is_ok());
     ///
     /// let second_entry_future = hashindex.begin_sync().unwrap().remove_and_async();
     /// ```
@@ -1714,8 +1715,8 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// assert!(hashindex.insert(1, 0).is_ok());
-    /// assert!(hashindex.insert(2, 0).is_ok());
+    /// assert!(hashindex.insert_sync(1, 0).is_ok());
+    /// assert!(hashindex.insert_sync(2, 0).is_ok());
     ///
     /// let first_entry = hashindex.begin_sync().unwrap();
     /// let first_key = *first_entry.key();
@@ -1762,8 +1763,8 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// assert!(hashindex.insert(1, 0).is_ok());
-    /// assert!(hashindex.insert(2, 0).is_ok());
+    /// assert!(hashindex.insert_sync(1, 0).is_ok());
+    /// assert!(hashindex.insert_sync(2, 0).is_ok());
     ///
     /// let second_entry_future = hashindex.begin_sync().unwrap().next_async();
     /// ```
@@ -1793,8 +1794,8 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// assert!(hashindex.insert(1, 0).is_ok());
-    /// assert!(hashindex.insert(2, 0).is_ok());
+    /// assert!(hashindex.insert_sync(1, 0).is_ok());
+    /// assert!(hashindex.insert_sync(2, 0).is_ok());
     ///
     /// let first_entry = hashindex.begin_sync().unwrap();
     /// let first_key = *first_entry.key();

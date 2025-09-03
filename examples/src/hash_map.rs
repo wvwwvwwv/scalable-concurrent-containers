@@ -9,9 +9,9 @@ fn single_threaded() {
     let hashmap: HashMap<isize, isize> = HashMap::new();
     for i in 1..workload_size {
         if i % 2 == 0 {
-            assert!(hashmap.insert(-i, i).is_ok());
+            assert!(hashmap.insert_sync(-i, i).is_ok());
         } else {
-            assert!(hashmap.insert(i, i).is_ok());
+            assert!(hashmap.insert_sync(i, i).is_ok());
         }
     }
     for i in 1..workload_size {
@@ -25,13 +25,13 @@ fn single_threaded() {
     }
     for i in 1..workload_size {
         if i % 2 == 0 {
-            assert!(hashmap.remove(&i).is_none());
-            assert!(hashmap.remove(&-i).is_some());
-            assert!(hashmap.remove(&-i).is_none());
+            assert!(hashmap.remove_sync(&i).is_none());
+            assert!(hashmap.remove_sync(&-i).is_some());
+            assert!(hashmap.remove_sync(&-i).is_none());
         } else {
-            assert!(hashmap.remove(&-i).is_none());
-            assert!(hashmap.remove(&i).is_some());
-            assert!(hashmap.remove(&i).is_none());
+            assert!(hashmap.remove_sync(&-i).is_none());
+            assert!(hashmap.remove_sync(&i).is_some());
+            assert!(hashmap.remove_sync(&i).is_none());
         }
     }
     assert!(hashmap.is_empty());
@@ -45,26 +45,26 @@ fn multi_threaded() {
     thread::scope(|s| {
         s.spawn(|| {
             for i in 1..workload_size {
-                assert!(hashmap.insert(i, i).is_ok());
+                assert!(hashmap.insert_sync(i, i).is_ok());
             }
             assert!(hashmap.get_sync(&0).is_none());
             for i in 1..workload_size {
                 assert!(hashmap.get_sync(&i).is_some());
             }
             for i in 1..workload_size {
-                assert!(hashmap.remove(&i).is_some());
+                assert!(hashmap.remove_sync(&i).is_some());
             }
         });
         s.spawn(|| {
             for i in 1..workload_size {
-                assert!(hashmap.insert(-i, i).is_ok());
+                assert!(hashmap.insert_sync(-i, i).is_ok());
             }
             assert!(hashmap.get_sync(&0).is_none());
             for i in 1..workload_size {
                 assert!(hashmap.get_sync(&-i).is_some());
             }
             for i in 1..workload_size {
-                assert!(hashmap.remove(&-i).is_some());
+                assert!(hashmap.remove_sync(&-i).is_some());
             }
         });
     });

@@ -63,7 +63,7 @@ mod sync_benchmarks {
     {
         #[inline(always)]
         fn insert_test(&self, k: K, v: V) -> bool {
-            self.insert(k, v).is_ok()
+            self.insert_sync(k, v).is_ok()
         }
         #[inline(always)]
         fn read_test(&self, k: &K) -> bool {
@@ -83,7 +83,7 @@ mod sync_benchmarks {
 
         #[inline(always)]
         fn remove_test(&self, k: &K) -> bool {
-            self.remove(k).is_some()
+            self.remove_sync(k).is_some()
         }
     }
 
@@ -95,7 +95,7 @@ mod sync_benchmarks {
     {
         #[inline(always)]
         fn insert_test(&self, k: K, v: V) -> bool {
-            self.insert(k, v).is_ok()
+            self.insert_sync(k, v).is_ok()
         }
         #[inline(always)]
         fn read_test(&self, k: &K) -> bool {
@@ -110,7 +110,7 @@ mod sync_benchmarks {
         }
         #[inline(always)]
         fn remove_test(&self, k: &K) -> bool {
-            self.remove(k)
+            self.remove_sync(k)
         }
     }
 

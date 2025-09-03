@@ -288,7 +288,7 @@ where
     ///
     /// let hashcache: HashCache<usize, usize> = HashCache::default();
     ///
-    /// assert!(hashcache.put(0, 1).is_ok());
+    /// assert!(hashcache.put_sync(0, 1).is_ok());
     /// assert!(hashcache.try_entry(0).is_some());
     /// ```
     #[inline]
@@ -309,43 +309,6 @@ where
                 locked_entry,
             }))
         }
-    }
-
-    /// Puts a key-value pair into the [`HashCache`].
-    ///
-    /// Returns `Some` if an entry was evicted for the new key-value pair.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error along with the supplied key-value pair if the key exists.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashCache;
-    ///
-    /// let hashcache: HashCache<u64, u32> = HashCache::default();
-    ///
-    /// assert!(hashcache.put(1, 0).is_ok());
-    /// assert_eq!(hashcache.put(1, 1).unwrap_err(), (1, 1));
-    /// ```
-    #[inline]
-    pub fn put(&self, key: K, val: V) -> Result<EvictedEntry<K, V>, (K, V)> {
-        let hash = self.hash(&key);
-        let guard = Guard::new();
-        self.writer_sync(hash, &guard, |writer, data_block, _, _| {
-            if writer
-                .get_entry_ptr(data_block, &key, hash, &guard)
-                .is_valid()
-            {
-                Err((key, val))
-            } else {
-                let evicted = writer.evict_lru_head(data_block);
-                let entry_ptr = writer.insert_with(data_block, hash, || (key, val), &guard);
-                writer.update_lru_tail(&entry_ptr);
-                Ok(evicted)
-            }
-        })
     }
 
     /// Puts a key-value pair into the [`HashCache`].
@@ -384,6 +347,43 @@ where
             }
         })
         .await
+    }
+
+    /// Puts a key-value pair into the [`HashCache`].
+    ///
+    /// Returns `Some` if an entry was evicted for the new key-value pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error along with the supplied key-value pair if the key exists.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    ///
+    /// assert!(hashcache.put_sync(1, 0).is_ok());
+    /// assert_eq!(hashcache.put_sync(1, 1).unwrap_err(), (1, 1));
+    /// ```
+    #[inline]
+    pub fn put_sync(&self, key: K, val: V) -> Result<EvictedEntry<K, V>, (K, V)> {
+        let hash = self.hash(&key);
+        let guard = Guard::new();
+        self.writer_sync(hash, &guard, |writer, data_block, _, _| {
+            if writer
+                .get_entry_ptr(data_block, &key, hash, &guard)
+                .is_valid()
+            {
+                Err((key, val))
+            } else {
+                let evicted = writer.evict_lru_head(data_block);
+                let entry_ptr = writer.insert_with(data_block, hash, || (key, val), &guard);
+                writer.update_lru_tail(&entry_ptr);
+                Ok(evicted)
+            }
+        })
     }
 
     /// Gets an [`OccupiedEntry`] corresponding to the key for in-place modification.
@@ -448,7 +448,7 @@ where
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
     /// assert!(hashcache.get_sync(&1).is_none());
-    /// assert!(hashcache.put(1, 10).is_ok());
+    /// assert!(hashcache.put_sync(1, 10).is_ok());
     /// assert_eq!(*hashcache.get_sync(&1).unwrap().get(), 10);
     ///
     /// *hashcache.get_sync(&1).unwrap() = 11;
@@ -518,7 +518,7 @@ where
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
     /// assert!(hashcache.read_sync(&1, |_, v| *v).is_none());
-    /// assert!(hashcache.put(1, 10).is_ok());
+    /// assert!(hashcache.put_sync(1, 10).is_ok());
     /// assert_eq!(hashcache.read_sync(&1, |_, v| *v).unwrap(), 10);
     /// ```
     #[inline]
@@ -562,7 +562,7 @@ where
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
     /// assert!(!hashcache.contains_sync(&1));
-    /// assert!(hashcache.put(1, 0).is_ok());
+    /// assert!(hashcache.put_sync(1, 0).is_ok());
     /// assert!(hashcache.contains_sync(&1));
     /// ```
     #[inline]
@@ -571,29 +571,6 @@ where
         Q: Equivalent<K> + Hash + ?Sized,
     {
         self.read_sync(key, |_, _| ()).is_some()
-    }
-
-    /// Removes a key-value pair if the key exists.
-    ///
-    /// Returns `None` if the key does not exist.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashCache;
-    ///
-    /// let hashcache: HashCache<u64, u32> = HashCache::default();
-    ///
-    /// assert!(hashcache.remove(&1).is_none());
-    /// assert!(hashcache.put(1, 0).is_ok());
-    /// assert_eq!(hashcache.remove(&1).unwrap(), (1, 0));
-    /// ```
-    #[inline]
-    pub fn remove<Q>(&self, key: &Q) -> Option<(K, V)>
-    where
-        Q: Equivalent<K> + Hash + ?Sized,
-    {
-        self.remove_if_sync(key, |_| true)
     }
 
     /// Removes a key-value pair if the key exists.
@@ -616,6 +593,29 @@ where
         Q: Equivalent<K> + Hash + ?Sized,
     {
         self.remove_if_async(key, |_| true).await
+    }
+
+    /// Removes a key-value pair if the key exists.
+    ///
+    /// Returns `None` if the key does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    ///
+    /// assert!(hashcache.remove_sync(&1).is_none());
+    /// assert!(hashcache.put_sync(1, 0).is_ok());
+    /// assert_eq!(hashcache.remove_sync(&1).unwrap(), (1, 0));
+    /// ```
+    #[inline]
+    pub fn remove_sync<Q>(&self, key: &Q) -> Option<(K, V)>
+    where
+        Q: Equivalent<K> + Hash + ?Sized,
+    {
+        self.remove_if_sync(key, |_| true)
     }
 
     /// Removes a key-value pair if the key exists and the given condition is met.
@@ -670,7 +670,7 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// assert!(hashcache.put(1, 0).is_ok());
+    /// assert!(hashcache.put_sync(1, 0).is_ok());
     /// assert!(hashcache.remove_if_sync(&1, |v| { *v += 1; false }).is_none());
     /// assert_eq!(hashcache.remove_if_sync(&1, |v| *v == 1).unwrap(), (1, 1));
     /// ```
@@ -711,7 +711,7 @@ where
     ///
     /// let hashcache: HashCache<u64, u64> = HashCache::default();
     ///
-    /// assert!(hashcache.put(1, 0).is_ok());
+    /// assert!(hashcache.put_sync(1, 0).is_ok());
     ///
     /// async {
     ///     let result = hashcache.iter_async(|k, v| {
@@ -751,8 +751,8 @@ where
     ///
     /// let hashcache: HashCache<u64, u64> = HashCache::default();
     ///
-    /// assert!(hashcache.put(1, 0).is_ok());
-    /// assert!(hashcache.put(2, 1).is_ok());
+    /// assert!(hashcache.put_sync(1, 0).is_ok());
+    /// assert!(hashcache.put_sync(2, 1).is_ok());
     ///
     /// let mut acc = 0_u64;
     /// let result = hashcache.iter_sync(|k, v| {
@@ -793,8 +793,8 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// assert!(hashcache.put(1, 0).is_ok());
-    /// assert!(hashcache.put(2, 1).is_ok());
+    /// assert!(hashcache.put_sync(1, 0).is_ok());
+    /// assert!(hashcache.put_sync(2, 1).is_ok());
     ///
     /// async {
     ///     let result = hashcache.iter_mut_async(|entry| {
@@ -850,9 +850,9 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// assert!(hashcache.put(1, 0).is_ok());
-    /// assert!(hashcache.put(2, 1).is_ok());
-    /// assert!(hashcache.put(3, 2).is_ok());
+    /// assert!(hashcache.put_sync(1, 0).is_ok());
+    /// assert!(hashcache.put_sync(2, 1).is_ok());
+    /// assert!(hashcache.put_sync(3, 2).is_ok());
     ///
     /// let result = hashcache.iter_mut_sync(|entry| {
     ///     if entry.0 == 1 {
@@ -938,9 +938,9 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// assert!(hashcache.put(1, 0).is_ok());
-    /// assert!(hashcache.put(2, 1).is_ok());
-    /// assert!(hashcache.put(3, 2).is_ok());
+    /// assert!(hashcache.put_sync(1, 0).is_ok());
+    /// assert!(hashcache.put_sync(2, 1).is_ok());
+    /// assert!(hashcache.put_sync(3, 2).is_ok());
     ///
     /// hashcache.retain_sync(|k, v| *k == 1 && *v == 0);
     ///
@@ -987,7 +987,7 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// assert!(hashcache.put(1, 0).is_ok());
+    /// assert!(hashcache.put_sync(1, 0).is_ok());
     /// hashcache.clear_sync();
     ///
     /// assert!(!hashcache.contains_sync(&1));
@@ -1010,7 +1010,7 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// assert!(hashcache.put(1, 0).is_ok());
+    /// assert!(hashcache.put_sync(1, 0).is_ok());
     /// assert_eq!(hashcache.len(), 1);
     /// ```
     #[inline]
@@ -1028,7 +1028,7 @@ where
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
     /// assert!(hashcache.is_empty());
-    /// assert!(hashcache.put(1, 0).is_ok());
+    /// assert!(hashcache.put_sync(1, 0).is_ok());
     /// assert!(!hashcache.is_empty());
     /// ```
     #[inline]
@@ -1201,7 +1201,7 @@ where
             H::default(),
         );
         into_iter.for_each(|e| {
-            let _result = hashcache.put(e.0, e.1);
+            let _result = hashcache.put_sync(e.0, e.1);
         });
         hashcache
     }
@@ -1746,9 +1746,9 @@ impl<K, V> ConsumableEntry<'_, '_, K, V> {
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// assert!(hashcache.put(1, 0).is_ok());
-    /// assert!(hashcache.put(2, 1).is_ok());
-    /// assert!(hashcache.put(3, 2).is_ok());
+    /// assert!(hashcache.put_sync(1, 0).is_ok());
+    /// assert!(hashcache.put_sync(2, 1).is_ok());
+    /// assert!(hashcache.put_sync(3, 2).is_ok());
     ///
     /// let mut consumed = None;
     ///

@@ -9,7 +9,7 @@ fn insert_cold(c: &mut Criterion) {
             let hashmap: HashMap<u64, u64> = HashMap::default();
             let start = Instant::now();
             for i in 0..iters {
-                assert!(hashmap.insert(i, i).is_ok());
+                assert!(hashmap.insert_sync(i, i).is_ok());
             }
             start.elapsed()
         })
@@ -22,7 +22,7 @@ fn insert_warmed_up(c: &mut Criterion) {
             let hashmap: HashMap<u64, u64> = HashMap::with_capacity(iters as usize * 2);
             let start = Instant::now();
             for i in 0..iters {
-                assert!(hashmap.insert(i, i).is_ok());
+                assert!(hashmap.insert_sync(i, i).is_ok());
             }
             start.elapsed()
         })
@@ -34,7 +34,7 @@ fn read(c: &mut Criterion) {
         b.iter_custom(|iters| {
             let hashmap: HashMap<u64, u64> = HashMap::with_capacity(iters as usize * 2);
             for i in 0..iters {
-                assert!(hashmap.insert(i, i).is_ok());
+                assert!(hashmap.insert_sync(i, i).is_ok());
             }
             let start = Instant::now();
             for i in 0..iters {
@@ -56,7 +56,7 @@ fn insert_tail_latency(c: &mut Criterion) {
                 (0..1048576).for_each(|_| {
                     key += 1;
                     let start = Instant::now();
-                    assert!(hashmap.insert(key, key).is_ok());
+                    assert!(hashmap.insert_sync(key, key).is_ok());
                     let elapsed = start.elapsed();
                     if elapsed > max_latency {
                         max_latency = elapsed;

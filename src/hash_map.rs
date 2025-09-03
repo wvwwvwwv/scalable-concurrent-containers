@@ -249,7 +249,7 @@ where
     /// assert_eq!(hashmap.capacity(), 16384);
     ///
     /// for i in 0..16 {
-    ///     assert!(hashmap.insert(i, i).is_ok());
+    ///     assert!(hashmap.insert_sync(i, i).is_ok());
     /// }
     /// drop(reserved);
     ///
@@ -363,7 +363,7 @@ where
     ///
     /// let hashmap: HashMap<usize, usize> = HashMap::default();
     ///
-    /// assert!(hashmap.insert(0, 1).is_ok());
+    /// assert!(hashmap.insert_sync(0, 1).is_ok());
     /// assert!(hashmap.try_entry(0).is_some());
     /// ```
     #[inline]
@@ -419,7 +419,7 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// assert!(hashmap.insert_sync(1, 0).is_ok());
     ///
     /// let mut first_entry = hashmap.begin_sync().unwrap();
     /// *first_entry.get_mut() = 2;
@@ -483,8 +483,8 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.insert(2, 3).is_ok());
+    /// assert!(hashmap.insert_sync(1, 0).is_ok());
+    /// assert!(hashmap.insert_sync(2, 3).is_ok());
     ///
     /// let mut entry = hashmap.any_sync(|k, _| *k == 2).unwrap();
     /// assert_eq!(*entry.get(), 3);
@@ -514,39 +514,6 @@ where
             (false, false)
         });
         entry
-    }
-
-    /// Inserts a key-value pair into the [`HashMap`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error along with the supplied key-value pair if the key exists.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashMap;
-    ///
-    /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert_eq!(hashmap.insert(1, 1).unwrap_err(), (1, 1));
-    /// ```
-    #[inline]
-    pub fn insert(&self, key: K, val: V) -> Result<(), (K, V)> {
-        let hash = self.hash(&key);
-        let guard = Guard::new();
-        self.writer_sync(hash, &guard, |writer, data_block, _, _| {
-            if writer
-                .get_entry_ptr(data_block, &key, hash, &guard)
-                .is_valid()
-            {
-                Err((key, val))
-            } else {
-                writer.insert_with(data_block, hash, || (key, val), &guard);
-                Ok(())
-            }
-        })
     }
 
     /// Inserts a key-value pair into the [`HashMap`].
@@ -584,9 +551,11 @@ where
         .await
     }
 
-    /// Upserts a key-value pair into the [`HashMap`].
+    /// Inserts a key-value pair into the [`HashMap`].
     ///
-    /// Returns the old value if the [`HashMap`] has this key present, or returns `None`.
+    /// # Errors
+    ///
+    /// Returns an error along with the supplied key-value pair if the key exists.
     ///
     /// # Examples
     ///
@@ -595,19 +564,24 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// assert!(hashmap.upsert(1, 0).is_none());
-    /// assert_eq!(hashmap.upsert(1, 1).unwrap(), 0);
-    /// assert_eq!(hashmap.read_sync(&1, |_, v| *v).unwrap(), 1);
+    /// assert!(hashmap.insert_sync(1, 0).is_ok());
+    /// assert_eq!(hashmap.insert_sync(1, 1).unwrap_err(), (1, 1));
     /// ```
     #[inline]
-    pub fn upsert(&self, key: K, val: V) -> Option<V> {
-        match self.entry_sync(key) {
-            Entry::Occupied(mut o) => Some(replace(o.get_mut(), val)),
-            Entry::Vacant(v) => {
-                v.insert_entry(val);
-                None
+    pub fn insert_sync(&self, key: K, val: V) -> Result<(), (K, V)> {
+        let hash = self.hash(&key);
+        let guard = Guard::new();
+        self.writer_sync(hash, &guard, |writer, data_block, _, _| {
+            if writer
+                .get_entry_ptr(data_block, &key, hash, &guard)
+                .is_valid()
+            {
+                Err((key, val))
+            } else {
+                writer.insert_with(data_block, hash, || (key, val), &guard);
+                Ok(())
             }
-        }
+        })
     }
 
     /// Upserts a key-value pair into the [`HashMap`].
@@ -634,9 +608,9 @@ where
         }
     }
 
-    /// Updates an existing key-value pair in-place.
+    /// Upserts a key-value pair into the [`HashMap`].
     ///
-    /// Returns `None` if the key does not exist.
+    /// Returns the old value if the [`HashMap`] has this key present, or returns `None`.
     ///
     /// # Examples
     ///
@@ -645,30 +619,19 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// assert!(hashmap.update(&1, |_, _| true).is_none());
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert_eq!(hashmap.update(&1, |_, v| { *v = 2; *v }).unwrap(), 2);
-    /// assert_eq!(hashmap.read_sync(&1, |_, v| *v).unwrap(), 2);
+    /// assert!(hashmap.upsert_sync(1, 0).is_none());
+    /// assert_eq!(hashmap.upsert_sync(1, 1).unwrap(), 0);
+    /// assert_eq!(hashmap.read_sync(&1, |_, v| *v).unwrap(), 1);
     /// ```
     #[inline]
-    pub fn update<Q, U, R>(&self, key: &Q, updater: U) -> Option<R>
-    where
-        Q: Equivalent<K> + Hash + ?Sized,
-        U: FnOnce(&K, &mut V) -> R,
-    {
-        let hash = self.hash(key);
-        let guard = Guard::default();
-        self.optional_writer_sync(hash, &guard, |writer, data_block, _, _| {
-            let mut entry_ptr = writer.get_entry_ptr(data_block, key, hash, &guard);
-            if entry_ptr.is_valid() {
-                let (k, v) = entry_ptr.get_mut(data_block, &writer);
-                (Some(updater(k, v)), false)
-            } else {
-                (None, false)
+    pub fn upsert_sync(&self, key: K, val: V) -> Option<V> {
+        match self.entry_sync(key) {
+            Entry::Occupied(mut o) => Some(replace(o.get_mut(), val)),
+            Entry::Vacant(v) => {
+                v.insert_entry(val);
+                None
             }
-        })
-        .ok()
-        .flatten()
+        }
     }
 
     /// Updates an existing key-value pair in-place.
@@ -683,7 +646,7 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// assert!(hashmap.insert_sync(1, 0).is_ok());
     /// let future_update = hashmap.update_async(&1, |_, v| { *v = 2; *v });
     /// ```
     #[inline]
@@ -709,7 +672,7 @@ where
         .flatten()
     }
 
-    /// Removes a key-value pair if the key exists.
+    /// Updates an existing key-value pair in-place.
     ///
     /// Returns `None` if the key does not exist.
     ///
@@ -720,16 +683,30 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// assert!(hashmap.remove(&1).is_none());
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert_eq!(hashmap.remove(&1).unwrap(), (1, 0));
+    /// assert!(hashmap.update_sync(&1, |_, _| true).is_none());
+    /// assert!(hashmap.insert_sync(1, 0).is_ok());
+    /// assert_eq!(hashmap.update_sync(&1, |_, v| { *v = 2; *v }).unwrap(), 2);
+    /// assert_eq!(hashmap.read_sync(&1, |_, v| *v).unwrap(), 2);
     /// ```
     #[inline]
-    pub fn remove<Q>(&self, key: &Q) -> Option<(K, V)>
+    pub fn update_sync<Q, U, R>(&self, key: &Q, updater: U) -> Option<R>
     where
         Q: Equivalent<K> + Hash + ?Sized,
+        U: FnOnce(&K, &mut V) -> R,
     {
-        self.remove_if_sync(key, |_| true)
+        let hash = self.hash(key);
+        let guard = Guard::default();
+        self.optional_writer_sync(hash, &guard, |writer, data_block, _, _| {
+            let mut entry_ptr = writer.get_entry_ptr(data_block, key, hash, &guard);
+            if entry_ptr.is_valid() {
+                let (k, v) = entry_ptr.get_mut(data_block, &writer);
+                (Some(updater(k, v)), false)
+            } else {
+                (None, false)
+            }
+        })
+        .ok()
+        .flatten()
     }
 
     /// Removes a key-value pair if the key exists.
@@ -752,6 +729,29 @@ where
         Q: Equivalent<K> + Hash + ?Sized,
     {
         self.remove_if_async(key, |_| true).await
+    }
+
+    /// Removes a key-value pair if the key exists.
+    ///
+    /// Returns `None` if the key does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// assert!(hashmap.remove_sync(&1).is_none());
+    /// assert!(hashmap.insert_sync(1, 0).is_ok());
+    /// assert_eq!(hashmap.remove_sync(&1).unwrap(), (1, 0));
+    /// ```
+    #[inline]
+    pub fn remove_sync<Q>(&self, key: &Q) -> Option<(K, V)>
+    where
+        Q: Equivalent<K> + Hash + ?Sized,
+    {
+        self.remove_if_sync(key, |_| true)
     }
 
     /// Removes a key-value pair if the key exists and the given condition is met.
@@ -806,7 +806,7 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// assert!(hashmap.insert_sync(1, 0).is_ok());
     /// assert!(hashmap.remove_if_sync(&1, |v| { *v += 1; false }).is_none());
     /// assert_eq!(hashmap.remove_if_sync(&1, |v| *v == 1).unwrap(), (1, 1));
     /// ```
@@ -897,7 +897,7 @@ where
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// assert!(hashmap.get_sync(&1).is_none());
-    /// assert!(hashmap.insert(1, 10).is_ok());
+    /// assert!(hashmap.insert_sync(1, 10).is_ok());
     /// assert_eq!(*hashmap.get_sync(&1).unwrap().get(), 10);
     ///
     /// *hashmap.get_sync(&1).unwrap() = 11;
@@ -966,7 +966,7 @@ where
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// assert!(hashmap.read_sync(&1, |_, v| *v).is_none());
-    /// assert!(hashmap.insert(1, 10).is_ok());
+    /// assert!(hashmap.insert_sync(1, 10).is_ok());
     /// assert_eq!(hashmap.read_sync(&1, |_, v| *v).unwrap(), 10);
     /// ```
     #[inline]
@@ -1010,7 +1010,7 @@ where
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// assert!(!hashmap.contains_sync(&1));
-    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// assert!(hashmap.insert_sync(1, 0).is_ok());
     /// assert!(hashmap.contains_sync(&1));
     /// ```
     #[inline]
@@ -1032,7 +1032,7 @@ where
     ///
     /// let hashmap: HashMap<u64, u64> = HashMap::default();
     ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// assert!(hashmap.insert_sync(1, 0).is_ok());
     ///
     /// async {
     ///     let result = hashmap.iter_async(|k, v| {
@@ -1072,8 +1072,8 @@ where
     ///
     /// let hashmap: HashMap<u64, u64> = HashMap::default();
     ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.insert(2, 1).is_ok());
+    /// assert!(hashmap.insert_sync(1, 0).is_ok());
+    /// assert!(hashmap.insert_sync(2, 1).is_ok());
     ///
     /// let mut acc = 0_u64;
     /// let result = hashmap.iter_sync(|k, v| {
@@ -1114,8 +1114,8 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.insert(2, 1).is_ok());
+    /// assert!(hashmap.insert_sync(1, 0).is_ok());
+    /// assert!(hashmap.insert_sync(2, 1).is_ok());
     ///
     /// async {
     ///     let result = hashmap.iter_mut_async(|entry| {
@@ -1171,9 +1171,9 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.insert(2, 1).is_ok());
-    /// assert!(hashmap.insert(3, 2).is_ok());
+    /// assert!(hashmap.insert_sync(1, 0).is_ok());
+    /// assert!(hashmap.insert_sync(2, 1).is_ok());
+    /// assert!(hashmap.insert_sync(3, 2).is_ok());
     ///
     /// let result = hashmap.iter_mut_sync(|entry| {
     ///     if entry.0 == 1 {
@@ -1259,9 +1259,9 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.insert(2, 1).is_ok());
-    /// assert!(hashmap.insert(3, 2).is_ok());
+    /// assert!(hashmap.insert_sync(1, 0).is_ok());
+    /// assert!(hashmap.insert_sync(2, 1).is_ok());
+    /// assert!(hashmap.insert_sync(3, 2).is_ok());
     ///
     /// hashmap.retain_sync(|k, v| *k == 1 && *v == 0);
     ///
@@ -1308,7 +1308,7 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// assert!(hashmap.insert_sync(1, 0).is_ok());
     /// hashmap.clear_sync();
     ///
     /// assert!(!hashmap.contains_sync(&1));
@@ -1331,7 +1331,7 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// assert!(hashmap.insert_sync(1, 0).is_ok());
     /// assert_eq!(hashmap.len(), 1);
     /// ```
     #[inline]
@@ -1349,7 +1349,7 @@ where
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// assert!(hashmap.is_empty());
-    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// assert!(hashmap.insert_sync(1, 0).is_ok());
     /// assert!(!hashmap.is_empty());
     /// ```
     #[inline]
@@ -1367,7 +1367,7 @@ where
     /// let hashmap_default: HashMap<u64, u32> = HashMap::default();
     /// assert_eq!(hashmap_default.capacity(), 0);
     ///
-    /// assert!(hashmap_default.insert(1, 0).is_ok());
+    /// assert!(hashmap_default.insert_sync(1, 0).is_ok());
     /// assert_eq!(hashmap_default.capacity(), 64);
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::with_capacity(1000);
@@ -1474,7 +1474,7 @@ where
     fn clone(&self) -> Self {
         let self_clone = Self::with_capacity_and_hasher(self.capacity(), self.hasher().clone());
         self.iter_sync(|k, v| {
-            let _result = self_clone.insert(k.clone(), v.clone());
+            let _result = self_clone.insert_sync(k.clone(), v.clone());
             true
         });
         self_clone
@@ -1556,7 +1556,7 @@ where
             H::default(),
         );
         into_iter.for_each(|e| {
-            hashmap.upsert(e.0, e.1);
+            hashmap.upsert_sync(e.0, e.1);
         });
         hashmap
     }
@@ -1959,8 +1959,8 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.insert(2, 0).is_ok());
+    /// assert!(hashmap.insert_sync(1, 0).is_ok());
+    /// assert!(hashmap.insert_sync(2, 0).is_ok());
     ///
     /// let second_entry_future = hashmap.begin_sync().unwrap().remove_and_async();
     /// ```
@@ -1999,8 +1999,8 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.insert(2, 0).is_ok());
+    /// assert!(hashmap.insert_sync(1, 0).is_ok());
+    /// assert!(hashmap.insert_sync(2, 0).is_ok());
     ///
     /// let first_entry = hashmap.begin_sync().unwrap();
     /// let first_key = *first_entry.key();
@@ -2052,8 +2052,8 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.insert(2, 0).is_ok());
+    /// assert!(hashmap.insert_sync(1, 0).is_ok());
+    /// assert!(hashmap.insert_sync(2, 0).is_ok());
     ///
     /// let second_entry_future = hashmap.begin_sync().unwrap().next_async();
     /// ```
@@ -2083,8 +2083,8 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.insert(2, 0).is_ok());
+    /// assert!(hashmap.insert_sync(1, 0).is_ok());
+    /// assert!(hashmap.insert_sync(2, 0).is_ok());
     ///
     /// let first_entry = hashmap.begin_sync().unwrap();
     /// let first_key = *first_entry.key();
@@ -2246,9 +2246,9 @@ impl<K, V> ConsumableEntry<'_, '_, K, V> {
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.insert(2, 1).is_ok());
-    /// assert!(hashmap.insert(3, 2).is_ok());
+    /// assert!(hashmap.insert_sync(1, 0).is_ok());
+    /// assert!(hashmap.insert_sync(2, 1).is_ok());
+    /// assert!(hashmap.insert_sync(3, 2).is_ok());
     ///
     /// let mut consumed = None;
     ///

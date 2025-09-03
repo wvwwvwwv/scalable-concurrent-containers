@@ -9,9 +9,9 @@ fn single_threaded() {
     let hashindex: HashIndex<isize, isize> = HashIndex::new();
     for i in 1..workload_size {
         if i % 2 == 0 {
-            assert!(hashindex.insert(-i, i).is_ok());
+            assert!(hashindex.insert_sync(-i, i).is_ok());
         } else {
-            assert!(hashindex.insert(i, i).is_ok());
+            assert!(hashindex.insert_sync(i, i).is_ok());
         }
     }
     for i in 1..workload_size {
@@ -25,13 +25,13 @@ fn single_threaded() {
     }
     for i in 1..workload_size {
         if i % 2 == 0 {
-            assert!(!hashindex.remove(&i));
-            assert!(hashindex.remove(&-i));
-            assert!(!hashindex.remove(&-i));
+            assert!(!hashindex.remove_sync(&i));
+            assert!(hashindex.remove_sync(&-i));
+            assert!(!hashindex.remove_sync(&-i));
         } else {
-            assert!(!hashindex.remove(&-i));
-            assert!(hashindex.remove(&i));
-            assert!(!hashindex.remove(&i));
+            assert!(!hashindex.remove_sync(&-i));
+            assert!(hashindex.remove_sync(&i));
+            assert!(!hashindex.remove_sync(&i));
         }
     }
     assert!(hashindex.is_empty());
@@ -45,26 +45,26 @@ fn multi_threaded() {
     thread::scope(|s| {
         s.spawn(|| {
             for i in 1..workload_size {
-                assert!(hashindex.insert(i, i).is_ok());
+                assert!(hashindex.insert_sync(i, i).is_ok());
             }
             assert!(hashindex.peek_with(&0, |_, _| ()).is_none());
             for i in 1..workload_size {
                 assert!(hashindex.peek_with(&i, |_, _| ()).is_some());
             }
             for i in 1..workload_size {
-                assert!(hashindex.remove(&i));
+                assert!(hashindex.remove_sync(&i));
             }
         });
         s.spawn(|| {
             for i in 1..workload_size {
-                assert!(hashindex.insert(-i, i).is_ok());
+                assert!(hashindex.insert_sync(-i, i).is_ok());
             }
             assert!(hashindex.peek_with(&0, |_, _| ()).is_none());
             for i in 1..workload_size {
                 assert!(hashindex.peek_with(&-i, |_, _| ()).is_some());
             }
             for i in 1..workload_size {
-                assert!(hashindex.remove(&-i));
+                assert!(hashindex.remove_sync(&-i));
             }
         });
     });

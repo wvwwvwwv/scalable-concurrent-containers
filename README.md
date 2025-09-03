@@ -8,17 +8,11 @@ A collection of high-performance containers and utilities for concurrent and asy
 
 #### Features
 
-- Asynchronous counterparts of blocking and synchronous methods.
+- Asynchronous counterparts of synchronous methods where asynchronous methods are suffixed with `_async` and synchronous methods are suffixed with `_sync`.
 - [`Equivalent`](https://github.com/indexmap-rs/equivalent), [`Loom`](https://github.com/tokio-rs/loom) and [`Serde`](https://github.com/serde-rs/serde) support: `features = ["equivalent", "loom", "serde"]`.
 - Near-linear scalability.
 - No spin-locks and no busy loops.
 - SIMD lookup to scan multiple entries in parallel: require `RUSTFLAGS='-C target_feature=+avx2'` on `x86_64`.
-
-#### (WIP - 3.0) API naming conventions
-
-- Asynchronous methods are suffixed with `_async`.
-- Synchronous methods are suffixed with `_sync`.
-- Methods without `_async` and `_sync` suffixes are non-blocking.
 
 #### Concurrent and Asynchronous Containers
 
@@ -58,12 +52,12 @@ use scc::HashMap;
 
 let hashmap: HashMap<u64, u32> = HashMap::default();
 
-assert!(hashmap.insert(1, 0).is_ok());
-assert!(hashmap.insert(1, 1).is_err());
-assert_eq!(hashmap.upsert(1, 1).unwrap(), 0);
-assert_eq!(hashmap.update(&1, |_, v| { *v = 3; *v }).unwrap(), 3);
+assert!(hashmap.insert_sync(1, 0).is_ok());
+assert!(hashmap.insert_sync(1, 1).is_err());
+assert_eq!(hashmap.upsert_sync(1, 1).unwrap(), 0);
+assert_eq!(hashmap.update_sync(&1, |_, v| { *v = 3; *v }).unwrap(), 3);
 assert_eq!(hashmap.read_sync(&1, |_, v| *v).unwrap(), 3);
-assert_eq!(hashmap.remove(&1).unwrap(), (1, 3));
+assert_eq!(hashmap.remove_sync(&1).unwrap(), (1, 3));
 
 hashmap.entry_sync(7).or_insert(17);
 assert_eq!(hashmap.read_sync(&7, |_, v| *v).unwrap(), 17);
@@ -93,8 +87,8 @@ use scc::HashMap;
 
 let hashmap: HashMap<u64, u32> = HashMap::default();
 
-assert!(hashmap.insert(1, 0).is_ok());
-assert!(hashmap.insert(2, 1).is_ok());
+assert!(hashmap.insert_sync(1, 0).is_ok());
+assert!(hashmap.insert_sync(2, 1).is_ok());
 
 // Entries can be modified or removed via `retain_sync`.
 let mut acc = 0;
@@ -104,7 +98,7 @@ assert_eq!(hashmap.read_sync(&1, |_, v| *v).unwrap(), 2);
 assert_eq!(hashmap.read_sync(&2, |_, v| *v).unwrap(), 2);
 
 // `iter_sync` returns `true` when all the entries satisfy the predicate.
-assert!(hashmap.insert(3, 2).is_ok());
+assert!(hashmap.insert_sync(3, 2).is_ok());
 assert!(!hashmap.iter_sync(|k, _| *k == 3));
 
 // Multiple entries can be removed through `retain_sync`.
@@ -151,7 +145,7 @@ use scc::HashSet;
 let hashset: HashSet<u64> = HashSet::default();
 
 assert!(hashset.read_sync(&1, |_| true).is_none());
-assert!(hashset.insert(1).is_ok());
+assert!(hashset.insert_sync(1).is_ok());
 assert!(hashset.read_sync(&1, |_| true).unwrap());
 
 let future_insert = hashset.insert_async(2);
@@ -181,7 +175,7 @@ use scc::HashIndex;
 
 let hashindex: HashIndex<u64, u32> = HashIndex::default();
 
-assert!(hashindex.insert(1, 0).is_ok());
+assert!(hashindex.insert_sync(1, 0).is_ok());
 
 // `peek` and `peek_with` are lock-free.
 assert_eq!(hashindex.peek_with(&1, |_, v| *v).unwrap(), 0);
@@ -196,7 +190,7 @@ The `Entry` API of [`HashIndex`](#hashindex) can update an existing entry.
 use scc::HashIndex;
 
 let hashindex: HashIndex<u64, u32> = HashIndex::default();
-assert!(hashindex.insert(1, 1).is_ok());
+assert!(hashindex.insert_sync(1, 1).is_ok());
 
 if let Some(mut o) = hashindex.get_sync(&1) {
     // Create a new version of the entry.
@@ -216,7 +210,7 @@ use scc::{Guard, HashIndex};
 
 let hashindex: HashIndex<u64, u32> = HashIndex::default();
 
-assert!(hashindex.insert(1, 0).is_ok());
+assert!(hashindex.insert_sync(1, 0).is_ok());
 
 // Existing values can be replaced with a new one.
 hashindex.get_sync(&1).unwrap().update(1);
@@ -253,14 +247,14 @@ let hashcache: HashCache<u64, u32> = HashCache::with_capacity(100, 2000);
 assert_eq!(hashcache.capacity_range(), 128..=2048);
 
 /// If the bucket corresponding to `1` or `2` is full, the LRU entry will be evicted.
-assert!(hashcache.put(1, 0).is_ok());
-assert!(hashcache.put(2, 0).is_ok());
+assert!(hashcache.put_sync(1, 0).is_ok());
+assert!(hashcache.put_sync(2, 0).is_ok());
 
 /// `1` becomes the most recently accessed entry in the bucket.
 assert!(hashcache.get_sync(&1).is_some());
 
 /// An entry can be normally removed.
-assert_eq!(hashcache.remove(&2).unwrap(), (2, 0));
+assert_eq!(hashcache.remove_sync(&2).unwrap(), (2, 0));
 ```
 
 ## `TreeIndex`

@@ -106,7 +106,11 @@ mod hashmap {
     #[test]
     fn equivalent() {
         let hashmap: HashMap<EqTest, usize> = HashMap::default();
-        assert!(hashmap.insert(EqTest("HELLO".to_owned(), 1), 1).is_ok());
+        assert!(
+            hashmap
+                .insert_sync(EqTest("HELLO".to_owned(), 1), 1)
+                .is_ok()
+        );
         assert!(!hashmap.contains_sync("NO"));
         assert!(hashmap.contains_sync("HELLO"));
     }
@@ -134,7 +138,7 @@ mod hashmap {
         let hashmap: HashMap<usize, R> = HashMap::default();
         let workload_size = 256;
         for k in 0..workload_size {
-            assert!(hashmap.insert(k, R::new(&INST_CNT)).is_ok());
+            assert!(hashmap.insert_sync(k, R::new(&INST_CNT)).is_ok());
         }
         assert_eq!(INST_CNT.load(Relaxed), workload_size);
         assert_eq!(hashmap.len(), workload_size);
@@ -168,7 +172,7 @@ mod hashmap {
         let workload_size = 1_usize << 8;
         for _ in 0..2 {
             for k in 0..workload_size {
-                assert!(hashmap.insert(k, R::new(&INST_CNT)).is_ok());
+                assert!(hashmap.insert_sync(k, R::new(&INST_CNT)).is_ok());
             }
             assert_eq!(INST_CNT.load(Relaxed), workload_size);
             assert_eq!(hashmap.len(), workload_size);
@@ -182,7 +186,7 @@ mod hashmap {
         let hashmap = Arc::new(HashMap::<String, Vec<u8>>::new());
         let barrier = Arc::new(Barrier::new(2));
 
-        hashmap.insert("first".into(), vec![123]).unwrap();
+        hashmap.insert_sync("first".into(), vec![123]).unwrap();
 
         let hashmap_clone = hashmap.clone();
         let barrier_clone = barrier.clone();
@@ -202,7 +206,7 @@ mod hashmap {
         });
 
         barrier.wait();
-        assert!(hashmap.remove("first").is_some());
+        assert!(hashmap.remove_sync("first").is_some());
         assert!(task.join().is_ok());
     }
 
@@ -226,7 +230,7 @@ mod hashmap {
         let hashmap: HashMap<usize, R> = HashMap::default();
         let workload_size = 256;
         for k in 0..workload_size {
-            assert!(hashmap.insert(k, R::new(&INST_CNT)).is_ok());
+            assert!(hashmap.insert_sync(k, R::new(&INST_CNT)).is_ok());
         }
         let hashmap_clone = hashmap.clone();
         hashmap.clear_sync();
@@ -243,19 +247,19 @@ mod hashmap {
         let hashmap2: HashMap<String, usize> = HashMap::new();
         assert_eq!(hashmap1, hashmap2);
 
-        assert!(hashmap1.insert("Hi".to_string(), 1).is_ok());
+        assert!(hashmap1.insert_sync("Hi".to_string(), 1).is_ok());
         assert_ne!(hashmap1, hashmap2);
 
-        assert!(hashmap2.insert("Hello".to_string(), 2).is_ok());
+        assert!(hashmap2.insert_sync("Hello".to_string(), 2).is_ok());
         assert_ne!(hashmap1, hashmap2);
 
-        assert!(hashmap1.insert("Hello".to_string(), 2).is_ok());
+        assert!(hashmap1.insert_sync("Hello".to_string(), 2).is_ok());
         assert_ne!(hashmap1, hashmap2);
 
-        assert!(hashmap2.insert("Hi".to_string(), 1).is_ok());
+        assert!(hashmap2.insert_sync("Hi".to_string(), 1).is_ok());
         assert_eq!(hashmap1, hashmap2);
 
-        assert!(hashmap1.remove("Hi").is_some());
+        assert!(hashmap1.remove_sync("Hi").is_some());
         assert_ne!(hashmap1, hashmap2);
     }
 
@@ -270,21 +274,21 @@ mod hashmap {
         for i in 0..num_iter {
             let prop_str = "[a-z]{1,16}".new_tree(&mut runner).unwrap();
             let str_val = prop_str.current();
-            if hashmap1.insert(str_val.clone(), i).is_ok() {
+            if hashmap1.insert_sync(str_val.clone(), i).is_ok() {
                 checker1.insert((str_val.clone(), i));
             }
             let str_borrowed = str_val.as_str();
             assert!(hashmap1.contains_sync(str_borrowed));
             assert!(hashmap1.read_sync(str_borrowed, |_, _| ()).is_some());
 
-            if hashmap2.insert(i, str_val.clone()).is_ok() {
+            if hashmap2.insert_sync(i, str_val.clone()).is_ok() {
                 checker2.insert((i, str_val.clone()));
             }
         }
         assert_eq!(hashmap1.len(), checker1.len());
         assert_eq!(hashmap2.len(), checker2.len());
         for iter in checker1 {
-            let v = hashmap1.remove(iter.0.as_str());
+            let v = hashmap1.remove_sync(iter.0.as_str());
             assert_eq!(v.unwrap().1, iter.1);
         }
         for iter in checker2 {
@@ -318,7 +322,7 @@ mod hashmap {
         let hashmap: HashMap<usize, L> = HashMap::default();
 
         for k in 0..workload_size {
-            assert!(hashmap.insert(k, L::new(&cnt)).is_ok());
+            assert!(hashmap.insert_sync(k, L::new(&cnt)).is_ok());
         }
         hashmap.retain_sync(|k, _| {
             assert!(*k < workload_size);
@@ -327,7 +331,7 @@ mod hashmap {
         assert_eq!(cnt.load(Relaxed), workload_size);
 
         for k in 0..workload_size / 2 {
-            assert!(hashmap.remove(&k).is_some());
+            assert!(hashmap.remove_sync(&k).is_some());
         }
         hashmap.retain_sync(|k, _| {
             assert!(*k >= workload_size / 2);
@@ -389,11 +393,11 @@ mod hashmap {
                     barrier.wait();
                     let range = (thread_id * workload_size)..((thread_id + 1) * workload_size);
                     for id in range.clone() {
-                        let result = hashmap.insert(id, id);
+                        let result = hashmap.insert_sync(id, id);
                         assert!(result.is_ok());
                     }
                     for id in range.clone() {
-                        let result = hashmap.insert(id, id);
+                        let result = hashmap.insert_sync(id, id);
                         assert_eq!(result, Err((id, id)));
                     }
                 }));
@@ -567,7 +571,7 @@ mod hashmap {
                     barrier.wait();
                     let range = (thread_id * workload_size)..((thread_id + 1) * workload_size);
                     for id in range.clone() {
-                        let result = hashmap.insert(id, id);
+                        let result = hashmap.insert_sync(id, id);
                         assert!(result.is_ok());
                     }
                     for id in range.clone() {
@@ -685,11 +689,11 @@ mod hashmap {
                     barrier.wait();
                     let range = (thread_id * workload_size)..((thread_id + 1) * workload_size);
                     for id in range.clone() {
-                        let result = hashmap.insert(id, id);
+                        let result = hashmap.insert_sync(id, id);
                         assert!(result.is_ok());
                     }
                     for id in range.clone() {
-                        let result = hashmap.insert(id, id);
+                        let result = hashmap.insert_sync(id, id);
                         assert_eq!(result, Err((id, id)));
                     }
                     let mut iterated = 0;
@@ -794,7 +798,7 @@ mod hashmap {
                 if i == data_size / 2 {
                     barrier.wait().await;
                 }
-                assert!(hashmap.insert(i, i).is_ok());
+                assert!(hashmap.insert_sync(i, i).is_ok());
                 inserted.store(i, Release);
             }
 
@@ -804,7 +808,7 @@ mod hashmap {
                 if i == data_size / 2 {
                     barrier.wait().await;
                 }
-                assert!(hashmap.remove(&i).is_some());
+                assert!(hashmap.remove_sync(&i).is_some());
                 removed.store(i, Release);
             }
 
@@ -871,7 +875,7 @@ mod hashmap {
                     barrier.wait();
                     let range = (thread_id * workload_size)..((thread_id + 1) * workload_size);
                     for id in range.clone() {
-                        let result = hashmap.insert(id, id);
+                        let result = hashmap.insert_sync(id, id);
                         assert!(result.is_ok());
                     }
                     let mut removed = 0;
@@ -906,7 +910,7 @@ mod hashmap {
             for d in key..(key + range) {
                 assert!(
                     hashmap
-                        .insert(Data::new(d, checker.clone()), Data::new(d, checker.clone()))
+                        .insert_sync(Data::new(d, checker.clone()), Data::new(d, checker.clone()))
                         .is_ok()
                 );
                 *hashmap
@@ -918,7 +922,7 @@ mod hashmap {
             for d in (key + range)..(key + range + range) {
                 assert!(
                     hashmap
-                        .insert(Data::new(d, checker.clone()), Data::new(d, checker.clone()))
+                        .insert_sync(Data::new(d, checker.clone()), Data::new(d, checker.clone()))
                         .is_ok()
                 );
                 *hashmap
@@ -952,14 +956,14 @@ mod hashmap {
                 assert!(hashmap.contains_sync(&Data::new(d, checker.clone())));
             }
             for d in key..(key + range) {
-                assert!(hashmap.remove(&Data::new(d, checker.clone())).is_some());
+                assert!(hashmap.remove_sync(&Data::new(d, checker.clone())).is_some());
             }
             assert_eq!(checker.load(Relaxed), 0);
 
             for d in key..(key + range) {
                 assert!(
                     hashmap
-                        .insert(Data::new(d, checker.clone()), Data::new(d, checker.clone()))
+                        .insert_sync(Data::new(d, checker.clone()), Data::new(d, checker.clone()))
                         .is_ok()
                 );
                 *hashmap
@@ -973,7 +977,7 @@ mod hashmap {
             for d in key..(key + range) {
                 assert!(
                     hashmap
-                        .insert(Data::new(d, checker.clone()), Data::new(d, checker.clone()))
+                        .insert_sync(Data::new(d, checker.clone()), Data::new(d, checker.clone()))
                         .is_ok()
                 );
                 *hashmap
@@ -1051,7 +1055,11 @@ mod hashindex {
     #[test]
     fn equivalent() {
         let hashindex: HashIndex<EqTest, usize> = HashIndex::default();
-        assert!(hashindex.insert(EqTest("HELLO".to_owned(), 1), 1).is_ok());
+        assert!(
+            hashindex
+                .insert_sync(EqTest("HELLO".to_owned(), 1), 1)
+                .is_ok()
+        );
         assert!(!hashindex.contains("NO"));
         assert!(hashindex.contains("HELLO"));
     }
@@ -1062,19 +1070,19 @@ mod hashindex {
         let hashindex2: HashIndex<String, usize> = HashIndex::new();
         assert_eq!(hashindex1, hashindex2);
 
-        assert!(hashindex1.insert("Hi".to_string(), 1).is_ok());
+        assert!(hashindex1.insert_sync("Hi".to_string(), 1).is_ok());
         assert_ne!(hashindex1, hashindex2);
 
-        assert!(hashindex2.insert("Hello".to_string(), 2).is_ok());
+        assert!(hashindex2.insert_sync("Hello".to_string(), 2).is_ok());
         assert_ne!(hashindex1, hashindex2);
 
-        assert!(hashindex1.insert("Hello".to_string(), 2).is_ok());
+        assert!(hashindex1.insert_sync("Hello".to_string(), 2).is_ok());
         assert_ne!(hashindex1, hashindex2);
 
-        assert!(hashindex2.insert("Hi".to_string(), 1).is_ok());
+        assert!(hashindex2.insert_sync("Hi".to_string(), 1).is_ok());
         assert_eq!(hashindex1, hashindex2);
 
-        assert!(hashindex1.remove("Hi"));
+        assert!(hashindex1.remove_sync("Hi"));
         assert_ne!(hashindex1, hashindex2);
     }
 
@@ -1111,7 +1119,7 @@ mod hashindex {
 
         for _ in 0..2 {
             for k in 0..workload_size {
-                assert!(hashindex.insert(k, R::new(&INST_CNT)).is_ok());
+                assert!(hashindex.insert_sync(k, R::new(&INST_CNT)).is_ok());
             }
             assert!(INST_CNT.load(Relaxed) >= workload_size);
             assert_eq!(hashindex.len(), workload_size);
@@ -1150,7 +1158,7 @@ mod hashindex {
         let workload_size = 256;
 
         for k in 0..workload_size {
-            assert!(hashindex.insert(k, R::new(&INST_CNT)).is_ok());
+            assert!(hashindex.insert_sync(k, R::new(&INST_CNT)).is_ok());
         }
         let hashindex_clone = hashindex.clone();
         drop(hashindex);
@@ -1176,7 +1184,7 @@ mod hashindex {
         for i in 0..num_iter {
             let prop_str = "[a-z]{1,16}".new_tree(&mut runner).unwrap();
             let str_val = prop_str.current();
-            if hashindex1.insert(str_val.clone(), i).is_ok() {
+            if hashindex1.insert_sync(str_val.clone(), i).is_ok() {
                 checker1.insert((str_val.clone(), i));
             }
             let str_borrowed = str_val.as_str();
@@ -1185,17 +1193,17 @@ mod hashindex {
                 assert!(hashindex1.peek_with(str_borrowed, |_, _| ()).is_some());
             }
 
-            if hashindex2.insert(i, str_val.clone()).is_ok() {
+            if hashindex2.insert_sync(i, str_val.clone()).is_ok() {
                 checker2.insert((i, str_val.clone()));
             }
         }
         assert_eq!(hashindex1.len(), checker1.len());
         assert_eq!(hashindex2.len(), checker2.len());
         for iter in checker1 {
-            assert!(hashindex1.remove(iter.0.as_str()));
+            assert!(hashindex1.remove_sync(iter.0.as_str()));
         }
         for iter in checker2 {
-            assert!(hashindex2.remove(&iter.0));
+            assert!(hashindex2.remove_sync(&iter.0));
         }
         assert_eq!(hashindex1.len(), 0);
         assert_eq!(hashindex2.len(), 0);
@@ -1246,7 +1254,7 @@ mod hashindex {
         let workload_size = if cfg!(miri) { 1024 } else { 1024 * 1024 };
 
         for k in 0..num_threads {
-            assert!(hashindex.insert(k, k).is_ok());
+            assert!(hashindex.insert_sync(k, k).is_ok());
         }
 
         let mut threads = Vec::with_capacity(num_threads);
@@ -1258,10 +1266,10 @@ mod hashindex {
                 barrier.wait();
                 if task_id == 0 {
                     for k in num_threads..workload_size {
-                        assert!(hashindex.insert(k, k).is_ok());
+                        assert!(hashindex.insert_sync(k, k).is_ok());
                     }
                     for k in num_threads..workload_size {
-                        assert!(hashindex.remove(&k));
+                        assert!(hashindex.remove_sync(&k));
                     }
                 } else if !cfg!(miri) {
                     // See notes about `Miri` in `peek*`.
@@ -1341,7 +1349,7 @@ mod hashindex {
         let workload_size = 256;
 
         for k in 0..num_tasks * workload_size {
-            assert!(hashindex.insert(k, k).is_ok());
+            assert!(hashindex.insert_sync(k, k).is_ok());
         }
 
         let mut tasks = Vec::with_capacity(num_tasks);
@@ -1446,7 +1454,7 @@ mod hashindex {
                     barrier.wait();
                     let range = (thread_id * workload_size)..((thread_id + 1) * workload_size);
                     for id in range.clone() {
-                        let result = hashindex.insert(id, id);
+                        let result = hashindex.insert_sync(id, id);
                         assert!(result.is_ok());
                     }
                     for id in range.clone() {
@@ -1564,7 +1572,7 @@ mod hashindex {
                 if i == data_size / 2 {
                     barrier.wait().await;
                 }
-                assert!(hashindex.insert(i, i).is_ok());
+                assert!(hashindex.insert_sync(i, i).is_ok());
                 inserted.store(i, Release);
             }
 
@@ -1574,7 +1582,7 @@ mod hashindex {
                 if i == data_size / 2 {
                     barrier.wait().await;
                 }
-                assert!(hashindex.remove(&i));
+                assert!(hashindex.remove_sync(&i));
                 removed.store(i, Release);
             }
 
@@ -1642,7 +1650,7 @@ mod hashindex {
                     barrier.wait();
                     let range = (thread_id * workload_size)..((thread_id + 1) * workload_size);
                     for id in range.clone() {
-                        let result = hashindex.insert(id, id);
+                        let result = hashindex.insert_sync(id, id);
                         assert!(result.is_ok());
                         let entry = hashindex.get_sync(&id).unwrap();
                         assert_eq!(*entry.get(), id);
@@ -1770,7 +1778,7 @@ mod hashset {
     #[test]
     fn equivalent() {
         let hashset: HashSet<EqTest> = HashSet::default();
-        assert!(hashset.insert(EqTest("HELLO".to_owned(), 1)).is_ok());
+        assert!(hashset.insert_sync(EqTest("HELLO".to_owned(), 1)).is_ok());
         assert!(!hashset.contains_sync("NO"));
         assert!(hashset.contains_sync("HELLO"));
     }
@@ -1790,19 +1798,19 @@ mod hashset {
         let hashset2: HashSet<String> = HashSet::new();
         assert_eq!(hashset1, hashset2);
 
-        assert!(hashset1.insert("Hi".to_string()).is_ok());
+        assert!(hashset1.insert_sync("Hi".to_string()).is_ok());
         assert_ne!(hashset1, hashset2);
 
-        assert!(hashset2.insert("Hello".to_string()).is_ok());
+        assert!(hashset2.insert_sync("Hello".to_string()).is_ok());
         assert_ne!(hashset1, hashset2);
 
-        assert!(hashset1.insert("Hello".to_string()).is_ok());
+        assert!(hashset1.insert_sync("Hello".to_string()).is_ok());
         assert_ne!(hashset1, hashset2);
 
-        assert!(hashset2.insert("Hi".to_string()).is_ok());
+        assert!(hashset2.insert_sync("Hi".to_string()).is_ok());
         assert_eq!(hashset1, hashset2);
 
-        assert!(hashset1.remove("Hi").is_some());
+        assert!(hashset1.remove_sync("Hi").is_some());
         assert_ne!(hashset1, hashset2);
     }
 }
@@ -1868,7 +1876,7 @@ mod hashcache {
     #[test]
     fn equivalent() {
         let hashcache: HashCache<EqTest, usize> = HashCache::default();
-        assert!(hashcache.put(EqTest("HELLO".to_owned(), 1), 1).is_ok());
+        assert!(hashcache.put_sync(EqTest("HELLO".to_owned(), 1), 1).is_ok());
         assert!(!hashcache.contains_sync("NO"));
         assert!(hashcache.contains_sync("HELLO"));
     }
@@ -1880,7 +1888,7 @@ mod hashcache {
 
         let workload_size = 256;
         for k in 0..workload_size {
-            assert!(hashcache.put(k, R::new(&INST_CNT)).is_ok());
+            assert!(hashcache.put_sync(k, R::new(&INST_CNT)).is_ok());
         }
         assert!(INST_CNT.load(Relaxed) <= hashcache.capacity());
         drop(hashcache);
@@ -1910,7 +1918,7 @@ mod hashcache {
 
         let mut max_key = 0;
         for k in 0..=capacity {
-            if let Ok(Some(_)) = hashcache.put(k, R::new(&INST_CNT)) {
+            if let Ok(Some(_)) = hashcache.put_sync(k, R::new(&INST_CNT)) {
                 max_key = k;
                 break;
             }
@@ -1918,7 +1926,7 @@ mod hashcache {
 
         hashcache.clear_sync();
         for k in 0..=capacity {
-            if let Ok(Some(_)) = hashcache.put(k, R::new(&INST_CNT)) {
+            if let Ok(Some(_)) = hashcache.put_sync(k, R::new(&INST_CNT)) {
                 assert_eq!(max_key, k);
                 break;
             }
@@ -1971,7 +1979,7 @@ mod hashcache {
         let hashcache: HashCache<usize, R> = HashCache::with_capacity(0, 256);
 
         for k in 0..workload_size {
-            assert!(hashcache.put(k, R::new(&INST_CNT)).is_ok());
+            assert!(hashcache.put_sync(k, R::new(&INST_CNT)).is_ok());
         }
 
         hashcache.retain_sync(|k, _| *k <= retain_limit);
@@ -1981,7 +1989,7 @@ mod hashcache {
             }
         }
         for k in 0..workload_size {
-            if hashcache.put(k, R::new(&INST_CNT)).is_err() {
+            if hashcache.put_sync(k, R::new(&INST_CNT)).is_err() {
                 assert!(k <= retain_limit);
             }
         }
@@ -1993,7 +2001,7 @@ mod hashcache {
             }
         }
         for k in 0..workload_size {
-            if hashcache.put(k, R::new(&INST_CNT)).is_err() {
+            if hashcache.put_sync(k, R::new(&INST_CNT)).is_err() {
                 assert!(k > retain_limit);
             }
         }
@@ -2010,11 +2018,11 @@ mod hashcache {
         let hashcache = HashCache::<usize, R>::with_capacity(64, 64);
         for s in 0..16 {
             for k in s * 4..s * 4 + 4 {
-                assert!(hashcache.put(k, R::new(&INST_CNT)).is_ok());
+                assert!(hashcache.put_sync(k, R::new(&INST_CNT)).is_ok());
             }
             hashcache.retain_sync(|k, _| *k % 2 == 0);
             for k in s * 4..s * 4 + 4 {
-                if hashcache.put(k, R::new(&INST_CNT)).is_err() {
+                if hashcache.put_sync(k, R::new(&INST_CNT)).is_err() {
                     assert!(k % 2 == 0);
                 }
             }
@@ -2137,13 +2145,13 @@ mod hashcache {
         fn capacity(xs in 0_usize..256) {
             let hashcache: HashCache<usize, usize> = HashCache::with_capacity(0, 64);
             for k in 0..xs {
-                assert!(hashcache.put(k, k).is_ok());
+                assert!(hashcache.put_sync(k, k).is_ok());
             }
             assert!(hashcache.capacity() <= 64);
 
             let hashcache: HashCache<usize, usize> = HashCache::with_capacity(xs, xs * 2);
             for k in 0..xs {
-                assert!(hashcache.put(k, k).is_ok());
+                assert!(hashcache.put_sync(k, k).is_ok());
             }
             if xs == 0 {
                 assert_eq!(hashcache.capacity_range(), 0..=64);
@@ -3699,7 +3707,7 @@ mod malfunction {
             let result: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
                 assert!(
                     hashindex
-                        .insert(k as usize, R::new_panic_free_drop(&INST_CNT, &NEVER_PANIC))
+                        .insert_sync(k as usize, R::new_panic_free_drop(&INST_CNT, &NEVER_PANIC))
                         .is_ok()
                 );
             });
@@ -3725,7 +3733,7 @@ mod malfunction {
             let result: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
                 assert!(
                     hashcache
-                        .put(k as usize, R::new(&INST_CNT, &NEVER_PANIC))
+                        .put_sync(k as usize, R::new(&INST_CNT, &NEVER_PANIC))
                         .is_ok()
                 );
                 if let Some(mut o) = hashcache.get_sync(&(k as usize)) {

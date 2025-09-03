@@ -8,7 +8,7 @@ fn iter_with(c: &mut Criterion) {
         b.iter_custom(|iters| {
             let hashindex: HashIndex<u64, u64> = HashIndex::with_capacity(iters as usize * 2);
             for i in 0..iters {
-                assert!(hashindex.insert(i, i).is_ok());
+                assert!(hashindex.insert_sync(i, i).is_ok());
             }
             let start = Instant::now();
             let guard = Guard::new();
@@ -26,7 +26,7 @@ fn peek(c: &mut Criterion) {
         b.iter_custom(|iters| {
             let hashindex: HashIndex<u64, u64> = HashIndex::with_capacity(iters as usize * 2);
             for i in 0..iters {
-                assert!(hashindex.insert(i, i).is_ok());
+                assert!(hashindex.insert_sync(i, i).is_ok());
             }
             let start = Instant::now();
             let guard = Guard::new();
@@ -43,7 +43,7 @@ fn peek_with(c: &mut Criterion) {
         b.iter_custom(|iters| {
             let hashindex: HashIndex<u64, u64> = HashIndex::with_capacity(iters as usize * 2);
             for i in 0..iters {
-                assert!(hashindex.insert(i, i).is_ok());
+                assert!(hashindex.insert_sync(i, i).is_ok());
             }
             let start = Instant::now();
             for i in 0..iters {
