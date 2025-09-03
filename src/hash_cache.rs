@@ -195,49 +195,6 @@ where
 {
     /// Gets the entry associated with the given key in the map for in-place manipulation.
     ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashCache;
-    ///
-    /// let hashcache: HashCache<char, u32> = HashCache::default();
-    ///
-    /// for ch in "a short treatise on fungi".chars() {
-    ///     hashcache.entry(ch).and_modify(|counter| *counter += 1).or_put(1);
-    /// }
-    ///
-    /// assert_eq!(*hashcache.get(&'s').unwrap().get(), 2);
-    /// assert_eq!(*hashcache.get(&'t').unwrap().get(), 3);
-    /// assert!(hashcache.get(&'y').is_none());
-    /// ```
-    #[inline]
-    pub fn entry(&self, key: K) -> Entry<'_, K, V, H> {
-        let hash = self.hash(&key);
-        let guard = Guard::new();
-        self.writer_sync(hash, &guard, |writer, data_block, index, len| {
-            let entry_ptr = writer.get_entry_ptr(data_block, &key, hash, &guard);
-            let locked_entry =
-                LockedEntry::new(writer, data_block, entry_ptr.clone(), index, len, &guard)
-                    .prolong_lifetime(self);
-            if entry_ptr.is_valid() {
-                Entry::Occupied(OccupiedEntry {
-                    hashcache: self,
-                    locked_entry,
-                })
-            } else {
-                let vacant_entry = VacantEntry {
-                    hashcache: self,
-                    key,
-                    hash,
-                    locked_entry,
-                };
-                Entry::Vacant(vacant_entry)
-            }
-        })
-    }
-
-    /// Gets the entry associated with the given key in the map for in-place manipulation.
-    ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
@@ -275,6 +232,49 @@ where
             }
         })
         .await
+    }
+
+    /// Gets the entry associated with the given key in the map for in-place manipulation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<char, u32> = HashCache::default();
+    ///
+    /// for ch in "a short treatise on fungi".chars() {
+    ///     hashcache.entry_sync(ch).and_modify(|counter| *counter += 1).or_put(1);
+    /// }
+    ///
+    /// assert_eq!(*hashcache.get(&'s').unwrap().get(), 2);
+    /// assert_eq!(*hashcache.get(&'t').unwrap().get(), 3);
+    /// assert!(hashcache.get(&'y').is_none());
+    /// ```
+    #[inline]
+    pub fn entry_sync(&self, key: K) -> Entry<'_, K, V, H> {
+        let hash = self.hash(&key);
+        let guard = Guard::new();
+        self.writer_sync(hash, &guard, |writer, data_block, index, len| {
+            let entry_ptr = writer.get_entry_ptr(data_block, &key, hash, &guard);
+            let locked_entry =
+                LockedEntry::new(writer, data_block, entry_ptr.clone(), index, len, &guard)
+                    .prolong_lifetime(self);
+            if entry_ptr.is_valid() {
+                Entry::Occupied(OccupiedEntry {
+                    hashcache: self,
+                    locked_entry,
+                })
+            } else {
+                let vacant_entry = VacantEntry {
+                    hashcache: self,
+                    key,
+                    hash,
+                    locked_entry,
+                };
+                Entry::Vacant(vacant_entry)
+            }
+        })
     }
 
     /// Tries to get the entry associated with the given key in the map for in-place manipulation.
@@ -1261,7 +1261,7 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// hashcache.entry(3).or_put(7);
+    /// hashcache.entry_sync(3).or_put(7);
     /// assert_eq!(*hashcache.get(&3).unwrap().get(), 7);
     /// ```
     #[inline]
@@ -1278,7 +1278,7 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// hashcache.entry(19).or_put_with(|| 5);
+    /// hashcache.entry_sync(19).or_put_with(|| 5);
     /// assert_eq!(*hashcache.get(&19).unwrap().get(), 5);
     /// ```
     #[inline]
@@ -1301,7 +1301,7 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// hashcache.entry(11).or_put_with_key(|k| if *k == 11 { 7 } else { 3 });
+    /// hashcache.entry_sync(11).or_put_with_key(|k| if *k == 11 { 7 } else { 3 });
     /// assert_eq!(*hashcache.get(&11).unwrap().get(), 7);
     /// ```
     #[inline]
@@ -1326,7 +1326,7 @@ where
     /// use scc::HashCache;
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
-    /// assert_eq!(hashcache.entry(31).key(), &31);
+    /// assert_eq!(hashcache.entry_sync(31).key(), &31);
     /// ```
     #[inline]
     pub fn key(&self) -> &K {
@@ -1345,10 +1345,10 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// hashcache.entry(37).and_modify(|v| { *v += 1 }).or_put(47);
+    /// hashcache.entry_sync(37).and_modify(|v| { *v += 1 }).or_put(47);
     /// assert_eq!(*hashcache.get(&37).unwrap().get(), 47);
     ///
-    /// hashcache.entry(37).and_modify(|v| { *v += 1 }).or_put(3);
+    /// hashcache.entry_sync(37).and_modify(|v| { *v += 1 }).or_put(3);
     /// assert_eq!(*hashcache.get(&37).unwrap().get(), 48);
     /// ```
     #[inline]
@@ -1374,7 +1374,7 @@ where
     /// use scc::HashCache;
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
-    /// let entry = hashcache.entry(11).put_entry(17).1;
+    /// let entry = hashcache.entry_sync(11).put_entry(17).1;
     /// assert_eq!(entry.key(), &11);
     /// ```
     #[inline]
@@ -1403,7 +1403,7 @@ where
     /// use scc::HashCache;
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
-    /// hashcache.entry(11).or_default();
+    /// hashcache.entry_sync(11).or_default();
     /// assert_eq!(*hashcache.get(&11).unwrap().get(), 0);
     /// ```
     #[inline]
@@ -1444,7 +1444,7 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// assert_eq!(hashcache.entry(29).or_default().1.key(), &29);
+    /// assert_eq!(hashcache.entry_sync(29).or_default().1.key(), &29);
     /// ```
     #[inline]
     #[must_use]
@@ -1466,9 +1466,9 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// hashcache.entry(11).or_put(17);
+    /// hashcache.entry_sync(11).or_put(17);
     ///
-    /// if let Entry::Occupied(o) = hashcache.entry(11) {
+    /// if let Entry::Occupied(o) = hashcache.entry_sync(11) {
     ///     assert_eq!(o.remove_entry(), (11, 17));
     /// };
     /// ```
@@ -1506,9 +1506,9 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// hashcache.entry(19).or_put(11);
+    /// hashcache.entry_sync(19).or_put(11);
     ///
-    /// if let Entry::Occupied(o) = hashcache.entry(19) {
+    /// if let Entry::Occupied(o) = hashcache.entry_sync(19) {
     ///     assert_eq!(o.get(), &11);
     /// };
     /// ```
@@ -1532,9 +1532,9 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// hashcache.entry(37).or_put(11);
+    /// hashcache.entry_sync(37).or_put(11);
     ///
-    /// if let Entry::Occupied(mut o) = hashcache.entry(37) {
+    /// if let Entry::Occupied(mut o) = hashcache.entry_sync(37) {
     ///     *o.get_mut() += 18;
     ///     assert_eq!(*o.get(), 29);
     /// }
@@ -1560,9 +1560,9 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// hashcache.entry(37).or_put(11);
+    /// hashcache.entry_sync(37).or_put(11);
     ///
-    /// if let Entry::Occupied(mut o) = hashcache.entry(37) {
+    /// if let Entry::Occupied(mut o) = hashcache.entry_sync(37) {
     ///     assert_eq!(o.put(17), 11);
     /// }
     ///
@@ -1583,9 +1583,9 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// hashcache.entry(11).or_put(17);
+    /// hashcache.entry_sync(11).or_put(17);
     ///
-    /// if let Entry::Occupied(o) = hashcache.entry(11) {
+    /// if let Entry::Occupied(o) = hashcache.entry_sync(11) {
     ///     assert_eq!(o.remove(), 17);
     /// };
     /// ```
@@ -1648,7 +1648,7 @@ where
     /// use scc::HashCache;
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
-    /// assert_eq!(hashcache.entry(11).key(), &11);
+    /// assert_eq!(hashcache.entry_sync(11).key(), &11);
     /// ```
     #[inline]
     pub fn key(&self) -> &K {
@@ -1665,7 +1665,7 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// if let Entry::Vacant(v) = hashcache.entry(17) {
+    /// if let Entry::Vacant(v) = hashcache.entry_sync(17) {
     ///     assert_eq!(v.into_key(), 17);
     /// };
     /// ```
@@ -1686,7 +1686,7 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// if let Entry::Vacant(o) = hashcache.entry(19) {
+    /// if let Entry::Vacant(o) = hashcache.entry_sync(19) {
     ///     o.put_entry(29);
     /// }
     ///

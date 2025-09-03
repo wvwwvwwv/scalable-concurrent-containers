@@ -270,49 +270,6 @@ where
 
     /// Gets the entry associated with the given key in the map for in-place manipulation.
     ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashMap;
-    ///
-    /// let hashmap: HashMap<char, u32> = HashMap::default();
-    ///
-    /// for ch in "a short treatise on fungi".chars() {
-    ///     hashmap.entry(ch).and_modify(|counter| *counter += 1).or_insert(1);
-    /// }
-    ///
-    /// assert_eq!(hashmap.read(&'s', |_, v| *v), Some(2));
-    /// assert_eq!(hashmap.read(&'t', |_, v| *v), Some(3));
-    /// assert!(hashmap.read(&'y', |_, v| *v).is_none());
-    /// ```
-    #[inline]
-    pub fn entry(&self, key: K) -> Entry<'_, K, V, H> {
-        let hash = self.hash(&key);
-        let guard = Guard::new();
-        self.writer_sync(hash, &guard, |writer, data_block, index, len| {
-            let entry_ptr = writer.get_entry_ptr(data_block, &key, hash, &guard);
-            let locked_entry =
-                LockedEntry::new(writer, data_block, entry_ptr.clone(), index, len, &guard)
-                    .prolong_lifetime(self);
-            if entry_ptr.is_valid() {
-                Entry::Occupied(OccupiedEntry {
-                    hashmap: self,
-                    locked_entry,
-                })
-            } else {
-                let vacant_entry = VacantEntry {
-                    hashmap: self,
-                    key,
-                    hash,
-                    locked_entry,
-                };
-                Entry::Vacant(vacant_entry)
-            }
-        })
-    }
-
-    /// Gets the entry associated with the given key in the map for in-place manipulation.
-    ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
@@ -350,6 +307,49 @@ where
             }
         })
         .await
+    }
+
+    /// Gets the entry associated with the given key in the map for in-place manipulation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<char, u32> = HashMap::default();
+    ///
+    /// for ch in "a short treatise on fungi".chars() {
+    ///     hashmap.entry_sync(ch).and_modify(|counter| *counter += 1).or_insert(1);
+    /// }
+    ///
+    /// assert_eq!(hashmap.read(&'s', |_, v| *v), Some(2));
+    /// assert_eq!(hashmap.read(&'t', |_, v| *v), Some(3));
+    /// assert!(hashmap.read(&'y', |_, v| *v).is_none());
+    /// ```
+    #[inline]
+    pub fn entry_sync(&self, key: K) -> Entry<'_, K, V, H> {
+        let hash = self.hash(&key);
+        let guard = Guard::new();
+        self.writer_sync(hash, &guard, |writer, data_block, index, len| {
+            let entry_ptr = writer.get_entry_ptr(data_block, &key, hash, &guard);
+            let locked_entry =
+                LockedEntry::new(writer, data_block, entry_ptr.clone(), index, len, &guard)
+                    .prolong_lifetime(self);
+            if entry_ptr.is_valid() {
+                Entry::Occupied(OccupiedEntry {
+                    hashmap: self,
+                    locked_entry,
+                })
+            } else {
+                let vacant_entry = VacantEntry {
+                    hashmap: self,
+                    key,
+                    hash,
+                    locked_entry,
+                };
+                Entry::Vacant(vacant_entry)
+            }
+        })
     }
 
     /// Tries to get the entry associated with the given key in the map for in-place manipulation.
@@ -403,7 +403,7 @@ where
     /// let mut first_entry = hashmap.first_entry().unwrap();
     /// *first_entry.get_mut() = 2;
     ///
-    /// assert!(first_entry.next().is_none());
+    /// assert!(first_entry.next_sync().is_none());
     /// assert_eq!(hashmap.read(&1, |_, v| *v), Some(2));
     /// ```
     #[inline]
@@ -607,7 +607,7 @@ where
     /// ```
     #[inline]
     pub fn upsert(&self, key: K, val: V) -> Option<V> {
-        match self.entry(key) {
+        match self.entry_sync(key) {
             Entry::Occupied(mut o) => Some(replace(o.get_mut(), val)),
             Entry::Vacant(v) => {
                 v.insert_entry(val);
@@ -1622,7 +1622,7 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// hashmap.entry(3).or_insert(7);
+    /// hashmap.entry_sync(3).or_insert(7);
     /// assert_eq!(hashmap.read(&3, |_, v| *v), Some(7));
     /// ```
     #[inline]
@@ -1639,7 +1639,7 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// hashmap.entry(19).or_insert_with(|| 5);
+    /// hashmap.entry_sync(19).or_insert_with(|| 5);
     /// assert_eq!(hashmap.read(&19, |_, v| *v), Some(5));
     /// ```
     #[inline]
@@ -1659,7 +1659,7 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// hashmap.entry(11).or_insert_with_key(|k| if *k == 11 { 7 } else { 3 });
+    /// hashmap.entry_sync(11).or_insert_with_key(|k| if *k == 11 { 7 } else { 3 });
     /// assert_eq!(hashmap.read(&11, |_, v| *v), Some(7));
     /// ```
     #[inline]
@@ -1684,7 +1684,7 @@ where
     /// use scc::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    /// assert_eq!(hashmap.entry(31).key(), &31);
+    /// assert_eq!(hashmap.entry_sync(31).key(), &31);
     /// ```
     #[inline]
     pub fn key(&self) -> &K {
@@ -1703,10 +1703,10 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// hashmap.entry(37).and_modify(|v| { *v += 1 }).or_insert(47);
+    /// hashmap.entry_sync(37).and_modify(|v| { *v += 1 }).or_insert(47);
     /// assert_eq!(hashmap.read(&37, |_, v| *v), Some(47));
     ///
-    /// hashmap.entry(37).and_modify(|v| { *v += 1 }).or_insert(3);
+    /// hashmap.entry_sync(37).and_modify(|v| { *v += 1 }).or_insert(3);
     /// assert_eq!(hashmap.read(&37, |_, v| *v), Some(48));
     /// ```
     #[inline]
@@ -1732,7 +1732,7 @@ where
     /// use scc::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    /// let entry = hashmap.entry(11).insert_entry(17);
+    /// let entry = hashmap.entry_sync(11).insert_entry(17);
     /// assert_eq!(entry.key(), &11);
     /// ```
     #[inline]
@@ -1761,7 +1761,7 @@ where
     /// use scc::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    /// hashmap.entry(11).or_default();
+    /// hashmap.entry_sync(11).or_default();
     /// assert_eq!(hashmap.read(&11, |_, v| *v), Some(0));
     /// ```
     #[inline]
@@ -1802,7 +1802,7 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// assert_eq!(hashmap.entry(29).or_default().key(), &29);
+    /// assert_eq!(hashmap.entry_sync(29).or_default().key(), &29);
     /// ```
     #[inline]
     #[must_use]
@@ -1824,9 +1824,9 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// hashmap.entry(11).or_insert(17);
+    /// hashmap.entry_sync(11).or_insert(17);
     ///
-    /// if let Entry::Occupied(o) = hashmap.entry(11) {
+    /// if let Entry::Occupied(o) = hashmap.entry_sync(11) {
     ///     assert_eq!(o.remove_entry(), (11, 17));
     /// };
     /// ```
@@ -1856,9 +1856,9 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// hashmap.entry(19).or_insert(11);
+    /// hashmap.entry_sync(19).or_insert(11);
     ///
-    /// if let Entry::Occupied(o) = hashmap.entry(19) {
+    /// if let Entry::Occupied(o) = hashmap.entry_sync(19) {
     ///     assert_eq!(o.get(), &11);
     /// };
     /// ```
@@ -1882,9 +1882,9 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// hashmap.entry(37).or_insert(11);
+    /// hashmap.entry_sync(37).or_insert(11);
     ///
-    /// if let Entry::Occupied(mut o) = hashmap.entry(37) {
+    /// if let Entry::Occupied(mut o) = hashmap.entry_sync(37) {
     ///     *o.get_mut() += 18;
     ///     assert_eq!(*o.get(), 29);
     /// }
@@ -1910,9 +1910,9 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// hashmap.entry(37).or_insert(11);
+    /// hashmap.entry_sync(37).or_insert(11);
     ///
-    /// if let Entry::Occupied(mut o) = hashmap.entry(37) {
+    /// if let Entry::Occupied(mut o) = hashmap.entry_sync(37) {
     ///     assert_eq!(o.insert(17), 11);
     /// }
     ///
@@ -1933,9 +1933,9 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// hashmap.entry(11).or_insert(17);
+    /// hashmap.entry_sync(11).or_insert(17);
     ///
-    /// if let Entry::Occupied(o) = hashmap.entry(11) {
+    /// if let Entry::Occupied(o) = hashmap.entry_sync(11) {
     ///     assert_eq!(o.remove(), 17);
     /// };
     /// ```
@@ -1943,45 +1943,6 @@ where
     #[must_use]
     pub fn remove(self) -> V {
         self.remove_entry().1
-    }
-
-    /// Gets the next closest occupied entry.
-    ///
-    /// [`HashMap::first_entry`], [`HashMap::first_entry_async`], and this method together enables
-    /// the [`OccupiedEntry`] to effectively act as a mutable iterator over entries. The method
-    /// never acquires more than one lock even when it searches other buckets for the next closest
-    /// occupied entry.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashMap;
-    /// use scc::hash_map::Entry;
-    ///
-    /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    ///
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.insert(2, 0).is_ok());
-    ///
-    /// let first_entry = hashmap.first_entry().unwrap();
-    /// let first_key = *first_entry.key();
-    /// let second_entry = first_entry.next().unwrap();
-    /// let second_key = *second_entry.key();
-    ///
-    /// assert!(second_entry.next().is_none());
-    /// assert_eq!(first_key + second_key, 3);
-    /// ```
-    #[inline]
-    #[must_use]
-    pub fn next(self) -> Option<Self> {
-        let hashmap = self.hashmap;
-        if let Some(locked_entry) = self.locked_entry.next_sync(hashmap) {
-            return Some(OccupiedEntry {
-                hashmap,
-                locked_entry,
-            });
-        }
-        None
     }
 
     /// Gets the next closest occupied entry.
@@ -2010,6 +1971,45 @@ where
     pub async fn next_async(self) -> Option<OccupiedEntry<'h, K, V, H>> {
         let hashmap = self.hashmap;
         if let Some(locked_entry) = self.locked_entry.next_async(hashmap).await {
+            return Some(OccupiedEntry {
+                hashmap,
+                locked_entry,
+            });
+        }
+        None
+    }
+
+    /// Gets the next closest occupied entry.
+    ///
+    /// [`HashMap::first_entry`], [`HashMap::first_entry_async`], and this method together enables
+    /// the [`OccupiedEntry`] to effectively act as a mutable iterator over entries. The method
+    /// never acquires more than one lock even when it searches other buckets for the next closest
+    /// occupied entry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    /// use scc::hash_map::Entry;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// assert!(hashmap.insert(2, 0).is_ok());
+    ///
+    /// let first_entry = hashmap.first_entry().unwrap();
+    /// let first_key = *first_entry.key();
+    /// let second_entry = first_entry.next_sync().unwrap();
+    /// let second_key = *second_entry.key();
+    ///
+    /// assert!(second_entry.next_sync().is_none());
+    /// assert_eq!(first_key + second_key, 3);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn next_sync(self) -> Option<Self> {
+        let hashmap = self.hashmap;
+        if let Some(locked_entry) = self.locked_entry.next_sync(hashmap) {
             return Some(OccupiedEntry {
                 hashmap,
                 locked_entry,
@@ -2166,7 +2166,7 @@ where
     /// use scc::HashMap;
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    /// assert_eq!(hashmap.entry(11).key(), &11);
+    /// assert_eq!(hashmap.entry_sync(11).key(), &11);
     /// ```
     #[inline]
     pub fn key(&self) -> &K {
@@ -2183,7 +2183,7 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// if let Entry::Vacant(v) = hashmap.entry(17) {
+    /// if let Entry::Vacant(v) = hashmap.entry_sync(17) {
     ///     assert_eq!(v.into_key(), 17);
     /// };
     /// ```
@@ -2202,7 +2202,7 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// if let Entry::Vacant(o) = hashmap.entry(19) {
+    /// if let Entry::Vacant(o) = hashmap.entry_sync(19) {
     ///     o.insert_entry(29);
     /// }
     ///

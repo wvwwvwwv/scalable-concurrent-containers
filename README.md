@@ -65,7 +65,7 @@ assert_eq!(hashmap.update(&1, |_, v| { *v = 3; *v }).unwrap(), 3);
 assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 3);
 assert_eq!(hashmap.remove(&1).unwrap(), (1, 3));
 
-hashmap.entry(7).or_insert(17);
+hashmap.entry_sync(7).or_insert(17);
 assert_eq!(hashmap.read(&7, |_, v| *v).unwrap(), 17);
 
 let future_insert = hashmap.insert_async(2, 1);
@@ -79,14 +79,14 @@ use scc::HashMap;
 
 let hashmap: HashMap<u64, u32> = HashMap::default();
 
-hashmap.entry(3).or_insert(7);
+hashmap.entry_sync(3).or_insert(7);
 assert_eq!(hashmap.read(&3, |_, v| *v), Some(7));
 
-hashmap.entry(4).and_modify(|v| { *v += 1 }).or_insert(5);
+hashmap.entry_sync(4).and_modify(|v| { *v += 1 }).or_insert(5);
 assert_eq!(hashmap.read(&4, |_, v| *v), Some(5));
 ```
 
-[`HashMap`](#hashmap) does not provide an [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) since it is impossible to confine the lifetime of [`Iterator::Item`](https://doc.rust-lang.org/std/iter/trait.Iterator.html#associatedtype.Item) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html). The limitation can be circumvented by relying on interior mutability, e.g., letting the returned reference hold a lock. However, it may lead to a deadlock if not correctly used, and frequent acquisition of locks may impact performance. Therefore, [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented; instead, [`HashMap`](#hashmap) provides several methods to iterate over entries synchronously or asynchronously: `iter_{async|sync}`, `iter_mut_{async|sync}`, `first_entry`, `first_entry_async`, `retain`, `retain_async`, `OccupiedEntry::next`, and `OccupiedEntry::next_async`.
+[`HashMap`](#hashmap) does not provide an [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) since it is impossible to confine the lifetime of [`Iterator::Item`](https://doc.rust-lang.org/std/iter/trait.Iterator.html#associatedtype.Item) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html). The limitation can be circumvented by relying on interior mutability, e.g., letting the returned reference hold a lock. However, it may lead to a deadlock if not correctly used, and frequent acquisition of locks may impact performance. Therefore, [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented; instead, [`HashMap`](#hashmap) provides several methods to iterate over entries synchronously or asynchronously: `iter_{async|sync}`, `iter_mut_{async|sync}`, `first_entry`, `first_entry_async`, `retain`, `retain_async`, `OccupiedEntry::next_{async|sync}`, and `OccupiedEntry::remove_and_{async|sync}`
 
 ```rust
 use scc::HashMap;
@@ -113,7 +113,7 @@ hashmap.retain(|k, v| *k == 1 && *v == 2);
 // `hash_map::OccupiedEntry` also can return the next closest occupied entry.
 let first_entry = hashmap.first_entry();
 assert_eq!(*first_entry.as_ref().unwrap().key(), 1);
-let second_entry = first_entry.and_then(|e| e.next());
+let second_entry = first_entry.and_then(|e| e.next_sync());
 assert!(second_entry.is_none());
 
 fn is_send<T: Send>(f: &T) -> bool {

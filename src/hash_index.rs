@@ -244,51 +244,6 @@ where
 
     /// Gets the entry associated with the given key in the map for in-place manipulation.
     ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashIndex;
-    ///
-    /// let hashindex: HashIndex<char, u32> = HashIndex::default();
-    ///
-    /// for ch in "a short treatise on fungi".chars() {
-    ///     unsafe {
-    ///         hashindex.entry(ch).and_modify(|counter| *counter += 1).or_insert(1);
-    ///     }
-    /// }
-    ///
-    /// assert_eq!(hashindex.peek_with(&'s', |_, v| *v), Some(2));
-    /// assert_eq!(hashindex.peek_with(&'t', |_, v| *v), Some(3));
-    /// assert!(hashindex.peek_with(&'y', |_, v| *v).is_none());
-    /// ```
-    #[inline]
-    pub fn entry(&self, key: K) -> Entry<'_, K, V, H> {
-        let hash = self.hash(&key);
-        let guard = Guard::new();
-        self.writer_sync(hash, &guard, |writer, data_block, index, len| {
-            let entry_ptr = writer.get_entry_ptr(data_block, &key, hash, &guard);
-            let locked_entry =
-                LockedEntry::new(writer, data_block, entry_ptr.clone(), index, len, &guard)
-                    .prolong_lifetime(self);
-            if entry_ptr.is_valid() {
-                Entry::Occupied(OccupiedEntry {
-                    hashindex: self,
-                    locked_entry,
-                })
-            } else {
-                let vacant_entry = VacantEntry {
-                    hashindex: self,
-                    key,
-                    hash,
-                    locked_entry,
-                };
-                Entry::Vacant(vacant_entry)
-            }
-        })
-    }
-
-    /// Gets the entry associated with the given key in the map for in-place manipulation.
-    ///
     /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
@@ -326,6 +281,51 @@ where
             }
         })
         .await
+    }
+
+    /// Gets the entry associated with the given key in the map for in-place manipulation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    ///
+    /// let hashindex: HashIndex<char, u32> = HashIndex::default();
+    ///
+    /// for ch in "a short treatise on fungi".chars() {
+    ///     unsafe {
+    ///         hashindex.entry_sync(ch).and_modify(|counter| *counter += 1).or_insert(1);
+    ///     }
+    /// }
+    ///
+    /// assert_eq!(hashindex.peek_with(&'s', |_, v| *v), Some(2));
+    /// assert_eq!(hashindex.peek_with(&'t', |_, v| *v), Some(3));
+    /// assert!(hashindex.peek_with(&'y', |_, v| *v).is_none());
+    /// ```
+    #[inline]
+    pub fn entry_sync(&self, key: K) -> Entry<'_, K, V, H> {
+        let hash = self.hash(&key);
+        let guard = Guard::new();
+        self.writer_sync(hash, &guard, |writer, data_block, index, len| {
+            let entry_ptr = writer.get_entry_ptr(data_block, &key, hash, &guard);
+            let locked_entry =
+                LockedEntry::new(writer, data_block, entry_ptr.clone(), index, len, &guard)
+                    .prolong_lifetime(self);
+            if entry_ptr.is_valid() {
+                Entry::Occupied(OccupiedEntry {
+                    hashindex: self,
+                    locked_entry,
+                })
+            } else {
+                let vacant_entry = VacantEntry {
+                    hashindex: self,
+                    key,
+                    hash,
+                    locked_entry,
+                };
+                Entry::Vacant(vacant_entry)
+            }
+        })
     }
 
     /// Tries to get the entry associated with the given key in the map for in-place manipulation.
@@ -381,7 +381,7 @@ where
     ///     *first_entry.get_mut() = 2;
     /// }
     ///
-    /// assert!(first_entry.next().is_none());
+    /// assert!(first_entry.next_sync().is_none());
     /// assert_eq!(hashindex.peek_with(&1, |_, v| *v), Some(2));
     /// ```
     #[inline]
@@ -1393,7 +1393,7 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// hashindex.entry(3).or_insert(7);
+    /// hashindex.entry_sync(3).or_insert(7);
     /// assert_eq!(hashindex.peek_with(&3, |_, v| *v), Some(7));
     /// ```
     #[inline]
@@ -1410,7 +1410,7 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// hashindex.entry(19).or_insert_with(|| 5);
+    /// hashindex.entry_sync(19).or_insert_with(|| 5);
     /// assert_eq!(hashindex.peek_with(&19, |_, v| *v), Some(5));
     /// ```
     #[inline]
@@ -1430,7 +1430,7 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// hashindex.entry(11).or_insert_with_key(|k| if *k == 11 { 7 } else { 3 });
+    /// hashindex.entry_sync(11).or_insert_with_key(|k| if *k == 11 { 7 } else { 3 });
     /// assert_eq!(hashindex.peek_with(&11, |_, v| *v), Some(7));
     /// ```
     #[inline]
@@ -1455,7 +1455,7 @@ where
     /// use scc::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
-    /// assert_eq!(hashindex.entry(31).key(), &31);
+    /// assert_eq!(hashindex.entry_sync(31).key(), &31);
     /// ```
     #[inline]
     pub fn key(&self) -> &K {
@@ -1482,12 +1482,12 @@ where
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
     /// unsafe {
-    ///     hashindex.entry(37).and_modify(|v| { *v += 1 }).or_insert(47);
+    ///     hashindex.entry_sync(37).and_modify(|v| { *v += 1 }).or_insert(47);
     /// }
     /// assert_eq!(hashindex.peek_with(&37, |_, v| *v), Some(47));
     ///
     /// unsafe {
-    ///     hashindex.entry(37).and_modify(|v| { *v += 1 }).or_insert(3);
+    ///     hashindex.entry_sync(37).and_modify(|v| { *v += 1 }).or_insert(3);
     /// }
     /// assert_eq!(hashindex.peek_with(&37, |_, v| *v), Some(48));
     /// ```
@@ -1523,7 +1523,7 @@ where
     /// use scc::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
-    /// hashindex.entry(11).or_default();
+    /// hashindex.entry_sync(11).or_default();
     /// assert_eq!(hashindex.peek_with(&11, |_, v| *v), Some(0));
     /// ```
     #[inline]
@@ -1565,7 +1565,7 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// assert_eq!(hashindex.entry(29).or_default().key(), &29);
+    /// assert_eq!(hashindex.entry_sync(29).or_default().key(), &29);
     /// ```
     #[inline]
     #[must_use]
@@ -1587,9 +1587,9 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// hashindex.entry(11).or_insert(17);
+    /// hashindex.entry_sync(11).or_insert(17);
     ///
-    /// if let Entry::Occupied(o) = hashindex.entry(11) {
+    /// if let Entry::Occupied(o) = hashindex.entry_sync(11) {
     ///     o.remove_entry();
     /// };
     /// assert_eq!(hashindex.peek_with(&11, |_, v| *v), None);
@@ -1617,9 +1617,9 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// hashindex.entry(19).or_insert(11);
+    /// hashindex.entry_sync(19).or_insert(11);
     ///
-    /// if let Entry::Occupied(o) = hashindex.entry(19) {
+    /// if let Entry::Occupied(o) = hashindex.entry_sync(19) {
     ///     assert_eq!(o.get(), &11);
     /// };
     /// ```
@@ -1650,9 +1650,9 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// hashindex.entry(37).or_insert(11);
+    /// hashindex.entry_sync(37).or_insert(11);
     ///
-    /// if let Entry::Occupied(mut o) = hashindex.entry(37) {
+    /// if let Entry::Occupied(mut o) = hashindex.entry_sync(37) {
     ///     // Safety: `u32` can be safely read while being modified.
     ///     unsafe { *o.get_mut() += 18; }
     ///     assert_eq!(*o.get(), 29);
@@ -1667,45 +1667,6 @@ where
             .entry_ptr
             .get_mut(self.locked_entry.data_block, &self.locked_entry.writer)
             .1
-    }
-
-    /// Gets the next closest occupied entry.
-    ///
-    /// [`HashIndex::first_entry`], [`HashIndex::first_entry_async`], and this method together
-    /// enables the [`OccupiedEntry`] to effectively act as a mutable iterator over entries. The
-    /// method never acquires more than one lock even when it searches other buckets for the next
-    /// closest occupied entry.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashIndex;
-    /// use scc::hash_index::Entry;
-    ///
-    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
-    ///
-    /// assert!(hashindex.insert(1, 0).is_ok());
-    /// assert!(hashindex.insert(2, 0).is_ok());
-    ///
-    /// let first_entry = hashindex.first_entry().unwrap();
-    /// let first_key = *first_entry.key();
-    /// let second_entry = first_entry.next().unwrap();
-    /// let second_key = *second_entry.key();
-    ///
-    /// assert!(second_entry.next().is_none());
-    /// assert_eq!(first_key + second_key, 3);
-    /// ```
-    #[inline]
-    #[must_use]
-    pub fn next(self) -> Option<Self> {
-        let hashindex = self.hashindex;
-        if let Some(locked_entry) = self.locked_entry.next_sync(hashindex) {
-            return Some(OccupiedEntry {
-                hashindex,
-                locked_entry,
-            });
-        }
-        None
     }
 
     /// Gets the next closest occupied entry.
@@ -1734,6 +1695,45 @@ where
     pub async fn next_async(self) -> Option<OccupiedEntry<'h, K, V, H>> {
         let hashindex = self.hashindex;
         if let Some(locked_entry) = self.locked_entry.next_async(hashindex).await {
+            return Some(OccupiedEntry {
+                hashindex,
+                locked_entry,
+            });
+        }
+        None
+    }
+
+    /// Gets the next closest occupied entry.
+    ///
+    /// [`HashIndex::first_entry`], [`HashIndex::first_entry_async`], and this method together
+    /// enables the [`OccupiedEntry`] to effectively act as a mutable iterator over entries. The
+    /// method never acquires more than one lock even when it searches other buckets for the next
+    /// closest occupied entry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashIndex;
+    /// use scc::hash_index::Entry;
+    ///
+    /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
+    ///
+    /// assert!(hashindex.insert(1, 0).is_ok());
+    /// assert!(hashindex.insert(2, 0).is_ok());
+    ///
+    /// let first_entry = hashindex.first_entry().unwrap();
+    /// let first_key = *first_entry.key();
+    /// let second_entry = first_entry.next_sync().unwrap();
+    /// let second_key = *second_entry.key();
+    ///
+    /// assert!(second_entry.next_sync().is_none());
+    /// assert_eq!(first_key + second_key, 3);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn next_sync(self) -> Option<Self> {
+        let hashindex = self.hashindex;
+        if let Some(locked_entry) = self.locked_entry.next_sync(hashindex) {
             return Some(OccupiedEntry {
                 hashindex,
                 locked_entry,
@@ -1845,9 +1845,9 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// hashindex.entry(37).or_insert(11);
+    /// hashindex.entry_sync(37).or_insert(11);
     ///
-    /// if let Entry::Occupied(mut o) = hashindex.entry(37) {
+    /// if let Entry::Occupied(mut o) = hashindex.entry_sync(37) {
     ///     o.update(29);
     /// }
     ///
@@ -1917,7 +1917,7 @@ where
     /// use scc::HashIndex;
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
-    /// assert_eq!(hashindex.entry(11).key(), &11);
+    /// assert_eq!(hashindex.entry_sync(11).key(), &11);
     /// ```
     #[inline]
     pub fn key(&self) -> &K {
@@ -1934,7 +1934,7 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// if let Entry::Vacant(v) = hashindex.entry(17) {
+    /// if let Entry::Vacant(v) = hashindex.entry_sync(17) {
     ///     assert_eq!(v.into_key(), 17);
     /// };
     /// ```
@@ -1953,7 +1953,7 @@ where
     ///
     /// let hashindex: HashIndex<u64, u32> = HashIndex::default();
     ///
-    /// if let Entry::Vacant(o) = hashindex.entry(19) {
+    /// if let Entry::Vacant(o) = hashindex.entry_sync(19) {
     ///     o.insert_entry(29);
     /// }
     ///

@@ -8,8 +8,7 @@
 
 ### API update
 
-* MSRV: 1.85.0.
-* Edition: 2024.
+* See [`#186`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/186).
 
 ## Version 2
 
@@ -234,73 +233,7 @@
 
 ### API update
 
-* `*::Visitor` -> `*::Iter`.
-* `*::Accessor` -> `*::IterMut`.
-* `ebr::Arc` -> `ebr::Shared`.
-* `ebr::Arc::get_ref_with` -> `ebr::Shared::get_guarded_ref`.
-* `ebr::Arc::ptr` -> `ebr::Shared::get_guarded_ptr`.
-* `ebr::Arc::release_drop_in_place` -> `ebr::Shared::drop_in_place`.
-* `ebr::AtomicArc` -> `ebr::AtomicShared`.
-* `ebr::AtomicArc::get_arc` -> `ebr::AtomicShared::get_shared`.
-* `ebr::AtomicArc::try_into_arc` -> `ebr::AtomicShared::into_shared`.
-* `ebr::AtomicOwned::try_into_owned` -> `ebr::AtomicOwned::into_owned`.
-* `ebr::Barrier` -> `ebr::Guard`.
-* `ebr::Owned::get_ref_with` -> `ebr::Owned::get_guarded_ref`.
-* `ebr::Owned::ptr` -> `ebr::Owned::get_guarded_ptr`.
-* `ebr::Ptr::as_raw` -> `ebr::Ptr::as_ptr`.
-* `ebr::Ptr::get_arc` -> `ebr::Ptr::get_shared`.
-* `*::first_occupied_entry*` -> `*::first_entry*`.
-* `HashIndex::read` -> `HashIndex::peek_with`.
-* `HashIndex::read_with` -> `HashIndex::peek`.
-* `Queue::peek` -> `Queue::peek_with`.
-* `Queue::peek_with` -> `Queue::peek`.
-* `Stack::peek` -> `Stack::peek_with`.
-* `Stack::peek_with` -> `Stack::peek`.
-* `TreeIndex::read` -> `TreeIndex::peek_with`.
-* `TreeIndex::read_with` -> `TreeIndex::peek`.
-* Remove `HashMap::upsert*`: superseded by `hash_map::Entry::and_modify` and `hash_map::Entry::or_insert`.
-
-```rust
-use scc::HashMap;
-
-let hashmap: HashMap<u64, u32> = HashMap::default();
-
-// hashmap.upsert(1, || 2, |_, v| *v = 3);
-hashmap.entry(1).and_modify(|v| { *v = 3 }).or_insert(2);
-```
-
-* Remove  `HashIndex::modify*` and `HashIndex::update*`: superseded by `HashIndex::entry*`, `HashIndex::get*`.
-
-```rust
-use scc::HashIndex;
-
-let hashindex: HashIndex<u64, u32> = HashIndex::default();
-assert!(hashindex.insert(1, 1).is_ok());
-
-// hashindex.modify(&1, |_, v| Some(Some(2)));
-if let Some(mut o) = hashindex.get(&1) {
-    o.update(2);
-};
-
-// unsafe { hashindex.update(&1, |_, v| { *v = 3; true } ); }
-if let Some(mut o) = hashindex.get(&1) {
-    unsafe { *o.get_mut() = 3; }
-};
-```
-
-* Remove `Hash*::for_each*`: superseded by `HashMap::retain*`.
-
-```rust
-use scc::HashMap;
-
-let hashmap: HashMap<u64, u32> = HashMap::default();
-assert!(hashmap.insert(1, 1).is_ok());
-
-// hashmap.for_each(|_, v| { *v = 2; });
-hashmap.retain(|_, v| { *v = 2; true });
-```
-
-* `Hash*::clear*`, `Hash*::prune*`, and `Hash*::retain*` return `()`.
+* See [`#108`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/108).
 
 ## Version 1
 

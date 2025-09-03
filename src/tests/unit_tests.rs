@@ -288,7 +288,7 @@ mod hashmap {
             assert_eq!(v.unwrap().1, iter.1);
         }
         for iter in checker2 {
-            let e = hashmap2.entry(iter.0);
+            let e = hashmap2.entry_sync(iter.0);
             match e {
                 Entry::Occupied(o) => assert_eq!(o.remove(), iter.1),
                 Entry::Vacant(_) => unreachable!(),
@@ -580,7 +580,7 @@ mod hashmap {
                         if range.contains(current_entry.key()) {
                             in_range += 1;
                         }
-                        entry = current_entry.next();
+                        entry = current_entry.next_sync();
                     }
                     assert!(in_range >= workload_size, "{in_range} {workload_size}");
 
@@ -598,7 +598,7 @@ mod hashmap {
                     let mut entry = hashmap.first_entry();
                     while let Some(current_entry) = entry.take() {
                         assert!(!range.contains(current_entry.key()));
-                        entry = current_entry.next();
+                        entry = current_entry.next_sync();
                     }
                 }));
             }
@@ -910,7 +910,7 @@ mod hashmap {
                         .is_ok()
                 );
                 *hashmap
-                    .entry(Data::new(d, checker.clone()))
+                    .entry_sync(Data::new(d, checker.clone()))
                     .or_insert(Data::new(d + 1, checker.clone()))
                     .get_mut() = Data::new(d + 2, checker.clone());
             }
@@ -922,7 +922,7 @@ mod hashmap {
                         .is_ok()
                 );
                 *hashmap
-                    .entry(Data::new(d, checker.clone()))
+                    .entry_sync(Data::new(d, checker.clone()))
                     .or_insert(Data::new(d + 1, checker.clone()))
                     .get_mut() = Data::new(d + 2, checker.clone());
             }
@@ -963,7 +963,7 @@ mod hashmap {
                         .is_ok()
                 );
                 *hashmap
-                    .entry(Data::new(d, checker.clone()))
+                    .entry_sync(Data::new(d, checker.clone()))
                     .or_insert(Data::new(d + 1, checker.clone()))
                     .get_mut() = Data::new(d + 2, checker.clone());
             }
@@ -977,7 +977,7 @@ mod hashmap {
                         .is_ok()
                 );
                 *hashmap
-                    .entry(Data::new(d, checker.clone()))
+                    .entry_sync(Data::new(d, checker.clone()))
                     .or_insert(Data::new(d + 1, checker.clone()))
                     .get_mut() = Data::new(d + 2, checker.clone());
             }
@@ -1462,7 +1462,7 @@ mod hashindex {
                         if range.contains(current_entry.key()) {
                             in_range += 1;
                         }
-                        entry = current_entry.next();
+                        entry = current_entry.next_sync();
                     }
                     assert!(in_range >= workload_size, "{in_range} {workload_size}");
 
@@ -1480,7 +1480,7 @@ mod hashindex {
                     let mut entry = hashindex.first_entry();
                     while let Some(current_entry) = entry.take() {
                         assert!(!range.contains(current_entry.key()));
-                        entry = current_entry.next();
+                        entry = current_entry.next_sync();
                     }
                 }));
             }
@@ -3652,7 +3652,7 @@ mod malfunction {
         let hashmap: HashMap<usize, R> = HashMap::default();
         for k in 0..workload_size {
             let result: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
-                hashmap.entry(k as usize).or_insert_with(|| {
+                hashmap.entry_sync(k as usize).or_insert_with(|| {
                     let mut r = R::new(&INST_CNT, &NEVER_PANIC);
                     r.2 = true;
                     r
@@ -3671,7 +3671,7 @@ mod malfunction {
         let hashmap: HashMap<usize, R> = HashMap::default();
         for k in 0..workload_size {
             let result: Result<(), Box<dyn Any + Send>> = catch_unwind(|| {
-                let Entry::Vacant(entry) = hashmap.entry(k as usize) else {
+                let Entry::Vacant(entry) = hashmap.entry_sync(k as usize) else {
                     return;
                 };
                 entry

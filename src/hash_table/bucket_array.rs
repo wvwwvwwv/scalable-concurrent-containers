@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 use sdd::{AtomicShared, Guard, Ptr, Tag};
 
-use super::bucket::{BUCKET_LEN, Bucket, DataBlock, LruList, INDEX};
+use super::bucket::{BUCKET_LEN, Bucket, DataBlock, INDEX, LruList};
 
 /// [`BucketArray`] is a special purpose array to manage [`Bucket`] and [`DataBlock`].
 pub struct BucketArray<K, V, L: LruList, const TYPE: char> {
