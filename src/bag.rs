@@ -25,7 +25,6 @@ use super::{LinkedEntry, LinkedList, Stack};
 pub struct Bag<T, const ARRAY_LEN: usize = DEFAULT_ARRAY_LEN> {
     /// Primary storage.
     primary_storage: Storage<T, ARRAY_LEN>,
-
     /// Fallback storage.
     stack: Stack<Storage<T, ARRAY_LEN>>,
 }
@@ -51,7 +50,6 @@ const DEFAULT_ARRAY_LEN: usize = usize::BITS as usize / 2;
 struct Storage<T, const ARRAY_LEN: usize> {
     /// Storage.
     storage: UnsafeCell<[MaybeUninit<T>; ARRAY_LEN]>,
-
     /// Storage metadata.
     ///
     /// The layout of the metadata is,
@@ -259,7 +257,7 @@ impl<T, const ARRAY_LEN: usize> Bag<T, ARRAY_LEN> {
     /// assert!(bag.pop().is_none());
     /// ```
     #[inline]
-    pub fn iter_mut(&mut self) -> IterMut<'_, T, ARRAY_LEN> {
+    pub const fn iter_mut(&mut self) -> IterMut<'_, T, ARRAY_LEN> {
         IterMut {
             bag: self,
             current_index: 0,
@@ -387,7 +385,7 @@ impl<T, const ARRAY_LEN: usize> UnwindSafe for IntoIter<T, ARRAY_LEN> where T: U
 
 impl<T, const ARRAY_LEN: usize> Storage<T, ARRAY_LEN> {
     /// Creates a new [`Storage`].
-    fn new() -> Self {
+    const fn new() -> Self {
         #[allow(clippy::uninit_assumed_init)]
         Storage {
             storage: unsafe { MaybeUninit::uninit().assume_init() },

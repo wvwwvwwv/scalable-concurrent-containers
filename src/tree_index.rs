@@ -28,7 +28,7 @@ use node::Node;
 /// interrupted by other threads or tasks. Write operations, such as insert and remove, do not block
 /// if structural changes are not required.
 ///
-/// ## Notes
+/// ## Note
 ///
 /// [`TreeIndex`] methods are linearizable. However, its iterator methods are not; [`Iter`] and
 /// [`Range`] are only guaranteed to observe events that happened before the first call to
@@ -487,7 +487,7 @@ where
     /// This method removes internal nodes that are definitely contained in the specified range
     /// first, and then removes remaining entries individually.
     ///
-    /// # Notes
+    /// # Note
     ///
     /// Internally, multiple internal node locks need to be acquired, thus making this method
     /// susceptible to lock starvation.
@@ -551,7 +551,7 @@ where
     /// This method removes internal nodes that are definitely contained in the specified range
     /// first, and then removes remaining entries individually.
     ///
-    /// # Notes
+    /// # Note
     ///
     /// Internally, multiple internal node locks need to be acquired, thus making this method
     /// susceptible to lock starvation.

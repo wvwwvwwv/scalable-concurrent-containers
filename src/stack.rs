@@ -227,7 +227,7 @@ impl<T> Stack<T> {
     ///
     /// # Errors
     ///
-    /// Returns an error containing the newest entry if the given condition is not met.
+    /// Returns an error along with the newest entry if the given condition is not met.
     ///
     /// # Examples
     ///
@@ -294,7 +294,7 @@ impl<T> Stack<T> {
 
     /// Returns the number of entries in the [`Stack`].
     ///
-    /// This method iterates over all the entries in the [`Stack`] to count them; therefore, its
+    /// This method iterates over all the entries in the [`Stack`] to count them, therefore its
     /// time complexity is `O(N)`.
     ///
     /// # Examples

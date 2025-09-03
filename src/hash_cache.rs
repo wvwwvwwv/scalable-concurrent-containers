@@ -58,7 +58,6 @@ where
 {
     /// An occupied entry.
     Occupied(OccupiedEntry<'h, K, V, H>),
-
     /// A vacant entry.
     Vacant(VacantEntry<'h, K, V, H>),
 }
@@ -313,6 +312,10 @@ where
     ///
     /// Returns `Some` if an entry was evicted for the new key-value pair.
     ///
+    /// # Note
+    ///
+    /// If the key exists, the value is *not* updated.
+    ///
     /// # Errors
     ///
     /// Returns an error containing the supplied key-value pair if the key exists.
@@ -349,6 +352,10 @@ where
     /// Puts a key-value pair into the [`HashCache`].
     ///
     /// Returns `Some` if an entry was evicted for the new key-value pair.
+    ///
+    /// # Note
+    ///
+    /// If the key exists, the value is *not* updated.
     ///
     /// # Errors
     ///

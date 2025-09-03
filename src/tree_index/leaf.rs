@@ -27,10 +27,8 @@ pub struct Leaf<K, V> {
     /// The entry state transitions as follows.
     /// * `uninit -> removed -> rank -> removed`.
     metadata: AtomicUsize,
-
     /// The array of key-value pairs.
     entry_array: UnsafeCell<EntryArray<K, V>>,
-
     /// A pointer that points to the next adjacent [`Leaf`].
     link: AtomicShared<Leaf<K, V>>,
 }
@@ -46,23 +44,18 @@ pub struct Dimension {
 pub enum InsertResult<K, V> {
     /// Insertion succeeded.
     Success,
-
     /// Duplicate key found.
     Duplicate(K, V),
-
     /// No vacant slot for the key.
     Full(K, V),
-
     /// The [`Leaf`] is frozen.
     ///
     /// This is not a terminal state as a frozen [`Leaf`] can be unfrozen.
     Frozen(K, V),
-
     /// Insertion failed as the [`Leaf`] has retired.
     ///
     /// It is a terminal state.
     Retired(K, V),
-
     /// The operation can be retried.
     Retry(K, V),
 }
@@ -72,16 +65,12 @@ pub enum InsertResult<K, V> {
 pub enum RemoveResult {
     /// Remove succeeded.
     Success,
-
     /// Remove succeeded and cleanup required.
     Cleanup,
-
     /// Remove succeeded and the [`Leaf`] has retired without usable entries left.
     Retired,
-
     /// Remove failed.
     Fail,
-
     /// The [`Leaf`] is frozen.
     Frozen,
 }

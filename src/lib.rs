@@ -8,8 +8,6 @@ pub use bag::Bag;
 mod equivalent;
 pub use equivalent::{Comparable, Equivalent};
 
-mod exit_guard;
-
 pub mod hash_cache;
 pub use hash_cache::HashCache;
 
@@ -22,21 +20,9 @@ pub use hash_map::HashMap;
 pub mod hash_set;
 pub use hash_set::HashSet;
 
-mod hash_table;
-
 mod linked_list;
 pub use linked_list::Entry as LinkedEntry;
 pub use linked_list::LinkedList;
-
-#[cfg(feature = "loom")]
-mod maybe_std {
-    pub(crate) use loom::sync::atomic::{AtomicU8, AtomicUsize};
-}
-
-#[cfg(not(feature = "loom"))]
-mod maybe_std {
-    pub(crate) use std::sync::atomic::{AtomicU8, AtomicUsize};
-}
 
 pub mod queue;
 pub use queue::Queue;
@@ -49,10 +35,22 @@ mod serde;
 pub mod stack;
 pub use stack::Stack;
 
-#[cfg(test)]
-mod tests;
-
 pub mod tree_index;
 pub use tree_index::TreeIndex;
 
 mod async_helper;
+mod exit_guard;
+mod hash_table;
+
+#[cfg(feature = "loom")]
+mod maybe_std {
+    pub(crate) use loom::sync::atomic::{AtomicU8, AtomicUsize};
+}
+
+#[cfg(not(feature = "loom"))]
+mod maybe_std {
+    pub(crate) use std::sync::atomic::{AtomicU8, AtomicUsize};
+}
+
+#[cfg(test)]
+mod tests;

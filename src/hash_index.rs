@@ -58,7 +58,6 @@ where
 {
     /// An occupied entry.
     Occupied(OccupiedEntry<'h, K, V, H>),
-
     /// A vacant entry.
     Vacant(VacantEntry<'h, K, V, H>),
 }
@@ -490,6 +489,10 @@ where
 
     /// Inserts a key-value pair into the [`HashIndex`].
     ///
+    /// # Note
+    ///
+    /// If the key exists, the value is *not* updated.
+    ///
     /// # Errors
     ///
     /// Returns an error containing the supplied key-value pair if the key exists.
@@ -523,6 +526,10 @@ where
     }
 
     /// Inserts a key-value pair into the [`HashIndex`].
+    ///
+    /// # Note
+    ///
+    /// If the key exists, the value is *not* updated.
     ///
     /// # Errors
     ///
@@ -779,9 +786,15 @@ where
     ///
     /// # Note
     ///
-    /// The returned reference may point to an old snapshot of the value if the entry has recently
-    /// been relocated due to resizing. This means that the effect of use of interior mutability,
-    /// e.g., `Mutex<T>` or `UnsafeCell<T>` may not be observable through the reference.
+    /// The closure may see an old snapshot of the value if the entry has recently been relocated
+    /// due to resizing. This means that the effects of interior mutability, e.g., `Mutex<T>` or
+    /// `UnsafeCell<T>`, may not be observable in the closure.
+    ///
+    /// # Safety
+    ///
+    /// This method is safe to use if the value is not modified or if `V` is a pointer type such as
+    /// `Box<T>` or `Arc<T>`. However, it is unsafe if `V` contains a pointer that can be modified
+    /// through interior mutability.
     ///
     /// # Examples
     ///
@@ -811,8 +824,14 @@ where
     /// # Note
     ///
     /// The closure may see an old snapshot of the value if the entry has recently been relocated
-    /// due to resizing. This means that the effect of use of interior mutability, e.g., `Mutex<T>`
-    /// or `UnsafeCell<T>` may not be observable in the closure.
+    /// due to resizing. This means that the effects of interior mutability, e.g., `Mutex<T>` or
+    /// `UnsafeCell<T>`, may not be observable in the closure.
+    ///
+    /// # Safety
+    ///
+    /// This method is safe to use if the value is not modified or if `V` is a pointer type such as
+    /// `Box<T>` or `Arc<T>`. However, it is unsafe if `V` contains a pointer that can be modified
+    /// through interior mutability.
     ///
     /// # Examples
     ///

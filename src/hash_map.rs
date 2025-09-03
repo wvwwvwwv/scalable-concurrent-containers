@@ -87,7 +87,6 @@ where
 {
     /// An occupied entry.
     Occupied(OccupiedEntry<'h, K, V, H>),
-
     /// A vacant entry.
     Vacant(VacantEntry<'h, K, V, H>),
 }
@@ -512,6 +511,11 @@ where
 
     /// Inserts a key-value pair into the [`HashMap`].
     ///
+    /// # Note
+    ///
+    /// If the key exists, the value is *not* updated. [`upsert_async`](Self::upsert_async)
+    /// provides a way to update the value if the key exists.
+    ///
     /// # Errors
     ///
     /// Returns an error containing the supplied key-value pair if the key exists.
@@ -544,6 +548,11 @@ where
     }
 
     /// Inserts a key-value pair into the [`HashMap`].
+    ///
+    /// # Note
+    ///
+    /// If the key exists, the value is *not* updated. [`upsert_sync`](Self::upsert_sync)
+    /// provides a way to update the value if the key exists.
     ///
     /// # Errors
     ///

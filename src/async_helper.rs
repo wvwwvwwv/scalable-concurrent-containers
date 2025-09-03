@@ -92,7 +92,7 @@ impl WaitQueue {
 
         let result = f();
         if result.is_ok() {
-            return result;
+            self.signal();
         }
         let _: Result<_, _> = pinned_pager.poll_sync();
         result
@@ -100,8 +100,7 @@ impl WaitQueue {
 
     /// Pushes an [`AsyncWait`] into the [`WaitQueue`].
     ///
-    /// If it happens to acquire the desired resource, it returns `Ok(T)` after waking up all
-    /// the entries in the [`WaitQueue`].
+    /// Returns `Ok(T)` if the condition is met and signaled.
     #[inline]
     pub(crate) fn push_async_entry<'w, T, F: FnOnce() -> Result<T, ()>>(
         &'w self,
@@ -114,8 +113,10 @@ impl WaitQueue {
         self.gate.register_async(&mut pinned_pager);
         if let Ok(result) = f() {
             self.signal();
-            async_wait.pager = Pager::default();
-            return Ok(result);
+            if pinned_pager.try_poll().is_ok() {
+                async_wait.pager = Pager::default();
+                return Ok(result);
+            }
         }
         Err(())
     }

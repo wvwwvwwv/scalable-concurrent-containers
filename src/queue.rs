@@ -12,7 +12,6 @@ use super::linked_list::{Entry, LinkedList};
 pub struct Queue<T> {
     /// `oldest` points to the oldest entry in the [`Queue`].
     oldest: AtomicShared<Entry<T>>,
-
     /// `newest` *eventually* points to the newest entry in the [`Queue`].
     newest: AtomicShared<Entry<T>>,
 }
@@ -444,6 +443,7 @@ impl<T> Queue<T> {
     }
 
     /// Traverses the linked list to the end.
+    #[inline]
     fn traverse<'g>(start: Ptr<'g, Entry<T>>, guard: &'g Guard) -> Ptr<'g, Entry<T>> {
         let mut current = start;
         while let Some(entry) = current.as_ref() {

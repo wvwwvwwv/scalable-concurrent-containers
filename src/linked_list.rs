@@ -358,7 +358,6 @@ pub trait LinkedList: Sized {
 pub struct Entry<T> {
     /// `instance` is always `Some` unless [`Self::take_inner`] is called.
     instance: Option<T>,
-
     /// `next` points to the next entry in a linked list.
     next: AtomicShared<Self>,
 }

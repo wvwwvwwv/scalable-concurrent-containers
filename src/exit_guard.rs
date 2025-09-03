@@ -11,7 +11,7 @@ pub(crate) struct ExitGuard<T, F: FnOnce(T)> {
 impl<T, F: FnOnce(T)> ExitGuard<T, F> {
     /// Creates a new [`ExitGuard`] with the specified variables captured.
     #[inline]
-    pub(crate) fn new(captured: T, drop_callback: F) -> Self {
+    pub(crate) const fn new(captured: T, drop_callback: F) -> Self {
         Self {
             drop_callback: Some((captured, drop_callback)),
         }
