@@ -153,7 +153,7 @@ impl<T, const ARRAY_LEN: usize> Bag<T, ARRAY_LEN> {
         self.primary_storage.pop().0
     }
 
-    /// Pops all the entries at once, and folds them into an accumulator.
+    /// Pops all the entries at once and folds them into an accumulator.
     ///
     /// # Examples
     ///
@@ -186,7 +186,7 @@ impl<T, const ARRAY_LEN: usize> Bag<T, ARRAY_LEN> {
     /// Returns the number of entries in the [`Bag`].
     ///
     /// This method iterates over all the entry arrays in the [`Bag`] to count the number of
-    /// entries, therefore its time complexity is `O(N)`.
+    /// entries; therefore, its time complexity is `O(N)`.
     ///
     /// # Examples
     ///
@@ -239,7 +239,7 @@ impl<T, const ARRAY_LEN: usize> Bag<T, ARRAY_LEN> {
         }
     }
 
-    /// Iterates over contained instances for modifying them.
+    /// Returns an iterator over the contained instances for modification.
     ///
     /// # Examples
     ///

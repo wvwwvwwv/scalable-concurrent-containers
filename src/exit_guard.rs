@@ -1,9 +1,9 @@
-//! This module implements a simplified, yet safe version of
+//! This module implements a simplified but safe version of
 //! [`scopeguard`](https://crates.io/crates/scopeguard).
 
 use std::ops::{Deref, DerefMut};
 
-/// [`ExitGuard`] captures the environment and invokes the defined closure at the end of the scope.
+/// [`ExitGuard`] captures the environment and invokes a defined closure at the end of the scope.
 pub(crate) struct ExitGuard<T, F: FnOnce(T)> {
     drop_callback: Option<(T, F)>,
 }

@@ -26,13 +26,13 @@ use crate::async_helper::SendableGuard;
 ///
 /// ## The key differences between [`HashIndex`] and [`HashMap`](crate::HashMap).
 ///
-/// * Lock-free-read: read and scan operations are never blocked and do not modify shared data.
+/// * Lock-free read: read and scan operations are never blocked and do not modify shared data.
 /// * Immutability: the data in the container is immutable until it becomes unreachable.
 /// * Linearizability: linearizability of read operations relies on the CPU architecture.
 ///
 /// ## The key statistics for [`HashIndex`]
 ///
-/// * The expected size of metadata for a single key-value pair: 2-byte.
+/// * The expected size of metadata for a single key-value pair: 2 bytes.
 /// * The expected number of atomic write operations required for an operation on a single key: 2.
 /// * The expected number of atomic variables accessed during a single key operation: 2.
 /// * The number of entries managed by a single bucket without a linked list: 32.
@@ -40,8 +40,8 @@ use crate::async_helper::SendableGuard;
 ///
 /// ## Unwind safety
 ///
-/// [`HashIndex`] is impervious to out-of-memory errors and panics in user-specified code on one
-/// condition; `H::Hasher::hash`, `K::drop` and `V::drop` must not panic.
+/// [`HashIndex`] is impervious to out-of-memory errors and panics in user-specified code under one
+/// condition: `H::Hasher::hash`, `K::drop` and `V::drop` must not panic.
 pub struct HashIndex<K, V, H = RandomState>
 where
     H: BuildHasher,
@@ -492,7 +492,7 @@ where
     ///
     /// # Errors
     ///
-    /// Returns an error along with the supplied key-value pair if the key exists.
+    /// Returns an error containing the supplied key-value pair if the key exists.
     ///
     /// # Examples
     ///
@@ -558,8 +558,10 @@ where
 
     /// Removes a key-value pair if the key exists.
     ///
-    /// Returns `false` if the key does not exist. Returns `true` if the key existed and the
-    /// condition was met after marking the entry unreachable; the memory will be reclaimed later.
+    /// Returns `false` if the key does not exist.
+    ///
+    /// Returns `true` if the key existed and the condition was met after marking the entry
+    /// unreachable; the memory will be reclaimed later.
     ///
     /// # Examples
     ///
@@ -606,9 +608,10 @@ where
 
     /// Removes a key-value pair if the key exists and the given condition is met.
     ///
-    /// Returns `false` if the key does not exist or the condition was not met. Returns `true` if
-    /// the key existed and the condition was met after marking the entry unreachable; the memory
-    /// will be reclaimed later.
+    /// Returns `false` if the key does not exist or the condition was not met.
+    ///
+    /// Returns `true` if the key existed and the condition was met after marking the entry
+    /// unreachable; the memory will be reclaimed later.
     ///
     /// # Examples
     ///
@@ -853,7 +856,7 @@ where
         self.peek_with(key, |_, _| ()).is_some()
     }
 
-    /// Iterates over entries asynchronously for reading entries.
+    /// Iterates over entries asynchronously for reading.
     ///
     /// Stops iterating when the closure returns `false`, and this method also returns `false`.
     ///
@@ -893,7 +896,7 @@ where
         result
     }
 
-    /// Iterates over entries synchronously for reading entries.
+    /// Iterates over entries synchronously for reading.
     ///
     /// Stops iterating when the closure returns `false`, and this method also returns `false`.
     ///
@@ -1126,7 +1129,7 @@ where
     /// Returns the index of the bucket that may contain the key.
     ///
     /// The method returns the index of the bucket associated with the key. The number of buckets
-    /// can be calculated by dividing `32` into the capacity.
+    /// can be calculated by dividing the capacity by `32`.
     ///
     /// # Examples
     ///

@@ -50,7 +50,7 @@ impl<T: 'static> Stack<T> {
     ///
     /// # Errors
     ///
-    /// Returns an error along with the supplied instance if the condition is not met.
+    /// Returns an error containing the supplied instance if the condition is not met.
     ///
     /// # Examples
     ///
@@ -107,7 +107,7 @@ impl<T> Stack<T> {
     /// # Safety
     ///
     /// `T::drop` can be run after the [`Stack`] is dropped, therefore it is safe only if `T::drop`
-    /// does not access short-lived data or [`std::mem::needs_drop`] is `false` for `T`,
+    /// does not access short-lived data or [`std::mem::needs_drop`] is `false` for `T`.
     ///
     /// # Examples
     ///
@@ -134,12 +134,12 @@ impl<T> Stack<T> {
     ///
     /// # Errors
     ///
-    /// Returns an error along with the supplied instance if the condition is not met.
+    /// Returns an error containing the supplied instance if the condition is not met.
     ///
     /// # Safety
     ///
     /// `T::drop` can be run after the [`Stack`] is dropped, therefore it is safe only if `T::drop`
-    /// does not access short-lived data or [`std::mem::needs_drop`] is `false` for `T`,
+    /// does not access short-lived data or [`std::mem::needs_drop`] is `false` for `T`.
     ///
     /// # Examples
     ///
@@ -188,8 +188,7 @@ impl<T> Stack<T> {
         }
     }
 
-    /// Pops all the entries at once, and passes each one of the popped entries to the supplied
-    /// closure.
+    /// Pops all the entries at once and returns them as a new [`Stack`].
     ///
     /// # Examples
     ///
@@ -228,7 +227,7 @@ impl<T> Stack<T> {
     ///
     /// # Errors
     ///
-    /// Returns an error along with the newest entry if the given condition is not met.
+    /// Returns an error containing the newest entry if the given condition is not met.
     ///
     /// # Examples
     ///
@@ -295,7 +294,7 @@ impl<T> Stack<T> {
 
     /// Returns the number of entries in the [`Stack`].
     ///
-    /// This method iterates over all the entries in the [`Stack`] to count them, therefore its
+    /// This method iterates over all the entries in the [`Stack`] to count them; therefore, its
     /// time complexity is `O(N)`.
     ///
     /// # Examples

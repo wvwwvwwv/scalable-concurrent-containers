@@ -41,28 +41,6 @@ mod maybe_std {
 pub mod queue;
 pub use queue::Queue;
 
-mod range_helper {
-    use crate::Comparable;
-    use std::ops::Bound::{Excluded, Included, Unbounded};
-    use std::ops::RangeBounds;
-
-    /// Emulates `RangeBounds::contains`.
-    pub(crate) fn contains<K, Q, R: RangeBounds<Q>>(range: &R, key: &K) -> bool
-    where
-        Q: Comparable<K> + ?Sized,
-    {
-        (match range.start_bound() {
-            Included(start) => start.compare(key).is_le(),
-            Excluded(start) => start.compare(key).is_lt(),
-            Unbounded => true,
-        }) && (match range.end_bound() {
-            Included(end) => end.compare(key).is_ge(),
-            Excluded(end) => end.compare(key).is_gt(),
-            Unbounded => true,
-        })
-    }
-}
-
 pub use sdd::{AtomicShared, Guard, Shared, Tag};
 
 #[cfg(feature = "serde")]

@@ -2,14 +2,15 @@ use std::cell::UnsafeCell;
 use std::cmp::Ordering;
 use std::fmt::{self, Debug};
 use std::mem::{MaybeUninit, needs_drop};
+use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::ops::RangeBounds;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
 use sdd::{AtomicShared, Guard, Shared};
 
+use crate::Comparable;
 use crate::LinkedList;
 use crate::maybe_std::AtomicUsize;
-use crate::{Comparable, range_helper};
 
 /// [`Leaf`] is an ordered array of key-value pairs.
 ///
@@ -54,7 +55,7 @@ pub enum InsertResult<K, V> {
 
     /// The [`Leaf`] is frozen.
     ///
-    /// It is not a terminal state that a frozen [`Leaf`] can be unfrozen.
+    /// This is not a terminal state as a frozen [`Leaf`] can be unfrozen.
     Frozen(K, V),
 
     /// Insertion failed as the [`Leaf`] has retired.
@@ -83,6 +84,22 @@ pub enum RemoveResult {
 
     /// The [`Leaf`] is frozen.
     Frozen,
+}
+
+/// Emulates `RangeBounds::contains`.
+pub(crate) fn range_contains<K, Q, R: RangeBounds<Q>>(range: &R, key: &K) -> bool
+where
+    Q: Comparable<K> + ?Sized,
+{
+    (match range.start_bound() {
+        Included(start) => start.compare(key).is_le(),
+        Excluded(start) => start.compare(key).is_lt(),
+        Unbounded => true,
+    }) && (match range.end_bound() {
+        Included(end) => end.compare(key).is_ge(),
+        Excluded(end) => end.compare(key).is_gt(),
+        Unbounded => true,
+    })
 }
 
 impl<K, V> Leaf<K, V> {
@@ -210,11 +227,11 @@ impl<K, V> Leaf<K, V> {
             .is_ok()
     }
 
-    /// Returns the recommended number of entries that the left-side node shall store when a
+    /// Returns the recommended number of entries that the left-side node should store when a
     /// [`Leaf`] is split.
     ///
     /// Returns a number in `[1, len(leaf))` that represents the recommended number of entries in
-    /// the left-side node. The number is calculated as, for each adjacent slots,
+    /// the left-side node. The number is calculated as follows for each adjacent slot:
     /// - Initial `score = len(leaf)`.
     /// - Rank increased: `score -= 1`.
     /// - Rank decreased: `score += 1`.
@@ -476,7 +493,7 @@ where
             let rank = mutable_metadata % (1_usize << DIMENSION.num_bits_per_entry);
             if rank != Dimension::uninit_rank() && rank != DIMENSION.removed_rank() {
                 let k = self.key_at(i);
-                if range_helper::contains(range, k) {
+                if range_contains(range, k) {
                     self.remove_if(k, &mut |_| true);
                 }
             }
@@ -505,7 +522,7 @@ where
         self.search_slot(key, metadata).map(|i| self.value_at(i))
     }
 
-    /// Returns the index of the key-value pair that is smaller than the given key.
+    /// Returns the index of the key-value pair that has a key smaller than the given key.
     #[inline]
     pub(super) fn max_less<Q>(&self, mut mutable_metadata: usize, key: &Q) -> usize
     where
@@ -544,8 +561,8 @@ where
 
     /// Returns the minimum entry among those that are not `Ordering::Less` than the given key.
     ///
-    /// It additionally returns the current version of its metadata in order for the caller to
-    /// validate the sanity of the result.
+    /// It additionally returns the current version of its metadata so the caller can validate the
+    /// correctness of the result.
     #[inline]
     pub(super) fn min_greater_equal<Q>(&self, key: &Q) -> (Option<(&K, &V)>, usize)
     where
@@ -591,7 +608,7 @@ where
         (None, metadata)
     }
 
-    /// Freezes the [`Leaf`] and distribute entries to two new leaves.
+    /// Freezes the [`Leaf`] and distributes entries to two new leaves.
     #[inline]
     pub(super) fn freeze_and_distribute(
         &self,
@@ -874,7 +891,7 @@ impl<'l, K, V> Scanner<'l, K, V> {
         self.metadata
     }
 
-    /// Returns a reference to the entry that the scanner is currently pointing to
+    /// Returns a reference to the entry that the scanner is currently pointing to.
     #[inline]
     pub(super) fn get(&self) -> Option<(&'l K, &'l V)> {
         if self.entry_index >= DIMENSION.num_entries {

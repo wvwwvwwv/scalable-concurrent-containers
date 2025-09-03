@@ -514,7 +514,7 @@ where
     ///
     /// # Errors
     ///
-    /// Returns an error along with the supplied key-value pair if the key exists.
+    /// Returns an error containing the supplied key-value pair if the key exists.
     ///
     /// # Examples
     ///
@@ -547,7 +547,7 @@ where
     ///
     /// # Errors
     ///
-    /// Returns an error along with the supplied key-value pair if the key exists.
+    /// Returns an error containing the supplied key-value pair if the key exists.
     ///
     /// # Examples
     ///
@@ -1005,7 +1005,7 @@ where
         self.read_sync(key, |_, _| ()).is_some()
     }
 
-    /// Iterates over entries asynchronously for reading entries.
+    /// Iterates over entries asynchronously for reading.
     ///
     /// Stops iterating when the closure returns `false`, and this method also returns `false`.
     ///
@@ -1045,7 +1045,7 @@ where
         result
     }
 
-    /// Iterates over entries synchronously for reading entries.
+    /// Iterates over entries synchronously for reading.
     ///
     /// Stops iterating when the closure returns `false`, and this method also returns `false`.
     ///
@@ -1087,7 +1087,7 @@ where
         result
     }
 
-    /// Iterates over entries asynchronously for updating entries.
+    /// Iterates over entries asynchronously for modification.
     ///
     /// Stops iterating when the closure returns `false`, and this method also returns `false`.
     ///
@@ -1144,7 +1144,7 @@ where
         result
     }
 
-    /// Iterates over entries synchronously for updating entries.
+    /// Iterates over entries synchronously for modification.
     ///
     /// Stops iterating when the closure returns `false`, and this method also returns `false`.
     ///
@@ -1469,9 +1469,9 @@ where
 {
     /// Iterates over all the entries in the [`HashMap`] to print them.
     ///
-    /// ## Locking behavior
+    /// # Locking behavior
     ///
-    /// Shared locks on buckets are acquired during iteration; therefore, any [`Entry`],
+    /// Shared locks on buckets are acquired during iteration, therefore any [`Entry`],
     /// [`OccupiedEntry`], or [`VacantEntry`] owned by the current thread will lead to deadlocks.
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1573,9 +1573,9 @@ where
 {
     /// Compares two [`HashMap`] instances.
     ///
-    /// ## Locking behavior
+    /// # Locking behavior
     ///
-    /// Shared locks on buckets are acquired when comparing two instances of [`HashMap`]; therefore,
+    /// Shared locks on buckets are acquired when comparing two instances of [`HashMap`], therefore
     /// this may lead to deadlocks if the instances are being modified by another thread.
     #[inline]
     fn eq(&self, other: &Self) -> bool {

@@ -20,21 +20,21 @@ use crate::hash_table::bucket::{BUCKET_LEN, DataBlock, Writer};
 
 /// Scalable concurrent 32-way associative cache backed by [`HashMap`](super::HashMap).
 ///
-/// [`HashCache`] is a concurrent 32-way associative cache that is based on the
+/// [`HashCache`] is a concurrent 32-way associative cache based on the
 /// [`HashMap`](super::HashMap) implementation. [`HashCache`] does not keep track of the least
 /// recently used entry in the entire cache. Instead, each bucket maintains a doubly linked list of
 /// occupied entries, updated on access to entries to keep track of the least recently used entries
 /// within the bucket. Therefore, entries can be evicted before the cache is full.
 ///
-/// [`HashCache`] and [`HashMap`](super::HashMap) share the same runtime characteristic, except that
-/// each entry in a [`HashCache`] additionally uses 2-byte space for a doubly linked list and a
+/// [`HashCache`] and [`HashMap`](super::HashMap) share the same runtime characteristics, except
+/// that each entry in a [`HashCache`] additionally uses 2-byte space for a doubly linked list and a
 /// [`HashCache`] starts evicting least recently used entries if the bucket is full instead of
-/// allocating linked list of entries.
+/// allocating a linked list of entries.
 ///
 /// ## Unwind safety
 ///
-/// [`HashCache`] is impervious to out-of-memory errors and panics in user-specified code on one
-/// condition; `H::Hasher::hash`, `K::drop` and `V::drop` must not panic.
+/// [`HashCache`] is impervious to out-of-memory errors and panics in user-specified code under one
+/// condition: `H::Hasher::hash`, `K::drop` and `V::drop` must not panic.
 pub struct HashCache<K, V, H = RandomState>
 where
     H: BuildHasher,
@@ -315,7 +315,7 @@ where
     ///
     /// # Errors
     ///
-    /// Returns an error along with the supplied key-value pair if the key exists.
+    /// Returns an error containing the supplied key-value pair if the key exists.
     ///
     /// # Examples
     ///
@@ -352,7 +352,7 @@ where
     ///
     /// # Errors
     ///
-    /// Returns an error along with the supplied key-value pair if the key exists.
+    /// Returns an error containing the supplied key-value pair if the key exists.
     ///
     /// # Examples
     ///
@@ -691,7 +691,7 @@ where
         .flatten()
     }
 
-    /// Iterates over entries asynchronously for reading entries.
+    /// Iterates over entries asynchronously for reading.
     ///
     /// Stops iterating when the closure returns `false`, and this method also returns `false`.
     ///
@@ -731,7 +731,7 @@ where
         result
     }
 
-    /// Iterates over entries synchronously for reading entries.
+    /// Iterates over entries synchronously for reading.
     ///
     /// Stops iterating when the closure returns `false`, and this method also returns `false`.
     ///
@@ -773,7 +773,7 @@ where
         result
     }
 
-    /// Iterates over entries asynchronously for updating entries.
+    /// Iterates over entries asynchronously for modification.
     ///
     /// Stops iterating when the closure returns `false`, and this method also returns `false`.
     ///
@@ -830,7 +830,7 @@ where
         result
     }
 
-    /// Iterates over entries synchronously for updating entries.
+    /// Iterates over entries synchronously for modification.
     ///
     /// Stops iterating when the closure returns `false`, and this method also returns `false`.
     ///
@@ -1144,7 +1144,7 @@ where
     /// ## Locking behavior
     ///
     /// Shared locks on buckets are acquired during iteration, therefore any [`Entry`],
-    /// [`OccupiedEntry`] or [`VacantEntry`] owned by the current thread will lead to a deadlock.
+    /// [`OccupiedEntry`], or [`VacantEntry`] owned by the current thread will lead to a deadlock.
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut d = f.debug_map();
@@ -1228,7 +1228,7 @@ where
     /// ## Locking behavior
     ///
     /// Shared locks on buckets are acquired when comparing two instances of [`HashCache`], therefore
-    /// it may lead to a deadlock if the instances are being modified by another thread.
+    /// this may lead to a deadlock if the instances are being modified by another thread.
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         if self.iter_sync(|k, v| other.read_sync(k, |_, ov| v == ov) == Some(true)) {
@@ -1665,7 +1665,7 @@ where
         self.key
     }
 
-    /// Sets the value of the entry with its key, and returns an [`OccupiedEntry`].
+    /// Sets the value of the entry with its key and returns an [`OccupiedEntry`].
     ///
     /// Returns a key-value pair if an entry was evicted for the new key-value pair.
     ///

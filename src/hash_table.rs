@@ -93,7 +93,7 @@ where
 
     /// Returns a reference to the bucket array.
     ///
-    /// Allocates a new one if If no bucket array has been allocated.
+    /// Allocates a new one if no bucket array has been allocated.
     #[inline]
     fn get_or_create_bucket_array<'g>(&self, guard: &'g Guard) -> &'g BucketArray<K, V, L, TYPE> {
         if let Some(current_array) = self.bucket_array().load(Acquire, guard).as_ref() {
@@ -507,7 +507,7 @@ where
 
     /// Iterates over all the buckets in the [`HashTable`] asynchronously.
     ///
-    /// This methods stops iterating when the closure returns `false`.
+    /// This method stops iterating when the closure returns `false`.
     #[inline]
     async fn for_each_reader_async<F>(&self, sendable_guard: &SendableGuard, mut f: F)
     where
@@ -558,7 +558,7 @@ where
 
     /// Iterates over all the buckets in the [`HashTable`] synchronously.
     ///
-    /// This methods stops iterating when the closure returns `false`.
+    /// This method stops iterating when the closure returns `false`.
     #[inline]
     fn for_each_reader_sync<F>(&self, guard: &Guard, mut f: F)
     where
@@ -603,7 +603,7 @@ where
 
     /// Iterates over all the buckets in the [`HashTable`].
     ///
-    /// This methods stops iterating when the closure returns `(true, _)`. The closure returning
+    /// This method stops iterating when the closure returns `(true, _)`. The closure returning
     /// `(_, true)` means that entries were removed from the bucket.
     #[inline]
     async fn for_each_writer_async<F>(
@@ -788,9 +788,9 @@ where
     /// # Note
     ///
     /// There is a possibility of an ABA problem where the bucket array was deallocated and a new
-    /// bucket array of a different size has been allocated in the same memory region. In order
-    /// to avoid this problem, if it finds a killed bucket and the task was suspended, returns
-    /// `false`.
+    /// bucket array of a different size has been allocated in the same memory region. To avoid
+    /// this problem, the method returns `false` if it finds a killed bucket and the task was
+    /// suspended.
     async fn dedup_bucket_async<'g>(
         &self,
         current_array: &'g BucketArray<K, V, L, TYPE>,
@@ -1200,7 +1200,7 @@ where
         }
     }
 
-    /// Tries to shrink the [`HashTable`] to fit the estimated number of entries, or rebuild it to
+    /// Tries to shrink the [`HashTable`] to fit the estimated number of entries or rebuild it to
     /// optimize the storage.
     fn try_shrink_or_rebuild(
         &self,
@@ -1267,7 +1267,7 @@ where
         debug_assert!(!current_array.has_old_array());
 
         // If the estimated load factor is greater than `13/16`, then the hash table grows up to
-        // `usize::BITS / 2` times larger. Oh the other hand, if The estimated load factor is less
+        // `usize::BITS / 2` times larger. On the other hand, if the estimated load factor is less
         // than `1/8`, then the hash table shrinks to fit.
         let minimum_capacity = self.minimum_capacity().load(Relaxed);
         let capacity = current_array.num_slots();

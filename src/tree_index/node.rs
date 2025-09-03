@@ -103,7 +103,7 @@ where
     }
 
     /// Returns a [`Scanner`] pointing to an entry that is close enough to the entry with the
-    /// maximum key among those keys smaller than or equal to the given key.
+    /// maximum key among those keys that are smaller than or equal to the given key.
     ///
     /// This method is not linearizable.
     #[inline]
@@ -343,7 +343,7 @@ where
         true
     }
 
-    /// Commits an on-going structural change.
+    /// Commits an ongoing structural change.
     #[inline]
     pub(super) fn commit(&self, guard: &Guard) {
         match &self {
@@ -352,7 +352,7 @@ where
         }
     }
 
-    /// Rolls back an on-going structural change.
+    /// Rolls back an ongoing structural change.
     #[inline]
     pub(super) fn rollback(&self, guard: &Guard) {
         match &self {
@@ -363,7 +363,7 @@ where
 
     /// Cleans up logically deleted [`LeafNode`] instances in the linked list.
     ///
-    /// If the target leaf node does not exist in the sub-tree, returns `false`.
+    /// Returns `false` if the target leaf node does not exist in the subtree.
     #[inline]
     pub(super) fn cleanup_link<'g, Q>(&self, key: &Q, traverse_max: bool, guard: &'g Guard) -> bool
     where

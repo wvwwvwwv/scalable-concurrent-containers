@@ -7,18 +7,18 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
 
 use super::Leaf;
-use super::leaf::{DIMENSION, InsertResult, RemoveResult, Scanner};
+use super::leaf::{DIMENSION, InsertResult, RemoveResult, Scanner, range_contains};
 use super::node::Node;
+use crate::Comparable;
 use crate::LinkedList;
 use crate::async_helper::{DeriveAsyncWait, WaitQueue};
 use crate::exit_guard::ExitGuard;
 use crate::maybe_std::AtomicU8;
-use crate::{Comparable, range_helper};
 
-/// [`Tag::First`] indicates the corresponding node has retired.
+/// [`Tag::First`] indicates that the corresponding node has retired.
 pub const RETIRED: Tag = Tag::First;
 
-/// [`Tag::Second`] indicates the corresponding node is locked.
+/// [`Tag::Second`] indicates that the corresponding node is locked.
 pub const LOCKED: Tag = Tag::Second;
 
 /// [`LeafNode`] contains a list of instances of `K, V` [`Leaf`].
@@ -30,11 +30,11 @@ pub struct LeafNode<K, V> {
 
     /// A child [`Leaf`] that has no upper key bound.
     ///
-    /// It stores the maximum key in the node, and key-value pairs are firstly pushed to this
-    /// [`Leaf`] until split.
+    /// It stores the maximum key in the node, and key-value pairs are first pushed to this
+    /// [`Leaf`] until it splits.
     unbounded_child: AtomicShared<Leaf<K, V>>,
 
-    /// On-going split operation.
+    /// Ongoing split operation.
     split_op: StructuralChange<K, V>,
 
     /// The latch protecting the [`LeafNode`].
@@ -44,7 +44,7 @@ pub struct LeafNode<K, V> {
     wait_queue: WaitQueue,
 }
 
-/// [`Locker`] holds exclusive ownership of a [`Leaf`].
+/// [`Locker`] holds exclusive ownership of a [`LeafNode`].
 pub(super) struct Locker<'n, K, V> {
     leaf_node: &'n LeafNode<K, V>,
 }
@@ -52,17 +52,17 @@ pub(super) struct Locker<'n, K, V> {
 /// A state machine to keep track of the progress of a bulk removal operation.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) enum RemoveRangeState {
-    /// The max key of the node is less than the start bound of the range.
+    /// The maximum key of the node is less than the start bound of the range.
     Below,
 
-    /// The max key of the node is contained in the range, but it is not clear that the
+    /// The maximum key of the node is contained in the range, but it is not clear whether the
     /// minimum key of the node is contained in the range.
     MaybeBelow,
 
-    /// The max key and the minimum key of the node are contained in the range.
+    /// The maximum key and the minimum key of the node are contained in the range.
     FullyContained,
 
-    /// The max key of the node is not contained in the range, but it is not clear that
+    /// The maximum key of the node is not contained in the range, but it is not clear whether
     /// the minimum key of the node is contained in the range.
     MaybeAbove,
 }
@@ -261,10 +261,9 @@ where
     }
 
     /// Returns a [`Scanner`] pointing to an entry that is close enough to the entry with the
-    /// maximum key among those keys smaller than the given key.
+    /// maximum key among those keys that are smaller than or equal to the given key.
     ///
-    /// Returns `None` if all the keys in the [`LeafNode`] is equal to or greater than the given
-    /// key.
+    /// Returns `None` if all keys in the [`LeafNode`] are greater than the given key.
     #[inline]
     pub(super) fn max_le_appr<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<Scanner<'g, K, V>>
     where
@@ -422,7 +421,7 @@ where
     ///
     /// # Errors
     ///
-    /// Returns an error if a retry is required with a Boolean flag indicating that an entry has been removed.
+    /// Returns an error if a retry is required.
     #[inline]
     pub(super) fn remove_if<Q, F: FnMut(&V) -> bool, D: DeriveAsyncWait>(
         &self,
@@ -691,7 +690,7 @@ where
         middle_key.unwrap()
     }
 
-    /// Commits an on-going structural change.
+    /// Commits an ongoing structural change.
     #[inline]
     pub(super) fn commit(&self, guard: &Guard) {
         // Unfreeze both leaves.
@@ -780,9 +779,9 @@ where
         origin.map(Shared::release);
     }
 
-    /// Cleans up logically deleted [`LeafNode`] instances in the linked list.
+    /// Cleans up logically deleted leaf instances in the linked list.
     ///
-    /// If the target leaf does not exist in the [`LeafNode`], returns `false`.
+    /// Returns `false` if the target leaf does not exist in the [`LeafNode`].
     #[inline]
     pub(super) fn cleanup_link<'g, Q>(&self, key: &Q, traverse_max: bool, guard: &'g Guard) -> bool
     where
@@ -809,7 +808,7 @@ where
             return false;
         };
 
-        // It *would* be the maximum leaf node among those that containing keys smaller than the
+        // It *would* be the maximum leaf node among those containing keys smaller than the
         // target key. Hopefully, two jumps will be sufficient.
         scanner.jump(None, guard).map(|s| s.jump(None, guard));
         true
@@ -1109,7 +1108,7 @@ impl RemoveRangeState {
     where
         Q: Comparable<K> + ?Sized,
     {
-        if range_helper::contains(range, key) {
+        if range_contains(range, key) {
             match self {
                 RemoveRangeState::Below => {
                     if start_unbounded {

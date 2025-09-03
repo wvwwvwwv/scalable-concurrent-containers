@@ -31,13 +31,13 @@ pub struct Bucket<K, V, L: LruList, const TYPE: char> {
     lru_list: L,
 }
 
-/// The type of [`Bucket`] only allows sequential access to it.
+/// The type of [`Bucket`] that only allows sequential access to it.
 pub const MAP: char = 'S';
 
-/// The type of [`Bucket`] allows lock-free read.
+/// The type of [`Bucket`] that allows lock-free read access.
 pub const INDEX: char = 'O';
 
-/// The type of [`Bucket`] acts as an LRU cache.
+/// The type of [`Bucket`] that acts as an LRU cache.
 pub const CACHE: char = 'C';
 
 /// The size of the fixed-size entry array in a [`Bucket`].
@@ -64,7 +64,7 @@ pub struct EntryPtr<'g, K, V, const TYPE: char> {
     current_index: usize,
 }
 
-/// Doubly-linked-list interfaces to efficiently manage least-recently-used entries.
+/// Doubly-linked list interfaces to efficiently manage least-recently-used entries.
 pub trait LruList: 'static + Default {
     /// Evicts an entry.
     #[inline]
@@ -95,7 +95,7 @@ struct Metadata<K, V, const LEN: usize> {
     link: AtomicShared<LinkedBucket<K, V>>,
     /// Occupied slot bitmap.
     occupied_bitmap: AtomicU32,
-    /// Removed slot bitmap, or the `1-based` index of the most recently used entry if
+    /// Removed slot bitmap, or the 1-based index of the most recently used entry if
     /// `TYPE = CACHE` where `0` represents `nil`.
     removed_bitmap_or_lru_tail: AtomicU32,
     /// Partial hash array for fast hash lookup.
@@ -124,7 +124,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
 
     /// Returns `true` if the [`Bucket`] needs to be rebuilt.
     ///
-    /// If `TYPE == OPTIMISTIC`, removed entries are rarely dropped, therefore rebuilding the
+    /// If `TYPE == OPTIMISTIC`, removed entries are rarely dropped; therefore, rebuilding the
     /// [`Bucket`] might be needed to keep the [`Bucket`] as small as possible.
     #[inline]
     pub(crate) fn need_rebuild(&self) -> bool {
@@ -133,7 +133,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
                 == (u32::MAX >> (32 - BUCKET_LEN))
     }
 
-    /// Reserves memory for insertion, and then constructs the key-value pair in-place.
+    /// Reserves memory for insertion and then constructs the key-value pair in-place.
     #[inline]
     pub(crate) fn insert_with<'g, C: FnOnce() -> (K, V)>(
         &self,
@@ -330,7 +330,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         None
     }
 
-    /// Sets the entry having been just accessed.
+    /// Sets the entry as having been just accessed.
     #[inline]
     pub(crate) fn update_lru_tail(&self, entry_ptr: &EntryPtr<K, V, TYPE>) {
         debug_assert_eq!(TYPE, CACHE);
@@ -428,7 +428,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
 
     /// Drops entries in the [`DataBlock`] based on the metadata of the [`Bucket`].
     ///
-    /// The [`Bucket`] and the [`DataBlock`] should never be used afterwards.
+    /// The [`Bucket`] and the [`DataBlock`] should never be used afterward.
     pub(super) fn drop_entries(&self, data_block: &DataBlock<K, V, BUCKET_LEN>) {
         if !self.metadata.link.is_null(Relaxed) {
             let mut next = self.metadata.link.swap((None, Tag::None), Acquire);
@@ -455,7 +455,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         }
     }
 
-    /// Drops removed entries if they are completely unreachable, thereby allowing others to reuse
+    /// Drops removed entries if they are completely unreachable, allowing others to reuse
     /// the memory.
     pub(super) fn drop_removed_unreachable_entries(
         &self,
@@ -520,7 +520,7 @@ impl<K, V, L: LruList, const TYPE: char> Bucket<K, V, L, TYPE> {
         );
     }
 
-    /// Drops the data in-place.
+    /// Drops the data in place.
     #[inline]
     fn drop_entry<const LEN: usize>(data_block: &DataBlock<K, V, LEN>, index: usize) {
         unsafe {
@@ -881,7 +881,7 @@ impl<'g, K, V, L: LruList, const TYPE: char> Reader<'g, K, V, L, TYPE> {
 
     /// Locks the [`Bucket`] synchronously.
     ///
-    /// Returns `None` if the [`Bucket`] has been killed or empty.
+    /// Returns `None` if the [`Bucket`] has been killed or is empty.
     #[inline]
     pub(crate) fn lock_sync(
         bucket: &'g Bucket<K, V, L, TYPE>,
@@ -920,7 +920,7 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
         }
     }
 
-    /// Returns `true` if the [`EntryPtr`] points to, or has pointed to an occupied entry.
+    /// Returns `true` if the [`EntryPtr`] points to, or has pointed to, an occupied entry.
     #[inline]
     pub(crate) const fn is_valid(&self) -> bool {
         self.current_index != BUCKET_LEN
@@ -956,7 +956,7 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
 
     /// Gets a reference to the entry.
     ///
-    /// The [`EntryPtr`] must point to an occupied entry.
+    /// The [`EntryPtr`] must point to a valid entry.
     #[inline]
     pub(crate) fn get(&self, data_block: &'g DataBlock<K, V, BUCKET_LEN>) -> &'g (K, V) {
         debug_assert_ne!(self.current_index, usize::MAX);
@@ -990,7 +990,7 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
 
     /// Gets the partial hash value of the entry.
     ///
-    /// The [`EntryPtr`] must point to an occupied entry.
+    /// The [`EntryPtr`] must point to a valid entry.
     #[inline]
     pub(crate) fn partial_hash<L: LruList>(&self, bucket: &Bucket<K, V, L, TYPE>) -> u8 {
         debug_assert_ne!(self.current_index, usize::MAX);
@@ -1006,7 +1006,7 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
         }
     }
 
-    /// Unlinks the [`LinkedBucket`] currently pointed to by the [`EntryPtr`] from the linked list.
+    /// Unlinks the [`LinkedBucket`] currently pointed to by this [`EntryPtr`] from the linked list.
     ///
     /// The associated [`Bucket`] must be locked.
     fn unlink<L: LruList>(
@@ -1056,9 +1056,9 @@ impl<'g, K, V, const TYPE: char> EntryPtr<'g, K, V, TYPE> {
         }
     }
 
-    /// Moves the [`EntryPtr`] to the next occupied entry in the [`Bucket`].
+    /// Moves this [`EntryPtr`] to the next occupied entry in the [`Bucket`].
     ///
-    /// Returns `false` if it currently points to the last entry.
+    /// Returns `false` if this currently points to the last entry.
     #[inline]
     fn next_entry<L: LruList, const LEN: usize>(
         &mut self,

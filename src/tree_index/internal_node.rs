@@ -25,11 +25,11 @@ pub struct InternalNode<K, V> {
 
     /// A child [`Node`] that has no upper key bound.
     ///
-    /// It stores the maximum key in the node, and key-value pairs are firstly pushed to this
-    /// [`Node`] until split.
+    /// It stores the maximum key in the node, and key-value pairs are first pushed to this [`Node`]
+    /// until it splits.
     pub(super) unbounded_child: AtomicShared<Node<K, V>>,
 
-    /// On-going split operation.
+    /// Ongoing split operation.
     split_op: StructuralChange<K, V>,
 
     /// The latch protecting the [`InternalNode`].
@@ -39,7 +39,7 @@ pub struct InternalNode<K, V> {
     wait_queue: WaitQueue,
 }
 
-/// [`Locker`] holds exclusive ownership of a [`InternalNode`].
+/// [`Locker`] holds exclusive ownership of an [`InternalNode`].
 pub(super) struct Locker<'n, K, V> {
     internal_node: &'n InternalNode<K, V>,
 }
@@ -241,10 +241,9 @@ where
     }
 
     /// Returns a [`Scanner`] pointing to an entry that is close enough to the entry with the
-    /// maximum key among those keys smaller than or equal to the given key.
+    /// maximum key among those keys that are smaller than or equal to the given key.
     ///
-    /// Returns `None` if all the keys in the [`InternalNode`] is equal to or greater than the
-    /// given key.
+    /// Returns `None` if all keys in the [`InternalNode`] are greater than the given key.
     #[inline]
     pub(super) fn max_le_appr<'g, Q>(&self, key: &Q, guard: &'g Guard) -> Option<Scanner<'g, K, V>>
     where
@@ -407,7 +406,7 @@ where
     ///
     /// # Errors
     ///
-    /// Returns an error if a retry is required with a Boolean flag indicating that an entry has been removed.
+    /// Returns an error if a retry is required.
     #[inline]
     pub(super) fn remove_if<Q, F: FnMut(&V) -> bool, D>(
         &self,
@@ -938,7 +937,7 @@ where
         origin.map(Shared::release);
     }
 
-    /// Commits an on-going structural change recursively.
+    /// Commits an ongoing structural change recursively.
     #[inline]
     pub(super) fn commit(&self, guard: &Guard) {
         let origin = self.split_op.reset();
@@ -964,7 +963,7 @@ where
 
     /// Cleans up logically deleted leaves in the linked list.
     ///
-    /// If the target leaf node does not exist in the sub-tree, returns `false`.
+    /// Returns `false` if the target leaf node does not exist in the subtree.
     #[inline]
     pub(super) fn cleanup_link<'g, Q>(&self, key: &Q, traverse_max: bool, guard: &'g Guard) -> bool
     where

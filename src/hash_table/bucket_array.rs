@@ -57,7 +57,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
 impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
     /// Creates a new [`BucketArray`] of the given capacity.
     ///
-    /// `capacity` is the desired number entries, not the number of [`Bucket`] instances.
+    /// `capacity` is the desired number of entries, not the number of [`Bucket`] instances.
     pub(crate) fn new(
         capacity: usize,
         old_array: AtomicShared<BucketArray<K, V, L, TYPE>>,
@@ -167,7 +167,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         (self.sample_size() * self.sample_size()).min(self.len())
     }
 
-    /// Returns a [`Ptr`] to the old array.
+    /// Returns `true` if the old array exists.
     #[inline]
     pub(crate) fn has_old_array(&self) -> bool {
         !self.old_array.is_null(Acquire)
@@ -199,7 +199,7 @@ impl<K, V, L: LruList, const TYPE: char> BucketArray<K, V, L, TYPE> {
         });
     }
 
-    /// Calculates `log_2` of the array size from the given capacity.
+    /// Calculates log₂ of the array size from the given capacity.
     ///
     /// Returns a non-zero `u8`, even when `capacity < 2 * BUCKET_LEN`.
     #[allow(clippy::cast_possible_truncation)]

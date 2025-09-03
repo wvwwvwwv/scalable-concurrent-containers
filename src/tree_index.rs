@@ -36,7 +36,7 @@ use node::Node;
 ///
 /// ## The key features of [`TreeIndex`]
 ///
-/// * Lock-free-read: read and scan operations are never blocked and do not modify shared data.
+/// * Lock-free read: read and scan operations are never blocked and do not modify shared data.
 /// * Near lock-free write: write operations do not block unless a structural change is needed.
 /// * No busy waiting: each node has a wait queue to avoid spinning.
 /// * Immutability: the data in the container is immutable until it becomes unreachable.
@@ -60,7 +60,7 @@ use node::Node;
 ///
 /// ### Unwind safety
 ///
-/// [`TreeIndex`] is impervious to out-of-memory errors and panics in user-specified code on one
+/// [`TreeIndex`] is impervious to out-of-memory errors and panics in user-specified code under one
 /// condition; `K::drop` and `V::drop` must not panic.
 pub struct TreeIndex<K, V> {
     root: AtomicShared<Node<K, V>>,
@@ -68,8 +68,8 @@ pub struct TreeIndex<K, V> {
 
 /// An iterator over the entries of a [`TreeIndex`].
 ///
-/// An [`Iter`] iterates over all the entries that survive the [`Iter`] in monotonically increasing
-/// order.
+/// An [`Iter`] iterates over all the entries that exist during the lifetime of the [`Iter`] in
+/// monotonically increasing order.
 pub struct Iter<'t, 'g, K, V> {
     root: &'t AtomicShared<Node<K, V>>,
     leaf_scanner: Option<Scanner<'g, K, V>>,

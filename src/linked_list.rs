@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering::{self, AcqRel, Acquire, Relaxed};
 
 use sdd::{AtomicShared, Guard, Ptr, Shared, Tag};
 
-/// [`LinkedList`] is a type trait implementing a lock-free singly linked list.
+/// [`LinkedList`] is a trait implementing a lock-free singly linked list.
 pub trait LinkedList: Sized {
     /// Returns a reference to the forward link.
     ///
@@ -44,7 +44,7 @@ pub trait LinkedList: Sized {
 
     /// Marks `self` with an internal flag to denote that `self` is in a special state.
     ///
-    /// Returns `false` if a flag has already been marked on `self`.
+    /// Returns `false` if a flag has already been set on `self`.
     ///
     /// # Examples
     ///
@@ -72,7 +72,7 @@ pub trait LinkedList: Sized {
 
     /// Removes any mark from `self`.
     ///
-    /// Returns `false` if no flag has been marked on `self`.
+    /// Returns `false` if no flag has been set on `self`.
     ///
     /// # Examples
     ///
@@ -130,7 +130,7 @@ pub trait LinkedList: Sized {
 
     /// Deletes `self`.
     ///
-    /// Returns `false` if `self` already has `deleted` marked on it.
+    /// Returns `false` if `self` is already marked as deleted.
     ///
     /// # Examples
     ///
@@ -199,8 +199,8 @@ pub trait LinkedList: Sized {
 
     /// Appends the given entry to `self` and returns a pointer to the entry.
     ///
-    /// If `mark` is given `true`, it atomically marks an internal flag on `self` when updating
-    /// the linked list, otherwise it removes marks.
+    /// If `mark` is `true`, it atomically sets an internal flag on `self` when updating
+    /// the linked list, otherwise it removes the mark.
     ///
     /// # Errors
     ///

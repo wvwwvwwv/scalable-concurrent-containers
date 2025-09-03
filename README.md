@@ -267,7 +267,7 @@ Read access is always lock-free and non-blocking. Write access to an entry is lo
 
 ### Entry lifetime
 
-`TreeIndex` does not drop removed entries immediately. Instead, they are dropped when the leaf node is cleared or split, and this makes `TreeIndex` a sub-optimal choice if the workload is write-heavy.
+`TreeIndex` does not drop removed entries immediately. Instead, they are dropped when the leaf node is cleared or split, making `TreeIndex` a suboptimal choice if the workload is write-heavy.
 
 ### Examples
 

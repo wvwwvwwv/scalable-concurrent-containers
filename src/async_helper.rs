@@ -11,7 +11,7 @@ use sdd::{AtomicShared, Guard};
 /// [`SendableGuard`] is used when an asynchronous task needs to be suspended without invalidating
 /// any references.
 ///
-/// The validity of those references should be checked and verified by the user.
+/// The validity of those references must be checked and verified by the user.
 #[derive(Debug, Default)]
 pub(crate) struct SendableGuard {
     /// [`Guard`] that can be dropped without invalidating any references.
@@ -20,7 +20,7 @@ pub(crate) struct SendableGuard {
 
 /// [`WaitQueue`] implements an unfair wait queue.
 ///
-/// The sole purpose of the data structure is to avoid busy-waiting. [`WaitQueue`] should always be
+/// The sole purpose of this data structure is to avoid busy-waiting. [`WaitQueue`] should always be
 /// protected by [`sdd`].
 #[derive(Debug, Default)]
 pub(crate) struct WaitQueue {
@@ -51,7 +51,7 @@ impl SendableGuard {
     ///
     /// # Safety
     ///
-    /// The caller must ensure that any references derived from the returned [`Guard`] does not
+    /// The caller must ensure that any references derived from the returned [`Guard`] do not
     /// outlive the underlying instance.
     #[inline]
     pub(crate) fn guard(&self) -> &Guard {
@@ -73,7 +73,7 @@ impl SendableGuard {
     }
 }
 
-/// SAFETY: this is the sole purpose of `SendableGuard`; the Send-safety should be ensured by the
+/// SAFETY: this is the sole purpose of `SendableGuard`; Send-safety should be ensured by the
 /// user, e.g., the `SendableGuard` should always be reset before the task is suspended.
 unsafe impl Send for SendableGuard {}
 unsafe impl Sync for SendableGuard {}
@@ -100,7 +100,7 @@ impl WaitQueue {
 
     /// Pushes an [`AsyncWait`] into the [`WaitQueue`].
     ///
-    /// If it happens to acquire the desired resource, it returns an `Ok(T)` after waking up all
+    /// If it happens to acquire the desired resource, it returns `Ok(T)` after waking up all
     /// the entries in the [`WaitQueue`].
     #[inline]
     pub(crate) fn push_async_entry<'w, T, F: FnOnce() -> Result<T, ()>>(
@@ -120,7 +120,7 @@ impl WaitQueue {
         Err(())
     }
 
-    /// Signals the waiting threads to wake up.
+    /// Signals waiting threads to wake up.
     #[inline]
     pub(crate) fn signal(&self) {
         let _: Result<_, _> = self.gate.permit();

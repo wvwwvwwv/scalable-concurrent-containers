@@ -1,4 +1,4 @@
-//! This module implements helper types and traits for `serde`.
+//! This module implements helper types and traits for `serde` serialization and deserialization.
 
 use std::fmt;
 use std::hash::{BuildHasher, Hash};

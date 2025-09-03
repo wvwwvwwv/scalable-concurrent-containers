@@ -136,7 +136,6 @@ where
     ///
     /// Returns an error along with the supplied key if the key exists.
     ///
-    /// function.
     /// # Examples
     ///
     /// ```
@@ -354,7 +353,7 @@ where
         self.read_sync(key, |_| ()).is_some()
     }
 
-    /// Iterates over entries asynchronously for reading entries.
+    /// Iterates over entries asynchronously for reading.
     ///
     /// Stops iterating when the closure returns `false`, and this method also returns `false`.
     ///
@@ -379,7 +378,7 @@ where
         self.map.iter_async(|k, ()| f(k)).await
     }
 
-    /// Iterates over entries synchronously for reading entries.
+    /// Iterates over entries synchronously for reading.
     ///
     /// Stops iterating when the closure returns `false`, and this method also returns `false`.
     ///
@@ -407,9 +406,10 @@ where
         self.map.iter_sync(|k, ()| f(k))
     }
 
-    /// Iterates over entries asynchronously for updating entries.
+    /// Iterates over entries asynchronously for modification.
     ///
-    /// Stops iterating when the closure returns `false`, and this method also returns `false`.
+    /// This method stops iterating when the closure returns `false`, and also returns `false` in
+    /// that case.
     ///
     /// # Examples
     ///
@@ -444,9 +444,10 @@ where
             .await
     }
 
-    /// Iterates over entries synchronously for updating entries.
+    /// Iterates over entries synchronously for modification.
     ///
-    /// Stops iterating when the closure returns `false`, and this method also returns `false`.
+    /// This method stops iterating when the closure returns `false`, and also returns `false` in
+    /// that case.
     ///
     /// # Examples
     ///
@@ -479,10 +480,6 @@ where
 
     /// Retains keys that satisfy the given predicate.
     ///
-    /// Keys that have existed since the invocation of the method are guaranteed to be visited if
-    /// they are not removed, however the same key can be visited more than once if the [`HashSet`]
-    /// gets resized by another task.
-    ///
     /// # Examples
     ///
     /// ```
@@ -498,13 +495,7 @@ where
         self.map.retain_async(|k, ()| filter(k)).await;
     }
 
-    /// Retains the entries specified by the predicate.
-    ///
-    /// This method allows the predicate closure to modify the value field.
-    ///
-    /// Entries that have existed since the invocation of the method are guaranteed to be visited
-    /// if they are not removed, however the same entry can be visited more than once if the
-    /// [`HashSet`] gets resized by another thread.
+    /// Retains keys that satisfy the given predicate.
     ///
     /// # Examples
     ///
@@ -651,7 +642,7 @@ where
     /// Returns the index of the bucket that may contain the key.
     ///
     /// The method returns the index of the bucket associated with the key. The number of buckets
-    /// can be calculated by dividing `32` into the capacity.
+    /// can be calculated by dividing the capacity by `32`.
     ///
     /// # Examples
     ///
@@ -749,7 +740,7 @@ where
 {
     /// Creates an empty default [`HashSet`].
     ///
-    /// The default capacity is `64`.
+    /// The default capacity is `0`.
     ///
     /// # Examples
     ///
@@ -795,7 +786,7 @@ where
 {
     /// Compares two [`HashSet`] instances.
     ///
-    /// ## Locking behavior
+    /// ### Locking behavior
     ///
     /// Shared locks on buckets are acquired when comparing two instances of [`HashSet`], therefore
     /// it may lead to a deadlock if the instances are being modified by another thread.
@@ -809,7 +800,7 @@ where
 }
 
 impl<K> ConsumableEntry<'_, '_, K> {
-    /// Consumes the entry by moving out the key and value.
+    /// Consumes the entry by moving out the key.
     ///
     /// # Examples
     ///

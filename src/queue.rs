@@ -117,7 +117,7 @@ impl<T> Queue<T> {
     /// # Safety
     ///
     /// `T::drop` can be run after the [`Queue`] is dropped, therefore it is safe only if `T::drop`
-    /// does not access short-lived data or [`std::mem::needs_drop`] is `false` for `T`,
+    /// does not access short-lived data or [`std::mem::needs_drop`] is `false` for `T`.
     ///
     /// # Examples
     ///
@@ -140,7 +140,7 @@ impl<T> Queue<T> {
     }
 
     /// Pushes an instance of `T` if the newest entry satisfies the given condition without
-    /// checking the lifetime of `T`
+    /// checking the lifetime of `T`.
     ///
     /// # Errors
     ///
@@ -149,7 +149,7 @@ impl<T> Queue<T> {
     /// # Safety
     ///
     /// `T::drop` can be run after the [`Queue`] is dropped, therefore it is safe only if `T::drop`
-    /// does not access short-lived data or [`std::mem::needs_drop`] is `false` for `T`,
+    /// does not access short-lived data or [`std::mem::needs_drop`] is `false` for `T`.
     ///
     /// # Examples
     ///
@@ -204,7 +204,7 @@ impl<T> Queue<T> {
     ///
     /// # Errors
     ///
-    /// Returns an error along with the oldest entry if the given condition is not met.
+    /// Returns an error containing the oldest entry if the given condition is not met.
     ///
     /// # Examples
     ///
@@ -274,7 +274,7 @@ impl<T> Queue<T> {
 
     /// Returns the number of entries in the [`Queue`].
     ///
-    /// This method iterates over all the entries in the [`Queue`] to count them, therefore its
+    /// This method iterates over all the entries in the [`Queue`] to count them; therefore, its
     /// time complexity is `O(N)`.
     ///
     /// # Examples
