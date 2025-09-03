@@ -1,5 +1,6 @@
 # Changelog
 
+
 ## Version 3
 
 3.0.0
@@ -9,6 +10,7 @@
 ### API update
 
 * See [`#186`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/186).
+
 
 ## Version 2
 
@@ -234,6 +236,7 @@
 ### API update
 
 * See [`#108`](https://github.com/wvwwvwwv/scalable-concurrent-containers/issues/108).
+
 
 ## Version 1
 
