@@ -484,31 +484,6 @@ where
 
     /// Reads a key-value pair.
     ///
-    /// Returns `None` if the key does not exist.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashCache;
-    ///
-    /// let hashcache: HashCache<u64, u32> = HashCache::default();
-    ///
-    /// assert!(hashcache.read(&1, |_, v| *v).is_none());
-    /// assert!(hashcache.put(1, 10).is_ok());
-    /// assert_eq!(hashcache.read(&1, |_, v| *v).unwrap(), 10);
-    /// ```
-    #[inline]
-    pub fn read<Q, R, F: FnOnce(&K, &V) -> R>(&self, key: &Q, reader: F) -> Option<R>
-    where
-        Q: Equivalent<K> + Hash + ?Sized,
-    {
-        let hash = self.hash(key);
-        let guard = Guard::new();
-        self.reader_sync(key, hash, reader, &guard)
-    }
-
-    /// Reads a key-value pair.
-    ///
     /// Returns `None` if the key does not exist. It is an asynchronous method returning an
     /// `impl Future` for the caller to await.
     ///
@@ -531,7 +506,9 @@ where
         self.reader_async(key, hash, reader, &sendable_guard).await
     }
 
-    /// Returns `true` if the [`HashCache`] contains a value for the specified key.
+    /// Reads a key-value pair.
+    ///
+    /// Returns `None` if the key does not exist.
     ///
     /// # Examples
     ///
@@ -540,16 +517,18 @@ where
     ///
     /// let hashcache: HashCache<u64, u32> = HashCache::default();
     ///
-    /// assert!(!hashcache.contains(&1));
-    /// assert!(hashcache.put(1, 0).is_ok());
-    /// assert!(hashcache.contains(&1));
+    /// assert!(hashcache.read_sync(&1, |_, v| *v).is_none());
+    /// assert!(hashcache.put(1, 10).is_ok());
+    /// assert_eq!(hashcache.read_sync(&1, |_, v| *v).unwrap(), 10);
     /// ```
     #[inline]
-    pub fn contains<Q>(&self, key: &Q) -> bool
+    pub fn read_sync<Q, R, F: FnOnce(&K, &V) -> R>(&self, key: &Q, reader: F) -> Option<R>
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        self.read(key, |_, _| ()).is_some()
+        let hash = self.hash(key);
+        let guard = Guard::new();
+        self.reader_sync(key, hash, reader, &guard)
     }
 
     /// Returns `true` if the [`HashCache`] contains a value for the specified key.
@@ -571,6 +550,27 @@ where
         Q: Equivalent<K> + Hash + ?Sized,
     {
         self.read_async(key, |_, _| ()).await.is_some()
+    }
+
+    /// Returns `true` if the [`HashCache`] contains a value for the specified key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashCache;
+    ///
+    /// let hashcache: HashCache<u64, u32> = HashCache::default();
+    ///
+    /// assert!(!hashcache.contains_sync(&1));
+    /// assert!(hashcache.put(1, 0).is_ok());
+    /// assert!(hashcache.contains_sync(&1));
+    /// ```
+    #[inline]
+    pub fn contains_sync<Q>(&self, key: &Q) -> bool
+    where
+        Q: Equivalent<K> + Hash + ?Sized,
+    {
+        self.read_sync(key, |_, _| ()).is_some()
     }
 
     /// Removes a key-value pair if the key exists.
@@ -859,7 +859,7 @@ where
     /// });
     ///
     /// assert!(!result);
-    /// assert!(!hashcache.contains(&1));
+    /// assert!(!hashcache.contains_sync(&1));
     /// assert_eq!(hashcache.len(), 2);
     /// ```
     #[inline]
@@ -940,9 +940,9 @@ where
     ///
     /// hashcache.retain_sync(|k, v| *k == 1 && *v == 0);
     ///
-    /// assert!(hashcache.contains(&1));
-    /// assert!(!hashcache.contains(&2));
-    /// assert!(!hashcache.contains(&3));
+    /// assert!(hashcache.contains_sync(&1));
+    /// assert!(!hashcache.contains_sync(&2));
+    /// assert!(!hashcache.contains_sync(&3));
     /// ```
     #[inline]
     pub fn retain_sync<F: FnMut(&K, &mut V) -> bool>(&self, mut pred: F) {
@@ -967,7 +967,7 @@ where
     /// assert!(hashcache.put(1, 0).is_ok());
     /// hashcache.clear();
     ///
-    /// assert!(!hashcache.contains(&1));
+    /// assert!(!hashcache.contains_sync(&1));
     /// ```
     #[inline]
     pub fn clear(&self) {
@@ -1240,8 +1240,8 @@ where
     /// it may lead to a deadlock if the instances are being modified by another thread.
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        if self.iter_sync(|k, v| other.read(k, |_, ov| v == ov) == Some(true)) {
-            return other.iter_sync(|k, v| self.read(k, |_, sv| v == sv) == Some(true));
+        if self.iter_sync(|k, v| other.read_sync(k, |_, ov| v == ov) == Some(true)) {
+            return other.iter_sync(|k, v| self.read_sync(k, |_, sv| v == sv) == Some(true));
         }
         false
     }
@@ -1755,7 +1755,7 @@ impl<K, V> ConsumableEntry<'_, '_, K, V> {
     ///     true
     /// });
     ///
-    /// assert!(!hashcache.contains(&1));
+    /// assert!(!hashcache.contains_sync(&1));
     /// assert_eq!(consumed, Some(0));
     /// ```
     #[inline]

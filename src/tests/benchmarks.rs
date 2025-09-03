@@ -67,7 +67,7 @@ mod sync_benchmarks {
         }
         #[inline(always)]
         fn read_test(&self, k: &K) -> bool {
-            self.read(k, |_, _| ()).is_some()
+            self.read_sync(k, |_, _| ()).is_some()
         }
         #[inline(always)]
         fn scan_test(&self) -> usize {

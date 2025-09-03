@@ -274,29 +274,6 @@ where
 
     /// Reads a key.
     ///
-    /// Returns `None` if the key does not exist.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashSet;
-    ///
-    /// let hashset: HashSet<u64> = HashSet::default();
-    ///
-    /// assert!(hashset.read(&1, |_| true).is_none());
-    /// assert!(hashset.insert(1).is_ok());
-    /// assert!(hashset.read(&1, |_| true).unwrap());
-    /// ```
-    #[inline]
-    pub fn read<Q, R, F: FnOnce(&K) -> R>(&self, key: &Q, reader: F) -> Option<R>
-    where
-        Q: Equivalent<K> + Hash + ?Sized,
-    {
-        self.map.read(key, |k, ()| reader(k))
-    }
-
-    /// Reads a key.
-    ///
     /// Returns `None` if the key does not exist. It is an asynchronous method returning an
     /// `impl Future` for the caller to await.
     ///
@@ -317,7 +294,9 @@ where
         self.map.read_async(key, |k, ()| reader(k)).await
     }
 
-    /// Returns `true` if the [`HashSet`] contains the specified key.
+    /// Reads a key.
+    ///
+    /// Returns `None` if the key does not exist.
     ///
     /// # Examples
     ///
@@ -326,16 +305,16 @@ where
     ///
     /// let hashset: HashSet<u64> = HashSet::default();
     ///
-    /// assert!(!hashset.contains(&1));
+    /// assert!(hashset.read_sync(&1, |_| true).is_none());
     /// assert!(hashset.insert(1).is_ok());
-    /// assert!(hashset.contains(&1));
+    /// assert!(hashset.read_sync(&1, |_| true).unwrap());
     /// ```
     #[inline]
-    pub fn contains<Q>(&self, key: &Q) -> bool
+    pub fn read_sync<Q, R, F: FnOnce(&K) -> R>(&self, key: &Q, reader: F) -> Option<R>
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        self.read(key, |_| ()).is_some()
+        self.map.read_sync(key, |k, ()| reader(k))
     }
 
     /// Returns `true` if the [`HashSet`] contains the specified key.
@@ -357,6 +336,27 @@ where
         Q: Equivalent<K> + Hash + ?Sized,
     {
         self.map.contains_async(key).await
+    }
+
+    /// Returns `true` if the [`HashSet`] contains the specified key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashSet;
+    ///
+    /// let hashset: HashSet<u64> = HashSet::default();
+    ///
+    /// assert!(!hashset.contains_sync(&1));
+    /// assert!(hashset.insert(1).is_ok());
+    /// assert!(hashset.contains_sync(&1));
+    /// ```
+    #[inline]
+    pub fn contains_sync<Q>(&self, key: &Q) -> bool
+    where
+        Q: Equivalent<K> + Hash + ?Sized,
+    {
+        self.read_sync(key, |_| ()).is_some()
     }
 
     /// Iterates over entries asynchronously for reading entries.
@@ -436,7 +436,7 @@ where
     /// });
     ///
     /// assert!(!result);
-    /// assert!(!hashset.contains(&1));
+    /// assert!(!hashset.contains_sync(&1));
     /// assert_eq!(hashset.len(), 2);
     /// ```
     #[inline]
@@ -511,7 +511,7 @@ where
     ///
     /// Entries that have existed since the invocation of the method are guaranteed to be visited
     /// if they are not removed, however the same entry can be visited more than once if the
-    /// [`HashCache`] gets resized by another thread.
+    /// [`HashSet`] gets resized by another thread.
     ///
     /// # Examples
     ///
@@ -526,9 +526,9 @@ where
     ///
     /// hashset.retain_sync(|k| *k == 1);
     ///
-    /// assert!(hashset.contains(&1));
-    /// assert!(!hashset.contains(&2));
-    /// assert!(!hashset.contains(&3));
+    /// assert!(hashset.contains_sync(&1));
+    /// assert!(!hashset.contains_sync(&2));
+    /// assert!(!hashset.contains_sync(&3));
     /// ```
     #[inline]
     pub fn retain_sync<F: FnMut(&K) -> bool>(&self, mut pred: F) {
@@ -552,7 +552,7 @@ where
     /// assert!(hashset.insert(1).is_ok());
     /// hashset.clear();
     ///
-    /// assert!(!hashset.contains(&1));
+    /// assert!(!hashset.contains_sync(&1));
     /// ```
     #[inline]
     pub fn clear(&self) {
@@ -810,8 +810,8 @@ where
     /// it may lead to a deadlock if the instances are being modified by another thread.
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        if self.iter_sync(|k| other.contains(k)) {
-            return other.iter_sync(|k| self.contains(k));
+        if self.iter_sync(|k| other.contains_sync(k)) {
+            return other.iter_sync(|k| self.contains_sync(k));
         }
         false
     }
@@ -840,7 +840,7 @@ impl<K> ConsumableEntry<'_, '_, K> {
     ///     true
     /// });
     ///
-    /// assert!(!hashset.contains(&1));
+    /// assert!(!hashset.contains_sync(&1));
     /// assert_eq!(consumed, Some(1));
     /// ```
     #[inline]

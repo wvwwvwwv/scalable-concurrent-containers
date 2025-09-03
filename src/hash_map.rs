@@ -322,9 +322,9 @@ where
     ///     hashmap.entry_sync(ch).and_modify(|counter| *counter += 1).or_insert(1);
     /// }
     ///
-    /// assert_eq!(hashmap.read(&'s', |_, v| *v), Some(2));
-    /// assert_eq!(hashmap.read(&'t', |_, v| *v), Some(3));
-    /// assert!(hashmap.read(&'y', |_, v| *v).is_none());
+    /// assert_eq!(hashmap.read_sync(&'s', |_, v| *v), Some(2));
+    /// assert_eq!(hashmap.read_sync(&'t', |_, v| *v), Some(3));
+    /// assert!(hashmap.read_sync(&'y', |_, v| *v).is_none());
     /// ```
     #[inline]
     pub fn entry_sync(&self, key: K) -> Entry<'_, K, V, H> {
@@ -425,7 +425,7 @@ where
     /// *first_entry.get_mut() = 2;
     ///
     /// assert!(first_entry.next_sync().is_none());
-    /// assert_eq!(hashmap.read(&1, |_, v| *v), Some(2));
+    /// assert_eq!(hashmap.read_sync(&1, |_, v| *v), Some(2));
     /// ```
     #[inline]
     pub fn begin_sync(&self) -> Option<OccupiedEntry<'_, K, V, H>> {
@@ -597,7 +597,7 @@ where
     ///
     /// assert!(hashmap.upsert(1, 0).is_none());
     /// assert_eq!(hashmap.upsert(1, 1).unwrap(), 0);
-    /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 1);
+    /// assert_eq!(hashmap.read_sync(&1, |_, v| *v).unwrap(), 1);
     /// ```
     #[inline]
     pub fn upsert(&self, key: K, val: V) -> Option<V> {
@@ -648,7 +648,7 @@ where
     /// assert!(hashmap.update(&1, |_, _| true).is_none());
     /// assert!(hashmap.insert(1, 0).is_ok());
     /// assert_eq!(hashmap.update(&1, |_, v| { *v = 2; *v }).unwrap(), 2);
-    /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
+    /// assert_eq!(hashmap.read_sync(&1, |_, v| *v).unwrap(), 2);
     /// ```
     #[inline]
     pub fn update<Q, U, R>(&self, key: &Q, updater: U) -> Option<R>
@@ -835,7 +835,7 @@ where
     /// Gets an [`OccupiedEntry`] corresponding to the key for in-place modification.
     ///
     /// [`OccupiedEntry`] exclusively owns the entry, preventing others from gaining access to it:
-    /// use [`read`](Self::read) if read-only access is sufficient.
+    /// use [`read_sync`](Self::read_sync) if read-only access is sufficient.
     ///
     /// Returns `None` if the key does not exist.
     ///
@@ -928,31 +928,6 @@ where
 
     /// Reads a key-value pair.
     ///
-    /// Returns `None` if the key does not exist.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use scc::HashMap;
-    ///
-    /// let hashmap: HashMap<u64, u32> = HashMap::default();
-    ///
-    /// assert!(hashmap.read(&1, |_, v| *v).is_none());
-    /// assert!(hashmap.insert(1, 10).is_ok());
-    /// assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 10);
-    /// ```
-    #[inline]
-    pub fn read<Q, R, F: FnOnce(&K, &V) -> R>(&self, key: &Q, reader: F) -> Option<R>
-    where
-        Q: Equivalent<K> + Hash + ?Sized,
-    {
-        let hash = self.hash(key);
-        let guard = Guard::new();
-        self.reader_sync(key, hash, reader, &guard)
-    }
-
-    /// Reads a key-value pair.
-    ///
     /// Returns `None` if the key does not exist. It is an asynchronous method returning an
     /// `impl Future` for the caller to await.
     ///
@@ -975,7 +950,9 @@ where
         self.reader_async(key, hash, reader, &sendable_guard).await
     }
 
-    /// Returns `true` if the [`HashMap`] contains a value for the specified key.
+    /// Reads a key-value pair.
+    ///
+    /// Returns `None` if the key does not exist.
     ///
     /// # Examples
     ///
@@ -984,16 +961,18 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
-    /// assert!(!hashmap.contains(&1));
-    /// assert!(hashmap.insert(1, 0).is_ok());
-    /// assert!(hashmap.contains(&1));
+    /// assert!(hashmap.read_sync(&1, |_, v| *v).is_none());
+    /// assert!(hashmap.insert(1, 10).is_ok());
+    /// assert_eq!(hashmap.read_sync(&1, |_, v| *v).unwrap(), 10);
     /// ```
     #[inline]
-    pub fn contains<Q>(&self, key: &Q) -> bool
+    pub fn read_sync<Q, R, F: FnOnce(&K, &V) -> R>(&self, key: &Q, reader: F) -> Option<R>
     where
         Q: Equivalent<K> + Hash + ?Sized,
     {
-        self.read(key, |_, _| ()).is_some()
+        let hash = self.hash(key);
+        let guard = Guard::new();
+        self.reader_sync(key, hash, reader, &guard)
     }
 
     /// Returns `true` if the [`HashMap`] contains a value for the specified key.
@@ -1015,6 +994,27 @@ where
         Q: Equivalent<K> + Hash + ?Sized,
     {
         self.read_async(key, |_, _| ()).await.is_some()
+    }
+
+    /// Returns `true` if the [`HashMap`] contains a value for the specified key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use scc::HashMap;
+    ///
+    /// let hashmap: HashMap<u64, u32> = HashMap::default();
+    ///
+    /// assert!(!hashmap.contains_sync(&1));
+    /// assert!(hashmap.insert(1, 0).is_ok());
+    /// assert!(hashmap.contains_sync(&1));
+    /// ```
+    #[inline]
+    pub fn contains_sync<Q>(&self, key: &Q) -> bool
+    where
+        Q: Equivalent<K> + Hash + ?Sized,
+    {
+        self.read_sync(key, |_, _| ()).is_some()
     }
 
     /// Iterates over entries asynchronously for reading entries.
@@ -1180,7 +1180,7 @@ where
     /// });
     ///
     /// assert!(!result);
-    /// assert!(!hashmap.contains(&1));
+    /// assert!(!hashmap.contains_sync(&1));
     /// assert_eq!(hashmap.len(), 2);
     /// ```
     #[inline]
@@ -1261,9 +1261,9 @@ where
     ///
     /// hashmap.retain_sync(|k, v| *k == 1 && *v == 0);
     ///
-    /// assert!(hashmap.contains(&1));
-    /// assert!(!hashmap.contains(&2));
-    /// assert!(!hashmap.contains(&3));
+    /// assert!(hashmap.contains_sync(&1));
+    /// assert!(!hashmap.contains_sync(&2));
+    /// assert!(!hashmap.contains_sync(&3));
     /// ```
     #[inline]
     pub fn retain_sync<F: FnMut(&K, &mut V) -> bool>(&self, mut pred: F) {
@@ -1288,7 +1288,7 @@ where
     /// assert!(hashmap.insert(1, 0).is_ok());
     /// hashmap.clear();
     ///
-    /// assert!(!hashmap.contains(&1));
+    /// assert!(!hashmap.contains_sync(&1));
     /// ```
     #[inline]
     pub fn clear(&self) {
@@ -1595,8 +1595,8 @@ where
     /// it may lead to a deadlock if the instances are being modified by another thread.
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        if self.iter_sync(|k, v| other.read(k, |_, ov| v == ov) == Some(true)) {
-            return other.iter_sync(|k, v| self.read(k, |_, sv| v == sv) == Some(true));
+        if self.iter_sync(|k, v| other.read_sync(k, |_, ov| v == ov) == Some(true)) {
+            return other.iter_sync(|k, v| self.read_sync(k, |_, sv| v == sv) == Some(true));
         }
         false
     }
@@ -1617,7 +1617,7 @@ where
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// hashmap.entry_sync(3).or_insert(7);
-    /// assert_eq!(hashmap.read(&3, |_, v| *v), Some(7));
+    /// assert_eq!(hashmap.read_sync(&3, |_, v| *v), Some(7));
     /// ```
     #[inline]
     pub fn or_insert(self, val: V) -> OccupiedEntry<'h, K, V, H> {
@@ -1634,7 +1634,7 @@ where
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// hashmap.entry_sync(19).or_insert_with(|| 5);
-    /// assert_eq!(hashmap.read(&19, |_, v| *v), Some(5));
+    /// assert_eq!(hashmap.read_sync(&19, |_, v| *v), Some(5));
     /// ```
     #[inline]
     pub fn or_insert_with<F: FnOnce() -> V>(self, constructor: F) -> OccupiedEntry<'h, K, V, H> {
@@ -1654,7 +1654,7 @@ where
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// hashmap.entry_sync(11).or_insert_with_key(|k| if *k == 11 { 7 } else { 3 });
-    /// assert_eq!(hashmap.read(&11, |_, v| *v), Some(7));
+    /// assert_eq!(hashmap.read_sync(&11, |_, v| *v), Some(7));
     /// ```
     #[inline]
     pub fn or_insert_with_key<F: FnOnce(&K) -> V>(
@@ -1698,10 +1698,10 @@ where
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     ///
     /// hashmap.entry_sync(37).and_modify(|v| { *v += 1 }).or_insert(47);
-    /// assert_eq!(hashmap.read(&37, |_, v| *v), Some(47));
+    /// assert_eq!(hashmap.read_sync(&37, |_, v| *v), Some(47));
     ///
     /// hashmap.entry_sync(37).and_modify(|v| { *v += 1 }).or_insert(3);
-    /// assert_eq!(hashmap.read(&37, |_, v| *v), Some(48));
+    /// assert_eq!(hashmap.read_sync(&37, |_, v| *v), Some(48));
     /// ```
     #[inline]
     #[must_use]
@@ -1756,7 +1756,7 @@ where
     ///
     /// let hashmap: HashMap<u64, u32> = HashMap::default();
     /// hashmap.entry_sync(11).or_default();
-    /// assert_eq!(hashmap.read(&11, |_, v| *v), Some(0));
+    /// assert_eq!(hashmap.read_sync(&11, |_, v| *v), Some(0));
     /// ```
     #[inline]
     pub fn or_default(self) -> OccupiedEntry<'h, K, V, H> {
@@ -1883,7 +1883,7 @@ where
     ///     assert_eq!(*o.get(), 29);
     /// }
     ///
-    /// assert_eq!(hashmap.read(&37, |_, v| *v), Some(29));
+    /// assert_eq!(hashmap.read_sync(&37, |_, v| *v), Some(29));
     /// ```
     #[inline]
     pub fn get_mut(&mut self) -> &mut V {
@@ -1910,7 +1910,7 @@ where
     ///     assert_eq!(o.insert(17), 11);
     /// }
     ///
-    /// assert_eq!(hashmap.read(&37, |_, v| *v), Some(17));
+    /// assert_eq!(hashmap.read_sync(&37, |_, v| *v), Some(17));
     /// ```
     #[inline]
     pub fn insert(&mut self, val: V) -> V {
@@ -2196,7 +2196,7 @@ where
     ///     o.insert_entry(29);
     /// }
     ///
-    /// assert_eq!(hashmap.read(&19, |_, v| *v), Some(29));
+    /// assert_eq!(hashmap.read_sync(&19, |_, v| *v), Some(29));
     /// ```
     #[inline]
     pub fn insert_entry(self, val: V) -> OccupiedEntry<'h, K, V, H> {
@@ -2255,7 +2255,7 @@ impl<K, V> ConsumableEntry<'_, '_, K, V> {
     ///     true
     /// });
     ///
-    /// assert!(!hashmap.contains(&1));
+    /// assert!(!hashmap.contains_sync(&1));
     /// assert_eq!(consumed, Some(0));
     /// ```
     #[inline]

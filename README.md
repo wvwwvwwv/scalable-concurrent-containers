@@ -62,11 +62,11 @@ assert!(hashmap.insert(1, 0).is_ok());
 assert!(hashmap.insert(1, 1).is_err());
 assert_eq!(hashmap.upsert(1, 1).unwrap(), 0);
 assert_eq!(hashmap.update(&1, |_, v| { *v = 3; *v }).unwrap(), 3);
-assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 3);
+assert_eq!(hashmap.read_sync(&1, |_, v| *v).unwrap(), 3);
 assert_eq!(hashmap.remove(&1).unwrap(), (1, 3));
 
 hashmap.entry_sync(7).or_insert(17);
-assert_eq!(hashmap.read(&7, |_, v| *v).unwrap(), 17);
+assert_eq!(hashmap.read_sync(&7, |_, v| *v).unwrap(), 17);
 
 let future_insert = hashmap.insert_async(2, 1);
 let future_remove = hashmap.remove_async(&1);
@@ -80,10 +80,10 @@ use scc::HashMap;
 let hashmap: HashMap<u64, u32> = HashMap::default();
 
 hashmap.entry_sync(3).or_insert(7);
-assert_eq!(hashmap.read(&3, |_, v| *v), Some(7));
+assert_eq!(hashmap.read_sync(&3, |_, v| *v), Some(7));
 
 hashmap.entry_sync(4).and_modify(|v| { *v += 1 }).or_insert(5);
-assert_eq!(hashmap.read(&4, |_, v| *v), Some(5));
+assert_eq!(hashmap.read_sync(&4, |_, v| *v), Some(5));
 ```
 
 [`HashMap`](#hashmap) does not provide an [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) since it is impossible to confine the lifetime of [`Iterator::Item`](https://doc.rust-lang.org/std/iter/trait.Iterator.html#associatedtype.Item) to the [Iterator](https://doc.rust-lang.org/std/iter/trait.Iterator.html). The limitation can be circumvented by relying on interior mutability, e.g., letting the returned reference hold a lock. However, it may lead to a deadlock if not correctly used, and frequent acquisition of locks may impact performance. Therefore, [`Iterator`](https://doc.rust-lang.org/std/iter/trait.Iterator.html) is not implemented; instead, [`HashMap`](#hashmap) provides several methods to iterate over entries synchronously or asynchronously: `iter_{async|sync}`, `iter_mut_{async|sync}`, `retain_{async|sync}`, `begin_{async|sync}`, `OccupiedEntry::next_{async|sync}`, and `OccupiedEntry::remove_and_{async|sync}`
@@ -100,8 +100,8 @@ assert!(hashmap.insert(2, 1).is_ok());
 let mut acc = 0;
 hashmap.retain_sync(|k, v_mut| { acc += *k; *v_mut = 2; true });
 assert_eq!(acc, 3);
-assert_eq!(hashmap.read(&1, |_, v| *v).unwrap(), 2);
-assert_eq!(hashmap.read(&2, |_, v| *v).unwrap(), 2);
+assert_eq!(hashmap.read_sync(&1, |_, v| *v).unwrap(), 2);
+assert_eq!(hashmap.read_sync(&2, |_, v| *v).unwrap(), 2);
 
 // `iter_sync` returns `true` when all the entries satisfy the predicate.
 assert!(hashmap.insert(3, 2).is_ok());
@@ -150,9 +150,9 @@ use scc::HashSet;
 
 let hashset: HashSet<u64> = HashSet::default();
 
-assert!(hashset.read(&1, |_| true).is_none());
+assert!(hashset.read_sync(&1, |_| true).is_none());
 assert!(hashset.insert(1).is_ok());
-assert!(hashset.read(&1, |_| true).unwrap());
+assert!(hashset.read_sync(&1, |_| true).unwrap());
 
 let future_insert = hashset.insert_async(2);
 let future_remove = hashset.remove_async(&1);

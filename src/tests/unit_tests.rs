@@ -107,8 +107,8 @@ mod hashmap {
     fn equivalent() {
         let hashmap: HashMap<EqTest, usize> = HashMap::default();
         assert!(hashmap.insert(EqTest("HELLO".to_owned(), 1), 1).is_ok());
-        assert!(!hashmap.contains("NO"));
-        assert!(hashmap.contains("HELLO"));
+        assert!(!hashmap.contains_sync("NO"));
+        assert!(hashmap.contains_sync("HELLO"));
     }
 
     #[cfg_attr(miri, ignore)]
@@ -187,7 +187,7 @@ mod hashmap {
         let hashmap_clone = hashmap.clone();
         let barrier_clone = barrier.clone();
         let task = thread::spawn(move || {
-            hashmap_clone.read("first", |_key, value| {
+            hashmap_clone.read_sync("first", |_key, value| {
                 {
                     let first_item = value.first();
                     assert_eq!(first_item.unwrap(), &123_u8);
@@ -231,7 +231,7 @@ mod hashmap {
         let hashmap_clone = hashmap.clone();
         hashmap.clear();
         for k in 0..workload_size {
-            assert!(hashmap_clone.read(&k, |_, _| ()).is_some());
+            assert!(hashmap_clone.read_sync(&k, |_, _| ()).is_some());
         }
         hashmap_clone.clear();
         assert_eq!(INST_CNT.load(Relaxed), 0);
@@ -274,8 +274,8 @@ mod hashmap {
                 checker1.insert((str_val.clone(), i));
             }
             let str_borrowed = str_val.as_str();
-            assert!(hashmap1.contains(str_borrowed));
-            assert!(hashmap1.read(str_borrowed, |_, _| ()).is_some());
+            assert!(hashmap1.contains_sync(str_borrowed));
+            assert!(hashmap1.read_sync(str_borrowed, |_, _| ()).is_some());
 
             if hashmap2.insert(i, str_val.clone()).is_ok() {
                 checker2.insert((i, str_val.clone()));
@@ -571,7 +571,7 @@ mod hashmap {
                         assert!(result.is_ok());
                     }
                     for id in range.clone() {
-                        assert!(hashmap.read(&id, |_, _| ()).is_some());
+                        assert!(hashmap.read_sync(&id, |_, _| ()).is_some());
                     }
 
                     let mut in_range = 0;
@@ -949,7 +949,7 @@ mod hashmap {
             assert_eq!(found_keys, range);
             assert_eq!(checker.load(Relaxed), range * 2);
             for d in key..(key + range) {
-                assert!(hashmap.contains(&Data::new(d, checker.clone())));
+                assert!(hashmap.contains_sync(&Data::new(d, checker.clone())));
             }
             for d in key..(key + range) {
                 assert!(hashmap.remove(&Data::new(d, checker.clone())).is_some());
@@ -1771,8 +1771,8 @@ mod hashset {
     fn equivalent() {
         let hashset: HashSet<EqTest> = HashSet::default();
         assert!(hashset.insert(EqTest("HELLO".to_owned(), 1)).is_ok());
-        assert!(!hashset.contains("NO"));
-        assert!(hashset.contains("HELLO"));
+        assert!(!hashset.contains_sync("NO"));
+        assert!(hashset.contains_sync("HELLO"));
     }
 
     #[test]
@@ -1869,8 +1869,8 @@ mod hashcache {
     fn equivalent() {
         let hashcache: HashCache<EqTest, usize> = HashCache::default();
         assert!(hashcache.put(EqTest("HELLO".to_owned(), 1), 1).is_ok());
-        assert!(!hashcache.contains("NO"));
-        assert!(hashcache.contains("HELLO"));
+        assert!(!hashcache.contains_sync("NO"));
+        assert!(hashcache.contains_sync("HELLO"));
     }
 
     #[test]
@@ -3660,7 +3660,7 @@ mod malfunction {
             });
             NEVER_PANIC.store(true, Relaxed);
             assert_eq!(
-                hashmap.read(&(k as usize), |_, _| ()).is_some(),
+                hashmap.read_sync(&(k as usize), |_, _| ()).is_some(),
                 result.is_ok()
             );
             NEVER_PANIC.store(false, Relaxed);
@@ -3680,7 +3680,7 @@ mod malfunction {
                     .2 = true;
             });
             assert_eq!(
-                hashmap.read(&(k as usize), |_, _| ()).is_some(),
+                hashmap.read_sync(&(k as usize), |_, _| ()).is_some(),
                 result.is_ok()
             );
         }

@@ -38,7 +38,7 @@ fn read(c: &mut Criterion) {
             }
             let start = Instant::now();
             for i in 0..iters {
-                assert_eq!(hashmap.read(&i, |_, v| *v == i), Some(true));
+                assert_eq!(hashmap.read_sync(&i, |_, v| *v == i), Some(true));
             }
             start.elapsed()
         })
