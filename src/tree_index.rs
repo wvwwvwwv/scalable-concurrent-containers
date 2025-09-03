@@ -52,6 +52,11 @@ use node::Node;
 /// non-blocking as long as no structural changes are required. However, when nodes are split or
 /// merged by a write operation, other write operations on keys in the affected range are blocked.
 ///
+/// ### Asynchronous and synchronous methods
+///
+/// It is generally not recommended to use synchronous methods in an asynchronous code block or
+/// [`poll`](std::future::Future::poll), since it may lead to deadlocks or performance degradation.
+///
 /// ### Unwind safety
 ///
 /// [`TreeIndex`] is impervious to out-of-memory errors and panics in user-specified code on one
@@ -156,8 +161,6 @@ where
     V: 'static + Clone,
 {
     /// Inserts a key-value pair.
-    ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Errors
     ///
@@ -307,11 +310,8 @@ where
 
     /// Removes a key-value pair.
     ///
-    /// Returns `false` if the key does not exist. It is an asynchronous method returning an
-    /// `impl Future` for the caller to await.
-    ///
-    /// Returns `true` if the key existed and the condition was met after marking the entry
-    /// unreachable; the memory will be reclaimed later.
+    /// Returns `false` if the key does not exist. Returns `true` if the key existed and the
+    /// condition was met after marking the entry unreachable; the memory will be reclaimed later.
     ///
     /// # Examples
     ///
@@ -357,11 +357,9 @@ where
 
     /// Removes a key-value pair if the given condition is met.
     ///
-    /// Returns `false` if the key does not exist or the condition was not met. It is an
-    /// asynchronous method returning an `impl Future` for the caller to await.
-    ///
-    /// Returns `true` if the key existed and the condition was met after marking the entry
-    /// unreachable; the memory will be reclaimed later.
+    /// Returns `false` if the key does not exist or the condition was not met. Returns `true` if
+    /// the key existed and the condition was met after marking the entry unreachable; the memory
+    /// will be reclaimed later.
     ///
     /// # Examples
     ///
@@ -487,8 +485,6 @@ where
     ///
     /// This method removes internal nodes that are definitely contained in the specified range
     /// first, and then removes remaining entries individually.
-    ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Notes
     ///

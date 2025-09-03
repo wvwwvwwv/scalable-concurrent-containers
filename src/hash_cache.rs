@@ -195,8 +195,6 @@ where
 {
     /// Gets the entry associated with the given key in the map for in-place manipulation.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
-    ///
     /// # Examples
     ///
     /// ```
@@ -313,8 +311,7 @@ where
 
     /// Puts a key-value pair into the [`HashCache`].
     ///
-    /// Returns `Some` if an entry was evicted for the new key-value pair. It is an asynchronous
-    /// method returning an `impl Future` for the caller to await.
+    /// Returns `Some` if an entry was evicted for the new key-value pair.
     ///
     /// # Errors
     ///
@@ -391,8 +388,7 @@ where
     /// [`OccupiedEntry`] exclusively owns the entry, preventing others from gaining access to it:
     /// use [`read_async`](Self::read_async) if read-only access is sufficient.
     ///
-    /// Returns `None` if the key does not exist. It is an asynchronous method returning an
-    /// `impl Future` for the caller to await.
+    /// Returns `None` if the key does not exist.
     ///
     /// # Examples
     ///
@@ -484,8 +480,7 @@ where
 
     /// Reads a key-value pair.
     ///
-    /// Returns `None` if the key does not exist. It is an asynchronous method returning an
-    /// `impl Future` for the caller to await.
+    /// Returns `None` if the key does not exist.
     ///
     /// # Examples
     ///
@@ -533,8 +528,6 @@ where
 
     /// Returns `true` if the [`HashCache`] contains a value for the specified key.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
-    ///
     /// # Examples
     ///
     /// ```
@@ -575,8 +568,7 @@ where
 
     /// Removes a key-value pair if the key exists.
     ///
-    /// Returns `None` if the key does not exist. It is an asynchronous method returning an
-    /// `impl Future` for the caller to await.
+    /// Returns `None` if the key does not exist.
     ///
     /// # Examples
     ///
@@ -620,8 +612,7 @@ where
 
     /// Removes a key-value pair if the key exists and the given condition is met.
     ///
-    /// Returns `None` if the key does not exist or the condition was not met. It is an
-    /// asynchronous method returning an `impl Future` for the caller to await.
+    /// Returns `None` if the key does not exist or the condition was not met.
     ///
     /// # Examples
     ///
@@ -899,8 +890,6 @@ where
     /// if they are not removed, however the same entry can be visited more than once if the
     /// [`HashCache`] gets resized by another thread.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
-    ///
     /// # Examples
     ///
     /// ```
@@ -960,8 +949,6 @@ where
     }
 
     /// Clears the [`HashCache`] by removing all key-value pairs.
-    ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///

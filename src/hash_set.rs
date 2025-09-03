@@ -132,8 +132,6 @@ where
 
     /// Inserts a key into the [`HashSet`].
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
-    ///
     /// # Errors
     ///
     /// Returns an error along with the supplied key if the key exists.
@@ -178,8 +176,7 @@ where
 
     /// Removes a key if the key exists.
     ///
-    /// Returns `None` if the key does not exist. It is an asynchronous method returning an
-    /// `impl Future` for the caller to await.
+    /// Returns `None` if the key does not exist.
     ///
     /// # Examples
     ///
@@ -226,8 +223,7 @@ where
 
     /// Removes a key if the key exists and the given condition is met.
     ///
-    /// Returns `None` if the key does not exist or the condition was not met. It is an
-    /// asynchronous method returning an `impl Future` for the caller to await.
+    /// Returns `None` if the key does not exist or the condition was not met.
     ///
     /// # Examples
     ///
@@ -276,8 +272,7 @@ where
 
     /// Reads a key.
     ///
-    /// Returns `None` if the key does not exist. It is an asynchronous method returning an
-    /// `impl Future` for the caller to await.
+    /// Returns `None` if the key does not exist.
     ///
     /// # Examples
     ///
@@ -320,8 +315,6 @@ where
     }
 
     /// Returns `true` if the [`HashSet`] contains the specified key.
-    ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -490,8 +483,6 @@ where
     /// they are not removed, however the same key can be visited more than once if the [`HashSet`]
     /// gets resized by another task.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
-    ///
     /// # Examples
     ///
     /// ```
@@ -543,8 +534,6 @@ where
     }
 
     /// Clears the [`HashSet`] by removing all keys.
-    ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///

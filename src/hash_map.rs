@@ -67,6 +67,11 @@ use crate::hash_table::bucket::{BUCKET_LEN, DataBlock, Writer};
 /// asynchronous code block or [`poll`](std::future::Future::poll), since it may lead to deadlocks
 /// or performance degradation.
 ///
+/// ### Asynchronous and synchronous methods
+///
+/// It is generally not recommended to use synchronous methods in an asynchronous code block or
+/// [`poll`](std::future::Future::poll), since it may lead to deadlocks or performance degradation.
+///
 /// ## Unwind safety
 ///
 /// [`HashMap`] is impervious to out-of-memory errors and panics in user-specified code on one
@@ -270,8 +275,6 @@ where
 
     /// Gets the entry associated with the given key in the map for in-place manipulation.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
-    ///
     /// # Examples
     ///
     /// ```
@@ -391,8 +394,6 @@ where
     /// The returned [`OccupiedEntry`] in combination with [`OccupiedEntry::next_async`] can act as
     /// a mutable iterator over entries.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
-    ///
     /// # Examples
     ///
     /// ```
@@ -433,8 +434,6 @@ where
     }
 
     /// Finds any entry satisfying the supplied predicate for in-place manipulation.
-    ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -518,8 +517,6 @@ where
 
     /// Inserts a key-value pair into the [`HashMap`].
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
-    ///
     /// # Errors
     ///
     /// Returns an error along with the supplied key-value pair if the key exists.
@@ -586,8 +583,7 @@ where
 
     /// Upserts a key-value pair into the [`HashMap`].
     ///
-    /// Returns the old value if the [`HashMap`] has this key present, or returns `None`. It is an
-    /// asynchronous method returning an `impl Future` for the caller to await.
+    /// Returns the old value if the [`HashMap`] has this key present, or returns `None`.
     ///
     /// # Examples
     ///
@@ -636,8 +632,7 @@ where
 
     /// Updates an existing key-value pair in-place.
     ///
-    /// Returns `None` if the key does not exist. It is an asynchronous method returning an
-    /// `impl Future` for the caller to await.
+    /// Returns `None` if the key does not exist.
     ///
     /// # Examples
     ///
@@ -711,8 +706,7 @@ where
 
     /// Removes a key-value pair if the key exists.
     ///
-    /// Returns `None` if the key does not exist. It is an asynchronous method returning an
-    /// `impl Future` for the caller to await.
+    /// Returns `None` if the key does not exist.
     ///
     /// # Examples
     ///
@@ -756,8 +750,7 @@ where
 
     /// Removes a key-value pair if the key exists and the given condition is met.
     ///
-    /// Returns `None` if the key does not exist or the condition was not met. It is an
-    /// asynchronous method returning an `impl Future` for the caller to await.
+    /// Returns `None` if the key does not exist or the condition was not met.
     ///
     /// # Examples
     ///
@@ -841,8 +834,7 @@ where
     /// [`OccupiedEntry`] exclusively owns the entry, preventing others from gaining access to it:
     /// use [`read_async`](Self::read_async) if read-only access is sufficient.
     ///
-    /// Returns `None` if the key does not exist. It is an asynchronous method returning an
-    /// `impl Future` for the caller to await.
+    /// Returns `None` if the key does not exist.
     ///
     /// # Examples
     ///
@@ -932,8 +924,7 @@ where
 
     /// Reads a key-value pair.
     ///
-    /// Returns `None` if the key does not exist. It is an asynchronous method returning an
-    /// `impl Future` for the caller to await.
+    /// Returns `None` if the key does not exist.
     ///
     /// # Examples
     ///
@@ -980,8 +971,6 @@ where
     }
 
     /// Returns `true` if the [`HashMap`] contains a value for the specified key.
-    ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -1220,8 +1209,6 @@ where
     /// if they are not removed, however the same entry can be visited more than once if the
     /// [`HashMap`] gets resized by another thread.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
-    ///
     /// # Examples
     ///
     /// ```
@@ -1281,8 +1268,6 @@ where
     }
 
     /// Clears the [`HashMap`] by removing all key-value pairs.
-    ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -1949,8 +1934,6 @@ where
     /// effectively act as a mutable iterator over entries. The method never acquires more than one
     /// lock even when it searches other buckets for the next closest occupied entry.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
-    ///
     /// # Examples
     ///
     /// ```
@@ -2041,8 +2024,6 @@ where
     /// [`HashMap::begin_async`] and this method together enable the [`OccupiedEntry`] to
     /// effectively act as a mutable iterator over entries. The method never acquires more than one
     /// lock even when it searches other buckets for the next closest occupied entry.
-    ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///

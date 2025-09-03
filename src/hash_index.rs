@@ -244,8 +244,6 @@ where
 
     /// Gets the entry associated with the given key in the map for in-place manipulation.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
-    ///
     /// # Examples
     ///
     /// ```
@@ -367,8 +365,6 @@ where
     /// The returned [`OccupiedEntry`] in combination with [`OccupiedEntry::next_async`] can act as
     /// a mutable iterator over entries.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
-    ///
     /// # Examples
     ///
     /// ```
@@ -411,8 +407,6 @@ where
     }
 
     /// Finds any entry satisfying the supplied predicate for in-place manipulation.
-    ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -496,8 +490,6 @@ where
 
     /// Inserts a key-value pair into the [`HashIndex`].
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
-    ///
     /// # Errors
     ///
     /// Returns an error along with the supplied key-value pair if the key exists.
@@ -566,11 +558,8 @@ where
 
     /// Removes a key-value pair if the key exists.
     ///
-    /// Returns `false` if the key does not exist. It is an asynchronous method returning an
-    /// `impl Future` for the caller to await.
-    ///
-    /// Returns `true` if the key existed and the condition was met after marking the entry
-    /// unreachable; the memory will be reclaimed later.
+    /// Returns `false` if the key does not exist. Returns `true` if the key existed and the
+    /// condition was met after marking the entry unreachable; the memory will be reclaimed later.
     ///
     /// # Examples
     ///
@@ -617,11 +606,9 @@ where
 
     /// Removes a key-value pair if the key exists and the given condition is met.
     ///
-    /// Returns `false` if the key does not exist or the condition was not met. It is an
-    /// asynchronous method returning an `impl Future` for the caller to await.
-    ///
-    /// Returns `true` if the key existed and the condition was met after marking the entry
-    /// unreachable; the memory will be reclaimed later.
+    /// Returns `false` if the key does not exist or the condition was not met. Returns `true` if
+    /// the key existed and the condition was met after marking the entry unreachable; the memory
+    /// will be reclaimed later.
     ///
     /// # Examples
     ///
@@ -696,8 +683,7 @@ where
     /// [`OccupiedEntry`] exclusively owns the entry, preventing others from gaining access to it:
     /// use [`peek`](Self::peek) if read-only access is sufficient.
     ///
-    /// Returns `None` if the key does not exist. It is an asynchronous method returning an
-    /// `impl Future` for the caller to await.
+    /// Returns `None` if the key does not exist.
     ///
     /// # Examples
     ///
@@ -955,8 +941,6 @@ where
     /// if they are not removed, however the same entry can be visited more than once if the
     /// [`HashIndex`] gets resized by another thread.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
-    ///
     /// # Examples
     ///
     /// ```
@@ -1027,8 +1011,6 @@ where
     }
 
     /// Clears the [`HashIndex`] by removing all key-value pairs.
-    ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
@@ -1669,8 +1651,6 @@ where
     /// effectively act as a mutable iterator over entries. The method never acquires more than one
     /// lock even when it searches other buckets for the next closest occupied entry.
     ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
-    ///
     /// # Examples
     ///
     /// ```
@@ -1752,8 +1732,6 @@ where
     /// [`HashIndex::begin_async`] and this method together enable the [`OccupiedEntry`] to
     /// effectively act as a mutable iterator over entries. The method never acquires more than one
     /// lock even when it searches other buckets for the next closest occupied entry.
-    ///
-    /// It is an asynchronous method returning an `impl Future` for the caller to await.
     ///
     /// # Examples
     ///
